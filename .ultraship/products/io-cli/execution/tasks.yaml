@@ -426,7 +426,7 @@ tasks:
     why_required: F2 is the wizard writing what it showed, and N5 is the credential never reaching the
       screen, the scrollback, a log line or the trace. The release's stated outcome starts from an
       empty configuration, so without the wizard there is no first run at all.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T07
       - US-IO-CLI-0.1.0-T10
@@ -445,8 +445,45 @@ tasks:
     files:
       - src/wizard.rs
       - src/settings.rs
+      - src/lib.rs
       - tests/wizard.rs
-    evidence: []
+    evidence:
+      - 64 tests pass across twelve binaries; fmt and clippy -D warnings exit 0. Seven of them are
+        the wizard's, driven by a scripted key sequence over a real CrosstermBackend so the byte
+        stream N5 asserts over is the one a terminal would have received.
+      - "A REAL FINDING that changes how F2 can be asserted: Config::from_toml parses text as the
+        PROJECT scope, and io-harness REFUSES a project-scoped file that widens the permission
+        boundary. The wizard's default posture — sandboxed workspace — sets exec = allow, so the
+        file it writes is correct and from_toml is right to reject it: widening is the operator's
+        own decision and belongs to the user scope, which is where the wizard writes. The test
+        therefore reads it back through Config::discover with the user file OUTSIDE the discovery
+        root, and separately checks that a narrowing posture parses either way. F2's own scripted
+        run chooses 'ask before writes', which narrows, so the criterion's literal from_toml
+        assertion is still made and still passes."
+      - "A second trap found while fixing the first: a user file placed at <root>/io.toml is ALSO
+        the project-scope candidate, so it is read under project rules and refused. The user scope
+        has to be somewhere the workspace is not."
+      - "F2: the scripted run picks OpenRouter, types a key, takes the second model, the light theme
+        and the ask-before-writes posture; the written file parses, provider_spec returns OpenRouter
+        with openai/gpt-5 and the typed key, the policy's write default is Ask and net is Deny,
+        [app.io-cli] gives back the chosen theme, and the file's mode is 0600 on unix. Nothing
+        exists on disk at any point before the confirmation screen."
+      - "N5: the key never appears in the byte stream, nor do its 12, 20 or 28 character prefixes;
+        the field renders bullets, so the absence is masking rather than the key simply not being
+        drawn; and the confirmation screen describes the credential as 'written into this file, mode
+        0600' without any of its value."
+      - Where an environment variable already carries the key, Enter on an empty field writes the
+        file WITHOUT a key at all — the better outcome rather than a fallback, since a key that is
+        never on disk cannot leak from it.
+      - A posture is an io_harness::Policy rather than a flag of io-cli's own, which is what will
+        let the status line name the layer in force. 'Ask before writes' says plainly at the moment
+        it is chosen that a write is declined until the approval surface lands, rather than implying
+        a behaviour this release does not have.
+      - "SABOTAGE AA — produce the write when the posture is chosen, skipping confirmation: only the
+        F2 test fails."
+      - "SABOTAGE BB — remove the mask character: only the F2/N5 test fails."
+      - "SABOTAGE CC — a rejection carries on to the model step: both F3 tests fail and nothing
+        else."
   - id: US-IO-CLI-0.1.0-T12
     summary: Verify the credential against the live endpoint inside the wizard, returning to the
       credential step with the provider's own message and writing no file on failure.
