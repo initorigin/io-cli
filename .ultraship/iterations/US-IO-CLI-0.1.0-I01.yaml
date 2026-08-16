@@ -1,0 +1,106 @@
+id: US-IO-CLI-0.1.0-I01
+timestamp: 2026-08-16T13:41:43Z
+category:
+  - product-level
+  - release-level
+trigger: >
+  The owner asked how io-cli would be distributed — a crates.io publish or GitHub Releases only.
+  Checking the registry before answering found that the crate name is already taken, by us, with a
+  published version history that reaches into the range this roadmap had just allocated.
+evidence:
+  - >
+    `https://crates.io/api/v1/crates/io-cli` returns a crate owned by `aakashpawar1999` (Aakash
+    Pawar) whose `repository` field is `https://github.com/initorigin/io-cli` — the same repository
+    this workspace plans. It was created 2026-07-25 and last updated 2026-08-07.
+  - >
+    It carries **17 published versions — 0.1.0 through 0.14.0** — and **all 17 are yanked**
+    (`max_version` is reported as `0.0.0`, which is what crates.io returns when nothing is live).
+    Total downloads 281.
+  - >
+    A yank removes a version from resolution; it does not delete it and it does not free the version
+    number. `cargo publish` of `io-cli 0.1.0` would therefore be rejected as already uploaded, and so
+    would every number up to 0.14.0 — the entire range this roadmap allocates for 0.1.0 through
+    0.9.0.
+  - >
+    The crate's published description still opens "`io-engine` runs an agent against the project you
+    are standing in", a naming that predates even the archived fork. Anything published under this
+    name inherits that page's history.
+  - >
+    Separately: `cargo install io-cli` requires a Rust toolchain on the user's machine and compiles
+    io-harness and its dependency tree from source. For a terminal application distributed to people
+    who may not have Rust, that is the slowest of the available install paths, not the primary one.
+before:
+  assumptions:
+    - >
+      Distribution was an open question, with `delivery.target_mode: release-ready` chosen as the
+      cautious default and the crates.io decision deferred to the owner.
+    - >
+      `product.yaml` stated the deployment context as "Installed from crates.io or a release binary".
+  scope:
+    - >
+      The 0.1.0 contract described a tag cutting a GitHub Release but never said what assets that
+      Release would carry. There was no release-engineering scope in the release at all.
+  implementation: >
+    No installer, no cross-compilation matrix, no checksums, no defined set of target triples.
+change:
+  summary: >
+    Distribution is **prebuilt binaries attached to the GitHub Release, installed by a `curl` shell
+    script on unix and a PowerShell script on Windows**. io-cli is not published to crates.io, not
+    published to Homebrew, and is not installable with `cargo install`. Because nothing is published
+    to the registry, the burned 0.1.0–0.14.0 range is irrelevant and the roadmap's numbering is
+    unaffected.
+  added:
+    - >
+      Release engineering enters 0.1.0's scope: a cross-compilation matrix producing four artifacts,
+      a `SHA256SUMS` file published with them, `install.sh`, and `install.ps1`.
+    - >
+      A new operational acceptance criterion requiring each installer to be exercised on a clean
+      machine per platform, and a non-functional criterion requiring checksum verification.
+  removed:
+    - >
+      The crates.io publish step, and with it the "does 0.1.0 publish to crates.io" open question,
+      which is now decided rather than open.
+  deferred:
+    - >
+      Homebrew, a Scoop or WinGet manifest, and `cargo install` support. Destination: recorded as
+      product `non_goals` — deliberately, since "for now" here means "not part of this product's
+      plan", and anything that changes it is a fresh iteration with its own record.
+    - >
+      Linux `aarch64`, and any macOS or Windows ARM target beyond `aarch64-apple-darwin`.
+      Destination: `open_questions` on the 0.1.0 contract, to be resolved when the matrix is first
+      built rather than guessed at now.
+  replaced:
+    - >
+      `product.yaml`'s `deployment_context` sentence "Installed from crates.io or a release binary"
+      is replaced with the installer path, because it is now factually wrong.
+    - >
+      `product.yaml`'s `public_contract` gains the installer scripts and the artifact naming, which
+      become part of what may be depended upon: a user's install command must keep working.
+impact:
+  products:
+    - io-cli
+  versions:
+    - 0.1.0
+  tasks: []
+  dependencies:
+    - >
+      GitHub Releases becomes a hard distribution dependency rather than a convenience — it is now
+      the only channel. This is recorded on the 0.1.0 contract's `dependencies.services`.
+  resource_effect: >
+    Adds a cross-compilation matrix and two installer scripts to 0.1.0, which is real work and is not
+    free. It removes the registry publish, its irreversibility, and the renumbering that publishing
+    would have forced on all nine roadmap entries. Net: more work in this release, materially less
+    risk across the product.
+versioning:
+  previous_target: 0.1.0
+  new_target: 0.1.0
+  consequence: no-version-change
+approval:
+  source: user
+  reference: >
+    Owner, in session 2026-08-16, asked whether these would be crate-published or GitHub Releases
+    only, was shown the burned version range and the four distribution options, and answered:
+    "Want installations with curl and powershell only for now."
+canonical_updates:
+  - products/io-cli/product.yaml
+  - products/io-cli/releases/0.1.0.yaml

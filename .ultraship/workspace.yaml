@@ -1,0 +1,12 @@
+id: io-cli
+name: io-cli
+vision: >
+  The terminal agent that shows you what it is allowed to do, what it is spending, and what it
+  refused — while it works. A renderer over io-harness, containing no agent loop of its own.
+constraints:
+  - >
+    io-cli contains no agent loop, no provider client, no tool implementation, no sandbox, no policy
+    engine and no session store. All of it is io-harness.
+  - Branch flow is feat/<version> to develop to main, and nothing reaches develop or main except by
+    pull request.
+active_product: io-cli

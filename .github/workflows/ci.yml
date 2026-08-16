@@ -1,0 +1,102 @@
+name: CI
+
+# O1: green on macOS, Linux and Windows, on the feature branch and again on the
+# merge to `develop`. Windows is not optional here — it is where a terminal
+# renderer's assumptions about key reporting, resize events and ANSI support
+# break, and it is where this line of repositories has historically found what
+# the other two hid.
+
+# `feat/**` is deliberately not a push trigger: every feature branch reaches
+# `develop` through a pull request, and the pull request already runs this
+# workflow. Listing it here would run the whole matrix twice per commit, in two
+# different concurrency groups, so neither run cancels the other.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# Every `uses:` is pinned to a full-length commit SHA with its human-readable
+# version in a trailing comment. A tag is a pointer its owner can move; a SHA is
+# not, so what ran yesterday is what runs today. Dependabot bumps these and
+# rewrites the trailing comment.
+#
+# Least privilege: every job only reads the checkout. Nothing publishes, nothing
+# comments, no job takes a secret.
+permissions:
+  contents: read
+
+# Deliberately NOT `cancel-in-progress: true`. A superseded run is often the one
+# carrying the diagnostics for the failure that prompted the next push, and this
+# project has thrown those away before. Runner minutes are cheaper than a
+# reproduction.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Full debuginfo is the most expensive part of a debug build and on Windows it
+  # dominates link time. `line-tables-only` keeps what a CI failure is actually
+  # read from — a panic carries its own file and line, and a backtrace keeps
+  # frame file/line. Set for both profiles because `test` inherits `dev` in the
+  # manifest but not through this variable.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  # No dot in a job id, here or anywhere: GitHub accepts it and then `needs:`
+  # cannot refer to it.
+  build-and-test:
+    name: build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Off on purpose. One platform failing must not hide the state of the other
+    # two, which is the whole reason for running three.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      # io-harness pulls a bundled rusqlite, which is the expensive part of a
+      # cold build here.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo build --all-targets
+      - run: cargo test --all-targets
+      # `cargo test --all-targets` does not run doctests. This crate has few, and
+      # they are cheap, but a doctest that stops compiling is a broken public
+      # example and CI should say so.
+      - run: cargo test --doc
+
+  lint:
+    name: fmt and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The floor is read from `rust-version` in Cargo.toml rather than written
+      # here, so the two can never drift apart.
+      - id: msrv
+        run: echo "version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["rust_version"])')" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo build --all-targets

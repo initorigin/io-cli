@@ -1,0 +1,235 @@
+name: release
+
+# Pushing the tag is what cuts the Release. `gh release create` is never used: it
+# produces a Release with no assets, and the assets ARE the product here — there
+# is no registry and no other channel, so a Release without them is an install
+# path that does not work.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 0.1.0). Must equal Cargo.toml's version."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Cheap and first: a tag that does not match the manifest would cut a Release
+  # labelled with a version it was not built from, and four cross-compiles is an
+  # expensive way to find that out.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: resolve
+        env:
+          DISPATCH: ${{ inputs.version }}
+        run: |
+          if [ -n "$DISPATCH" ]; then
+            version="$DISPATCH"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::tag says $version, Cargo.toml says $manifest"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section"
+            exit 1
+          fi
+          echo "number=$version" >> "$GITHUB_OUTPUT"
+
+  # Four artifacts. musl for Linux deliberately: one static binary that runs on
+  # any distribution beats two glibc builds and a support question about which
+  # one a user needs.
+  build:
+    needs: [checks]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One target failing must not hide the state of the other three.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.target }}
+
+      # io-harness carries rusqlite with a bundled C SQLite, so a musl target
+      # needs a musl C compiler in the job. Without it the build fails inside a
+      # dependency's build script, which reads like a toolchain bug and is not
+      # one. This is the row most likely to break and the reason it was proved
+      # before the release branch depended on it.
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y musl-tools
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Run it. A binary that builds and will not start is the failure a release
+      # profile hides from a test profile, and it costs one line to rule out on
+      # every target the runner can execute.
+      - if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            ./target/${{ matrix.target }}/release/io.exe --version
+          else
+            ./target/${{ matrix.target }}/release/io --version
+          fi
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ needs.checks.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          stage="io-$VERSION-$TARGET"
+          mkdir -p "dist/$stage"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/$TARGET/release/io.exe" "dist/$stage/"
+          else
+            cp "target/$TARGET/release/io" "dist/$stage/"
+          fi
+          cp LICENSE NOTICE README.md CHANGELOG.md "dist/$stage/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "$stage.zip" "$stage" >/dev/null
+          else
+            tar czf "$stage.tar.gz" "$stage"
+          fi
+          rm -rf "$stage"
+          ls -l
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [checks, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The file the installers verify against before they unpack anything. It
+      # covers every artifact in one document, so a partial upload is visible as a
+      # missing line rather than as a checksum that happens to match.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum ./*.tar.gz ./*.zip | sed 's|\./||' > SHA256SUMS
+          cat SHA256SUMS
+          test "$(grep -c . SHA256SUMS)" -eq 4 || {
+            echo "::error::expected four artifacts, got $(grep -c . SHA256SUMS)"
+            exit 1
+          }
+
+      - name: Notes
+        env:
+          VERSION: ${{ needs.checks.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on && !/^\[[^]]*\]:/ { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no non-empty '## [$VERSION]' section"
+            exit 1
+          fi
+          cat >> notes.md <<'EOF'
+
+          ### Install
+
+          macOS and Linux:
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/initorigin/io-cli/main/install.sh | sh
+          ```
+
+          Windows, in PowerShell:
+
+          ```powershell
+          irm https://raw.githubusercontent.com/initorigin/io-cli/main/install.ps1 | iex
+          ```
+
+          Both scripts verify the artifact against `SHA256SUMS` before unpacking
+          it and install into a per-user directory with no administrator rights.
+          The checksum defends against a truncated download and a tampered asset;
+          `curl | sh` is a trust-the-publisher model regardless.
+          EOF
+          cat notes.md
+
+      # Release titles are the bare form this line of repositories uses:
+      # "io-cli 0.1.0".
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          tag_name: v${{ needs.checks.outputs.version }}
+          name: io-cli ${{ needs.checks.outputs.version }}
+          body_path: notes.md
+          files: dist/*
+          target_commitish: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
+          fail_on_unmatched_files: true
+
+      - name: What is left for a human
+        env:
+          VERSION: ${{ needs.checks.outputs.version }}
+        run: |
+          echo "::notice::Released io-cli $VERSION. By hand:"
+          echo "::notice::  1. run install.sh on a clean macOS machine and in a clean Linux container"
+          echo "::notice::  2. run install.ps1 on a clean Windows machine"
+          echo "::notice::  3. in each case run 'io --version' in a NEW shell"
+          echo "::notice::There is no registry publish. The Release is the whole channel."

@@ -1,0 +1,93 @@
+# io-harness's configuration file, as `io setup` writes it.
+#
+# This is the harness's schema, not io-cli's — io-cli has no configuration parser
+# and never will. Everything below except `[app.io-cli]` is read and validated by
+# io-harness itself; `[app.io-cli]` is the section it deliberately leaves alone
+# for whoever is building on top of it.
+#
+# Where this file goes:
+#
+#   $IO_CONFIG                       a file, named outright
+#   $IO_CONFIG_HOME/io.toml          a directory, named outright
+#   $XDG_CONFIG_HOME/io/io.toml      unix
+#   ~/.config/io/io.toml             unix, when XDG_CONFIG_HOME is unset
+#   %APPDATA%\io\io.toml             Windows
+#
+# A project's own `io.toml` and a gitignored `io.local.toml` layer on top.
+
+# --- The provider -----------------------------------------------------------
+#
+# One of: openrouter, anthropic, openai, compatible.
+#
+# `api_key` absent means the provider's own environment variable —
+# OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY. That is the better
+# arrangement, not a fallback: a key that is never on disk cannot leak from disk.
+# An environment variable always wins over a key written here.
+
+[[provider]]
+kind = "openrouter"
+model = "anthropic/claude-sonnet-4"
+# api_key = "sk-or-v1-..."   # written mode 0600 when the wizard writes it
+
+# Any OpenAI-shaped endpoint — a proxy, a gateway, a local runtime. Exactly one
+# of `preset` and `base_url`.
+#
+# [[provider]]
+# kind = "compatible"
+# base_url = "http://localhost:11434/v1"
+# model = "llama3.2"
+# auth = "none"
+
+# --- The permission boundary ------------------------------------------------
+#
+# What the agent may do before anything asks. The three postures the wizard
+# offers are exactly these three shapes:
+#
+#   sandboxed workspace   read/write/exec allow, net deny
+#   ask before writes     read allow, write/exec ask, net deny
+#   read only             read allow, write/exec/net deny
+#
+# `ask` is answered by declining in 0.1.0; the overlay that asks a human is
+# 0.2.0's, and a posture whose behaviour is not what its name suggests should say
+# so rather than imply otherwise.
+#
+# NOTE: a PROJECT-scoped file may narrow this and may never widen it — a
+# repository you cloned must not be able to grant itself permission. Widening
+# belongs in the user-scope file, which is where `io setup` writes.
+
+[policy.defaults]
+read = "allow"
+write = "allow"
+exec = "allow"
+net = "deny"
+
+# Named layers, evaluated after the built-in ones. A later layer may add
+# capability and may never re-allow an earlier deny.
+#
+# [[policy.layers]]
+# name = "no-secrets"
+# rules = [{ act = "read", effect = "deny", pattern = ".env" }]
+
+# --- Not read by io-cli 0.1.0 -----------------------------------------------
+#
+# io-harness reads all of these; io-cli 0.1.0 does not pass them to a turn, so
+# writing them here has no effect on an `io` session yet. See the README: the
+# harness's steerable turn builds its own contract, and the entry point that
+# takes a caller's contract does not take a steer inbox, so honouring them today
+# would mean giving up Ctrl+C.
+#
+#   [sandbox]      limits and network allowances
+#   [run]          step, token and duration budgets
+#   [instructions] AGENTS.md and friends
+#   [[mcp]] [[lsp]] [[agent]] [web] [browser]
+#
+# The sandbox itself IS on: a workspace turn runs commands inside it. What is
+# missing is the configured ceilings, not the containment.
+
+# --- io-cli's own section ---------------------------------------------------
+#
+# One key in this release. io-harness does not validate this table.
+
+[app.io-cli]
+# "dark" or "light". Absent means detect from the terminal background.
+theme = "dark"

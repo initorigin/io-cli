@@ -1,0 +1,29 @@
+version: 2
+
+# Dependabot opens its pull requests against the DEFAULT branch unless told
+# otherwise, and this repository's default branch is `main`. `main` takes nothing
+# but a release merge from `develop`, so a bot PR into it would bypass the whole
+# flow. Every ecosystem here targets `develop` explicitly.
+#
+# The cost of that line is real and worth stating: GitHub does not raise
+# Dependabot *security* updates against a non-default target branch. Security
+# advisories have to be acted on by hand here, through the same develop -> main
+# path as any other change.
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patch bumps instead of a dozen. This crate is a binary,
+      # so a patch bump moves Cargo.lock and nothing anybody resolves against.
+      patch-updates:
+        update-types: ["patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: develop
+    schedule:
+      interval: monthly
