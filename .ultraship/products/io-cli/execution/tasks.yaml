@@ -504,6 +504,9 @@ tasks:
       - src/wizard.rs
       - src/main.rs
       - src/lib.rs
+      - src/app.rs
+      - src/term.rs
+      - src/events.rs
     evidence:
       - 69 tests pass across thirteen binaries; fmt and clippy -D warnings exit 0. The verification
         path itself is exercised live by F1, which is what a credential check can only be proved by.
