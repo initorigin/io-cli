@@ -6,7 +6,7 @@ tasks:
     why_required: "This is the release. Without a tick the clock advances only when an event happens
       to arrive, which is the defect being fixed, and without the injected clock the tick cannot be
       asserted without measuring time — which N1 forbids."
-    status: todo
+    status: done
     depends_on: []
     acceptance_criteria:
       - >
@@ -25,7 +25,23 @@ tasks:
       - src/app.rs
       - src/main.rs
       - tests/tick.rs
-    evidence: []
+    evidence:
+      - "`App::tick(age) -> bool` is the seam. It takes the session's age as an argument rather than
+        reading a clock, so a test advances time by hand; it returns whether a frame is owed rather
+        than drawing one, so the decision is observable without a terminal."
+      - "`cargo test --test tick` — 4 passed, 0 failed. F1 repaints across two ticks with no event
+        ever delivered to the app; F2 pumps ten idle ticks and asserts the recorder gained not one
+        byte, which is `no frame at all` rather than `a frame that changed nothing`."
+      - "Sabotage A — the tick never repaints (`self.status.elapsed = age; true` becomes `false`):
+        1 failed, and it is F1's test alone. Sabotage B — the `Mode::Running` guard deleted so the
+        tick fires unconditionally: 3 failed, all three of them F2's. Neither arm fails the other's
+        test."
+      - The driver's ticker is built inside `turn` and dropped with it, so an idle session has no
+        timer at all — the guard in `App::tick` is the half a test can see and the ticker's lifetime
+        is the half that makes it true in production.
+      - "`MissedTickBehavior::Delay` rather than the default burst: a turn that blocked the select
+        loop resumes ticking from now instead of firing a catch-up run of frames nobody saw."
+      - No test in this file sleeps, and none reads a clock. `cargo check --all-targets` exits 0.
 
   - id: US-IO-CLI-0.1.1-T02
     summary: Put a moving indicator beside the status line's state word, and suppress it under NO_COLOR.

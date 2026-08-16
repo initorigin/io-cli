@@ -5,6 +5,8 @@
 //! everything a test needs to answer "what does `Ctrl+C` do in the middle of a
 //! streaming turn".
 
+use std::time::Duration;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_harness::RunEvent;
 use ratatui::layout::Rect;
@@ -17,6 +19,14 @@ use crate::events::Events;
 use crate::status::Status;
 use crate::term::VIEWPORT_HEIGHT;
 use crate::theme::{Theme, Tone};
+
+/// How often the driver offers the session a tick while a turn is running.
+///
+/// Ten a second: fast enough that the indicator reads as motion rather than as a
+/// character changing, slow enough that it is nothing next to the repaints a
+/// streaming answer already causes. It is an offer rather than a repaint — see
+/// [`App::tick`], which is what decides whether a frame is drawn.
+pub const TICK: Duration = Duration::from_millis(100);
 
 /// Whether a turn is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +99,26 @@ impl App {
         self.status.working = false;
         let tail = self.events.flush();
         self.pending.extend(tail);
+    }
+
+    /// The clock moved. Returns whether the viewport has to be redrawn.
+    ///
+    /// This is the whole of the release's liveness, and it is a *function of an
+    /// age the caller supplies* rather than of a timer this type reads. That is
+    /// deliberate and it is what makes the two properties assertable: a test
+    /// advances `age` by hand and asks whether a frame is owed, with nothing
+    /// sleeping and nothing measured.
+    ///
+    /// An idle session is told no, and is not even given the new time. A terminal
+    /// interface that redraws forever is the thing this renderer exists not to
+    /// be, so the tick is live only while a turn is: between turns the clock is
+    /// answered by the next keystroke, which repaints anyway.
+    pub fn tick(&mut self, age: Duration) -> bool {
+        if self.mode != Mode::Running {
+            return false;
+        }
+        self.status.elapsed = age;
+        true
     }
 
     /// Take an event from the harness.
