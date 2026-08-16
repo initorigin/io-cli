@@ -6,7 +6,7 @@ tasks:
     why_required: "Nothing else in the release can be written, built or tested without a crate. The
       manifest is also where N1 is decided: the dependency set that this release is allowed to have
       is declared here once, and every later task is measured against it."
-    status: todo
+    status: done
     depends_on: []
     acceptance_criteria:
       - >
@@ -27,18 +27,27 @@ tasks:
       - .gitignore
       - .github/CODEOWNERS
       - .github/dependabot.yml
-      - .github/pull_request_template.md
+      - .github/PULL_REQUEST_TEMPLATE.md
       - .github/ISSUE_TEMPLATE/bug_report.md
       - .github/ISSUE_TEMPLATE/feature_request.md
       - src/main.rs
       - src/cli.rs
-    evidence: []
+      - src/lib.rs
+    evidence:
+      - cargo build exits 0 against a lockfile of 274 packages, resolved 2026-08-16.
+      - "The direct dependency set is exactly the eight N1 names: io-harness 0.60.1, ratatui 0.29,
+        crossterm 0.28, tui-textarea 0.7, clap 4, tokio 1, serde 1, toml 1, plus tempfile as a
+        dev-dependency. Nothing that is a runtime, a client or a store."
+      - The manifest carries publish = false, so the crates.io non-goal is mechanical rather than
+        remembered.
+      - "rust-version is 1.95, copied from io-harness rather than guessed: libsqlite3-sys calls the
+        std cfg_select! macro from its build script and neither it nor rusqlite declares the floor."
   - id: US-IO-CLI-0.1.0-T02
     summary: "Add `ci.yml`: build, test, clippy -D warnings and fmt --check on macOS, Linux and Windows."
     why_required: O1 requires a green run on three platforms on the feature branch and again on the
       merge. Without the workflow there is no run to be green, and Windows — where this line of
       repositories historically finds what the other two hide — is never exercised.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T01
     acceptance_criteria:
@@ -48,7 +57,15 @@ tasks:
         and it is where this project has historically found what the other two hid.
     files:
       - .github/workflows/ci.yml
-    evidence: []
+    evidence:
+      - ci.yml runs build --all-targets, test --all-targets, test --doc on ubuntu-latest,
+        macos-latest and windows-latest with fail-fast off, plus a lint job (fmt --check, clippy -D
+        warnings) and an msrv job that reads rust-version out of Cargo.toml rather than repeating
+        it.
+      - "Every uses: is pinned to a full-length commit SHA with the version in a trailing comment;
+        no job id contains a dot; cancel-in-progress is false so a superseded run keeps its
+        diagnostics."
+      - The green run itself is recorded against O1 when the branch is pushed.
   - id: US-IO-CLI-0.1.0-T03
     summary: "Build the inline renderer core and the byte-stream capture harness: `Viewport::Inline`,
       `insert_before` for finished content, synchronized output per frame, and a panic hook plus

@@ -1,0 +1,50 @@
+[package]
+name = "io-cli"
+version = "0.1.0"
+edition = "2021"
+# io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
+# macro from its build script. Nothing here can be lower than what the harness
+# needs, so the floor is copied rather than guessed at.
+rust-version = "1.95"
+authors = ["Aakash Pawar"]
+license = "Apache-2.0"
+description = "A terminal agent that shows you what it is allowed to do, what it is spending, and what it refused — while it works."
+repository = "https://github.com/initorigin/io-cli"
+readme = "README.md"
+# This crate is never published. The name holds seventeen yanked versions from an
+# archived product, a yank does not free a version number, and the distribution
+# decision is prebuilt binaries on the GitHub Release. `publish = false` makes an
+# accidental `cargo publish` impossible rather than merely discouraged.
+publish = false
+
+# The binary is `io`. The crate is `io-cli` because the bare names are taken on
+# crates.io by other people; the two never have to agree.
+[[bin]]
+name = "io"
+path = "src/main.rs"
+
+# The library half exists so the integration tests under `tests/` can reach the
+# renderer, the composer and the picker. A binary-only crate cannot be linked by
+# an integration test, and F4, F5, F8 and N3 are all integration tests.
+[lib]
+name = "io_cli"
+path = "src/lib.rs"
+
+[dependencies]
+# The agent loop, the providers, the tools, the sandbox, the policy engine and the
+# session store — all of it. This crate adds none of them; see the F7 test.
+io-harness = "0.60.1"
+# ratatui stays at 0.29 and crossterm at 0.28 because `tui-textarea` 0.7 — the
+# composer — is built against exactly that pair. The 0.30 line has forks of the
+# textarea widget rather than a release of it, and taking one would mean depending
+# on somebody's fork of the one widget the composer is made of.
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"
