@@ -26,7 +26,7 @@ versions:
       renderer or the wizard changes: this is the release that makes what 0.1.0 already does legible
       while it is happening.
     detail: specified
-    status: planned
+    status: released
   - version: 0.2.0
     outcome: >
       The operator can see and steer the boundary the agent is working under. One key cycles the

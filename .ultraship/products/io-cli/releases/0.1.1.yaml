@@ -1,6 +1,6 @@
 product: io-cli
 version: 0.1.1
-status: planned
+status: released
 release_type: patch
 outcome:
   user_can: >
@@ -261,3 +261,115 @@ open_questions:
     characters is the common case and the picker already has a fitting rule. Reuse
     it, or leave the step to wrap, is a decision for when the line is first
     rendered against real content.
+released_at: "2026-08-16T18:47:29Z"
+mode: published
+delivered: >
+  The session stops looking frozen while it works. A turn in flight advances its
+  own clock and turns its own indicator, and neither waits for an event to
+  arrive. The screenshot this release put in the README is the proof and the
+  case: forty seconds into a slow first token, no answer on screen yet, the
+  status line reading `deepseek/deepseek-v4-flash-0731 · ⠨ working · 40s` with
+  the indicator turning. Under 0.1.0 that same moment was a still word beside a
+  still clock, which is what a hung process looks like.
+
+
+  The mechanism is one function. `App::tick(age) -> bool` takes the session's age
+  as an argument rather than reading a clock, and answers whether a frame is owed
+  rather than drawing one. That is what makes liveness assertable without a
+  timing assertion: a test advances the clock by hand and asks. It also decides
+  the half that matters more — an idle session is told no, so this renderer still
+  repaints only when something changed, which is the whole of its differentiation
+  from the alternate-screen products.
+
+
+  A step now reads as a step: the decision, the tool it called with its target,
+  the result, and then the token count and the step number as trailing muted
+  detail. The result is stated in both directions, `changed files` or `no
+  change`, so a transcript is skimmed down one column instead of parsed.
+
+
+  Nothing else moved. No key, no command, no event surface, no setting this
+  release starts reading, and the eight dependencies are the same eight. A
+  spinner is a handful of characters and a modulo.
+evidence:
+  tests:
+    - "cargo test — 110 passing, 0 failing, 4 ignored (tests/live.rs, ignored by design), across 22 test binaries"
+    - "cargo test --test tick — 4 passing: F1 repaints across two ticks with no event ever delivered; F2 pumps ten idle ticks and asserts the byte recorder gained nothing at all"
+    - "cargo test --test status — 7 passing, including a full ten-frame cycle asserting NO_COLOR keeps the word and shows no frame"
+    - "cargo test --test events — 12 passing; the two F5 tests assert the ORDER of the five facts by their positions in the rendered line, not their presence"
+    - "cargo test --test timing — 2 passing: no test in the repository sleeps or reads a clock, and src/main.rs is the only module that reads one"
+    - "six sabotage arms run, each failing only its own criterion's tests: tick never repaints (F1 alone); guard deleted (F2's three alone); spinner replaces the word (tests/status.rs alone); token count in front of the decision (the two F5 tests alone); a sleeping test appended (the scan named its file and line); an Instant::now added to src/app.rs (the driver-only test named it)"
+  builds:
+    - "cargo fmt --all -- --check — exit 0"
+    - "cargo clippy --all-targets -- -D warnings — exit 0"
+    - "cargo build --release — exit 0; ./target/release/io --version prints io 0.1.1"
+    - "cargo tree --depth 1 — the same eight names 0.1.0's N1 permits, plus tempfile as a dev-dependency; nothing was added for the animation"
+  reviews:
+    - "F3 completed by the owner, 2026-08-17: the release binary run against a live OpenRouter provider, a real turn watched, verdict `spinner and timer working fine`"
+    - "the capture from that run is docs/screenshot.png and is now the README's screenshot, replacing the one 0.1.0 recorded as a picture of a defect"
+  deployments:
+    - "CI green on macOS, Linux and Windows plus lint, msrv and five CodeQL analyses, on feat/0.1.1 at b478d02"
+  health_checks:
+    - "the release binary starts, prints io 0.1.1, and the live session in the F3 run reached a provider and streamed"
+known_limitations:
+  - >
+    **An idle session's clock is still frozen, and that is F2 rather than a
+    defect.** Between turns the elapsed time advances only when a key arrives.
+    Making it tick when nothing is happening is exactly the repaint-forever
+    behaviour this renderer exists not to have, so the frozen idle clock is the
+    price of the property and is deliberate.
+  - >
+    **The tick's cost while text is streaming quickly was not measured.** The
+    contract raised it as an open question to record rather than to gate, and it
+    was recorded rather than measured: token events already drive repaints, so a
+    timer on top of them is redundant while text is arriving and useful only while
+    it is not. The interval is 100 ms, chosen for how motion reads rather than
+    from a measurement. If a later release measures it, the number belongs there.
+  - >
+    **A long tool target in a step line wraps rather than being fitted.** The
+    picker has a fitting rule that could be reused; the contract left the decision
+    to the first rendering against real content, and the real content in the F3
+    run had no long target in it. Left to wrap, deliberately, rather than
+    designing against a case not yet seen.
+  - >
+    **The indicator is braille and there is no ASCII fallback.** Every frame is
+    one cell wide, which is why braille was chosen, but a terminal without the
+    glyphs shows a replacement character where the animation should be. The word
+    beside it is unaffected, and `NO_COLOR` removes the animation entirely. A
+    proper plain mode is 0.6.0.
+  - >
+    **The README screenshot shows the liveness fix and not the step fix.** The
+    turn it captures was in its first step, so no step line had committed yet. The
+    picture proves the clock and the indicator, which is what the release is named
+    for; F5 is proved by tests asserting the rendered order rather than by the
+    image.
+  - >
+    **Two of 0.1.0's four interface limitations are untouched and stay where the
+    roadmap put them.** The model picker still has no type-to-filter (0.7.0,
+    decided with the owner at 0.1.0's release and widened there to every picker),
+    and a prompt longer than two rows still scrolls within them rather than
+    growing the viewport (0.7.0, because ratatui fixes an inline viewport's height
+    at construction). This release fixed the other two.
+  - >
+    **An action that needs approval is still declined, and the configuration's
+    `[sandbox]`, `[run]` and `[instructions]` sections are still not applied to a
+    turn.** Both are 0.1.0 limitations carried forward unchanged; the approval
+    overlay is 0.2.0 and the contract sections wait on a harness entry point that
+    takes both a caller's contract and a steer inbox.
+  - >
+    **This record is sealed before the Release exists, which is the flow rather
+    than a shortfall.** The sealed record and its lock pin ride the feature branch
+    and merge with the code, so the seal necessarily precedes the tag that cuts
+    the Release and the workflow that attaches the four artifacts and
+    `SHA256SUMS`. `mode: published` describes the channel this product has. If the
+    tag or the matrix fails after this point, the correction is a new version, not
+    an edit.
+  - >
+    **The `fmt and clippy` job failed once on this branch and was re-run.** The
+    failure was seven seconds into `dtolnay/rust-toolchain`, before any of this
+    repository's own commands ran, on a SHA that had just gone green on `develop`.
+    Recorded rather than smoothed over: a failure inside a toolchain download is a
+    flake, and the same two commands exit 0 locally and in the re-run.
+supersedes: 0.1.0
+next_recommended_version: 0.2.0
+immutable: true

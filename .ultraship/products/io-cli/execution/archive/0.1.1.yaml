@@ -20,9 +20,9 @@ release_fit:
       `src/status.rs`, `src/events.rs` and the driver's select loop — and each already has a test
       file pointed at it.
   major_cost_drivers:
-    - "The clock seam. The work is not the timer; it is making the tick assertable without asserting
+    - The clock seam. The work is not the timer; it is making the tick assertable without asserting
       on time, which is what keeps N1 true. Getting that seam wrong is the way this release grows a
-      sleeping test."
+      sleeping test.
     - Not repainting when idle. The easy implementation ticks always, and F2 exists because that is
       the version that would ship by accident.
     - "F3, which cannot be automated: a real turn against a live provider, watched by the owner, and
