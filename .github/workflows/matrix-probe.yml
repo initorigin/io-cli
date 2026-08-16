@@ -1,0 +1,117 @@
+name: release-matrix-probe
+
+# A throwaway. The release contract names the musl row as the most likely thing
+# in the whole matrix to fail — io-harness carries rusqlite with a bundled C
+# SQLite, so cross-compiling it needs a musl C compiler in the job — and says it
+# is worth proving before the release branch depends on it. This is that proof.
+#
+# It is the build job from release.yml with the checks and release jobs removed,
+# so what it exercises is the same four rows, the same toolchain and the same
+# packaging step. Nothing here cuts a Release and nothing here uploads to one.
+#
+# The branch is left in place after it has served its purpose; branches are not
+# deleted in this line of repositories.
+
+on:
+  push:
+    branches: ["diag/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matrix-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One target failing must not hide the state of the other three.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.target }}
+
+      # io-harness carries rusqlite with a bundled C SQLite, so a musl target
+      # needs a musl C compiler in the job. Without it the build fails inside a
+      # dependency's build script, which reads like a toolchain bug and is not
+      # one. This is the row most likely to break and the reason it was proved
+      # before the release branch depended on it.
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y musl-tools
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Run it. A binary that builds and will not start is the failure a release
+      # profile hides from a test profile, and it costs one line to rule out on
+      # every target the runner can execute.
+      - if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            ./target/${{ matrix.target }}/release/io.exe --version
+          else
+            ./target/${{ matrix.target }}/release/io --version
+          fi
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: 0.1.0-probe
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          stage="io-$VERSION-$TARGET"
+          mkdir -p "dist/$stage"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/$TARGET/release/io.exe" "dist/$stage/"
+          else
+            cp "target/$TARGET/release/io" "dist/$stage/"
+          fi
+          cp LICENSE NOTICE README.md CHANGELOG.md "dist/$stage/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "$stage.zip" "$stage" >/dev/null
+          else
+            tar czf "$stage.tar.gz" "$stage"
+          fi
+          rm -rf "$stage"
+          ls -l
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
