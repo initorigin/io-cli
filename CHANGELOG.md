@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-17
+
+The session stops looking frozen while it works. Remediation of what 0.1.0
+shipped, not new capability: no new key, no new command, no new setting, and
+nothing about the permission boundary, the renderer or the wizard changes.
+
+### Added
+
+- **A moving indicator beside the state word.** A small animation next to
+  `working`, advancing on the same tick that drives the clock. The word stays —
+  it is what survives `NO_COLOR`, a screen reader and a log — and the motion is
+  beside it, never instead of it. Suppressed entirely under `NO_COLOR`, where an
+  animation is noise a reader cannot use.
+- **A repaint tick.** The viewport redraws while a turn is in flight, so the
+  clock advances and the indicator moves without an event having to arrive. It
+  runs only while a turn is running: an idle session does not repaint, because a
+  terminal interface that redraws forever is what this renderer exists not to be.
+  Both halves are asserted against a clock the tests advance by hand, so no test
+  sleeps and no test measures how long anything took.
+- **A mechanical check that no test in the repository sleeps or reads a clock**,
+  and that the driver is the only module that reads one at all.
+
+### Changed
+
+- **A step reads as a step.** The line is now the decision, then the tool it
+  called with its target, then the result, with the token count and the step
+  number trailing as muted detail. 0.1.0 put the step number and the token count
+  in the middle of the decision. The result is stated in both directions —
+  `changed files` or `no change` — so a transcript can be skimmed down one
+  column instead of parsed.
+
 ## [0.1.0] - 2026-08-16
 
 First release: a terminal interface over
@@ -61,5 +92,6 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/initorigin/io-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/initorigin/io-cli/releases/tag/v0.1.0

@@ -141,7 +141,8 @@ refusal, error and warning also carries a word.
 
 ## What this release is not
 
-0.1.0 is the renderer, the composer, the wizard and one real session. Approval
+0.1.1 is the renderer, the composer, the wizard and one real session, now legible
+while it is happening. Approval
 overlays and the refusal surface that names the rule and the layer are 0.2.0;
 diffs and collapsible tool output are 0.3.0; resume, fork and rewind are 0.4.0;
 the headless subcommand and NDJSON are 0.5.0; the screen-reader mode is 0.6.0.
