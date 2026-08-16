@@ -386,9 +386,22 @@ async fn turn<P: Provider>(
     let mut running =
         Box::pin(session.turn_steered(text, provider, store, policy, approver, &observer, &inbox));
 
+    // Lives for the turn and no longer, which is half of why an idle session
+    // never repaints; `App::tick` is the other half and the one a test can see.
+    // `MissedTickBehavior::Delay` rather than the default: a turn that blocked the
+    // loop should resume ticking from now, not fire a burst catching up on the
+    // frames nobody saw.
+    let mut ticker = tokio::time::interval(io_cli::app::TICK);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let outcome = loop {
         tokio::select! {
             result = &mut running => break result,
+            _ = ticker.tick() => {
+                if app.tick(started.elapsed()) {
+                    paint(screen, app)?;
+                }
+            }
             Some(event) = events.recv() => {
                 app.event(&event);
                 app.status.elapsed = started.elapsed();

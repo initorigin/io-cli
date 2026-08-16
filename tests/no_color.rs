@@ -111,7 +111,11 @@ fn the_splash_is_suppressed_without_colour_a_tty_or_the_width_for_it() {
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
         .collect();
-    assert!(rendered.contains("io 0.1.0"), "got {rendered:?}");
+    // Read from the manifest rather than written out, so the assertion is that
+    // the splash names THIS build; a literal here goes stale at every bump and
+    // says nothing about the version actually shipping.
+    let version = format!("io {}", env!("CARGO_PKG_VERSION"));
+    assert!(rendered.contains(&version), "got {rendered:?}");
     assert!(!rendered.contains('█'), "the mark was drawn anyway");
 }
 

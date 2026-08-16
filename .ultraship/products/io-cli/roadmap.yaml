@@ -15,6 +15,18 @@ versions:
       facilities, because io-cli never took them away.
     detail: specified
     status: released
+  - version: 0.1.1
+    outcome: >
+      The session stops looking frozen while it works. A turn in flight shows a moving indicator
+      beside the word that names its state, so a reader can tell thinking from hung, and the elapsed
+      clock advances on its own rather than only when an event happens to arrive. A step reads as a
+      step — what the agent decided, what it ran, and what came back — instead of a decision string
+      with a token count appended to it. The README gains the screenshot 0.1.0 could not supply,
+      taken from a run of the corrected interface. Nothing about the permission boundary, the
+      renderer or the wizard changes: this is the release that makes what 0.1.0 already does legible
+      while it is happening.
+    detail: specified
+    status: released
   - version: 0.2.0
     outcome: >
       The operator can see and steer the boundary the agent is working under. One key cycles the
@@ -75,9 +87,11 @@ versions:
       The composer becomes a command surface. A slash palette with fuzzy matching reaches every
       command and every harness skill and prompt template; `@` completes paths from the workspace;
       `!` passes a line to the shell verbatim; a large paste becomes an attachment instead of
-      flooding the input. The agent's own plan and todo list render as a live panel, and a question
-      the agent asks about intent — which the harness distinguishes from an approval about
-      permission — is answered inline rather than guessed at.
+      flooding the input. Every picker filters as you type — the model list, the theme list,
+      `/resume` and `/fork` — so a four-hundred-model catalogue is reached by typing three
+      characters rather than by holding an arrow key. The agent's own plan and todo list render as a
+      live panel, and a question the agent asks about intent — which the harness distinguishes from
+      an approval about permission — is answered inline rather than guessed at.
     detail: hypothesis
     status: planned
   - version: 0.8.0
