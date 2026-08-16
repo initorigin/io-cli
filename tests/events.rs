@@ -118,7 +118,10 @@ fn f5_a_step_reads_decision_then_tool_then_result_then_its_metadata() {
     let tokens = at("1234 tok");
     let step = at("step 7");
 
-    assert!(decision < tool, "the tool came before the decision: {line:?}");
+    assert!(
+        decision < tool,
+        "the tool came before the decision: {line:?}"
+    );
     assert!(tool < result, "the result came before the tool: {line:?}");
     assert!(
         result < tokens,

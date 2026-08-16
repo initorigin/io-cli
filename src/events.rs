@@ -113,10 +113,7 @@ impl Events {
                 // middle of that sentence, which made a transcript something to
                 // parse rather than to skim. Content before metadata is the rule
                 // the rest of the interface already follows.
-                let mut spans = vec![Span::styled(
-                    decision.clone(),
-                    theme.style(Tone::Normal),
-                )];
+                let mut spans = vec![Span::styled(decision.clone(), theme.style(Tone::Normal))];
                 if !tool_call.is_empty() {
                     spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
                     spans.push(Span::styled(tool_call.clone(), theme.style(Tone::Accent)));
@@ -126,7 +123,11 @@ impl Events {
                 // is the one thing this event reports about what came back.
                 spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
                 spans.push(Span::styled(
-                    if *changed { "changed files" } else { "no change" },
+                    if *changed {
+                        "changed files"
+                    } else {
+                        "no change"
+                    },
                     theme.style(if *changed { Tone::Success } else { Tone::Muted }),
                 ));
                 spans.push(Span::styled(
