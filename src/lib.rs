@@ -11,3 +11,4 @@
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod cli;
+pub mod term;

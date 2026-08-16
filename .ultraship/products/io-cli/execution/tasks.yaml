@@ -73,7 +73,7 @@ tasks:
     why_required: This is the release. Every other surface renders through it, and the contract names it
       the single largest technical risk with the instruction to build it before anything else. The
       capture harness is built with it because F5 and N3 cannot be asserted without one.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T01
     acceptance_criteria:
@@ -101,11 +101,32 @@ tasks:
     files:
       - src/term.rs
       - src/lib.rs
+      - Cargo.toml
+      - Cargo.lock
       - tests/support/mod.rs
       - tests/structure.rs
       - tests/scrollback.rs
       - tests/restore.rs
-    evidence: []
+    evidence:
+      - 8 tests pass across tests/structure.rs, tests/scrollback.rs and tests/restore.rs; cargo fmt
+        --all -- --check and cargo clippy --all-targets -- -D warnings both exit 0.
+      - "The harness is a real CrosstermBackend writing into a Recorder, wrapped by a Fixed backend
+        that answers only size() and get_cursor_position() from test-chosen values. TestBackend was
+        rejected on purpose: it emits no escape sequences, so F5 would pass against it because
+        nothing appears rather than because nothing forbidden appears."
+      - "SABOTAGE A — queue EnterAlternateScreen in draw(): both F5 tests fail, the other six pass."
+      - "SABOTAGE B — queue Clear(ClearType::All) in draw(): only
+        n3_never_clears_the_whole_screen_during_a_session fails."
+      - "SABOTAGE C — commit() renders through draw() into the viewport instead of insert_before:
+        both F4 tests fail, F5 and N3 still pass."
+      - "SABOTAGE D — call the previous panic hook before the restore: only
+        n2_a_panic_runs_the_restore_before_the_previous_hook fails."
+      - "SABOTAGE E — drop the idempotence guard on restore(): only
+        dropping_the_screen_restores_it_once fails."
+      - insert_before is given a MEASURED height from Paragraph::line_count(width), not an estimate.
+        ratatui's unstable-rendered-line-info feature is enabled for that one method; an estimated
+        height truncates committed content, which on this renderer loses it from the transcript
+        permanently.
   - id: US-IO-CLI-0.1.0-T04
     summary: Handle resize without duplicating committed scrollback, and define every surface at 80x24.
     why_required: F9 makes 80x24 a supported size rather than a degraded one, and resize is where a

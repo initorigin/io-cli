@@ -38,7 +38,12 @@ io-harness = "0.60.1"
 # composer — is built against exactly that pair. The 0.30 line has forks of the
 # textarea widget rather than a release of it, and taking one would mean depending
 # on somebody's fork of the one widget the composer is made of.
-ratatui = "0.29"
+# `unstable-rendered-line-info` is enabled for one method: `Paragraph::line_count`,
+# which answers how many rows a wrapped paragraph will occupy. `insert_before`
+# takes that height as an argument, and a caller that estimates it truncates
+# exactly the content this product exists to keep. It is a feature of a dependency
+# already taken, not a dependency.
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 crossterm = "0.28"
 tui-textarea = "0.7"
 clap = { version = "4", features = ["derive"] }
