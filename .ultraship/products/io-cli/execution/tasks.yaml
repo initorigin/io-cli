@@ -1,908 +1,122 @@
 product: io-cli
-version: 0.1.0
+version: 0.1.1
 tasks:
-  - id: US-IO-CLI-0.1.0-T01
-    summary: Create the repository skeleton and the one-crate manifest for the `io` binary.
-    why_required: "Nothing else in the release can be written, built or tested without a crate. The
-      manifest is also where N1 is decided: the dependency set that this release is allowed to have
-      is declared here once, and every later task is measured against it."
-    status: done
+  - id: US-IO-CLI-0.1.1-T01
+    summary: Give the session a clock it can be ticked by, and repaint on it only while a turn runs.
+    why_required: "This is the release. Without a tick the clock advances only when an event happens
+      to arrive, which is the defect being fixed, and without the injected clock the tick cannot be
+      asserted without measuring time — which N1 forbids."
+    status: todo
     depends_on: []
     acceptance_criteria:
       - >
-        **N1 — io-cli contains no second harness.** `cargo tree --depth 1` is recorded in the
-        release evidence and reviewed: `io-harness`, `ratatui`, `crossterm`, `tui-textarea`, `clap`,
-        `tokio`, `serde`/`toml`, and nothing that constitutes a runtime, a client or a store. Any
-        addition beyond that list is argued in the release record or it does not ship.
+        **F1 — the viewport repaints while a turn runs, with no event arriving.**
+        Driven by a clock the test controls: with a turn in flight and no run event
+        delivered, advancing the clock produces a new frame whose status line
+        differs from the previous one. Sabotage: only repaint on an event, under
+        which only F1 fails. No assertion anywhere on how long anything took.
+      - >
+        **F2 — an idle session does not repaint.** With no turn running, advancing
+        the same clock produces no frame at all. This is the other half of F1 and
+        the more important one: a terminal interface that redraws forever is the
+        thing this renderer exists not to be. Sabotage: tick unconditionally, under
+        which only F2 fails.
     files:
-      - Cargo.toml
-      - Cargo.lock
-      - LICENSE
-      - NOTICE
-      - README.md
-      - CHANGELOG.md
-      - CONTRIBUTING.md
-      - CODE_OF_CONDUCT.md
-      - SECURITY.md
-      - .gitignore
-      - .github/CODEOWNERS
-      - .github/dependabot.yml
-      - .github/PULL_REQUEST_TEMPLATE.md
-      - .github/ISSUE_TEMPLATE/bug_report.md
-      - .github/ISSUE_TEMPLATE/feature_request.md
+      - src/app.rs
       - src/main.rs
-      - src/cli.rs
-      - src/lib.rs
-    evidence:
-      - cargo build exits 0 against a lockfile of 274 packages, resolved 2026-08-16.
-      - "The direct dependency set is exactly the eight N1 names: io-harness 0.60.1, ratatui 0.29,
-        crossterm 0.28, tui-textarea 0.7, clap 4, tokio 1, serde 1, toml 1, plus tempfile as a
-        dev-dependency. Nothing that is a runtime, a client or a store."
-      - The manifest carries publish = false, so the crates.io non-goal is mechanical rather than
-        remembered.
-      - "rust-version is 1.95, copied from io-harness rather than guessed: libsqlite3-sys calls the
-        std cfg_select! macro from its build script and neither it nor rusqlite declares the floor."
-  - id: US-IO-CLI-0.1.0-T02
-    summary: "Add `ci.yml`: build, test, clippy -D warnings and fmt --check on macOS, Linux and Windows."
-    why_required: O1 requires a green run on three platforms on the feature branch and again on the
-      merge. Without the workflow there is no run to be green, and Windows — where this line of
-      repositories historically finds what the other two hide — is never exercised.
-    status: done
+      - tests/tick.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.1.1-T02
+    summary: Put a moving indicator beside the status line's state word, and suppress it under NO_COLOR.
+    why_required: The clock advancing answers "is it alive" once a second; the indicator answers it
+      continuously, which is what the first thirty seconds of a slow first token needs. It rides the
+      same tick, so it exists only because T01 does.
+    status: todo
     depends_on:
-      - US-IO-CLI-0.1.0-T01
+      - US-IO-CLI-0.1.1-T01
     acceptance_criteria:
       - >
-        **O1 — CI green on macOS, Linux and Windows**, on the feature branch and again on the merge
-        to `develop`. Windows is not optional: it is where a terminal renderer's assumptions break,
-        and it is where this project has historically found what the other two hid.
-    files:
-      - .github/workflows/ci.yml
-    evidence:
-      - ci.yml runs build --all-targets, test --all-targets, test --doc on ubuntu-latest,
-        macos-latest and windows-latest with fail-fast off, plus a lint job (fmt --check, clippy -D
-        warnings) and an msrv job that reads rust-version out of Cargo.toml rather than repeating
-        it.
-      - "Every uses: is pinned to a full-length commit SHA with the version in a trailing comment;
-        no job id contains a dot; cancel-in-progress is false so a superseded run keeps its
-        diagnostics."
-      - The green run itself is recorded against O1 when the branch is pushed.
-  - id: US-IO-CLI-0.1.0-T03
-    summary: "Build the inline renderer core and the byte-stream capture harness: `Viewport::Inline`,
-      `insert_before` for finished content, synchronized output per frame, and a panic hook plus
-      `Drop` guard that restore the terminal."
-    why_required: This is the release. Every other surface renders through it, and the contract names it
-      the single largest technical risk with the instruction to build it before anything else. The
-      capture harness is built with it because F5 and N3 cannot be asserted without one.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T01
-    acceptance_criteria:
+        **F4 — the state word survives everything the animation does not.** Under
+        `NO_COLOR` the indicator does not animate and the word is still there;
+        the status line's narrow form still drops whole fields rather than wrapping.
+        Sabotage: replace the word with the spinner, under which only F4 fails.
       - >
-        **F4 — finished content reaches scrollback, not the viewport.** After a scripted session,
-        the captured byte stream contains every finished message's text outside the viewport region,
-        and the viewport buffer at rest contains only the composer and the status line. Sabotage:
-        render a finished message into the viewport instead of committing it, under which only F4
-        fails.
-      - >
-        **F5 — no alternate screen and no mouse capture, ever.** Over the same captured byte stream,
-        the sequences `ESC[?1049h`, `ESC[?1047h`, `ESC[?1000h`, `ESC[?1002h` and `ESC[?1003h` do not
-        appear. This is the release's structural criterion and it is written so that no later
-        release can reintroduce fullscreen without failing it. Sabotage: call
-        `EnterAlternateScreen`, under which only F5 fails.
-      - >
-        **N2 — the terminal is always restored.** Panic, `Ctrl+C` at any point, and a kill signal
-        each leave the terminal in cooked mode with the cursor visible and the scrollback intact.
-        Asserted by a test that panics inside a turn and inspects the restore path, and by manual
-        check for the signal case.
-      - >
-        **N3 — no full-screen clear during a session.** The captured byte stream contains no
-        `ESC[2J` after startup. This is the flicker criterion, and it is asserted structurally
-        because flicker itself cannot be asserted on a CI runner.
-    files:
-      - src/term.rs
-      - src/lib.rs
-      - Cargo.toml
-      - Cargo.lock
-      - tests/support/mod.rs
-      - tests/structure.rs
-      - tests/scrollback.rs
-      - tests/restore.rs
-    evidence:
-      - 8 tests pass across tests/structure.rs, tests/scrollback.rs and tests/restore.rs; cargo fmt
-        --all -- --check and cargo clippy --all-targets -- -D warnings both exit 0.
-      - "The harness is a real CrosstermBackend writing into a Recorder, wrapped by a Fixed backend
-        that answers only size() and get_cursor_position() from test-chosen values. TestBackend was
-        rejected on purpose: it emits no escape sequences, so F5 would pass against it because
-        nothing appears rather than because nothing forbidden appears."
-      - "SABOTAGE A — queue EnterAlternateScreen in draw(): both F5 tests fail, the other six pass."
-      - "SABOTAGE B — queue Clear(ClearType::All) in draw(): only
-        n3_never_clears_the_whole_screen_during_a_session fails."
-      - "SABOTAGE C — commit() renders through draw() into the viewport instead of insert_before:
-        both F4 tests fail, F5 and N3 still pass."
-      - "SABOTAGE D — call the previous panic hook before the restore: only
-        n2_a_panic_runs_the_restore_before_the_previous_hook fails."
-      - "SABOTAGE E — drop the idempotence guard on restore(): only
-        dropping_the_screen_restores_it_once fails."
-      - insert_before is given a MEASURED height from Paragraph::line_count(width), not an estimate.
-        ratatui's unstable-rendered-line-info feature is enabled for that one method; an estimated
-        height truncates committed content, which on this renderer loses it from the transcript
-        permanently.
-  - id: US-IO-CLI-0.1.0-T04
-    summary: Handle resize without duplicating committed scrollback, and define every surface at 80x24.
-    why_required: F9 makes 80x24 a supported size rather than a degraded one, and resize is where a
-      hybrid inline renderer duplicates history if it is wrong. Both are properties of the renderer,
-      so they are fixed while it is still small.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T03
-    acceptance_criteria:
-      - >
-        **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
-        asserts no panel is truncated mid-word, the composer remains usable, and the status line
-        degrades to its narrow form rather than wrapping.
-    files:
-      - src/term.rs
-      - tests/support/mod.rs
-      - tests/resize.rs
-      - tests/narrow.rs
-    evidence:
-      - 13 tests pass across five test binaries; fmt and clippy -D warnings both exit 0.
-      - "Resize: a committed line is written exactly once and stays written once across two resizes,
-        so the transcript is never redrawn — the duplication a full-screen renderer produces has no
-        code path here."
-      - "80x24: a forty-line commit into a twenty-four-line terminal keeps the viewport; a
-        two-hundred-character line wraps with all twenty repeats intact; CJK text wraps with every
-        character intact and no replacement character in the byte stream."
-      - "SABOTAGE F — compute the commit height from lines.len() instead of
-        Paragraph::line_count(width): three tests fail (both wrapping tests and the post-resize
-        commit), the other ten pass."
-      - "SABOTAGE G — make Screen::resize a no-op: the FIRST version of the resize test failed
-        nothing, because ratatui's autoresize re-reads the terminal size at the top of every draw
-        and covered it. That was a real finding about the test, not the code. The test now commits
-        between the resize and the next frame, which is the only path where the explicit call is
-        load-bearing, and the same sabotage fails exactly that one test."
-      - "The harness gained Fixed::set_size for the same reason: a backend whose size never moves
-        undoes any resize on the very next frame, which is a property of the harness and would have
-        hidden a genuine renderer bug."
-  - id: US-IO-CLI-0.1.0-T05
-    summary: Add the theme token set with two shipped themes, terminal background detection, `NO_COLOR`,
-      and the splash committed once into scrollback.
-    why_required: N6 requires that a session run with colour disabled stays usable and that every state
-      colour distinguishes also carries a word. That is a property of the token set, so the tokens
-      have to exist before any surface uses one. The splash is the first thing written through the
-      renderer and is suppressed by the same switches.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T03
-    acceptance_criteria:
-      - >
-        **N6 — `NO_COLOR` produces a usable session.** With `NO_COLOR=1` the scripted session runs
-        and every state that colour distinguishes — success, warning, error, refusal — also carries
-        a word.
-    files:
-      - src/theme.rs
-      - src/splash.rs
-      - src/lib.rs
-      - tests/no_color.rs
-    evidence:
-      - 19 tests pass; fmt and clippy -D warnings exit 0. Six of them are new and cover the theme,
-        the splash and NO_COLOR.
-      - "The colour-is-never-alone rule is a property of the constructor, not a convention:
-        Theme::notice is the only way a toned line is built and it puts the tone's word in front of
-        the text, so a call site cannot forget. Tone::word returns None for the three presentation
-        tones and Some for the four that mean something."
-      - NO_COLOR wins over an explicitly chosen theme, and the PLAIN theme returns a bare Style with
-        no modifier — a dim or italic attribute would still be a presentation-only carrier of
-        meaning.
-      - "Background detection reads COLORFGBG rather than issuing an OSC 11 query: the query needs a
-        reply read back off stdin and hangs on any terminal that does not answer, in a product whose
-        first frame should already be on screen. Unparseable or absent means dark, because the light
-        palette on a dark terminal is the less readable mistake."
-      - "SABOTAGE H — Theme::notice emits colour without the word: the two N6 word tests fail,
-        nothing else."
-      - "SABOTAGE J — the PLAIN theme emits an indexed colour: only the scripted NO_COLOR session
-        fails, on the escape-sequence assertion."
-      - "SABOTAGE K — the splash ignores NO_COLOR: only the splash suppression test fails."
-      - "The splash is also suppressed below forty-one columns, which the contract does not require:
-        the mark is forty-one wide and is the first thing that looks broken on a small window."
-  - id: US-IO-CLI-0.1.0-T06
-    summary: "Build the composer on `tui-textarea`: multiline on Shift+Enter with a `\\`+Enter fallback,
-      prompt history on the arrow keys, and bracketed paste."
-    why_required: There is no way to type a task without it, so F1 and F6 both stop here. Its narrow
-      form is also half of what F9 asserts.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T04
-      - US-IO-CLI-0.1.0-T05
-    acceptance_criteria:
-      - >
-        **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
-        asserts no panel is truncated mid-word, the composer remains usable, and the status line
-        degrades to its narrow form rather than wrapping.
-    files:
-      - src/composer.rs
-      - src/lib.rs
-      - tests/composer.rs
-    evidence:
-      - 30 tests pass across seven binaries; fmt and clippy -D warnings exit 0. Eleven of them are
-        the composer's.
-      - "A REAL DEFECT was found by reading the captured byte stream rather than the rendered
-        buffer: every frame carried ESC[?25l, hiding the cursor. ratatui hides it on any frame that
-        does not set a cursor position, and a hidden cursor removes the only focus indicator a
-        screen reader has — the specific criticism this product category is unusable for. The fix
-        puts frame.set_cursor_position inside Composer::render, so the widget that owns the
-        insertion point owns the cursor and no frame can forget."
-      - "A second finding, about the harness rather than the code: ratatui writes only the cells
-        that differ from the previous frame, so viewport text arrives in the byte stream split at
-        its unchanged spaces with a cursor move between the pieces. Viewport assertions therefore
-        read viewport_text(); committed content still reads the bytes, because insert_before draws
-        every cell of a fresh buffer."
-      - Shift+Enter inserts a newline and a trailing backslash does the same on the terminals that
-        cannot report Shift+Enter at all — which without the Kitty keyboard protocol is most of
-        them.
-      - The arrows walk prompt history only from the first and last line, so a multiline prompt can
-        still be edited; a repeated prompt is one history entry; walking past the newest entry
-        restores the draft that was being typed.
-      - "SABOTAGE L — remove the backslash continuation: only
-        a_trailing_backslash_continues_the_line fails."
-      - "SABOTAGE M — let Up always recall history: only
-        the_arrows_move_the_cursor_inside_a_multiline_prompt fails."
-      - "SABOTAGE N — do not set the cursor position: only
-        the_real_cursor_is_never_hidden_while_input_is_possible fails."
-  - id: US-IO-CLI-0.1.0-T07
-    summary: Build the `Picker` overlay component, once, as the widget every selection surface uses.
-    why_required: The wizard has four selection steps and F2 drives all of them over the TestBackend.
-      The contract also names this the one piece of the fallback scope that must not drop, because
-      cutting it means hand-rolling the wizard and rebuilding it in 0.2.0 for approvals.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T04
-      - US-IO-CLI-0.1.0-T05
-    acceptance_criteria:
-      - >
-        **F2 — the wizard writes what it showed.** A test drives the wizard over the `TestBackend`
-        with a scripted key sequence and asserts the resulting file parses under
-        `io_harness::Config::from_toml`, that `provider_spec()` returns the chosen variant with the
-        chosen model, and that the file's mode is `0600` on unix. Sabotage: write the file before
-        the confirmation screen, under which only F2 fails.
-    files:
-      - src/picker.rs
-      - src/lib.rs
-      - tests/picker.rs
-    evidence:
-      - 37 tests pass across eight binaries; fmt and clippy -D warnings exit 0. Seven of them are
-        the picker's.
-      - One widget, in the viewport, never in scrollback — a choice that has scrolled away cannot be
-        answered. The wizard's four selection steps, /model and /theme are this widget with
-        different rows, and 0.2.0's approval overlay and 0.4.0's /resume and /fork are the same
-        widget again.
-      - The selection is marked by a marker character as well as by colour, so it survives NO_COLOR
-        and a monochrome terminal.
-      - "At eighty columns a row loses its DETAIL, not its label, and is fitted with a
-        single-character ellipsis rather than wrapped: a row that wraps stops the list being a list,
-        and the label is the part that has to survive."
-      - Movement clamps at both ends rather than wrapping, matching the composer's history, and a
-        long list scrolls so the selection is always drawn.
-      - "SABOTAGE P — never scroll to the selection: only
-        a_long_list_scrolls_so_the_selection_stays_visible fails."
-      - "SABOTAGE Q — render the detail unfitted: only the eighty-column row test fails."
-      - "SABOTAGE R — mark the selected row by colour alone: only
-        the_selected_row_is_marked_by_more_than_colour fails."
-  - id: US-IO-CLI-0.1.0-T08
-    summary: Render the status line with model, elapsed time and a working indicator, laid out for 0.2.0
-      fields.
-    why_required: F4 asserts that the viewport at rest contains the composer and the status line and
-      nothing else, so the status line has to exist for that assertion to mean anything. F9 asserts
-      it degrades to a narrow form rather than wrapping.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T04
-      - US-IO-CLI-0.1.0-T05
-    acceptance_criteria:
-      - >
-        **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
-        asserts no panel is truncated mid-word, the composer remains usable, and the status line
-        degrades to its narrow form rather than wrapping.
+        **N2 — the dependency set does not grow.** `cargo tree --depth 1` is still
+        the eight names 0.1.0's N1 permits. A spinner is a handful of characters and
+        a modulo; a crate for it would be the beginning of the thing this product
+        exists not to become.
     files:
       - src/status.rs
-      - src/lib.rs
       - tests/status.rs
-    evidence:
-      - 42 tests pass across nine binaries; fmt and clippy -D warnings exit 0. Five of them are the
-        status line's.
-      - "Three fields filled — model, running state, elapsed — and the 0.2.0 fields are named in the
-        module rather than left to a later redesign: adding the policy layer, context pressure,
-        spend and containment is filling in a value."
-      - The running state is a WORD rather than a spinner. A spinner carries its meaning only to a
-        reader who can see it move, and this line has to work in a screen reader.
-      - "The narrow form drops whole fields from the right and never wraps: a status line that
-        becomes two lines has taken a row from the transcript and stopped being a status line. Below
-        the width of even one field the model is shown truncated, because a blank status line is
-        worse than a truncated one. Asserted across nine widths from 1 to 200."
-      - Field width is counted in characters, not bytes — the separator's middle dot is two bytes
-        and one cell, and byte accounting reserved room that was not needed and dropped a field a
-        column early.
-      - "SABOTAGE S — keep every field regardless of width: only the narrow-form test fails."
-      - "SABOTAGE T — render the running state as a tone with no word: three tests fail, all of them
-        status tests."
-  - id: US-IO-CLI-0.1.0-T09
-    summary: "Map io-harness run events to rendered cells with an exhaustive match: `started`, `token`,
-      `step`, `tool_call` and `finished` styled, `refused` and `approval_requested` as a plain
-      notice, every other kind as a muted line."
-    why_required: F8 requires the match to be exhaustive with no wildcard that silently discards. This
-      is also where token coalescing lives, without which a streaming turn strobes.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T03
+    evidence: []
+
+  - id: US-IO-CLI-0.1.1-T03
+    summary: Render a step as decision, then tool and target, then result, with the count and the step number trailing.
+    why_required: A step is the unit a transcript is skimmed in, and 0.1.0 committed the decision
+      with the step number and a token count wedged into the middle of it. Content before metadata
+      is the rule the rest of the interface already follows and this line is the one that broke it.
+    status: todo
+    depends_on: []
     acceptance_criteria:
       - >
-        **F8 — every event kind is accounted for.** A test enumerates the event kinds io-harness
-        emits and asserts the renderer's match is exhaustive with no wildcard that silently
-        discards. An event this release does not style renders as a muted line; none is dropped.
-        Sabotage: add a catch-all arm that returns without rendering, under which only F8 fails.
+        **F5 — a step renders as decision, then tool and target, then result, with
+        the count and the step number trailing.** Asserted over the rendered line's
+        order, not merely its contents. Sabotage: put the token count in front of
+        the decision, under which only F5 fails.
     files:
       - src/events.rs
-      - src/lib.rs
       - tests/events.rs
-      - tests/support/mod.rs
-    evidence:
-      - 48 tests pass across ten binaries; fmt and clippy -D warnings exit 0. Six of them are the
-        event renderer's.
-      - "EventKind is #[non_exhaustive] with fifty variants and no accessor for its own tag, so a
-        wildcard arm is REQUIRED BY THE TYPE rather than chosen. F8 is therefore asserted as the two
-        things that actually matter: no kind renders to nothing, and no kind exists that this
-        repository has never seen."
-      - The drift half reads io-harness's OWN SOURCE out of the cargo registry — the version taken
-        from this crate's lockfile, so the source read is the source built — parses the variants of
-        pub enum EventKind, and requires the set to equal the seven styled names plus the
-        forty-three that fall through. A fifty-first kind fails the test by name, which is the
-        moment someone has to decide what it should look like. A list copied into this repository
-        could not have noticed.
-      - "An unstyled kind names itself. The label comes from the derived Debug form, snake-cased the
-        way #[serde(rename_all)] does, because reaching the serde tag would mean carrying a
-        serializer for a label."
-      - "Tokens are coalesced: a token commits nothing and accumulates in a live buffer the viewport
-        draws, and the whole passage commits once when a step, a refusal or the finish closes it.
-        Committing per token would put a scrollback line in the terminal for every few characters
-        the model produced."
-      - A refusal keeps its rule and its layer even in the plain one-line notice this release
-        renders it as — those are the two facts no other core records, and 0.2.0's surface is a
-        presentation of them, not their first appearance.
-      - "SABOTAGE U — wildcard arm returns no lines: exactly the two no-silent-drop tests fail."
-      - "SABOTAGE V — commit each token as its own line: only the coalescing test fails."
-      - "SABOTAGE W — remove one kind from the known list: only the drift test fails, which is what
-        proves the drift test can fail at all."
-  - id: US-IO-CLI-0.1.0-T10
-    summary: "Bridge io-harness to the screen: an `Observer` that hands events to the render loop
-      without blocking the run, a session driven by `Session::turn_steered`, and `Ctrl+C` calling
-      `Steer::interrupt`."
-    why_required: This is the only path from the harness to the interface, and F6 — interrupt a turn,
-      keep the session, accept the next prompt — is asserted against it. `Observer::event` is
-      synchronous and runs on the run's own task, so the bridge has to hand off rather than render
-      in place.
-    status: done
+    evidence: []
+
+  - id: US-IO-CLI-0.1.1-T04
+    summary: Assert mechanically that no test in the suite sleeps or measures elapsed time.
+    why_required: N1 is the constraint the whole clock seam exists to satisfy, and a constraint
+      checked by reading is a constraint that decays. This release adds a timer, which is exactly
+      the kind of work that grows a sleeping test in the next one.
+    status: todo
     depends_on:
-      - US-IO-CLI-0.1.0-T06
-      - US-IO-CLI-0.1.0-T08
-      - US-IO-CLI-0.1.0-T09
+      - US-IO-CLI-0.1.1-T01
     acceptance_criteria:
       - >
-        **F6 — an interrupt stops the turn and keeps the session.** A scripted `Ctrl+C` during a
-        streaming turn causes `Steer::interrupt`, the turn ends, the partial output stays committed
-        in scrollback, and the composer accepts the next prompt. A second `Ctrl+C` at an idle
-        composer exits. Sabotage: drop the interrupt on the floor, under which only F6 fails.
+        **N1 — no timing assertion anywhere, again.** Inherited from 0.1.0 and
+        re-checked mechanically: no test measures elapsed time and no test sleeps.
+        The tick is driven by an injected clock precisely so that this holds.
+      - >
+        **N3 — every structural property of 0.1.0 still holds.** No alternate
+        screen, no mouse capture, no full-screen clear, the terminal always
+        restored, the credential never rendered. The existing tests carry these and
+        they must all still pass — a release that adds a repaint loop is exactly the
+        kind that could quietly start clearing the screen.
     files:
-      - src/app.rs
-      - src/bridge.rs
-      - src/lib.rs
-      - tests/interrupt.rs
-    evidence:
-      - 57 tests pass across eleven binaries; fmt and clippy -D warnings exit 0. Nine of them are
-        the bridge's and the session state's.
-      - "Observer::event is synchronous and runs on the RUN'S OWN TASK, so the bridge does one thing
-        — hand the event on down an unbounded channel — and the interface draws when it next gets
-        to. Rendering inside the observer would put terminal I/O on the agent loop's path: a slow
-        write slows the run, a blocking write stops it."
-      - "The channel is unbounded deliberately. A bounded one fills in one of two ways and both are
-        wrong here: blocking stalls the run, dropping loses an event, which is the failure F8 exists
-        to prevent. A thousand events through the bridge arrive as a thousand events."
-      - Ctrl+C during a turn returns Interrupt and the test drives Steer::interrupt, then reads
-        SteerInbox::pending and sees the interrupt with no message beside it. The turn's partial
-        output is committed by App::finished rather than lost with the turn, and the composer takes
-        the next prompt afterwards. F1 covers the same path against a real model.
-      - Ctrl+C with something typed clears the composer and does NOT count towards the exit, so a
-        stray keystroke cannot end a session by surprise; twice at an idle composer exits, and the
-        first one says so.
-      - Ctrl+D exits only on an empty composer; Ctrl+L clears the VIEWPORT and never the scrollback,
-        which on this renderer is the terminal's own buffer and not something this process could
-        redraw.
-      - "SABOTAGE X — Ctrl+C exits instead of interrupting: only the F6 interrupt test fails."
-      - "SABOTAGE Y — a finished turn drops what streamed: the same test fails, on the
-        partial-output assertion."
-      - "SABOTAGE Z — the observer returns Flow::Cancel: exactly the two bridge tests fail."
-  - id: US-IO-CLI-0.1.0-T11
-    summary: Build the first-run wizard through its eight screens and write io-harness's configuration
-      file at mode 0600, with nothing written before the confirmation screen.
-    why_required: F2 is the wizard writing what it showed, and N5 is the credential never reaching the
-      screen, the scrollback, a log line or the trace. The release's stated outcome starts from an
-      empty configuration, so without the wizard there is no first run at all.
-    status: done
+      - tests/timing.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.1.1-T05
+    summary: Bump the version to 0.1.1, write the changelog entry, and recapture the README screenshot from the corrected interface.
+    why_required: The screenshot is in the release's scope because 0.1.0 recorded that it could not
+      supply one; the version and the changelog are what make the Release installable and legible.
+      Without this task the release ships as 0.1.0.
+    status: todo
     depends_on:
-      - US-IO-CLI-0.1.0-T07
-      - US-IO-CLI-0.1.0-T10
+      - US-IO-CLI-0.1.1-T01
+      - US-IO-CLI-0.1.1-T02
+      - US-IO-CLI-0.1.1-T03
     acceptance_criteria:
       - >
-        **F2 — the wizard writes what it showed.** A test drives the wizard over the `TestBackend`
-        with a scripted key sequence and asserts the resulting file parses under
-        `io_harness::Config::from_toml`, that `provider_spec()` returns the chosen variant with the
-        chosen model, and that the file's mode is `0600` on unix. Sabotage: write the file before
-        the confirmation screen, under which only F2 fails.
+        **F3 — the owner watches a real turn and says it reads as alive.** Manual,
+        recorded, and the recording replaces the README's screenshot. The same human
+        gate 0.1.0 put on its look; a test can assert a frame changed and cannot
+        assert that a person stopped wondering whether it had hung.
       - >
-        **N5 — the credential never reaches the screen, the scrollback, a log line or the trace.**
-        The captured byte stream from the F2 scripted wizard is searched for the test key and must
-        not contain it. Sabotage: echo the key in the confirmation screen, under which only N5
-        fails.
+        **O4 — the Release carries the same four artifacts and `SHA256SUMS`**, and
+        `install.sh` resolves the new version without change, because the artifact
+        naming is part of the public contract and this release must not churn it.
     files:
-      - src/wizard.rs
-      - src/settings.rs
-      - src/lib.rs
-      - tests/wizard.rs
-    evidence:
-      - 64 tests pass across twelve binaries; fmt and clippy -D warnings exit 0. Seven of them are
-        the wizard's, driven by a scripted key sequence over a real CrosstermBackend so the byte
-        stream N5 asserts over is the one a terminal would have received.
-      - "A REAL FINDING that changes how F2 can be asserted: Config::from_toml parses text as the
-        PROJECT scope, and io-harness REFUSES a project-scoped file that widens the permission
-        boundary. The wizard's default posture — sandboxed workspace — sets exec = allow, so the
-        file it writes is correct and from_toml is right to reject it: widening is the operator's
-        own decision and belongs to the user scope, which is where the wizard writes. The test
-        therefore reads it back through Config::discover with the user file OUTSIDE the discovery
-        root, and separately checks that a narrowing posture parses either way. F2's own scripted
-        run chooses 'ask before writes', which narrows, so the criterion's literal from_toml
-        assertion is still made and still passes."
-      - "A second trap found while fixing the first: a user file placed at <root>/io.toml is ALSO
-        the project-scope candidate, so it is read under project rules and refused. The user scope
-        has to be somewhere the workspace is not."
-      - "F2: the scripted run picks OpenRouter, types a key, takes the second model, the light theme
-        and the ask-before-writes posture; the written file parses, provider_spec returns OpenRouter
-        with openai/gpt-5 and the typed key, the policy's write default is Ask and net is Deny,
-        [app.io-cli] gives back the chosen theme, and the file's mode is 0600 on unix. Nothing
-        exists on disk at any point before the confirmation screen."
-      - "N5: the key never appears in the byte stream, nor do its 12, 20 or 28 character prefixes;
-        the field renders bullets, so the absence is masking rather than the key simply not being
-        drawn; and the confirmation screen describes the credential as 'written into this file, mode
-        0600' without any of its value."
-      - Where an environment variable already carries the key, Enter on an empty field writes the
-        file WITHOUT a key at all — the better outcome rather than a fallback, since a key that is
-        never on disk cannot leak from it.
-      - A posture is an io_harness::Policy rather than a flag of io-cli's own, which is what will
-        let the status line name the layer in force. 'Ask before writes' says plainly at the moment
-        it is chosen that a write is declined until the approval surface lands, rather than implying
-        a behaviour this release does not have.
-      - "SABOTAGE AA — produce the write when the posture is chosen, skipping confirmation: only the
-        F2 test fails."
-      - "SABOTAGE BB — remove the mask character: only the F2/N5 test fails."
-      - "SABOTAGE CC — a rejection carries on to the model step: both F3 tests fail and nothing
-        else."
-  - id: US-IO-CLI-0.1.0-T12
-    summary: Verify the credential against the live endpoint inside the wizard, returning to the
-      credential step with the provider's own message and writing no file on failure.
-    why_required: F3 asserts that a bad key does not get past the wizard. It is the step that decides
-      whether a first run fails inside a screen that can explain it or on the user's first real
-      prompt.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T11
-    acceptance_criteria:
-      - >
-        **F3 — a bad key does not get past the wizard.** With a provider endpoint that rejects the
-        credential, the wizard returns to the credential step carrying the provider's own message,
-        and **no file is written**. Sabotage: treat any non-transport error as success, under which
-        only F3 fails.
-    files:
-      - src/verify.rs
-      - src/wizard.rs
-      - src/main.rs
-      - src/lib.rs
-      - src/app.rs
-      - src/term.rs
-      - src/events.rs
-    evidence:
-      - 69 tests pass across thirteen binaries; fmt and clippy -D warnings exit 0. The verification
-        path itself is exercised live by F1, which is what a credential check can only be proved by.
-      - The rejection carries THE PROVIDER'S OWN MESSAGE rather than a category. '401 No auth
-        credentials found' tells a user what to do and 'verification failed' does not, and every
-        provider words it differently.
-      - Provider is not dyn-compatible — its methods return impl Future — so each ProviderSpec
-        variant is constructed and pinged in its own arm. That is the shape of the harness's trait,
-        not a choice; the same match appears once more in the driver, where it picks the concrete
-        type the session loop is generic over.
-      - "A spec whose variant this release has never seen returns an explicit refusal rather than a
-        pass it never made: ProviderSpec is #[non_exhaustive] and a wildcard that returned Ok would
-        report a working key for a provider that was never contacted."
-      - "The catalogue is io-harness's Reference, which reads OpenRouter's models endpoint — so for
-        OpenRouter it is not a reference at all but the provider speaking for itself, and for
-        Anthropic and OpenAI it is filtered by prefix. A catalogue that cannot be read is not fatal:
-        the wizard offers the provider's usual default, or asks the user to type a model id when
-        there is nothing to suggest."
-      - "A DESIGN CONSEQUENCE settled here: ratatui fixes an inline viewport's height when the
-        terminal is constructed and offers no way to change it, and rebuilding the terminal would
-        re-query the cursor and risk shifting the scrollback this product exists to protect. So the
-        viewport does not grow — instead a streaming answer commits each line to scrollback as it
-        FINISHES and only the unfinished tail is ever live. A two-hundred-line answer leaves the
-        viewport exactly the size it started. The ceiling it buys is that a prompt longer than two
-        rows scrolls within them; the composer's own release is 0.7.0."
-      - The clippy fix for a collapsible match would have put App::key — which mutates — inside a
-        match guard. Bound to a local instead; a guard is not a place for something that changes
-        state.
-  - id: US-IO-CLI-0.1.0-T13
-    summary: "Add the five slash commands: `/help`, `/quit`, `/setup`, `/theme`, `/model`."
-    why_required: They are named in the release scope and each is a `Picker` or a print over components
-      that already exist. `/setup` in particular is the contract's stated way to re-run the wizard
-      at any time, which is what makes the wizard reachable after the first run.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T11
-    acceptance_criteria: []
-    files:
-      - src/commands.rs
-      - src/lib.rs
-      - tests/commands.rs
-    evidence:
-      - "Five slash commands, five tests. The keybinding table and the command list are DATA, not
-        prose: /help renders them and the README renders the same constants, so the two cannot drift
-        from each other or from the code."
-      - An unknown command prints the list rather than erroring — somebody who typed /models wants
-        to be told what does exist.
-      - A test asserts the table covers every key App::key and Composer::key actually bind, and
-        fails if a key is added to one and not the other.
-      - /theme and /model change the SESSION only and say so, rather than silently rewriting a
-        configuration file that holds settings this release does not own. Making a choice permanent
-        is "io setup".
-  - id: US-IO-CLI-0.1.0-T14
-    summary: "Assert the forbidden subsystems are absent: no HTTP client, TLS stack, SQL or sandboxing
-      crate in the dependency set, and no provider-response loop in the source."
-    why_required: F7 is the criterion that keeps the archived fork from growing back, and N1 is the
-      evidence reviewed at completion. It is written last on purpose, when the dependency set is
-      final and the assertion is meaningful.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T13
-    acceptance_criteria:
-      - >
-        **F7 — the forbidden subsystems are absent.** A test over `Cargo.toml` asserts the
-        dependency set contains no HTTP client, no TLS stack, no SQL or database crate, and no
-        sandboxing crate, and a grep asserts the source contains no `async fn` that loops over
-        provider responses. The only path to a model is through `io_harness`. Sabotage: add
-        `reqwest` as a direct dependency, under which only F7 fails. This is the criterion that
-        keeps the archived fork from growing back.
-      - >
-        **N1 — io-cli contains no second harness.** `cargo tree --depth 1` is recorded in the
-        release evidence and reviewed: `io-harness`, `ratatui`, `crossterm`, `tui-textarea`, `clap`,
-        `tokio`, `serde`/`toml`, and nothing that constitutes a runtime, a client or a store. Any
-        addition beyond that list is argued in the release record or it does not ship.
-    files:
-      - tests/dependencies.rs
-    evidence:
-      - 76 tests pass; fmt and clippy -D warnings exit 0. Seven of them are F7 and N1.
-      - "The dependency set is asserted BOTH ways: nothing beyond the eight the contract names, and
-        nothing the contract permits that has stopped being used. A dependency added quietly fails
-        the build; one that is genuinely needed is argued in the release record and added to the
-        list, which is a decision somebody makes rather than a line somebody adds."
-      - Twenty-three named crates are refused by name — HTTP clients, TLS stacks, databases,
-        sandboxing crates and a provider client — matched against DIRECT dependencies only, because
-        a transitive one arrives through io-harness and is the harness's business.
-      - "The agent-loop assertion is coarse on purpose: a file that calls a provider must contain no
-        top-level loop, while, or for. Being coarse is what makes it hard to creep past. io-cli
-        calls a provider EXACTLY ONCE in the whole crate — the wizard's verification handshake — and
-        the test asserts that count, so a second call anywhere fails it."
-      - "Also asserted: no std::process::Command, no TcpStream, no std::net (running a command is
-        the harness's tool layer, inside its sandbox — one here would be a tool no policy governs
-        and no trace records); no toml::from_str anywhere, because configuration is io-harness's and
-        a second parser would be a second, disagreeing answer to what a config file means; one
-        binary, named io; and publish = false."
-      - "SABOTAGE DD — add reqwest as a direct dependency: exactly the two dependency-set tests
-        fail."
-      - "SABOTAGE EE — add a second provider call inside a loop: only the agent-loop test fails."
-  - id: US-IO-CLI-0.1.0-T15
-    summary: "Add `release.yml`: a cross-compile matrix producing the four artifacts plus `SHA256SUMS`,
-      attached to the Release the tag cuts."
-    why_required: The GitHub Release is the product's only distribution channel, and O5 requires all
-      four artifacts and the checksum file to exist on it. The musl row is the one most likely to
-      fail, so it is proved before the release branch depends on it.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T02
-    acceptance_criteria:
-      - >
-        **O5 — every artifact in the matrix exists and every installer works on a clean machine.**
-        The Release carries all four artifacts plus `SHA256SUMS`. `install.sh` is then run on a
-        clean macOS machine and in a clean Linux container, and `install.ps1` on a clean Windows
-        machine, each followed by running `io --version` **in a new shell** — which is what catches
-        a script that installed correctly and told the user nothing useful about `PATH`. An
-        installer verified only on the machine that built it is not verified.
-      - >
-        **O6 — the Release is cut by pushing the tag, and nothing else.** `gh release create` is
-        never used: it produces a Release with no assets. The workflow the tag triggers is what
-        attaches them, and the Release title is the bare form this line of repositories uses.
-    files:
-      - .github/workflows/release.yml
-    evidence:
-      - release.yml cross-compiles four targets — aarch64-apple-darwin, x86_64-apple-darwin,
-        x86_64-unknown-linux-musl, x86_64-pc-windows-msvc — writes SHA256SUMS over all four, and
-        attaches all five to the Release the TAG cuts. gh release create is never used; it produces
-        a Release with no assets, and the assets are the whole channel here.
-      - The musl row installs musl-tools and sets CC and the linker, because io-harness carries
-        rusqlite with a bundled C SQLite. Without it the build fails inside a dependency's build
-        script, which reads like a toolchain bug and is not one. It is the row most likely to break
-        and it is why fail-fast is off.
-      - Every job runs the built binary with --version where the runner can execute it. A binary
-        that builds and will not start is exactly what a test profile hides from a release profile,
-        and it costs one line per target.
-      - "A checks job runs first and alone: the tag must equal Cargo.toml's version and the
-        CHANGELOG must have that section. Four cross-compiles is an expensive way to discover a
-        mismatched tag."
-      - The release job asserts SHA256SUMS has four lines, so a partial upload is a named failure
-        rather than a checksum file that happens to be short.
-      - "Every uses: is pinned to a full-length commit SHA with the version in a trailing comment;
-        no job id contains a dot; concurrency does not cancel in progress."
-  - id: US-IO-CLI-0.1.0-T16
-    summary: "Write `install.sh` and `install.ps1`: resolve the artifact, verify it against `SHA256SUMS`
-      before unpacking, install into a per-user directory, and print the `PATH` line rather than
-      editing a profile."
-    why_required: N7 is the one place in this product where a failure is a security failure, and N8
-      requires an install to need no administrator rights. There is no other way to install io-cli,
-      so the release does not exist without these two scripts.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T15
-    acceptance_criteria:
-      - >
-        **N7 — an installer never runs an unverified binary.** Both scripts compute the artifact's
-        SHA-256 and compare it against the published `SHA256SUMS` before unpacking, and **abort
-        non-zero on a mismatch without leaving anything on disk**. Asserted by running each
-        installer against a deliberately corrupted artifact and checking both the exit status and
-        that the target directory is untouched. This is the one place in the product where a failure
-        is a security failure rather than an inconvenience, and `curl | sh` is a trust-the-publisher
-        model regardless — the checksum defends against a truncated download and a tampered asset,
-        not against a compromised repository, and the README says so rather than implying more.
-      - >
-        **N8 — an install needs no administrator rights.** Neither script writes outside the user's
-        own directories and neither invokes `sudo`. Asserted by running each as an unprivileged user
-        with no write access to any system path.
-    files:
-      - install.sh
-      - install.ps1
-      - tests/installers.rs
-    evidence:
-      - 82 tests pass; fmt and clippy -D warnings exit 0. Six of them are the installers', and they
-        run install.sh END TO END against a local release served over file:// — a real archive, a
-        real SHA256SUMS, a real unpack, and the installed stand-in executed afterwards.
-      - "N7 the good path: checksum ok, the binary installs, running it produces the content that
-        was inside the archive, and the script PRINTS the PATH line instead of editing a shell
-        profile behind the user's back."
-      - "N7 the bad path: the archive is corrupted AFTER its checksum is computed, so the mismatch
-        is real rather than a wrong number written into the file. The script exits non-zero, says
-        'checksum mismatch' and 'Nothing was installed', and THE TARGET DIRECTORY IS NEVER EVEN
-        CREATED."
-      - "N7 the missing-line path: a SHA256SUMS that does not mention this artifact is a refusal,
-        not a skip. That is the one path where an installer would do the thing it exists to
-        prevent."
-      - The script also refuses outright when neither sha256sum nor shasum is on PATH, for the same
-        reason.
-      - "SABOTAGE FF — verify after unpacking: only the ORDER test failed, because the unpack
-        happens inside the temp directory and the target is still untouched. That is a finding about
-        the two tests rather than a gap: they cover different halves and neither is redundant."
-      - "SABOTAGE HH — install first and verify afterwards, which is the genuinely dangerous
-        ordering: THREE tests fail, including the corrupt-artifact one on the untouched-directory
-        assertion."
-      - "SABOTAGE GG — default to /usr/local/bin: only the no-administrator-rights test fails."
-      - "N8 is asserted on both scripts: no sudo, doas, runas or elevation verb; the unix default is
-        under HOME and the Windows one under LOCALAPPDATA; install.ps1 sets the USER PATH and is
-        asserted never to touch the machine PATH, which would need administrator rights and change
-        the environment for everybody on the box."
-      - A cross-file test asserts the artifact naming the installers resolve is the naming
-        release.yml produces. The install command is the first thing a user depends on and the two
-        facts live in three files.
-      - OPEN QUESTION ANSWERED — the script resolves the LATEST release by default, via the
-        /releases/latest redirect, so re-running it is the update mechanism; IO_VERSION pins a
-        version for anyone who needs yesterday's install. No API token and no JSON parser.
-  - id: US-IO-CLI-0.1.0-T17
-    summary: Write the README with the keybinding table, the slash-command reference and the install
-      commands; fill the CHANGELOG entry and set the version to 0.1.0.
-    why_required: The keybinding table is required to be a table rather than prose, the install command
-      is part of the product's public contract, and the README states plainly what a checksum does
-      and does not defend against, which N7 requires.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T16
-    acceptance_criteria:
-      - >
-        **N7 — an installer never runs an unverified binary.** Both scripts compute the artifact's
-        SHA-256 and compare it against the published `SHA256SUMS` before unpacking, and **abort
-        non-zero on a mismatch without leaving anything on disk**. Asserted by running each
-        installer against a deliberately corrupted artifact and checking both the exit status and
-        that the target directory is untouched. This is the one place in the product where a failure
-        is a security failure rather than an inconvenience, and `curl | sh` is a trust-the-publisher
-        model regardless — the checksum defends against a truncated download and a tampered asset,
-        not against a compromised repository, and the README says so rather than implying more.
-    files:
-      - README.md
+      - Cargo.toml
+      - Cargo.lock
       - CHANGELOG.md
-      - docs/config.example.toml
-      - tests/docs.rs
-    evidence:
-      - 90 tests pass; fmt and clippy -D warnings exit 0. Eight of them check the documentation
-        against the code rather than against a reviewer's memory.
-      - "The keybinding table is a shipped artifact and it is DATA: /help renders the constants and
-        the README's table is checked against the same constants, row for row, description for
-        description, including the row COUNT — so a key added to one and not the other fails a named
-        test. A table that has drifted is worse than no table; it is folklore with a typeface."
-      - "SABOTAGE II — reword a key's description in the code without touching the README: only the
-        README key-table test fails."
-      - "docs/config.example.toml is documentation that RUNS: a test writes it as the user scope and
-        asserts io-harness accepts it, that it configures a provider and a policy, and that
-        [app.io-cli] gives back the theme. An example the harness has stopped accepting is not an
-        example, it is a trap."
-      - The README states what the checksum does NOT defend against — a compromised repository — in
-        N7's own words, and a test asserts that sentence is still there. A page that leaves it
-        unsaid is overselling a curl-into-sh install.
-      - The CHANGELOG's 0.1.0 section is asserted to exist and to have a body, because release.yml
-        refuses to cut a Release without one and finding that out from a failed workflow is four
-        cross-compiles too late.
-      - "Also asserted: every file the repository refers to exists; NOTICE and the README carry
-        'Copyright 2026 Aakash Pawar (InitOrigin)' while the Apache-2.0 body is untouched; and the
-        release evidence directory stays out of git."
-      - "The README documents the scope trap found in T11: a project file may narrow the permission
-        boundary and may never widen it, because a repository you cloned must not be able to grant
-        itself permission — which is why the wizard writes the user scope."
-  - id: US-IO-CLI-0.1.0-T18
-    summary: Build the binary in release profile and run it, then record `cargo tree --depth 1` and the
-      startup and streaming measurements as evidence.
-    why_required: O2 is a standing gate because CI builds the test profile only and a release-profile
-      break is invisible to it — this has broken a binary in this line of repositories before. N4
-      requires the measurements to be recorded rather than asserted.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.0-T14
-      - US-IO-CLI-0.1.0-T17
-    acceptance_criteria:
-      - >
-        **O2 — the binary builds in release profile.** `cargo build --release` is run and the binary
-        executed. CI builds the test profile only, so a release-profile break is invisible to it —
-        this has bitten this line of repositories before and is now a standing gate.
-      - >
-        **N4 — no timing assertion anywhere in this release's tests.** Startup cost and streaming
-        smoothness are **recorded as measurements** in the release evidence, not gated. This line of
-        repositories has paid for wall-clock assertions on CI runners more than for anything else.
-    files:
       - README.md
-      - docs/config.example.toml
-    evidence:
-      - "O2: cargo build --release exits 0 in 1m46s on rustc 1.95.0 aarch64-apple-darwin, and the
-        binary RUNS. io --version prints 0.1.0, io --help prints the subcommand and both flags, and
-        io with a non-tty stdout refuses with exit 1 and a sentence rather than half-working. CI
-        builds the test profile only, so none of that is visible to it."
-      - "N1: cargo tree --depth 1 is exactly the eight names the contract permits — io-harness
-        0.60.1, ratatui 0.29.0, crossterm 0.28.1, tui-textarea 0.7.0, clap 4.6.6, tokio 1.53.1,
-        serde 1.0.229, toml 1.1.4 — plus tempfile as a dev-dependency. Saved to the release
-        evidence."
-      - "N4 measurements, RECORDED and not gated: binary 20,236,832 bytes; startup 4.86 ms per run
-        measured over fifty runs against a 1.64 ms process-spawn baseline, so io's own share is 3.22
-        ms. THE FIRST VERSION OF THIS MEASUREMENT WAS WRONG and was discarded: it timed a python
-        process start on either side of the binary and reported 26 ms, almost all of which was the
-        harness. A misleading number is worse than no number."
-      - "The business case, measured: 3,458 lines of source across 16 files and 3,102 lines of tests
-        across 17, against the archived product's 1,199,453 lines across 88 crates. That ratio is
-        the whole reason this release exists."
-      - "A LIMITATION FOUND AND DOCUMENTED RATHER THAN LEFT TO SURPRISE SOMEBODY:
-        Session::turn_steered builds its own TaskContract, and io-harness has no entry point that
-        takes both a caller's contract and a steer inbox. So [sandbox] limits, [run] budgets,
-        [instructions]/AGENTS.md, [[mcp]], [[lsp]], [[agent]], [web] and [browser] are read by the
-        harness and NOT applied to an io-cli turn — honouring them today would mean giving up
-        Ctrl+C, which F6 requires. The sandbox itself IS on: TaskContract::workspace sets
-        exec_sandbox, so a workspace turn runs commands inside it; what is missing is the configured
-        ceilings, not the containment. Stated in the README and in docs/config.example.toml. Nothing
-        in the 0.1.0 contract promised those sections, so this is not a scope change — but it is the
-        natural first item for a harness release, and the owner should decide whether it is."
-  - id: US-IO-CLI-0.1.0-T19
-    summary: "Run the live first run end to end against a real provider and record it: wizard, verified
-      key, written file, streamed answer, sandboxed edit, interrupt, exit, then the terminal's own
-      search and selection over the transcript."
-    why_required: F1 is the release's only criterion that a fixture cannot prove, and the recording is
-      both the release evidence and the README screenshot. The owner's approval of the rendered look
-      is taken from it.
-    status: in-progress
-    depends_on:
-      - US-IO-CLI-0.1.0-T18
-    acceptance_criteria:
-      - >
-        **F1 — the live first run.** From an empty `$IO_CONFIG_HOME`, in a real repository, against
-        a real provider: the wizard is completed, the key is verified by a live call, the file is
-        written, a task is typed, the answer streams, a file is edited inside the sandbox, `Ctrl+C`
-        interrupts a second turn mid-flight, and `Ctrl+D` exits. Afterwards, in the same terminal,
-        the transcript is searched with the terminal's own search and a passage is selected with the
-        mouse and pasted elsewhere. Manual, recorded, and the recording is the release evidence. A
-        fixture cannot prove this; only a live run can.
-    files:
-      - tests/live.rs
-      - tests/wizard.rs
-      - src/term.rs
-      - src/events.rs
-      - src/wizard.rs
-      - src/main.rs
-      - tests/events.rs
-      - scripts/f1-fixture.sh
-    evidence:
-      - "F1 PASSED, 2026-08-16, recorded. From an empty configuration: the wizard completed, the key
-        was verified live, the file was written at mode 0600 carrying the model chosen from the live
-        catalogue, a task streamed and EDITED THE FILE INSIDE THE SANDBOX — src/lib.rs went from 'a
-        - b' to 'a + b' — a second turn was interrupted, and the session exited. The terminal's own
-        search and selection worked on the transcript afterwards, because io-cli never took them
-        away. Recording held by the owner."
-      - "DEFECT 5, FOUND BY THE PASSING RUN: the theme step drew NO PICKER. render_theme reserved
-        four rows for its live sample out of a four-row viewport, leaving zero for the picker, so
-        the operator saw only the sample — which deliberately contains a refusal and a success so
-        the palette can be judged — and read it as their own session failing. The same fixed
-        four-row viewport showed only three rows of a four-hundred-model catalogue, because a picker
-        draws height - 1."
-      - The fix gives the WIZARD its own viewport, fourteen rows clamped to the terminal, separate
-        from the session's four. The two phases are divided by a boundary where nothing is
-        streaming, so re-placing the viewport there disturbs nothing in flight — which is what made
-        the fixed-height constraint acceptable in the first place. The sample now opens with
-        'preview — not your session:', because a label is what stops the two states worth judging
-        from reading as alarm. Two tests; two sabotages, reserving the whole viewport again and
-        removing the label, each fail exactly the new test.
-      - F1 IS THE OWNER'S RUN AND IT HAS ALREADY EARNED ITS PLACE. The first attempt failed on the
-        credential screen, three times in a row, before a single character was typed — and the
-        defect it found is the worst kind this release could have shipped.
-      - "DEFECT 3, FIRST CONTACT, FOUND BY F1: pasting the API key closed the wizard. The driver's
-        wizard loop destructured the next event as Event::Key and returned Ok(None) on any other
-        shape — and Cmd+V arrives as Event::Paste when bracketed paste is on, which this product
-        enables. The pattern failed, the else branch ran, and the wizard exited. SILENTLY: that path
-        returned before it could even commit its own 'nothing was written' notice, so a first-time
-        user sees the splash, the welcome, the credential prompt, and then their shell prompt back
-        with no explanation. A terminal resize mid-wizard did the same thing. And even once it
-        stopped exiting, the wizard had no paste handling at all, so the key would have landed
-        nowhere."
-      - The session loop had always handled non-key events correctly; only the wizard was wrong —
-        which is why no test caught it. Dispatch lived in the driver, and the driver is the one
-        thing the suite cannot reach. The fix moves it into Wizard::event, in the library, where
-        four tests now cover it.
-      - "A paste is stripped of newlines rather than submitted: a key copied out of a web page
-        usually carries a trailing one, and treating it as Enter would submit a field the user was
-        still filling in."
-      - "SABOTAGE — make a non-key event cancel again: only
-        no_event_other_than_a_keypress_can_end_the_wizard fails. SABOTAGE — make the paste land
-        nowhere: exactly the two paste tests fail. Together they pin both halves of the defect."
-      - "DEFECT 4, FOUND BY THE OWNER'S SECOND F1 RUN: the 'ask before writes' posture dead-ended.
-        Every write and exec needs an approver, this release passes DenyAll because the approval
-        overlay is 0.2.0, and the agent was denied three times, then asked 'May I have approval to
-        edit src/lib.rs' — and the turn ended awaiting_answer, an outcome io-cli had no arm for. It
-        fell through the unknown-outcome branch and printed a bare 'error' with no explanation and
-        no next action. The denials were honest and documented; the DEAD END was not. A wizard
-        option led somewhere the interface could not get the operator out of."
-      - "The fix keeps every posture honest without adding the 0.2.0 surface: awaiting_answer,
-        awaiting_approval and awaiting_plan now read as warnings rather than errors — nothing went
-        wrong, the run simply cannot continue — and each carries a sentence naming the way out,
-        which for all three is `io setup` and the sandboxed-workspace posture. A refusal says the
-        same. Two tests, and two sabotages: dropping the tone arm and emptying the help each fail
-        exactly the two new tests."
-      - "A process note from the same fix: cargo fmt had already split the match arm across lines,
-        so an exact-string patch silently did nothing and the code was unchanged while the edit
-        reported success. The test caught it. Patching formatted source by string match is only safe
-        when a test is watching."
-      - "WHAT WAS PROVED LIVE BEFORE THIS, and still holds: a real key accepted by the wizard's
-        verification call; F3 live, a wrong key rejected carrying OpenRouter's own words (HTTP 401,
-        'User not found.'); 413 models in the catalogue; and a real turn through the real bridge and
-        renderer that streamed 45 events and edited a file inside the sandbox."
-      - "DEFECT 1, N2: Screen::attach enabled raw mode and could then return Err without restoring,
-        leaving the shell with no echo and an error that did not say what had happened. Every
-        failure path after raw mode now restores first."
-      - "DEFECT 2, USER-FACING: every ordinary successful turn printed the word 'warning', because
-        io-harness returns 'finished' rather than 'success' for a turn with no verification
-        criterion — and every io-cli turn is exactly that, so 'success' is unreachable from this
-        interface. Invisible to a green suite; found by running one live."
-      - "STILL THE OWNER'S, and unchanged: the recorded run itself, the terminal's own search and
-        selection over the transcript afterwards, and approval of the rendered look. 96 tests green
-        and clippy clean against the tree carrying all three fixes."
+      - tests/docs.rs
+      - tests/no_color.rs
+    evidence: []
