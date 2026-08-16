@@ -11,4 +11,6 @@
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod cli;
+pub mod splash;
 pub mod term;
+pub mod theme;

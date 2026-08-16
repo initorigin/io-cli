@@ -171,7 +171,7 @@ tasks:
       colour distinguishes also carries a word. That is a property of the token set, so the tokens
       have to exist before any surface uses one. The splash is the first thing written through the
       renderer and is suppressed by the same switches.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T03
     acceptance_criteria:
@@ -182,8 +182,29 @@ tasks:
     files:
       - src/theme.rs
       - src/splash.rs
+      - src/lib.rs
       - tests/no_color.rs
-    evidence: []
+    evidence:
+      - 19 tests pass; fmt and clippy -D warnings exit 0. Six of them are new and cover the theme,
+        the splash and NO_COLOR.
+      - "The colour-is-never-alone rule is a property of the constructor, not a convention:
+        Theme::notice is the only way a toned line is built and it puts the tone's word in front of
+        the text, so a call site cannot forget. Tone::word returns None for the three presentation
+        tones and Some for the four that mean something."
+      - NO_COLOR wins over an explicitly chosen theme, and the PLAIN theme returns a bare Style with
+        no modifier — a dim or italic attribute would still be a presentation-only carrier of
+        meaning.
+      - "Background detection reads COLORFGBG rather than issuing an OSC 11 query: the query needs a
+        reply read back off stdin and hangs on any terminal that does not answer, in a product whose
+        first frame should already be on screen. Unparseable or absent means dark, because the light
+        palette on a dark terminal is the less readable mistake."
+      - "SABOTAGE H — Theme::notice emits colour without the word: the two N6 word tests fail,
+        nothing else."
+      - "SABOTAGE J — the PLAIN theme emits an indexed colour: only the scripted NO_COLOR session
+        fails, on the escape-sequence assertion."
+      - "SABOTAGE K — the splash ignores NO_COLOR: only the splash suppression test fails."
+      - "The splash is also suppressed below forty-one columns, which the contract does not require:
+        the mark is forty-one wide and is the first thing that looks broken on a small window."
   - id: US-IO-CLI-0.1.0-T06
     summary: "Build the composer on `tui-textarea`: multiline on Shift+Enter with a `\\`+Enter fallback,
       prompt history on the arrow keys, and bracketed paste."
