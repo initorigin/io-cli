@@ -1,0 +1,7 @@
+/target
+node_modules/
+.DS_Store
+.env
+
+# UltraShip: transient deploy/publish hook output
+.ultraship/products/*/evidence/
