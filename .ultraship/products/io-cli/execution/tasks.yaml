@@ -555,7 +555,7 @@ tasks:
         fails if a key is added to one and not the other.
       - /theme and /model change the SESSION only and say so, rather than silently rewriting a
         configuration file that holds settings this release does not own. Making a choice permanent
-        is .
+        is "io setup".
   - id: US-IO-CLI-0.1.0-T14
     summary: "Assert the forbidden subsystems are absent: no HTTP client, TLS stack, SQL or sandboxing
       crate in the dependency set, and no provider-response loop in the source."
