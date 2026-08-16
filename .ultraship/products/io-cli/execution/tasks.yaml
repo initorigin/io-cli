@@ -210,7 +210,7 @@ tasks:
       prompt history on the arrow keys, and bracketed paste."
     why_required: There is no way to type a task without it, so F1 and F6 both stop here. Its narrow
       form is also half of what F9 asserts.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T04
       - US-IO-CLI-0.1.0-T05
@@ -221,8 +221,34 @@ tasks:
         degrades to its narrow form rather than wrapping.
     files:
       - src/composer.rs
+      - src/lib.rs
       - tests/composer.rs
-    evidence: []
+    evidence:
+      - 30 tests pass across seven binaries; fmt and clippy -D warnings exit 0. Eleven of them are
+        the composer's.
+      - "A REAL DEFECT was found by reading the captured byte stream rather than the rendered
+        buffer: every frame carried ESC[?25l, hiding the cursor. ratatui hides it on any frame that
+        does not set a cursor position, and a hidden cursor removes the only focus indicator a
+        screen reader has — the specific criticism this product category is unusable for. The fix
+        puts frame.set_cursor_position inside Composer::render, so the widget that owns the
+        insertion point owns the cursor and no frame can forget."
+      - "A second finding, about the harness rather than the code: ratatui writes only the cells
+        that differ from the previous frame, so viewport text arrives in the byte stream split at
+        its unchanged spaces with a cursor move between the pieces. Viewport assertions therefore
+        read viewport_text(); committed content still reads the bytes, because insert_before draws
+        every cell of a fresh buffer."
+      - Shift+Enter inserts a newline and a trailing backslash does the same on the terminals that
+        cannot report Shift+Enter at all — which without the Kitty keyboard protocol is most of
+        them.
+      - The arrows walk prompt history only from the first and last line, so a multiline prompt can
+        still be edited; a repeated prompt is one history entry; walking past the newest entry
+        restores the draft that was being typed.
+      - "SABOTAGE L — remove the backslash continuation: only
+        a_trailing_backslash_continues_the_line fails."
+      - "SABOTAGE M — let Up always recall history: only
+        the_arrows_move_the_cursor_inside_a_multiline_prompt fails."
+      - "SABOTAGE N — do not set the cursor position: only
+        the_real_cursor_is_never_hidden_while_input_is_possible fails."
   - id: US-IO-CLI-0.1.0-T07
     summary: Build the `Picker` overlay component, once, as the widget every selection surface uses.
     why_required: The wizard has four selection steps and F2 drives all of them over the TestBackend.
