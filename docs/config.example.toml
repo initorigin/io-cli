@@ -68,6 +68,22 @@ net = "deny"
 # name = "no-secrets"
 # rules = [{ act = "read", effect = "deny", pattern = ".env" }]
 
+# --- Not read by io-cli 0.1.0 -----------------------------------------------
+#
+# io-harness reads all of these; io-cli 0.1.0 does not pass them to a turn, so
+# writing them here has no effect on an `io` session yet. See the README: the
+# harness's steerable turn builds its own contract, and the entry point that
+# takes a caller's contract does not take a steer inbox, so honouring them today
+# would mean giving up Ctrl+C.
+#
+#   [sandbox]      limits and network allowances
+#   [run]          step, token and duration budgets
+#   [instructions] AGENTS.md and friends
+#   [[mcp]] [[lsp]] [[agent]] [web] [browser]
+#
+# The sandbox itself IS on: a workspace turn runs commands inside it. What is
+# missing is the configured ceilings, not the containment.
+
 # --- io-cli's own section ---------------------------------------------------
 #
 # One key in this release. io-harness does not validate this table.

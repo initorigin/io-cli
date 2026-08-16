@@ -759,7 +759,7 @@ tasks:
     why_required: O2 is a standing gate because CI builds the test profile only and a release-profile
       break is invisible to it — this has broken a binary in this line of repositories before. N4
       requires the measurements to be recorded rather than asserted.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T14
       - US-IO-CLI-0.1.0-T17
@@ -772,8 +772,36 @@ tasks:
         **N4 — no timing assertion anywhere in this release's tests.** Startup cost and streaming
         smoothness are **recorded as measurements** in the release evidence, not gated. This line of
         repositories has paid for wall-clock assertions on CI runners more than for anything else.
-    files: []
-    evidence: []
+    files:
+      - README.md
+      - docs/config.example.toml
+    evidence:
+      - "O2: cargo build --release exits 0 in 1m46s on rustc 1.95.0 aarch64-apple-darwin, and the
+        binary RUNS. io --version prints 0.1.0, io --help prints the subcommand and both flags, and
+        io with a non-tty stdout refuses with exit 1 and a sentence rather than half-working. CI
+        builds the test profile only, so none of that is visible to it."
+      - "N1: cargo tree --depth 1 is exactly the eight names the contract permits — io-harness
+        0.60.1, ratatui 0.29.0, crossterm 0.28.1, tui-textarea 0.7.0, clap 4.6.6, tokio 1.53.1,
+        serde 1.0.229, toml 1.1.4 — plus tempfile as a dev-dependency. Saved to the release
+        evidence."
+      - "N4 measurements, RECORDED and not gated: binary 20,236,832 bytes; startup 4.86 ms per run
+        measured over fifty runs against a 1.64 ms process-spawn baseline, so io's own share is 3.22
+        ms. THE FIRST VERSION OF THIS MEASUREMENT WAS WRONG and was discarded: it timed a python
+        process start on either side of the binary and reported 26 ms, almost all of which was the
+        harness. A misleading number is worse than no number."
+      - "The business case, measured: 3,458 lines of source across 16 files and 3,102 lines of tests
+        across 17, against the archived product's 1,199,453 lines across 88 crates. That ratio is
+        the whole reason this release exists."
+      - "A LIMITATION FOUND AND DOCUMENTED RATHER THAN LEFT TO SURPRISE SOMEBODY:
+        Session::turn_steered builds its own TaskContract, and io-harness has no entry point that
+        takes both a caller's contract and a steer inbox. So [sandbox] limits, [run] budgets,
+        [instructions]/AGENTS.md, [[mcp]], [[lsp]], [[agent]], [web] and [browser] are read by the
+        harness and NOT applied to an io-cli turn — honouring them today would mean giving up
+        Ctrl+C, which F6 requires. The sandbox itself IS on: TaskContract::workspace sets
+        exec_sandbox, so a workspace turn runs commands inside it; what is missing is the configured
+        ceilings, not the containment. Stated in the README and in docs/config.example.toml. Nothing
+        in the 0.1.0 contract promised those sections, so this is not a scope change — but it is the
+        natural first item for a harness release, and the owner should decide whether it is."
   - id: US-IO-CLI-0.1.0-T19
     summary: "Run the live first run end to end against a real provider and record it: wizard, verified
       key, written file, streamed answer, sandboxed edit, interrupt, exit, then the terminal's own

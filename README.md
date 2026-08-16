@@ -125,6 +125,17 @@ and may never widen it, because a repository you cloned must not be able to gran
 itself permission. The wizard therefore writes the user-scope file, which is
 where widening is your own decision.
 
+**What this release reads from that file, and what it does not.** io-cli reads
+the provider, the permission policy and its own `[app.io-cli]` section. It does
+**not** yet apply `[sandbox]` limits, `[run]` budgets, `[[mcp]]`, `[[lsp]]`,
+`[[agent]]` or an `AGENTS.md` instruction file to a turn. The reason is specific
+rather than an oversight: io-harness's steerable turn builds its own task
+contract, and the entry point that takes a caller's contract does not take a
+steer inbox — so honouring those sections today would mean giving up `Ctrl+C`.
+The sandbox itself **is** on: a workspace turn runs commands inside it, with no
+resource ceilings until the harness offers a turn that is both contracted and
+steerable.
+
 `NO_COLOR` is honoured. Colour is never the only thing carrying a meaning — every
 refusal, error and warning also carries a word.
 
