@@ -153,6 +153,11 @@ impl<B: Backend + Write> Screen<B> {
         self.terminal.resize(Rect::new(0, 0, width, height))
     }
 
+    /// The width the renderer is currently laying out against, in cells.
+    pub fn width(&mut self) -> u16 {
+        self.terminal.current_buffer_mut().area.width
+    }
+
     /// What the last frame put in the viewport, one row per line with trailing
     /// spaces trimmed. Empty until the first [`Screen::draw`].
     pub fn viewport_text(&self) -> &str {

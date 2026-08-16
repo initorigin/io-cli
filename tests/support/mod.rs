@@ -89,6 +89,17 @@ impl Fixed {
             },
         }
     }
+
+    /// Report a different terminal size from now on.
+    ///
+    /// A real terminal answers the size query with its new dimensions the moment
+    /// it is resized, and `Terminal::draw` re-reads it on every frame through
+    /// `autoresize`. A harness whose size never moves therefore undoes any resize
+    /// on the very next frame — which is a property of the harness, not of the
+    /// renderer, and is why this exists.
+    pub fn set_size(&mut self, width: u16, height: u16) {
+        self.size = Size { width, height };
+    }
 }
 
 impl Write for Fixed {
@@ -185,6 +196,13 @@ pub fn screen_of(
     )
     .expect("inline terminal");
     (io_cli::term::Screen::from_terminal(terminal), recorder)
+}
+
+/// Resize the way a terminal does: the backend reports the new size *and* the
+/// application is told about it, in that order.
+pub fn resize(screen: &mut io_cli::term::Screen<Fixed>, width: u16, height: u16) {
+    screen.terminal_mut().backend_mut().set_size(width, height);
+    screen.resize(width, height).expect("resize");
 }
 
 /// The escape sequences F5 forbids, with the names the contract uses.

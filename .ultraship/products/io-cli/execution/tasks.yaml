@@ -132,7 +132,7 @@ tasks:
     why_required: F9 makes 80x24 a supported size rather than a degraded one, and resize is where a
       hybrid inline renderer duplicates history if it is wrong. Both are properties of the renderer,
       so they are fixed while it is still small.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T03
     acceptance_criteria:
@@ -142,8 +142,28 @@ tasks:
         degrades to its narrow form rather than wrapping.
     files:
       - src/term.rs
+      - tests/support/mod.rs
+      - tests/resize.rs
       - tests/narrow.rs
-    evidence: []
+    evidence:
+      - 13 tests pass across five test binaries; fmt and clippy -D warnings both exit 0.
+      - "Resize: a committed line is written exactly once and stays written once across two resizes,
+        so the transcript is never redrawn — the duplication a full-screen renderer produces has no
+        code path here."
+      - "80x24: a forty-line commit into a twenty-four-line terminal keeps the viewport; a
+        two-hundred-character line wraps with all twenty repeats intact; CJK text wraps with every
+        character intact and no replacement character in the byte stream."
+      - "SABOTAGE F — compute the commit height from lines.len() instead of
+        Paragraph::line_count(width): three tests fail (both wrapping tests and the post-resize
+        commit), the other ten pass."
+      - "SABOTAGE G — make Screen::resize a no-op: the FIRST version of the resize test failed
+        nothing, because ratatui's autoresize re-reads the terminal size at the top of every draw
+        and covered it. That was a real finding about the test, not the code. The test now commits
+        between the resize and the next frame, which is the only path where the explicit call is
+        load-bearing, and the same sabotage fails exactly that one test."
+      - "The harness gained Fixed::set_size for the same reason: a backend whose size never moves
+        undoes any resize on the very next frame, which is a property of the harness and would have
+        hidden a genuine renderer bug."
   - id: US-IO-CLI-0.1.0-T05
     summary: Add the theme token set with two shipped themes, terminal background detection, `NO_COLOR`,
       and the splash committed once into scrollback.
