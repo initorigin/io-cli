@@ -88,6 +88,78 @@ fn rendered(events: &mut Events, kind: EventKind) -> String {
 }
 
 #[test]
+fn f5_a_step_reads_decision_then_tool_then_result_then_its_metadata() {
+    let mut events = Events::new(DARK);
+    let line: String = events
+        .event(&RunEvent::new(
+            1,
+            7,
+            EventKind::Step {
+                decision: "edited the parser".into(),
+                tool_call: "apply_patch src/lib.rs".into(),
+                tokens: 1234,
+                changed: true,
+            },
+        ))
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    // The order is the assertion, not the contents. A line carrying all five
+    // facts in the wrong order is the line 0.1.0 shipped.
+    let at = |needle: &str| {
+        line.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is missing from {line:?}"))
+    };
+    let decision = at("edited the parser");
+    let tool = at("apply_patch src/lib.rs");
+    let result = at("changed files");
+    let tokens = at("1234 tok");
+    let step = at("step 7");
+
+    assert!(decision < tool, "the tool came before the decision: {line:?}");
+    assert!(tool < result, "the result came before the tool: {line:?}");
+    assert!(
+        result < tokens,
+        "the token count came before the result: {line:?}",
+    );
+    assert!(
+        tokens < step,
+        "the step number came before the token count: {line:?}",
+    );
+}
+
+#[test]
+fn f5_a_step_that_changed_nothing_still_says_so() {
+    let mut events = Events::new(DARK);
+    let line: String = events
+        .event(&RunEvent::new(
+            1,
+            2,
+            EventKind::Step {
+                decision: "read the failing test".into(),
+                tool_call: String::new(),
+                tokens: 88,
+                changed: false,
+            },
+        ))
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    // The result is always present, so a skim down the transcript reads the same
+    // column of answers whether or not a step touched anything.
+    assert!(line.contains("no change"), "{line:?}");
+    assert!(
+        line.find("read the failing test") < line.find("no change"),
+        "{line:?}",
+    );
+    assert!(line.find("no change") < line.find("88 tok"), "{line:?}");
+}
+
+#[test]
 fn f8_every_styled_kind_renders_its_own_facts() {
     let mut events = Events::new(DARK);
 

@@ -92,7 +92,7 @@ tasks:
     why_required: A step is the unit a transcript is skimmed in, and 0.1.0 committed the decision
       with the step number and a token count wedged into the middle of it. Content before metadata
       is the rule the rest of the interface already follows and this line is the one that broke it.
-    status: todo
+    status: done
     depends_on: []
     acceptance_criteria:
       - >
@@ -102,8 +102,26 @@ tasks:
         the decision, under which only F5 fails.
     files:
       - src/events.rs
+      - src/status.rs
       - tests/events.rs
-    evidence: []
+    evidence:
+      - "The line is now `decision · tool target · result · N tok · step N`, built as spans in that
+        order: the decision in the normal tone, the tool in the accent, the result in success or
+        muted, and the two metadata facts trailing in muted. 0.1.0 wrote
+        `decision  step N · tool · N tok`, with the step number wedged between the decision and what
+        it ran."
+      - "The result is said in BOTH directions — `changed files` or `no change`. A result that
+        appears only when something happened is a column a reader cannot skim down, and `changed` is
+        the only thing this event reports about what came back."
+      - "`cargo test --test events` — 12 passed, 0 failed. The two new tests assert the ORDER, by
+        comparing the positions of the five facts within the rendered line, rather than asserting
+        that the line contains them."
+      - "Sabotage — the token count moved in front of the decision: 2 failed, and they are exactly
+        the two F5 tests. The whole rest of the suite passed, including the existing step assertion,
+        which only checks that the facts are present and cannot see an order change. That is why the
+        new tests assert positions."
+      - The separator is now `status::SEPARATOR` rather than a second literal — one separator in the
+        product, so a step line and the status line under it read as one surface.
 
   - id: US-IO-CLI-0.1.1-T04
     summary: Assert mechanically that no test in the suite sleeps or measures elapsed time.

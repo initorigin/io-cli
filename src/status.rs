@@ -21,7 +21,10 @@ use crate::theme::{Theme, Tone};
 
 /// What separates two fields. Spaced, because a bare separator between two words
 /// reads as punctuation inside one of them.
-const SEPARATOR: &str = " · ";
+///
+/// Public because the step line separates its own parts with it. One separator in
+/// the product, so a transcript and the status line under it read as one surface.
+pub const SEPARATOR: &str = " · ";
 
 /// The frames of the working indicator.
 ///
