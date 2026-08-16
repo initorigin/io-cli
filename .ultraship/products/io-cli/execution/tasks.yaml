@@ -294,7 +294,7 @@ tasks:
     why_required: F4 asserts that the viewport at rest contains the composer and the status line and
       nothing else, so the status line has to exist for that assertion to mean anything. F9 asserts
       it degrades to a narrow form rather than wrapping.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T04
       - US-IO-CLI-0.1.0-T05
@@ -305,8 +305,26 @@ tasks:
         degrades to its narrow form rather than wrapping.
     files:
       - src/status.rs
-      - tests/narrow.rs
-    evidence: []
+      - src/lib.rs
+      - tests/status.rs
+    evidence:
+      - 42 tests pass across nine binaries; fmt and clippy -D warnings exit 0. Five of them are the
+        status line's.
+      - "Three fields filled — model, running state, elapsed — and the 0.2.0 fields are named in the
+        module rather than left to a later redesign: adding the policy layer, context pressure,
+        spend and containment is filling in a value."
+      - The running state is a WORD rather than a spinner. A spinner carries its meaning only to a
+        reader who can see it move, and this line has to work in a screen reader.
+      - "The narrow form drops whole fields from the right and never wraps: a status line that
+        becomes two lines has taken a row from the transcript and stopped being a status line. Below
+        the width of even one field the model is shown truncated, because a blank status line is
+        worse than a truncated one. Asserted across nine widths from 1 to 200."
+      - Field width is counted in characters, not bytes — the separator's middle dot is two bytes
+        and one cell, and byte accounting reserved room that was not needed and dropped a field a
+        column early.
+      - "SABOTAGE S — keep every field regardless of width: only the narrow-form test fails."
+      - "SABOTAGE T — render the running state as a tone with no word: three tests fail, all of them
+        status tests."
   - id: US-IO-CLI-0.1.0-T09
     summary: "Map io-harness run events to rendered cells with an exhaustive match: `started`, `token`,
       `step`, `tool_call` and `finished` styled, `refused` and `approval_requested` as a plain
