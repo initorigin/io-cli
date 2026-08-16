@@ -607,7 +607,7 @@ tasks:
     why_required: The GitHub Release is the product's only distribution channel, and O5 requires all
       four artifacts and the checksum file to exist on it. The musl row is the one most likely to
       fail, so it is proved before the release branch depends on it.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T02
     acceptance_criteria:
@@ -624,7 +624,25 @@ tasks:
         attaches them, and the Release title is the bare form this line of repositories uses.
     files:
       - .github/workflows/release.yml
-    evidence: []
+    evidence:
+      - release.yml cross-compiles four targets — aarch64-apple-darwin, x86_64-apple-darwin,
+        x86_64-unknown-linux-musl, x86_64-pc-windows-msvc — writes SHA256SUMS over all four, and
+        attaches all five to the Release the TAG cuts. gh release create is never used; it produces
+        a Release with no assets, and the assets are the whole channel here.
+      - The musl row installs musl-tools and sets CC and the linker, because io-harness carries
+        rusqlite with a bundled C SQLite. Without it the build fails inside a dependency's build
+        script, which reads like a toolchain bug and is not one. It is the row most likely to break
+        and it is why fail-fast is off.
+      - Every job runs the built binary with --version where the runner can execute it. A binary
+        that builds and will not start is exactly what a test profile hides from a release profile,
+        and it costs one line per target.
+      - "A checks job runs first and alone: the tag must equal Cargo.toml's version and the
+        CHANGELOG must have that section. Four cross-compiles is an expensive way to discover a
+        mismatched tag."
+      - The release job asserts SHA256SUMS has four lines, so a partial upload is a named failure
+        rather than a checksum file that happens to be short.
+      - "Every uses: is pinned to a full-length commit SHA with the version in a trailing comment;
+        no job id contains a dot; concurrency does not cancel in progress."
   - id: US-IO-CLI-0.1.0-T16
     summary: "Write `install.sh` and `install.ps1`: resolve the artifact, verify it against `SHA256SUMS`
       before unpacking, install into a per-user directory, and print the `PATH` line rather than
@@ -632,7 +650,7 @@ tasks:
     why_required: N7 is the one place in this product where a failure is a security failure, and N8
       requires an install to need no administrator rights. There is no other way to install io-cli,
       so the release does not exist without these two scripts.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T15
     acceptance_criteria:
@@ -653,7 +671,39 @@ tasks:
       - install.sh
       - install.ps1
       - tests/installers.rs
-    evidence: []
+    evidence:
+      - 82 tests pass; fmt and clippy -D warnings exit 0. Six of them are the installers', and they
+        run install.sh END TO END against a local release served over file:// — a real archive, a
+        real SHA256SUMS, a real unpack, and the installed stand-in executed afterwards.
+      - "N7 the good path: checksum ok, the binary installs, running it produces the content that
+        was inside the archive, and the script PRINTS the PATH line instead of editing a shell
+        profile behind the user's back."
+      - "N7 the bad path: the archive is corrupted AFTER its checksum is computed, so the mismatch
+        is real rather than a wrong number written into the file. The script exits non-zero, says
+        'checksum mismatch' and 'Nothing was installed', and THE TARGET DIRECTORY IS NEVER EVEN
+        CREATED."
+      - "N7 the missing-line path: a SHA256SUMS that does not mention this artifact is a refusal,
+        not a skip. That is the one path where an installer would do the thing it exists to
+        prevent."
+      - The script also refuses outright when neither sha256sum nor shasum is on PATH, for the same
+        reason.
+      - "SABOTAGE FF — verify after unpacking: only the ORDER test failed, because the unpack
+        happens inside the temp directory and the target is still untouched. That is a finding about
+        the two tests rather than a gap: they cover different halves and neither is redundant."
+      - "SABOTAGE HH — install first and verify afterwards, which is the genuinely dangerous
+        ordering: THREE tests fail, including the corrupt-artifact one on the untouched-directory
+        assertion."
+      - "SABOTAGE GG — default to /usr/local/bin: only the no-administrator-rights test fails."
+      - "N8 is asserted on both scripts: no sudo, doas, runas or elevation verb; the unix default is
+        under HOME and the Windows one under LOCALAPPDATA; install.ps1 sets the USER PATH and is
+        asserted never to touch the machine PATH, which would need administrator rights and change
+        the environment for everybody on the box."
+      - A cross-file test asserts the artifact naming the installers resolve is the naming
+        release.yml produces. The install command is the first thing a user depends on and the two
+        facts live in three files.
+      - OPEN QUESTION ANSWERED — the script resolves the LATEST release by default, via the
+        /releases/latest redirect, so re-running it is the update mechanism; IO_VERSION pins a
+        version for anyone who needs yesterday's install. No API token and no JSON parser.
   - id: US-IO-CLI-0.1.0-T17
     summary: Write the README with the keybinding table, the slash-command reference and the install
       commands; fill the CHANGELOG entry and set the version to 0.1.0.
