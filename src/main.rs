@@ -424,14 +424,19 @@ async fn wizard(
             return Ok(Some(wizard.theme()));
         }
 
-        let Some(Event::Key(key)) = inputs.recv().await else {
+        let Some(event) = inputs.recv().await else {
+            // Only the keyboard going away ends the wizard here. Every other
+            // event is the wizard's own business — see `Wizard::event`, which is
+            // where a paste used to fall through to "the user left".
             return Ok(None);
         };
-        if key.kind != KeyEventKind::Press {
-            continue;
+        if let Event::Resize(width, height) = event {
+            screen
+                .resize(width, height)
+                .map_err(|error| error.to_string())?;
         }
 
-        match wizard.key(key) {
+        match wizard.event(&event) {
             Progress::Idle => {}
             Progress::Commit(lines) => {
                 screen.commit(&lines).map_err(|error| error.to_string())?;

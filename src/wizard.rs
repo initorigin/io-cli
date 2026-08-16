@@ -17,7 +17,7 @@
 //! catalogue — are handed back to the driver rather than performed here, so this
 //! whole flow is drivable from a test with a scripted key sequence.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use io_harness::ProviderSpec;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -219,6 +219,46 @@ impl Wizard {
                 self.base_url.clone(),
             ),
         )
+    }
+
+    /// Take a terminal event.
+    ///
+    /// This exists because the driver used to pattern-match `Event::Key` and
+    /// treat everything else as "the user left" — so a paste, which arrives as
+    /// `Event::Paste` when bracketed paste is on, silently ended the wizard.
+    /// Pasting a key is the single most likely thing anybody does on the
+    /// credential screen. Dispatch lives here now, where a test can reach it.
+    pub fn event(&mut self, event: &Event) -> Progress {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.key(*key),
+            Event::Paste(text) => {
+                self.paste(text);
+                Progress::Idle
+            }
+            // A key release, a resize, a focus change, a mouse report from a
+            // terminal that sends them unasked: none of these is a decision, and
+            // none of them ends the wizard.
+            _ => Progress::Idle,
+        }
+    }
+
+    /// Take a bracketed paste into whichever field is open.
+    ///
+    /// Newlines are stripped rather than submitted: a key copied out of a web
+    /// page often carries a trailing newline, and treating that as Enter would
+    /// submit a field the user was still filling in.
+    pub fn paste(&mut self, text: &str) {
+        if !matches!(
+            self.step,
+            Step::Credential | Step::BaseUrl | Step::ModelText
+        ) {
+            return;
+        }
+        let cleaned: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        if cleaned.is_empty() {
+            return;
+        }
+        self.input.insert_str(cleaned);
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Progress {

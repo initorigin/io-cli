@@ -826,49 +826,47 @@ tasks:
         fixture cannot prove this; only a live run can.
     files:
       - tests/live.rs
+      - tests/wizard.rs
       - src/term.rs
       - src/events.rs
+      - src/wizard.rs
+      - src/main.rs
       - tests/events.rs
+      - scripts/f1-fixture.sh
     evidence:
-      - PARTIAL, AND DELIBERATELY SO. F1 is a person at a real terminal and cannot be satisfied from
-        here — no tty is available in this session, script(1) refuses (tcgetattr on a socket) and a
-        bare pty has no terminal emulator behind it to answer the cursor-position query. The
-        recording, the mid-flight interrupt and the terminal's own search and selection are the
-        owner's to do.
-      - "WHAT WAS PROVED LIVE, so the manual run is not the first time any of it is exercised.
-        tests/live.rs, four #[ignore]d tests run by hand with a key in the environment; CI holds no
-        secrets and never runs them."
-      - A real key is ACCEPTED by the wizard's verification call against the live OpenRouter
-        endpoint.
-      - "F3 LIVE: a wrong key is rejected carrying the provider's OWN words — 'provider error (Auth,
-        HTTP 401): {\"error\":{\"message\":\"User not found.\",\"code\":401}}'. That is the
-        criterion's actual point; a generic 'verification failed' would leave a user with nothing to
-        act on."
-      - The catalogue returns 413 models, vendor-prefixed, so the wizard's model step has something
-        real to offer.
-      - "A REAL TURN against a real model, driven through the real Observer bridge and the real
-        event renderer: 45 events, tokens streamed, tools called, and greeting.txt edited from
-        \"hello\" to \"goodbye\" inside the sandbox. The rendered transcript is in the evidence
-        directory and reads exactly as designed — one line per tool call, a step line with its token
-        count, and muted single lines for the kinds this release does not style (reasoning,
-        speculated, contained, sandbox, replan), which is F8's fallthrough confirmed against live
-        events rather than constructed ones."
-      - "DEFECT 1, N2, found by the pty attempt and fixed: Screen::attach enabled raw mode and then
-        returned Err if the inline viewport could not be placed — leaving the user's shell in raw
-        mode with no echo and no line editing, and an error that did not say what had happened.
-        Every failure path after raw mode now restores first, and the message says what the
-        cursor-position query is and why a pipe or a pty with nothing behind it fails it."
-      - "DEFECT 2, USER-FACING, found by the first live turn and invisible to a green suite: the
-        renderer treated any outcome other than 'success' as a warning, so a completely ordinary
-        successful turn ended the transcript with the word 'warning'. io-harness distinguishes
-        'success' (a verification criterion passed) from 'finished' (a run with no criterion that
-        ended on its own terms) — and EVERY io-cli turn is 'finished', because a steerable turn is
-        built on TaskContract::workspace, which carries Verification::None. Success is literally
-        unreachable from this interface. Now mapped across the harness's whole outcome vocabulary
-        with two tests."
-      - "AN OBSERVATION FOR THE OWNER, not a defect: the first live turn wrote the file correctly at
-        step 2 and then re-read, re-grepped and re-wrote it until the stall policy stopped it at 9
-        steps. With no verification criterion an agent has no definition of done — and io-cli cannot
-        supply one, because the harness has no turn that takes both a contract and a steer inbox.
-        The second run, whose prompt asked for a sentence as well as an edit, finished cleanly in 8
-        steps."
+      - F1 IS THE OWNER'S RUN AND IT HAS ALREADY EARNED ITS PLACE. The first attempt failed on the
+        credential screen, three times in a row, before a single character was typed — and the
+        defect it found is the worst kind this release could have shipped.
+      - "DEFECT 3, FIRST CONTACT, FOUND BY F1: pasting the API key closed the wizard. The driver's
+        wizard loop destructured the next event as Event::Key and returned Ok(None) on any other
+        shape — and Cmd+V arrives as Event::Paste when bracketed paste is on, which this product
+        enables. The pattern failed, the else branch ran, and the wizard exited. SILENTLY: that path
+        returned before it could even commit its own 'nothing was written' notice, so a first-time
+        user sees the splash, the welcome, the credential prompt, and then their shell prompt back
+        with no explanation. A terminal resize mid-wizard did the same thing. And even once it
+        stopped exiting, the wizard had no paste handling at all, so the key would have landed
+        nowhere."
+      - The session loop had always handled non-key events correctly; only the wizard was wrong —
+        which is why no test caught it. Dispatch lived in the driver, and the driver is the one
+        thing the suite cannot reach. The fix moves it into Wizard::event, in the library, where
+        four tests now cover it.
+      - "A paste is stripped of newlines rather than submitted: a key copied out of a web page
+        usually carries a trailing one, and treating it as Enter would submit a field the user was
+        still filling in."
+      - "SABOTAGE — make a non-key event cancel again: only
+        no_event_other_than_a_keypress_can_end_the_wizard fails. SABOTAGE — make the paste land
+        nowhere: exactly the two paste tests fail. Together they pin both halves of the defect."
+      - "WHAT WAS PROVED LIVE BEFORE THIS, and still holds: a real key accepted by the wizard's
+        verification call; F3 live, a wrong key rejected carrying OpenRouter's own words (HTTP 401,
+        'User not found.'); 413 models in the catalogue; and a real turn through the real bridge and
+        renderer that streamed 45 events and edited a file inside the sandbox."
+      - "DEFECT 1, N2: Screen::attach enabled raw mode and could then return Err without restoring,
+        leaving the shell with no echo and an error that did not say what had happened. Every
+        failure path after raw mode now restores first."
+      - "DEFECT 2, USER-FACING: every ordinary successful turn printed the word 'warning', because
+        io-harness returns 'finished' rather than 'success' for a turn with no verification
+        criterion — and every io-cli turn is exactly that, so 'success' is unreachable from this
+        interface. Invisible to a green suite; found by running one live."
+      - "STILL THE OWNER'S, and unchanged: the recorded run itself, the terminal's own search and
+        selection over the transcript afterwards, and approval of the rendered look. 96 tests green
+        and clippy clean against the tree carrying all three fixes."

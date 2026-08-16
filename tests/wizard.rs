@@ -11,7 +11,7 @@ mod support;
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use io_cli::settings::{self, CliSettings, Posture};
 use io_cli::theme::DARK;
 use io_cli::wizard::{Progress, Step, Wizard};
@@ -220,6 +220,102 @@ fn f2_n5_the_wizard_writes_what_it_showed_and_never_shows_the_key() {
     assert!(!summary.contains(TEST_KEY), "got {summary:?}");
     assert!(summary.contains("0600"), "got {summary:?}");
     assert!(summary.contains("openai/gpt-5"), "got {summary:?}");
+}
+
+/// Walk to the credential screen, which is where a key gets pasted.
+fn at_the_credential_step() -> Wizard {
+    let mut wizard = Wizard::new(DARK);
+    wizard.key(key(KeyCode::Enter));
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Credential);
+    wizard
+}
+
+#[test]
+fn a_pasted_key_lands_in_the_field_and_does_not_close_the_wizard() {
+    // The defect this exists for: the driver matched `Event::Key` and treated
+    // everything else as "the user left", so Cmd+V — which arrives as
+    // `Event::Paste` when bracketed paste is on — silently ended the wizard on
+    // the one screen where pasting is the expected thing to do. Three runs in a
+    // row died this way before anyone typed a character.
+    let mut wizard = at_the_credential_step();
+
+    let progress = wizard.event(&Event::Paste(TEST_KEY.to_string()));
+    assert_eq!(progress, Progress::Idle, "a paste is not a decision");
+    assert_eq!(
+        wizard.step(),
+        Step::Credential,
+        "the paste closed the wizard",
+    );
+
+    // ...and it actually went into the field, which the old code would not have
+    // done even once it stopped exiting.
+    let progress = wizard.event(&Event::Key(key(KeyCode::Enter)));
+    let Progress::Verify(spec) = progress else {
+        panic!("the pasted key should be submitted for verification, got {progress:?}");
+    };
+    assert!(
+        matches!(&spec, ProviderSpec::OpenRouter { api_key: Some(k), .. } if k == TEST_KEY),
+        "the pasted key did not reach the provider spec",
+    );
+}
+
+#[test]
+fn a_paste_with_a_trailing_newline_does_not_submit_the_field() {
+    // A key copied out of a web page usually carries one. Treating it as Enter
+    // would submit a field the user was still filling in.
+    let mut wizard = at_the_credential_step();
+    wizard.event(&Event::Paste(format!("{TEST_KEY}\n")));
+    assert_eq!(wizard.step(), Step::Credential);
+
+    let Progress::Verify(spec) = wizard.event(&Event::Key(key(KeyCode::Enter))) else {
+        panic!("the field should still have been submittable by hand");
+    };
+    assert!(
+        matches!(&spec, ProviderSpec::OpenRouter { api_key: Some(k), .. } if k == TEST_KEY),
+        "the newline should have been stripped, not carried into the key",
+    );
+}
+
+#[test]
+fn no_event_other_than_a_keypress_can_end_the_wizard() {
+    // A resize, a focus change, a key RELEASE on Windows, a mouse report from a
+    // terminal that sends them unasked. None of these is a decision.
+    let noise = [
+        Event::Resize(120, 40),
+        Event::FocusGained,
+        Event::FocusLost,
+        Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        }),
+    ];
+
+    for event in noise {
+        let mut wizard = at_the_credential_step();
+        let progress = wizard.event(&event);
+        assert_eq!(progress, Progress::Idle, "{event:?} produced {progress:?}");
+        assert_eq!(
+            wizard.step(),
+            Step::Credential,
+            "{event:?} moved or ended the wizard",
+        );
+    }
+}
+
+#[test]
+fn a_paste_on_a_picker_screen_is_ignored_rather_than_swallowed() {
+    let mut wizard = Wizard::new(DARK);
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Provider);
+
+    assert_eq!(wizard.event(&Event::Paste("noise".into())), Progress::Idle,);
+    assert_eq!(wizard.step(), Step::Provider);
+    // The picker still works afterwards.
+    wizard.event(&Event::Key(key(KeyCode::Enter)));
+    assert_eq!(wizard.step(), Step::Credential);
 }
 
 #[test]
