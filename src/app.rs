@@ -118,6 +118,7 @@ impl App {
             return false;
         }
         self.status.elapsed = age;
+        self.status.advance();
         true
     }
 

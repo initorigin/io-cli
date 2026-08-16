@@ -23,6 +23,17 @@ use crate::theme::{Theme, Tone};
 /// reads as punctuation inside one of them.
 const SEPARATOR: &str = " · ";
 
+/// The frames of the working indicator.
+///
+/// Braille, because every frame is exactly one cell wide — a spinner built from
+/// characters of differing width shifts the whole line right and left as it turns,
+/// which is worse than not moving at all. Ten frames and a modulo; a crate for
+/// this would be the beginning of the thing this product exists not to become.
+///
+/// It never carries a meaning of its own. The state is the word beside it, and
+/// this is only the evidence that the word is still true.
+pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 /// A field of the status line, in priority order: the first is the last to be
 /// dropped when the terminal is narrow.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +60,9 @@ pub struct Status {
     pub working: bool,
     /// How long the session has been open.
     pub elapsed: Duration,
+    /// Which frame of the indicator is showing. Advanced by the tick, never by
+    /// the clock: an indicator that read the time would be a second timer.
+    frame: usize,
 }
 
 impl Status {
@@ -57,28 +71,46 @@ impl Status {
             model: model.into(),
             working: false,
             elapsed: Duration::ZERO,
+            frame: 0,
         }
     }
 
+    /// Move the indicator on one frame. Called from the tick and from nowhere
+    /// else, so the animation cannot outlive the thing it is reporting on.
+    pub fn advance(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+    }
+
+    /// The indicator, if there is anything to indicate and anywhere to show it.
+    ///
+    /// `None` under `NO_COLOR`, where an animation is noise a reader cannot use —
+    /// and `None` when nothing is running, because a session that spins while it
+    /// waits for a prompt is lying about being busy.
+    pub fn indicator(&self, theme: &Theme) -> Option<char> {
+        (self.working && theme.coloured).then(|| SPINNER[self.frame % SPINNER.len()])
+    }
+
     /// The fields, most important first.
-    pub fn fields(&self) -> Vec<Field> {
+    pub fn fields(&self, theme: &Theme) -> Vec<Field> {
+        // The WORD is the state, and the animation is only beside it. A spinner
+        // carries a meaning solely for a reader who can see it move, and this
+        // line has to work in a screen reader, under `NO_COLOR` and in a log — so
+        // the indicator is a prefix on the field, never the field itself.
+        let state = match (self.working, self.indicator(theme)) {
+            (true, Some(frame)) => Field::new(format!("{frame} working"), Tone::Normal),
+            (true, None) => Field::new("working", Tone::Normal),
+            (false, _) => Field::new("ready", Tone::Muted),
+        };
         vec![
             Field::new(self.model.clone(), Tone::Accent),
-            // A word, not an animation. A spinner carries the same meaning only
-            // for a reader who can see it move, and this line has to work in a
-            // screen reader and in a log.
-            if self.working {
-                Field::new("working", Tone::Normal)
-            } else {
-                Field::new("ready", Tone::Muted)
-            },
+            state,
             Field::new(format_elapsed(self.elapsed), Tone::Muted),
         ]
     }
 
     /// The line, fitted to `width` by dropping whole fields from the right.
     pub fn line(&self, width: u16, theme: &Theme) -> Line<'static> {
-        let fields = self.fields();
+        let fields = self.fields(theme);
         let width = width as usize;
 
         let mut kept: Vec<&Field> = Vec::new();

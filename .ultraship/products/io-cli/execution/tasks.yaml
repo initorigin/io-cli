@@ -48,7 +48,7 @@ tasks:
     why_required: The clock advancing answers "is it alive" once a second; the indicator answers it
       continuously, which is what the first thirty seconds of a slow first token needs. It rides the
       same tick, so it exists only because T01 does.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.1-T01
     acceptance_criteria:
@@ -63,9 +63,29 @@ tasks:
         a modulo; a crate for it would be the beginning of the thing this product
         exists not to become.
     files:
+      - src/app.rs
       - src/status.rs
       - tests/status.rs
-    evidence: []
+    evidence:
+      - "The indicator is a PREFIX on the state field, never the field: `⠋ working` when the theme
+        emits colour, `working` when it does not. `Status::indicator` returns `None` under
+        `NO_COLOR` and `None` when nothing is running, so the two suppressions are one expression
+        rather than two call sites that could drift."
+      - "Ten braille frames and a modulo, in `status::SPINNER`. Braille because every frame is
+        exactly one cell wide — a spinner of mixed-width characters shifts the whole line as it
+        turns, which is worse than not moving."
+      - "`Status::advance` is called from `App::tick` and from nowhere else, so the animation cannot
+        outlive the turn it reports on; `cargo test --test status` — 7 passed, 0 failed, including a
+        full cycle of ten frames asserting `NO_COLOR` keeps the word and shows no frame at all."
+      - "Sabotage — the spinner replaces the word (`format!(\"{frame} working\")` becomes
+        `format!(\"{frame}\")`): 4 failed, every one of them in `tests/status.rs`, and nothing
+        anywhere else in the suite. The narrow-form test is among them because it asserts the whole
+        line exactly, which is what makes it able to see a missing word."
+      - "N2 — `cargo tree --depth 1` is the same eight names 0.1.0 permits: clap, crossterm 0.28.1,
+        io-harness 0.60.1, ratatui 0.29.0, serde, tokio, toml, tui-textarea, plus the tempfile
+        dev-dependency. Nothing was added for the animation."
+      - The narrow form still drops whole fields from the right and still never wraps; the two
+        threshold widths in its test moved by the two cells the indicator occupies.
 
   - id: US-IO-CLI-0.1.1-T03
     summary: Render a step as decision, then tool and target, then result, with the count and the step number trailing.
