@@ -64,19 +64,50 @@ async fn run() -> Result<(), String> {
     }
 
     let setup = matches!(cli.command, Some(Subcommand::Setup));
-    let mut screen = Screen::attach().map_err(|error| error.to_string())?;
     let mut inputs = keyboard();
+    let mut config = config;
+    let mut theme = theme;
 
-    let result = drive(
-        &mut screen,
-        &mut inputs,
-        &root,
-        config,
-        theme,
-        setup,
-        cli.model,
-    )
-    .await;
+    // The wizard runs on a viewport of its own, and a tall one. Its screens are
+    // pickers, a picker draws `height - 1` rows, and at the session's four that
+    // was three visible options — unusable for a four-hundred-model list, and for
+    // the theme step, which shares its space with a live sample, it left no rows
+    // for the picker at all. The two phases are separated by a natural boundary
+    // where nothing is streaming, so giving each the viewport it needs costs
+    // nothing that matters.
+    if setup || config.provider_spec().is_none() {
+        let mut screen =
+            Screen::attach_with(io_cli::term::WIZARD_VIEWPORT_HEIGHT).map_err(|e| e.to_string())?;
+        let width = screen.width();
+        screen
+            .commit(&splash::lines(&theme, true, width))
+            .map_err(|error| error.to_string())?;
+
+        let chosen = wizard(&mut screen, &mut inputs, theme).await;
+        screen.restore();
+        drop(screen);
+
+        match chosen? {
+            Some(chosen) => theme = chosen,
+            // Nothing was written and the user said so. Leaving is the whole
+            // answer; starting a session against no configuration is not.
+            None => return Ok(()),
+        }
+        // Read back what was written rather than trusting what was typed: the
+        // file is the source of truth from here on, and if the harness disagrees
+        // with the wizard about it this is where that shows.
+        config = Config::discover(&root).map_err(|error| error.to_string())?;
+    }
+
+    let mut screen = Screen::attach().map_err(|error| error.to_string())?;
+    if !setup && config.provider_spec().is_some() {
+        let width = screen.width();
+        screen
+            .commit(&splash::lines(&theme, true, width))
+            .map_err(|error| error.to_string())?;
+    }
+
+    let result = drive(&mut screen, &mut inputs, config, theme, cli.model, &root).await;
 
     // Explicit as well as on `Drop`, so the terminal is back before anything is
     // printed about how this ended.
@@ -84,33 +115,15 @@ async fn run() -> Result<(), String> {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The session, once there is a configuration to run it against.
 async fn drive(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &mut UnboundedReceiver<Event>,
-    root: &std::path::Path,
-    mut config: Config,
-    mut theme: Theme,
-    forced_setup: bool,
+    config: Config,
+    theme: Theme,
     model_override: Option<String>,
+    root: &std::path::Path,
 ) -> Result<(), String> {
-    let width = screen.width();
-    screen
-        .commit(&splash::lines(&theme, true, width))
-        .map_err(|error| error.to_string())?;
-
-    if forced_setup || config.provider_spec().is_none() {
-        if let Some(chosen) = wizard(screen, inputs, theme).await? {
-            theme = chosen;
-        } else {
-            return Ok(());
-        }
-        // Read back what was written rather than trusting what was typed: the
-        // file is the source of truth from here on, and if the harness disagrees
-        // with the wizard about it this is where that shows.
-        config = Config::discover(root).map_err(|error| error.to_string())?;
-    }
-
     let Some(spec) = config.provider_spec().cloned() else {
         return Err("no provider is configured; run `io setup`".into());
     };

@@ -319,6 +319,74 @@ fn a_paste_on_a_picker_screen_is_ignored_rather_than_swallowed() {
 }
 
 #[test]
+fn the_theme_step_draws_its_picker_and_labels_its_sample() {
+    // The defect this exists for: `render_theme` reserved rows for the live
+    // sample out of a viewport that had exactly that many, so the PICKER never
+    // drew. A live first run saw only the sample — which contains a refusal and a
+    // success, by design, so the palette can be judged — and read it as the
+    // session having gone wrong.
+    let mut wizard = Wizard::new(DARK);
+    wizard.key(key(KeyCode::Enter)); // welcome
+    wizard.key(key(KeyCode::Enter)); // OpenRouter
+    for character in "sk-test".chars() {
+        wizard.key(key(KeyCode::Char(character)));
+    }
+    wizard.key(key(KeyCode::Enter)); // -> verifying
+    wizard.verified();
+    wizard.catalogue(vec!["a/one".into(), "a/two".into()]);
+    wizard.key(key(KeyCode::Enter)); // model chosen -> theme
+    assert_eq!(wizard.step(), Step::Theme);
+
+    let (mut screen, _recorder) = support::screen_of(100, 40, io_cli::term::WIZARD_VIEWPORT_HEIGHT);
+    screen
+        .draw(|frame| wizard.render(frame, frame.area()))
+        .expect("frame");
+
+    let viewport = screen.viewport_text();
+    assert!(
+        viewport.contains("Which theme?"),
+        "the theme picker did not draw at all: {viewport:?}",
+    );
+    for name in ["dark", "light"] {
+        assert!(viewport.contains(name), "{name} is missing: {viewport:?}");
+    }
+    assert!(
+        viewport.contains("preview"),
+        "the sample must say it is a preview, or it reads as real output: {viewport:?}",
+    );
+    // And the sample is still there, below the picker, doing its job.
+    assert!(viewport.contains("refused"), "{viewport:?}");
+}
+
+#[test]
+fn the_wizard_viewport_shows_a_usable_number_of_choices() {
+    // Three visible rows made a four-hundred-model catalogue unusable. The
+    // wizard's viewport is sized for its screens rather than for the session's,
+    // and the assertion is on what actually renders rather than on the constant —
+    // the constant is only a means to it.
+    let mut picker = io_cli::picker::Picker::new(
+        "Which model?",
+        (0..400)
+            .map(|n| io_cli::picker::Row::new(format!("vendor/model-{n}")))
+            .collect(),
+    );
+    let (mut screen, _recorder) = support::screen_of(100, 40, io_cli::term::WIZARD_VIEWPORT_HEIGHT);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+
+    let rows = screen
+        .viewport_text()
+        .lines()
+        .filter(|line| line.contains("vendor/model-"))
+        .count();
+    assert!(
+        rows >= 7,
+        "only {rows} choices are visible; three is what made this unusable",
+    );
+}
+
+#[test]
 fn f3_a_rejected_key_returns_to_the_credential_step_with_the_providers_own_words() {
     let mut wizard = Wizard::new(DARK);
     wizard.key(key(KeyCode::Enter)); // welcome

@@ -834,6 +834,25 @@ tasks:
       - tests/events.rs
       - scripts/f1-fixture.sh
     evidence:
+      - "F1 PASSED, 2026-08-16, recorded. From an empty configuration: the wizard completed, the key
+        was verified live, the file was written at mode 0600 carrying the model chosen from the live
+        catalogue, a task streamed and EDITED THE FILE INSIDE THE SANDBOX — src/lib.rs went from 'a
+        - b' to 'a + b' — a second turn was interrupted, and the session exited. The terminal's own
+        search and selection worked on the transcript afterwards, because io-cli never took them
+        away. Recording held by the owner."
+      - "DEFECT 5, FOUND BY THE PASSING RUN: the theme step drew NO PICKER. render_theme reserved
+        four rows for its live sample out of a four-row viewport, leaving zero for the picker, so
+        the operator saw only the sample — which deliberately contains a refusal and a success so
+        the palette can be judged — and read it as their own session failing. The same fixed
+        four-row viewport showed only three rows of a four-hundred-model catalogue, because a picker
+        draws height - 1."
+      - The fix gives the WIZARD its own viewport, fourteen rows clamped to the terminal, separate
+        from the session's four. The two phases are divided by a boundary where nothing is
+        streaming, so re-placing the viewport there disturbs nothing in flight — which is what made
+        the fixed-height constraint acceptable in the first place. The sample now opens with
+        'preview — not your session:', because a label is what stops the two states worth judging
+        from reading as alarm. Two tests; two sabotages, reserving the whole viewport again and
+        removing the label, each fail exactly the new test.
       - F1 IS THE OWNER'S RUN AND IT HAS ALREADY EARNED ITS PLACE. The first attempt failed on the
         credential screen, three times in a row, before a single character was typed — and the
         defect it found is the worst kind this release could have shipped.

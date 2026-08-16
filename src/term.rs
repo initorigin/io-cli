@@ -46,6 +46,20 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// rather than expanding the viewport. The composer's own release is 0.7.0.
 pub const VIEWPORT_HEIGHT: u16 = 4;
 
+/// Rows the wizard's viewport occupies.
+///
+/// Much taller than the session's, and it has to be: the wizard's screens are
+/// pickers, and a picker draws `height - 1` rows. At the session's four that is
+/// three visible options — which made a four-hundred-row model list unusable and
+/// left the theme step, whose picker shares its space with a live sample,
+/// drawing NO picker at all. A live first run found both.
+///
+/// A wizard viewport can afford to be large because nothing is streaming under
+/// it and the transcript it would otherwise crowd out does not exist yet. It is
+/// clamped to the terminal, so an eighty-by-twenty-four terminal gets what it can
+/// spare rather than more rows than it has.
+pub const WIZARD_VIEWPORT_HEIGHT: u16 = 14;
+
 /// What to run when the terminal has to be handed back.
 type Restore = Box<dyn Fn() + Send + Sync + 'static>;
 
@@ -72,6 +86,18 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     /// the mouse is not captured, so the scrollback, the terminal's search and its
     /// selection are all still the terminal's own.
     pub fn attach() -> io::Result<Self> {
+        Self::attach_with(VIEWPORT_HEIGHT)
+    }
+
+    /// Take the terminal with a viewport of `height` rows.
+    ///
+    /// The height is fixed for the life of the `Screen` — ratatui sets an inline
+    /// viewport's height when the terminal is constructed and offers no way to
+    /// change it. A caller that needs a different one drops this and attaches
+    /// again, which is what the wizard and the session do at the boundary between
+    /// them: nothing is streaming there, so re-placing the viewport cannot
+    /// disturb anything in flight.
+    pub fn attach_with(height: u16) -> io::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
 
         // From here on the terminal is raw, so EVERY failure path has to give it
@@ -80,17 +106,25 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         // stdin, and a terminal that does not answer left the process exiting
         // with the user's shell still in raw mode — no echo, no line editing, and
         // an error message that did not say what had happened.
-        Self::attach_raw().inspect_err(|_| restore_terminal())
+        Self::attach_raw(height).inspect_err(|_| restore_terminal())
     }
 
-    fn attach_raw() -> io::Result<Self> {
+    fn attach_raw(height: u16) -> io::Result<Self> {
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;
 
         let terminal = Terminal::with_options(
             CrosstermBackend::new(out),
             TerminalOptions {
-                viewport: Viewport::Inline(VIEWPORT_HEIGHT),
+                // Clamped: a viewport taller than the terminal is not a viewport,
+                // and 80x24 is a supported size rather than a degraded one.
+                viewport: Viewport::Inline(
+                    height.min(
+                        crossterm::terminal::size()
+                            .map(|(_, rows)| rows.saturating_sub(2))
+                            .unwrap_or(height),
+                    ),
+                ),
             },
         )
         .map_err(|error| {

@@ -729,7 +729,11 @@ impl Wizard {
         // The sample sits below the picker and is redrawn in whichever theme is
         // highlighted. It is the one moment of delight in the flow and it costs
         // nothing, because the renderer is already here.
-        let sample_rows = 4u16;
+        // Five: a label and the four sample lines. The label is not decoration —
+        // the sample deliberately contains a refusal and a success so the palette
+        // can be judged, and without a word saying what it is, a first-time user
+        // reads it as their own session going wrong. One did.
+        let sample_rows = 5u16;
         let picker_rows = area.height.saturating_sub(sample_rows);
         if picker_rows > 0 {
             if let Some(picker) = self.picker.as_mut() {
@@ -758,8 +762,17 @@ impl Wizard {
 }
 
 /// The sample transcript the theme step renders behind its picker.
+///
+/// It opens by saying what it is. The lines below are invented — a refusal and a
+/// success — chosen because they are the two states whose colours are worth
+/// judging before committing to a theme, and they are exactly the two that look
+/// alarming when nothing says they are a preview.
 pub fn sample(theme: &Theme) -> Vec<Line<'static>> {
     vec![
+        Line::from(Span::styled(
+            "preview — not your session:".to_string(),
+            theme.style(Tone::Muted),
+        )),
         Line::from(vec![
             Span::styled("› ", theme.style(Tone::Accent)),
             Span::styled("make the failing test pass", theme.style(Tone::Normal)),
