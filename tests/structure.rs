@@ -32,7 +32,7 @@ fn scripted_session(width: u16, height: u16) -> support::Recorder {
         screen.draw(|_| {}).expect("frame");
     }
 
-    screen.resize(width, height + 4).expect("resize");
+    support::resize(&mut screen, width, height + 4);
     screen.draw(|_| {}).expect("frame after resize");
     screen
         .commit(&[Line::from("after the resize")])

@@ -108,16 +108,10 @@ impl App {
         std::mem::take(&mut self.pending)
     }
 
-    /// Rows the viewport needs: the composer, the status line, and whatever is
-    /// streaming but not yet committed.
-    pub fn viewport_height(&self, width: u16) -> u16 {
-        let live = self.events.live();
-        let streaming = if live.is_empty() {
-            0
-        } else {
-            live.lines().count().min(8) as u16 + 1
-        };
-        (self.composer.height(width) + 1 + streaming).max(VIEWPORT_HEIGHT)
+    /// Rows the viewport uses. Fixed — see [`VIEWPORT_HEIGHT`] for why, and for
+    /// what that costs.
+    pub fn viewport_height(&self) -> u16 {
+        VIEWPORT_HEIGHT
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Command {
@@ -173,11 +167,14 @@ impl App {
         if area.height == 0 {
             return;
         }
-        let composer_rows = self.composer.height(area.width).min(area.height);
-        let status_rows = if area.height > composer_rows { 1 } else { 0 };
-        let live_rows = area.height - composer_rows - status_rows;
+        // One row for the streaming tail, one for the status line, the rest for
+        // the composer. Content before metadata, top to bottom, so a reader
+        // reaches the model's words before the token count.
+        let live_rows = u16::from(area.height >= 3);
+        let status_rows = u16::from(area.height >= 2);
+        let composer_rows = area.height - live_rows - status_rows;
 
-        if live_rows > 0 && !self.events.live().is_empty() {
+        if live_rows > 0 {
             let live = Rect {
                 height: live_rows,
                 ..area

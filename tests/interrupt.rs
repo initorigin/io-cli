@@ -181,29 +181,40 @@ fn a_dropped_interface_does_not_cancel_the_run() {
 }
 
 #[test]
-fn f9_the_viewport_grows_for_streaming_text_and_shrinks_again() {
+fn f9_a_streaming_answer_of_any_length_leaves_the_viewport_the_same_size() {
+    // The viewport is a fixed few rows and stays that way however much streams,
+    // because each line commits to the terminal's own scrollback as it finishes.
+    // Only the unfinished tail is ever live, so there is nothing for the viewport
+    // to grow to hold.
     let mut app = App::new(DARK, "m");
-    let quiet = app.viewport_height(80);
-    assert!(quiet >= 3, "composer plus status is at least three rows");
+    let quiet = app.viewport_height();
+    assert!(quiet >= 3, "streaming tail, composer and status line");
 
-    for _ in 0..4 {
-        app.event(&RunEvent::new(
-            1,
-            1,
-            EventKind::Token {
-                text: "a line of an answer\n".into(),
-            },
-        ));
+    let mut committed = 0;
+    for index in 0..200 {
+        committed += app_lines(&mut app, &format!("line {index} of an answer\n"));
     }
-    assert!(
-        app.viewport_height(80) > quiet,
-        "the viewport should make room for what is streaming",
+    assert_eq!(
+        committed, 200,
+        "every finished line should have been committed as it arrived",
     );
+    assert_eq!(app.viewport_height(), quiet, "the viewport did not move");
+
+    // A partial line stays live until something finishes it.
+    app_lines(&mut app, "the tail with no newline yet");
+    assert_eq!(app.events.live(), "the tail with no newline yet");
+    assert_eq!(app.viewport_height(), quiet);
 
     app.finished();
-    assert_eq!(
-        app.viewport_height(80),
-        quiet,
-        "and give the rows back once it is committed",
-    );
+    assert_eq!(app.events.live(), "");
+    let tail = text_of(&app.take_pending());
+    assert!(tail.contains("the tail with no newline yet"), "{tail:?}");
+}
+
+/// Feed one token and report how many lines it committed.
+fn app_lines(app: &mut App, text: &str) -> usize {
+    let before = app.take_pending().len();
+    assert_eq!(before, 0, "the caller should have drained first");
+    app.event(&RunEvent::new(1, 1, EventKind::Token { text: text.into() }));
+    app.take_pending().len()
 }
