@@ -1,0 +1,433 @@
+product: io-cli
+version: 0.1.0
+tasks:
+  - id: US-IO-CLI-0.1.0-T01
+    summary: Create the repository skeleton and the one-crate manifest for the `io` binary.
+    why_required: "Nothing else in the release can be written, built or tested without a crate. The
+      manifest is also where N1 is decided: the dependency set that this release is allowed to have
+      is declared here once, and every later task is measured against it."
+    status: todo
+    depends_on: []
+    acceptance_criteria:
+      - >
+        **N1 — io-cli contains no second harness.** `cargo tree --depth 1` is recorded in the
+        release evidence and reviewed: `io-harness`, `ratatui`, `crossterm`, `tui-textarea`, `clap`,
+        `tokio`, `serde`/`toml`, and nothing that constitutes a runtime, a client or a store. Any
+        addition beyond that list is argued in the release record or it does not ship.
+    files:
+      - Cargo.toml
+      - Cargo.lock
+      - LICENSE
+      - NOTICE
+      - README.md
+      - CHANGELOG.md
+      - CONTRIBUTING.md
+      - CODE_OF_CONDUCT.md
+      - SECURITY.md
+      - .gitignore
+      - .github/CODEOWNERS
+      - .github/dependabot.yml
+      - .github/pull_request_template.md
+      - .github/ISSUE_TEMPLATE/bug_report.md
+      - .github/ISSUE_TEMPLATE/feature_request.md
+      - src/main.rs
+      - src/cli.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T02
+    summary: "Add `ci.yml`: build, test, clippy -D warnings and fmt --check on macOS, Linux and Windows."
+    why_required: O1 requires a green run on three platforms on the feature branch and again on the
+      merge. Without the workflow there is no run to be green, and Windows — where this line of
+      repositories historically finds what the other two hide — is never exercised.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T01
+    acceptance_criteria:
+      - >
+        **O1 — CI green on macOS, Linux and Windows**, on the feature branch and again on the merge
+        to `develop`. Windows is not optional: it is where a terminal renderer's assumptions break,
+        and it is where this project has historically found what the other two hid.
+    files:
+      - .github/workflows/ci.yml
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T03
+    summary: "Build the inline renderer core and the byte-stream capture harness: `Viewport::Inline`,
+      `insert_before` for finished content, synchronized output per frame, and a panic hook plus
+      `Drop` guard that restore the terminal."
+    why_required: This is the release. Every other surface renders through it, and the contract names it
+      the single largest technical risk with the instruction to build it before anything else. The
+      capture harness is built with it because F5 and N3 cannot be asserted without one.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T01
+    acceptance_criteria:
+      - >
+        **F4 — finished content reaches scrollback, not the viewport.** After a scripted session,
+        the captured byte stream contains every finished message's text outside the viewport region,
+        and the viewport buffer at rest contains only the composer and the status line. Sabotage:
+        render a finished message into the viewport instead of committing it, under which only F4
+        fails.
+      - >
+        **F5 — no alternate screen and no mouse capture, ever.** Over the same captured byte stream,
+        the sequences `ESC[?1049h`, `ESC[?1047h`, `ESC[?1000h`, `ESC[?1002h` and `ESC[?1003h` do not
+        appear. This is the release's structural criterion and it is written so that no later
+        release can reintroduce fullscreen without failing it. Sabotage: call
+        `EnterAlternateScreen`, under which only F5 fails.
+      - >
+        **N2 — the terminal is always restored.** Panic, `Ctrl+C` at any point, and a kill signal
+        each leave the terminal in cooked mode with the cursor visible and the scrollback intact.
+        Asserted by a test that panics inside a turn and inspects the restore path, and by manual
+        check for the signal case.
+      - >
+        **N3 — no full-screen clear during a session.** The captured byte stream contains no
+        `ESC[2J` after startup. This is the flicker criterion, and it is asserted structurally
+        because flicker itself cannot be asserted on a CI runner.
+    files:
+      - src/term.rs
+      - src/lib.rs
+      - tests/support/mod.rs
+      - tests/structure.rs
+      - tests/scrollback.rs
+      - tests/restore.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T04
+    summary: Handle resize without duplicating committed scrollback, and define every surface at 80x24.
+    why_required: F9 makes 80x24 a supported size rather than a degraded one, and resize is where a
+      hybrid inline renderer duplicates history if it is wrong. Both are properties of the renderer,
+      so they are fixed while it is still small.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T03
+    acceptance_criteria:
+      - >
+        **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
+        asserts no panel is truncated mid-word, the composer remains usable, and the status line
+        degrades to its narrow form rather than wrapping.
+    files:
+      - src/term.rs
+      - tests/narrow.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T05
+    summary: Add the theme token set with two shipped themes, terminal background detection, `NO_COLOR`,
+      and the splash committed once into scrollback.
+    why_required: N6 requires that a session run with colour disabled stays usable and that every state
+      colour distinguishes also carries a word. That is a property of the token set, so the tokens
+      have to exist before any surface uses one. The splash is the first thing written through the
+      renderer and is suppressed by the same switches.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T03
+    acceptance_criteria:
+      - >
+        **N6 — `NO_COLOR` produces a usable session.** With `NO_COLOR=1` the scripted session runs
+        and every state that colour distinguishes — success, warning, error, refusal — also carries
+        a word.
+    files:
+      - src/theme.rs
+      - src/splash.rs
+      - tests/no_color.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T06
+    summary: "Build the composer on `tui-textarea`: multiline on Shift+Enter with a `\\`+Enter fallback,
+      prompt history on the arrow keys, and bracketed paste."
+    why_required: There is no way to type a task without it, so F1 and F6 both stop here. Its narrow
+      form is also half of what F9 asserts.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T04
+      - US-IO-CLI-0.1.0-T05
+    acceptance_criteria:
+      - >
+        **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
+        asserts no panel is truncated mid-word, the composer remains usable, and the status line
+        degrades to its narrow form rather than wrapping.
+    files:
+      - src/composer.rs
+      - tests/composer.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T07
+    summary: Build the `Picker` overlay component, once, as the widget every selection surface uses.
+    why_required: The wizard has four selection steps and F2 drives all of them over the TestBackend.
+      The contract also names this the one piece of the fallback scope that must not drop, because
+      cutting it means hand-rolling the wizard and rebuilding it in 0.2.0 for approvals.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T04
+      - US-IO-CLI-0.1.0-T05
+    acceptance_criteria:
+      - >
+        **F2 — the wizard writes what it showed.** A test drives the wizard over the `TestBackend`
+        with a scripted key sequence and asserts the resulting file parses under
+        `io_harness::Config::from_toml`, that `provider_spec()` returns the chosen variant with the
+        chosen model, and that the file's mode is `0600` on unix. Sabotage: write the file before
+        the confirmation screen, under which only F2 fails.
+    files:
+      - src/picker.rs
+      - tests/picker.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T08
+    summary: Render the status line with model, elapsed time and a working indicator, laid out for 0.2.0
+      fields.
+    why_required: F4 asserts that the viewport at rest contains the composer and the status line and
+      nothing else, so the status line has to exist for that assertion to mean anything. F9 asserts
+      it degrades to a narrow form rather than wrapping.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T04
+      - US-IO-CLI-0.1.0-T05
+    acceptance_criteria:
+      - >
+        **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
+        asserts no panel is truncated mid-word, the composer remains usable, and the status line
+        degrades to its narrow form rather than wrapping.
+    files:
+      - src/status.rs
+      - tests/narrow.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T09
+    summary: "Map io-harness run events to rendered cells with an exhaustive match: `started`, `token`,
+      `step`, `tool_call` and `finished` styled, `refused` and `approval_requested` as a plain
+      notice, every other kind as a muted line."
+    why_required: F8 requires the match to be exhaustive with no wildcard that silently discards. This
+      is also where token coalescing lives, without which a streaming turn strobes.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T03
+    acceptance_criteria:
+      - >
+        **F8 — every event kind is accounted for.** A test enumerates the event kinds io-harness
+        emits and asserts the renderer's match is exhaustive with no wildcard that silently
+        discards. An event this release does not style renders as a muted line; none is dropped.
+        Sabotage: add a catch-all arm that returns without rendering, under which only F8 fails.
+    files:
+      - src/events.rs
+      - tests/events.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T10
+    summary: "Bridge io-harness to the screen: an `Observer` that hands events to the render loop
+      without blocking the run, a session driven by `Session::turn_steered`, and `Ctrl+C` calling
+      `Steer::interrupt`."
+    why_required: This is the only path from the harness to the interface, and F6 — interrupt a turn,
+      keep the session, accept the next prompt — is asserted against it. `Observer::event` is
+      synchronous and runs on the run's own task, so the bridge has to hand off rather than render
+      in place.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T06
+      - US-IO-CLI-0.1.0-T08
+      - US-IO-CLI-0.1.0-T09
+    acceptance_criteria:
+      - >
+        **F6 — an interrupt stops the turn and keeps the session.** A scripted `Ctrl+C` during a
+        streaming turn causes `Steer::interrupt`, the turn ends, the partial output stays committed
+        in scrollback, and the composer accepts the next prompt. A second `Ctrl+C` at an idle
+        composer exits. Sabotage: drop the interrupt on the floor, under which only F6 fails.
+    files:
+      - src/bridge.rs
+      - src/app.rs
+      - tests/interrupt.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T11
+    summary: Build the first-run wizard through its eight screens and write io-harness's configuration
+      file at mode 0600, with nothing written before the confirmation screen.
+    why_required: F2 is the wizard writing what it showed, and N5 is the credential never reaching the
+      screen, the scrollback, a log line or the trace. The release's stated outcome starts from an
+      empty configuration, so without the wizard there is no first run at all.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T07
+      - US-IO-CLI-0.1.0-T10
+    acceptance_criteria:
+      - >
+        **F2 — the wizard writes what it showed.** A test drives the wizard over the `TestBackend`
+        with a scripted key sequence and asserts the resulting file parses under
+        `io_harness::Config::from_toml`, that `provider_spec()` returns the chosen variant with the
+        chosen model, and that the file's mode is `0600` on unix. Sabotage: write the file before
+        the confirmation screen, under which only F2 fails.
+      - >
+        **N5 — the credential never reaches the screen, the scrollback, a log line or the trace.**
+        The captured byte stream from the F2 scripted wizard is searched for the test key and must
+        not contain it. Sabotage: echo the key in the confirmation screen, under which only N5
+        fails.
+    files:
+      - src/wizard.rs
+      - src/settings.rs
+      - tests/wizard.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T12
+    summary: Verify the credential against the live endpoint inside the wizard, returning to the
+      credential step with the provider's own message and writing no file on failure.
+    why_required: F3 asserts that a bad key does not get past the wizard. It is the step that decides
+      whether a first run fails inside a screen that can explain it or on the user's first real
+      prompt.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T11
+    acceptance_criteria:
+      - >
+        **F3 — a bad key does not get past the wizard.** With a provider endpoint that rejects the
+        credential, the wizard returns to the credential step carrying the provider's own message,
+        and **no file is written**. Sabotage: treat any non-transport error as success, under which
+        only F3 fails.
+    files:
+      - src/wizard.rs
+      - tests/wizard.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T13
+    summary: "Add the five slash commands: `/help`, `/quit`, `/setup`, `/theme`, `/model`."
+    why_required: They are named in the release scope and each is a `Picker` or a print over components
+      that already exist. `/setup` in particular is the contract's stated way to re-run the wizard
+      at any time, which is what makes the wizard reachable after the first run.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T11
+    acceptance_criteria: []
+    files:
+      - src/commands.rs
+      - tests/commands.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T14
+    summary: "Assert the forbidden subsystems are absent: no HTTP client, TLS stack, SQL or sandboxing
+      crate in the dependency set, and no provider-response loop in the source."
+    why_required: F7 is the criterion that keeps the archived fork from growing back, and N1 is the
+      evidence reviewed at completion. It is written last on purpose, when the dependency set is
+      final and the assertion is meaningful.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T13
+    acceptance_criteria:
+      - >
+        **F7 — the forbidden subsystems are absent.** A test over `Cargo.toml` asserts the
+        dependency set contains no HTTP client, no TLS stack, no SQL or database crate, and no
+        sandboxing crate, and a grep asserts the source contains no `async fn` that loops over
+        provider responses. The only path to a model is through `io_harness`. Sabotage: add
+        `reqwest` as a direct dependency, under which only F7 fails. This is the criterion that
+        keeps the archived fork from growing back.
+      - >
+        **N1 — io-cli contains no second harness.** `cargo tree --depth 1` is recorded in the
+        release evidence and reviewed: `io-harness`, `ratatui`, `crossterm`, `tui-textarea`, `clap`,
+        `tokio`, `serde`/`toml`, and nothing that constitutes a runtime, a client or a store. Any
+        addition beyond that list is argued in the release record or it does not ship.
+    files:
+      - tests/dependencies.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T15
+    summary: "Add `release.yml`: a cross-compile matrix producing the four artifacts plus `SHA256SUMS`,
+      attached to the Release the tag cuts."
+    why_required: The GitHub Release is the product's only distribution channel, and O5 requires all
+      four artifacts and the checksum file to exist on it. The musl row is the one most likely to
+      fail, so it is proved before the release branch depends on it.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T02
+    acceptance_criteria:
+      - >
+        **O5 — every artifact in the matrix exists and every installer works on a clean machine.**
+        The Release carries all four artifacts plus `SHA256SUMS`. `install.sh` is then run on a
+        clean macOS machine and in a clean Linux container, and `install.ps1` on a clean Windows
+        machine, each followed by running `io --version` **in a new shell** — which is what catches
+        a script that installed correctly and told the user nothing useful about `PATH`. An
+        installer verified only on the machine that built it is not verified.
+      - >
+        **O6 — the Release is cut by pushing the tag, and nothing else.** `gh release create` is
+        never used: it produces a Release with no assets. The workflow the tag triggers is what
+        attaches them, and the Release title is the bare form this line of repositories uses.
+    files:
+      - .github/workflows/release.yml
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T16
+    summary: "Write `install.sh` and `install.ps1`: resolve the artifact, verify it against `SHA256SUMS`
+      before unpacking, install into a per-user directory, and print the `PATH` line rather than
+      editing a profile."
+    why_required: N7 is the one place in this product where a failure is a security failure, and N8
+      requires an install to need no administrator rights. There is no other way to install io-cli,
+      so the release does not exist without these two scripts.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T15
+    acceptance_criteria:
+      - >
+        **N7 — an installer never runs an unverified binary.** Both scripts compute the artifact's
+        SHA-256 and compare it against the published `SHA256SUMS` before unpacking, and **abort
+        non-zero on a mismatch without leaving anything on disk**. Asserted by running each
+        installer against a deliberately corrupted artifact and checking both the exit status and
+        that the target directory is untouched. This is the one place in the product where a failure
+        is a security failure rather than an inconvenience, and `curl | sh` is a trust-the-publisher
+        model regardless — the checksum defends against a truncated download and a tampered asset,
+        not against a compromised repository, and the README says so rather than implying more.
+      - >
+        **N8 — an install needs no administrator rights.** Neither script writes outside the user's
+        own directories and neither invokes `sudo`. Asserted by running each as an unprivileged user
+        with no write access to any system path.
+    files:
+      - install.sh
+      - install.ps1
+      - tests/installers.rs
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T17
+    summary: Write the README with the keybinding table, the slash-command reference and the install
+      commands; fill the CHANGELOG entry and set the version to 0.1.0.
+    why_required: The keybinding table is required to be a table rather than prose, the install command
+      is part of the product's public contract, and the README states plainly what a checksum does
+      and does not defend against, which N7 requires.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T16
+    acceptance_criteria:
+      - >
+        **N7 — an installer never runs an unverified binary.** Both scripts compute the artifact's
+        SHA-256 and compare it against the published `SHA256SUMS` before unpacking, and **abort
+        non-zero on a mismatch without leaving anything on disk**. Asserted by running each
+        installer against a deliberately corrupted artifact and checking both the exit status and
+        that the target directory is untouched. This is the one place in the product where a failure
+        is a security failure rather than an inconvenience, and `curl | sh` is a trust-the-publisher
+        model regardless — the checksum defends against a truncated download and a tampered asset,
+        not against a compromised repository, and the README says so rather than implying more.
+    files:
+      - README.md
+      - CHANGELOG.md
+      - Cargo.toml
+      - Cargo.lock
+      - docs/config.example.toml
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T18
+    summary: Build the binary in release profile and run it, then record `cargo tree --depth 1` and the
+      startup and streaming measurements as evidence.
+    why_required: O2 is a standing gate because CI builds the test profile only and a release-profile
+      break is invisible to it — this has broken a binary in this line of repositories before. N4
+      requires the measurements to be recorded rather than asserted.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T14
+      - US-IO-CLI-0.1.0-T17
+    acceptance_criteria:
+      - >
+        **O2 — the binary builds in release profile.** `cargo build --release` is run and the binary
+        executed. CI builds the test profile only, so a release-profile break is invisible to it —
+        this has bitten this line of repositories before and is now a standing gate.
+      - >
+        **N4 — no timing assertion anywhere in this release's tests.** Startup cost and streaming
+        smoothness are **recorded as measurements** in the release evidence, not gated. This line of
+        repositories has paid for wall-clock assertions on CI runners more than for anything else.
+    files: []
+    evidence: []
+  - id: US-IO-CLI-0.1.0-T19
+    summary: "Run the live first run end to end against a real provider and record it: wizard, verified
+      key, written file, streamed answer, sandboxed edit, interrupt, exit, then the terminal's own
+      search and selection over the transcript."
+    why_required: F1 is the release's only criterion that a fixture cannot prove, and the recording is
+      both the release evidence and the README screenshot. The owner's approval of the rendered look
+      is taken from it.
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.1.0-T18
+    acceptance_criteria:
+      - >
+        **F1 — the live first run.** From an empty `$IO_CONFIG_HOME`, in a real repository, against
+        a real provider: the wizard is completed, the key is verified by a live call, the file is
+        written, a task is typed, the answer streams, a file is edited inside the sandbox, `Ctrl+C`
+        interrupts a second turn mid-flight, and `Ctrl+D` exits. Afterwards, in the same terminal,
+        the transcript is searched with the terminal's own search and a passage is selected with the
+        mouse and pasted elsewhere. Manual, recorded, and the recording is the release evidence. A
+        fixture cannot prove this; only a live run can.
+    files: []
+    evidence: []

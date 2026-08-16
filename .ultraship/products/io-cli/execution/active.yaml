@@ -1,0 +1,33 @@
+product: io-cli
+version: 0.1.0
+execution_state: DEVELOPING
+checkpoint: null
+blockers: []
+release_fit:
+  assessment: probable
+  reasons:
+    - The workspace records no time, token or monetary budget at all — `resource_profile.available`
+      is null on every field — so nothing caps this release except the work itself, and the contract
+      already carries a fallback scope for the case where it does.
+    - "The workspace records `preferences.minimize_cost: true` and `allow_parallel_agents: false`,
+      so this is a sequential build with no fan-out. That makes the schedule long rather than
+      uncertain: the tasks are ordered by dependency and each one is independently verifiable."
+    - Everything the release renders already exists in io-harness 0.60.1 — `Session::turn_steered`
+      already takes both an observer and a steer inbox, `ProviderSpec` already enumerates the four
+      provider variants the wizard offers, and `Config` already owns discovery, layering and the
+      `[app.<key>]` section. No harness change is currently known to be required.
+    - The repository is empty — one commit, a licence and an empty README — so there is no existing
+      code, no existing test suite and no migration to work around.
+  major_cost_drivers:
+    - "The inline renderer: committing finished content to scrollback under a live viewport, and
+      getting resize and over-wide content right. Unverified in our own code and named the largest
+      technical risk in the contract."
+    - Windows, where a terminal renderer meets different key reporting, resize events and ANSI
+      support.
+    - The cross-compile matrix, and `x86_64-unknown-linux-musl` in particular, because io-harness
+      carries `rusqlite` and its bundled C SQLite needs a musl toolchain in the job.
+    - Verifying the installers on clean machines, which O5 deliberately makes unsatisfiable from the
+      build machine.
+    - Two new test harnesses — TestBackend rendering and byte-stream capture — without the second of
+      which F5 and N3 cannot be asserted at all.
+  recommended_scope_change: null
