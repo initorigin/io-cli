@@ -128,7 +128,7 @@ tasks:
     why_required: N1 is the constraint the whole clock seam exists to satisfy, and a constraint
       checked by reading is a constraint that decays. This release adds a timer, which is exactly
       the kind of work that grows a sleeping test in the next one.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.1-T01
     acceptance_criteria:
@@ -144,7 +144,29 @@ tasks:
         kind that could quietly start clearing the screen.
     files:
       - tests/timing.rs
-    evidence: []
+    evidence:
+      - "`tests/timing.rs` scans every `.rs` file under `tests/` for `thread::sleep`, `time::sleep`,
+        `Instant::now`, `SystemTime::now` and `.elapsed()`, and reports every hit with its file, its
+        line and why the pattern is forbidden."
+      - "The needles are assembled from fragments at run time, so the scanner does not match its own
+        source and therefore does not have to skip its own path. A scanner with a self-exemption is
+        a scanner with a hole in it — and the first run caught a doc comment of its own, which is
+        how it was found."
+      - "The scan asserts it read at least ten files and that it found itself. A scan that silently
+        reads nothing passes for the wrong reason, which is the failure mode this line of
+        repositories has already paid for once."
+      - "A second test asserts the driver is the ONLY module that reads a clock: `src/main.rs` and
+        nothing else. That is what stops a later release quietly growing a second, unsynchronised
+        clock beside the one the tick already carries. The listing is sorted before it is compared,
+        because `read_dir` order differs across the three platforms CI runs on."
+      - "Both tripwires were verified by breaking them. A `thread::sleep` appended to
+        `tests/tick.rs` failed the scan with the file and line; an `Instant::now` added to
+        `src/app.rs` failed the second test with `left: [\"main.rs\", \"app.rs\"]`. Both were
+        reverted."
+      - "N3 — the whole suite: 110 passed, 0 failed, 4 ignored (the live-provider tests, ignored by
+        design). `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` both
+        exit 0. Every 0.1.0 structural test — no alternate screen, no mouse capture, no full-screen
+        clear, the terminal restored, the credential never rendered — passes unchanged."
 
   - id: US-IO-CLI-0.1.1-T05
     summary: Bump the version to 0.1.1, write the changelog entry, and recapture the README screenshot from the corrected interface.
