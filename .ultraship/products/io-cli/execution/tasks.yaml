@@ -331,7 +331,7 @@ tasks:
       notice, every other kind as a muted line."
     why_required: F8 requires the match to be exhaustive with no wildcard that silently discards. This
       is also where token coalescing lives, without which a streaming turn strobes.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T03
     acceptance_criteria:
@@ -342,8 +342,36 @@ tasks:
         Sabotage: add a catch-all arm that returns without rendering, under which only F8 fails.
     files:
       - src/events.rs
+      - src/lib.rs
       - tests/events.rs
-    evidence: []
+      - tests/support/mod.rs
+    evidence:
+      - 48 tests pass across ten binaries; fmt and clippy -D warnings exit 0. Six of them are the
+        event renderer's.
+      - "EventKind is #[non_exhaustive] with fifty variants and no accessor for its own tag, so a
+        wildcard arm is REQUIRED BY THE TYPE rather than chosen. F8 is therefore asserted as the two
+        things that actually matter: no kind renders to nothing, and no kind exists that this
+        repository has never seen."
+      - The drift half reads io-harness's OWN SOURCE out of the cargo registry — the version taken
+        from this crate's lockfile, so the source read is the source built — parses the variants of
+        pub enum EventKind, and requires the set to equal the seven styled names plus the
+        forty-three that fall through. A fifty-first kind fails the test by name, which is the
+        moment someone has to decide what it should look like. A list copied into this repository
+        could not have noticed.
+      - "An unstyled kind names itself. The label comes from the derived Debug form, snake-cased the
+        way #[serde(rename_all)] does, because reaching the serde tag would mean carrying a
+        serializer for a label."
+      - "Tokens are coalesced: a token commits nothing and accumulates in a live buffer the viewport
+        draws, and the whole passage commits once when a step, a refusal or the finish closes it.
+        Committing per token would put a scrollback line in the terminal for every few characters
+        the model produced."
+      - A refusal keeps its rule and its layer even in the plain one-line notice this release
+        renders it as — those are the two facts no other core records, and 0.2.0's surface is a
+        presentation of them, not their first appearance.
+      - "SABOTAGE U — wildcard arm returns no lines: exactly the two no-silent-drop tests fail."
+      - "SABOTAGE V — commit each token as its own line: only the coalescing test fails."
+      - "SABOTAGE W — remove one kind from the known list: only the drift test fails, which is what
+        proves the drift test can fail at all."
   - id: US-IO-CLI-0.1.0-T10
     summary: "Bridge io-harness to the screen: an `Observer` that hands events to the render loop
       without blocking the run, a session driven by `Session::turn_steered`, and `Ctrl+C` calling

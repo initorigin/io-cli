@@ -12,6 +12,7 @@
 
 pub mod cli;
 pub mod composer;
+pub mod events;
 pub mod picker;
 pub mod splash;
 pub mod status;

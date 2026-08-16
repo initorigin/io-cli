@@ -205,6 +205,86 @@ pub fn resize(screen: &mut io_cli::term::Screen<Fixed>, width: u16, height: u16)
     screen.resize(width, height).expect("resize");
 }
 
+/// Every event kind io-harness declares, snake-cased the way its serde tag is.
+///
+/// Read out of the dependency's own source rather than from a list copied into
+/// this repository, because a copied list cannot notice that the harness grew a
+/// fifty-first kind — which is exactly the drift F8 exists to catch. The version
+/// comes from this crate's own lockfile, so the source read is the source built.
+pub fn harness_event_kinds() -> Vec<String> {
+    let source = std::fs::read_to_string(harness_observe_path())
+        .expect("io-harness's source is readable from the registry")
+        .replace("\r\n", "\n");
+    let body = source
+        .split_once("pub enum EventKind {")
+        .expect("io-harness declares EventKind in src/observe.rs")
+        .1;
+    let body = body.split_once("\n}\n").expect("the enum is closed").0;
+
+    let mut kinds = Vec::new();
+    for line in body.lines() {
+        // A variant sits at exactly four spaces and starts with a capital; a doc
+        // line starts with `/`, an attribute with `#`, a field is indented eight.
+        let Some(rest) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+            continue;
+        }
+        let variant: String = rest
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect();
+        let mut snake = String::new();
+        for (index, character) in variant.char_indices() {
+            if character.is_ascii_uppercase() && index > 0 {
+                snake.push('_');
+            }
+            snake.push(character.to_ascii_lowercase());
+        }
+        kinds.push(snake);
+    }
+    kinds
+}
+
+/// Where the io-harness version this crate is locked to unpacked its source.
+fn harness_observe_path() -> std::path::PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lock = std::fs::read_to_string(manifest.join("Cargo.lock")).expect("the lockfile is here");
+    let version = lock
+        .split("name = \"io-harness\"")
+        .nth(1)
+        .and_then(|rest| rest.split_once("version = \""))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(version, _)| version.to_string())
+        .expect("io-harness is in the lockfile");
+
+    let home = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cargo"))
+        })
+        .expect("a cargo home");
+
+    let registries = home.join("registry").join("src");
+    let entries = std::fs::read_dir(&registries)
+        .unwrap_or_else(|error| panic!("{} is readable: {error}", registries.display()));
+    for entry in entries.flatten() {
+        let candidate = entry
+            .path()
+            .join(format!("io-harness-{version}"))
+            .join("src")
+            .join("observe.rs");
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    panic!(
+        "io-harness {version} is not unpacked under {}",
+        registries.display()
+    );
+}
+
 /// The escape sequences F5 forbids, with the names the contract uses.
 pub const FORBIDDEN: &[(&str, &str)] = &[
     ("alternate screen (1049)", "\x1b[?1049h"),
