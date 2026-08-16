@@ -8,7 +8,9 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
@@ -64,7 +66,6 @@ async fn run() -> Result<(), String> {
     }
 
     let setup = matches!(cli.command, Some(Subcommand::Setup));
-    let mut inputs = keyboard();
     let mut config = config;
     let mut theme = theme;
 
@@ -76,14 +77,21 @@ async fn run() -> Result<(), String> {
     // where nothing is streaming, so giving each the viewport it needs costs
     // nothing that matters.
     if setup || config.provider_spec().is_none() {
+        // Attach BEFORE any reader exists: the viewport's cursor query reads its
+        // answer off stdin and a reader would take it first.
         let mut screen =
             Screen::attach_with(io_cli::term::WIZARD_VIEWPORT_HEIGHT).map_err(|e| e.to_string())?;
+        let (keys, mut inputs) = Keyboard::start(&screen);
         let width = screen.width();
         screen
             .commit(&splash::lines(&theme, true, width))
             .map_err(|error| error.to_string())?;
 
         let chosen = wizard(&mut screen, &mut inputs, theme).await;
+        // The reader goes before the screen does, and both before the next
+        // attach, so nothing is holding stdin when the session's viewport is
+        // placed.
+        keys.stop();
         screen.restore();
         drop(screen);
 
@@ -100,6 +108,7 @@ async fn run() -> Result<(), String> {
     }
 
     let mut screen = Screen::attach().map_err(|error| error.to_string())?;
+    let (keys, mut inputs) = Keyboard::start(&screen);
     if !setup && config.provider_spec().is_some() {
         let width = screen.width();
         screen
@@ -111,6 +120,7 @@ async fn run() -> Result<(), String> {
 
     // Explicit as well as on `Drop`, so the terminal is back before anything is
     // printed about how this ended.
+    keys.stop();
     screen.restore();
     result
 }
@@ -528,21 +538,72 @@ fn paint_picker(
         .map_err(|error| error.to_string())
 }
 
-/// Keystrokes, read on a thread of their own.
+/// A keyboard reader that can be stopped.
 ///
-/// crossterm's `read` blocks, and the alternative — its async `EventStream` — is
-/// behind a feature that pulls in a futures stack for what one thread and a
-/// channel already do.
-fn keyboard() -> UnboundedReceiver<Event> {
-    let (tx, rx) = unbounded_channel();
-    std::thread::spawn(move || {
-        while let Ok(event) = crossterm::event::read() {
-            if tx.send(event).is_err() {
-                break;
+/// Stopping matters, and it is not a nicety. Placing an inline viewport asks the
+/// terminal where its cursor is and reads the answer back **off stdin** — and a
+/// thread sitting in `crossterm::event::read()` will consume that answer first,
+/// so the query times out and the program refuses to start. A reader must
+/// therefore never be running while a `Screen` is being attached.
+///
+/// That is why the thread polls rather than blocking in `read()`: a thread parked
+/// in `read()` cannot be told to stand down, and there is no synthetic event to
+/// wake it with.
+struct Keyboard {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Keyboard {
+    /// Start reading.
+    ///
+    /// Takes the attached screen as a witness rather than as a parameter it uses.
+    /// The rule it encodes is the one this cost a broken binary to learn: a
+    /// reader must not exist while a viewport is being placed, and a signature
+    /// that cannot be satisfied before the attach is a stronger guarantee than a
+    /// comment saying so.
+    fn start(
+        _attached: &Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    ) -> (Self, UnboundedReceiver<Event>) {
+        let (tx, rx) = unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                // A short poll rather than a blocking read, so the flag is seen.
+                match crossterm::event::poll(Duration::from_millis(40)) {
+                    Ok(true) => match crossterm::event::read() {
+                        Ok(event) => {
+                            if tx.send(event).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    },
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
             }
+        });
+        (
+            Self {
+                stop,
+                thread: Some(thread),
+            },
+            rx,
+        )
+    }
+
+    /// Stop reading and wait for the thread to leave stdin alone.
+    ///
+    /// Joined rather than detached: the point is to know the reader is gone
+    /// before the next viewport is placed.
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
-    });
-    rx
+    }
 }
 
 fn key_for(api_key: Option<String>, var: &str) -> Result<String, String> {
