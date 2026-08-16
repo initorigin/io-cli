@@ -14,17 +14,17 @@ versions:
       the whole conversation scrollable, searchable and selectable with the terminal's own
       facilities, because io-cli never took them away.
     detail: specified
-    status: planned
+    status: released
   - version: 0.2.0
     outcome: >
       The operator can see and steer the boundary the agent is working under. One key cycles the
       permission posture and the status line names the io-harness policy layer now in force. A
       sensitive action stops the run in an overlay that cannot scroll away — showing the act, the
-      target, the rule that is asking, and the diff when it is a write — and is resolved by keystroke
-      into both the transcript and the durable trace. A refusal prints the act, the target, and the
-      rule and layer that produced it, which no other terminal agent can render because no other core
-      records it. The status line gains the rest of its fields: context pressure, tokens, spend
-      against the tree ceiling, containment state.
+      target, the rule that is asking, and the diff when it is a write — and is resolved by
+      keystroke into both the transcript and the durable trace. A refusal prints the act, the
+      target, and the rule and layer that produced it, which no other terminal agent can render
+      because no other core records it. The status line gains the rest of its fields: context
+      pressure, tokens, spend against the tree ceiling, containment state.
     detail: outline
     status: planned
   - version: 0.3.0
@@ -62,12 +62,12 @@ versions:
     outcome: >
       The interface reaches people and terminals the category currently excludes. A plain mode built
       for screen readers removes animation and repaint, keeps the real terminal cursor as the focus
-      indicator, puts content before metadata, and announces every state change as one line of text —
-      which no terminal agent in this field does today. Colour is never the sole carrier of meaning,
-      `NO_COLOR` is honoured, box drawing degrades to ASCII, the keyboard protocol is negotiated up
-      on terminals that advertise it and down over SSH without losing core function, keybindings are
-      configurable and documented as a table, and every surface has an audited form at eighty
-      columns.
+      indicator, puts content before metadata, and announces every state change as one line of text
+      — which no terminal agent in this field does today. Colour is never the sole carrier of
+      meaning, `NO_COLOR` is honoured, box drawing degrades to ASCII, the keyboard protocol is
+      negotiated up on terminals that advertise it and down over SSH without losing core function,
+      keybindings are configurable and documented as a table, and every surface has an audited form
+      at eighty columns.
     detail: hypothesis
     status: planned
   - version: 0.7.0
@@ -82,11 +82,11 @@ versions:
     status: planned
   - version: 0.8.0
     outcome: >
-      A decomposed task becomes visible as a tree. Spawned children appear as a live fleet with their
-      own status, each showing its draw against the ceiling the whole tree shares, with refused
-      spawns and collected results shown where they happen. This is the surface that is structurally
-      impossible for a competing interface to copy, because it is rendering facts only this core
-      emits.
+      A decomposed task becomes visible as a tree. Spawned children appear as a live fleet with
+      their own status, each showing its draw against the ceiling the whole tree shares, with
+      refused spawns and collected results shown where they happen. This is the surface that is
+      structurally impossible for a competing interface to copy, because it is rendering facts only
+      this core emits.
     detail: hypothesis
     status: planned
   - version: 0.9.0
