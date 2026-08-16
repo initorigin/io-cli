@@ -380,7 +380,7 @@ tasks:
       keep the session, accept the next prompt — is asserted against it. `Observer::event` is
       synchronous and runs on the run's own task, so the bridge has to hand off rather than render
       in place.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T06
       - US-IO-CLI-0.1.0-T08
@@ -392,10 +392,34 @@ tasks:
         in scrollback, and the composer accepts the next prompt. A second `Ctrl+C` at an idle
         composer exits. Sabotage: drop the interrupt on the floor, under which only F6 fails.
     files:
-      - src/bridge.rs
       - src/app.rs
+      - src/bridge.rs
+      - src/lib.rs
       - tests/interrupt.rs
-    evidence: []
+    evidence:
+      - 57 tests pass across eleven binaries; fmt and clippy -D warnings exit 0. Nine of them are
+        the bridge's and the session state's.
+      - "Observer::event is synchronous and runs on the RUN'S OWN TASK, so the bridge does one thing
+        — hand the event on down an unbounded channel — and the interface draws when it next gets
+        to. Rendering inside the observer would put terminal I/O on the agent loop's path: a slow
+        write slows the run, a blocking write stops it."
+      - "The channel is unbounded deliberately. A bounded one fills in one of two ways and both are
+        wrong here: blocking stalls the run, dropping loses an event, which is the failure F8 exists
+        to prevent. A thousand events through the bridge arrive as a thousand events."
+      - Ctrl+C during a turn returns Interrupt and the test drives Steer::interrupt, then reads
+        SteerInbox::pending and sees the interrupt with no message beside it. The turn's partial
+        output is committed by App::finished rather than lost with the turn, and the composer takes
+        the next prompt afterwards. F1 covers the same path against a real model.
+      - Ctrl+C with something typed clears the composer and does NOT count towards the exit, so a
+        stray keystroke cannot end a session by surprise; twice at an idle composer exits, and the
+        first one says so.
+      - Ctrl+D exits only on an empty composer; Ctrl+L clears the VIEWPORT and never the scrollback,
+        which on this renderer is the terminal's own buffer and not something this process could
+        redraw.
+      - "SABOTAGE X — Ctrl+C exits instead of interrupting: only the F6 interrupt test fails."
+      - "SABOTAGE Y — a finished turn drops what streamed: the same test fails, on the
+        partial-output assertion."
+      - "SABOTAGE Z — the observer returns Flow::Cancel: exactly the two bridge tests fail."
   - id: US-IO-CLI-0.1.0-T11
     summary: Build the first-run wizard through its eight screens and write io-harness's configuration
       file at mode 0600, with nothing written before the confirmation screen.
