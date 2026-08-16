@@ -16,6 +16,7 @@
 use io_harness::{EventKind, RunEvent};
 use ratatui::text::{Line, Span};
 
+use crate::status::SEPARATOR;
 use crate::theme::{Theme, Tone};
 
 /// Accumulates streaming text and turns events into committed lines.
@@ -106,18 +107,34 @@ impl Events {
                 // A step's own narration commits after whatever streamed before
                 // it, so the transcript reads in the order it happened.
                 let mut lines = self.flush();
-                let mut detail = format!("step {}", event.step);
+
+                // What was decided, what it ran, what came back — then the
+                // metadata. 0.1.0 put the step number and the token count in the
+                // middle of that sentence, which made a transcript something to
+                // parse rather than to skim. Content before metadata is the rule
+                // the rest of the interface already follows.
+                let mut spans = vec![Span::styled(decision.clone(), theme.style(Tone::Normal))];
                 if !tool_call.is_empty() {
-                    detail.push_str(&format!(" · {tool_call}"));
+                    spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                    spans.push(Span::styled(tool_call.clone(), theme.style(Tone::Accent)));
                 }
-                detail.push_str(&format!(" · {tokens} tok"));
-                if *changed {
-                    detail.push_str(" · changed files");
-                }
-                lines.push(Line::from(vec![
-                    Span::styled(decision.clone(), theme.style(Tone::Muted)),
-                    Span::styled(format!("  {detail}"), theme.style(Tone::Muted)),
-                ]));
+                // Always said, in both directions. A result that appears only
+                // sometimes is a column a reader cannot skim down, and `changed`
+                // is the one thing this event reports about what came back.
+                spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                spans.push(Span::styled(
+                    if *changed {
+                        "changed files"
+                    } else {
+                        "no change"
+                    },
+                    theme.style(if *changed { Tone::Success } else { Tone::Muted }),
+                ));
+                spans.push(Span::styled(
+                    format!("{SEPARATOR}{tokens} tok{SEPARATOR}step {}", event.step),
+                    theme.style(Tone::Muted),
+                ));
+                lines.push(Line::from(spans));
                 lines
             }
             EventKind::ToolCall { name, target } => {

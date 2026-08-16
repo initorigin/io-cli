@@ -1,0 +1,375 @@
+product: io-cli
+version: 0.1.1
+status: released
+release_type: patch
+outcome:
+  user_can: >
+    A developer starts a turn and can tell, at a glance, that io-cli is working
+    rather than hung. A moving indicator sits beside the word that names the
+    state, and the elapsed clock advances on its own — not only when an event
+    happens to arrive, which in 0.1.0 meant it froze between steps and jumped
+    when one landed. On a slow first token, which is the exact moment a user
+    doubts the tool, the interface is visibly alive.
+
+
+    The steps read as steps. Where 0.1.0 committed a decision string with a token
+    count appended, a step now says what the agent decided, what it ran, and what
+    came back, laid out so a transcript can be skimmed rather than parsed.
+
+
+    And the README carries a screenshot of the interface as it actually is. The
+    one 0.1.0 could not supply was recorded before the theme step's picker was
+    fixed, which that release recorded as a known limitation rather than shipping
+    a picture of a defect.
+  business_value: >
+    0.1.0's own release record carries four interface limitations, three of them
+    raised by the owner within minutes of the first real session: the working
+    indicator does not move, the clock stops between events, and a step is hard to
+    read. None of them stops a session and all of them make the product feel
+    unfinished in the first thirty seconds, which for an interface release is the
+    part that matters.
+
+
+    This is remediation of what 0.1.0 shipped, not new capability, which is why it
+    is a patch. It also buys a rule for everything after it: the status line is
+    the surface 0.2.0 fills with the policy layer, context pressure, spend and
+    containment, and it is cheaper to make it tick correctly once, now, than to
+    add four fields to a line that stutters.
+  evidence_of_value: >
+    The criteria are deliberately structural rather than temporal. This line of
+    repositories has paid more for wall-clock assertions on CI runners than for
+    anything else, and 0.1.0's N4 forbids them outright — so "the clock advances
+    on its own" is asserted as *a repaint happens without an event arriving*,
+    driven by an injected clock the test controls, and never as *a repaint
+    happened within N milliseconds*.
+
+
+    F3 is the one that cannot be automated: the owner watches a real turn and says
+    whether it now reads as alive. The same human gate 0.1.0 put on its look, for
+    the same reason — this is an interface release and the thing being shipped is
+    what it feels like.
+scope:
+  included:
+    - >
+      **A moving working indicator.** A small animation beside the status line's
+      state word, advancing on the same tick that drives the clock. The WORD stays
+      — it is what survives `NO_COLOR`, a screen reader and a log — and the motion
+      is added beside it, never instead of it. Suppressed entirely under
+      `NO_COLOR`, where an animation is noise a reader cannot use.
+    - >
+      **A repaint tick.** A timer that redraws the viewport while a turn is
+      running, so the clock advances and the indicator moves without an event
+      having to arrive. It runs only while a turn is in flight: an idle session
+      must not repaint, because an interface that redraws forever is what the
+      alternate-screen products are criticised for and what this renderer exists
+      not to be.
+    - >
+      **Step rendering.** A step becomes a legible line: the decision, the tool it
+      called with its target, and the result, in that order, with the token count
+      and the step number as trailing muted detail rather than as the middle of
+      the sentence. Content before metadata, which is the same rule the rest of
+      the interface already follows.
+    - >
+      **The README screenshot**, recaptured from a run of the corrected
+      interface, plus the CHANGELOG entry and the version at `0.1.1`.
+    - >
+      **The tests for all of it**, including a clock the test drives, which is the
+      piece that makes the tick assertable without asserting on time.
+  excluded:
+    - >
+      **Anything that changes what a session can do.** No new keys, no new slash
+      commands, no new event surfaces, no configuration this release starts
+      reading. A patch that grows capability is a minor pretending otherwise.
+    - >
+      **The approval overlay and the refusal surface with rule and layer.** 0.2.0,
+      unchanged.
+    - >
+      **Answering a question the agent asked.** 0.1.0 dead-ended there and now
+      says so with a way out; letting a user actually answer is new capability and
+      belongs with the approval surface in 0.2.0.
+    - >
+      **Type-to-filter on the picker.** Recorded against 0.7.0, where the roadmap
+      already promised fuzzy matching, and widened there to every picker rather
+      than only the command palette. Decided with the owner at 0.1.0's release.
+    - >
+      **A growable session viewport.** The composer still scrolls within its two
+      rows; ratatui fixes an inline viewport's height at construction and
+      rebuilding mid-session would risk the scrollback. 0.7.0.
+  fallback_scope:
+    - >
+      **The repaint tick and the clock.** A still clock is the one that reads as a
+      crash, and it is also the piece every later status-line field depends on. A
+      release that ships only this is coherent: the session visibly advances while
+      it works.
+    - >
+      **The step rendering drops first.** It is legibility, not liveness, and the
+      current form is cluttered rather than wrong.
+    - >
+      **The spinner drops second**, because the word already carries the state and
+      the moving clock already answers "is it alive". The animation is the polish
+      on top of the answer.
+acceptance:
+  functional:
+    - >
+      **F1 — the viewport repaints while a turn runs, with no event arriving.**
+      Driven by a clock the test controls: with a turn in flight and no run event
+      delivered, advancing the clock produces a new frame whose status line
+      differs from the previous one. Sabotage: only repaint on an event, under
+      which only F1 fails. No assertion anywhere on how long anything took.
+    - >
+      **F2 — an idle session does not repaint.** With no turn running, advancing
+      the same clock produces no frame at all. This is the other half of F1 and
+      the more important one: a terminal interface that redraws forever is the
+      thing this renderer exists not to be. Sabotage: tick unconditionally, under
+      which only F2 fails.
+    - >
+      **F3 — the owner watches a real turn and says it reads as alive.** Manual,
+      recorded, and the recording replaces the README's screenshot. The same human
+      gate 0.1.0 put on its look; a test can assert a frame changed and cannot
+      assert that a person stopped wondering whether it had hung.
+    - >
+      **F4 — the state word survives everything the animation does not.** Under
+      `NO_COLOR` the indicator does not animate and the word is still there;
+      the status line's narrow form still drops whole fields rather than wrapping.
+      Sabotage: replace the word with the spinner, under which only F4 fails.
+    - >
+      **F5 — a step renders as decision, then tool and target, then result, with
+      the count and the step number trailing.** Asserted over the rendered line's
+      order, not merely its contents. Sabotage: put the token count in front of
+      the decision, under which only F5 fails.
+  non_functional:
+    - >
+      **N1 — no timing assertion anywhere, again.** Inherited from 0.1.0 and
+      re-checked mechanically: no test measures elapsed time and no test sleeps.
+      The tick is driven by an injected clock precisely so that this holds.
+    - >
+      **N2 — the dependency set does not grow.** `cargo tree --depth 1` is still
+      the eight names 0.1.0's N1 permits. A spinner is a handful of characters and
+      a modulo; a crate for it would be the beginning of the thing this product
+      exists not to become.
+    - >
+      **N3 — every structural property of 0.1.0 still holds.** No alternate
+      screen, no mouse capture, no full-screen clear, the terminal always
+      restored, the credential never rendered. The existing tests carry these and
+      they must all still pass — a release that adds a repaint loop is exactly the
+      kind that could quietly start clearing the screen.
+  operational:
+    - >
+      **O1 — CI green on macOS, Linux and Windows**, on the feature branch and
+      again on the merge to `develop`.
+    - >
+      **O2 — the binary builds in release profile and runs.** Standing gate; CI
+      builds the test profile only.
+    - >
+      **O3 — the branch flow is followed exactly.** `feat/0.1.1` off `develop`,
+      one pull request into `develop`, `develop` to `main` by pull request, the
+      tag `v0.1.1` pushed alone. The rulesets make this mechanical.
+    - >
+      **O4 — the Release carries the same four artifacts and `SHA256SUMS`**, and
+      `install.sh` resolves the new version without change, because the artifact
+      naming is part of the public contract and this release must not churn it.
+delivery:
+  target_mode: published
+  environment: >
+    The developer's own machine — macOS, Linux and Windows terminals, including
+    inside tmux and over SSH. GitHub for the pull requests, CI, the Release and
+    its assets. No service and no registry, as 0.1.0 established.
+  deployment_method: >
+    One feature branch `feat/0.1.1` cut from `develop`. One pull request into
+    `develop`, merged with the PR button; `git pull origin develop` immediately
+    after. Then a pull request from `develop` into `main`. The UltraShip record is
+    sealed and the lock pinned on the feature branch so it merges with the code.
+    The tag `v0.1.1` is pushed alone, which cuts the Release; the workflow it
+    triggers cross-compiles the four artifacts, writes `SHA256SUMS` and attaches
+    all five. There is no publish step after the Release, because there is no
+    registry.
+  migrations:
+    - >
+      None. The configuration file 0.1.0 writes is read unchanged; this release
+      adds no setting and reads no new section.
+  observability:
+    - >
+      Unchanged from 0.1.0: the run's durable trace in the harness store, and a
+      `RUST_LOG`-gated stderr log that is silent by default. No telemetry.
+  rollback: >
+    Deleting the tag and the Release removes the artifacts and the install path,
+    both reversible. A user already on 0.1.1 is handled by fixing forward, since
+    the install script always resolves the latest Release. The `develop`-to-`main`
+    merge is reverted by a revert commit through a pull request.
+
+
+    0.1.0 remains installable by setting `IO_VERSION`, which is the reason that
+    variable exists.
+dependencies:
+  products:
+    - >
+      io-harness 0.60.1 or later, unchanged. Nothing in this release requires a
+      harness change, and if one is discovered it is a harness release and this
+      one waits.
+  services:
+    - >
+      One live model provider, for F3's real turn.
+    - >
+      GitHub Actions and GitHub Releases, which remain the sole distribution
+      channel.
+  human_approvals:
+    - >
+      The owner watches a real turn and says whether it now reads as alive. This
+      is F3 and it cannot be delegated to a test — the defect being fixed is that
+      the interface *looked* stopped, and only a person can say it no longer does.
+resource_profile:
+  complexity: small
+  uncertainty: low
+  likely_cost_drivers:
+    - >
+      **Making the tick assertable without asserting on time.** The work is not
+      the timer; it is the seam that lets a test advance a clock by hand, which is
+      what keeps N1 true. Getting that seam right is most of the release.
+    - >
+      **Not repainting when idle.** The easy implementation ticks always, and F2
+      exists because that is the version that would ship by accident.
+  preferred_tools:
+    - "`tokio::time::interval` for the tick, behind a clock the tests can drive"
+    - "the existing byte-stream and viewport harnesses in `tests/support/mod.rs`"
+  constraints:
+    - >
+      **No new dependency.** N2 asserts it.
+    - >
+      **No timing assertion, on any test, on any platform.** N1 asserts it.
+    - >
+      **The word is never replaced by the animation.** A state that only a moving
+      character conveys is a state a screen reader cannot read.
+risks:
+  - >
+    **A repaint loop is the easiest way to reintroduce flicker.** 0.1.0's whole
+    differentiation is that the viewport repaints only when something changed, and
+    this release adds a timer that repaints on purpose. Mitigation: the tick is
+    live only while a turn is running, F2 asserts the idle case, and synchronized
+    output already wraps every frame.
+  - >
+    **The spinner is the part most likely to expand.** Frames, colours, a second
+    animation for tool calls. The fallback scope names it as the first thing to
+    drop for that reason.
+open_questions:
+  - >
+    **What does the tick cost on a session that is streaming quickly?** Token
+    events already drive repaints; a timer on top of them may be redundant while
+    text is arriving and only useful while it is not. Worth measuring — and
+    recording, not gating — before choosing an interval.
+  - >
+    **Should the step line collapse a long tool target?** A path of two hundred
+    characters is the common case and the picker already has a fitting rule. Reuse
+    it, or leave the step to wrap, is a decision for when the line is first
+    rendered against real content.
+released_at: "2026-08-16T18:47:29Z"
+mode: published
+delivered: >
+  The session stops looking frozen while it works. A turn in flight advances its
+  own clock and turns its own indicator, and neither waits for an event to
+  arrive. The screenshot this release put in the README is the proof and the
+  case: forty seconds into a slow first token, no answer on screen yet, the
+  status line reading `deepseek/deepseek-v4-flash-0731 · ⠨ working · 40s` with
+  the indicator turning. Under 0.1.0 that same moment was a still word beside a
+  still clock, which is what a hung process looks like.
+
+
+  The mechanism is one function. `App::tick(age) -> bool` takes the session's age
+  as an argument rather than reading a clock, and answers whether a frame is owed
+  rather than drawing one. That is what makes liveness assertable without a
+  timing assertion: a test advances the clock by hand and asks. It also decides
+  the half that matters more — an idle session is told no, so this renderer still
+  repaints only when something changed, which is the whole of its differentiation
+  from the alternate-screen products.
+
+
+  A step now reads as a step: the decision, the tool it called with its target,
+  the result, and then the token count and the step number as trailing muted
+  detail. The result is stated in both directions, `changed files` or `no
+  change`, so a transcript is skimmed down one column instead of parsed.
+
+
+  Nothing else moved. No key, no command, no event surface, no setting this
+  release starts reading, and the eight dependencies are the same eight. A
+  spinner is a handful of characters and a modulo.
+evidence:
+  tests:
+    - "cargo test — 110 passing, 0 failing, 4 ignored (tests/live.rs, ignored by design), across 22 test binaries"
+    - "cargo test --test tick — 4 passing: F1 repaints across two ticks with no event ever delivered; F2 pumps ten idle ticks and asserts the byte recorder gained nothing at all"
+    - "cargo test --test status — 7 passing, including a full ten-frame cycle asserting NO_COLOR keeps the word and shows no frame"
+    - "cargo test --test events — 12 passing; the two F5 tests assert the ORDER of the five facts by their positions in the rendered line, not their presence"
+    - "cargo test --test timing — 2 passing: no test in the repository sleeps or reads a clock, and src/main.rs is the only module that reads one"
+    - "six sabotage arms run, each failing only its own criterion's tests: tick never repaints (F1 alone); guard deleted (F2's three alone); spinner replaces the word (tests/status.rs alone); token count in front of the decision (the two F5 tests alone); a sleeping test appended (the scan named its file and line); an Instant::now added to src/app.rs (the driver-only test named it)"
+  builds:
+    - "cargo fmt --all -- --check — exit 0"
+    - "cargo clippy --all-targets -- -D warnings — exit 0"
+    - "cargo build --release — exit 0; ./target/release/io --version prints io 0.1.1"
+    - "cargo tree --depth 1 — the same eight names 0.1.0's N1 permits, plus tempfile as a dev-dependency; nothing was added for the animation"
+  reviews:
+    - "F3 completed by the owner, 2026-08-17: the release binary run against a live OpenRouter provider, a real turn watched, verdict `spinner and timer working fine`"
+    - "the capture from that run is docs/screenshot.png and is now the README's screenshot, replacing the one 0.1.0 recorded as a picture of a defect"
+  deployments:
+    - "CI green on macOS, Linux and Windows plus lint, msrv and five CodeQL analyses, on feat/0.1.1 at b478d02"
+  health_checks:
+    - "the release binary starts, prints io 0.1.1, and the live session in the F3 run reached a provider and streamed"
+known_limitations:
+  - >
+    **An idle session's clock is still frozen, and that is F2 rather than a
+    defect.** Between turns the elapsed time advances only when a key arrives.
+    Making it tick when nothing is happening is exactly the repaint-forever
+    behaviour this renderer exists not to have, so the frozen idle clock is the
+    price of the property and is deliberate.
+  - >
+    **The tick's cost while text is streaming quickly was not measured.** The
+    contract raised it as an open question to record rather than to gate, and it
+    was recorded rather than measured: token events already drive repaints, so a
+    timer on top of them is redundant while text is arriving and useful only while
+    it is not. The interval is 100 ms, chosen for how motion reads rather than
+    from a measurement. If a later release measures it, the number belongs there.
+  - >
+    **A long tool target in a step line wraps rather than being fitted.** The
+    picker has a fitting rule that could be reused; the contract left the decision
+    to the first rendering against real content, and the real content in the F3
+    run had no long target in it. Left to wrap, deliberately, rather than
+    designing against a case not yet seen.
+  - >
+    **The indicator is braille and there is no ASCII fallback.** Every frame is
+    one cell wide, which is why braille was chosen, but a terminal without the
+    glyphs shows a replacement character where the animation should be. The word
+    beside it is unaffected, and `NO_COLOR` removes the animation entirely. A
+    proper plain mode is 0.6.0.
+  - >
+    **The README screenshot shows the liveness fix and not the step fix.** The
+    turn it captures was in its first step, so no step line had committed yet. The
+    picture proves the clock and the indicator, which is what the release is named
+    for; F5 is proved by tests asserting the rendered order rather than by the
+    image.
+  - >
+    **Two of 0.1.0's four interface limitations are untouched and stay where the
+    roadmap put them.** The model picker still has no type-to-filter (0.7.0,
+    decided with the owner at 0.1.0's release and widened there to every picker),
+    and a prompt longer than two rows still scrolls within them rather than
+    growing the viewport (0.7.0, because ratatui fixes an inline viewport's height
+    at construction). This release fixed the other two.
+  - >
+    **An action that needs approval is still declined, and the configuration's
+    `[sandbox]`, `[run]` and `[instructions]` sections are still not applied to a
+    turn.** Both are 0.1.0 limitations carried forward unchanged; the approval
+    overlay is 0.2.0 and the contract sections wait on a harness entry point that
+    takes both a caller's contract and a steer inbox.
+  - >
+    **This record is sealed before the Release exists, which is the flow rather
+    than a shortfall.** The sealed record and its lock pin ride the feature branch
+    and merge with the code, so the seal necessarily precedes the tag that cuts
+    the Release and the workflow that attaches the four artifacts and
+    `SHA256SUMS`. `mode: published` describes the channel this product has. If the
+    tag or the matrix fails after this point, the correction is a new version, not
+    an edit.
+  - >
+    **The `fmt and clippy` job failed once on this branch and was re-run.** The
+    failure was seven seconds into `dtolnay/rust-toolchain`, before any of this
+    repository's own commands ran, on a SHA that had just gone green on `develop`.
+    Recorded rather than smoothed over: a failure inside a toolchain download is a
+    flake, and the same two commands exit 0 locally and in the re-run.
+supersedes: 0.1.0
+next_recommended_version: 0.2.0
+immutable: true
