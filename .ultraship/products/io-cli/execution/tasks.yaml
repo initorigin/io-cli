@@ -254,7 +254,7 @@ tasks:
     why_required: The wizard has four selection steps and F2 drives all of them over the TestBackend.
       The contract also names this the one piece of the fallback scope that must not drop, because
       cutting it means hand-rolling the wizard and rebuilding it in 0.2.0 for approvals.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T04
       - US-IO-CLI-0.1.0-T05
@@ -267,8 +267,27 @@ tasks:
         the confirmation screen, under which only F2 fails.
     files:
       - src/picker.rs
+      - src/lib.rs
       - tests/picker.rs
-    evidence: []
+    evidence:
+      - 37 tests pass across eight binaries; fmt and clippy -D warnings exit 0. Seven of them are
+        the picker's.
+      - One widget, in the viewport, never in scrollback — a choice that has scrolled away cannot be
+        answered. The wizard's four selection steps, /model and /theme are this widget with
+        different rows, and 0.2.0's approval overlay and 0.4.0's /resume and /fork are the same
+        widget again.
+      - The selection is marked by a marker character as well as by colour, so it survives NO_COLOR
+        and a monochrome terminal.
+      - "At eighty columns a row loses its DETAIL, not its label, and is fitted with a
+        single-character ellipsis rather than wrapped: a row that wraps stops the list being a list,
+        and the label is the part that has to survive."
+      - Movement clamps at both ends rather than wrapping, matching the composer's history, and a
+        long list scrolls so the selection is always drawn.
+      - "SABOTAGE P — never scroll to the selection: only
+        a_long_list_scrolls_so_the_selection_stays_visible fails."
+      - "SABOTAGE Q — render the detail unfitted: only the eighty-column row test fails."
+      - "SABOTAGE R — mark the selected row by colour alone: only
+        the_selected_row_is_marked_by_more_than_colour fails."
   - id: US-IO-CLI-0.1.0-T08
     summary: Render the status line with model, elapsed time and a working indicator, laid out for 0.2.0
       fields.

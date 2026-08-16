@@ -12,6 +12,7 @@
 
 pub mod cli;
 pub mod composer;
+pub mod picker;
 pub mod splash;
 pub mod term;
 pub mod theme;
