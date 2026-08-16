@@ -710,7 +710,7 @@ tasks:
     why_required: The keybinding table is required to be a table rather than prose, the install command
       is part of the product's public contract, and the README states plainly what a checksum does
       and does not defend against, which N7 requires.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T16
     acceptance_criteria:
@@ -726,10 +726,33 @@ tasks:
     files:
       - README.md
       - CHANGELOG.md
-      - Cargo.toml
-      - Cargo.lock
       - docs/config.example.toml
-    evidence: []
+      - tests/docs.rs
+    evidence:
+      - 90 tests pass; fmt and clippy -D warnings exit 0. Eight of them check the documentation
+        against the code rather than against a reviewer's memory.
+      - "The keybinding table is a shipped artifact and it is DATA: /help renders the constants and
+        the README's table is checked against the same constants, row for row, description for
+        description, including the row COUNT — so a key added to one and not the other fails a named
+        test. A table that has drifted is worse than no table; it is folklore with a typeface."
+      - "SABOTAGE II — reword a key's description in the code without touching the README: only the
+        README key-table test fails."
+      - "docs/config.example.toml is documentation that RUNS: a test writes it as the user scope and
+        asserts io-harness accepts it, that it configures a provider and a policy, and that
+        [app.io-cli] gives back the theme. An example the harness has stopped accepting is not an
+        example, it is a trap."
+      - The README states what the checksum does NOT defend against — a compromised repository — in
+        N7's own words, and a test asserts that sentence is still there. A page that leaves it
+        unsaid is overselling a curl-into-sh install.
+      - The CHANGELOG's 0.1.0 section is asserted to exist and to have a body, because release.yml
+        refuses to cut a Release without one and finding that out from a failed workflow is four
+        cross-compiles too late.
+      - "Also asserted: every file the repository refers to exists; NOTICE and the README carry
+        'Copyright 2026 Aakash Pawar (InitOrigin)' while the Apache-2.0 body is untouched; and the
+        release evidence directory stays out of git."
+      - "The README documents the scope trap found in T11: a project file may narrow the permission
+        boundary and may never widen it, because a repository you cloned must not be able to grant
+        itself permission — which is why the wizard writes the user scope."
   - id: US-IO-CLI-0.1.0-T18
     summary: Build the binary in release profile and run it, then record `cargo tree --depth 1` and the
       startup and streaming measurements as evidence.
