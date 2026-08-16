@@ -1,0 +1,537 @@
+product: io-cli
+version: 0.1.0
+status: planned
+release_type: minor
+outcome:
+  user_can: >
+    A developer clones nothing, configures nothing, and runs `io` in a repository. Because no
+    configuration exists, a guided first run starts: it asks which provider to use — the choices
+    being the variants io-harness's own `ProviderSpec` defines, not a hardcoded list — takes an API
+    key without echoing it, and **verifies that key against the live endpoint before continuing**, so
+    a bad key is caught in the wizard rather than on the first real prompt. It then offers the
+    provider's own model catalogue, lets the developer arrow through the shipped themes with a sample
+    transcript re-rendering live behind the picker, and asks for a default permission posture in
+    plain words. It shows exactly what will be written and where, and only then writes io-harness's
+    configuration file with mode `0600`.
+
+
+    The session that follows is the product's core claim made real. Every finished message, tool cell
+    and system line is committed into **the terminal's own scrollback**; a viewport of a few lines at
+    the bottom holds the composer and a status line, and is the only region that repaints. The
+    developer types a task, watches the reply stream token by token without strobing, watches the
+    agent edit a file inside io-harness's sandbox, presses `Ctrl+C` to interrupt a turn that is going
+    wrong, types another, and exits with `Ctrl+D`.
+
+
+    Afterwards the terminal contains the whole conversation. `Cmd+F` finds text in it. tmux copy-mode
+    scrolls it. A mouse drag selects it. None of that was implemented — it works because io-cli never
+    entered the alternate screen and never captured the mouse.
+  business_value: >
+    This release exists to make the archived fork's mistake structurally impossible to repeat. That
+    product was 1,199,453 lines across 88 crates, roughly sixty of which duplicated io-harness, and
+    its interface could not be lifted out — the TUI crate alone was 229k lines depending on 41
+    siblings. The scope below is a binary that renders an event stream and edits a prompt. If 0.1.0
+    ships and it is small, the shape is proven and every later release inherits it.
+
+
+    It also settles the two decisions that are expensive to reverse later and cheap to make now. The
+    renderer is the first: the field's most-complained-about choice is the alternate screen, and a
+    product that ships with it spends the rest of its life adding escape hatches. Building on the
+    inline viewport from the first commit means the property is never lost, because there is no code
+    path that could lose it. The wizard is the second: first contact is where a bring-your-own-key
+    product loses people, and every competitor either errors on a missing environment variable or
+    funnels the user into one vendor's login.
+
+
+    And it puts a real agent in the owner's hands. The harness has shipped sixty-one releases with
+    its only interactive consumer being example programs. The first session in which a human watches
+    io-harness work and can stop it will find things sixty-one releases of tests did not.
+  evidence_of_value: >
+    The acceptance criteria carry it, and two of them are unusual on purpose.
+
+
+    F5 asserts a structural property rather than a behaviour: over a full scripted session, the bytes
+    io-cli writes to the terminal **never contain the alternate-screen sequences** `ESC[?1049h` or
+    `ESC[?1047h`, and never contain the mouse-capture sequences `ESC[?1000h` or `ESC[?1003h`. That
+    single assertion is the whole differentiator of §1 of the design, expressed as something a test
+    can fail on rather than something a reviewer has to notice. It is also permanent — no later
+    release can quietly reintroduce fullscreen without turning this test red.
+
+
+    F1 is the manual one that cannot be automated and must not be skipped: a real live run, against a
+    real provider, in a real repository, taken from an empty configuration through the wizard to a
+    verified file edit, with the terminal's own search and selection exercised on the transcript
+    afterwards. The screen recording of that run is the release's evidence and the README's
+    screenshot.
+scope:
+  included:
+    - >
+      **The repository skeleton, matching the io-harness line.** `LICENSE` (Apache-2.0 body
+      pristine), `NOTICE` and `README.md` carrying `Copyright 2026 Aakash Pawar (InitOrigin)`,
+      `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `.github/` with
+      `CODEOWNERS`, a PR template, issue templates, and `dependabot.yml` targeting `develop`.
+      Manifest authors carry no email address.
+    - >
+      **CI on three platforms**, mirroring io-harness's `ci.yml` shape: build, test, `clippy -D
+      warnings`, `fmt --check`, on macOS, Linux and Windows. Every `uses:` pinned to a full-length
+      commit SHA with the version in a trailing comment. No job id contains a dot.
+      `cancel-in-progress` is off, so a failing run keeps its diagnostics.
+    - >
+      **The binary is `io`.** One crate, one binary, `clap` for arguments. The crate name is
+      `io-cli`; the binary name, the config section and the environment prefix follow the naming
+      table already settled for this product.
+    - >
+      **The renderer — the load-bearing piece.** `ratatui` over `crossterm` with
+      `Viewport::Inline`. Finished content is pushed to scrollback with `Terminal::insert_before`;
+      the viewport holds composer and status only. Every frame is wrapped in synchronized-output
+      (`CSI ? 2026 h` / `l`). Token events are coalesced to at most one frame per frame-budget. No
+      alternate screen, no mouse capture, no full-screen clear. A panic hook and a `Drop` guard
+      restore the terminal — cooked mode, cursor shown — **before** anything is printed.
+    - >
+      **The `Picker` overlay component**, built once and used by the wizard's provider, model, theme
+      and posture steps. It is the component every later release reuses for `/model`, `/resume`,
+      `/fork` and approvals, which is why it is built properly here and not inlined into the wizard.
+      This replaces adopting a Rust prompt library — `inquire`, `dialoguer`, `promkit` — each of
+      which would be a second owner of raw mode and a second aesthetic.
+    - >
+      **The composer.** `tui-textarea` for editing, multiline on `Shift+Enter` with a `\` + `Enter`
+      fallback for terminals that cannot report it, prompt history on the arrow keys, and bracketed
+      paste enabled so a pasted block does not arrive as keystrokes.
+    - >
+      **The first-run wizard**, in the seven steps the design fixes: provider, credential,
+      verification call, model, theme with live preview, permission posture, and a
+      write-confirmation screen that names the exact path. Re-runnable at any time as `io setup`.
+    - >
+      **Configuration is io-harness's.** `Config::discover` finds it; the wizard writes it by
+      serializing `ProviderSpec` and the chosen policy, because those types already derive
+      `Serialize`. io-cli's own settings — theme, and nothing else in this release — live under
+      `[app.io-cli]` and are read with `Config::app::<CliSettings>("io-cli")`. **There is no
+      configuration parser in this repository**, and F7 asserts it.
+    - >
+      **The session.** `io_harness::Session` over the harness `Store`, driven by
+      `turn_steered_observed`-shaped calls so that streaming and interruption both work from the
+      first release. An `Observer` implementation is the sole bridge between the harness and the
+      screen.
+    - >
+      **The event surface for this release**, deliberately partial: `started`, `token`, `step`,
+      `tool_call`, `finished` rendered fully; `refused` and `approval_requested` rendered as a plain
+      one-line notice with the run behaving safely, because their real surfaces are 0.2.0. Every
+      other kind of the fifty falls through to a muted single line rather than being dropped
+      silently — an unrendered event is a bug this design should surface, not hide.
+    - >
+      **A status line** with model, elapsed time and a working indicator. The remaining fields —
+      policy layer, context pressure, spend against ceiling, containment — are 0.2.0, and the line is
+      laid out now so they slot in without a redesign.
+    - >
+      **The theme token set** — background, foreground, muted, accent, success, warning, error,
+      diff-add, diff-delete — with two shipped themes, terminal background detection, and `NO_COLOR`
+      honoured.
+    - >
+      **The splash**: the `IO CLI` mark in the block characters the owner supplied, printed once into
+      scrollback, suppressed under `NO_COLOR`, under a non-TTY stdout, and under any future plain
+      mode.
+    - >
+      **Keys for this release**: `Ctrl+C` interrupts the turn via `Steer::interrupt` and twice in
+      succession exits, `Ctrl+D` exits on an empty composer, `Ctrl+L` clears the viewport and never
+      the scrollback, `Enter` submits. Documented as a table in the README, not as prose.
+    - >
+      **Slash commands for this release**: `/help`, `/quit`, `/setup`, `/theme`, `/model`. Five, each
+      one a `Picker` or a print. The palette is 0.7.0.
+    - >
+      **Terminal reality**: a resize is handled without duplicating committed scrollback, and an
+      80×24 terminal is a supported size with every surface defined at that width.
+    - >
+      **The tests**, including the two harnesses later releases will build on: a `TestBackend`-based
+      renderer harness that asserts buffer contents, and a byte-stream harness that captures
+      everything written to the terminal so F5 can assert over it.
+    - >
+      **The distribution, which is the only channel this product has.** A `release.yml` cross-compile
+      matrix producing four artifacts — `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+      `x86_64-unknown-linux-musl` and `x86_64-pc-windows-msvc` — attached to the GitHub Release that
+      the tag cuts, alongside a `SHA256SUMS` file covering all of them. musl is chosen for Linux
+      deliberately: one static artifact that runs on any distribution beats two glibc builds and a
+      support matrix of which one a user needs.
+    - >
+      **`install.sh` and `install.ps1`.** The shell script is POSIX `sh`, detects the platform from
+      `uname`, resolves the matching artifact from the latest release, **verifies it against
+      `SHA256SUMS` before unpacking**, and installs into a per-user directory — `$IO_INSTALL_DIR`,
+      else `~/.local/bin` — with **no `sudo` and no system-wide write**. The PowerShell script does
+      the same into `%LOCALAPPDATA%\io\bin` and adds it to the user `PATH`. Both print the exact
+      `PATH` line to add when the directory is not already on it, rather than editing a shell profile
+      behind the user's back.
+    - >
+      **The CHANGELOG entry and the version**, `0.1.0` in `Cargo.toml` and `Cargo.lock`, under the
+      structure this line of repositories uses.
+  excluded:
+    - >
+      **Any agent loop, provider client, tool, sandbox, policy engine or session store.** This is the
+      product's founding constraint. If something is missing, it is added to io-harness and consumed
+      — not written here. N1 asserts it by dependency and by grep.
+    - >
+      **Approval overlays, policy cycling, and the refusal surface with rule and layer.** 0.2.0.
+      This release runs under whatever posture the wizard wrote and prints a plain notice rather than
+      pretending to a surface it does not have.
+    - >
+      **Diff rendering and collapsible tool output.** 0.3.0. An edit is reported as a one-line fact
+      here; making it beautiful is a release of its own and doing it badly now costs more than
+      waiting.
+    - >
+      **Session resume, fork and rewind.** 0.4.0. A session in this release starts fresh.
+    - >
+      **The headless subcommand and NDJSON.** 0.5.0. `io` is interactive-only in this release, and it
+      detects a non-TTY stdout only well enough to suppress the splash and refuse to start a wizard.
+    - >
+      **Plain mode, configurable keybindings, the Kitty keyboard protocol negotiation.** 0.6.0. The
+      defaults chosen here — real cursor never hidden while input is possible, `NO_COLOR` honoured,
+      content before metadata — are the parts that would be expensive to retrofit, so they are in;
+      the mode itself is not.
+    - >
+      **`@` file completion, `!` shell escape, the command palette, the plan and todo panel.** 0.7.0.
+    - >
+      **The fleet surface.** 0.8.0.
+    - >
+      **Images, browser, LSP and MCP indicators.** 0.9.0.
+    - >
+      **An OS-keychain credential backend.** A `0600` file is what `gh`, `aws` and `npm` do. A
+      keychain that fails silently on a headless Linux box is worse, and choosing between them is not
+      a first-release decision.
+    - >
+      **Publishing to crates.io, and `cargo install` as a path.** Decided against for the product,
+      not deferred — see `product.yaml` non-goals and iterations/US-IO-CLI-0.1.0-I01. The name holds
+      seventeen yanked versions through 0.14.0 and a yank does not free a number, so publishing would
+      restart this roadmap above 0.14.0 for an install path slower than the one being built.
+    - >
+      **Homebrew, Scoop, WinGet, `.deb`, `.rpm`, or an npm shim.** Two scripts are the distribution
+      surface.
+    - >
+      **Linux `aarch64`, Windows `aarch64`, and 32-bit anything.** Four artifacts in the first
+      matrix; see the open question on which fifth is worth adding first.
+    - >
+      **Auto-update, an update checker, or any version phone-home.** Re-running the install script
+      is the update mechanism, and a terminal tool that contacts a server the operator did not ask it
+      to contact violates this product's own non-goals.
+    - >
+      **Vim mode in the composer.** Deliberately late, as it was for the product this pattern is
+      taken from.
+  fallback_scope:
+    - >
+      **The renderer, the composer, the session and one real completed task, configured from
+      environment variables.** The wizard drops to three steps — provider, key, model — with no theme
+      preview and no posture step, and the theme falls back to the single default. This is still a
+      coherent release: a developer can do real work in it, the scrollback property holds, and F5
+      still passes. The renderer is the half that must not drop, because it is the one thing that
+      cannot be added later without rewriting everything built on top of it.
+    - >
+      **The theme picker with live preview drops first.** It is the delight, not the function; a
+      single shipped theme with `NO_COLOR` support is a complete product and the picker is two hours
+      whenever it is wanted.
+    - >
+      **The live key-verification call drops second**, to a format check plus a clear error on the
+      first real turn. It is the difference between a good wizard and an adequate one, not the
+      difference between working and not.
+    - >
+      **The `Picker` component does not drop.** If it is cut, the wizard has to be hand-rolled and
+      then rebuilt in 0.2.0 for approvals — which is the seam this release exists to prevent.
+acceptance:
+  functional:
+    - >
+      **F1 — the live first run.** From an empty `$IO_CONFIG_HOME`, in a real repository, against a
+      real provider: the wizard is completed, the key is verified by a live call, the file is
+      written, a task is typed, the answer streams, a file is edited inside the sandbox, `Ctrl+C`
+      interrupts a second turn mid-flight, and `Ctrl+D` exits. Afterwards, in the same terminal, the
+      transcript is searched with the terminal's own search and a passage is selected with the mouse
+      and pasted elsewhere. Manual, recorded, and the recording is the release evidence. A fixture
+      cannot prove this; only a live run can.
+    - >
+      **F2 — the wizard writes what it showed.** A test drives the wizard over the `TestBackend`
+      with a scripted key sequence and asserts the resulting file parses under
+      `io_harness::Config::from_toml`, that `provider_spec()` returns the chosen variant with the
+      chosen model, and that the file's mode is `0600` on unix. Sabotage: write the file before the
+      confirmation screen, under which only F2 fails.
+    - >
+      **F3 — a bad key does not get past the wizard.** With a provider endpoint that rejects the
+      credential, the wizard returns to the credential step carrying the provider's own message, and
+      **no file is written**. Sabotage: treat any non-transport error as success, under which only
+      F3 fails.
+    - >
+      **F4 — finished content reaches scrollback, not the viewport.** After a scripted session, the
+      captured byte stream contains every finished message's text outside the viewport region, and
+      the viewport buffer at rest contains only the composer and the status line. Sabotage: render a
+      finished message into the viewport instead of committing it, under which only F4 fails.
+    - >
+      **F5 — no alternate screen and no mouse capture, ever.** Over the same captured byte stream,
+      the sequences `ESC[?1049h`, `ESC[?1047h`, `ESC[?1000h`, `ESC[?1002h` and `ESC[?1003h` do not
+      appear. This is the release's structural criterion and it is written so that no later release
+      can reintroduce fullscreen without failing it. Sabotage: call
+      `EnterAlternateScreen`, under which only F5 fails.
+    - >
+      **F6 — an interrupt stops the turn and keeps the session.** A scripted `Ctrl+C` during a
+      streaming turn causes `Steer::interrupt`, the turn ends, the partial output stays committed in
+      scrollback, and the composer accepts the next prompt. A second `Ctrl+C` at an idle composer
+      exits. Sabotage: drop the interrupt on the floor, under which only F6 fails.
+    - >
+      **F7 — the forbidden subsystems are absent.** A test over `Cargo.toml` asserts the dependency
+      set contains no HTTP client, no TLS stack, no SQL or database crate, and no sandboxing crate,
+      and a grep asserts the source contains no `async fn` that loops over provider responses. The
+      only path to a model is through `io_harness`. Sabotage: add `reqwest` as a direct dependency,
+      under which only F7 fails. This is the criterion that keeps the archived fork from growing back.
+    - >
+      **F8 — every event kind is accounted for.** A test enumerates the event kinds io-harness emits
+      and asserts the renderer's match is exhaustive with no wildcard that silently discards. An
+      event this release does not style renders as a muted line; none is dropped. Sabotage: add a
+      catch-all arm that returns without rendering, under which only F8 fails.
+    - >
+      **F9 — 80×24 is supported.** The renderer harness runs the scripted session at 80×24 and
+      asserts no panel is truncated mid-word, the composer remains usable, and the status line
+      degrades to its narrow form rather than wrapping.
+  non_functional:
+    - >
+      **N1 — io-cli contains no second harness.** `cargo tree --depth 1` is recorded in the release
+      evidence and reviewed: `io-harness`, `ratatui`, `crossterm`, `tui-textarea`, `clap`, `tokio`,
+      `serde`/`toml`, and nothing that constitutes a runtime, a client or a store. Any addition
+      beyond that list is argued in the release record or it does not ship.
+    - >
+      **N2 — the terminal is always restored.** Panic, `Ctrl+C` at any point, and a kill signal each
+      leave the terminal in cooked mode with the cursor visible and the scrollback intact. Asserted
+      by a test that panics inside a turn and inspects the restore path, and by manual check for the
+      signal case.
+    - >
+      **N3 — no full-screen clear during a session.** The captured byte stream contains no
+      `ESC[2J` after startup. This is the flicker criterion, and it is asserted structurally because
+      flicker itself cannot be asserted on a CI runner.
+    - >
+      **N4 — no timing assertion anywhere in this release's tests.** Startup cost and streaming
+      smoothness are **recorded as measurements** in the release evidence, not gated. This line of
+      repositories has paid for wall-clock assertions on CI runners more than for anything else.
+    - >
+      **N5 — the credential never reaches the screen, the scrollback, a log line or the trace.** The
+      captured byte stream from the F2 scripted wizard is searched for the test key and must not
+      contain it. Sabotage: echo the key in the confirmation screen, under which only N5 fails.
+    - >
+      **N6 — `NO_COLOR` produces a usable session.** With `NO_COLOR=1` the scripted session runs and
+      every state that colour distinguishes — success, warning, error, refusal — also carries a word.
+    - >
+      **N7 — an installer never runs an unverified binary.** Both scripts compute the artifact's
+      SHA-256 and compare it against the published `SHA256SUMS` before unpacking, and **abort
+      non-zero on a mismatch without leaving anything on disk**. Asserted by running each installer
+      against a deliberately corrupted artifact and checking both the exit status and that the target
+      directory is untouched. This is the one place in the product where a failure is a security
+      failure rather than an inconvenience, and `curl | sh` is a trust-the-publisher model regardless
+      — the checksum defends against a truncated download and a tampered asset, not against a
+      compromised repository, and the README says so rather than implying more.
+    - >
+      **N8 — an install needs no administrator rights.** Neither script writes outside the user's own
+      directories and neither invokes `sudo`. Asserted by running each as an unprivileged user with
+      no write access to any system path.
+  operational:
+    - >
+      **O1 — CI green on macOS, Linux and Windows**, on the feature branch and again on the merge to
+      `develop`. Windows is not optional: it is where a terminal renderer's assumptions break, and it
+      is where this project has historically found what the other two hid.
+    - >
+      **O2 — the binary builds in release profile.** `cargo build --release` is run and the binary
+      executed. CI builds the test profile only, so a release-profile break is invisible to it —
+      this has bitten this line of repositories before and is now a standing gate.
+    - >
+      **O3 — the branch flow is followed exactly.** `feat/0.1.0` off `develop`, one pull request into
+      `develop`, merged with the PR button. `develop` to `main` by pull request. Nothing is pushed
+      directly to `develop` or `main` at any point. The tag `v0.1.0` is pushed on its own after the
+      merge — pushing the tag is what cuts the GitHub Release; creating the Release by hand ships it
+      with no assets.
+    - >
+      **O4 — the repository's own protections are in place or their absence is recorded.** The
+      rulesets that make O3 mechanical rather than voluntary require the repository to be public or
+      on a paid plan; see the open question. Until then O3 is a discipline, and that fact is stated
+      in the release record rather than left implied.
+    - >
+      **O5 — every artifact in the matrix exists and every installer works on a clean machine.** The
+      Release carries all four artifacts plus `SHA256SUMS`. `install.sh` is then run on a clean macOS
+      machine and in a clean Linux container, and `install.ps1` on a clean Windows machine, each
+      followed by running `io --version` **in a new shell** — which is what catches a script that
+      installed correctly and told the user nothing useful about `PATH`. An installer verified only
+      on the machine that built it is not verified.
+    - >
+      **O6 — the Release is cut by pushing the tag, and nothing else.** `gh release create` is never
+      used: it produces a Release with no assets. The workflow the tag triggers is what attaches
+      them, and the Release title is the bare form this line of repositories uses.
+delivery:
+  target_mode: release-ready
+  environment: >
+    The developer's own machine — macOS, Linux and Windows terminals, including inside tmux and over
+    SSH. GitHub for the pull requests, CI, the Release and the release assets. No service, no
+    deployment target, no infrastructure, and no package registry. The artifact is a binary a
+    developer installs with one command and runs in their own terminal, and the GitHub Release is the
+    only channel it travels through.
+  deployment_method: >
+    One feature branch `feat/0.1.0` cut from `develop`. All work lands on it. One pull request into
+    `develop`, merged with the PR button; `git pull origin develop` immediately after. Then a pull
+    request from `develop` into `main`, merged the same way. The UltraShip record is sealed and the
+    lock pinned in a commit on top of the release commit. The tag `v0.1.0` is pushed alone, which
+    cuts the GitHub Release; the workflow it triggers cross-compiles the four artifacts, writes
+    `SHA256SUMS`, and attaches all five to that Release. The installers are then exercised against
+    the published Release, not against a local build — O5. **Nothing reaches `develop` or `main`
+    except through a pull request.** Pushes go over HTTPS with the `gh` credential helper; the remote
+    is never rewritten. There is no publish step after the Release, because there is no registry.
+  migrations:
+    - >
+      None. This is a first release with no predecessor state. The configuration file it writes is
+      io-harness's, in the schema io-harness 0.60.1 already reads, so it is forward-compatible with
+      the harness by construction rather than by agreement.
+  observability:
+    - >
+      The run's own durable trace in the harness store is the observability surface; io-cli adds no
+      telemetry, no crash reporting and no network call the operator did not ask for. The one
+      diagnostic io-cli owns is a `RUST_LOG`-gated stderr log that is silent by default and never
+      writes into the scrollback the transcript lives in.
+  rollback: >
+    Deleting the tag and the GitHub Release removes the artifacts and, with them, the install path —
+    both actions are reversible, and this is the whole reason the no-registry decision is valuable:
+    a crates.io publish could never have been undone, and a yank is not a delete, as the seventeen
+    yanked versions on this crate's own name demonstrate.
+
+
+    What rollback does **not** reach is a binary already installed on someone's machine. That is
+    inherent to shipping binaries and is handled by fixing forward as 0.1.1 and by the install script
+    always resolving the latest Release, so re-running one command is the update. There is no
+    auto-update and no version check, deliberately.
+
+
+    The `develop`-to-`main` merge is reverted by a revert commit through a pull request, like any
+    other change.
+dependencies:
+  products:
+    - >
+      io-harness 0.60.1 or later, as a path dependency during development and a version dependency at
+      release. Everything this release renders already exists in it; nothing in this release requires
+      a harness change. **If one is discovered, it is a harness release and this one waits** — that
+      is the constraint, and the first time it is tested is here.
+  services:
+    - >
+      One live model provider, for the wizard's verification call and for F1. OpenRouter is the
+      likely first, being the harness's own first provider.
+    - >
+      GitHub Actions, for CI on the three platforms, for the cross-compile matrix, and for the
+      Release the tag cuts.
+    - >
+      GitHub Releases, which is now a **hard** dependency rather than a convenience: it is the sole
+      distribution channel and the sole host of the artifacts the installers resolve. If it is
+      unavailable, there is no way to install io-cli. Accepted knowingly — the alternative is
+      operating a download host, which contradicts "no service, nothing to operate".
+  human_approvals:
+    - >
+      The owner approves the rendered look before the tag — the splash, the theme defaults, the
+      status line and the wizard screens — from the F1 recording. This is an interface release; the
+      thing being shipped is what it looks like, and that cannot be delegated to a test.
+    - >
+      The owner decides whether the repository becomes public, which is what makes the branch
+      rulesets available. Until that decision the pull-request rule is discipline rather than
+      enforcement.
+resource_profile:
+  complexity: large
+  uncertainty: medium
+  likely_cost_drivers:
+    - >
+      **The inline renderer.** Committing finished content to scrollback while a live viewport sits
+      below it is the one genuinely novel piece of engineering in the release, and the product's
+      whole differentiation rests on it. Resize, wrapping wider than the terminal, and the ordering
+      of commits against in-flight frames are each their own problem. This is where the time goes and
+      the schedule should assume it.
+    - >
+      **Windows.** A terminal renderer meets a different reality there — key reporting, resize
+      events, ANSI support depending on the host — and this project's history is that Windows finds
+      what the other two platforms hide.
+    - >
+      **The wizard's verification step.** Each provider reports a bad credential differently, and the
+      criterion is that the wizard shows the provider's own message rather than a generic failure.
+    - >
+      **Building the test harnesses.** A `TestBackend` renderer harness and a byte-stream capture
+      harness are both new, and F5 and N3 are impossible without the second. They pay for themselves
+      across every later release, but they are paid for here.
+    - >
+      **The cross-compile matrix, and `musl` specifically.** io-harness carries `rusqlite`, which
+      builds a bundled C SQLite. Cross-compiling that to `x86_64-unknown-linux-musl` needs a musl
+      toolchain in the job and is the row most likely to fail first. It is still the right target —
+      one static Linux artifact that runs anywhere beats two glibc builds and a support question —
+      but it is where the matrix work concentrates, and it is worth proving on a throwaway branch
+      before the release branch depends on it.
+    - >
+      **Verifying the installers on clean machines.** O5 is deliberately not satisfiable from the
+      build machine, and "a new shell" in that criterion is the part that catches the `PATH` mistake
+      every install script makes once.
+  preferred_tools:
+    - '`ratatui` `Viewport::Inline` and `Terminal::insert_before`, plus its `TestBackend` for F2/F4/F9'
+    - '`tui-textarea` for the composer; `crossterm` for events, bracketed paste and capability queries'
+    - >
+      io-harness's `examples/` as the reference for driving `Session` and `Observer` — `edit_repo.rs`
+      drives a complete verified workspace edit in 56 lines and is the shape this binary wraps
+    - '`cargo tree --depth 1` as the evidence for N1'
+  constraints:
+    - >
+      **No second harness.** The moment something is missing — a provider detail, a policy shape, a
+      tool — it goes into io-harness. Writing it here is how the archived fork happened, and F7 is the
+      criterion that catches it.
+    - >
+      **No timing assertion, on any test, on any platform.** Measurements are recorded; nothing is
+      gated on a clock.
+    - >
+      **No alternate screen, in any mode, behind any flag.** There is no configuration for it because
+      there is no code path for it.
+    - >
+      **Nothing reaches `develop` or `main` except by pull request**, including documentation and
+      including the UltraShip record itself.
+risks:
+  - >
+    **The inline renderer turns out to be harder than the design assumes.** The assumption that
+    finished content can be committed to scrollback while a live viewport renders below it is taken
+    from how a shipped Rust agent behaves, not from our own code. If it proves unworkable — most
+    likely on resize or with content wider than the terminal — the whole product's differentiation is
+    at risk, not just this release. **Mitigation: build the renderer first, before the wizard, before
+    the composer, before anything else.** A spike that commits a hundred lines of fake transcript to
+    scrollback under a live viewport, at three terminal widths, with a resize in the middle, is the
+    first thing written and the gate on the rest of the release.
+  - >
+    **The wizard grows into the release.** Seven steps, a live network call, a theme preview and a
+    provider catalogue is a lot of surface for a first release, and it is the part most likely to
+    expand while being built. The fallback scope names the three-step version deliberately so that
+    shrinking it is a decision already made rather than an emergency.
+  - >
+    **Something turns out to be missing from io-harness.** The constraint says the harness gets the
+    change and this release waits. That is correct and it is also a schedule risk with no mitigation
+    other than finding out early, which is another reason the renderer and one real end-to-end turn
+    come before the polish.
+  - >
+    **Windows costs a round.** Assume it, rather than discovering it after the macOS and Linux runs
+    are green. The historical pattern in this line of repositories is that Windows finds real defects
+    the other two cannot.
+  - >
+    **The look is approved late.** This is an interface release and the acceptance for the look is a
+    human decision from a recording. If that decision arrives after the tag, the correction is a
+    patch release for something that should have been a review. The F1 recording should be produced
+    and shown as soon as one real turn works, not at the end.
+open_questions:
+  - >
+    **Which fifth target is worth adding, and when?** The matrix ships four.
+    `aarch64-unknown-linux-musl` is the strongest candidate — ARM servers and ARM Linux laptops are
+    no longer unusual — and it is also the second-hardest row, for the same `rusqlite`-on-musl reason
+    as the first. Decide once the x86 musl row is actually building, not now.
+  - >
+    **Does the install script pin a version, or always resolve `latest`?** Always-latest makes
+    re-running the script the update mechanism, which is the design. It also means a user cannot
+    reproduce yesterday's install. An `IO_VERSION` environment variable answers both and costs a few
+    lines, but only if the artifact naming is stable from the first Release — which is why it is
+    worth deciding while writing the script rather than after.
+  - >
+    **Does the repository become public now?** The branch rulesets that make "nothing without a pull
+    request" mechanical are unavailable on a private repository without a paid plan — the API refuses
+    with a 403. The product is Apache-2.0 and intended to be open, so this is a question of timing
+    rather than direction. Until it is answered, O3 is discipline rather than enforcement, and O4
+    requires that to be stated rather than assumed.
+  - >
+    **Which provider is the wizard's default?** OpenRouter is the harness's own first provider and
+    reaches the widest model set with one key, which argues for it. It also means the developer's
+    first impression of io-cli is mediated by an aggregator. Not a blocker — the wizard offers all
+    variants regardless — but the default is what most people will take.
+  - >
+    **Does the status line's spend field appear here, greyed, or wait for 0.2.0?** Laying it out now
+    avoids a redesign; showing an empty field looks unfinished. Decide when the line is first
+    rendered against real content, not now.
