@@ -31,12 +31,20 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
-/// Lines the live viewport occupies: a blank separator, the composer, and the
-/// status line.
+/// Lines the live viewport occupies: the unfinished tail of a streaming answer,
+/// two rows of composer, and the status line.
 ///
-/// Deliberately small. Every line the viewport takes is a line the transcript
-/// does not get, and everything that can be committed is committed.
-pub const VIEWPORT_HEIGHT: u16 = 3;
+/// Fixed, and deliberately small. ratatui sets an inline viewport's height when
+/// the terminal is constructed and there is no way to change it afterwards short
+/// of rebuilding — which would re-query the cursor and risk shifting the
+/// scrollback this product exists to protect. So the viewport does not grow;
+/// instead everything that can be committed is committed, which is why a
+/// streaming answer commits each line as it finishes and leaves only the tail
+/// here.
+///
+/// The ceiling that buys: a prompt longer than two rows scrolls within them
+/// rather than expanding the viewport. The composer's own release is 0.7.0.
+pub const VIEWPORT_HEIGHT: u16 = 4;
 
 /// What to run when the terminal has to be handed back.
 type Restore = Box<dyn Fn() + Send + Sync + 'static>;
@@ -65,6 +73,17 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     /// selection are all still the terminal's own.
     pub fn attach() -> io::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+
+        // From here on the terminal is raw, so EVERY failure path has to give it
+        // back before returning. Found the hard way: placing the inline viewport
+        // asks the terminal where its cursor is and reads the answer back off
+        // stdin, and a terminal that does not answer left the process exiting
+        // with the user's shell still in raw mode — no echo, no line editing, and
+        // an error message that did not say what had happened.
+        Self::attach_raw().inspect_err(|_| restore_terminal())
+    }
+
+    fn attach_raw() -> io::Result<Self> {
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;
 
@@ -73,7 +92,19 @@ impl Screen<CrosstermBackend<io::Stdout>> {
             TerminalOptions {
                 viewport: Viewport::Inline(VIEWPORT_HEIGHT),
             },
-        )?;
+        )
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}. io asks the terminal where its cursor is before it \
+                     draws anything, and this one did not answer. That usually \
+                     means stdout is not a real terminal — a pipe, a CI job, or a \
+                     pty with nothing behind it. `io exec` and a non-interactive \
+                     mode are 0.5.0."
+                ),
+            )
+        })?;
 
         install_panic_hook(restore_terminal);
 

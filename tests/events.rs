@@ -255,6 +255,51 @@ fn f8_no_event_renders_to_nothing_except_a_token() {
 }
 
 #[test]
+fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
+    use io_cli::events::outcome_tone;
+    use io_cli::theme::Tone;
+
+    // `finished` is what EVERY io-cli turn returns: a steerable turn is built on
+    // TaskContract::workspace, which carries Verification::None, so there is no
+    // criterion to pass and `success` is unreachable from this interface. Reading
+    // it as a warning was a real defect and a live run is what found it.
+    assert_eq!(outcome_tone("finished"), Tone::Success);
+    assert_eq!(outcome_tone("success"), Tone::Success);
+
+    // Stopped deliberately: not a failure, and not silence either.
+    for outcome in [
+        "cancelled",
+        "denied",
+        "refused",
+        "plan_rejected",
+        "stalled",
+        "budget_ceiling_reached",
+    ] {
+        assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
+    }
+
+    // Gave up, or a word this release has never seen.
+    for outcome in ["escalated_terminal", "escalated_retryable", "something_new"] {
+        assert_eq!(outcome_tone(outcome), Tone::Error, "{outcome}");
+    }
+}
+
+#[test]
+fn a_finished_turn_reads_as_finished_end_to_end() {
+    let mut events = Events::new(DARK);
+    let line = rendered(
+        &mut events,
+        EventKind::Finished {
+            outcome: "finished".into(),
+            steps: 8,
+            tokens: 32624,
+        },
+    );
+    assert!(line.contains("ok"), "{line:?}");
+    assert!(!line.contains("warning"), "{line:?}");
+}
+
+#[test]
 fn the_kind_name_is_the_serde_tag() {
     assert_eq!(
         kind_name(&EventKind::ToolCall {

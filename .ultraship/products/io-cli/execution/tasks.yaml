@@ -809,7 +809,7 @@ tasks:
     why_required: F1 is the release's only criterion that a fixture cannot prove, and the recording is
       both the release evidence and the README screenshot. The owner's approval of the rendered look
       is taken from it.
-    status: todo
+    status: in-progress
     depends_on:
       - US-IO-CLI-0.1.0-T18
     acceptance_criteria:
@@ -821,5 +821,51 @@ tasks:
         the transcript is searched with the terminal's own search and a passage is selected with the
         mouse and pasted elsewhere. Manual, recorded, and the recording is the release evidence. A
         fixture cannot prove this; only a live run can.
-    files: []
-    evidence: []
+    files:
+      - tests/live.rs
+      - src/term.rs
+      - src/events.rs
+      - tests/events.rs
+    evidence:
+      - PARTIAL, AND DELIBERATELY SO. F1 is a person at a real terminal and cannot be satisfied from
+        here — no tty is available in this session, script(1) refuses (tcgetattr on a socket) and a
+        bare pty has no terminal emulator behind it to answer the cursor-position query. The
+        recording, the mid-flight interrupt and the terminal's own search and selection are the
+        owner's to do.
+      - "WHAT WAS PROVED LIVE, so the manual run is not the first time any of it is exercised.
+        tests/live.rs, four #[ignore]d tests run by hand with a key in the environment; CI holds no
+        secrets and never runs them."
+      - A real key is ACCEPTED by the wizard's verification call against the live OpenRouter
+        endpoint.
+      - "F3 LIVE: a wrong key is rejected carrying the provider's OWN words — 'provider error (Auth,
+        HTTP 401): {\"error\":{\"message\":\"User not found.\",\"code\":401}}'. That is the
+        criterion's actual point; a generic 'verification failed' would leave a user with nothing to
+        act on."
+      - The catalogue returns 413 models, vendor-prefixed, so the wizard's model step has something
+        real to offer.
+      - "A REAL TURN against a real model, driven through the real Observer bridge and the real
+        event renderer: 45 events, tokens streamed, tools called, and greeting.txt edited from
+        \"hello\" to \"goodbye\" inside the sandbox. The rendered transcript is in the evidence
+        directory and reads exactly as designed — one line per tool call, a step line with its token
+        count, and muted single lines for the kinds this release does not style (reasoning,
+        speculated, contained, sandbox, replan), which is F8's fallthrough confirmed against live
+        events rather than constructed ones."
+      - "DEFECT 1, N2, found by the pty attempt and fixed: Screen::attach enabled raw mode and then
+        returned Err if the inline viewport could not be placed — leaving the user's shell in raw
+        mode with no echo and no line editing, and an error that did not say what had happened.
+        Every failure path after raw mode now restores first, and the message says what the
+        cursor-position query is and why a pipe or a pty with nothing behind it fails it."
+      - "DEFECT 2, USER-FACING, found by the first live turn and invisible to a green suite: the
+        renderer treated any outcome other than 'success' as a warning, so a completely ordinary
+        successful turn ended the transcript with the word 'warning'. io-harness distinguishes
+        'success' (a verification criterion passed) from 'finished' (a run with no criterion that
+        ended on its own terms) — and EVERY io-cli turn is 'finished', because a steerable turn is
+        built on TaskContract::workspace, which carries Verification::None. Success is literally
+        unreachable from this interface. Now mapped across the harness's whole outcome vocabulary
+        with two tests."
+      - "AN OBSERVATION FOR THE OWNER, not a defect: the first live turn wrote the file correctly at
+        step 2 and then re-read, re-grepped and re-wrote it until the stall policy stopped it at 9
+        steps. With no verification criterion an agent has no definition of done — and io-cli cannot
+        supply one, because the harness has no turn that takes both a contract and a steer inbox.
+        The second run, whose prompt asked for a sentence as well as an edit, finished cleanly in 8
+        steps."

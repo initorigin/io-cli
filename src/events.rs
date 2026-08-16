@@ -37,8 +37,9 @@ impl Events {
         self.theme = theme;
     }
 
-    /// The text streamed but not yet committed. Drawn in the viewport, where it
-    /// can be replaced as it grows; a committed line cannot be.
+    /// The unfinished tail of what is streaming: everything since the last
+    /// newline. Drawn in the viewport, where it can be replaced as it grows; a
+    /// committed line cannot be.
     pub fn live(&self) -> &str {
         &self.live
     }
@@ -70,7 +71,19 @@ impl Events {
         match &event.kind {
             EventKind::Token { text } => {
                 self.live.push_str(text);
-                Vec::new()
+                // Every COMPLETE line commits as it arrives; only the unfinished
+                // tail stays live. That is what keeps the viewport a fixed few
+                // rows while an answer of any length streams: a line that will
+                // never change again belongs to the terminal, not to us.
+                let mut lines = Vec::new();
+                while let Some(newline) = self.live.find('\n') {
+                    let finished: String = self.live.drain(..=newline).collect();
+                    lines.push(Line::from(Span::styled(
+                        finished.trim_end_matches('\n').to_string(),
+                        theme.style(Tone::Normal),
+                    )));
+                }
+                lines
             }
             EventKind::Started { goal, provider } => {
                 let mut lines = vec![Line::from(vec![
@@ -157,11 +170,7 @@ impl Events {
                 tokens,
             } => {
                 let mut lines = self.flush();
-                let tone = if outcome == "success" {
-                    Tone::Success
-                } else {
-                    Tone::Warning
-                };
+                let tone = outcome_tone(outcome);
                 lines.push(theme.notice(tone, format!("{outcome} · {steps} steps · {tokens} tok")));
                 lines.push(Line::from(""));
                 lines
@@ -177,6 +186,36 @@ impl Events {
                 ])]
             }
         }
+    }
+}
+
+/// How a run's outcome should read.
+///
+/// The vocabulary is io-harness's, and the distinction that matters here is
+/// between `success` and `finished`: `success` means a verification criterion
+/// passed, and `finished` means a run with no criterion ended on its own terms.
+/// **Every io-cli turn ends `finished`**, because a steerable turn is built on
+/// `TaskContract::workspace`, which carries `Verification::None`.
+///
+/// Found in a live run, not in the suite: treating anything that was not
+/// `success` as a warning meant every ordinary, completely successful turn ended
+/// the transcript with the word "warning".
+pub fn outcome_tone(outcome: &str) -> Tone {
+    match outcome {
+        // Ended well, with or without a criterion to end against.
+        "success" | "finished" => Tone::Success,
+        // Somebody or something stopped it deliberately. Not a failure, and not
+        // nothing either — the work did not complete.
+        "cancelled"
+        | "denied"
+        | "refused"
+        | "plan_rejected"
+        | "stalled"
+        | "budget_ceiling_reached" => Tone::Warning,
+        // The run gave up and wants a human. Anything unrecognised lands here too:
+        // an outcome this release has never seen is better over- than
+        // under-reported.
+        _ => Tone::Error,
     }
 }
 
