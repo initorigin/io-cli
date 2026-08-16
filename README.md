@@ -9,6 +9,11 @@ permission boundary and the session store are all
 reimplemented here. A test asserts that: `tests/dependencies.rs` fails the build
 if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 
+![A session in flight: the IO CLI mark and the finished transcript sitting in the
+terminal's own scrollback, a prompt, and one status line naming the model, a
+moving indicator beside the word `working`, and the elapsed clock — which
+advances on its own while the first token is still on its way.](docs/screenshot.png)
+
 ## It never takes your terminal
 
 `io` does not enter the alternate screen and does not capture the mouse, in any

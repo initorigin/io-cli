@@ -173,7 +173,7 @@ tasks:
     why_required: The screenshot is in the release's scope because 0.1.0 recorded that it could not
       supply one; the version and the changelog are what make the Release installable and legible.
       Without this task the release ships as 0.1.0.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.1-T01
       - US-IO-CLI-0.1.1-T02
@@ -193,6 +193,27 @@ tasks:
       - Cargo.lock
       - CHANGELOG.md
       - README.md
+      - docs/screenshot.png
       - tests/docs.rs
       - tests/no_color.rs
-    evidence: []
+    evidence:
+      - "F3 — the owner ran the release binary against a live OpenRouter provider on 2026-08-17,
+        watched a real turn, and reported: `spinner and timer working fine`. The verdict is the
+        criterion; a test can assert a frame changed and cannot assert that a person stopped
+        wondering whether the tool had hung."
+      - "The capture is `docs/screenshot.png`, taken from that run and now in the README. It shows
+        the case this release exists for: the status line reads
+        `deepseek/deepseek-v4-flash-0731 · ⠨ working · 40s` with no answer on screen yet — forty
+        seconds into a slow first token, with the indicator turning and the clock advancing on its
+        own. Under 0.1.0 that same moment showed a still clock and a still word."
+      - "It also shows the release's own splash naming `io 0.1.1`, and the transcript sitting in the
+        terminal's scrollback above a viewport of a few rows — 0.1.0's structural properties,
+        unchanged, in the same picture."
+      - "Version bumped to 0.1.1 in `Cargo.toml` and `Cargo.lock`; `./target/release/io --version`
+        prints `io 0.1.1`. The changelog's 0.1.1 entry states plainly that this is remediation
+        rather than capability, and the compare and tag links were extended."
+      - "`tests/no_color.rs` now reads the version from `CARGO_PKG_VERSION` rather than asserting
+        the literal `io 0.1.0`. The assertion is that the splash names THIS build, which is what it
+        was always meant to say; a literal goes stale at every bump."
+      - "O4 — no artifact name, no asset list and no line of `install.sh` changed. The installer
+        resolves the latest Release and takes `IO_VERSION` for anything else, both untouched."
