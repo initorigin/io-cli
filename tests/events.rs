@@ -285,6 +285,56 @@ fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
 }
 
 #[test]
+fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
+    use io_cli::events::{outcome_help, outcome_tone};
+    use io_cli::theme::Tone;
+
+    // A live first run walked straight into this: the ask-before-writes posture
+    // denied three actions, the agent asked for permission, and the turn ended
+    // `awaiting_answer` — a state this release has nothing on screen to resolve.
+    // Nothing went wrong, so it is a warning rather than an error; but an outcome
+    // the operator cannot act on has to come with a next action.
+    for outcome in ["awaiting_answer", "awaiting_approval", "awaiting_plan"] {
+        assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
+        let help = outcome_help(outcome)
+            .unwrap_or_else(|| panic!("{outcome} leaves the operator with no next action"));
+        assert!(
+            help.contains("io setup"),
+            "{outcome} should name the way out: {help}",
+        );
+    }
+
+    // A refusal is actionable too, for the same reason.
+    assert!(outcome_help("denied").is_some());
+    assert!(outcome_help("refused").is_some());
+
+    // An outcome that needs no explanation does not get one.
+    for outcome in ["finished", "success", "cancelled", "stalled"] {
+        assert_eq!(outcome_help(outcome), None, "{outcome}");
+    }
+}
+
+#[test]
+fn the_awaiting_help_reaches_the_transcript() {
+    let mut events = Events::new(DARK);
+    let line = rendered(
+        &mut events,
+        EventKind::Finished {
+            outcome: "awaiting_answer".into(),
+            steps: 5,
+            tokens: 4210,
+        },
+    );
+    assert!(line.contains("awaiting_answer"), "{line:?}");
+    assert!(line.contains("warning"), "{line:?}");
+    assert!(
+        line.contains("io setup"),
+        "the way out should be in the transcript, not only in the docs: {line:?}",
+    );
+    assert!(!line.contains("error"), "nothing went wrong: {line:?}");
+}
+
+#[test]
 fn a_finished_turn_reads_as_finished_end_to_end() {
     let mut events = Events::new(DARK);
     let line = rendered(

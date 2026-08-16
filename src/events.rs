@@ -172,6 +172,12 @@ impl Events {
                 let mut lines = self.flush();
                 let tone = outcome_tone(outcome);
                 lines.push(theme.notice(tone, format!("{outcome} · {steps} steps · {tokens} tok")));
+                if let Some(help) = outcome_help(outcome) {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {help}"),
+                        theme.style(Tone::Muted),
+                    )));
+                }
                 lines.push(Line::from(""));
                 lines
             }
@@ -212,10 +218,42 @@ pub fn outcome_tone(outcome: &str) -> Tone {
         | "plan_rejected"
         | "stalled"
         | "budget_ceiling_reached" => Tone::Warning,
+        // Waiting on a human this release has no way of asking. A warning rather
+        // than an error: nothing went wrong, the run simply cannot go on from
+        // here, and `outcome_help` is what says so on screen.
+        "awaiting_answer" | "awaiting_approval" | "awaiting_plan" => Tone::Warning,
         // The run gave up and wants a human. Anything unrecognised lands here too:
         // an outcome this release has never seen is better over- than
         // under-reported.
         _ => Tone::Error,
+    }
+}
+
+/// A sentence to print under an outcome the operator cannot otherwise act on.
+///
+/// A turn that ends waiting for a human is a dead end in this release: the
+/// approval overlay is 0.2.0 and answering a question is 0.7.0, so there is
+/// nothing on screen that can resolve it. Saying only "awaiting_answer" leaves
+/// somebody stuck with no next action, which a live first run found by walking
+/// straight into it — the agent was denied three times, asked for permission,
+/// and the session had no way to give it.
+pub fn outcome_help(outcome: &str) -> Option<&'static str> {
+    match outcome {
+        "awaiting_answer" => Some(
+            "the agent asked a question, and this release has no way to answer one. \
+             Say the answer in your next prompt, or run `io setup` to choose a \
+             posture that does not need approval.",
+        ),
+        "awaiting_approval" | "awaiting_plan" => Some(
+            "the agent asked permission, and the approval surface is not in this \
+             release. Run `io setup` and choose the sandboxed-workspace posture, \
+             which allows writes and commands inside this repository.",
+        ),
+        "denied" | "refused" => Some(
+            "the permission boundary stopped it. Run `io setup` to change the \
+             posture if that is not what you wanted.",
+        ),
+        _ => None,
     }
 }
 

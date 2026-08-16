@@ -856,6 +856,23 @@ tasks:
       - "SABOTAGE — make a non-key event cancel again: only
         no_event_other_than_a_keypress_can_end_the_wizard fails. SABOTAGE — make the paste land
         nowhere: exactly the two paste tests fail. Together they pin both halves of the defect."
+      - "DEFECT 4, FOUND BY THE OWNER'S SECOND F1 RUN: the 'ask before writes' posture dead-ended.
+        Every write and exec needs an approver, this release passes DenyAll because the approval
+        overlay is 0.2.0, and the agent was denied three times, then asked 'May I have approval to
+        edit src/lib.rs' — and the turn ended awaiting_answer, an outcome io-cli had no arm for. It
+        fell through the unknown-outcome branch and printed a bare 'error' with no explanation and
+        no next action. The denials were honest and documented; the DEAD END was not. A wizard
+        option led somewhere the interface could not get the operator out of."
+      - "The fix keeps every posture honest without adding the 0.2.0 surface: awaiting_answer,
+        awaiting_approval and awaiting_plan now read as warnings rather than errors — nothing went
+        wrong, the run simply cannot continue — and each carries a sentence naming the way out,
+        which for all three is `io setup` and the sandboxed-workspace posture. A refusal says the
+        same. Two tests, and two sabotages: dropping the tone arm and emptying the help each fail
+        exactly the two new tests."
+      - "A process note from the same fix: cargo fmt had already split the match arm across lines,
+        so an exact-string patch silently did nothing and the code was unchanged while the edit
+        reported success. The test caught it. Patching formatted source by string match is only safe
+        when a test is watching."
       - "WHAT WAS PROVED LIVE BEFORE THIS, and still holds: a real key accepted by the wizard's
         verification call; F3 live, a wrong key rejected carrying OpenRouter's own words (HTTP 401,
         'User not found.'); 413 models in the catalogue; and a real turn through the real bridge and
