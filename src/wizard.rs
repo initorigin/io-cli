@@ -126,6 +126,10 @@ pub enum Step {
     /// Waiting for the driver to make the verification call.
     Verifying,
     Model,
+    /// Typed rather than picked, when the catalogue has nothing to offer — a
+    /// local runtime or a proxy serves whatever it serves and no catalogue can
+    /// say what that is.
+    ModelText,
     Theme,
     Posture,
     Confirm,
@@ -231,6 +235,7 @@ impl Wizard {
             // than queueing up behind a network call.
             Step::Verifying => Progress::Idle,
             Step::Model => self.model(key),
+            Step::ModelText => self.model_text(key),
             Step::Theme => self.theme_step(key),
             Step::Posture => self.posture(key),
             Step::Confirm => self.confirm(key),
@@ -276,6 +281,14 @@ impl Wizard {
         }
         let default = self.kind.map(Kind::default_model).unwrap_or_default();
         let mut rows: Vec<Row> = models.iter().map(|id| Row::new(id.clone())).collect();
+        if rows.is_empty() && default.is_empty() {
+            // Nothing to pick from and nothing to suggest. Asking the user to
+            // type it is the honest answer; offering an empty row is not.
+            self.input = plain();
+            self.picker = None;
+            self.step = Step::ModelText;
+            return;
+        }
         if rows.is_empty() {
             rows.push(Row::with_detail(
                 default.to_string(),
@@ -424,6 +437,40 @@ impl Wizard {
         }
     }
 
+    fn model_text(&mut self, key: KeyEvent) -> Progress {
+        if key.code == KeyCode::Enter {
+            let typed = self.input.lines().join("").trim().to_string();
+            if typed.is_empty() {
+                return Progress::Idle;
+            }
+            self.model = Some(typed);
+            self.enter_theme_step();
+            return Progress::Idle;
+        }
+        self.input.input(key);
+        Progress::Idle
+    }
+
+    /// Move on to the theme step. Two callers, so the picker is built once.
+    fn enter_theme_step(&mut self) {
+        self.step = Step::Theme;
+        self.picker = Some(
+            Picker::new(
+                "Which theme?",
+                THEMES
+                    .iter()
+                    .map(|theme| Row::with_detail(theme.name, "the sample below re-renders"))
+                    .collect(),
+            )
+            .selecting(
+                THEMES
+                    .iter()
+                    .position(|theme| theme.name == self.theme_name)
+                    .unwrap_or(0),
+            ),
+        );
+    }
+
     fn theme_step(&mut self, key: KeyEvent) -> Progress {
         let Some(picker) = self.picker.as_mut() else {
             return Progress::Idle;
@@ -567,6 +614,11 @@ impl Wizard {
                 }
             }
             Step::Theme => self.render_theme(frame, area),
+            Step::ModelText => self.render_input(
+                frame,
+                area,
+                "No catalogue to offer. Type the model id this endpoint serves.",
+            ),
             Step::BaseUrl => self.render_input(
                 frame,
                 area,

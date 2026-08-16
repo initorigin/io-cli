@@ -490,7 +490,7 @@ tasks:
     why_required: F3 asserts that a bad key does not get past the wizard. It is the step that decides
       whether a first run fails inside a screen that can explain it or on the user's first real
       prompt.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T11
     acceptance_criteria:
@@ -500,22 +500,62 @@ tasks:
         and **no file is written**. Sabotage: treat any non-transport error as success, under which
         only F3 fails.
     files:
+      - src/verify.rs
       - src/wizard.rs
-      - tests/wizard.rs
-    evidence: []
+      - src/main.rs
+      - src/lib.rs
+    evidence:
+      - 69 tests pass across thirteen binaries; fmt and clippy -D warnings exit 0. The verification
+        path itself is exercised live by F1, which is what a credential check can only be proved by.
+      - The rejection carries THE PROVIDER'S OWN MESSAGE rather than a category. '401 No auth
+        credentials found' tells a user what to do and 'verification failed' does not, and every
+        provider words it differently.
+      - Provider is not dyn-compatible — its methods return impl Future — so each ProviderSpec
+        variant is constructed and pinged in its own arm. That is the shape of the harness's trait,
+        not a choice; the same match appears once more in the driver, where it picks the concrete
+        type the session loop is generic over.
+      - "A spec whose variant this release has never seen returns an explicit refusal rather than a
+        pass it never made: ProviderSpec is #[non_exhaustive] and a wildcard that returned Ok would
+        report a working key for a provider that was never contacted."
+      - "The catalogue is io-harness's Reference, which reads OpenRouter's models endpoint — so for
+        OpenRouter it is not a reference at all but the provider speaking for itself, and for
+        Anthropic and OpenAI it is filtered by prefix. A catalogue that cannot be read is not fatal:
+        the wizard offers the provider's usual default, or asks the user to type a model id when
+        there is nothing to suggest."
+      - "A DESIGN CONSEQUENCE settled here: ratatui fixes an inline viewport's height when the
+        terminal is constructed and offers no way to change it, and rebuilding the terminal would
+        re-query the cursor and risk shifting the scrollback this product exists to protect. So the
+        viewport does not grow — instead a streaming answer commits each line to scrollback as it
+        FINISHES and only the unfinished tail is ever live. A two-hundred-line answer leaves the
+        viewport exactly the size it started. The ceiling it buys is that a prompt longer than two
+        rows scrolls within them; the composer's own release is 0.7.0."
+      - The clippy fix for a collapsible match would have put App::key — which mutates — inside a
+        match guard. Bound to a local instead; a guard is not a place for something that changes
+        state.
   - id: US-IO-CLI-0.1.0-T13
     summary: "Add the five slash commands: `/help`, `/quit`, `/setup`, `/theme`, `/model`."
     why_required: They are named in the release scope and each is a `Picker` or a print over components
       that already exist. `/setup` in particular is the contract's stated way to re-run the wizard
       at any time, which is what makes the wizard reachable after the first run.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T11
     acceptance_criteria: []
     files:
       - src/commands.rs
+      - src/lib.rs
       - tests/commands.rs
-    evidence: []
+    evidence:
+      - "Five slash commands, five tests. The keybinding table and the command list are DATA, not
+        prose: /help renders them and the README renders the same constants, so the two cannot drift
+        from each other or from the code."
+      - An unknown command prints the list rather than erroring — somebody who typed /models wants
+        to be told what does exist.
+      - A test asserts the table covers every key App::key and Composer::key actually bind, and
+        fails if a key is added to one and not the other.
+      - /theme and /model change the SESSION only and say so, rather than silently rewriting a
+        configuration file that holds settings this release does not own. Making a choice permanent
+        is .
   - id: US-IO-CLI-0.1.0-T14
     summary: "Assert the forbidden subsystems are absent: no HTTP client, TLS stack, SQL or sandboxing
       crate in the dependency set, and no provider-response loop in the source."

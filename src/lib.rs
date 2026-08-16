@@ -13,6 +13,7 @@
 pub mod app;
 pub mod bridge;
 pub mod cli;
+pub mod commands;
 pub mod composer;
 pub mod events;
 pub mod picker;
@@ -21,4 +22,5 @@ pub mod splash;
 pub mod status;
 pub mod term;
 pub mod theme;
+pub mod verify;
 pub mod wizard;
