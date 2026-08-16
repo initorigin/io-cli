@@ -562,7 +562,7 @@ tasks:
     why_required: F7 is the criterion that keeps the archived fork from growing back, and N1 is the
       evidence reviewed at completion. It is written last on purpose, when the dependency set is
       final and the assertion is meaningful.
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.1.0-T13
     acceptance_criteria:
@@ -580,7 +580,27 @@ tasks:
         addition beyond that list is argued in the release record or it does not ship.
     files:
       - tests/dependencies.rs
-    evidence: []
+    evidence:
+      - 76 tests pass; fmt and clippy -D warnings exit 0. Seven of them are F7 and N1.
+      - "The dependency set is asserted BOTH ways: nothing beyond the eight the contract names, and
+        nothing the contract permits that has stopped being used. A dependency added quietly fails
+        the build; one that is genuinely needed is argued in the release record and added to the
+        list, which is a decision somebody makes rather than a line somebody adds."
+      - Twenty-three named crates are refused by name — HTTP clients, TLS stacks, databases,
+        sandboxing crates and a provider client — matched against DIRECT dependencies only, because
+        a transitive one arrives through io-harness and is the harness's business.
+      - "The agent-loop assertion is coarse on purpose: a file that calls a provider must contain no
+        top-level loop, while, or for. Being coarse is what makes it hard to creep past. io-cli
+        calls a provider EXACTLY ONCE in the whole crate — the wizard's verification handshake — and
+        the test asserts that count, so a second call anywhere fails it."
+      - "Also asserted: no std::process::Command, no TcpStream, no std::net (running a command is
+        the harness's tool layer, inside its sandbox — one here would be a tool no policy governs
+        and no trace records); no toml::from_str anywhere, because configuration is io-harness's and
+        a second parser would be a second, disagreeing answer to what a config file means; one
+        binary, named io; and publish = false."
+      - "SABOTAGE DD — add reqwest as a direct dependency: exactly the two dependency-set tests
+        fail."
+      - "SABOTAGE EE — add a second provider call inside a loop: only the agent-loop test fails."
   - id: US-IO-CLI-0.1.0-T15
     summary: "Add `release.yml`: a cross-compile matrix producing the four artifacts plus `SHA256SUMS`,
       attached to the Release the tag cuts."
