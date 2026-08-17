@@ -506,4 +506,18 @@ tasks:
         again on the merge to `develop`.
     files:
       - .ultraship/products/io-cli/execution/tasks.yaml
-    evidence: []
+    evidence:
+      - "**O1 — CI green on macOS, Linux and Windows**, on `feat/0.2.0` at afcfb7c, PR #9. All eight
+        checks pass: `build and test` on macos-latest (36s), ubuntu-latest (39s) and windows-latest
+        (1m39s), plus `fmt and clippy`, `msrv`, `CodeQL`, `Analyze (actions)` and `Analyze (rust)`.
+        No re-runs and no flakes. The second half of O1 — green again on the merge to `develop` —
+        is outstanding until that merge happens."
+      - "**F10 is outstanding and is the only thing between this release and its record.** It is a
+        human gate by construction: the owner runs the release binary under *ask before writes*,
+        approves one write, denies another, and says whether the overlay reads clear or alarming.
+        No test can answer that, which is why 0.1.0 and 0.1.1 both carried one."
+      - "Noted while the checks ran, and not introduced by this release: GitHub reports one **low**
+        Dependabot advisory on the default branch — `lru` `IterMut` violates Stacked Borrows —
+        reached through `ratatui 0.29`, which `Cargo.toml` pins deliberately because `tui-textarea
+        0.7` is built against exactly that pair. It predates 0.2.0 and is a dependency decision for
+        a release of its own, not a change to make inside this one."
