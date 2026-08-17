@@ -517,9 +517,41 @@ tasks:
         `allow once`, and asserts the edit then happened. The second denies instead and asserts the
         file is untouched — an approver that is consulted but whose `no` is not enforced is worse
         than no approver at all."
-      - "They cannot be run from this session: there is no `OPENROUTER_API_KEY` in the environment
-        and no `~/.config/io/io.toml` on this machine. They are ready for the owner to run beside
-        the manual gate with `cargo test --test live -- --ignored --nocapture`."
+      - "**The rehearsal was run against a live provider** (`anthropic/claude-sonnet-4`,
+        OpenRouter) after the owner placed a key in the gitignored `.env`. Three live tests, all
+        passing, and they change what the owner should expect from the manual gate."
+      - "**The approve path works end to end.** Under *ask before writes* a real turn reached the
+        approver, the overlay's facts arrived (`write greeting.txt`, 7 bytes of content), the
+        answer was acted on, and the file ended as `goodbye`. `EventKind::ApprovalRequested` was
+        emitted for the transcript."
+      - "**The deny path works, and the transcript reads well.** The file was untouched
+        (`hello\n`), each attempt rendered `refused: write greeting.txt`, the agent tried
+        `write_file`, then `edit_file`, then `patch_file`, then `git_status` — which produced a
+        genuine `Refused` event rendering `exec git · no rule named it: the tier default decided` —
+        and finally asked a question, ending `awaiting_answer` with the help line pointing at the
+        next prompt. That is the documented 0.7.0 dead end, reached exactly as designed."
+      - "**`rule` and `layer` are `None` in the ordinary case, not the exotic one.** Every live
+        question and the live refusal came through with no rule named, because the posture's own
+        `write: Ask` default is what asks and no glob named the action. So the tier-default sentence
+        is the common rendering, which makes F8's second case the one that matters most — a blank
+        there would have been what almost every operator saw."
+      - "**A fourth live test was added and it earns its place.** F5 asserts what outlives a turn,
+        because that half is io-cli's. This asserts the half io-harness owns: answering `allow this
+        session` collapsed **three questions into one** inside a single turn. Under *allow once* the
+        same edit asked three times, because an agent does not write a file once — it tries
+        `write_file`, then `edit_file`, then `patch_file`, and each is its own question. Without the
+        collapse, `a` would be a key with no visible effect."
+      - "**`Stalled { steps: 11 }` is the model, not this release.** Every approve-path run ended
+        stalled after the edit had already succeeded — and so did the never-asks workspace path that
+        0.1.0 shipped, on the same prompt and the same step count. The approval flow does not cause
+        it."
+      - "**A pre-existing live test fails and 0.2.0 did not cause it.**
+        `live_f1_a_real_turn_streams_and_edits_a_file` asserts the turn streamed assistant tokens;
+        this model stalled without a closing message, so it streamed none. The test's own comment
+        records that fragility — a turn that is nothing but tool calls emits no assistant text, and
+        that is the model's choice rather than a property of this interface. It is `#[ignore]`d, CI
+        never runs it, and it belongs to 0.1.0's F1 rather than to any criterion here. Left alone
+        rather than reworded into passing."
       - "**O1 — CI green on macOS, Linux and Windows**, on `feat/0.2.0` at afcfb7c, PR #9. All eight
         checks pass: `build and test` on macos-latest (36s), ubuntu-latest (39s) and windows-latest
         (1m39s), plus `fmt and clippy`, `msrv`, `CodeQL`, `Analyze (actions)` and `Analyze (rust)`.

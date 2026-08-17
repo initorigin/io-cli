@@ -394,3 +394,88 @@ async fn live_f10_a_denial_leaves_the_file_alone() {
         .join("\n");
     println!("--- as the interface would have rendered it ---\n{transcript}\n---");
 }
+
+/// What *allow for the rest of this session* does inside the turn it is given in.
+///
+/// F5 asserts the half that outlives the turn — the policy the next turn is handed
+/// — because that is the half io-cli owns. This asserts the other half, which
+/// io-harness owns: `Decision::Approve { remember }` installs a run-scoped layer,
+/// so a second attempt at the same target should not ask again.
+///
+/// It matters because an agent does not write a file once. It tries `write_file`,
+/// then `edit_file`, then `patch_file`, and under *allow once* each of those is
+/// its own question. If `a` did not collapse them, the answer would be a button
+/// that does nothing visible and the operator would learn to stop pressing it.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_allowing_for_the_session_stops_the_reasking_inside_one_turn() {
+    use io_cli::approval::{self, Answer, Approval};
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("greeting.txt"), "hello\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = Policy {
+        layers: Policy::default().layers,
+        defaults: Posture::AskWrites.defaults(),
+    };
+
+    let (approver, mut asks) = approval::channel();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let answering = tokio::spawn(async move {
+        let mut targets = Vec::new();
+        while let Some(ask) = asks.recv().await {
+            let approval = Approval::new(ask);
+            targets.push(approval.ask().target().to_string());
+            println!("asked about {}", approval.ask().target());
+            approval.answer(Answer::Session);
+        }
+        targets
+    });
+
+    let result = session
+        .turn_steered(
+            "Edit greeting.txt so that it contains exactly the word: goodbye. \
+             Then tell me in one sentence what you changed.",
+            &provider,
+            &store,
+            &policy,
+            &approver,
+            &observer,
+            &inbox,
+        )
+        .await
+        .expect("the turn runs");
+
+    println!("outcome: {:?}", result.outcome);
+    drop(approver);
+    let targets = answering.await.expect("the answering task did not panic");
+    println!("{} question(s): {targets:?}", targets.len());
+
+    let after = std::fs::read_to_string(root.join("greeting.txt")).expect("the file survives");
+    assert!(
+        after.to_lowercase().contains("goodbye"),
+        "the write was allowed and did not happen: {after:?}",
+    );
+
+    let repeats = targets
+        .iter()
+        .filter(|target| *target == &targets[0])
+        .count();
+    assert_eq!(
+        repeats, 1,
+        "answering `allow this session` did not stop the re-asking for {:?} — it was \
+         asked {repeats} times in one turn, so the answer is a key that does nothing \
+         a reader can see: {targets:?}",
+        targets[0],
+    );
+}
