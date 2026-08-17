@@ -151,7 +151,21 @@ impl Composer {
 
     /// Render into `area`, prompt marker included.
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if area.width <= PROMPT.len() as u16 || area.height == 0 {
+        if area.height == 0 {
+            return;
+        }
+        if area.width <= PROMPT.len() as u16 {
+            // Too narrow to draw the prompt and any text beside it — but a frame
+            // that accepts input still has to say where the focus is, and a
+            // terminal this narrow is the last place to take that away. The
+            // caret goes to the origin, which is where the first character
+            // would land if there were room for one. Returning here without it
+            // was the composer's own version of the defect F2 exists for, and
+            // it was the surface that already knew better.
+            frame.set_cursor_position(Position {
+                x: area.x,
+                y: area.y,
+            });
             return;
         }
         let marker = Rect {

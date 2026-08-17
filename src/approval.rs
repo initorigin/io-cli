@@ -26,7 +26,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use io_harness::approve::DecisionFuture;
 use io_harness::{Act, ApprovalContext, Approver, Decision, Edit, Effect, Request, Rule};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -340,10 +340,32 @@ impl Approval {
         if room > 0 {
             lines.extend(self.preview(room, width, theme));
         }
+        // The cursor goes on the answer `Enter` would take, and it is put there
+        // here rather than by `App::render`. The overlay takes the whole viewport
+        // — `App::render` returns as soon as this has drawn — so there is no
+        // composer on this frame to own the caret, and ratatui hides the cursor
+        // on any frame that sets no position. That removes the only focus
+        // indicator a screen reader has at the one moment a person is being asked
+        // to give a permission away. Owned by the widget that owns the selection,
+        // the way `Composer::render` owns its insertion point.
+        //
+        // The fallback is the first row rather than nothing: at two rows there is
+        // no room for the answers line at all, and a frame too cramped to show the
+        // choices is exactly when a reader most needs telling where they are.
+        let mut cursor = Position {
+            x: area.x,
+            y: area.y,
+        };
         if area.height >= 2 {
-            lines.push(self.answers(theme));
+            let (answers, column) = self.answers(theme);
+            cursor = Position {
+                x: (area.x + column).min(area.right().saturating_sub(1)),
+                y: (area.y + lines.len() as u16).min(area.bottom().saturating_sub(1)),
+            };
+            lines.push(answers);
         }
         frame.render_widget(Paragraph::new(lines), area);
+        frame.set_cursor_position(cursor);
     }
 
     /// `warning: write src/main.rs · rule src/*.rs · layer app`.
@@ -518,23 +540,38 @@ impl Approval {
     /// above have first claim on them. The marker is the same `›` every other
     /// selection surface uses, so the answer that `Enter` would take is marked by
     /// more than a colour.
-    fn answers(&self, theme: &Theme) -> Line<'static> {
+    ///
+    /// It hands back **where on the row the chosen answer starts** as well as the
+    /// row itself, because the terminal cursor is placed there. Counted in the
+    /// same loop that lays the spans out rather than recomputed by the caller: a
+    /// second copy of this layout is a second thing to keep in step, and the one
+    /// that drifts is the one nothing is drawn from.
+    fn answers(&self, theme: &Theme) -> (Line<'static>, u16) {
         let mut spans = Vec::new();
+        let mut width = 0usize;
+        let mut column = 0usize;
         for (index, answer) in Answer::ALL.into_iter().enumerate() {
             if index > 0 {
                 spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                width += SEPARATOR.chars().count();
             }
             let chosen = index == self.chosen;
+            let marker = if chosen { "› " } else { "  " };
+            spans.push(Span::styled(marker.to_string(), theme.style(Tone::Accent)));
+            width += marker.chars().count();
+            let text = format!("{} {}", answer.key(), answer.label());
+            // Past the marker, which is decoration: a reader following the caret
+            // should land on the key and the words, not on the arrow.
+            if chosen {
+                column = width;
+            }
+            width += text.chars().count();
             spans.push(Span::styled(
-                if chosen { "› " } else { "  " }.to_string(),
-                theme.style(Tone::Accent),
-            ));
-            spans.push(Span::styled(
-                format!("{} {}", answer.key(), answer.label()),
+                text,
                 theme.style(if chosen { Tone::Accent } else { Tone::Muted }),
             ));
         }
-        Line::from(spans)
+        (Line::from(spans), u16::try_from(column).unwrap_or(u16::MAX))
     }
 }
 

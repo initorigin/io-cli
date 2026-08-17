@@ -14,7 +14,7 @@
 //! cannot be answered.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -200,6 +200,31 @@ impl Picker {
         }
 
         frame.render_widget(Paragraph::new(lines), area);
+
+        // The real terminal cursor goes on the selected row, and it is put there
+        // here rather than by any of the callers. ratatui hides the cursor on any
+        // frame that does not set a position, and this widget is drawn *instead
+        // of* the composer — `paint_picker` renders the open picker in place of
+        // the app — so an open picker used to be a frame with no caret anywhere
+        // on it. A hidden cursor removes the only focus indicator a screen reader
+        // has, at the one moment the operator is being asked to choose. Owning it
+        // in the widget that owns the selection is what makes it unforgettable,
+        // exactly as `Composer::render` owns its insertion point.
+        //
+        // At the **start of the label** rather than on the marker: the marker is
+        // decoration and the label is what identifies the choice, so a reader
+        // following the caret lands on the word that says what pressing Enter
+        // would do.
+        //
+        // The row is measured from `offset`, which `scroll_to_selection` has
+        // already moved, so a selection in a scrolled list is placed where it was
+        // actually drawn and not where an unscrolled list would have put it.
+        let row = (self.selected.saturating_sub(self.offset) + 1)
+            .min(area.height.saturating_sub(1) as usize) as u16;
+        frame.set_cursor_position(Position {
+            x: (area.x + MARKER.chars().count() as u16).min(area.right().saturating_sub(1)),
+            y: area.y + row,
+        });
     }
 
     fn scroll_to_selection(&mut self, visible: usize) {

@@ -644,6 +644,23 @@ impl Wizard {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        // Every step sets a cursor, and this is the position a step that draws no
+        // field of its own is left with. ratatui hides the terminal cursor on any
+        // frame that sets no position, and a hidden cursor removes the only focus
+        // indicator a screen reader has — through a whole flow whose every screen
+        // is a question. Set before the match rather than in ten places inside it:
+        // the steps below overwrite it when they have somewhere better to point,
+        // and the last write of a frame is the one that lands, so no step can
+        // forget by omission.
+        //
+        // It matters most where it is least visible. `render_input` places the
+        // caret in the field only `if area.height > used`, and a viewport too
+        // short for the field is exactly when a reader most needs telling where
+        // they are; without this the cramped frame had no position at all.
+        frame.set_cursor_position(ratatui::layout::Position {
+            x: area.x,
+            y: area.y,
+        });
         let theme = self.theme;
         match self.step {
             Step::Welcome => paragraph(
