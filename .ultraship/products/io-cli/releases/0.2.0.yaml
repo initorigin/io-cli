@@ -1,0 +1,496 @@
+product: io-cli
+version: 0.2.0
+status: planned
+release_type: minor
+outcome:
+  user_can: >
+    The operator can see the boundary the agent is working under, change it, and
+    answer it when it asks. One key cycles the permission posture, and the status
+    line names the io-harness policy layer now in force rather than a flag of
+    io-cli's own.
+
+
+    When an action needs permission, the run stops in an overlay that cannot
+    scroll away. It states the act, the target, and the rule and layer that are
+    asking, and for a write it shows the content the agent proposes to leave
+    behind. It is answered by keystroke — allow once, allow for the rest of this
+    session, deny — and the decision commits one line into the transcript, which
+    is the terminal's own scrollback, and into the run's durable trace.
+
+
+    When something is refused, the transcript says which act, on which target, by
+    which rule, in which policy layer. No other terminal agent can print the last
+    two, because no other core records them.
+
+
+    And the status line stops being three fields. It carries the policy layer in
+    force, the tokens the session has spent, how close the assembled context is to
+    being folded, and how this run's commands are actually contained — the mode
+    asked for and the backend that answered on this host.
+  business_value: >
+    This is the release the product's own thesis rests on. `product.yaml` states
+    the differentiator in one sentence — io-harness records the permission
+    boundary, the spend ceiling and the agent tree as first-class facts, and
+    io-cli is the interface that makes them visible — and until this release
+    ships, the interface makes none of them visible. 0.1.0 and 0.1.1 delivered a
+    renderer any competing product could have built.
+
+
+    It also closes the one dead end the product has. Under the *ask before
+    writes* posture, io-cli currently declines every write and every command,
+    because `DenyAll` is the approver it hands the harness. A live first run
+    walked straight into it: the agent was denied three times, asked for
+    permission, and the session had no way to give it. 0.1.0 shipped that as a
+    known limitation, 0.1.1 carried it forward unchanged, and the wizard says so
+    out loud at the moment a user picks the posture. A posture whose name does not
+    describe its behaviour is a defect that has now been deferred twice, and it is
+    the one the roadmap put here.
+  evidence_of_value: >
+    The first three success measures in `product.yaml` are reachable only after
+    this release, and one of them is written as a test: *a refusal in a real run
+    names its rule and its layer on screen, and the same refusal is in the durable
+    trace.*
+
+
+    The criteria below inherit 0.1.1's discipline and extend it. Order is asserted
+    by position and never by `contains` — 0.1.1 paid for that lesson when a
+    sabotage that moved the token count in front of the decision left a membership
+    assertion green. Absence is asserted as absence: a status field with no fact
+    behind it renders as nothing at all, not as a zero, and the sabotage arm for
+    it is the version that would ship by accident.
+
+
+    Two criteria exist because the harness's own semantics make the obvious
+    implementation wrong, and neither is visible from the screen. *Allow for the
+    rest of this session* is one: `Decision::Approve { remember }` installs a
+    run-scoped layer that dies with the turn, so an implementation that stops
+    there would ask again on the next prompt and look like a bug in memory. And a
+    posture indicator that is not backed by the `Policy` actually handed to the
+    next turn is a mode display that displays nothing. Both are asserted on the
+    values passed to the harness, not on the rendered line.
+
+
+    F10 is a human gate for the same reason 0.1.0's and 0.1.1's were. What is
+    being shipped is a moment — a run stopping to ask, and a person answering it —
+    and no test can say whether that moment reads as clear or as alarming.
+scope:
+  included:
+    - >
+      **An interactive approver.** io-cli stops handing the harness `DenyAll` and
+      hands it an approver that asks the operator. The request travels off the
+      run's task to the interface, the answer travels back, and the run resumes.
+      This seam is the release; everything else here is rendering, and this is the
+      one piece that changes what a session can do.
+    - >
+      **The overlay is fed by the approver, not by the event stream.** This is the
+      structural fact the design has to be built around:
+      `EventKind::ApprovalRequested` carries only `act` and `target`, while the
+      rule, the layer and the proposed content arrive as the `Request` and
+      `ApprovalContext` handed to `Approver::decide_in_context`. So io-cli's one
+      existing seam — a one-way observer channel — cannot render this surface, and
+      a second, two-way seam is what is being built.
+    - >
+      **The approval overlay.** A viewport overlay, never a history cell, because
+      a question that has scrolled above the fold blocks a run nobody can see is
+      blocked. It states the act, the target, and the asking rule and layer in that
+      order, and for a write it shows the content the agent proposes. It is the
+      existing `Picker` with a body above its rows — one overlay component in the
+      product, so an approval and a model list are visibly the same thing.
+    - >
+      **Three answers, each on its own key and each also reachable by arrow and
+      `Enter`**, because a key that only works for a reader who already knows it is
+      not an interface. Allow once is `Decision::approve()`. Deny is
+      `Decision::deny(reason)`, with a reason that reaches the model. Allow for the
+      rest of this session is two things and must be built as two: the harness's
+      run-scoped `remember` for the turn in flight, and the same
+      `io_harness::Rule` carried into the `Policy` io-cli hands every later turn.
+    - >
+      **One committed line per decision.** On resolution the overlay closes and
+      commits exactly one line into the terminal's scrollback naming the act, the
+      target and the decision, so the decision is in the transcript as well as in
+      the harness's trace, which already records it.
+    - >
+      **Posture cycling on one key.** `Shift+Tab` moves through the three postures
+      `settings.rs` already declares, and the status line names the policy layer
+      now in force. It changes this session, like `/theme` and `/model` and for the
+      same reason; `io setup` is what makes a choice permanent. It takes effect on
+      the next turn, which is what the harness allows: `Policy` is a per-turn
+      argument and there is no `Session::set_policy`.
+    - >
+      **The refusal surface.** A refusal becomes a designed cell rather than the
+      plain notice 0.1.0 shipped as a placeholder: the act, the target, the rule
+      and the layer that rule came from, in that order. The two facts no other core
+      records are never dropped when the event carries them — and when it does not,
+      the line says the tier default decided rather than saying nothing, because in
+      io-harness an absent rule means exactly that.
+    - >
+      **The rest of the status line, as far as the harness can supply it.** The
+      policy layer in force; the tokens the session has spent, accumulated from the
+      `Step` events already rendered; how close the assembled context is to a fold,
+      with the denominator taken from the harness's own `ContextBudget` rather than
+      from a number copied into this repository; and containment, as the mode *and*
+      the backend that actually answered on this host — never the mode alone, which
+      is an intention rather than a fact. Each is absent when nothing has supplied
+      it. The fields are already named in `status.rs`; this fills them in.
+    - >
+      **The documentation that is mechanically checked.** `Shift+Tab` in the
+      README's key table and in `/help`, which are the same list; the CHANGELOG
+      section for `0.2.0`; the README's *what this release is not*, which has named
+      the approval overlay as 0.2.0's since 0.1.0 and must now stop; and the
+      README's *what this release reads from that file*, which changes because a
+      posture can now be cycled.
+    - >
+      **The tests and the sabotage arms for all of it**, including the arm that
+      drops the answer channel and asserts the run is denied rather than blocked.
+  excluded:
+    - >
+      **Spend against the tree ceiling.** It cannot be rendered from this
+      product's turn and this is a harness boundary, not a scoping preference:
+      `EventKind::SpendDraw` is emitted only by a contained turn, and the contained
+      entry point takes no steer inbox — so rendering spend today would cost
+      `Ctrl+C`. It is the same blocker the README already documents for the
+      configuration's `[sandbox]` and `[run]` sections. Moved in the roadmap to
+      0.8.0, which is the fleet release and therefore the release that has to be
+      contained anyway. If a harness turn that is both contained and steerable
+      appears sooner, it is a harness release and this moves with it.
+    - >
+      **Diff rendering as a designed surface.** The harness hands an approver the
+      full post-write content, not a patch, so a diff is io-cli's to compute and
+      0.3.0's to design. This release shows the proposed content plainly.
+      Unified-versus-split, word-level emphasis, syntax highlighting, collapsed
+      context with an expander and a `minimal` setting are all 0.3.0.
+    - >
+      **`Decision::Defer` and `Decision::Approve { modified }`.** Deferring stops
+      the run and persists the request for a decision later, which is only useful
+      alongside the resume this product does not have until 0.4.0; approving a
+      rewritten action is an editor inside an overlay. Both are real harness
+      affordances and both are deliberately not bound to a key here.
+    - >
+      **Collapsible tool cells and the transcript overlay.** 0.3.0, unchanged.
+    - >
+      **Answering a question the agent asked.** `question_asked` asks what was
+      meant, which the harness deliberately distinguishes from an approval about
+      what is permitted, and answering one needs a `Responder` installed on a
+      caller-supplied contract — the same entry point that costs the steer inbox.
+      0.7.0, where the roadmap already puts it.
+    - >
+      **Persisting a cycled posture to the configuration file.** Cycling is for
+      this session and says so, matching `/theme` and `/model`. Writing the file is
+      `io setup`'s job, and a key that silently rewrites a permission boundary on
+      disk is the opposite of what this release is for.
+    - >
+      **Session resume, fork and rewind** (0.4.0), **the headless subcommand**
+      (0.5.0), **plain mode** (0.6.0), **type-to-filter on any picker and a
+      growable composer** (0.7.0). All unchanged, all where the roadmap put them.
+  fallback_scope:
+    - >
+      **The interactive approver, the overlay, and the refusal surface.** This is
+      the spine and it is coherent on its own: a run that needs permission stops
+      and asks, the operator answers it, and a refusal names its rule and its
+      layer. The *ask before writes* posture stops being a posture that declines
+      everything, which is the defect this release exists to close.
+    - >
+      **The three new status fields drop first**, together. They are rendering of
+      facts that already arrive, and the status line is a legible three fields
+      today rather than a broken one.
+    - >
+      **Posture cycling drops second.** The wizard already sets a posture and `io
+      setup` already changes it; the key is ergonomics on top of a capability that
+      exists. It drops after the status fields because the field naming the layer
+      in force is what makes cycling legible, and shipping the key without it would
+      be a mode indicator that indicates nothing.
+    - >
+      **Within the spine, *allow for the rest of this session* is the last thing
+      in and the first thing out.** Allow-once and deny are the release; carrying a
+      remembered rule into later turns is the convenience on top, and it is the
+      part with a harness subtlety underneath it.
+acceptance:
+  functional:
+    - >
+      **F1 — an approval request opens an overlay and commits nothing to
+      history.** With a request delivered, the viewport holds the question and the
+      scrollback gains nothing at all. Sabotage: render the request as a committed
+      line, under which only F1 fails. This is the structural property the whole
+      surface rests on — a question in the scrollback is a question that can be
+      scrolled away from a run that is blocked on it.
+    - >
+      **F2 — the overlay states the act, then the target, then the rule and the
+      layer, in that order.** Asserted over the positions of the facts in the
+      rendered lines, never over their presence. Sabotage: put the rule first,
+      under which only F2 fails.
+    - >
+      **F3 — each answer resolves the request as itself, and commits exactly one
+      line.** Allow once, allow for the rest of the session and deny each produce
+      the matching `io_harness::Decision`, and each closes the overlay and commits
+      one line naming the act, the target and the decision. Sabotage: map every key
+      to allow, under which only F3 fails.
+    - >
+      **F4 — an unanswered request denies rather than hangs.** Dropping the
+      interface end of the answer channel resolves the request as a denial. No
+      clock, no timeout, no sleep: the assertion is on what the approver returns
+      when the channel is closed. Sabotage: block on the receiver, under which only
+      F4 fails — and it fails by never finishing, which is why the arm is run under
+      the suite's own harness rather than by hand.
+    - >
+      **F5 — *allow for the rest of this session* survives the turn it was given
+      in.** Asserted on the `Policy` handed to the *next* turn: it carries a rule
+      that the previous answer produced. The harness's own `remember` is
+      run-scoped and dies with the turn, so an implementation that uses only it
+      passes F3 and fails F5 — which is the whole reason this is its own criterion.
+      Sabotage: pass `remember` and keep nothing, under which only F5 fails.
+    - >
+      **F6 — `Shift+Tab` cycles the posture and the status line names the layer in
+      force.** Both spellings a terminal may send — `BackTab`, and `Tab` with the
+      shift modifier — reach the same action, or the key works in one class of
+      terminal and silently does nothing in the other. Sabotage: cycle without
+      updating the field, under which only F6 fails.
+    - >
+      **F7 — the cycled posture is what the next turn actually runs under.**
+      Asserted on the `io_harness::Policy` handed to the turn, not on the label
+      beside it. A mode indicator not backed by the thing it names is invisible to
+      any assertion on a rendered line. Sabotage: update the label only, under
+      which only F7 fails.
+    - >
+      **F8 — a refusal renders act, target, rule and layer, in that order, and an
+      absent rule reads as the tier default rather than as silence.** Asserted by
+      position, and asserted twice: once with a named rule and layer, once with
+      neither, because in io-harness `None` means the tier default decided and that
+      is a different sentence, not a missing one. Sabotage: drop the layer, under
+      which only F8 fails.
+    - >
+      **F9 — a status field with nothing behind it is absent, not zero.** Before
+      any `Contained` event the line carries no containment field; after one it
+      carries the mode and the backend together. The same for context pressure and
+      the token count. Sabotage: render a zero for an unknown value, under which
+      only F9 fails. A field that invents its own value is worse than no field.
+    - >
+      **F10 — the owner runs a real turn under *ask before writes*, approves one
+      write, denies another, and says the overlay reads right.** Manual and
+      recorded. The same human gate 0.1.0 and 0.1.1 put on their look, for the same
+      reason: what ships here is a moment, and only a person can say whether a run
+      stopping to ask reads as clear or as alarming.
+  non_functional:
+    - >
+      **N1 — no timing assertion anywhere, a third time.** `tests/timing.rs` still
+      passes: no test sleeps, no test reads a clock, and `src/main.rs` is still the
+      only module that does. The approval path is the shape most likely to be
+      tested with a timeout, and F4 exists so that it is not.
+    - >
+      **N2 — the dependency set does not grow.** `cargo tree --depth 1` is still
+      the eight names 0.1.0's N1 permits, plus `tempfile` as a dev-dependency. An
+      approval channel is `tokio::sync::oneshot`, which is already here.
+    - >
+      **N3 — every structural property of 0.1.0 still holds.** No alternate
+      screen, no mouse capture, no full-screen clear, the terminal always restored,
+      the credential never rendered. The existing tests carry these, and an overlay
+      that shows a file's proposed content is exactly the kind of change that could
+      put a secret on screen — the credential test is not incidental here.
+    - >
+      **N4 — io-cli still contains no policy engine.** `tests/dependencies.rs`
+      still passes. This release renders a `Policy`, constructs `io_harness::Rule`
+      values from a human's answer, and relays that answer. It evaluates no rule
+      and decides no permission; every verdict is still the harness's.
+    - >
+      **N5 — every new surface has a defined form at eighty columns**, and the
+      status line still drops whole fields from the right rather than wrapping,
+      with three more fields to drop. `tests/narrow.rs` covers the line; the
+      overlay joins it, including the case where the proposed content is wider than
+      the terminal.
+  operational:
+    - >
+      **O1 — CI green on macOS, Linux and Windows**, on the feature branch and
+      again on the merge to `develop`.
+    - >
+      **O2 — the binary builds in release profile and runs.** Standing gate; CI
+      builds the test profile only.
+    - >
+      **O3 — the branch flow is followed exactly.** `feat/0.2.0` off `develop`,
+      one pull request into `develop`, `develop` to `main` by pull request, the tag
+      `v0.2.0` pushed alone. The sealed record and its lock pin ride the feature
+      branch and merge with the code.
+    - >
+      **O4 — the Release carries the same four artifacts and `SHA256SUMS`**, and
+      `install.sh` and `install.ps1` resolve the new version without change. The
+      artifact naming is part of the public contract and this release must not
+      churn it.
+delivery:
+  target_mode: published
+  environment: >
+    The developer's own machine — macOS, Linux and Windows terminals, including
+    inside tmux and over SSH. GitHub for the pull requests, CI, the Release and
+    its assets. No service and no registry, as 0.1.0 established and as
+    `product.yaml` fixes: publishing to crates.io is a non-goal.
+  deployment_method: >
+    One feature branch `feat/0.2.0` cut from `develop`. One pull request into
+    `develop`, merged with the PR button; `git pull origin develop` immediately
+    after. Then a pull request from `develop` into `main`. The UltraShip record is
+    sealed and the lock pinned on the feature branch so it merges with the code.
+    The tag `v0.2.0` is pushed alone, which cuts the Release; the workflow it
+    triggers cross-compiles the four artifacts, writes `SHA256SUMS` and attaches
+    all five. There is no publish step after the Release, because there is no
+    registry.
+  migrations:
+    - >
+      None. The configuration file the wizard writes is read unchanged, and this
+      release writes no new section: a cycled posture and a remembered allow live
+      for the session only. A user on 0.1.1 gains the approval overlay without
+      touching their file, and a user who chose *ask before writes* gains the
+      behaviour its name always described.
+  observability:
+    - >
+      Unchanged in kind: the run's durable trace in the harness store, and a
+      `RUST_LOG`-gated stderr log that is silent by default. What changes is what
+      the trace contains — every approval decision the operator made, because the
+      harness records the answer it was given as `EventKind::ApprovalDecided` and
+      as a resolved row in the store. No telemetry.
+  rollback: >
+    Deleting the tag and the Release removes the artifacts and the install path,
+    both reversible. A user already on 0.2.0 is handled by fixing forward, since
+    the install script always resolves the latest Release. The `develop`-to-`main`
+    merge is reverted by a revert commit through a pull request.
+
+
+    0.1.1 remains installable by setting `IO_VERSION`, and a user who wants the
+    old behaviour without downgrading has it already: the *sandboxed workspace*
+    posture asks for nothing, which is what 0.1.1 effectively forced everyone into.
+dependencies:
+  products:
+    - >
+      io-harness. Every piece of this release exists in the version this
+      repository is locked to: `Approver::decide_in_context`, `Request`,
+      `ApprovalContext`, `Decision`, `Rule`, and the `Refused`, `Contained`,
+      `Compacted` and `Step` events. The lockfile resolves 0.60.1 and 0.60.3 is
+      published; the two are API-identical, so moving the pin is a decision to make
+      deliberately at the start of development rather than a thing this release
+      needs. If any part of the work turns out to require a harness change, that is
+      a harness release and this one waits rather than reimplementing the missing
+      piece here. That rule is the product's first constraint.
+  services:
+    - >
+      One live model provider, for F10's real turn — with a task that will
+      actually attempt a write, so the overlay is exercised rather than described.
+    - >
+      GitHub Actions and GitHub Releases, which remain the sole distribution
+      channel.
+  human_approvals:
+    - >
+      The owner runs a real turn under *ask before writes*, approves one write and
+      denies another, and says whether the overlay reads right. This is F10 and it
+      cannot be delegated to a test.
+resource_profile:
+  complexity: medium
+  uncertainty: medium
+  likely_cost_drivers:
+    - >
+      **The two-way seam.** Everything io-cli has drawn so far arrived on a
+      one-way channel from an observer that runs on the agent's own task and hands
+      the event on without blocking. An approver is the opposite shape: it must
+      ask, wait, and answer, while the keyboard stays live so `Ctrl+C` still
+      reaches the turn and the event drain does not stall behind the question.
+      Getting that seam right is most of this release, and F4 is the criterion that
+      says so.
+    - >
+      **A four-row viewport.** The inline viewport's height is fixed at
+      construction and cannot grow without rebuilding the terminal, which would
+      re-query the cursor and risk the scrollback this product exists to protect.
+      An approval that shows a proposed file's content does not fit in four rows.
+      Deciding what goes in the overlay and what is committed above it is a design
+      decision, not an implementation detail — see the open questions.
+    - >
+      **Three status fields, each with an absence and one with a denominator.**
+      The rendering is trivial and the semantics are not: what the line says before
+      the first `Contained` event, and where the number that context pressure is a
+      share *of* comes from, are decisions rather than code. The denominator must be
+      asked of the harness's own `ContextBudget`, because a copy of `24_000` in
+      this repository is a number that will be wrong after some harness patch and
+      will be wrong silently.
+    - >
+      **`remember` is run-scoped.** The obvious implementation of *allow for the
+      rest of this session* passes every visible test and asks again on the next
+      prompt. F5 exists because that version would ship by accident.
+  preferred_tools:
+    - "`tokio::sync::oneshot` for the answer, which tokio already provides"
+    - "the existing `Picker` overlay, extended with a body above its rows rather than replaced"
+    - "`io_harness::Rule` and the `Policy` builders, so a remembered allow is a harness value and not an io-cli concept"
+    - "the `Recorder` and `Fixed` harnesses in `tests/support/mod.rs`, which assert over the bytes that actually leave the process"
+    - "`harness_event_kinds()` in the same file, which reads the locked harness's own source rather than a copied list"
+  constraints:
+    - >
+      **No new dependency.** N2 asserts it.
+    - >
+      **No timing assertion, on any test, on any platform.** N1 asserts it, and
+      the approval path is where it will be tempting.
+    - >
+      **`Shift+Tab` is not one key event.** A terminal without the Kitty keyboard
+      protocol sends `BackTab`; one with it sends `Tab` with a shift modifier.
+      Binding one spelling ships a key that works on the developer's terminal and
+      nowhere else. F6 asserts both.
+    - >
+      **Never invent a field's value, and never render an intention as a fact.**
+      A containment mode without the backend that actually answered is what the
+      harness's own documentation calls reading an intention: `workspace-write`
+      with a portable-floor backend means resource caps only.
+    - >
+      **io-cli decides no permissions.** It renders what the harness asked and
+      relays what the human answered. Any rule evaluation appearing in this
+      repository is the constraint in `product.yaml` being violated.
+risks:
+  - >
+    **The approval seam is the one place this product can deadlock.** The
+    approver runs on the run's task; if it waits on an answer that never comes,
+    the turn stops forever and `Ctrl+C` may not reach it, because the loop that
+    would deliver the interrupt is the one now blocked. Mitigation: F4 asserts a
+    closed channel denies, and the interrupt path is exercised while an approval is
+    open rather than only while text streams.
+  - >
+    **The overlay does not fit.** Four rows hold a question or a proposed file,
+    not both. Mitigation: the release decides this explicitly and records the
+    decision rather than discovering it when the first real write arrives; the
+    fallback is to commit the proposed content above the overlay, where it is one
+    line up in the scrollback and cannot be pushed away because the run is blocked.
+  - >
+    **An absent rule read as an absent boundary.** `rule` and `layer` are `None`
+    when the tier default decided, which is the *least* vouched-for kind of
+    decision — and a surface that renders `None` as blank tells the reader the
+    opposite of what happened. F8 asserts both cases for exactly this reason.
+  - >
+    **A secret on screen.** The overlay shows a file's proposed content, and the
+    harness's built-in secrets layer exists because agents do touch `.env` and key
+    files. A write the policy would refuse never reaches an approver, but the
+    surface is new and the credential test is the one that must not be treated as
+    incidental. N3 carries it.
+  - >
+    **Scope creep into 0.3.0.** The moment content is on screen, word-level
+    emphasis and syntax highlighting look like small additions. They are the next
+    release, they are named in `excluded`, and the fallback scope does not contain
+    them.
+open_questions:
+  - >
+    **What goes in the overlay and what is committed above it?** The viewport is
+    four rows. A question with four facts and a set of answer keys already fills
+    it. The most likely answer is that the proposed content commits to scrollback
+    the moment the request arrives and the overlay holds only the question — which
+    is safe precisely because the run is blocked, so nothing can scroll it away.
+    Decide it against a real write, not on paper.
+  - >
+    **Does `Ctrl+C` mean *deny* or *interrupt the turn* while an overlay is
+    open?** Both readings are defensible and the wrong one loses work. Worth
+    deciding before the overlay is built, and worth stating in the README's key
+    table either way.
+  - >
+    **Is *allow for the rest of this session* remembered per act, per target, or
+    per rule?** The narrowest is the act and the target together, which is what a
+    person means when they say yes to the same question twice. Recorded here rather
+    than guessed at in the implementation, and it decides what `io_harness::Rule`
+    gets constructed.
+  - >
+    **Where does the context number come from between folds?** `Compacted` fires
+    only when a fold happens. The per-step assembled estimate is in the store, as
+    `ContextEvent::est_tokens`, which is a read rather than an event. Whether the
+    field reports a live share or only the fold state is a decision for the first
+    rendering against a real session.
+  - >
+    **Should the lockfile's harness version move to 0.60.3?** The public API is
+    identical, so nothing here needs it. It is a deliberate decision to make with
+    the changelog open at the start of development, not a side effect of a `cargo
+    update`.
