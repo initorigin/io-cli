@@ -346,24 +346,48 @@ impl Approval {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
-    /// `write src/main.rs · rule src/*.rs · layer app`.
+    /// `warning: write src/main.rs · rule src/*.rs · layer app`.
     ///
     /// Act, then target, then the rule, then the layer — content before metadata,
     /// the same order the rest of the interface reads in, and the order F2 asserts
     /// by position rather than by presence.
+    ///
+    /// **The act carries its tone's word, and that is 0.6.0's F4** — a different
+    /// criterion from the 0.3.0 F4 this module's own documentation names. Until
+    /// 0.6.0 this row styled the act `Tone::Warning` through a bare
+    /// `Span::styled`, which made it
+    /// the one place left in the product where a colour was the sole carrier of a
+    /// meaning: with `NO_COLOR` set the row read `write src/main.rs`, and nothing
+    /// on it said a decision was being asked for. The overlay around it carried
+    /// that, but no word did. Routing it through [`Theme::notice`] — the same
+    /// constructor every other toned line in the product is built with, and the
+    /// one the transcript already uses to announce this very event — puts
+    /// `warning: ` in front of the act, whatever the terminal can render.
+    ///
+    /// The word **leads** the row rather than trailing it, for the reason the row
+    /// below exists: this viewport clips, and the load-bearing fact has to sit
+    /// where it cannot be the part that goes. The target is still what gives way,
+    /// and its room is now the width less the word as well as the act.
     fn question(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let act = act_word(self.ask.act());
-        let asked = Line::from(vec![
-            Span::styled(act.to_string(), theme.style(Tone::Warning)),
-            Span::styled(" ", theme.style(Tone::Normal)),
-            Span::styled(
+        // Measured from the tone rather than written out, so this and `notice`
+        // cannot drift: `word` plus the colon and the space it is prefixed with.
+        let prefix = Tone::Warning
+            .word()
+            .map_or(0, |word| word.chars().count() + 2);
+        let asked = theme.notice(
+            Tone::Warning,
+            format!(
+                "{act} {}",
                 // The target is what gets shortened, because it is the only part
                 // that can be arbitrarily long and the only part whose middle a
                 // reader can infer. The act cannot be shortened at all.
-                crate::picker::fit(self.ask.target(), width.saturating_sub(act.len() + 1)),
-                theme.style(Tone::Normal),
+                crate::picker::fit(
+                    self.ask.target(),
+                    width.saturating_sub(prefix + act.len() + 1),
+                ),
             ),
-        ]);
+        );
 
         // **On its own row, and this cost a test to learn.** Laid out beside the
         // target, the rule and the layer are the first thing off the end of an
