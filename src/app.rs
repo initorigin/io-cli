@@ -233,6 +233,18 @@ impl App {
         self.pending.extend(lines);
     }
 
+    /// What a step changed, as diffs.
+    ///
+    /// Handed in by the driver rather than read here. The store belongs to the
+    /// driver — it is the only thing that holds one — and keeping this a function
+    /// of values is what lets a test state a hunk by hand instead of standing up
+    /// a database to hold one.
+    pub fn edits(&mut self, edits: &[io_harness::Edit]) {
+        for edit in edits {
+            self.pending.extend(crate::diff::cell(edit, &self.theme));
+        }
+    }
+
     /// The status line's share of an event.
     ///
     /// Only the events that carry a fact set a field, and nothing sets one to a

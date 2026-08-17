@@ -75,6 +75,11 @@ pub enum Tone {
     /// An act the permission boundary refused. Its own tone because it is not an
     /// error — the system worked.
     Refused,
+    /// A line a change added. The `diff_add` token, which has been in the theme
+    /// since 0.1.0 waiting for the release that draws a diff.
+    Added,
+    /// A line a change removed.
+    Removed,
 }
 
 impl Tone {
@@ -82,7 +87,10 @@ impl Tone {
     /// than meaning.
     pub fn word(self) -> Option<&'static str> {
         match self {
-            Self::Normal | Self::Muted | Self::Accent => None,
+            // A diff line's carrier is the `+` or the `-` the harness already
+            // put on it, which is why these two need no word of their own: the
+            // meaning survives `NO_COLOR` without one.
+            Self::Normal | Self::Muted | Self::Accent | Self::Added | Self::Removed => None,
             Self::Success => Some("ok"),
             Self::Warning => Some("warning"),
             Self::Error => Some("error"),
@@ -222,6 +230,8 @@ impl Theme {
             Tone::Refused => Style::default()
                 .fg(self.warning)
                 .add_modifier(Modifier::BOLD),
+            Tone::Added => Style::default().fg(self.diff_add),
+            Tone::Removed => Style::default().fg(self.diff_delete),
         }
     }
 

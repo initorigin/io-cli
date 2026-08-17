@@ -414,6 +414,7 @@ async fn turn<P: Provider>(
             }
             Some(event) = events.recv() => {
                 app.event(&event);
+                commit_edits(app, store, &event);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }
@@ -461,6 +462,37 @@ async fn turn<P: Provider>(
     }
     app.status.elapsed = started.elapsed();
     paint(screen, app)
+}
+
+/// Draw what a step changed, by asking the store what it recorded.
+///
+/// **Anchored on `Step` and never on `ToolCall`.** io-harness documents
+/// `ToolCall` as *a tool was invoked, before its result is known*, while `Step`
+/// is emitted after the step has been committed to the store — so a read at the
+/// tool call is a read of a row that may not be there yet, and the two events
+/// are one line apart in a transcript, which is what would make that invisible
+/// until it was a bug.
+///
+/// This is the first time this product reads the durable trace while a run is
+/// live. It is safe because it happens on the drain half of the select, where
+/// the turn future is suspended, and because every `Store` call is synchronous —
+/// nothing this function does is held across an await, so there is no shape here
+/// that can deadlock against the turn holding the same `&Store`.
+///
+/// A read that fails degrades to a line saying so. A run whose work succeeded is
+/// not a run to panic over because the trace could not be re-read, and silence
+/// would say the step changed nothing.
+fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
+    let io_harness::EventKind::Step { changed: true, .. } = &event.kind else {
+        return;
+    };
+    match store.edits(event.run_id) {
+        Ok(edits) => app.edits(&io_cli::diff::for_step(edits, event.step)),
+        Err(error) => app.say(
+            Tone::Muted,
+            format!("the diff for this step could not be read: {error}"),
+        ),
+    }
 }
 
 /// The first-run wizard. Returns the theme chosen, or `None` if it was abandoned.

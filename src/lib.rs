@@ -16,6 +16,7 @@ pub mod bridge;
 pub mod cli;
 pub mod commands;
 pub mod composer;
+pub mod diff;
 pub mod events;
 pub mod picker;
 pub mod settings;
