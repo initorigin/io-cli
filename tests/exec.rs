@@ -8,6 +8,8 @@
 //! F8 — a run with no configuration file works from the environment.
 //! F9 — an approval becomes a refusal the agent is told about, not a hang.
 //! F11 — `--sandbox full-access` announces itself on stderr.
+//! N1 — no interface code on the headless path.
+//! N6 — the plain output is not composed to a width.
 //!
 //! The two mappings that look like taste are the release's research. A clean
 //! headless run ends in `RunOutcome::Finished` and never `Success`, because the
@@ -678,4 +680,100 @@ async fn f9_an_ask_becomes_a_refusal_and_the_run_still_ends() {
         kinds.contains(&"approval_decided") || kinds.contains(&"refused"),
         "and that it was answered: {kinds:?}",
     );
+}
+
+/// One source file, read for what it does not contain.
+fn source(name: &str) -> String {
+    std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join(name),
+    )
+    .unwrap_or_else(|_| panic!("src/{name} should exist"))
+}
+
+#[test]
+fn n1_the_headless_path_reaches_no_interface_code() {
+    // Asserted rather than intended. The headless path renders nothing, and the
+    // way that stops being true is somebody reaching for a Theme to colour an
+    // error — which would put ANSI in a stream a machine is reading.
+    let forbidden = [
+        "crate::term",
+        "crate::app",
+        "crate::picker",
+        "crate::composer",
+        "crate::status",
+        "crate::theme",
+        "crate::splash",
+        "crate::diff",
+        "ratatui",
+        "crossterm",
+    ];
+    for module in ["exec.rs", "provider.rs"] {
+        let text = source(module);
+        for name in forbidden {
+            assert!(
+                !text.contains(name),
+                "src/{module} reaches `{name}`. The headless path draws nothing, \
+                 and a renderer on it is how ANSI ends up in a stream that is \
+                 being parsed.",
+            );
+        }
+    }
+}
+
+#[test]
+fn n1_no_escape_sequence_is_written_by_the_headless_path() {
+    for module in ["exec.rs", "provider.rs"] {
+        let text = source(module);
+        assert!(
+            !text.contains("\u{1b}") && !text.contains("\\x1b") && !text.contains("\\e["),
+            "src/{module} contains an escape sequence",
+        );
+    }
+}
+
+#[test]
+fn n1_the_headless_path_is_chosen_before_the_wizard_can_be_reached() {
+    // `main.rs` has no automated coverage by construction — no integration test
+    // links a binary — so this decision cannot be sabotaged. What can be checked
+    // is its ORDER, which is the whole of its correctness: the exec arm must
+    // return before the block that runs the wizard, or a container with no
+    // configuration file gets a prompt nobody can answer.
+    let main = source("main.rs");
+    let exec_arm = main
+        .find("Subcommand::Exec(args)")
+        .expect("main routes the exec subcommand");
+    let wizard = main
+        .find("Screen::attach_with(io_cli::term::WIZARD_VIEWPORT_HEIGHT)")
+        .expect("main opens the wizard viewport somewhere");
+    let refusal = main
+        .find("stdout().is_terminal()")
+        .expect("main still refuses a non-TTY session");
+
+    assert!(
+        exec_arm < wizard,
+        "`io exec` must leave before the wizard can be reached",
+    );
+    assert!(
+        exec_arm < refusal,
+        "`io exec` must leave before the non-TTY refusal, which is what it is \
+         the answer to rather than a victim of",
+    );
+}
+
+#[test]
+fn n6_the_plain_output_is_never_composed_to_a_width() {
+    // The opposite discipline from every viewport surface, and worth asserting
+    // because three releases running have paid for a row whose important half was
+    // the half that got clipped. Here nothing measures and nothing truncates: the
+    // terminal wraps the line, or the pipe does not.
+    let text = source("exec.rs");
+    for measuring in ["width", "truncate", "chars().take(", "unicode_width"] {
+        assert!(
+            !text.contains(measuring),
+            "src/exec.rs measures its output (`{measuring}`). A headless stream \
+             is not a viewport: clipping it loses data a machine was going to read.",
+        );
+    }
 }
