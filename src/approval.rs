@@ -305,10 +305,10 @@ impl Approval {
             return;
         }
         let width = area.width as usize;
-        let mut lines = vec![self.question(width, theme)];
+        let mut lines = self.question(width, theme);
 
         // Everything between the question and the answers, if there is any room.
-        let room = area.height.saturating_sub(2) as usize;
+        let room = (area.height as usize).saturating_sub(lines.len() + 1);
         if room > 0 {
             lines.extend(self.preview(room, width, theme));
         }
@@ -323,38 +323,42 @@ impl Approval {
     /// Act, then target, then the rule, then the layer — content before metadata,
     /// the same order the rest of the interface reads in, and the order F2 asserts
     /// by position rather than by presence.
-    fn question(&self, width: usize, theme: &Theme) -> Line<'static> {
-        let mut spans = vec![
-            Span::styled(
-                act_word(self.ask.act()).to_string(),
-                theme.style(Tone::Warning),
-            ),
+    fn question(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let act = act_word(self.ask.act());
+        let asked = Line::from(vec![
+            Span::styled(act.to_string(), theme.style(Tone::Warning)),
             Span::styled(" ", theme.style(Tone::Normal)),
             Span::styled(
-                crate::picker::fit(self.ask.target(), width.saturating_sub(8)),
+                // The target is what gets shortened, because it is the only part
+                // that can be arbitrarily long and the only part whose middle a
+                // reader can infer. The act cannot be shortened at all.
+                crate::picker::fit(self.ask.target(), width.saturating_sub(act.len() + 1)),
                 theme.style(Tone::Normal),
             ),
-        ];
-        spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
-        match (self.ask.rule(), self.ask.layer()) {
-            (Some(rule), Some(layer)) => spans.push(Span::styled(
-                format!("rule {rule}{SEPARATOR}layer {layer}"),
-                theme.style(Tone::Muted),
-            )),
-            (Some(rule), None) => spans.push(Span::styled(
-                format!("rule {rule}"),
-                theme.style(Tone::Muted),
-            )),
+        ]);
+
+        // **On its own row, and this cost a test to learn.** Laid out beside the
+        // target, the rule and the layer are the first thing off the end of an
+        // eighty-column terminal — and ratatui clips a row rather than complaining,
+        // so the two facts this release exists to show would vanish silently on the
+        // supported terminal size. A row of their own is the only layout where they
+        // cannot be the part that goes.
+        let why = match (self.ask.rule(), self.ask.layer()) {
+            (Some(rule), Some(layer)) => format!("rule {rule}{SEPARATOR}layer {layer}"),
+            (Some(rule), None) => format!("rule {rule}"),
             // Said plainly rather than left blank. In io-harness a missing rule
             // means the tier default decided — the least vouched-for kind of
             // action, not the most — so an empty space here would read as the
             // opposite of what happened.
-            (None, _) => spans.push(Span::styled(
-                "no rule named it: the tier default decided",
+            (None, _) => "no rule named it: the tier default decided".to_string(),
+        };
+        vec![
+            asked,
+            Line::from(Span::styled(
+                crate::picker::fit(&why, width),
                 theme.style(Tone::Muted),
             )),
-        }
-        Line::from(spans)
+        ]
     }
 
     /// The content a write would leave behind, in the rows that are left.
@@ -366,24 +370,29 @@ impl Approval {
             return Vec::new();
         };
         let total = content.lines().count();
-        let shown = if total > room { room - 1 } else { total };
-        let mut lines: Vec<Line<'static>> = content
+        let shown = total.min(room);
+        // The count rides the last shown line rather than taking a row of its own.
+        // At the tightest size the overlay has exactly one row for content, and a
+        // whole row spent saying "40 more lines" would show a reader the number of
+        // lines they are approving and not one of the lines themselves.
+        let cut = total.saturating_sub(shown);
+        content
             .lines()
             .take(shown)
-            .map(|line| {
+            .enumerate()
+            .map(|(index, line)| {
+                let suffix = if cut > 0 && index + 1 == shown {
+                    format!("  ⋯ {cut} more lines")
+                } else {
+                    String::new()
+                };
+                let room = width.saturating_sub(2 + suffix.chars().count());
                 Line::from(Span::styled(
-                    format!("  {}", crate::picker::fit(line, width.saturating_sub(2))),
+                    format!("  {}{suffix}", crate::picker::fit(line, room)),
                     theme.style(Tone::Muted),
                 ))
             })
-            .collect();
-        if total > shown {
-            lines.push(Line::from(Span::styled(
-                format!("  ⋯ {} more lines", total - shown),
-                theme.style(Tone::Muted),
-            )));
-        }
-        lines
+            .collect()
     }
 
     /// `› allow once · allow this session · deny`, on one row.
@@ -447,4 +456,24 @@ pub fn effective_policy(base: &io_harness::Policy, remembered: &[Rule]) -> io_ha
         layer = layer.rule(rule.act, rule.effect, rule.pattern.clone());
     }
     base.clone().merge(layer)
+}
+
+/// The whole policy a turn runs under: the file's own, with the operator's chosen
+/// posture as its tier defaults, plus everything they have allowed for the session.
+///
+/// The posture replaces the *defaults* and nothing else, which is the reason a key
+/// on a keyboard is safe here: a layer that denies a secret is not a default, so no
+/// posture can unlock what a layer refused. `None` leaves the file's own policy
+/// alone — io-harness's configuration can express far more than three postures, and
+/// overwriting one nobody chose would be a keystroke rewriting a boundary.
+pub fn session_policy(
+    base: &io_harness::Policy,
+    posture: Option<crate::settings::Posture>,
+    remembered: &[Rule],
+) -> io_harness::Policy {
+    let mut policy = base.clone();
+    if let Some(posture) = posture {
+        policy.defaults = posture.defaults();
+    }
+    effective_policy(&policy, remembered)
 }

@@ -374,7 +374,7 @@ tasks:
     why_required: "`product.yaml` fixes 80x24 as a supported size rather than a degraded one. An
       overlay carrying four facts and a file's content is the widest thing this product has drawn,
       and the status line now has three more fields to drop."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T07
     acceptance_criteria:
@@ -386,9 +386,29 @@ tasks:
         the terminal.
     files:
       - src/approval.rs
-      - src/status.rs
       - tests/narrow.rs
-    evidence: []
+    evidence:
+      - "**This task found a real defect, and it is the reason the criterion exists.** The first
+        version of the narrow test passed while the overlay was silently broken: the rule and the
+        layer sat at the end of the question line, ratatui clipped the row at eighty columns rather
+        than complaining, and the two facts this release exists to show simply were not there. The
+        assertion `every line is at most eighty columns` was green *because* they had been cut."
+      - "The fix is layout, not truncation: the rule and the layer have a row of their own, so they
+        cannot be the part that goes. The target is what gets shortened — it is the only part whose
+        middle a reader can infer, and the act cannot be shortened at all."
+      - "That squeezed the content to one row in a four-row viewport, which exposed the second
+        defect: the `⋯ 40 more lines` marker took the only content row, so the overlay showed a
+        reader how many lines they were approving and not one of the lines. The count now rides the
+        end of the last shown line instead of taking a row."
+      - "`cargo test --test narrow` — 4 passed. The new case is a seventy-character path, a
+        two-hundred-character content line, a long glob and a named layer, at exactly eighty
+        columns: every row fits, the answers survive, the path is fitted with `…`, and
+        `ops-baseline` is still on screen."
+      - "`cargo test` — 24 test binaries, all ok. `cargo clippy --all-targets -- -D warnings` exit
+        0; `cargo fmt --all -- --check` exit 0."
+      - "The status line's own narrow form was asserted with T07's fields, in `tests/status.rs`:
+        at forty columns the line stays one row, keeps the model, and has dropped the containment
+        field from the right."
 
   - id: US-IO-CLI-0.2.0-T09
     summary: Bring the documented surfaces and the structural gates up to what the release now is.
