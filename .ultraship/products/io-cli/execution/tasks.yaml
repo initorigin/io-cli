@@ -506,7 +506,20 @@ tasks:
         again on the merge to `develop`.
     files:
       - .ultraship/products/io-cli/execution/tasks.yaml
+      - tests/live.rs
     evidence:
+      - "**A live rehearsal for F10 exists, and it does not satisfy F10.** Two `#[ignore]`d tests
+        in `tests/live.rs`, in the pattern 0.1.0 established for its own manual gate: they prove
+        everything about the moment that a terminal is not needed for, so the owner's one run is
+        not the first time any of it has been exercised. The first drives a real turn against a
+        real provider under *ask before writes*, asserts the run actually reaches the approver,
+        prints what the overlay would have asked (act, target, rule, layer, content size), answers
+        `allow once`, and asserts the edit then happened. The second denies instead and asserts the
+        file is untouched — an approver that is consulted but whose `no` is not enforced is worse
+        than no approver at all."
+      - "They cannot be run from this session: there is no `OPENROUTER_API_KEY` in the environment
+        and no `~/.config/io/io.toml` on this machine. They are ready for the owner to run beside
+        the manual gate with `cargo test --test live -- --ignored --nocapture`."
       - "**O1 — CI green on macOS, Linux and Windows**, on `feat/0.2.0` at afcfb7c, PR #9. All eight
         checks pass: `build and test` on macos-latest (36s), ubuntu-latest (39s) and windows-latest
         (1m39s), plus `fmt and clippy`, `msrv`, `CodeQL`, `Analyze (actions)` and `Analyze (rust)`.
