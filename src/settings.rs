@@ -50,13 +50,11 @@ impl Posture {
     pub fn detail(self) -> &'static str {
         match self {
             Self::Workspace => "read, write and run inside this repository; no outbound network",
-            // Said plainly rather than implied. The overlay that asks a human is
-            // 0.2.0's; until it exists, "ask" is answered by declining, and a
-            // posture whose behaviour is not what its name suggests has to say so
-            // at the moment it is chosen.
-            Self::AskWrites => {
-                "read freely; a write or a command is declined until the approval surface lands"
-            }
+            // True as of 0.2.0. Through 0.1.0 and 0.1.1 this line had to say that
+            // a write was *declined* rather than asked about, because the approver
+            // handed to the harness was `DenyAll` — a posture whose behaviour is
+            // not what its name suggests has to say so at the moment it is chosen.
+            Self::AskWrites => "read freely; a write or a command stops and asks you first",
             Self::ReadOnly => "read only; nothing is written and nothing is run",
         }
     }

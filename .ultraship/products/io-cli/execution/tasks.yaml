@@ -115,7 +115,7 @@ tasks:
     why_required: "This is the task that closes the dead end 0.1.0 and 0.1.1 both shipped: until the
       driver stops passing `DenyAll`, the *ask before writes* posture declines everything and the
       overlay has nothing to open on."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T02
     acceptance_criteria:
@@ -129,8 +129,36 @@ tasks:
       - src/approval.rs
       - src/app.rs
       - src/main.rs
+      - src/settings.rs
       - tests/approval.rs
-    evidence: []
+    evidence:
+      - "`DenyAll` is gone from the driver. `turn` now builds an `approval::channel()` alongside the
+        steer channel and the observer bridge, and a new arm in the select loop opens the overlay
+        when a question arrives. The loop keeps turning while the run is stopped inside
+        `decide_in_context`, which is what leaves `Ctrl+C` reachable with a question on screen."
+      - "`cargo test --test approval` — 11 passed, 0 failed. F3 runs all three answers through the
+        same body: press the key, assert the overlay closed, assert the `io_harness::Decision` the
+        run was actually given, and assert exactly one line was committed and that it names the act
+        and the target. `Once` is asserted to remember *nothing*, which is the half a looser test
+        would miss."
+      - "The `Session` answer hands the run one rule — `Act::Write` on `src/main.rs`, the target as
+        written rather than a widened glob. A bare filename is matched against a basename too, so
+        `main.rs` as a pattern would have allowed that name anywhere in the tree."
+      - "Sabotage F3 — every character key answers `Once`: 2 failed, both of them F3's. The second
+        is the keyboard-capture test, which fails for the same reason and belongs to the same
+        criterion; nothing outside F3 moved."
+      - "The other way in is its own test: three `Right`s and `Enter` reaches `deny`, and the third
+        `Right` is clamped rather than wrapped. A surface that wraps from deny back to allow is one
+        where holding an arrow key approves a write. The overlay opens on `Once`, the least
+        committal answer, so `Enter` by reflex gives away the least."
+      - "A question takes the keyboard while it is up: two letters typed at an open overlay leave
+        the composer empty. The run is stopped, so a keystroke reaching the composer would be one
+        whose effect the operator never sees."
+      - "The wizard's own words are now true. The *ask before writes* posture described itself as
+        `declined until the approval surface lands` through two releases, because the approver was
+        `DenyAll`; it now reads `read freely; a write or a command stops and asks you first`."
+      - "`cargo test` — the whole suite, 121 passed, 0 failed, 4 ignored (`tests/live.rs`, ignored by
+        design). `cargo clippy --all-targets -- -D warnings` exit 0."
 
   - id: US-IO-CLI-0.2.0-T04
     summary: Carry a remembered allow into the Policy the next turn runs under.

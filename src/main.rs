@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
 use io_harness::{
-    Anthropic, Compatible, Config, DenyAll, OpenAi, OpenRouter, Policy, Provider, ProviderSpec,
-    Session, Steer, Store,
+    Anthropic, Compatible, Config, OpenAi, OpenRouter, Policy, Provider, ProviderSpec, Session,
+    Steer, Store,
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -28,7 +28,7 @@ use io_cli::settings::{self, CliSettings};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
-use io_cli::{bridge, splash, verify};
+use io_cli::{approval, bridge, splash, verify};
 
 fn main() -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
@@ -235,7 +235,6 @@ async fn loop_over<P: Provider>(
     theme: Theme,
     model: String,
 ) -> Result<(), String> {
-    let approver = DenyAll;
     let mut app = App::new(theme, model);
     let started = Instant::now();
     let mut picker: Option<(Picker, Pick)> = None;
@@ -351,7 +350,6 @@ async fn loop_over<P: Provider>(
                     &store,
                     &mut session,
                     &policy,
-                    &approver,
                     text,
                     started,
                 )
@@ -374,17 +372,20 @@ async fn turn<P: Provider>(
     store: &Store,
     session: &mut Session,
     policy: &Policy,
-    approver: &DenyAll,
     text: String,
     started: Instant,
 ) -> Result<(), String> {
     let (steer, inbox) = Steer::channel();
     let (observer, mut events) = bridge::channel();
+    // The other seam, and the one that can stop the agent. `DenyAll` stood here
+    // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
+    // declined everything it was named for.
+    let (approver, mut asks) = approval::channel();
     app.started();
     paint(screen, app)?;
 
     let mut running =
-        Box::pin(session.turn_steered(text, provider, store, policy, approver, &observer, &inbox));
+        Box::pin(session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox));
 
     // Lives for the turn and no longer, which is half of why an idle session
     // never repaints; `App::tick` is the other half and the one a test can see.
@@ -404,6 +405,14 @@ async fn turn<P: Provider>(
             }
             Some(event) = events.recv() => {
                 app.event(&event);
+                app.status.elapsed = started.elapsed();
+                paint(screen, app)?;
+            }
+            Some(ask) = asks.recv() => {
+                // The run is now stopped inside `Approver::decide_in_context` and
+                // stays there until the overlay answers. The loop keeps turning,
+                // which is what leaves `Ctrl+C` reachable while a question is up.
+                app.open_approval(ask);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }

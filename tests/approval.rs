@@ -12,6 +12,8 @@
 
 mod support;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 use io_harness::{Act, ApprovalContext, Approver, Decision, Request};
 
 use io_cli::app::App;
@@ -277,5 +279,113 @@ async fn the_overlay_shows_the_proposed_content_and_says_what_it_cut() {
     );
 
     approval.answer(approval::Answer::Deny);
+    deciding.await.expect("the approver did not panic");
+}
+
+/// **F3.** Each key is its own answer, the run is told exactly that, and the
+/// transcript gains exactly one line saying so — so a decision is in the terminal's
+/// own scrollback as well as in the harness's durable trace.
+#[tokio::test]
+async fn f3_each_answer_reaches_the_run_as_itself_and_commits_one_line() {
+    for (key, expected) in [
+        ('y', approval::Answer::Once),
+        ('a', approval::Answer::Session),
+        ('n', approval::Answer::Deny),
+    ] {
+        let (request, context) = flagged();
+        let (ask, deciding) = asked(request, context).await;
+
+        let mut app = App::new(DARK, "opus-5");
+        app.open_approval(ask);
+        assert!(app.asking(), "the overlay is up before the key");
+
+        app.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        assert!(!app.asking(), "answering closes the overlay: {key:?}");
+
+        let decision = deciding.await.expect("the approver did not panic");
+        match (expected, &decision) {
+            (approval::Answer::Once, Decision::Approve { remember, .. }) => {
+                assert!(
+                    remember.is_empty(),
+                    "allow ONCE must remember nothing: {remember:?}",
+                );
+            }
+            (approval::Answer::Session, Decision::Approve { remember, .. }) => {
+                assert_eq!(
+                    remember.len(),
+                    1,
+                    "allow this session must hand the run one rule: {remember:?}",
+                );
+                assert_eq!(remember[0].act, Act::Write);
+                assert_eq!(remember[0].pattern, "src/main.rs");
+            }
+            (approval::Answer::Deny, Decision::Deny { .. }) => {}
+            (expected, got) => panic!("{key:?} should be {expected:?}, got {got:?}"),
+        }
+
+        let committed = app.take_pending();
+        assert_eq!(
+            committed.len(),
+            1,
+            "exactly one line per decision, not none and not a paragraph: {committed:?}",
+        );
+        let text: String = committed[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            text.contains("write") && text.contains("src/main.rs"),
+            "the committed line names the act and the target: {text:?}",
+        );
+    }
+}
+
+/// The other way in. A key that only works for a reader who already knows it is
+/// not an interface, so the same three answers are reachable by moving and
+/// pressing `Enter` — and the overlay opens on the least committal one, so
+/// `Enter` by reflex gives away the least rather than the most.
+#[tokio::test]
+async fn f3_the_answers_are_reachable_without_knowing_the_keys() {
+    let (request, context) = flagged();
+    let (ask, deciding) = asked(request, context).await;
+
+    let mut app = App::new(DARK, "opus-5");
+    app.open_approval(ask);
+
+    app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    // Clamped at the end rather than wrapping, like every other list in the
+    // product: a surface that jumps from deny back to allow on one keypress is
+    // one where holding an arrow key approves a write.
+    app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let decision = deciding.await.expect("the approver did not panic");
+    assert!(
+        matches!(decision, Decision::Deny { .. }),
+        "three rights and Enter is the third answer: {decision:?}",
+    );
+}
+
+/// A question takes the keyboard while it is up. The run is stopped, so there is
+/// nothing to type at, and a keystroke that reached the composer would be one the
+/// operator never sees the effect of.
+#[tokio::test]
+async fn an_open_question_takes_the_keyboard() {
+    let (request, context) = flagged();
+    let (ask, deciding) = asked(request, context).await;
+
+    let mut app = App::new(DARK, "opus-5");
+    app.open_approval(ask);
+    app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+    app.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+
+    assert!(
+        app.composer.is_empty(),
+        "a keystroke reached the composer while a run was waiting on an answer",
+    );
+
+    app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
     deciding.await.expect("the approver did not panic");
 }
