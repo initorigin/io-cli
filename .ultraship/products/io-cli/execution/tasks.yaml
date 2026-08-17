@@ -52,7 +52,7 @@ tasks:
     why_required: "An approval that is committed to history can be scrolled away from a run that is
       blocked on it, which is the failure the overlay exists to prevent. This is the structural
       property the whole surface rests on."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T01
     acceptance_criteria:
@@ -73,7 +73,42 @@ tasks:
       - src/picker.rs
       - src/app.rs
       - tests/approval.rs
-    evidence: []
+    evidence:
+      - "`Approval` owns the `Ask`, so the run stays paused for exactly as long as the overlay
+        exists and not one moment longer. `App::finished` drops it, which denies — the run it
+        belonged to has already ended, so there is nobody left to tell."
+      - "`cargo test --test approval` — 8 passed, 0 failed. F1 asserts twice: nothing is queued for
+        scrollback while a question is open, and the recorder's byte stream carries no committed
+        line for it either. F2 asserts by position, with a closure that looks up each fact's index
+        and compares them; a `contains` assertion would pass with the sentence inside out."
+      - "Sabotage F1 — commit a line when the question opens: 1 failed, and it is F1's test alone.
+        Sabotage F2 — move the rule and the layer to the front of the line: 1 failed, and it is F2's
+        ordering test alone. Neither arm touched the other's test, and the tier-default test stayed
+        green under both."
+      - "**The answers are one row, not a vertical `Picker` list, and the contract's scope sentence
+        assumed the latter.** A session viewport is four rows and ratatui fixes it at construction.
+        Title plus three list rows fills all four and leaves nothing for the target, the rule, the
+        layer or the content — the facts the overlay exists to show. So the layout is: the question
+        on row one, the proposed content in the rows between, and `› y allow once · a allow this
+        session · n deny` on the last. Nothing the contract promised was dropped; the overlay shows
+        strictly more than a picker could have. It still reads as one product: the same `›` marker,
+        the same ` · ` separator, the same `Tone` palette, and `picker::fit` — now public — is the
+        one fitting rule for a shortened path, a shortened row and a shortened line of content."
+      - "The content preview says what it cut (`⋯ 37 more lines`). A reader who believes they have
+        seen a whole file and has seen four lines of it is worse off than one who was told, and this
+        is the surface where that belief authorises a write."
+      - "The tier-default case is rendered as a sentence — `no rule named it: the tier default
+        decided` — rather than as a blank. io-harness's own documentation is explicit that an
+        unnamed action in the grey tier is the least vouched-for kind, so silence there would tell
+        the reader the opposite of what happened. Its own test."
+      - "`Ctrl+C` while a question is open interrupts the turn rather than answering it, which
+        settles one of the contract's open questions. The question is then denied as a consequence
+        of the turn ending — `App::finished` drops the overlay — rather than by giving one key two
+        meanings. Everything else on the keyboard goes to the overlay while it is up, because the
+        run is stopped and there is nothing to type at."
+      - "`cargo test --test picker --test scrollback --test narrow --test timing` — 14 passed, so
+        making `fit` public changed no picker behaviour, the scrollback discipline is intact, and no
+        clock or sleep entered the suite. `cargo clippy --all-targets -- -D warnings` exit 0."
 
   - id: US-IO-CLI-0.2.0-T03
     summary: Bind the three answers, commit one line per decision, and hand the harness a real approver.

@@ -14,6 +14,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::approval::{Answer, Approval, Ask};
 use crate::composer::{Composer, Reply};
 use crate::events::Events;
 use crate::status::Status;
@@ -63,6 +64,18 @@ pub struct App {
     quits: u8,
     /// Lines waiting to be committed to scrollback.
     pending: Vec<Line<'static>>,
+    /// The question on screen, if the run is waiting on one.
+    ///
+    /// It lives here rather than beside the picker in the driver because it is
+    /// not a choice the operator went looking for: it arrives mid-turn, it takes
+    /// the keyboard while it is up, and the run is stopped until it is gone.
+    approval: Option<Approval>,
+    /// Rules the operator has allowed for the rest of this session.
+    ///
+    /// The harness's own `remember` is run-scoped and dies with the turn, so
+    /// without this a *this session* answer would ask again on the next prompt.
+    /// F5 asserts it on the policy handed to the next turn.
+    remembered: Vec<io_harness::Rule>,
 }
 
 impl App {
@@ -75,7 +88,53 @@ impl App {
             mode: Mode::Idle,
             quits: 0,
             pending: Vec::new(),
+            approval: None,
+            remembered: Vec::new(),
         }
+    }
+
+    /// A run stopped to ask. The overlay opens and takes the keyboard.
+    ///
+    /// Nothing is committed here. A question in the scrollback is one that can be
+    /// scrolled away from a run which is blocked on it, which is what F1 asserts
+    /// and the reason this surface is an overlay at all.
+    pub fn open_approval(&mut self, ask: Ask) {
+        self.approval = Some(Approval::new(ask));
+    }
+
+    /// Whether a question is on screen.
+    pub fn asking(&self) -> bool {
+        self.approval.is_some()
+    }
+
+    /// Answer the open question. The overlay closes, the run goes on, and the
+    /// decision commits one line — so it is in the transcript as well as in the
+    /// harness's own trace.
+    pub fn answer_approval(&mut self, answer: Answer) {
+        let Some(approval) = self.approval.take() else {
+            return;
+        };
+        let act = crate::approval::act_word(approval.ask().act());
+        let target = approval.ask().target().to_string();
+        if answer == Answer::Session {
+            self.remembered.push(approval.remembered());
+        }
+        approval.answer(answer);
+        self.say(
+            if answer == Answer::Deny {
+                Tone::Refused
+            } else {
+                Tone::Success
+            },
+            format!("{act} {target} — {}", answer.spoken()),
+        );
+    }
+
+    /// Everything the operator has allowed for the rest of this session, as
+    /// io-harness rules. The driver merges these into the policy it hands the next
+    /// turn; io-cli evaluates none of them.
+    pub fn remembered(&self) -> &[io_harness::Rule] {
+        &self.remembered
     }
 
     pub fn mode(&self) -> Mode {
@@ -97,6 +156,10 @@ impl App {
     pub fn finished(&mut self) {
         self.mode = Mode::Idle;
         self.status.working = false;
+        // A question outlives its run only as a stuck overlay over a session that
+        // has moved on. Dropping it is the denial — see `Ask` — and the run it
+        // belonged to has already ended, so there is nobody left to tell.
+        self.approval = None;
         let tail = self.events.flush();
         self.pending.extend(tail);
     }
@@ -147,6 +210,18 @@ impl App {
 
     pub fn key(&mut self, key: KeyEvent) -> Command {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        // An open question takes the keyboard, except for `Ctrl+C`. That is the
+        // answer to "does `Ctrl+C` deny, or interrupt?": it interrupts, and the
+        // question is denied as a consequence of the turn ending rather than as a
+        // second meaning for one key. Nothing else can reach the composer while a
+        // run is stopped waiting on an answer.
+        let interrupting = control && key.code == KeyCode::Char('c');
+        if let Some(open) = self.approval.as_mut().filter(|_| !interrupting) {
+            if let Some(answer) = open.key(key) {
+                self.answer_approval(answer);
+            }
+            return Command::None;
+        }
         match (key.code, control) {
             (KeyCode::Char('c'), true) => self.interrupt_or_quit(),
             // Only on an empty composer, so it never discards something typed.
@@ -196,6 +271,13 @@ impl App {
     /// words before the token count.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         if area.height == 0 {
+            return;
+        }
+        // A question takes the whole viewport while it is up. There is nothing to
+        // type at — the run is stopped — and the alternative, squeezing it beside
+        // a composer nobody can use, is how an approval ends up too small to read.
+        if let Some(open) = &self.approval {
+            open.render(frame, area, &self.theme);
             return;
         }
         // One row for the streaming tail, one for the status line, the rest for
