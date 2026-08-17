@@ -382,7 +382,7 @@ impl Keys {
     /// honoured about it.
     ///
     /// Every notice is a sentence a session can commit as it starts. Nothing
-    /// here fails: a file that names one key wrongly still gets the other ten,
+    /// here fails: a file that names one key wrongly still gets the rest,
     /// because a session that refuses to start over a keybinding is a worse
     /// answer than one that starts and says what it ignored.
     pub fn resolve(configured: Option<&BTreeMap<String, String>>) -> (Self, Vec<String>) {

@@ -293,8 +293,8 @@ pub fn render(
                 // Left out for the strongest reason of the four: writing the
                 // defaults down would make every later change to a default a
                 // change that only reaches new installations, and would put a
-                // table of eleven keys in a file the wizard's user never asked
-                // to edit. The keys are documented; they are not written.
+                // table of five bindings in a file the wizard's user never
+                // asked to edit. The keys are documented; they are not written.
                 keys: None,
             },
         },

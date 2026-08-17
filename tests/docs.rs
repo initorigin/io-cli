@@ -57,6 +57,41 @@ fn the_readme_key_table_is_the_key_table() {
     );
 }
 
+/// The rebinding table under the key table, which is a second table with a second
+/// job: the first says what a key does, this one says what a configuration file
+/// may call it and what it is bound to today.
+///
+/// It sits outside the `keys` markers because [`KEYS`] is not a list of actions —
+/// it holds the composer's keys and an approval's letters too — so a "rebindable?"
+/// column there would have been a column that is empty for five of eleven rows.
+/// What replaces it is this: the row is generated from `Action` and asserted, so
+/// the prose cannot name an action the code does not have, quote a default the
+/// code does not bind, or offer `interrupt` as something to move.
+#[test]
+fn the_readme_says_which_actions_can_be_rebound_and_to_what() {
+    use io_cli::keys::{Action, Keys};
+
+    let readme = read("README.md");
+    let keys = Keys::default();
+
+    for action in Action::ALL.iter().copied() {
+        let row = format!("| `{}` | `{}` |", action.name(), keys.binding(action));
+        if action.rebindable() {
+            assert!(
+                readme.contains(&row),
+                "the README should offer `{}` with its default, as `{row}`",
+                action.name(),
+            );
+        } else {
+            assert!(
+                !readme.contains(&format!("| `{}` |", action.name())),
+                "the README offers `{}` as rebindable and the code refuses it",
+                action.name(),
+            );
+        }
+    }
+}
+
 #[test]
 fn the_readme_command_table_is_the_command_table() {
     let readme = read("README.md");
