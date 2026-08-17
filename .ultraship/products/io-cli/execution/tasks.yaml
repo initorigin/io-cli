@@ -1,219 +1,256 @@
 product: io-cli
-version: 0.1.1
+version: 0.2.0
 tasks:
-  - id: US-IO-CLI-0.1.1-T01
-    summary: Give the session a clock it can be ticked by, and repaint on it only while a turn runs.
-    why_required: "This is the release. Without a tick the clock advances only when an event happens
-      to arrive, which is the defect being fixed, and without the injected clock the tick cannot be
-      asserted without measuring time — which N1 forbids."
-    status: done
+  - id: US-IO-CLI-0.2.0-T01
+    summary: Build the approver seam — a request out, a decision back, and a denial when nobody answers.
+    why_required: "Every other task in this release renders or answers an approval, and none of them
+      can exist until an approval can reach the interface at all. It is also the one place the
+      product can deadlock: the approver runs on the agent's own task, so the release is not correct
+      unless a dropped answer denies rather than blocks."
+    status: todo
     depends_on: []
     acceptance_criteria:
       - >
-        **F1 — the viewport repaints while a turn runs, with no event arriving.**
-        Driven by a clock the test controls: with a turn in flight and no run event
-        delivered, advancing the clock produces a new frame whose status line
-        differs from the previous one. Sabotage: only repaint on an event, under
-        which only F1 fails. No assertion anywhere on how long anything took.
-      - >
-        **F2 — an idle session does not repaint.** With no turn running, advancing
-        the same clock produces no frame at all. This is the other half of F1 and
-        the more important one: a terminal interface that redraws forever is the
-        thing this renderer exists not to be. Sabotage: tick unconditionally, under
-        which only F2 fails.
+        **F4 — an unanswered request denies rather than hangs.** Dropping the
+        interface end of the answer channel resolves the request as a denial. No
+        clock, no timeout, no sleep: the assertion is on what the approver returns
+        when the channel is closed. Sabotage: block on the receiver, under which only
+        F4 fails — and it fails by never finishing, which is why the arm is run under
+        the suite's own harness rather than by hand.
     files:
+      - src/approval.rs
+      - src/lib.rs
+      - tests/approval.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.2.0-T02
+    summary: Render the question as a viewport overlay that commits nothing to scrollback.
+    why_required: "An approval that is committed to history can be scrolled away from a run that is
+      blocked on it, which is the failure the overlay exists to prevent. This is the structural
+      property the whole surface rests on."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T01
+    acceptance_criteria:
+      - >
+        **F1 — an approval request opens an overlay and commits nothing to
+        history.** With a request delivered, the viewport holds the question and the
+        scrollback gains nothing at all. Sabotage: render the request as a committed
+        line, under which only F1 fails. This is the structural property the whole
+        surface rests on — a question in the scrollback is a question that can be
+        scrolled away from a run that is blocked on it.
+      - >
+        **F2 — the overlay states the act, then the target, then the rule and the
+        layer, in that order.** Asserted over the positions of the facts in the
+        rendered lines, never over their presence. Sabotage: put the rule first,
+        under which only F2 fails.
+    files:
+      - src/approval.rs
+      - src/picker.rs
+      - src/app.rs
+      - tests/approval.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.2.0-T03
+    summary: Bind the three answers, commit one line per decision, and hand the harness a real approver.
+    why_required: "This is the task that closes the dead end 0.1.0 and 0.1.1 both shipped: until the
+      driver stops passing `DenyAll`, the *ask before writes* posture declines everything and the
+      overlay has nothing to open on."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T02
+    acceptance_criteria:
+      - >
+        **F3 — each answer resolves the request as itself, and commits exactly one
+        line.** Allow once, allow for the rest of the session and deny each produce
+        the matching `io_harness::Decision`, and each closes the overlay and commits
+        one line naming the act, the target and the decision. Sabotage: map every key
+        to allow, under which only F3 fails.
+    files:
+      - src/approval.rs
       - src/app.rs
       - src/main.rs
-      - tests/tick.rs
-    evidence:
-      - "`App::tick(age) -> bool` is the seam. It takes the session's age as an argument rather than
-        reading a clock, so a test advances time by hand; it returns whether a frame is owed rather
-        than drawing one, so the decision is observable without a terminal."
-      - "`cargo test --test tick` — 4 passed, 0 failed. F1 repaints across two ticks with no event
-        ever delivered to the app; F2 pumps ten idle ticks and asserts the recorder gained not one
-        byte, which is `no frame at all` rather than `a frame that changed nothing`."
-      - "Sabotage A — the tick never repaints (`self.status.elapsed = age; true` becomes `false`):
-        1 failed, and it is F1's test alone. Sabotage B — the `Mode::Running` guard deleted so the
-        tick fires unconditionally: 3 failed, all three of them F2's. Neither arm fails the other's
-        test."
-      - The driver's ticker is built inside `turn` and dropped with it, so an idle session has no
-        timer at all — the guard in `App::tick` is the half a test can see and the ticker's lifetime
-        is the half that makes it true in production.
-      - "`MissedTickBehavior::Delay` rather than the default burst: a turn that blocked the select
-        loop resumes ticking from now instead of firing a catch-up run of frames nobody saw."
-      - No test in this file sleeps, and none reads a clock. `cargo check --all-targets` exits 0.
+      - tests/approval.rs
+    evidence: []
 
-  - id: US-IO-CLI-0.1.1-T02
-    summary: Put a moving indicator beside the status line's state word, and suppress it under NO_COLOR.
-    why_required: The clock advancing answers "is it alive" once a second; the indicator answers it
-      continuously, which is what the first thirty seconds of a slow first token needs. It rides the
-      same tick, so it exists only because T01 does.
-    status: done
+  - id: US-IO-CLI-0.2.0-T04
+    summary: Carry a remembered allow into the Policy the next turn runs under.
+    why_required: "`Decision::Approve { remember }` installs a run-scoped layer that dies with the
+      turn. Without this task, *allow for the rest of this session* asks again on the next prompt and
+      reads as a defect in memory rather than as a scope this release chose."
+    status: todo
     depends_on:
-      - US-IO-CLI-0.1.1-T01
+      - US-IO-CLI-0.2.0-T03
     acceptance_criteria:
       - >
-        **F4 — the state word survives everything the animation does not.** Under
-        `NO_COLOR` the indicator does not animate and the word is still there;
-        the status line's narrow form still drops whole fields rather than wrapping.
-        Sabotage: replace the word with the spinner, under which only F4 fails.
+        **F5 — *allow for the rest of this session* survives the turn it was given
+        in.** Asserted on the `Policy` handed to the *next* turn: it carries a rule
+        that the previous answer produced. The harness's own `remember` is
+        run-scoped and dies with the turn, so an implementation that uses only it
+        passes F3 and fails F5 — which is the whole reason this is its own criterion.
+        Sabotage: pass `remember` and keep nothing, under which only F5 fails.
+    files:
+      - src/approval.rs
+      - src/main.rs
+      - tests/approval.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.2.0-T05
+    summary: Cycle the posture on Shift+Tab, name the layer in force, and run the next turn under it.
+    why_required: "The roadmap's outcome is that the operator can *see and steer* the boundary. The
+      overlay is the answering half; this is the choosing half, and without the status field naming
+      the layer the key would be a mode indicator that indicates nothing."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T04
+    acceptance_criteria:
       - >
-        **N2 — the dependency set does not grow.** `cargo tree --depth 1` is still
-        the eight names 0.1.0's N1 permits. A spinner is a handful of characters and
-        a modulo; a crate for it would be the beginning of the thing this product
-        exists not to become.
+        **F6 — `Shift+Tab` cycles the posture and the status line names the layer in
+        force.** Both spellings a terminal may send — `BackTab`, and `Tab` with the
+        shift modifier — reach the same action, or the key works in one class of
+        terminal and silently does nothing in the other. Sabotage: cycle without
+        updating the field, under which only F6 fails.
+      - >
+        **F7 — the cycled posture is what the next turn actually runs under.**
+        Asserted on the `io_harness::Policy` handed to the turn, not on the label
+        beside it. A mode indicator not backed by the thing it names is invisible to
+        any assertion on a rendered line. Sabotage: update the label only, under
+        which only F7 fails.
     files:
       - src/app.rs
       - src/status.rs
+      - src/settings.rs
+      - src/commands.rs
+      - src/main.rs
+      - README.md
       - tests/status.rs
-    evidence:
-      - "The indicator is a PREFIX on the state field, never the field: `⠋ working` when the theme
-        emits colour, `working` when it does not. `Status::indicator` returns `None` under
-        `NO_COLOR` and `None` when nothing is running, so the two suppressions are one expression
-        rather than two call sites that could drift."
-      - "Ten braille frames and a modulo, in `status::SPINNER`. Braille because every frame is
-        exactly one cell wide — a spinner of mixed-width characters shifts the whole line as it
-        turns, which is worse than not moving."
-      - "`Status::advance` is called from `App::tick` and from nowhere else, so the animation cannot
-        outlive the turn it reports on; `cargo test --test status` — 7 passed, 0 failed, including a
-        full cycle of ten frames asserting `NO_COLOR` keeps the word and shows no frame at all."
-      - "Sabotage — the spinner replaces the word (`format!(\"{frame} working\")` becomes
-        `format!(\"{frame}\")`): 4 failed, every one of them in `tests/status.rs`, and nothing
-        anywhere else in the suite. The narrow-form test is among them because it asserts the whole
-        line exactly, which is what makes it able to see a missing word."
-      - "N2 — `cargo tree --depth 1` is the same eight names 0.1.0 permits: clap, crossterm 0.28.1,
-        io-harness 0.60.1, ratatui 0.29.0, serde, tokio, toml, tui-textarea, plus the tempfile
-        dev-dependency. Nothing was added for the animation."
-      - The narrow form still drops whole fields from the right and still never wraps; the two
-        threshold widths in its test moved by the two cells the indicator occupies.
+      - tests/policy.rs
+    evidence: []
 
-  - id: US-IO-CLI-0.1.1-T03
-    summary: Render a step as decision, then tool and target, then result, with the count and the step number trailing.
-    why_required: A step is the unit a transcript is skimmed in, and 0.1.0 committed the decision
-      with the step number and a token count wedged into the middle of it. Content before metadata
-      is the rule the rest of the interface already follows and this line is the one that broke it.
-    status: done
-    depends_on: []
+  - id: US-IO-CLI-0.2.0-T06
+    summary: Give a refusal its own cell — act, target, rule, layer, and the tier default said plainly.
+    why_required: "This is the product's third success measure written as a test, and the two facts
+      no competing core records. 0.1.0 shipped a plain notice as a placeholder and named this release
+      as the one that replaces it."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T05
     acceptance_criteria:
       - >
-        **F5 — a step renders as decision, then tool and target, then result, with
-        the count and the step number trailing.** Asserted over the rendered line's
-        order, not merely its contents. Sabotage: put the token count in front of
-        the decision, under which only F5 fails.
+        **F8 — a refusal renders act, target, rule and layer, in that order, and an
+        absent rule reads as the tier default rather than as silence.** Asserted by
+        position, and asserted twice: once with a named rule and layer, once with
+        neither, because in io-harness `None` means the tier default decided and that
+        is a different sentence, not a missing one. Sabotage: drop the layer, under
+        which only F8 fails.
     files:
       - src/events.rs
-      - src/status.rs
       - tests/events.rs
-    evidence:
-      - "The line is now `decision · tool target · result · N tok · step N`, built as spans in that
-        order: the decision in the normal tone, the tool in the accent, the result in success or
-        muted, and the two metadata facts trailing in muted. 0.1.0 wrote
-        `decision  step N · tool · N tok`, with the step number wedged between the decision and what
-        it ran."
-      - "The result is said in BOTH directions — `changed files` or `no change`. A result that
-        appears only when something happened is a column a reader cannot skim down, and `changed` is
-        the only thing this event reports about what came back."
-      - "`cargo test --test events` — 12 passed, 0 failed. The two new tests assert the ORDER, by
-        comparing the positions of the five facts within the rendered line, rather than asserting
-        that the line contains them."
-      - "Sabotage — the token count moved in front of the decision: 2 failed, and they are exactly
-        the two F5 tests. The whole rest of the suite passed, including the existing step assertion,
-        which only checks that the facts are present and cannot see an order change. That is why the
-        new tests assert positions."
-      - The separator is now `status::SEPARATOR` rather than a second literal — one separator in the
-        product, so a step line and the status line under it read as one surface.
+    evidence: []
 
-  - id: US-IO-CLI-0.1.1-T04
-    summary: Assert mechanically that no test in the suite sleeps or measures elapsed time.
-    why_required: N1 is the constraint the whole clock seam exists to satisfy, and a constraint
-      checked by reading is a constraint that decays. This release adds a timer, which is exactly
-      the kind of work that grows a sleeping test in the next one.
-    status: done
+  - id: US-IO-CLI-0.2.0-T07
+    summary: Fill the status line's remaining fields, each absent until something supplies it.
+    why_required: "The status line is where this product's differentiation is meant to be visible at
+      a glance, and it has carried three fields and four named placeholders since 0.1.0. A field that
+      invents a value it did not receive would be worse than the placeholder."
+    status: todo
     depends_on:
-      - US-IO-CLI-0.1.1-T01
+      - US-IO-CLI-0.2.0-T06
     acceptance_criteria:
       - >
-        **N1 — no timing assertion anywhere, again.** Inherited from 0.1.0 and
-        re-checked mechanically: no test measures elapsed time and no test sleeps.
-        The tick is driven by an injected clock precisely so that this holds.
+        **F9 — a status field with nothing behind it is absent, not zero.** Before
+        any `Contained` event the line carries no containment field; after one it
+        carries the mode and the backend together. The same for context pressure and
+        the token count. Sabotage: render a zero for an unknown value, under which
+        only F9 fails. A field that invents its own value is worse than no field.
+    files:
+      - src/status.rs
+      - src/app.rs
+      - src/events.rs
+      - tests/status.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.2.0-T08
+    summary: Give every new surface a defined form at eighty columns.
+    why_required: "`product.yaml` fixes 80x24 as a supported size rather than a degraded one. An
+      overlay carrying four facts and a file's content is the widest thing this product has drawn,
+      and the status line now has three more fields to drop."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T07
+    acceptance_criteria:
+      - >
+        **N5 — every new surface has a defined form at eighty columns**, and the
+        status line still drops whole fields from the right rather than wrapping,
+        with three more fields to drop. `tests/narrow.rs` covers the line; the
+        overlay joins it, including the case where the proposed content is wider than
+        the terminal.
+    files:
+      - src/approval.rs
+      - src/status.rs
+      - tests/narrow.rs
+    evidence: []
+
+  - id: US-IO-CLI-0.2.0-T09
+    summary: Bring the documented surfaces and the structural gates up to what the release now is.
+    why_required: "The README's key table, `/help` and the CHANGELOG are checked mechanically against
+      the code, and the README has told every reader since 0.1.0 that the approval overlay is 0.2.0's.
+      The structural gates are what stop a release that adds an overlay from quietly adding a
+      dependency, a clock or a full-screen clear."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T08
+    acceptance_criteria:
+      - >
+        **N1 — no timing assertion anywhere, a third time.** `tests/timing.rs` still
+        passes: no test sleeps, no test reads a clock, and `src/main.rs` is still the
+        only module that does. The approval path is the shape most likely to be
+        tested with a timeout, and F4 exists so that it is not.
+      - >
+        **N2 — the dependency set does not grow.** `cargo tree --depth 1` is still
+        the eight names 0.1.0's N1 permits, plus `tempfile` as a dev-dependency. An
+        approval channel is `tokio::sync::oneshot`, which is already here.
       - >
         **N3 — every structural property of 0.1.0 still holds.** No alternate
-        screen, no mouse capture, no full-screen clear, the terminal always
-        restored, the credential never rendered. The existing tests carry these and
-        they must all still pass — a release that adds a repaint loop is exactly the
-        kind that could quietly start clearing the screen.
-    files:
-      - tests/timing.rs
-    evidence:
-      - "`tests/timing.rs` scans every `.rs` file under `tests/` for `thread::sleep`, `time::sleep`,
-        `Instant::now`, `SystemTime::now` and `.elapsed()`, and reports every hit with its file, its
-        line and why the pattern is forbidden."
-      - "The needles are assembled from fragments at run time, so the scanner does not match its own
-        source and therefore does not have to skip its own path. A scanner with a self-exemption is
-        a scanner with a hole in it — and the first run caught a doc comment of its own, which is
-        how it was found."
-      - "The scan asserts it read at least ten files and that it found itself. A scan that silently
-        reads nothing passes for the wrong reason, which is the failure mode this line of
-        repositories has already paid for once."
-      - "A second test asserts the driver is the ONLY module that reads a clock: `src/main.rs` and
-        nothing else. That is what stops a later release quietly growing a second, unsynchronised
-        clock beside the one the tick already carries. The listing is sorted before it is compared,
-        because `read_dir` order differs across the three platforms CI runs on."
-      - "Both tripwires were verified by breaking them. A `thread::sleep` appended to
-        `tests/tick.rs` failed the scan with the file and line; an `Instant::now` added to
-        `src/app.rs` failed the second test with `left: [\"main.rs\", \"app.rs\"]`. Both were
-        reverted."
-      - "N3 — the whole suite: 110 passed, 0 failed, 4 ignored (the live-provider tests, ignored by
-        design). `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` both
-        exit 0. Every 0.1.0 structural test — no alternate screen, no mouse capture, no full-screen
-        clear, the terminal restored, the credential never rendered — passes unchanged."
-
-  - id: US-IO-CLI-0.1.1-T05
-    summary: Bump the version to 0.1.1, write the changelog entry, and recapture the README screenshot from the corrected interface.
-    why_required: The screenshot is in the release's scope because 0.1.0 recorded that it could not
-      supply one; the version and the changelog are what make the Release installable and legible.
-      Without this task the release ships as 0.1.0.
-    status: done
-    depends_on:
-      - US-IO-CLI-0.1.1-T01
-      - US-IO-CLI-0.1.1-T02
-      - US-IO-CLI-0.1.1-T03
-    acceptance_criteria:
+        screen, no mouse capture, no full-screen clear, the terminal always restored,
+        the credential never rendered. The existing tests carry these, and an overlay
+        that shows a file's proposed content is exactly the kind of change that could
+        put a secret on screen — the credential test is not incidental here.
       - >
-        **F3 — the owner watches a real turn and says it reads as alive.** Manual,
-        recorded, and the recording replaces the README's screenshot. The same human
-        gate 0.1.0 put on its look; a test can assert a frame changed and cannot
-        assert that a person stopped wondering whether it had hung.
+        **N4 — io-cli still contains no policy engine.** `tests/dependencies.rs`
+        still passes. This release renders a `Policy`, constructs `io_harness::Rule`
+        values from a human's answer, and relays that answer. It evaluates no rule
+        and decides no permission; every verdict is still the harness's.
       - >
-        **O4 — the Release carries the same four artifacts and `SHA256SUMS`**, and
-        `install.sh` resolves the new version without change, because the artifact
-        naming is part of the public contract and this release must not churn it.
+        **O2 — the binary builds in release profile and runs.** Standing gate; CI
+        builds the test profile only.
     files:
+      - README.md
+      - CHANGELOG.md
       - Cargo.toml
       - Cargo.lock
-      - CHANGELOG.md
-      - README.md
-      - docs/screenshot.png
+      - src/commands.rs
       - tests/docs.rs
-      - tests/no_color.rs
-    evidence:
-      - "F3 — the owner ran the release binary against a live OpenRouter provider on 2026-08-17,
-        watched a real turn, and reported: `spinner and timer working fine`. The verdict is the
-        criterion; a test can assert a frame changed and cannot assert that a person stopped
-        wondering whether the tool had hung."
-      - "The capture is `docs/screenshot.png`, taken from that run and now in the README. It shows
-        the case this release exists for: the status line reads
-        `deepseek/deepseek-v4-flash-0731 · ⠨ working · 40s` with no answer on screen yet — forty
-        seconds into a slow first token, with the indicator turning and the clock advancing on its
-        own. Under 0.1.0 that same moment showed a still clock and a still word."
-      - "It also shows the release's own splash naming `io 0.1.1`, and the transcript sitting in the
-        terminal's scrollback above a viewport of a few rows — 0.1.0's structural properties,
-        unchanged, in the same picture."
-      - "Version bumped to 0.1.1 in `Cargo.toml` and `Cargo.lock`; `./target/release/io --version`
-        prints `io 0.1.1`. The changelog's 0.1.1 entry states plainly that this is remediation
-        rather than capability, and the compare and tag links were extended."
-      - "`tests/no_color.rs` now reads the version from `CARGO_PKG_VERSION` rather than asserting
-        the literal `io 0.1.0`. The assertion is that the splash names THIS build, which is what it
-        was always meant to say; a literal goes stale at every bump."
-      - "O4 — no artifact name, no asset list and no line of `install.sh` changed. The installer
-        resolves the latest Release and takes `IO_VERSION` for anything else, both untouched."
+    evidence: []
+
+  - id: US-IO-CLI-0.2.0-T10
+    summary: The owner runs a real turn under ask-before-writes, approving one write and denying another.
+    why_required: "What this release ships is a moment — a run stopping to ask, and a person
+      answering it. A test can assert that a decision reached the harness and cannot say whether the
+      overlay read as clear or as alarming. The same human gate 0.1.0 and 0.1.1 both carried."
+    status: todo
+    depends_on:
+      - US-IO-CLI-0.2.0-T09
+    acceptance_criteria:
+      - >
+        **F10 — the owner runs a real turn under *ask before writes*, approves one
+        write, denies another, and says the overlay reads right.** Manual and
+        recorded. The same human gate 0.1.0 and 0.1.1 put on their look, for the same
+        reason: what ships here is a moment, and only a person can say whether a run
+        stopping to ask reads as clear or as alarming.
+      - >
+        **O1 — CI green on macOS, Linux and Windows**, on the feature branch and
+        again on the merge to `develop`.
+    files:
+      - .ultraship/products/io-cli/execution/tasks.yaml
+    evidence: []
