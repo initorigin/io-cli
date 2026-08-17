@@ -20,6 +20,8 @@ pub mod composer;
 pub mod diff;
 pub mod events;
 pub mod picker;
+pub mod rewind;
+pub mod sessions;
 pub mod settings;
 pub mod splash;
 pub mod status;

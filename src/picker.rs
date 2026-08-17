@@ -214,3 +214,20 @@ pub fn fit(text: &str, room: usize) -> String {
     out.push('…');
     out
 }
+
+/// [`fit`], keeping the **end** of the text instead of the beginning.
+///
+/// For a filesystem path, and only for a path. Every workspace on one machine
+/// shares its first several segments, so shortening a path from the right keeps
+/// the part that is the same on every row and drops the part that identifies it.
+/// `/Users/someone/code/io-cli` matters; `/Users/someone/co…` does not.
+pub fn fit_left(text: &str, room: usize) -> String {
+    let count = text.chars().count();
+    if count <= room {
+        return text.to_string();
+    }
+    let keep = room.saturating_sub(1);
+    let mut out = String::from("…");
+    out.extend(text.chars().skip(count - keep));
+    out
+}
