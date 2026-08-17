@@ -14,8 +14,10 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::approval::{Answer, Approval, Ask};
 use crate::composer::{Composer, Reply};
 use crate::events::Events;
+use crate::settings::Posture;
 use crate::status::Status;
 use crate::term::VIEWPORT_HEIGHT;
 use crate::theme::{Theme, Tone};
@@ -63,6 +65,25 @@ pub struct App {
     quits: u8,
     /// Lines waiting to be committed to scrollback.
     pending: Vec<Line<'static>>,
+    /// The question on screen, if the run is waiting on one.
+    ///
+    /// It lives here rather than beside the picker in the driver because it is
+    /// not a choice the operator went looking for: it arrives mid-turn, it takes
+    /// the keyboard while it is up, and the run is stopped until it is gone.
+    approval: Option<Approval>,
+    /// Rules the operator has allowed for the rest of this session.
+    ///
+    /// The harness's own `remember` is run-scoped and dies with the turn, so
+    /// without this a *this session* answer would ask again on the next prompt.
+    /// F5 asserts it on the policy handed to the next turn.
+    remembered: Vec<io_harness::Rule>,
+    /// The permission posture this session is running under.
+    ///
+    /// `None` means the configuration file holds a policy that is none of the
+    /// three the wizard offers, which io-harness's own file can express. The line
+    /// says `custom` rather than naming one it is not, and the first press of the
+    /// key moves to a posture the operator did choose.
+    posture: Option<Posture>,
 }
 
 impl App {
@@ -75,7 +96,86 @@ impl App {
             mode: Mode::Idle,
             quits: 0,
             pending: Vec::new(),
+            approval: None,
+            remembered: Vec::new(),
+            posture: None,
         }
+    }
+
+    /// A run stopped to ask. The overlay opens and takes the keyboard.
+    ///
+    /// Nothing is committed here. A question in the scrollback is one that can be
+    /// scrolled away from a run which is blocked on it, which is what F1 asserts
+    /// and the reason this surface is an overlay at all.
+    pub fn open_approval(&mut self, ask: Ask) {
+        self.approval = Some(Approval::new(ask));
+    }
+
+    /// The posture in force.
+    pub fn posture(&self) -> Option<Posture> {
+        self.posture
+    }
+
+    /// Say which posture the session started under. The status line follows it.
+    pub fn set_posture(&mut self, posture: Option<Posture>) {
+        self.posture = posture;
+        self.status.policy = Some(match posture {
+            Some(posture) => posture.short().to_string(),
+            None => "custom".to_string(),
+        });
+    }
+
+    /// Move to the next posture. One key, no menu, always visible — and it takes
+    /// effect on the next turn, because io-harness takes a policy per turn and has
+    /// no way to change one mid-flight.
+    fn cycle_posture(&mut self) -> Command {
+        let next = match self.posture {
+            Some(posture) => posture.next(),
+            // From a policy that is none of the three, the first press lands on the
+            // first one rather than on nothing.
+            None => Posture::Workspace,
+        };
+        self.set_posture(Some(next));
+        self.say(
+            Tone::Muted,
+            format!("policy:{} — {}", next.short(), next.detail()),
+        );
+        Command::None
+    }
+
+    /// Whether a question is on screen.
+    pub fn asking(&self) -> bool {
+        self.approval.is_some()
+    }
+
+    /// Answer the open question. The overlay closes, the run goes on, and the
+    /// decision commits one line — so it is in the transcript as well as in the
+    /// harness's own trace.
+    pub fn answer_approval(&mut self, answer: Answer) {
+        let Some(approval) = self.approval.take() else {
+            return;
+        };
+        let act = crate::approval::act_word(approval.ask().act());
+        let target = approval.ask().target().to_string();
+        if answer == Answer::Session {
+            self.remembered.push(approval.remembered());
+        }
+        approval.answer(answer);
+        self.say(
+            if answer == Answer::Deny {
+                Tone::Refused
+            } else {
+                Tone::Success
+            },
+            format!("{act} {target} — {}", answer.spoken()),
+        );
+    }
+
+    /// Everything the operator has allowed for the rest of this session, as
+    /// io-harness rules. The driver merges these into the policy it hands the next
+    /// turn; io-cli evaluates none of them.
+    pub fn remembered(&self) -> &[io_harness::Rule] {
+        &self.remembered
     }
 
     pub fn mode(&self) -> Mode {
@@ -97,6 +197,10 @@ impl App {
     pub fn finished(&mut self) {
         self.mode = Mode::Idle;
         self.status.working = false;
+        // A question outlives its run only as a stuck overlay over a session that
+        // has moved on. Dropping it is the denial — see `Ask` — and the run it
+        // belonged to has already ended, so there is nobody left to tell.
+        self.approval = None;
         let tail = self.events.flush();
         self.pending.extend(tail);
     }
@@ -124,8 +228,43 @@ impl App {
 
     /// Take an event from the harness.
     pub fn event(&mut self, event: &RunEvent) {
+        self.status_from(event);
         let lines = self.events.event(event);
         self.pending.extend(lines);
+    }
+
+    /// The status line's share of an event.
+    ///
+    /// Only the events that carry a fact set a field, and nothing sets one to a
+    /// default. A field this has never heard about stays `None`, which is what the
+    /// line renders as nothing at all rather than as a zero.
+    fn status_from(&mut self, event: &RunEvent) {
+        match &event.kind {
+            io_harness::EventKind::Step { tokens, .. } => {
+                // The session's total, not the step's own. A field that swings
+                // rather than climbs cannot be read at a glance.
+                self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
+            }
+            // The run's own total, which is authoritative over the sum of the steps
+            // we happened to see. Guarded on the tag rather than inside the arm:
+            // a run that reported no usage at all reports `0`, and overwriting a
+            // real total with it would turn a known number into a wrong one.
+            io_harness::EventKind::Finished { tokens, .. } if *tokens > 0 => {
+                self.status.tokens = Some(*tokens);
+            }
+            io_harness::EventKind::Compacted { after_tokens, .. } => {
+                // The denominator is io-harness's own declared budget, asked of the
+                // harness rather than copied here — a `24_000` written into this
+                // file would be wrong after some harness patch, and wrong silently.
+                let budget = io_harness::ContextBudget::default().effective_tokens(None);
+                let share = (*after_tokens as f64 / budget.max(1) as f64 * 100.0).round();
+                self.status.context = Some(share.clamp(0.0, 100.0) as u8);
+            }
+            io_harness::EventKind::Contained { mode, backend, .. } => {
+                self.status.containment = Some(crate::status::format_containment(mode, backend));
+            }
+            _ => {}
+        }
     }
 
     /// Add a line of io-cli's own, rather than the harness's.
@@ -147,8 +286,29 @@ impl App {
 
     pub fn key(&mut self, key: KeyEvent) -> Command {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        // An open question takes the keyboard, except for `Ctrl+C`. That is the
+        // answer to "does `Ctrl+C` deny, or interrupt?": it interrupts, and the
+        // question is denied as a consequence of the turn ending rather than as a
+        // second meaning for one key. Nothing else can reach the composer while a
+        // run is stopped waiting on an answer.
+        let interrupting = control && key.code == KeyCode::Char('c');
+        if let Some(open) = self.approval.as_mut().filter(|_| !interrupting) {
+            if let Some(answer) = open.key(key) {
+                self.answer_approval(answer);
+            }
+            return Command::None;
+        }
         match (key.code, control) {
             (KeyCode::Char('c'), true) => self.interrupt_or_quit(),
+            // Two spellings of one key. A terminal without the Kitty keyboard
+            // protocol sends `BackTab` with no modifier; one that has negotiated it
+            // sends `Tab` with shift. Binding either alone ships a key that works
+            // on the developer's terminal and silently does nothing on somebody
+            // else's, which is worse than not shipping it.
+            (KeyCode::BackTab, _) => self.cycle_posture(),
+            (KeyCode::Tab, _) if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.cycle_posture()
+            }
             // Only on an empty composer, so it never discards something typed.
             (KeyCode::Char('d'), true) if self.composer.is_empty() => Command::Exit,
             (KeyCode::Char('d'), true) => Command::None,
@@ -196,6 +356,13 @@ impl App {
     /// words before the token count.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         if area.height == 0 {
+            return;
+        }
+        // A question takes the whole viewport while it is up. There is nothing to
+        // type at — the run is stopped — and the alternative, squeezing it beside
+        // a composer nobody can use, is how an approval ends up too small to read.
+        if let Some(open) = &self.approval {
+            open.render(frame, area, &self.theme);
             return;
         }
         // One row for the streaming tail, one for the status line, the rest for

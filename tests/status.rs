@@ -5,8 +5,28 @@ mod support;
 
 use std::time::Duration;
 
+use io_cli::app::App;
 use io_cli::status::{format_elapsed, Status};
 use io_cli::theme::{DARK, PLAIN};
+use io_harness::{EventKind, RunEvent};
+
+/// A run event at step zero, which is where everything but a step sits.
+fn event(kind: EventKind) -> RunEvent {
+    RunEvent::new(1, 0, kind)
+}
+
+fn step(number: u32, tokens: u64) -> RunEvent {
+    RunEvent::new(
+        1,
+        number,
+        EventKind::Step {
+            decision: "edited src/lib.rs".into(),
+            tool_call: "apply_patch".into(),
+            tokens,
+            changed: true,
+        },
+    )
+}
 
 fn rendered(status: &Status, width: u16) -> String {
     status
@@ -170,4 +190,122 @@ fn elapsed_time_is_readable_at_every_scale() {
     assert_eq!(format_elapsed(Duration::from_secs(3599)), "59m59s");
     assert_eq!(format_elapsed(Duration::from_secs(3600)), "1h00m");
     assert_eq!(format_elapsed(Duration::from_secs(3725)), "1h02m");
+}
+
+/// **F9.** A field with nothing behind it is absent. Not a zero, not a dash, not a
+/// placeholder — and the field this matters most for is the one about spending.
+#[test]
+fn f9_a_field_with_nothing_behind_it_is_absent_rather_than_zero() {
+    let status = Status::new("opus-5");
+    let line = status.line(120, &DARK).to_string();
+
+    assert!(
+        !line.contains("tok"),
+        "no step has reported a token count yet: {line:?}",
+    );
+    assert!(
+        !line.contains("ctx"),
+        "nothing has said how full the context is: {line:?}",
+    );
+    // Deliberately not "the line contains no zero": the elapsed field is `0s` and
+    // is legitimately zero, because the session really has been open no time at
+    // all. The criterion is about a field with no *fact* behind it.
+    assert!(
+        !line.contains("0 tok") && !line.contains("ctx 0"),
+        "an unknown value must not be rendered as a zero: {line:?}",
+    );
+    // And nothing has said how this run's commands are contained, which is a
+    // different statement from saying they are not.
+    assert!(
+        !line.contains("sandbox"),
+        "containment is unknown until the run says so: {line:?}",
+    );
+}
+
+/// Tokens accumulate across the steps of a session rather than showing the last
+/// step's own count, which would swing rather than climb.
+#[test]
+fn the_token_field_is_the_session_and_not_the_last_step() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(&step(1, 1_200));
+    app.event(&step(2, 300));
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(
+        line.contains("1.5k tok"),
+        "the field is the running total: {line:?}",
+    );
+}
+
+/// **F9, containment.** The mode is what was asked for and the backend is what
+/// answered on this host, and io-harness's own documentation says a surface
+/// showing the first without the second is reading an intention rather than a
+/// fact: `workspace-write` on a portable floor means resource caps only.
+#[test]
+fn the_containment_field_carries_the_backend_and_not_only_the_mode() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(&event(EventKind::Contained {
+        mode: "workspace-write".into(),
+        backend: "portable-floor".into(),
+        roots: 0,
+    }));
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(line.contains("workspace-write"), "{line:?}");
+    assert!(
+        line.contains("portable-floor"),
+        "the mode without the backend is an intention, not a fact: {line:?}",
+    );
+}
+
+/// Context pressure appears once something has said what it is, and says it as a
+/// share of the budget io-harness itself declares rather than of a number copied
+/// into this repository.
+#[test]
+fn the_context_field_appears_when_a_fold_reports_one() {
+    let mut app = App::new(DARK, "opus-5");
+    assert!(!app.status.line(120, &DARK).to_string().contains("ctx"));
+
+    app.event(&event(EventKind::Compacted {
+        through_step: 4,
+        before_tokens: 11_000,
+        after_tokens: 6_000,
+    }));
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(
+        line.contains("ctx "),
+        "a fold is the harness telling us how full it was: {line:?}",
+    );
+    assert!(line.contains('%'), "{line:?}");
+}
+
+/// N5's half of this task: the new fields drop from the right, and the line never
+/// becomes two lines. A status line that wraps has taken a row from the transcript
+/// and stopped being a status line.
+#[test]
+fn the_new_fields_drop_from_the_right_rather_than_wrapping() {
+    let mut app = App::new(DARK, "opus-5");
+    app.set_posture(Some(io_cli::settings::Posture::Workspace));
+    app.event(&step(1, 12_400));
+    app.event(&event(EventKind::Contained {
+        mode: "workspace-write".into(),
+        backend: "seatbelt".into(),
+        roots: 2,
+    }));
+
+    let wide = app.status.line(160, &DARK).to_string();
+    assert!(wide.contains("seatbelt"), "{wide:?}");
+
+    let narrow = app.status.line(40, &DARK).to_string();
+    assert!(narrow.chars().count() <= 40, "{narrow:?}");
+    assert!(!narrow.contains('\n'), "the line wrapped: {narrow:?}");
+    assert!(
+        narrow.contains("opus-5"),
+        "the model is the last field to go: {narrow:?}",
+    );
+    assert!(
+        !narrow.contains("seatbelt"),
+        "the rightmost fields are the ones that drop: {narrow:?}",
+    );
 }

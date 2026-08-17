@@ -32,13 +32,13 @@ versions:
       The operator can see and steer the boundary the agent is working under. One key cycles the
       permission posture and the status line names the io-harness policy layer now in force. A
       sensitive action stops the run in an overlay that cannot scroll away — showing the act, the
-      target, the rule that is asking, and the diff when it is a write — and is resolved by
-      keystroke into both the transcript and the durable trace. A refusal prints the act, the
+      target, the rule and layer that are asking, and the content a write proposes — and is resolved
+      by keystroke into both the transcript and the durable trace. A refusal prints the act, the
       target, and the rule and layer that produced it, which no other terminal agent can render
-      because no other core records it. The status line gains the rest of its fields: context
-      pressure, tokens, spend against the tree ceiling, containment state.
-    detail: outline
-    status: planned
+      because no other core records it. The status line gains the fields the harness can supply to a
+      steerable turn: the policy layer, tokens, context pressure, containment.
+    detail: specified
+    status: released
   - version: 0.3.0
     outcome: >
       The operator can read what the agent did without leaving the terminal or losing the thread.
@@ -98,9 +98,12 @@ versions:
     outcome: >
       A decomposed task becomes visible as a tree. Spawned children appear as a live fleet with
       their own status, each showing its draw against the ceiling the whole tree shares, with
-      refused spawns and collected results shown where they happen. This is the surface that is
-      structurally impossible for a competing interface to copy, because it is rendering facts only
-      this core emits.
+      refused spawns and collected results shown where they happen. The status line gains the spend
+      field here rather than at 0.2.0: `SpendDraw` is emitted only by a contained turn, and the
+      contained entry point takes no steer inbox, so a session that renders spend today is one that
+      cannot be interrupted. This release is contained by definition, which is what makes the field
+      reachable. This is the surface that is structurally impossible for a competing interface to
+      copy, because it is rendering facts only this core emits.
     detail: hypothesis
     status: planned
   - version: 0.9.0

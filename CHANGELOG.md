@@ -6,6 +6,66 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-17
+
+The operator can see the boundary the agent is working under, change it, and
+answer it when it asks. Through 0.1.0 and 0.1.1 the approver handed to io-harness
+was `DenyAll`, so the *ask before writes* posture declined every write and every
+command it was named for; that dead end is what this release closes.
+
+### Added
+
+- **An approval overlay.** When an action needs permission the run stops and asks
+  in an overlay that cannot scroll away, because a question committed to the
+  transcript can be scrolled above the fold while the run is blocked on it. It
+  states the act and the target, then the rule and the layer that are asking on a
+  row of their own, then the content a write proposes. Answer it with `y` (allow
+  once), `a` (allow for the rest of this session) or `n` (deny) — or with the
+  arrows and `Enter`, since a key that only works for a reader who already knows
+  it is not an interface. The overlay opens on the least committal answer.
+- **Every decision in the transcript.** Answering commits exactly one line naming
+  the act, the target and what was decided, so the decision is in the terminal's
+  own scrollback as well as in the run's durable trace.
+- **`Shift+Tab` cycles the permission posture**, and the status line names the one
+  in force. It changes this session, like `/theme` and `/model`; `io setup` is
+  what makes a choice permanent. It takes effect on the next turn, because
+  io-harness takes a policy per turn. Both spellings a terminal can send —
+  `BackTab`, and `Tab` with a shift modifier under the Kitty keyboard protocol —
+  are the same key.
+- **A refusal names its rule and its layer.** `write /etc/hosts · rule fs.deny ·
+  layer ops-baseline` — the two facts no other terminal agent can print, because
+  no other core records them. When no rule named the action, the line says the
+  tier default decided rather than showing a blank: in io-harness that is the
+  least vouched-for kind of action, not the most.
+- **Three more status fields**: the tokens the session has spent, how full the
+  assembled context was at the last fold, and how this run's commands are actually
+  contained — the mode asked for *and* the backend that answered on this host,
+  never the mode alone, which is an intention rather than a fact. Each is absent
+  until something supplies it. A field that invents its own value is worse than no
+  field.
+
+### Changed
+
+- The *ask before writes* posture now asks. Its description in the wizard said
+  `declined until the approval surface lands`, which was true and is not any more.
+- An outcome that stopped waiting on a human points at what to do about it now
+  that there is something to do.
+
+### Not in this release
+
+- **Spend against the tree ceiling.** `EventKind::SpendDraw` is emitted only by a
+  contained turn, and io-harness's contained entry point takes no steer inbox — so
+  rendering spend today would cost `Ctrl+C`. It moves to 0.8.0, the fleet release,
+  which is contained by definition.
+- Diffs, syntax highlighting and collapsible tool output: 0.3.0. The harness hands
+  an approver the full post-write content rather than a patch, so the overlay shows
+  that content plainly and the diff surface is designed where it belongs.
+- Deferring an approval, and approving a rewritten action. Both are real io-harness
+  affordances; deferring is only useful alongside the resume that arrives in 0.4.0,
+  and rewriting is an editor inside an overlay.
+- Answering a question the agent asked about *intent*, which io-harness
+  deliberately distinguishes from an approval about permission: 0.7.0.
+
 ## [0.1.1] - 2026-08-17
 
 The session stops looking frozen while it works. Remediation of what 0.1.0

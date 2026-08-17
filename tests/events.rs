@@ -369,13 +369,20 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
     // `awaiting_answer` — a state this release has nothing on screen to resolve.
     // Nothing went wrong, so it is a warning rather than an error; but an outcome
     // the operator cannot act on has to come with a next action.
+    //
+    // 0.2.0 changes what the way out *is* — an approval is now answered on screen,
+    // so the help no longer sends everyone to `io setup` — but not that there has
+    // to be one. The assertion is therefore that each help names something the
+    // operator can actually do next, rather than one particular sentence.
     for outcome in ["awaiting_answer", "awaiting_approval", "awaiting_plan"] {
         assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
         let help = outcome_help(outcome)
             .unwrap_or_else(|| panic!("{outcome} leaves the operator with no next action"));
         assert!(
-            help.contains("io setup"),
-            "{outcome} should name the way out: {help}",
+            ["io setup", "Shift+Tab", "next prompt"]
+                .iter()
+                .any(|way| help.contains(way)),
+            "{outcome} should name something the operator can do: {help}",
         );
     }
 
@@ -403,7 +410,7 @@ fn the_awaiting_help_reaches_the_transcript() {
     assert!(line.contains("awaiting_answer"), "{line:?}");
     assert!(line.contains("warning"), "{line:?}");
     assert!(
-        line.contains("io setup"),
+        line.contains("next prompt"),
         "the way out should be in the transcript, not only in the docs: {line:?}",
     );
     assert!(!line.contains("error"), "nothing went wrong: {line:?}");
@@ -472,5 +479,86 @@ fn f8_this_release_has_seen_every_kind_io_harness_emits() {
     assert!(
         gone.is_empty(),
         "these names are no longer io-harness event kinds: {gone:?}",
+    );
+}
+
+/// **F8.** The two facts no other core records, in the order a reader needs them,
+/// asserted by position. A `contains` assertion is green when the sentence is
+/// inside out — which 0.1.1 paid to learn.
+#[test]
+fn f8_a_refusal_names_act_then_target_then_rule_then_layer() {
+    let mut events = Events::new(DARK);
+    let refused = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "write".into(),
+            target: "/etc/hosts".into(),
+            rule: Some("fs.deny".into()),
+            layer: Some("ops-baseline".into()),
+        },
+    );
+
+    let at = |needle: &str| {
+        refused
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not in the line: {refused:?}"))
+    };
+    assert!(at("write") < at("/etc/hosts"), "act first: {refused:?}");
+    assert!(
+        at("/etc/hosts") < at("fs.deny"),
+        "the target before the rule: {refused:?}",
+    );
+    assert!(
+        at("fs.deny") < at("ops-baseline"),
+        "the rule before the layer it came from: {refused:?}",
+    );
+    assert!(
+        refused.contains("refused"),
+        "colour is never the only carrier of a meaning: {refused:?}",
+    );
+}
+
+/// **F8, the other half.** In io-harness a missing rule means the *tier default*
+/// decided — the least vouched-for kind of action, not the most. A line that
+/// renders nothing there tells the reader the opposite of what happened.
+#[test]
+fn f8_a_refusal_with_no_rule_says_the_tier_default_decided() {
+    let mut events = Events::new(DARK);
+    let refused = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "net".into(),
+            target: "api.example.com:443".into(),
+            rule: None,
+            layer: None,
+        },
+    );
+
+    assert!(refused.contains("api.example.com:443"), "{refused:?}");
+    assert!(
+        refused.contains("tier default"),
+        "an unnamed refusal must say what refused it: {refused:?}",
+    );
+}
+
+/// A rule with no layer is possible and is not the same as no rule at all. It is
+/// rendered as what it is rather than being rounded to either neighbour.
+#[test]
+fn f8_a_rule_without_a_layer_is_neither_of_the_other_two_cases() {
+    let mut events = Events::new(DARK);
+    let refused = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "exec".into(),
+            target: "curl".into(),
+            rule: Some("*.sh".into()),
+            layer: None,
+        },
+    );
+
+    assert!(refused.contains("*.sh"), "{refused:?}");
+    assert!(
+        !refused.contains("tier default"),
+        "a named rule did decide this one: {refused:?}",
     );
 }

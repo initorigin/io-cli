@@ -1,0 +1,33 @@
+product: io-cli
+version: 0.2.0
+timestamp: 2026-08-17T02:03:13Z
+reason: blocker
+repository_state: passing
+completed_acceptance:
+  - >
+    F1, F2, F3, F4, F5, F6, F7, F8, F9 — every functional criterion but F10, each with a sabotage
+    arm run and each arm failing only its own criterion's tests.
+  - >
+    N1, N2, N3, N4, N5 — no test sleeps or reads a clock; the dependency set is the same eight
+    names plus tempfile; every structural property of 0.1.0 still holds; io-cli still contains no
+    policy engine; every new surface has a defined form at eighty columns.
+  - >
+    O1, first half — CI green on macOS, Linux and Windows on feat/0.2.0 at afcfb7c (PR #9), all
+    eight checks, no re-runs.
+  - O2 — cargo build --release exit 0; ./target/release/io --version prints io 0.2.0.
+  - O3, in progress — feat/0.2.0 is cut from develop and PR #9 is open into it.
+remaining_acceptance:
+  - >
+    F10 — the owner runs the release binary under *ask before writes*, approves one write, denies
+    another, and says whether the overlay reads right. It cannot be delegated to a test: what this
+    release ships is a moment, and only a person can say whether a run stopping to ask reads as
+    clear or as alarming.
+  - O1, second half — CI green again on the merge to develop.
+  - O3 — develop to main by pull request, then the tag v0.2.0 pushed alone.
+  - O4 — the Release carries the same four artifacts and SHA256SUMS.
+active_hypotheses: []
+next_task: US-IO-CLI-0.2.0-T10
+required_context:
+  - .ultraship/products/io-cli/releases/0.2.0.yaml
+  - .ultraship/products/io-cli/execution/tasks.yaml
+  - src/approval.rs

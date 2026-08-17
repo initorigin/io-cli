@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
 use io_harness::{
-    Anthropic, Compatible, Config, DenyAll, OpenAi, OpenRouter, Policy, Provider, ProviderSpec,
-    Session, Steer, Store,
+    Anthropic, Compatible, Config, OpenAi, OpenRouter, Policy, Provider, ProviderSpec, Session,
+    Steer, Store,
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -24,11 +24,11 @@ use io_cli::app::{App, Command};
 use io_cli::cli::{Cli, Command as Subcommand};
 use io_cli::commands::{self, Action};
 use io_cli::picker::{Outcome, Picker, Row};
-use io_cli::settings::{self, CliSettings};
+use io_cli::settings::{self, CliSettings, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
-use io_cli::{bridge, splash, verify};
+use io_cli::{approval, bridge, splash, verify};
 
 fn main() -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
@@ -235,8 +235,11 @@ async fn loop_over<P: Provider>(
     theme: Theme,
     model: String,
 ) -> Result<(), String> {
-    let approver = DenyAll;
     let mut app = App::new(theme, model);
+    // What the file already says, read back rather than assumed. `None` means the
+    // file holds a policy that is none of the three, which io-harness's own
+    // configuration can express and this session must not relabel.
+    app.set_posture(Posture::of(&policy.defaults));
     let started = Instant::now();
     let mut picker: Option<(Picker, Pick)> = None;
 
@@ -343,6 +346,11 @@ async fn loop_over<P: Provider>(
                 }
             },
             Command::Submit(text) => {
+                // Rebuilt every turn rather than kept, because `remembered` grows
+                // as the operator answers and the harness's own `remember` dies
+                // with the turn it was given in. With nothing remembered this is
+                // the session's policy unchanged.
+                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
                 turn(
                     screen,
                     inputs,
@@ -350,8 +358,7 @@ async fn loop_over<P: Provider>(
                     &provider,
                     &store,
                     &mut session,
-                    &policy,
-                    &approver,
+                    &effective,
                     text,
                     started,
                 )
@@ -374,17 +381,20 @@ async fn turn<P: Provider>(
     store: &Store,
     session: &mut Session,
     policy: &Policy,
-    approver: &DenyAll,
     text: String,
     started: Instant,
 ) -> Result<(), String> {
     let (steer, inbox) = Steer::channel();
     let (observer, mut events) = bridge::channel();
+    // The other seam, and the one that can stop the agent. `DenyAll` stood here
+    // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
+    // declined everything it was named for.
+    let (approver, mut asks) = approval::channel();
     app.started();
     paint(screen, app)?;
 
     let mut running =
-        Box::pin(session.turn_steered(text, provider, store, policy, approver, &observer, &inbox));
+        Box::pin(session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox));
 
     // Lives for the turn and no longer, which is half of why an idle session
     // never repaints; `App::tick` is the other half and the one a test can see.
@@ -404,6 +414,14 @@ async fn turn<P: Provider>(
             }
             Some(event) = events.recv() => {
                 app.event(&event);
+                app.status.elapsed = started.elapsed();
+                paint(screen, app)?;
+            }
+            Some(ask) = asks.recv() => {
+                // The run is now stopped inside `Approver::decide_in_context` and
+                // stays there until the overlay answers. The loop keeps turning,
+                // which is what leaves `Ctrl+C` reachable while a question is up.
+                app.open_approval(ask);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }

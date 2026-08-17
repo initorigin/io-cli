@@ -47,16 +47,47 @@ impl Posture {
         }
     }
 
+    /// The short name the status line uses. Hyphenated rather than spaced, so the
+    /// field is one token a reader's eye can skip over or stop on.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::AskWrites => "ask-writes",
+            Self::ReadOnly => "read-only",
+        }
+    }
+
+    /// The next posture in the cycle. It wraps, because one key that only ever
+    /// moves one way is a key you press three times to undo.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Workspace => Self::AskWrites,
+            Self::AskWrites => Self::ReadOnly,
+            Self::ReadOnly => Self::Workspace,
+        }
+    }
+
+    /// Which posture a set of defaults *is*, if it is one of them.
+    ///
+    /// `None` for a configuration file holding a policy nobody offered, which is
+    /// allowed — io-harness's own file can express far more than three postures.
+    /// Reporting such a policy as one of the three would put a true-looking word
+    /// beside a boundary it does not describe.
+    pub fn of(defaults: &Defaults) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|posture| &posture.defaults() == defaults)
+    }
+
     pub fn detail(self) -> &'static str {
         match self {
             Self::Workspace => "read, write and run inside this repository; no outbound network",
-            // Said plainly rather than implied. The overlay that asks a human is
-            // 0.2.0's; until it exists, "ask" is answered by declining, and a
-            // posture whose behaviour is not what its name suggests has to say so
-            // at the moment it is chosen.
-            Self::AskWrites => {
-                "read freely; a write or a command is declined until the approval surface lands"
-            }
+            // True as of 0.2.0. Through 0.1.0 and 0.1.1 this line had to say that
+            // a write was *declined* rather than asked about, because the approver
+            // handed to the harness was `DenyAll` — a posture whose behaviour is
+            // not what its name suggests has to say so at the moment it is chosen.
+            Self::AskWrites => "read freely; a write or a command stops and asks you first",
             Self::ReadOnly => "read only; nothing is written and nothing is run",
         }
     }
