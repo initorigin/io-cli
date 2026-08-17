@@ -47,6 +47,39 @@ impl Posture {
         }
     }
 
+    /// The short name the status line uses. Hyphenated rather than spaced, so the
+    /// field is one token a reader's eye can skip over or stop on.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::AskWrites => "ask-writes",
+            Self::ReadOnly => "read-only",
+        }
+    }
+
+    /// The next posture in the cycle. It wraps, because one key that only ever
+    /// moves one way is a key you press three times to undo.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Workspace => Self::AskWrites,
+            Self::AskWrites => Self::ReadOnly,
+            Self::ReadOnly => Self::Workspace,
+        }
+    }
+
+    /// Which posture a set of defaults *is*, if it is one of them.
+    ///
+    /// `None` for a configuration file holding a policy nobody offered, which is
+    /// allowed — io-harness's own file can express far more than three postures.
+    /// Reporting such a policy as one of the three would put a true-looking word
+    /// beside a boundary it does not describe.
+    pub fn of(defaults: &Defaults) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|posture| &posture.defaults() == defaults)
+    }
+
     pub fn detail(self) -> &'static str {
         match self {
             Self::Workspace => "read, write and run inside this repository; no outbound network",

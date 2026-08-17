@@ -209,7 +209,7 @@ tasks:
     why_required: "The roadmap's outcome is that the operator can *see and steer* the boundary. The
       overlay is the answering half; this is the choosing half, and without the status field naming
       the layer the key would be a mode indicator that indicates nothing."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T04
     acceptance_criteria:
@@ -232,9 +232,41 @@ tasks:
       - src/commands.rs
       - src/main.rs
       - README.md
+      - tests/commands.rs
       - tests/status.rs
       - tests/policy.rs
-    evidence: []
+    evidence:
+      - "`Shift+Tab` reaches `App::cycle_posture` from BOTH spellings a terminal can send —
+        `KeyCode::BackTab` with no modifier, and `KeyCode::Tab` with shift, which is what a terminal
+        that has negotiated the Kitty keyboard protocol sends instead. Its own test, because binding
+        one alone ships a key that works on the developer's terminal and does nothing on somebody
+        else's, silently."
+      - "The status line's second field is `policy:workspace` / `policy:ask-writes` /
+        `policy:read-only` — second because what the agent is allowed to do outranks how long it has
+        been doing it, and second-to-last to be dropped when the terminal is narrow."
+      - "`approval::session_policy(base, posture, remembered)` replaces the policy's *tier defaults*
+        and nothing else, then layers the remembered allows on top. That is what makes a keystroke
+        safe here: a layer that denies a secret is not a default, so `no_posture_can_unlock_what_a_
+        layer_denied` passes for all three postures against `.env`."
+      - "`cargo test --test policy` — 7 passed, 0 failed. F7 is asserted as a verdict on the policy
+        (`Allow`, then `Ask`, then `Deny` for a write to `src/main.rs` as the key is pressed), never
+        on the word beside it."
+      - "Sabotage F6 — cycle the posture without updating the field: 1 failed, F6's status test
+        alone; the F7 policy test stayed green, which is precisely the split the two criteria exist
+        to catch. Sabotage F7 — update the label and ignore the posture when building the policy:
+        1 failed, F7's test alone, with every F6 test green."
+      - "A configuration file whose policy is none of the three reads `policy:custom` rather than
+        being labelled as one it is not; io-harness's own file can express far more than three
+        postures. The first press of the key then moves to a posture the operator did choose.
+        `Posture::of` is asserted exact in both directions."
+      - "Cycling changes this session, like `/theme` and `/model`, and takes effect on the next turn
+        because io-harness takes a `&Policy` per turn and offers no way to change one mid-flight.
+        The committed line says which posture and what it means, so the key teaches itself."
+      - "The key table grew two rows — `Shift+Tab` and `y / a / n` — in `commands.rs`, which is the
+        one list the README and `/help` both render. `tests/commands.rs` had to be updated in the
+        same commit because it asserts the count, which is the gate working rather than failing."
+      - "`cargo test` — 24 test binaries, all ok, 0 failures. `cargo fmt --all -- --check` exit 0;
+        `cargo clippy --all-targets -- -D warnings` exit 0."
 
   - id: US-IO-CLI-0.2.0-T06
     summary: Give a refusal its own cell — act, target, rule, layer, and the tier default said plainly.

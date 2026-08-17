@@ -17,6 +17,7 @@ use ratatui::Frame;
 use crate::approval::{Answer, Approval, Ask};
 use crate::composer::{Composer, Reply};
 use crate::events::Events;
+use crate::settings::Posture;
 use crate::status::Status;
 use crate::term::VIEWPORT_HEIGHT;
 use crate::theme::{Theme, Tone};
@@ -76,6 +77,13 @@ pub struct App {
     /// without this a *this session* answer would ask again on the next prompt.
     /// F5 asserts it on the policy handed to the next turn.
     remembered: Vec<io_harness::Rule>,
+    /// The permission posture this session is running under.
+    ///
+    /// `None` means the configuration file holds a policy that is none of the
+    /// three the wizard offers, which io-harness's own file can express. The line
+    /// says `custom` rather than naming one it is not, and the first press of the
+    /// key moves to a posture the operator did choose.
+    posture: Option<Posture>,
 }
 
 impl App {
@@ -90,6 +98,7 @@ impl App {
             pending: Vec::new(),
             approval: None,
             remembered: Vec::new(),
+            posture: None,
         }
     }
 
@@ -100,6 +109,38 @@ impl App {
     /// and the reason this surface is an overlay at all.
     pub fn open_approval(&mut self, ask: Ask) {
         self.approval = Some(Approval::new(ask));
+    }
+
+    /// The posture in force.
+    pub fn posture(&self) -> Option<Posture> {
+        self.posture
+    }
+
+    /// Say which posture the session started under. The status line follows it.
+    pub fn set_posture(&mut self, posture: Option<Posture>) {
+        self.posture = posture;
+        self.status.policy = Some(match posture {
+            Some(posture) => posture.short().to_string(),
+            None => "custom".to_string(),
+        });
+    }
+
+    /// Move to the next posture. One key, no menu, always visible — and it takes
+    /// effect on the next turn, because io-harness takes a policy per turn and has
+    /// no way to change one mid-flight.
+    fn cycle_posture(&mut self) -> Command {
+        let next = match self.posture {
+            Some(posture) => posture.next(),
+            // From a policy that is none of the three, the first press lands on the
+            // first one rather than on nothing.
+            None => Posture::Workspace,
+        };
+        self.set_posture(Some(next));
+        self.say(
+            Tone::Muted,
+            format!("policy:{} — {}", next.short(), next.detail()),
+        );
+        Command::None
     }
 
     /// Whether a question is on screen.
@@ -224,6 +265,15 @@ impl App {
         }
         match (key.code, control) {
             (KeyCode::Char('c'), true) => self.interrupt_or_quit(),
+            // Two spellings of one key. A terminal without the Kitty keyboard
+            // protocol sends `BackTab` with no modifier; one that has negotiated it
+            // sends `Tab` with shift. Binding either alone ships a key that works
+            // on the developer's terminal and silently does nothing on somebody
+            // else's, which is worse than not shipping it.
+            (KeyCode::BackTab, _) => self.cycle_posture(),
+            (KeyCode::Tab, _) if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.cycle_posture()
+            }
             // Only on an empty composer, so it never discards something typed.
             (KeyCode::Char('d'), true) if self.composer.is_empty() => Command::Exit,
             (KeyCode::Char('d'), true) => Command::None,

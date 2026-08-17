@@ -92,7 +92,9 @@ writes no key to disk at all.
 | `Up / Down` | walk prompt history |
 | `Ctrl+C` | interrupt the turn; twice at an empty prompt, exit |
 | `Ctrl+D` | exit, on an empty prompt |
+| `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
+| `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
 
 <!-- keys:end -->

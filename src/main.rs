@@ -24,7 +24,7 @@ use io_cli::app::{App, Command};
 use io_cli::cli::{Cli, Command as Subcommand};
 use io_cli::commands::{self, Action};
 use io_cli::picker::{Outcome, Picker, Row};
-use io_cli::settings::{self, CliSettings};
+use io_cli::settings::{self, CliSettings, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
@@ -236,6 +236,10 @@ async fn loop_over<P: Provider>(
     model: String,
 ) -> Result<(), String> {
     let mut app = App::new(theme, model);
+    // What the file already says, read back rather than assumed. `None` means the
+    // file holds a policy that is none of the three, which io-harness's own
+    // configuration can express and this session must not relabel.
+    app.set_posture(Posture::of(&policy.defaults));
     let started = Instant::now();
     let mut picker: Option<(Picker, Pick)> = None;
 
@@ -346,7 +350,7 @@ async fn loop_over<P: Provider>(
                 // as the operator answers and the harness's own `remember` dies
                 // with the turn it was given in. With nothing remembered this is
                 // the session's policy unchanged.
-                let effective = approval::effective_policy(&policy, app.remembered());
+                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
                 turn(
                     screen,
                     inputs,

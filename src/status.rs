@@ -61,6 +61,14 @@ pub struct Status {
     pub model: String,
     /// Whether a turn is running.
     pub working: bool,
+    /// The permission posture in force, by its short name — or `None` before one
+    /// is known, which is the wizard's first moments and nothing else.
+    ///
+    /// It is a *posture*, which is an `io_harness::Defaults` set, and never a flag
+    /// of io-cli's own. That is what makes this field an explanation rather than a
+    /// decoration: the word here is the same thing the agent is actually bounded
+    /// by, and a refusal can name the rule and the layer underneath it.
+    pub policy: Option<String>,
     /// How long the session has been open.
     pub elapsed: Duration,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
@@ -72,6 +80,7 @@ impl Status {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            policy: None,
             working: false,
             elapsed: Duration::ZERO,
             frame: 0,
@@ -104,11 +113,15 @@ impl Status {
             (true, None) => Field::new("working", Tone::Normal),
             (false, _) => Field::new("ready", Tone::Muted),
         };
-        vec![
-            Field::new(self.model.clone(), Tone::Accent),
-            state,
-            Field::new(format_elapsed(self.elapsed), Tone::Muted),
-        ]
+        let mut fields = vec![Field::new(self.model.clone(), Tone::Accent)];
+        // Second, and the last field to be dropped after the model. What the agent
+        // is allowed to do outranks how long it has been doing it.
+        if let Some(policy) = &self.policy {
+            fields.push(Field::new(format!("policy:{policy}"), Tone::Normal));
+        }
+        fields.push(state);
+        fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
+        fields
     }
 
     /// The line, fitted to `width` by dropping whole fields from the right.
