@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use io_cli::app::App;
 use io_cli::status::{format_elapsed, Status};
-use io_cli::theme::{DARK, PLAIN};
+use io_cli::theme::{DARK, MONO};
 use io_harness::{EventKind, RunEvent};
 
 /// A run event at step zero, which is where everything but a step sits.
@@ -58,7 +58,7 @@ fn the_running_state_is_a_word_and_not_only_a_colour() {
 
     // The same under NO_COLOR, where the tone carries nothing at all.
     let plain: String = status
-        .line(80, &PLAIN)
+        .line(80, &MONO)
         .spans
         .iter()
         .map(|span| span.content.as_ref())
@@ -107,7 +107,7 @@ fn f4_no_color_keeps_the_word_and_drops_the_animation() {
 
     for tick in 0..SPINNER_LEN {
         let plain: String = status
-            .line(80, &PLAIN)
+            .line(80, &MONO)
             .spans
             .iter()
             .map(|span| span.content.as_ref())

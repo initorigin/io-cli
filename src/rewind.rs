@@ -36,6 +36,7 @@
 //! single-turn case — where the parent is `None` — is the one that needs the
 //! explanation in [`last_turn`]'s own documentation.
 
+use crate::glyphs::Glyphs;
 use crate::theme::Tone;
 use io_harness::tools::Workspace;
 use io_harness::{rewind_run, Error, Rewind, Session, Store};
@@ -252,11 +253,15 @@ pub fn last_turn(session: &mut Session, store: &Store) -> Result<Option<Undone>,
 /// before were rows *drawn in the viewport*, where there is no second line to
 /// wrap onto. A test pins this so the distinction is checked and not merely
 /// argued.
-pub fn armed_line(about: &Preview) -> String {
+pub fn armed_line(about: &Preview, glyphs: &Glyphs) -> String {
     format!(
-        "undo “{}”? Esc again puts its files back as they were BEFORE that turn — \
-         anything you have edited by hand since is lost. Any other key cancels.",
-        crate::picker::fit(about.prompt.trim(), QUOTED_PROMPT)
+        "undo {open}{}{close}? Esc again puts its files back as they were BEFORE \
+         that turn {dash} anything you have edited by hand since is lost. Any \
+         other key cancels.",
+        crate::picker::fit(about.prompt.trim(), QUOTED_PROMPT, glyphs),
+        open = glyphs.quote_open,
+        close = glyphs.quote_close,
+        dash = glyphs.dash,
     )
 }
 
@@ -269,12 +274,13 @@ pub fn armed_line(about: &Preview) -> String {
 ///
 /// Every number here is read off the `Undone` the harness's own return value
 /// produced. Nothing lists the workspace to check.
-pub fn undone_lines(undone: &Undone) -> Vec<(Tone, String)> {
+pub fn undone_lines(undone: &Undone, glyphs: &Glyphs) -> Vec<(Tone, String)> {
+    let (open, close, dash) = (glyphs.quote_open, glyphs.quote_close, glyphs.dash);
     let mut lines = Vec::new();
     for (path, why) in &undone.declined {
         lines.push((
             Tone::Warning,
-            format!("left as the turn left it: {path} — {why}"),
+            format!("left as the turn left it: {path} {dash} {why}"),
         ));
     }
     lines.push((
@@ -314,15 +320,15 @@ pub fn undone_lines(undone: &Undone) -> Vec<(Tone, String)> {
         // later should not have to scroll up one line to learn what went.
         match undone.head {
             Some(_) => format!(
-                "“{}” is undone; the conversation continues from the turn before it",
-                crate::picker::fit(undone.prompt.trim(), QUOTED_PROMPT)
+                "{open}{}{close} is undone; the conversation continues from the turn before it",
+                crate::picker::fit(undone.prompt.trim(), QUOTED_PROMPT, glyphs)
             ),
             // Said in words rather than left to be inferred from silence: this is
             // the case `Session::branch_from` cannot express, and the one nobody
             // tries by hand.
             None => format!(
-                "“{}” is undone; this conversation is back to having said nothing",
-                crate::picker::fit(undone.prompt.trim(), QUOTED_PROMPT)
+                "{open}{}{close} is undone; this conversation is back to having said nothing",
+                crate::picker::fit(undone.prompt.trim(), QUOTED_PROMPT, glyphs)
             ),
         },
     ));

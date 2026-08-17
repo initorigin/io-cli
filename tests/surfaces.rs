@@ -23,6 +23,7 @@ use io_cli::app::{App, Command};
 use io_cli::clipboard;
 use io_cli::commands::{parse, Action, Copied};
 use io_cli::diff::MAX_BODY_LINES;
+use io_cli::keys::Keys;
 use io_cli::term::VIEWPORT_HEIGHT;
 use io_cli::theme::DARK;
 use io_cli::transcript::{self, BRANCHED_AWAY};
@@ -331,7 +332,7 @@ async fn f10_the_transcript_shows_the_branched_away_turn_and_labels_it_after_its
 #[test]
 fn f11_copy_resolves_to_the_answer_and_copy_diff_and_copy_patch_both_to_the_patch() {
     assert_eq!(
-        parse("copy", &DARK),
+        parse("copy", &Keys::default(), &DARK),
         Action::Copy(Copied::Answer),
         "a bare /copy is the last answer, which is what a reader who just read one wants",
     );
@@ -341,7 +342,7 @@ fn f11_copy_resolves_to_the_answer_and_copy_diff_and_copy_patch_both_to_the_patc
     // rather than reporting that the command was not understood.
     for spelling in ["copy diff", "copy patch"] {
         assert_eq!(
-            parse(spelling, &DARK),
+            parse(spelling, &Keys::default(), &DARK),
             Action::Copy(Copied::Diff),
             "/{spelling} must reach the patch",
         );

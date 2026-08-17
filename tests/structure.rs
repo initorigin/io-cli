@@ -93,8 +93,24 @@ fn n3_never_clears_the_whole_screen_during_a_session() {
 #[test]
 fn every_frame_is_wrapped_in_synchronized_output() {
     let (mut screen, recorder) = support::screen(100, 30);
-    screen.draw(|_| {}).expect("frame");
-    screen.draw(|_| {}).expect("frame");
+    // The two frames must DIFFER, and that is 0.6.0's doing rather than an
+    // arbitrary choice. Since F6 a frame whose content matches the one on screen
+    // is not drawn at all, so two empty frames would produce one begin and this
+    // test would read the skip as a missing wrapper — a green-to-red for the
+    // opposite of the reason it exists. What it is actually about is that every
+    // frame io-cli *does* draw is wrapped, so the frames are given something to
+    // differ by.
+    for word in ["ready", "working"] {
+        screen
+            .draw(|frame| {
+                // `frame.area()` and not a rectangle of the test's own: an inline
+                // viewport sits at the bottom of the terminal, so its area has a
+                // non-zero origin and anything drawn at row zero is outside the
+                // buffer.
+                frame.render_widget(ratatui::widgets::Paragraph::new(word), frame.area());
+            })
+            .expect("frame");
+    }
     drop(screen);
 
     let text = recorder.text();

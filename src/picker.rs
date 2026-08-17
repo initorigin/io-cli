@@ -13,17 +13,23 @@
 //! It lives in the viewport, never in scrollback. A choice that has scrolled away
 //! cannot be answered.
 
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::glyphs::Glyphs;
 use crate::theme::{Theme, Tone};
 
-/// The marker in front of the selected row. Two cells, and a word — `>` is also
-/// what the composer uses, so the two never appear at once.
-const MARKER: &str = "› ";
+/// What an unselected row is drawn with: exactly the width of
+/// [`crate::glyphs::Glyphs::marker`], in either set, so the labels line up in a
+/// column whatever the terminal can draw.
+///
+/// The marker itself comes off the chosen set. Under the ASCII set it is `> `,
+/// which is also [`crate::composer::PROMPT`] — the same collision the Unicode
+/// marker's note has always described, and safe for the same reason: this widget
+/// is drawn *instead of* the composer, so the two never appear at once.
 const UNMARKED: &str = "  ";
 
 /// One choice.
@@ -104,6 +110,22 @@ impl Picker {
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
+        // `Ctrl+C` leaves, exactly as `Esc` does. The picker owns the keyboard
+        // while it is open, and the shipped keybinding table promises `Ctrl+C`
+        // interrupts the turn and exits from an empty prompt — a picker that
+        // swallowed it would make the documentation describe a trap, with the
+        // only way out a key the table never names.
+        //
+        // Backing out rather than a second, picker-only meaning: the press
+        // closes the overlay and the one after it reaches the app, where the
+        // table's meaning is the one that applies. This is the approval
+        // overlay's answer (`App::key`, which exempts `Ctrl+C` from the open
+        // question) reached from the other side — the approval interrupts and
+        // the question is denied as a consequence; here there is nothing to
+        // interrupt, so backing out *is* the whole consequence.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Outcome::Cancelled;
+        }
         match key.code {
             // Clamped at both ends rather than wrapping, for the same reason the
             // composer's history is: a list that jumps from the last row to the
@@ -144,8 +166,17 @@ impl Picker {
             return;
         }
 
+        // Everything this widget draws is fitted to the area, including the two
+        // things that used to be handed to ratatui raw: the title and the label.
+        // A `Paragraph` in the viewport does not wrap and does not complain — it
+        // clips the row and draws nothing to say so — so an unfitted title was a
+        // question with its second half missing, and an unfitted label was a
+        // choice whose identifying tail was gone. `/resume` and `/fork` avoided
+        // both only because `sessions::rows` happened to shorten them first,
+        // which is a property of one caller and not of the widget.
+        let width = area.width as usize;
         let mut lines = vec![Line::from(Span::styled(
-            self.title.clone(),
+            fit(&self.title, width, &theme.glyphs),
             theme.style(Tone::Muted),
         ))];
 
@@ -160,11 +191,30 @@ impl Picker {
             .take(visible.max(1))
         {
             let chosen = index == self.selected;
-            let marker = if chosen { MARKER } else { UNMARKED };
+            let marker = if chosen {
+                theme.glyphs.marker
+            } else {
+                UNMARKED
+            };
+            // Fitted to what the marker leaves, never to the whole row. The
+            // marker is the only thing on screen that says which choice Enter
+            // would take, and it is drawn first — so a label fitted to the full
+            // width pushes exactly its own marker's worth of characters off the
+            // right-hand edge, on the selected row, where it matters most. The
+            // reservation is `marker` rather than a literal two because that is
+            // the string actually about to be drawn; the two sets agree on its
+            // width today and this does not depend on them continuing to.
+            let marker_width = marker.chars().count();
+            let label = fit(
+                &row.label,
+                width.saturating_sub(marker_width),
+                &theme.glyphs,
+            );
+            let label_width = label.chars().count();
             let mut spans = vec![
                 Span::styled(marker, theme.style(Tone::Accent)),
                 Span::styled(
-                    row.label.clone(),
+                    label,
                     theme.style(if chosen { Tone::Accent } else { Tone::Normal }),
                 ),
             ];
@@ -172,11 +222,20 @@ impl Picker {
                 // Fitted rather than wrapped. A row that wraps makes the list
                 // stop being a list, and the label is the part that has to
                 // survive — which is why the detail is what gets cut.
-                let used = marker.chars().count() + row.label.chars().count() + 2;
-                if let Some(room) = (area.width as usize).checked_sub(used) {
+                //
+                // Measured off the **fitted** label, which is the string actually
+                // about to be drawn. A budget that counts anything other than what
+                // reaches the buffer is a budget that disagrees with the row by
+                // however much they differ — and this budget being one cell out is
+                // precisely how an ellipsis ends up on the floor.
+                let used = marker_width + label_width + 2;
+                if let Some(room) = width.checked_sub(used) {
                     if room > 1 {
                         spans.push(Span::styled("  ", theme.style(Tone::Muted)));
-                        spans.push(Span::styled(fit(detail, room), theme.style(Tone::Muted)));
+                        spans.push(Span::styled(
+                            fit(detail, room, &theme.glyphs),
+                            theme.style(Tone::Muted),
+                        ));
                     }
                 }
             }
@@ -184,6 +243,32 @@ impl Picker {
         }
 
         frame.render_widget(Paragraph::new(lines), area);
+
+        // The real terminal cursor goes on the selected row, and it is put there
+        // here rather than by any of the callers. ratatui hides the cursor on any
+        // frame that does not set a position, and this widget is drawn *instead
+        // of* the composer — `paint_picker` renders the open picker in place of
+        // the app — so an open picker used to be a frame with no caret anywhere
+        // on it. A hidden cursor removes the only focus indicator a screen reader
+        // has, at the one moment the operator is being asked to choose. Owning it
+        // in the widget that owns the selection is what makes it unforgettable,
+        // exactly as `Composer::render` owns its insertion point.
+        //
+        // At the **start of the label** rather than on the marker: the marker is
+        // decoration and the label is what identifies the choice, so a reader
+        // following the caret lands on the word that says what pressing Enter
+        // would do.
+        //
+        // The row is measured from `offset`, which `scroll_to_selection` has
+        // already moved, so a selection in a scrolled list is placed where it was
+        // actually drawn and not where an unscrolled list would have put it.
+        let row = (self.selected.saturating_sub(self.offset) + 1)
+            .min(area.height.saturating_sub(1) as usize) as u16;
+        frame.set_cursor_position(Position {
+            x: (area.x + theme.glyphs.marker.chars().count() as u16)
+                .min(area.right().saturating_sub(1)),
+            y: area.y + row,
+        });
     }
 
     fn scroll_to_selection(&mut self, visible: usize) {
@@ -202,16 +287,32 @@ impl Picker {
 ///
 /// Public because the approval overlay fits a path and a line of file content
 /// with it. One fitting rule in the product, so a shortened row and a shortened
-/// target are shortened the same way and by the same character.
-pub fn fit(text: &str, room: usize) -> String {
+/// target are shortened the same way and by the same mark.
+///
+/// **The mark's own width is measured, never assumed, and this is the whole of
+/// why.** Until 0.6.0 the ellipsis was one character and this function reserved
+/// exactly one for it. The ASCII set spells it `...`, which is three — so a
+/// fitter that kept the old reservation would have returned a string two cells
+/// wider than the room it was given, on every shortened row of every surface at
+/// once. ratatui clips a viewport row silently, so the symptom would have been
+/// load-bearing text disappearing off the right-hand edge with nothing on screen
+/// to say so, which is the same failure this product has now shipped three times.
+/// The result of this function is `room` characters or fewer, always.
+///
+/// At a room too small for the mark itself the mark is what gets cut, and the
+/// text does not appear at all. A fragment of a word in two cells is not
+/// information; two dots at least say that something was there.
+pub fn fit(text: &str, room: usize, glyphs: &Glyphs) -> String {
     if text.chars().count() <= room {
         return text.to_string();
     }
-    // Counted in characters, and the ellipsis is one character rather than three
-    // dots, so a shortened row and a full one are the same width.
-    let keep = room.saturating_sub(1);
-    let mut out: String = text.chars().take(keep).collect();
-    out.push('…');
+    let mark = glyphs.ellipsis;
+    let width = mark.chars().count();
+    if room <= width {
+        return mark.chars().take(room).collect();
+    }
+    let mut out: String = text.chars().take(room - width).collect();
+    out.push_str(mark);
     out
 }
 
@@ -221,13 +322,20 @@ pub fn fit(text: &str, room: usize) -> String {
 /// shares its first several segments, so shortening a path from the right keeps
 /// the part that is the same on every row and drops the part that identifies it.
 /// `/Users/someone/code/io-cli` matters; `/Users/someone/co…` does not.
-pub fn fit_left(text: &str, room: usize) -> String {
+///
+/// Bounded by `room` on the same terms as [`fit`], and for the same reason.
+pub fn fit_left(text: &str, room: usize, glyphs: &Glyphs) -> String {
     let count = text.chars().count();
     if count <= room {
         return text.to_string();
     }
-    let keep = room.saturating_sub(1);
-    let mut out = String::from("…");
+    let mark = glyphs.ellipsis;
+    let width = mark.chars().count();
+    if room <= width {
+        return mark.chars().take(room).collect();
+    }
+    let keep = room - width;
+    let mut out = String::from(mark);
     out.extend(text.chars().skip(count - keep));
     out
 }

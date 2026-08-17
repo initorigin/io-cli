@@ -18,7 +18,7 @@ use io_harness::{Act, ApprovalContext, Approver, Decision, Request};
 
 use io_cli::app::App;
 use io_cli::approval::{self, Approval, Ask};
-use io_cli::theme::DARK;
+use io_cli::theme::{Tone, DARK};
 
 fn write() -> Request {
     Request::new(Act::Write, "src/main.rs").with_content("fn main() {}\n")
@@ -586,6 +586,175 @@ async fn f7_no_file_other_than_the_request_s_own_target_is_read() {
         !drawn.contains("NEVERREADTHISFILE"),
         "a file the request never named reached the screen: {drawn}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// F4 — every tone that means something renders its word, asserted over the whole
+// `Tone` enum rather than over the site that was wrong.
+// ---------------------------------------------------------------------------
+
+/// Where a tone's meaning is said out loud.
+///
+/// The point of naming this per variant is that F4 is a property of the *enum*,
+/// not of the approval overlay. `carrier` below is an exhaustive `match`, so a
+/// variant added to `Tone` stops this file compiling until somebody says which
+/// surface carries its word — and a tone that has a word but is called
+/// decoration, or the reverse, fails the test rather than the compiler. Which is
+/// the failure that was actually shipping: `Tone::Warning` had a word all along,
+/// and the overlay's act was drawn with a bare `Span::styled` that never used it.
+enum Carrier {
+    /// `word()` is `None`. Presentation only — a diff line's `+`, the accent on a
+    /// selection — and forcing a word onto one would put "accent" in front of
+    /// every prompt.
+    Decoration,
+    /// The approval overlay's act row. The one surface F4 exists for.
+    Overlay,
+    /// A line committed to the terminal's scrollback, which is where the other
+    /// three states reach a reader.
+    Transcript,
+}
+
+fn carrier(tone: Tone) -> Carrier {
+    match tone {
+        Tone::Normal | Tone::Muted | Tone::Accent => Carrier::Decoration,
+        // A diff line already carries its meaning in the `+` or `-` the harness
+        // put on it, and a syntax colour means nothing on its own to carry.
+        Tone::Added | Tone::Removed | Tone::Keyword | Tone::StringLiteral | Tone::Literal => {
+            Carrier::Decoration
+        }
+        Tone::Warning => Carrier::Overlay,
+        Tone::Success | Tone::Error | Tone::Refused => Carrier::Transcript,
+    }
+}
+
+/// Every variant, written out because Rust cannot enumerate an enum from
+/// outside it. The exhaustive `match` above is what stops a new tone arriving
+/// unanswered; this list is what stops one arriving unasserted, and the two are
+/// kept adjacent on purpose so a variant added to one is added to the other.
+const EVERY_TONE: &[Tone] = &[
+    Tone::Normal,
+    Tone::Muted,
+    Tone::Accent,
+    Tone::Success,
+    Tone::Warning,
+    Tone::Error,
+    Tone::Refused,
+    Tone::Added,
+    Tone::Removed,
+    Tone::Keyword,
+    Tone::StringLiteral,
+    Tone::Literal,
+];
+
+/// The overlay's act row as a reader sees it: drawn through a real screen at
+/// eighty columns, with a path long enough that the row has to be fitted.
+///
+/// Fitted on purpose. A word that is only present on a wide terminal is not a
+/// carrier — the question is whether it survives the cut, and the only way to
+/// ask that is to make the cut happen.
+async fn act_row_at_eighty() -> String {
+    let (ask, deciding) = asked(
+        Request::new(
+            Act::Write,
+            "crates/some-rather-long-crate-name/src/subsystem/module/implementation.rs",
+        )
+        .with_content("fn main() {}\n"),
+        ApprovalContext::new("tidy the parser")
+            .flagged_by(Some("crates/**/*.rs".into()), Some("app".into())),
+    )
+    .await;
+
+    let approval = Approval::new(ask, std::path::Path::new(""));
+    let (mut screen, _recorder) = support::screen(80, 24);
+    screen
+        .draw(|frame| approval.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    // The first row the overlay draws is the act row; F2 pins that order.
+    let row = screen
+        .viewport_text()
+        .lines()
+        .next()
+        .expect("the overlay drew something")
+        .to_string();
+
+    approval.answer(approval::Answer::Deny);
+    deciding.await.expect("the approver did not panic");
+    row
+}
+
+/// **F4.** Every tone whose `word()` is `Some` reaches a reader with that word
+/// beside it, on a surface that was actually rendered.
+///
+/// Asserted over the enum rather than over the overlay, because the defect this
+/// replaces was not that one call site was wrong — it was that nothing stopped a
+/// call site from being wrong. A tone added tomorrow either names a carrier here
+/// or does not compile.
+#[tokio::test]
+async fn f4_every_tone_that_means_something_renders_its_word() {
+    for &tone in EVERY_TONE {
+        match (tone.word(), carrier(tone)) {
+            // Nothing to say, and nothing must be made up to say.
+            (None, Carrier::Decoration) => {}
+
+            (Some(word), Carrier::Overlay) => {
+                let row = act_row_at_eighty().await;
+                assert!(
+                    row.contains(word),
+                    "the overlay's act is {tone:?} and the row it draws never says \
+                     {word:?}, so with colour off nothing on it says a decision is \
+                     being asked for: {row:?}",
+                );
+                let at = |needle: &str| {
+                    row.find(needle)
+                        .unwrap_or_else(|| panic!("{needle:?} is not on the row: {row:?}"))
+                };
+                assert!(
+                    at(word) < at("write"),
+                    "the word has to lead the act: trailing it puts it where the fit \
+                     cuts, which is a carrier that disappears exactly when the row is \
+                     hardest to read: {row:?}",
+                );
+                // The fit really did bite, so the assertion above is about a cut
+                // row rather than about a row that happened to fit whole.
+                assert!(
+                    row.contains('…'),
+                    "the fixture path is meant to be too long for eighty columns: {row:?}",
+                );
+                assert!(
+                    row.chars().count() <= 80,
+                    "the word must not push the row past the supported width: {row:?}",
+                );
+            }
+
+            (Some(word), Carrier::Transcript) => {
+                let mut app = App::new(DARK, "opus-5");
+                app.say(tone, "write to /etc/hosts");
+                let text: String = app
+                    .take_pending()
+                    .iter()
+                    .flat_map(|line| line.spans.iter())
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                assert!(
+                    text.contains(word),
+                    "a committed {tone:?} line never says {word:?}: {text:?}",
+                );
+                assert!(
+                    text.contains("write to /etc/hosts"),
+                    "the word replaced the line instead of accompanying it: {text:?}",
+                );
+            }
+
+            (Some(_), Carrier::Decoration) => panic!(
+                "{tone:?} carries a word and no surface renders it — a state told \
+                 apart by colour alone",
+            ),
+            (None, _) => panic!(
+                "{tone:?} is decoration and has no word to carry; a surface that \
+                 prefixes one is inventing a meaning",
+            ),
+        }
+    }
 }
 
 #[tokio::test]

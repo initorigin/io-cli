@@ -25,6 +25,7 @@
 //! clock — which `tests/timing.rs` forbids outright, and which a resume picker is
 //! the most tempting surface yet shipped to break.
 
+use io_cli::glyphs::UNICODE;
 use io_cli::sessions::{cut_note, recent, rows, MAX_RUNS_SCANNED, MAX_SESSIONS};
 use io_harness::Store;
 
@@ -383,7 +384,7 @@ fn n5_at_eighty_columns_a_long_path_keeps_its_end() {
     );
 
     let (list, _) = recent(&store).expect("the list reads");
-    let fitted = rows(&list, 80);
+    let fitted = rows(&list, 80, &UNICODE);
     let row = &fitted[0];
     let detail = row.detail.as_deref().expect("a session row has a detail");
 
@@ -430,7 +431,7 @@ fn n5_the_detail_leads_with_the_workspace() {
 
     let (list, _) = recent(&store).expect("the list reads");
     let stamp = list[0].at.clone();
-    let detail = rows(&list, 80)[0]
+    let detail = rows(&list, 80, &UNICODE)[0]
         .detail
         .clone()
         .expect("a session row has a detail");

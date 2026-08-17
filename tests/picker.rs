@@ -53,6 +53,27 @@ fn enter_chooses_and_escape_backs_out() {
 }
 
 #[test]
+fn control_c_backs_out_exactly_as_escape_does() {
+    // The keybinding table promises `Ctrl+C` interrupts, and exits from an empty
+    // prompt. A picker owns the keyboard while it is open, so a `Ctrl+C` it
+    // swallows makes that promise false and leaves the only way out of the
+    // overlay a key the table never mentions.
+    let mut picker = providers();
+    picker.key(key(KeyCode::Down));
+    assert_eq!(
+        picker.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Outcome::Cancelled,
+    );
+    // The same outcome as `Esc`, deliberately: the picker closes and the next
+    // press reaches the app, where `Ctrl+C` means what the table says.
+    assert_eq!(picker.key(key(KeyCode::Esc)), Outcome::Cancelled);
+    // Unmodified `c` is not a way out — it is a letter, and one day a filter.
+    let mut picker = providers();
+    assert_eq!(picker.key(key(KeyCode::Char('c'))), Outcome::Idle);
+    assert_eq!(picker.selected(), 0);
+}
+
+#[test]
 fn an_empty_picker_cannot_be_chosen_from() {
     let mut picker = Picker::new("Nothing here", vec![]);
     assert_eq!(picker.key(key(KeyCode::Enter)), Outcome::Idle);

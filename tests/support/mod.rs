@@ -32,6 +32,7 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
+use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use io_harness::provider::{CompletionRequest, CompletionResponse, ToolCall};
 use io_harness::tools::WRITE_FILE_TOOL;
 use io_harness::Provider;
@@ -390,6 +391,25 @@ fn quoted(text: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// How many keyboard-protocol pushes and pops the recorded byte stream carries.
+///
+/// Deliberately not a [`FORBIDDEN`] entry, and the difference is the point.
+/// `FORBIDDEN` is a list of sequences that must never appear at all; a keyboard
+/// push is allowed to appear — it is what F7 asks for on a terminal that
+/// advertises the protocol — and what has to hold is that it *balances*. A push
+/// with no pop leaves the terminal in a mode io-cli chose, in a shell io-cli no
+/// longer owns.
+///
+/// The sequences come from crossterm through [`io_cli::term::sequence`] rather
+/// than from two escape strings typed in here, so a crossterm that changed what
+/// it emits fails this rather than passing it by counting zero of both.
+pub fn keyboard_balance(recorder: &Recorder) -> (usize, usize) {
+    let text = recorder.text();
+    let pushed = io_cli::term::sequence(PushKeyboardEnhancementFlags(io_cli::term::KEYBOARD_FLAGS));
+    let popped = io_cli::term::sequence(PopKeyboardEnhancementFlags);
+    (text.matches(&pushed).count(), text.matches(&popped).count())
 }
 
 /// The escape sequences F5 forbids, with the names the contract uses.

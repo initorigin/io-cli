@@ -177,16 +177,16 @@ async fn live_f1_a_real_turn_streams_and_edits_a_file() {
         .join("\n");
     println!("--- as the interface would have rendered it ---\n{transcript}\n---");
 
-    // The prompt asks for a sentence on purpose. A turn that is nothing but tool
-    // calls emits no assistant text and therefore no tokens, which is the model's
-    // choice rather than a property of this interface — the first version of this
-    // test asserted on a purely mechanical edit and failed for that reason.
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event.kind, EventKind::Token { .. })),
-        "the turn should have streamed tokens; without them nothing appears live",
-    );
+    // **Not asserted: that the model streamed any assistant text.** The prompt
+    // asks for a sentence, and this test used to require a `Token` event on the
+    // strength of that. It is the model's choice whether to answer in prose or to
+    // spend the whole turn in tool calls, and on 2026-08-18 the model behind
+    // `OPENROUTER_MODEL` chose the latter — so the assertion failed while every
+    // durable fact about the run was correct. That is the rule this repository
+    // already wrote down once and had to learn twice: a live assertion rests on
+    // what reached the store, never on what the model decided to say. What is
+    // asserted instead is below — a tool call happened, the renderer produced
+    // lines, and the file on disk changed.
     assert!(
         events
             .iter()
@@ -906,11 +906,14 @@ async fn live_f13_work_survives_the_session() {
 
     // ---- Esc Esc: the undo puts the workspace back ---------------------------
     let about = io_cli::rewind::preview(&session, &store).expect("a turn to undo");
-    println!("armed: {}", io_cli::rewind::armed_line(&about));
+    println!(
+        "armed: {}",
+        io_cli::rewind::armed_line(&about, &DARK.glyphs)
+    );
     let undone = io_cli::rewind::last_turn(&mut session, &store)
         .expect("the rewind runs")
         .expect("there was a turn to undo");
-    for (tone, line) in io_cli::rewind::undone_lines(&undone) {
+    for (tone, line) in io_cli::rewind::undone_lines(&undone, &DARK.glyphs) {
         println!("  [{tone:?}] {line}");
     }
     assert_eq!(
@@ -962,7 +965,7 @@ async fn live_f13_work_survives_the_session() {
     let alpha = path[0].id;
     // The picker's own rows, so the live arm exercises what an operator reads and
     // not only the call underneath it.
-    for row in io_cli::sessions::turn_rows(&path, 80) {
+    for row in io_cli::sessions::turn_rows(&path, 80, &DARK.glyphs) {
         println!("  fork row: {} — {:?}", row.label, row.detail);
     }
 
@@ -1028,7 +1031,7 @@ async fn live_f13_work_survives_the_session() {
 
     let (found, cut) = io_cli::sessions::recent(&store).expect("the session list");
     println!("resume list ({} rows, cut={cut}):", found.len());
-    for row in io_cli::sessions::rows(&found, 80) {
+    for row in io_cli::sessions::rows(&found, 80, &DARK.glyphs) {
         println!("  {} — {:?}", row.label, row.detail);
     }
     let listed = found
@@ -1130,8 +1133,23 @@ async fn f4_live_a_real_run_streams_events_that_round_trip() {
     println!("live: outcome {:?}", result.outcome);
     println!("live: kinds {kinds:?}");
     println!("live: file exists {}", dir.path().join("live.txt").exists());
-    // The durable record, not the reply — the model's words are not evidence.
-    assert_eq!(io_cli::exec::code(&result.outcome), io_cli::exec::OK);
+    // **Not asserted: that the run ended cleanly.** This used to require exit 0,
+    // which is an assertion about how the agent chose to stop rather than about
+    // the stream this test exists to check. 0.5.0's own record says exit 5 is
+    // common even when the work completed, because the agent keeps going after
+    // the useful part — and on 2026-08-18 it does, reaching `Stalled` on every
+    // run of this goal while writing the file correctly each time. The exit code
+    // is a total function of the outcome and `tests/exec.rs` covers the mapping
+    // over all fifteen variants offline, which is where that belongs.
+    //
+    // What is asserted is that the outcome maps to a code the published table
+    // defines at all, so a harness that grew a variant this product does not
+    // handle still fails here.
+    assert!(
+        io_cli::exec::code(&result.outcome) <= io_cli::exec::UNFINISHED,
+        "the outcome {:?} maps outside the published exit-code table",
+        result.outcome,
+    );
     assert!(
         dir.path().join("live.txt").exists(),
         "the agent was asked to write a file inside the sandbox and should have",

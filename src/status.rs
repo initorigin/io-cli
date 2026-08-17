@@ -19,14 +19,7 @@ use ratatui::Frame;
 
 use crate::theme::{Theme, Tone};
 
-/// What separates two fields. Spaced, because a bare separator between two words
-/// reads as punctuation inside one of them.
-///
-/// Public because the step line separates its own parts with it. One separator in
-/// the product, so a transcript and the status line under it read as one surface.
-pub const SEPARATOR: &str = " · ";
-
-/// The frames of the working indicator.
+/// The frames of the working indicator, in the Unicode set.
 ///
 /// Braille, because every frame is exactly one cell wide — a spinner built from
 /// characters of differing width shifts the whole line right and left as it turns,
@@ -35,6 +28,11 @@ pub const SEPARATOR: &str = " · ";
 ///
 /// It never carries a meaning of its own. The state is the word beside it, and
 /// this is only the evidence that the word is still true.
+///
+/// Reached through [`crate::glyphs::Glyphs::spinner`] rather than named directly
+/// by the renderer, so a terminal that cannot draw braille turns
+/// [`crate::glyphs::ASCII_SPINNER`] instead — which is held to the same one-cell
+/// rule, for the same reason.
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// A field of the status line, in priority order: the first is the last to be
@@ -93,6 +91,20 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// Whether this session runs in plain mode.
+    ///
+    /// It lives on the status line rather than beside it because the status line
+    /// is the only surface in this product that animates — so this is the field
+    /// the mode is *about*, and putting it here means there is one boolean in the
+    /// session rather than two that have to agree. [`crate::app::App`] reads it
+    /// back off this struct for the same reason.
+    ///
+    /// A separate axis from the theme's colour, and from the glyph set. A
+    /// monochrome terminal is not a reason to still the indicator, and a terminal
+    /// that cannot draw braille gets an ASCII spinner that turns perfectly well —
+    /// `NO_COLOR` and the ASCII set are both about what can be *drawn*, and this
+    /// is about whether anything should *move*.
+    pub plain: bool,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
     /// the clock: an indicator that read the time would be a second timer.
     frame: usize,
@@ -108,6 +120,7 @@ impl Status {
             containment: None,
             working: false,
             elapsed: Duration::ZERO,
+            plain: false,
             frame: 0,
         }
     }
@@ -123,8 +136,19 @@ impl Status {
     /// `None` under `NO_COLOR`, where an animation is noise a reader cannot use —
     /// and `None` when nothing is running, because a session that spins while it
     /// waits for a prompt is lying about being busy.
+    ///
+    /// **`None` in plain mode, which is the whole of the animation half of F1.**
+    /// This is the one gate: the frames are reached through here and nowhere
+    /// else, so a mode threaded to every other surface and missed here would
+    /// still turn — which is the exact shape the criterion's sabotage arm names,
+    /// and the reason this method is what `tests/plain.rs` asserts on directly
+    /// rather than only through the bytes it eventually produces.
     pub fn indicator(&self, theme: &Theme) -> Option<char> {
-        (self.working && theme.coloured).then(|| SPINNER[self.frame % SPINNER.len()])
+        let frames = theme.glyphs.spinner;
+        if self.plain || !self.working || !theme.coloured || frames.is_empty() {
+            return None;
+        }
+        Some(frames[self.frame % frames.len()])
     }
 
     /// The fields, most important first.
@@ -168,6 +192,12 @@ impl Status {
     pub fn line(&self, width: u16, theme: &Theme) -> Line<'static> {
         let fields = self.fields(theme);
         let width = width as usize;
+        // Measured off the chosen set rather than off a constant. Both sets spell
+        // the separator in three cells, so the arithmetic below lands on the same
+        // answer either way — but a set that did not would have shifted every
+        // drop decision on this line, and this is the input that says so.
+        let separator = theme.glyphs.separator;
+        let separator_width = separator.chars().count();
 
         let mut kept: Vec<&Field> = Vec::new();
         let mut used = 0usize;
@@ -175,12 +205,8 @@ impl Status {
             // Counted in characters, not bytes: the separator's middle dot is two
             // bytes and one cell, and `len()` here would reserve room that is not
             // needed and drop a field one column early.
-            let extra = field.text.chars().count()
-                + if kept.is_empty() {
-                    0
-                } else {
-                    SEPARATOR.chars().count()
-                };
+            let extra =
+                field.text.chars().count() + if kept.is_empty() { 0 } else { separator_width };
             if used + extra > width {
                 break;
             }
@@ -198,7 +224,7 @@ impl Status {
         let mut spans = Vec::new();
         for (index, field) in kept.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
             }
             spans.push(Span::styled(field.text.clone(), theme.style(field.tone)));
         }

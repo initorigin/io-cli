@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 use io_harness::RunEvent;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -17,6 +17,7 @@ use ratatui::Frame;
 use crate::approval::{Answer, Approval, Ask};
 use crate::composer::{Composer, Reply};
 use crate::events::Events;
+use crate::keys::{Action, Chord, Hit, Keys};
 use crate::settings::Posture;
 use crate::status::Status;
 use crate::term::VIEWPORT_HEIGHT;
@@ -79,11 +80,22 @@ pub struct App {
     /// How many times `Ctrl+C` has been pressed with nothing to interrupt and
     /// nothing typed. Two in succession exits.
     quits: u8,
-    /// Whether the last keystroke was the first `Esc` of a rewind.
+    /// Which action, if any, the last keystroke armed the first chord of.
     ///
     /// Cleared by *any* other key rather than by a timer, so nothing here reads a
     /// clock and an arming cannot outlive the moment the operator meant it.
-    armed: bool,
+    ///
+    /// It holds the action rather than a bare flag now that the sequence is
+    /// configurable: `rewind = "ctrl+r ctrl+r"` is as valid as the default
+    /// `esc esc`, and a flag could not say which sequence was half-pressed.
+    armed: Option<Action>,
+    /// The bindings this session is running under.
+    ///
+    /// Held rather than consulted globally, because `/help` renders *this* —
+    /// see [`crate::commands::rows`] — and a table that read the defaults from a
+    /// constant while the handler read the file would be a help screen that lies
+    /// about the machine in front of the reader.
+    keys: Keys,
     /// Lines waiting to be committed to scrollback.
     pending: Vec<Line<'static>>,
     /// The question on screen, if the run is waiting on one.
@@ -125,7 +137,8 @@ impl App {
             theme,
             mode: Mode::Idle,
             quits: 0,
-            armed: false,
+            armed: None,
+            keys: Keys::default(),
             pending: Vec::new(),
             approval: None,
             remembered: Vec::new(),
@@ -146,6 +159,22 @@ impl App {
         self.diff_style = style;
     }
 
+    /// Say whether this session runs in plain mode.
+    ///
+    /// Decided once, by [`crate::settings::plain`], and handed down — never
+    /// re-derived here. There is one boolean and it lives on the status line,
+    /// which is the surface the mode is about; this reads it back off there
+    /// rather than keeping a second copy that could disagree with the one the
+    /// indicator consults.
+    pub fn set_plain(&mut self, plain: bool) {
+        self.status.plain = plain;
+    }
+
+    /// Whether this session runs in plain mode.
+    pub fn plain(&self) -> bool {
+        self.status.plain
+    }
+
     /// A run stopped to ask. The overlay opens and takes the keyboard.
     ///
     /// Nothing is committed here. A question in the scrollback is one that can be
@@ -163,7 +192,19 @@ impl App {
     /// from outside, or "one press does nothing" is a claim with nothing behind
     /// it.
     pub fn armed(&self) -> bool {
-        self.armed
+        self.armed.is_some()
+    }
+
+    /// Say which keys this session runs under. Resolved once by
+    /// [`crate::keys::Keys::resolve`] from `[app.io-cli.keys]` and handed down;
+    /// never parsed here.
+    pub fn set_keys(&mut self, keys: Keys) {
+        self.keys = keys;
+    }
+
+    /// The bindings in force, for the surface that has to show them.
+    pub fn keys(&self) -> &Keys {
+        &self.keys
     }
 
     pub fn posture(&self) -> Option<Posture> {
@@ -192,7 +233,12 @@ impl App {
         self.set_posture(Some(next));
         self.say(
             Tone::Muted,
-            format!("policy:{} — {}", next.short(), next.detail()),
+            format!(
+                "policy:{} {} {}",
+                next.short(),
+                self.theme.glyphs.dash,
+                next.detail()
+            ),
         );
         Command::None
     }
@@ -221,7 +267,11 @@ impl App {
             } else {
                 Tone::Success
             },
-            format!("{act} {target} — {}", answer.spoken()),
+            format!(
+                "{act} {target} {} {}",
+                self.theme.glyphs.dash,
+                answer.spoken()
+            ),
         );
     }
 
@@ -241,6 +291,7 @@ impl App {
         self.mode = Mode::Running;
         self.status.working = true;
         self.quits = 0;
+        self.announce();
     }
 
     /// A turn ended, however it ended — finished, cancelled or failed.
@@ -257,6 +308,51 @@ impl App {
         self.approval = None;
         let tail = self.events.flush();
         self.pending.extend(tail);
+        // After the tail, so the line saying the session is idle again is the last
+        // thing in the scrollback rather than a claim made over content still
+        // arriving underneath it.
+        self.announce();
+    }
+
+    /// In plain mode, commit the state word the status line has just changed to.
+    ///
+    /// **This is the one thing plain mode puts in the scrollback that the default
+    /// does not, and it is deliberately the only one.** Every other state a run
+    /// produces already commits: `Started`, `Step`, `Refused`,
+    /// `ApprovalRequested`, `Finished` and the forty-odd kinds that fall through
+    /// [`crate::events::Events::event`] each write at least one line, and the
+    /// status fields fed from them — the token total, the context share, the
+    /// containment backend — are all restatements of an event that has already
+    /// been narrated. Committing those again would be a second rendering of the
+    /// same facts, which is what "plain mode is a second consumer of the event
+    /// stream, not a second renderer" rules out.
+    ///
+    /// What is left over is exactly this: whether a turn is running. It is
+    /// io-cli's own state rather than io-harness's — [`App::started`] is called
+    /// before the run exists and [`App::finished`] after it has returned, so the
+    /// pair brackets the turn even when the harness never emitted a `Started` at
+    /// all, which is what a provider that fails on its first call produces. In
+    /// the default interface that state is carried by a word that only ever
+    /// repaints and a spinner that only ever moves, so it is the one state change
+    /// a reader who cannot see the viewport cannot follow.
+    ///
+    /// The words are the status line's own, verbatim, so there is one vocabulary
+    /// for the state and not two spellings of it.
+    ///
+    /// The session's age is deliberately not narrated. It changes every second
+    /// with nothing having happened, which makes it a clock rather than a state
+    /// change — and a transcript that says the time once a second is one nobody
+    /// can read, in a screen reader least of all.
+    fn announce(&mut self) {
+        if !self.status.plain {
+            return;
+        }
+        let state = if self.status.working {
+            "working"
+        } else {
+            "ready"
+        };
+        self.say(Tone::Muted, state);
     }
 
     /// The clock moved. Returns whether the viewport has to be redrawn.
@@ -357,28 +453,42 @@ impl App {
         VIEWPORT_HEIGHT
     }
 
+    /// What a keystroke means to the session.
+    ///
+    /// **The `match` is on an [`Action`], not on a `KeyCode`.** Which chord
+    /// reaches which action is [`Keys`]'s business and the configuration file's;
+    /// what an action *does* — and the guards around it, which are the
+    /// interesting part — is this function's, and moving a key must not move
+    /// those. `Ctrl+C` is the exception in both directions: it cannot be
+    /// rebound, so it is still exactly one key here.
     pub fn key(&mut self, key: KeyEvent) -> Command {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let chord = Chord::of(key);
         // An open question takes the keyboard, except for `Ctrl+C`. That is the
         // answer to "does `Ctrl+C` deny, or interrupt?": it interrupts, and the
         // question is denied as a consequence of the turn ending rather than as a
         // second meaning for one key. Nothing else can reach the composer while a
         // run is stopped waiting on an answer.
-        let interrupting = control && key.code == KeyCode::Char('c');
+        //
+        // Asked of `Keys` rather than spelled out, so this and the handler below
+        // cannot disagree about which chord interrupts — but the answer is fixed,
+        // because `Action::Interrupt` is the one binding a file cannot move.
+        let interrupting = self.keys.hit(chord, None) == Some(Hit::Fire(Action::Interrupt));
         if let Some(open) = self.approval.as_mut().filter(|_| !interrupting) {
             if let Some(answer) = open.key(key) {
                 self.answer_approval(answer);
             }
             return Command::None;
         }
-        // Any key at all disarms a pending rewind, and the arming is read back
-        // here rather than left standing. Taking it before the match means every
-        // arm below clears it without having to remember to — the alternative is
-        // a `self.armed = false` in a dozen places, one of which would be missing
-        // and would leave a destructive key armed across an unrelated keystroke.
-        let was_armed = std::mem::take(&mut self.armed);
-        match (key.code, control) {
-            (KeyCode::Char('c'), true) => self.interrupt_or_quit(),
+        // Any key at all disarms a half-pressed sequence, and the arming is read
+        // back here rather than left standing. Taking it before the match means
+        // every arm below clears it without having to remember to — the
+        // alternative is a `self.armed = None` in a dozen places, one of which
+        // would be missing and would leave a destructive key armed across an
+        // unrelated keystroke.
+        let armed = std::mem::take(&mut self.armed);
+        let hit = self.keys.hit(chord, armed);
+        match hit {
+            Some(Hit::Fire(Action::Interrupt)) => self.interrupt_or_quit(),
             // The one key in this product that changes the operator's files on
             // io-cli's own initiative rather than the agent's. Every write before
             // it arrived through a tool call and passed a policy layer; this one
@@ -387,53 +497,77 @@ impl App {
             //
             // Only at an empty prompt, so it never discards something typed, and
             // never while a turn runs: a rewind moves the conversation head the
-            // running turn is about to write to.
-            (KeyCode::Esc, false) if self.composer.is_empty() => {
+            // running turn is about to write to. The guards are on the *action*,
+            // so they survive the key being moved — which is the whole reason
+            // the rebinding is a lookup in front of this match rather than a
+            // rewrite of it.
+            Some(hit) if hit.action() == Action::Rewind && self.composer.is_empty() => {
                 if self.mode == Mode::Running {
                     self.say(
                         Tone::Muted,
-                        "not while a turn is running — a rewind moves the head this turn is writing to",
+                        format!(
+                            "not while a turn is running {} a rewind moves the head this \
+                             turn is writing to",
+                            self.theme.glyphs.dash
+                        ),
                     );
                     return Command::None;
                 }
-                if was_armed {
-                    Command::Rewind
-                } else {
-                    self.armed = true;
-                    Command::ArmRewind
+                match hit {
+                    Hit::Fire(_) => Command::Rewind,
+                    Hit::Arm(action) => {
+                        self.armed = Some(action);
+                        Command::ArmRewind
+                    }
                 }
             }
-            // Two spellings of one key. A terminal without the Kitty keyboard
-            // protocol sends `BackTab` with no modifier; one that has negotiated it
-            // sends `Tab` with shift. Binding either alone ships a key that works
-            // on the developer's terminal and silently does nothing on somebody
-            // else's, which is worse than not shipping it.
-            (KeyCode::BackTab, _) => self.cycle_posture(),
-            (KeyCode::Tab, _) if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.cycle_posture()
+            // The rewind chord when the guard above did not hold — something is
+            // typed, or a turn is running. It has to be named HERE, in front of
+            // the generic arm below, and that ordering is the whole of it: that
+            // arm arms *any* sequence, this one included, so a guard that only
+            // rejects the arm above hands the rejected action straight to the
+            // next arm and it is armed anyway. The second press then fires the
+            // one key in this product that changes the operator's files on
+            // io-cli's own initiative, from a prompt with their text visible in
+            // it. The `_` arm at the bottom already claimed to cover this case;
+            // it never reached it.
+            Some(hit) if hit.action() == Action::Rewind => self.compose(key),
+            // A sequence bound to anything else. Nothing has happened yet and
+            // nothing is said: only the rewind has something to confirm, and a
+            // session that narrated every half-pressed chord would be one that
+            // narrates typing.
+            Some(Hit::Arm(action)) => {
+                self.armed = Some(action);
+                Command::None
             }
             // Only on an empty composer, so it never discards something typed.
-            (KeyCode::Char('d'), true) if self.composer.is_empty() => Command::Exit,
-            (KeyCode::Char('d'), true) => Command::None,
+            Some(Hit::Fire(Action::Exit)) if self.composer.is_empty() => Command::Exit,
+            Some(Hit::Fire(Action::Exit)) => Command::None,
+            Some(Hit::Fire(Action::Posture)) => self.cycle_posture(),
             // The viewport, never the scrollback. Clearing the terminal would
             // destroy the transcript, which on this renderer is the terminal's own
             // buffer rather than something this process can redraw.
-            (KeyCode::Char('l'), true) => Command::ClearViewport,
+            Some(Hit::Fire(Action::Clear)) => Command::ClearViewport,
             // Upward, never into a pane. The conversation is already in the
             // terminal's scrollback; this puts back the part that has scrolled
             // out of reach, branched-away turns included, where the terminal's
             // own search and copy-mode already work on it.
-            (KeyCode::Char('t'), true) => Command::Transcript,
-            _ => {
-                self.quits = 0;
-                match self.composer.key(key) {
-                    Reply::Idle => Command::None,
-                    Reply::Submitted(text) => match text.strip_prefix('/') {
-                        Some(command) => Command::Slash(command.trim().to_string()),
-                        None => Command::Submit(text),
-                    },
-                }
-            }
+            Some(Hit::Fire(Action::Transcript)) => Command::Transcript,
+            // The rewind chord with something typed, and every key this session
+            // does not bind: the composer's, which is where they belong.
+            _ => self.compose(key),
+        }
+    }
+
+    /// Hand the keystroke to the prompt.
+    fn compose(&mut self, key: KeyEvent) -> Command {
+        self.quits = 0;
+        match self.composer.key(key) {
+            Reply::Idle => Command::None,
+            Reply::Submitted(text) => match text.strip_prefix('/') {
+                Some(command) => Command::Slash(command.trim().to_string()),
+                None => Command::Submit(text),
+            },
         }
     }
 

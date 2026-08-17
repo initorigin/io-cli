@@ -6,6 +6,127 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-18
+
+The interface can be read without being seen. Every mark has an ASCII form, the
+one state a run does not narrate can be committed to the scrollback as text, the
+cursor sits wherever input is expected, and the keys the session owns can be moved
+to the ones your terminal and your muscle memory already have.
+
+### Added
+
+- **`--plain`** runs the session without animation: nothing turns, nothing moves,
+  the ASCII glyph set is forced, and each state the session enters — `working`,
+  `ready` — is committed into the terminal's own scrollback as a line of text.
+  That one state is the only thing plain mode adds to the scrollback, and
+  deliberately so: every other state a run produces already writes a line, and in
+  the default interface this one is carried by a word that only ever repaints
+  beside an indicator that only ever moves. It is a global flag, accepted on
+  either side of a subcommand, and **`[app.io-cli] plain = true`** is the same
+  switch for every session. The flag wins over the file, and there is no
+  `--no-plain`: accessibility is switched on deliberately, and a mode that can be
+  lost to a stray flag is not one to rely on. It reaches an interactive session
+  and stops there — `io exec` builds no theme and animates nothing already.
+- **An ASCII form for every mark.** Ten classes — the separator, the tool bullet,
+  the selection marker, the ellipsis, the elision, the dash, the transcript rule,
+  the quotes, the credential mask and the working indicator — now exist in two
+  sets, chosen once at startup and carried to every surface, where before each was
+  a literal typed at the place it was drawn. Every ASCII form carries its
+  counterpart's *meaning* rather than merely standing in the same column: a
+  product whose selection marker vanishes on a terminal that cannot draw it has
+  lost the selection, not a decoration. **`[app.io-cli] glyphs`** names a set
+  outright — `unicode` or `ascii` — and an absent key asks the locale: `LC_ALL`,
+  then `LC_CTYPE`, then `LANG`, the first one present deciding whatever it says.
+  The set is an axis of its own in both directions: `NO_COLOR` keeps the Unicode
+  marks and the ASCII set arrives at a fully coloured theme, which
+  `Theme::resolve` enforces structurally by taking the set as an argument and
+  never deriving one. The IO CLI wordmark is the deliberate exception — it is
+  suppressed when it cannot be drawn rather than transliterated, because a
+  wordmark redrawn in `#` is a different and worse image wearing its name.
+- **`[app.io-cli.keys]` moves the keys the session owns.** Five actions — `exit`,
+  `posture`, `clear`, `transcript`, `rewind` — each take a chord, or two chords
+  separated by a space, in the spelling VS Code, Zed and helix already write, so
+  it is the one a reader guesses right on the first try. **`Ctrl+C` is fixed and
+  is the only one that is**: it interrupts a running turn and leaves `io`, so a
+  configuration file able to take it away is one able to lock an operator inside a
+  running agent, and both spellings of the attempt — naming `interrupt`, and
+  putting anything else onto `ctrl+c` — are refused with that reason rather than
+  ignored. Nothing about a bad line is fatal or silent: an unreadable value leaves
+  its action on the default and names the key it kept, a name that is no action
+  says which names there are, and every notice is committed to the scrollback as
+  the session starts. `/help` renders the table as the session actually behaves
+  rather than the defaults that shipped — rebinding without a truthful table
+  leaves the operator with documentation confidently wrong about the machine in
+  front of them and no way to find out but by pressing keys.
+- **The Kitty keyboard protocol is negotiated** where the terminal advertises it,
+  which is what makes `Shift+Enter` a distinguishable key at all: without it a
+  terminal sends the same `CR` for `Enter` and for `Shift+Enter`, and the trailing
+  backslash was the only spelling there was. That fallback still works everywhere,
+  and a terminal that does not advertise the protocol is written nothing. One flag
+  is asked for, `DISAMBIGUATE_ESCAPE_CODES`; the other three are declined for
+  stated reasons, the last of them because a terminal where typing stops working
+  is the one risk this product must not take. What is pushed is popped on every
+  path out of the process — an orderly exit, a `Drop`, a panic — and
+  `tests/keyboard.rs` asserts the two balance in the byte stream.
+
+### Fixed
+
+- **Every frame that accepts input now sets a cursor position**: the composer,
+  including at a width too narrow to draw it; the approval overlay; the selected
+  row of a picker; and every step of the wizard. The terminal cursor is the focus
+  indicator a screen reader follows, and a frame that leaves it where the last one
+  put it reports focus somewhere the session is not reading from.
+- **`NO_COLOR` survives the first-run wizard and `/theme`.** A theme picked at
+  either is now *resolved* rather than assigned, so it is recorded as the
+  preference it is and the session it was picked in stays uncoloured — and says
+  so. The wizard also no longer seeds itself from the uncoloured theme's own name,
+  which would have opened the picker on the wrong row and written down a
+  preference no later launch could resolve.
+- **A malformed `[app.io-cli]` is a notice rather than silence.** io-harness
+  answers `Config::app` with three outcomes — parsed, absent, unreadable — and the
+  old `.unwrap_or_default()` collapsed the third into the second, so one mistyped
+  value silently reverted the theme and the diff style together with nothing said
+  about either. The session now starts on the defaults carrying io-harness's own
+  message, which already names the section and the key that broke; rewording it
+  here would drop the only part that says where to look.
+- **`Ctrl+C` closes an open picker.** Every arm of the picker's key handling
+  matched on the key code alone, so `Ctrl+C` fell through to the idle arm and did
+  nothing: the shipped table promised a key that inside a picker neither
+  interrupted nor exited. It backs out rather than taking a second, picker-only
+  meaning — the press closes the overlay and the one after it reaches the session,
+  where the table's meaning is the one that applies.
+- **An approval names the act in a word as well as in a colour.** The act was
+  styled through a bare span rather than through the theme's notice, which left it
+  the one place in the product where colour was the sole carrier of a meaning:
+  under `NO_COLOR` the row read `write src/main.rs` with nothing on it saying a
+  decision was being asked for. The word leads the row, because this viewport
+  clips and the load-bearing fact must not be the part that goes.
+
+### Changed
+
+- **A frame whose content did not change is not drawn at all.** The frame is
+  rendered into a probe terminal whose backend discards its output and remembers
+  only where the cursor was asked to go; if the result matches what the terminal
+  is already showing, nothing is written. The comparison is over the whole buffer
+  *and* the cursor rather than over the viewport's text, because a picker
+  highlight moving between two rows changes only a style and moving the caret
+  through unchanged text is a real change with no cell behind it. The frame after
+  a resize is never skipped: a resize clears the viewport.
+- **io-harness moves to 0.63.0**, from 0.62.0.
+
+### Notes
+
+- No dependency is added. The direct set is the same ten names 0.5.0 shipped, and
+  `tests/dependencies.rs` asserts that in both directions.
+- The uncoloured theme is renamed internally from `PLAIN` to `MONO`, because
+  `--plain` gives the word a second and unrelated meaning. Nothing user-visible
+  changes: it was never a name a configuration file could select, under either
+  spelling.
+- `[app.io-cli] plain` distinguishes `Some(false)` from absent only so a file can
+  state the default; the wizard writes neither it nor `glyphs` nor `keys`. A glyph
+  set detected from the machine the wizard ran on would freeze into a file later
+  read on another terminal, and plain mode is asked for rather than inferred.
+
 ## [0.5.0] - 2026-08-17
 
 The same agent runs unattended. `io exec` runs one goal to completion with no
