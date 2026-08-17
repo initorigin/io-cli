@@ -3,5 +3,7 @@ node_modules/
 .DS_Store
 .env
 
-# UltraShip: transient deploy/publish hook output
-.ultraship/products/*/evidence/
+# UltraShip: local planning state. Release contracts, iterations, checkpoints and
+# gate evidence are the maintainer's working notes, written by tooling rather
+# than by hand. They are not a contributor-facing surface and are never committed.
+.ultraship/
