@@ -203,8 +203,15 @@ pub const LIGHT: Theme = Theme {
 };
 
 /// No colour at all. What `NO_COLOR` selects.
-pub const PLAIN: Theme = Theme {
-    name: "plain",
+///
+/// It is `MONO` and not `PLAIN` because 0.6.0 gives the word "plain" a second
+/// and unrelated meaning — `--plain`, the accessibility mode that stills the
+/// animation, stops repainting and draws in ASCII. The two are different axes:
+/// `--plain` in a colour terminal is still fully coloured, and `NO_COLOR`
+/// leaves every animation running. One word across both would have read as one
+/// switch, so the theme takes the word that describes what it actually is.
+pub const MONO: Theme = Theme {
+    name: "mono",
     background: Background::Dark,
     foreground: Color::Reset,
     muted: Color::Reset,
@@ -220,8 +227,11 @@ pub const PLAIN: Theme = Theme {
     coloured: false,
 };
 
-/// The themes a user can choose between. `PLAIN` is not among them: it is not a
-/// preference, it is what `NO_COLOR` forces.
+/// The themes a user can choose between. `MONO` is not among them: it is not a
+/// preference, it is what `NO_COLOR` forces. Its `name` is a label for
+/// diagnostics rather than a key — `by_name` searches this list and nothing
+/// else, so there is no string a configuration file could carry that selects
+/// it, under either of its names.
 pub const THEMES: &[Theme] = &[DARK, LIGHT];
 
 impl Theme {
@@ -236,7 +246,7 @@ impl Theme {
     /// which is what the convention specifies.
     pub fn resolve(no_color: bool, background: Background, chosen: Option<&str>) -> Self {
         if no_color {
-            return PLAIN;
+            return MONO;
         }
         if let Some(theme) = chosen.and_then(Self::by_name) {
             return theme;

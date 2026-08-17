@@ -463,9 +463,9 @@ fn f4_a_keyword_a_string_and_a_number_each_get_their_own_token() {
 
 #[test]
 fn f4_no_color_leaves_the_markers_carrying_the_meaning() {
-    use io_cli::theme::PLAIN;
+    use io_cli::theme::MONO;
 
-    let lines = cell(&edit_with_code(), &PLAIN, WIDE);
+    let lines = cell(&edit_with_code(), &MONO, WIDE);
     for line in &lines {
         for span in &line.spans {
             assert_eq!(
