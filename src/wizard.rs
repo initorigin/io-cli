@@ -25,7 +25,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tui_textarea::TextArea;
 
-use crate::picker::{Outcome, Picker, Row};
+use crate::picker::{fit, fit_left, Outcome, Picker, Row};
 use crate::settings::{self, Posture};
 use crate::theme::{Background, Theme, Tone, THEMES};
 
@@ -599,15 +599,48 @@ impl Wizard {
         Progress::Write(path, contents)
     }
 
+    /// The lines the confirmation screen shows, unbounded.
+    ///
+    /// For a caller that wants the *facts* rather than the layout — what is on the
+    /// screen, not how much of it a given terminal has room for.
+    pub fn summary(&self) -> Vec<Line<'static>> {
+        self.summary_at(usize::MAX)
+    }
+
     /// The lines the confirmation screen shows: the exact path, and what will be
     /// in the file. Never the credential itself.
-    pub fn summary(&self) -> Vec<Line<'static>> {
+    ///
+    /// **Fitted to `width`, because two of these lines are unbounded and this
+    /// paragraph does not wrap.** The path comes from the environment and the
+    /// model id from a provider's catalogue; either can be longer than eighty
+    /// columns on an ordinary machine, and a viewport `Paragraph` answers a line
+    /// it cannot fit by clipping it and saying nothing. On this screen in
+    /// particular that is not a cosmetic loss: the whole promise of the wizard is
+    /// that nothing is written until a screen has named the exact path, and a
+    /// path silently missing its last segments names a different file.
+    ///
+    /// The path is shortened from the **left** ([`fit_left`]) and the model from
+    /// the right ([`fit`]), which is the same split the resume picker makes and
+    /// for the same reason: every configuration path on one machine shares its
+    /// first segments and is identified by its last, while a model id is
+    /// identified by its vendor and family, which come first.
+    pub fn summary_at(&self, width: usize) -> Vec<Line<'static>> {
         let theme = self.theme;
+        let glyphs = &theme.glyphs;
+        // The width of the fixed text each line leads with. Written as the
+        // strings themselves so the reservation cannot drift from the `format!`
+        // below it.
+        let lead = |prefix: &str| width.saturating_sub(prefix.chars().count());
         let path = settings::user_path()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "(no configuration directory could be found)".into());
+        let path = fit_left(&path, lead("This will write "), glyphs);
         let kind = self.kind.map(Kind::label).unwrap_or("(none)");
-        let model = self.model.clone().unwrap_or_default();
+        let model = fit(
+            self.model.as_deref().unwrap_or_default(),
+            lead("  model       "),
+            glyphs,
+        );
 
         let credential = match (&self.api_key, self.kind.and_then(Kind::env_var)) {
             // Said as a fact about the file, with no part of the value in it.
@@ -723,7 +756,7 @@ impl Wizard {
                     theme.style(Tone::Muted),
                 ))],
             ),
-            Step::Confirm => paragraph(frame, area, self.summary()),
+            Step::Confirm => paragraph(frame, area, self.summary_at(area.width as usize)),
             Step::Done | Step::Cancelled => {}
         }
     }
@@ -735,7 +768,24 @@ impl Wizard {
             // The provider's own words, not a generic failure. Every provider
             // reports a bad credential differently and the difference is the
             // information.
-            lines.push(theme.notice(Tone::Error, rejection.clone()));
+            //
+            // **Cut to fit rather than wrapped, and this is the one place in the
+            // wizard where that is the harder call.** A provider's rejection is
+            // an arbitrary string — several of them return a whole JSON body —
+            // and this paragraph does not wrap, so past eighty columns the tail
+            // is clipped with nothing on screen to say so. Wrapping would keep
+            // every word, but the height of the wrap is not knowable from
+            // `lines.len()`, and `lines.len()` is what places the credential
+            // field and the caret on the rows below. A rejection that grew the
+            // block would draw the field on top of its own last line and put the
+            // caret on text rather than on the input, which trades a visible loss
+            // for an invisible one.
+            //
+            // The reservation is measured off an empty notice rather than
+            // assumed, so the word `Tone::Error` prefixes and the colon and space
+            // after it are counted by the code that draws them.
+            let room = (area.width as usize).saturating_sub(theme.notice(Tone::Error, "").width());
+            lines.push(theme.notice(Tone::Error, fit(rejection, room, &theme.glyphs)));
         }
         lines.push(Line::from(Span::styled(
             prompt.to_string(),

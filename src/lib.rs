@@ -21,6 +21,7 @@ pub mod diff;
 pub mod events;
 pub mod exec;
 pub mod glyphs;
+pub mod keys;
 pub mod picker;
 pub mod provider;
 pub mod rewind;

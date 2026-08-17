@@ -166,8 +166,17 @@ impl Picker {
             return;
         }
 
+        // Everything this widget draws is fitted to the area, including the two
+        // things that used to be handed to ratatui raw: the title and the label.
+        // A `Paragraph` in the viewport does not wrap and does not complain — it
+        // clips the row and draws nothing to say so — so an unfitted title was a
+        // question with its second half missing, and an unfitted label was a
+        // choice whose identifying tail was gone. `/resume` and `/fork` avoided
+        // both only because `sessions::rows` happened to shorten them first,
+        // which is a property of one caller and not of the widget.
+        let width = area.width as usize;
         let mut lines = vec![Line::from(Span::styled(
-            self.title.clone(),
+            fit(&self.title, width, &theme.glyphs),
             theme.style(Tone::Muted),
         ))];
 
@@ -187,10 +196,25 @@ impl Picker {
             } else {
                 UNMARKED
             };
+            // Fitted to what the marker leaves, never to the whole row. The
+            // marker is the only thing on screen that says which choice Enter
+            // would take, and it is drawn first — so a label fitted to the full
+            // width pushes exactly its own marker's worth of characters off the
+            // right-hand edge, on the selected row, where it matters most. The
+            // reservation is `marker` rather than a literal two because that is
+            // the string actually about to be drawn; the two sets agree on its
+            // width today and this does not depend on them continuing to.
+            let marker_width = marker.chars().count();
+            let label = fit(
+                &row.label,
+                width.saturating_sub(marker_width),
+                &theme.glyphs,
+            );
+            let label_width = label.chars().count();
             let mut spans = vec![
                 Span::styled(marker, theme.style(Tone::Accent)),
                 Span::styled(
-                    row.label.clone(),
+                    label,
                     theme.style(if chosen { Tone::Accent } else { Tone::Normal }),
                 ),
             ];
@@ -198,8 +222,14 @@ impl Picker {
                 // Fitted rather than wrapped. A row that wraps makes the list
                 // stop being a list, and the label is the part that has to
                 // survive — which is why the detail is what gets cut.
-                let used = marker.chars().count() + row.label.chars().count() + 2;
-                if let Some(room) = (area.width as usize).checked_sub(used) {
+                //
+                // Measured off the **fitted** label, which is the string actually
+                // about to be drawn. A budget that counts anything other than what
+                // reaches the buffer is a budget that disagrees with the row by
+                // however much they differ — and this budget being one cell out is
+                // precisely how an ellipsis ends up on the floor.
+                let used = marker_width + label_width + 2;
+                if let Some(room) = width.checked_sub(used) {
                     if room > 1 {
                         spans.push(Span::styled("  ", theme.style(Tone::Muted)));
                         spans.push(Span::styled(

@@ -14,12 +14,24 @@
 
 use ratatui::text::{Line, Span};
 
+// Qualified rather than imported: `Action` in this module is already a slash
+// command's outcome, and two types with one name in one file is how a reader
+// ends up reading the wrong one.
+use crate::keys::{self, Keys};
 use crate::theme::{Theme, Tone};
 
-/// Every key this release binds, as data rather than as prose.
+/// Every key this release binds **by default**, as data rather than as prose.
 ///
 /// The table is the documentation: the README renders this list, `/help` renders
-/// this list, and neither can drift from the other or from the code.
+/// [`rows`] — which is this list with the session's own bindings substituted into
+/// it — and neither can drift from the other or from the code.
+///
+/// The first column of a rebindable row is the *default* spelling, and it is
+/// what [`rows`] matches a [`keys::Action`] on. That is a join on a display string,
+/// which would be fragile if either side could move on its own; `tests/keys.rs`
+/// asserts that every action's default binding renders to a row that is in here,
+/// so a default changed in one place and not the other fails a test rather than
+/// quietly dropping a row out of the rebindable set.
 pub const KEYS: &[(&str, &str)] = &[
     ("Enter", "send the prompt"),
     (
@@ -110,13 +122,51 @@ pub enum Copied {
     Diff,
 }
 
+/// The key table as this session actually behaves.
+///
+/// **`/help` renders this, never [`KEYS`] directly, and that is the whole point
+/// of the release's rebinding half.** A help screen that showed the shipped
+/// defaults to somebody who had moved a key would be worse than no rebinding at
+/// all: rebinding without a truthful table leaves the operator with a product
+/// whose documentation is confidently wrong about the machine in front of them,
+/// and no way to find out but by pressing keys.
+///
+/// A row the session does not own — the composer's keys, an approval's letters,
+/// the picker's `Esc` — passes through unchanged, because nothing in this
+/// release can move it.
+///
+/// `Ctrl+C` is marked rather than silently identical to the others. It is fixed,
+/// a reader consulting the table is exactly the reader who might be about to try
+/// rebinding it, and a table that shows one immovable key beside five movable
+/// ones without saying which is which is a table that invites the attempt.
+pub fn rows(keys: &Keys) -> Vec<(String, String)> {
+    let defaults = Keys::default();
+    KEYS.iter()
+        .map(|(name, what)| {
+            let Some(action) = keys::Action::ALL
+                .iter()
+                .copied()
+                .find(|action| defaults.binding(*action).to_string() == *name)
+            else {
+                return ((*name).to_string(), (*what).to_string());
+            };
+            let what = if action.rebindable() {
+                (*what).to_string()
+            } else {
+                format!("{what} (fixed)")
+            };
+            (keys.binding(action).to_string(), what)
+        })
+        .collect()
+}
+
 /// Resolve a command. The leading `/` has already been removed.
 ///
 /// An unknown command prints the list rather than erroring: a user who typed
 /// `/models` wants to be told what does exist, not that they were wrong.
-pub fn parse(input: &str, theme: &Theme) -> Action {
+pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
     match input.split_whitespace().next().unwrap_or("help") {
-        "help" | "?" => Action::Print(help(theme)),
+        "help" | "?" => Action::Print(help(keys, theme)),
         "quit" | "exit" | "q" => Action::Quit,
         "setup" => Action::Setup,
         "theme" => Action::Theme,
@@ -145,40 +195,46 @@ pub fn parse(input: &str, theme: &Theme) -> Action {
     }
 }
 
-/// The `/help` output: the keys, then the commands.
-pub fn help(theme: &Theme) -> Vec<Line<'static>> {
+/// The `/help` output: the keys in force, then the commands.
+pub fn help(keys: &Keys, theme: &Theme) -> Vec<Line<'static>> {
+    let bound = rows(keys);
+    // Both tables, so `/help` lines up as one table rather than two — and
+    // measured over the bindings in force rather than over the defaults, because
+    // a rebinding can be wider than what it replaced.
+    let width = column(&bound).max(column(COMMANDS));
     let mut lines = vec![Line::from(Span::styled(
         "Keys".to_string(),
         theme.style(Tone::Accent),
     ))];
-    lines.extend(table(KEYS, theme));
+    lines.extend(table(&bound, width, theme));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Commands".to_string(),
         theme.style(Tone::Accent),
     )));
-    lines.extend(commands(theme));
+    lines.extend(table(COMMANDS, width, theme));
     lines.push(Line::from(""));
     lines
 }
 
+/// The command table on its own, for the reader who typed a command that does
+/// not exist. Its first column is measured over the defaults, because there is
+/// no key table beside it here to line up with.
 fn commands(theme: &Theme) -> Vec<Line<'static>> {
-    table(COMMANDS, theme)
+    table(COMMANDS, column(COMMANDS), theme)
 }
 
-/// The widest first column across every row of both tables, so `/help` lines up
-/// as one table rather than two.
-fn column() -> usize {
-    KEYS.iter()
-        .chain(COMMANDS.iter())
-        .map(|(name, _)| name.chars().count())
+/// The widest first column of a table.
+fn column<S: AsRef<str>>(rows: &[(S, S)]) -> usize {
+    rows.iter()
+        .map(|(name, _)| name.as_ref().chars().count())
         .max()
         .unwrap_or(0)
 }
 
-fn table(rows: &[(&str, &str)], theme: &Theme) -> Vec<Line<'static>> {
-    let width = column();
+fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Line<'static>> {
     rows.iter()
+        .map(|(name, what)| (name.as_ref(), what.as_ref()))
         .map(|(name, what)| {
             Line::from(vec![
                 Span::styled(format!("  {name:width$}  "), theme.style(Tone::Normal)),

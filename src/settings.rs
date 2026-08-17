@@ -45,6 +45,52 @@ pub struct CliSettings {
     /// a flag is this run and a file is every run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain: Option<bool>,
+    /// The session's keys, by action name: `[app.io-cli.keys]`.
+    ///
+    /// A map rather than a struct of named fields on purpose. A struct would
+    /// make an action nobody has heard of a *deserialization* failure, which
+    /// would take the whole section down — theme, diff style, glyphs and plain
+    /// mode with it — over a misspelt keybinding. A map lets
+    /// [`crate::keys::Keys::resolve`] answer for each line on its own and say
+    /// which names it does know, which is the difference between a typo that
+    /// costs one key and a typo that costs every setting in the file.
+    ///
+    /// `BTreeMap` rather than `HashMap` so the notices a bad file produces come
+    /// out in the same order every time; a diagnostic that shuffles is one
+    /// nobody can compare against the last run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// io-cli's own section, and what was wrong with it.
+///
+/// **This is F10, and it exists because `.unwrap_or_default()` on the `Result`
+/// was the whole of the old behaviour.** io-harness answers `Config::app` with
+/// three distinct outcomes — the section is there and parsed, the section is not
+/// there at all, or the section is there and could not be read — and collapsing
+/// the third into the second meant that one mistyped value silently reverted the
+/// theme, the diff style, the glyph set, plain mode and every keybinding at
+/// once, with nothing said about any of it. A setting that quietly goes back to
+/// its default is worse than one that fails loudly: the operator sees a session
+/// that looks almost right and has no thread to pull.
+///
+/// The notice carries **the harness's own message**, which already names the
+/// section and the key that broke — rewording it here would drop the only part
+/// that says where to look.
+///
+/// It lives in the library rather than at the two call sites in `src/main.rs`
+/// because nothing under `tests/` can link the binary: a decision written there
+/// is one no test drives and no sabotage can make fail.
+pub fn stored(config: &io_harness::Config) -> (Option<CliSettings>, Option<String>) {
+    match config.app(APP_KEY) {
+        Ok(stored) => (stored, None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "{error}; this session is running on the default settings until that is fixed"
+            )),
+        ),
+    }
 }
 
 /// Whether this session runs in plain mode: `--plain`, or `[app.io-cli] plain`.
@@ -244,6 +290,12 @@ pub fn render(
                 // stated. Plain mode likewise: it is asked for, never inferred.
                 glyphs: None,
                 plain: None,
+                // Left out for the strongest reason of the four: writing the
+                // defaults down would make every later change to a default a
+                // change that only reaches new installations, and would put a
+                // table of eleven keys in a file the wizard's user never asked
+                // to edit. The keys are documented; they are not written.
+                keys: None,
             },
         },
     };

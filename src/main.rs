@@ -21,7 +21,7 @@ use io_cli::cli::{Cli, Command as Subcommand};
 use io_cli::commands::{self, Action, Copied};
 use io_cli::glyphs::Glyphs;
 use io_cli::picker::{Outcome, Picker, Row};
-use io_cli::settings::{self, CliSettings, Posture};
+use io_cli::settings::{self, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
@@ -54,7 +54,12 @@ async fn run() -> Result<u8, String> {
     };
 
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
-    let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
+    // The notice this read produces is dropped *here* and only here: `run` may
+    // hand control to the wizard, which rewrites the very file this just failed
+    // to read, so a complaint raised now could be about a file that no longer
+    // exists in that state by the time there is a session to say it in. The read
+    // in `drive` happens after the wizard and is the one that discloses.
+    let (stored, _) = settings::stored(&config);
     // Plain mode is decided ONCE, and by a function in the library rather than by
     // an expression written here: nothing under `tests/` can link this binary, so
     // a decision made in this file is one no test drives and no sabotage can make
@@ -185,8 +190,25 @@ async fn drive(
     // `[app.io-cli]` again, read through the harness rather than parsed here. It
     // is read in `drive` rather than in `run` because `run` may hand control to
     // the wizard, which writes the file this then reads back.
-    let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
-    let diff_style = settings::DiffStyle::from_setting(stored.and_then(|s| s.diff).as_deref());
+    //
+    // **This is the read that discloses.** A section io-harness could not parse
+    // comes back here as a sentence rather than as silence, and the session
+    // starts on the defaults with that sentence in its scrollback — see
+    // [`settings::stored`] for why the old `.unwrap_or_default()` was a defect
+    // and not a shortcut.
+    let (stored, complaint) = settings::stored(&config);
+    let diff_style =
+        settings::DiffStyle::from_setting(stored.as_ref().and_then(|s| s.diff.as_deref()));
+    // The keys are resolved once, here, and handed down. Every notice the file
+    // earned — a key that could not be read, a name that is no action, an
+    // attempt on `Ctrl+C` — is carried with the section's own complaint, so the
+    // session says everything it ignored in one place at the start rather than
+    // leaving the operator to discover it by pressing something.
+    let (keys, mut notices) =
+        io_cli::keys::Keys::resolve(stored.as_ref().and_then(|s| s.keys.as_ref()));
+    if let Some(complaint) = complaint {
+        notices.insert(0, complaint);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -212,6 +234,8 @@ async fn drive(
             session,
             policy,
             diff_style,
+            keys,
+            notices,
             theme,
             plain,
         },
@@ -228,6 +252,9 @@ struct Interactive<'a, 'b> {
     session: Session,
     policy: Policy,
     diff_style: settings::DiffStyle,
+    keys: io_cli::keys::Keys,
+    /// What `[app.io-cli]` earned itself, in the order it will be said.
+    notices: Vec<String>,
     theme: Theme,
     plain: bool,
 }
@@ -249,6 +276,8 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.session,
             self.policy,
             self.diff_style,
+            self.keys,
+            self.notices,
             self.theme,
             self.plain,
             model,
@@ -268,6 +297,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     mut session: Session,
     policy: Policy,
     diff_style: settings::DiffStyle,
+    keys: io_cli::keys::Keys,
+    notices: Vec<String>,
     theme: Theme,
     plain: bool,
     model: String,
@@ -277,6 +308,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     let mut provider = make(&model)?;
     let mut app = App::new(theme, model);
     app.set_diff_style(diff_style);
+    // Before anything is drawn and before the first keystroke, so the keys are
+    // never briefly the defaults, and so the notices are the first thing in the
+    // scrollback rather than something that appears under an answer.
+    app.set_keys(keys);
+    for notice in notices {
+        app.say(Tone::Warning, notice);
+    }
     // Said once, before anything is drawn or any turn starts. Everything the mode
     // governs — the indicator, and the state words that go to scrollback in its
     // place — is downstream of this one call.
@@ -455,7 +493,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
                 Err(error) => app.say(Tone::Error, format!("nothing was undone: {error}")),
             },
-            Command::Slash(text) => match commands::parse(&text, &app.theme) {
+            Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
