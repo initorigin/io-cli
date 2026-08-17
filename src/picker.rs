@@ -13,7 +13,7 @@
 //! It lives in the viewport, never in scrollback. A choice that has scrolled away
 //! cannot be answered.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -104,6 +104,22 @@ impl Picker {
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
+        // `Ctrl+C` leaves, exactly as `Esc` does. The picker owns the keyboard
+        // while it is open, and the shipped keybinding table promises `Ctrl+C`
+        // interrupts the turn and exits from an empty prompt — a picker that
+        // swallowed it would make the documentation describe a trap, with the
+        // only way out a key the table never names.
+        //
+        // Backing out rather than a second, picker-only meaning: the press
+        // closes the overlay and the one after it reaches the app, where the
+        // table's meaning is the one that applies. This is the approval
+        // overlay's answer (`App::key`, which exempts `Ctrl+C` from the open
+        // question) reached from the other side — the approval interrupts and
+        // the question is denied as a consequence; here there is nothing to
+        // interrupt, so backing out *is* the whole consequence.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Outcome::Cancelled;
+        }
         match key.code {
             // Clamped at both ends rather than wrapping, for the same reason the
             // composer's history is: a list that jumps from the last row to the
