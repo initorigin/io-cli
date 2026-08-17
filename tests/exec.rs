@@ -6,6 +6,7 @@
 //! F6 — `--sandbox` and `--policy` reach the run.
 //! F7 — `--policy ask-writes` is refused, and says what to use instead.
 //! F8 — a run with no configuration file works from the environment.
+//! F9 — an approval becomes a refusal the agent is told about, not a hang.
 //! F11 — `--sandbox full-access` announces itself on stderr.
 //!
 //! The two mappings that look like taste are the release's research. A clean
@@ -617,4 +618,64 @@ async fn f8_no_provider_and_no_flag_fails_with_a_sentence_rather_than_a_prompt()
         "the error should name the way out: {error}",
     );
     assert!(!dir.path().join("io.toml").exists(), "nothing was written");
+}
+
+#[tokio::test]
+async fn f9_an_ask_becomes_a_refusal_and_the_run_still_ends() {
+    // Under a posture whose default is `Ask`, a write reaches an approver. There
+    // is no approver here that can say yes — `DenyAll` is the harness's own
+    // choice for an unattended job — so the ask becomes a refusal the agent is
+    // told about and adapts to, exactly as a policy refusal already does.
+    //
+    // The failure this guards against is not a wrong answer but a hang: an
+    // approver that blocks on a channel nothing drains never returns, and a test
+    // cannot assert its way out of that. Reaching the assertions at all is half
+    // of what this proves.
+    let (dir, store, mut session, config) = workspace("");
+    let provider = support::Scripted::writing(&[("notes.txt", "hello")]);
+    let policy = exec::policy_for(&config, Some(Posture::AskWrites));
+    assert_eq!(policy.defaults.write, Effect::Ask);
+
+    let json = exec::Ndjson::new(Vec::new());
+    let result = exec::turn(
+        &provider,
+        &store,
+        &mut session,
+        &config,
+        &policy,
+        "write the note".into(),
+        None,
+        &json,
+    )
+    .await
+    .expect("the turn ends rather than blocking on a question nobody can answer");
+
+    assert_eq!(
+        exec::code(&result.outcome),
+        exec::OK,
+        "a denied write is not a failed run: the agent was told and carried on",
+    );
+    assert!(
+        !dir.path().join("notes.txt").exists(),
+        "the write was denied, so the file must not be on disk",
+    );
+
+    // The denial is in the stream, so a CI job can see why nothing was written.
+    let written = String::from_utf8(json.into_inner()).expect("UTF-8");
+    let events: Vec<serde_json::Value> = written
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["event"].as_str())
+        .collect();
+    assert!(
+        kinds.contains(&"approval_requested") || kinds.contains(&"refused"),
+        "the operator must be able to see that something was asked: {kinds:?}",
+    );
+    assert!(
+        kinds.contains(&"approval_decided") || kinds.contains(&"refused"),
+        "and that it was answered: {kinds:?}",
+    );
 }
