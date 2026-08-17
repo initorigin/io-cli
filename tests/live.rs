@@ -1063,3 +1063,79 @@ async fn live_f13_work_survives_the_session() {
     );
     println!("resumed session {session_id} at head {:?}", reopened.head());
 }
+
+/// F4 against a real provider: the stream a real run produces deserializes back
+/// into the harness's own type.
+///
+/// Every offline arm uses a scripted provider, and this product has twice
+/// shipped a feature that passed every offline test and failed on the first real
+/// run — an approver reading absolute paths in 0.3.0, and a `/model` assertion
+/// that read a model's reply in 0.4.0. The round trip is what a scripted
+/// provider cannot prove: those events came from a real agent loop.
+///
+/// Nothing here asserts on what the model SAID. The assertions are the shape of
+/// the stream, the presence of the harness's own step and finished events, and
+/// the exit status — all of which survive a vendor retune.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn f4_live_a_real_run_streams_events_that_round_trip() {
+    let dir = tempfile::tempdir().expect("a workspace");
+    let store = Store::memory().expect("an in-memory store");
+    let mut session = Session::open(&store, dir.path()).expect("a session");
+    let config = io_harness::Config::from_toml("").expect("an empty configuration");
+    let provider = io_harness::OpenRouter::new(key(), model());
+
+    let json = io_cli::exec::Ndjson::new(Vec::new());
+    let result = io_cli::exec::turn(
+        &provider,
+        &store,
+        &mut session,
+        &config,
+        &workspace_policy(),
+        "Create a file called live.txt containing exactly the word ok, then stop.".into(),
+        None,
+        &json,
+    )
+    .await
+    .expect("a live headless turn runs");
+
+    let written = String::from_utf8(json.into_inner()).expect("the stream is UTF-8");
+    let lines: Vec<&str> = written.lines().collect();
+    assert!(!lines.is_empty(), "a real run should emit events");
+
+    // Every line is the harness's own type, read back with the harness's own
+    // derive. A shape io-cli invented would fail here and nowhere else.
+    let events: Vec<RunEvent> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line}\n{e}")))
+        .collect();
+
+    let kinds: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).expect("JSON");
+            value["event"].as_str().expect("a tagged event").to_string()
+        })
+        .collect();
+
+    assert!(kinds.iter().any(|kind| kind == "started"), "{kinds:?}");
+    assert!(kinds.iter().any(|kind| kind == "finished"), "{kinds:?}");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::Step { .. })),
+        "a run that edits a file takes at least one step: {kinds:?}",
+    );
+
+    println!("live: outcome {:?}", result.outcome);
+    println!("live: kinds {kinds:?}");
+    println!("live: file exists {}", dir.path().join("live.txt").exists());
+    // The durable record, not the reply — the model's words are not evidence.
+    assert_eq!(io_cli::exec::code(&result.outcome), io_cli::exec::OK);
+    assert!(
+        dir.path().join("live.txt").exists(),
+        "the agent was asked to write a file inside the sandbox and should have",
+    );
+
+    println!("live: {} events, outcome {:?}", lines.len(), result.outcome);
+}

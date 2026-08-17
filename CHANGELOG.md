@@ -6,6 +6,62 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-17
+
+The same agent runs unattended. `io exec` runs one goal to completion with no
+terminal, exits with a status a script can branch on, and with `--json` emits the
+run's own event stream — the same events the interactive session renders, from
+the same stream, with no interface code on the path.
+
+### Added
+
+- **`io exec "<goal>"`** runs one goal to completion without a terminal, prints
+  the agent's reply on stdout, and exits with a status derived from io-harness's
+  own `RunOutcome`. Six codes: `0` ended of its own accord, `1` never got that
+  far, `2` a boundary said no, `3` a ceiling was reached, `4` stopped needing a
+  human, `5` ended without finishing. The mapping is exhaustive by construction —
+  a variant added by a later harness breaks the build rather than being folded
+  silently into a wrong code.
+- **`--json`** writes the run's events to stdout as newline-delimited JSON, one
+  object per line and nothing else on stdout. The objects are
+  `io_harness::RunEvent` serialized by io-harness's own derive, which is the same
+  shape its `[[hook]]` writer appends to a file and its store keeps in
+  `run_events.json` — so no format was invented here, and every event kind
+  reaches the stream including the ones the interactive renderer cannot draw.
+- **`--sandbox`** picks `read-only`, `workspace-write` or `full-access`, and
+  **`--policy`** picks `workspace` or `read-only` in the same words the status
+  line and the wizard use. `--policy ask-writes` is refused: nothing in a
+  headless run can answer an approval, so honouring it would turn *ask before
+  writes* into *deny writes* without saying so.
+- **`--provider openrouter|anthropic|openai`** builds the provider from the
+  environment, using the credential and model variables io-harness's own
+  `from_env` constructors read — so a CI container needs nothing written to disk.
+
+### Changed
+
+- **`[sandbox]` limits and `[run]` budgets now apply to a headless run**, which
+  is the first time either section has had an effect in this product. A run with
+  nobody to steer it can hand the harness a task contract of its own, and that
+  contract is what those sections travel in. An interactive session still cannot
+  use them without giving up `Ctrl+C`.
+- **A non-TTY stdout is no longer a refusal for `io exec`.** The check moved
+  after the subcommand is known: a session still refuses to draw into a pipe, and
+  its message now names `io exec` as the thing to use instead.
+- Every provider is constructed in one place, reached by both the interactive
+  session and `io exec`, so the next provider io-harness gains cannot arrive on
+  one path and not the other.
+
+### Notes
+
+- `io exec` runs one goal and stops. There is no `io resume`, which is why every
+  approval is declined rather than deferred and why exit code `4` cannot happen
+  yet; it is mapped so that adding that subcommand later renumbers nothing.
+- `RunEvent` carries no timestamp, so the JSON has none. Adding an envelope to
+  supply one would make this a format io-cli owns rather than one it passes
+  through.
+- `serde_json` becomes the tenth direct dependency. It is already an
+  unconditional dependency of io-harness, so nothing new enters the tree.
+
 ## [0.4.0] - 2026-08-17
 
 Work survives the session. A conversation can be come back to, restarted from the

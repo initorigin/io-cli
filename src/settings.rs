@@ -213,6 +213,16 @@ pub fn user_path() -> Option<PathBuf> {
     io_harness::config::user_path()
 }
 
+/// The run store, beside the configuration file.
+///
+/// That is the directory this product already owns, and asking for a second one
+/// buys nothing. It lives here rather than in the binary because both entry
+/// points need it: an interactive session and a headless `io exec` write to the
+/// same store, which is what lets `/resume` list a run that CI started.
+pub fn store_path() -> Option<PathBuf> {
+    Some(user_path()?.parent()?.join("runs.db"))
+}
+
 /// Write the file, creating its directory, with mode `0600` on unix.
 ///
 /// The mode is set on the file that is created rather than afterwards, so there

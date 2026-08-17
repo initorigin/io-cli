@@ -210,3 +210,63 @@ fn the_workspace_directory_is_not_shipped_inside_the_crate() {
         "the planning tree must stay off the repository: {gitignore}",
     );
 }
+
+#[test]
+fn the_readme_exit_table_is_the_exit_table() {
+    // The exit codes are public contract from 0.5.0 onward: a script branches on
+    // them and cannot be migrated by fixing forward. A table in the README that
+    // drifted from the constants would be worse than no table at all.
+    let readme = read("README.md");
+    for (code, what) in [
+        (io_cli::exec::OK, "of its own accord"),
+        (io_cli::exec::FAILED, "never got that far"),
+        (io_cli::exec::REFUSED, "a boundary said no"),
+        (io_cli::exec::CEILING, "a ceiling was reached"),
+        (io_cli::exec::PAUSED, "needing a human"),
+        (io_cli::exec::UNFINISHED, "without finishing"),
+    ] {
+        let row = format!("| `{code}` |");
+        assert!(
+            readme.contains(&row),
+            "the README's exit table has no row for {code}",
+        );
+        assert!(
+            readme.contains(what),
+            "the README describes {code} differently from the code: {what}",
+        );
+    }
+}
+
+#[test]
+fn the_readme_lists_every_flag_io_exec_actually_takes() {
+    use clap::CommandFactory;
+
+    let readme = read("README.md");
+    let cli = io_cli::cli::Cli::command();
+    let exec = cli
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "exec")
+        .expect("`io exec` is a subcommand");
+
+    let flags: Vec<String> = exec
+        .get_arguments()
+        .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
+        .filter(|long| long != "--help")
+        .collect();
+
+    assert!(!flags.is_empty(), "there should be flags to check");
+    for flag in &flags {
+        assert!(
+            readme.contains(&format!("`{flag}")),
+            "`io exec` takes {flag} and the README does not mention it",
+        );
+    }
+
+    // And nothing the README promises has been removed from the binary.
+    for promised in ["--json", "--sandbox", "--policy", "--provider"] {
+        assert!(
+            flags.iter().any(|flag| flag == promised),
+            "the README documents {promised} and `io exec` no longer takes it",
+        );
+    }
+}

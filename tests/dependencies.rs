@@ -32,6 +32,11 @@ const ALLOWED: &[&str] = &[
     // as well as its name — see `n2_syntect_is_taken_with_exactly_the_features_
     // the_cross_compiles_survive`.
     "syntect",
+    // Tenth, added in 0.5.0 for `io exec --json`. It serializes a type io-harness
+    // declares and already derives `Serialize` for, using the crate io-harness
+    // already depends on — so this name buys a correctness property (escaping is
+    // not this crate's to get right) rather than a subsystem.
+    "serde_json",
 ];
 
 /// Crates that would mean a subsystem had been rebuilt here. Matched against
