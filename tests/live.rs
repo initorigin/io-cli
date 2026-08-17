@@ -21,6 +21,8 @@
 //! driven through the real bridge and the real event renderer, editing a real
 //! file inside the sandbox.
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use io_cli::events::Events;
@@ -252,9 +254,11 @@ async fn live_f10_a_real_turn_stops_and_asks_before_it_writes() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let answering = tokio::spawn({
         let seen = Arc::clone(&seen);
+        // Owned, because the task outlives this borrow of the tempdir.
+        let root = root.to_path_buf();
         async move {
             while let Some(ask) = asks.recv().await {
-                let approval = Approval::new(ask);
+                let approval = Approval::new(ask, &root);
                 let question = approval.ask();
                 let note = format!(
                     "{} {} — rule {:?}, layer {:?}, {} bytes of content",
@@ -344,13 +348,16 @@ async fn live_f10_a_denial_leaves_the_file_alone() {
         events: Arc::clone(&collected),
     };
 
-    let answering = tokio::spawn(async move {
-        let mut denied = 0usize;
-        while let Some(ask) = asks.recv().await {
-            Approval::new(ask).answer(Answer::Deny);
-            denied += 1;
+    let answering = tokio::spawn({
+        let root = root.to_path_buf();
+        async move {
+            let mut denied = 0usize;
+            while let Some(ask) = asks.recv().await {
+                Approval::new(ask, &root).answer(Answer::Deny);
+                denied += 1;
+            }
+            denied
         }
-        denied
     });
 
     let result = session
@@ -431,15 +438,18 @@ async fn live_allowing_for_the_session_stops_the_reasking_inside_one_turn() {
         events: Arc::clone(&collected),
     };
 
-    let answering = tokio::spawn(async move {
-        let mut targets = Vec::new();
-        while let Some(ask) = asks.recv().await {
-            let approval = Approval::new(ask);
-            targets.push(approval.ask().target().to_string());
-            println!("asked about {}", approval.ask().target());
-            approval.answer(Answer::Session);
+    let answering = tokio::spawn({
+        let root = root.to_path_buf();
+        async move {
+            let mut targets = Vec::new();
+            while let Some(ask) = asks.recv().await {
+                let approval = Approval::new(ask, &root);
+                targets.push(approval.ask().target().to_string());
+                println!("asked about {}", approval.ask().target());
+                approval.answer(Answer::Session);
+            }
+            targets
         }
-        targets
     });
 
     let result = session
@@ -477,5 +487,271 @@ async fn live_allowing_for_the_session_stops_the_reasking_inside_one_turn() {
          asked {repeats} times in one turn, so the answer is a key that does nothing \
          a reader can see: {targets:?}",
         targets[0],
+    );
+}
+
+// ===========================================================================
+// F12 — a real turn against a live provider edits a file, and every surface
+// this release ships is exercised on it.
+//
+// This replaced the human gate the first three releases each ended at. The
+// owner withdrew manual release testing on 2026-08-17; see
+// `.ultraship/iterations/US-IO-CLI-0.3.0-I01.yaml`. What a gate proved and this
+// cannot is whether a diff is *pleasant* to read, and the release record says so
+// rather than implying otherwise.
+//
+// What it does prove is the thing no assertion over a hand-written hunk can:
+// that the hunk io-harness ACTUALLY stores for a real edit, by a real model,
+// through the real tool layer, is the one this renderer draws.
+// ===========================================================================
+
+/// The whole cell, as a reader would see it.
+fn as_text(lines: &[ratatui::text::Line<'static>]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f12_a_real_edit_renders_as_the_hunk_the_harness_stored() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    // Several lines, so a one-line edit produces a hunk with real context and
+    // real `@@` numbers rather than a whole-file replacement that would look the
+    // same however it was computed.
+    std::fs::write(
+        root.join("greeting.rs"),
+        "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\nfn five() {}\n\
+         fn six() {}\nfn seven() {}\nfn eight() {}\n",
+    )
+    .expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let result = session
+        .turn_steered(
+            "In greeting.rs, change only the body of `fn five` so that it reads \
+             `fn five() { println!(\"five\"); }`. Change nothing else. Then say done.",
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &observer,
+            &inbox,
+        )
+        .await
+        .expect("the turn runs");
+
+    println!("outcome: {:?}  run {}", result.outcome, result.run_id);
+
+    // ---- F1/F2/F3/F4: the diff, from the store, for a real edit -------------
+    let edits = store.edits(result.run_id).expect("the edits are readable");
+    println!("{} edit(s) recorded", edits.len());
+    assert!(
+        !edits.is_empty(),
+        "the model did not edit the file, so this proves nothing about the diff. \
+         outcome was {:?}",
+        result.outcome,
+    );
+
+    for edit in &edits {
+        let text = as_text(&io_cli::diff::cell(edit, &DARK, 120));
+        println!("--- step {} · {} ---\n{text}\n---", edit.step, edit.tool);
+
+        assert!(
+            text.contains(&edit.path),
+            "the path is on the header: {text}"
+        );
+        match &edit.hunk {
+            Some(hunk) => {
+                // The load-bearing assertion of the whole release: what is on
+                // screen is the harness's stored text, not something io-cli
+                // recomputed. Every body line survives, in order.
+                for line in hunk.lines() {
+                    assert!(
+                        text.contains(line),
+                        "the rendered cell dropped a line the store holds: {line:?}",
+                    );
+                }
+                assert!(
+                    text.contains("@@"),
+                    "a stored hunk carries the file's own line numbers: {text}",
+                );
+            }
+            // Honest about the other case rather than failing on it: an absent
+            // hunk has three causes and none of them is "nothing changed".
+            None => assert!(
+                text.contains("no diff stored"),
+                "an absent hunk has to say so: {text}",
+            ),
+        }
+    }
+
+    // ---- F11: the whole run as one patch, over OSC 52 -----------------------
+    let patch = store.patch(result.run_id).expect("the patch is readable");
+    assert!(
+        !patch.trim().is_empty(),
+        "a run that edited a file has a patch"
+    );
+    let sequence = io_cli::clipboard::sequence(&patch);
+    assert!(sequence.starts_with("\x1b]52;c;"), "OSC 52 is malformed");
+    assert!(sequence.ends_with('\x07'), "OSC 52 is unterminated");
+    let described = io_cli::clipboard::describe(&patch);
+    println!("clipboard: {described}");
+    for claim in ["copied", "success", "done"] {
+        assert!(
+            !described.to_lowercase().contains(claim),
+            "nothing acknowledges an OSC 52 write, so {claim:?} is a claim this \
+             product cannot support: {described}",
+        );
+    }
+
+    // ---- F10: the conversation, back into the scrollback --------------------
+    let transcript = session.transcript(&store).expect("the transcript reads");
+    let rendered = as_text(&io_cli::transcript::lines(&transcript, &DARK));
+    println!("--- Ctrl+T ---\n{rendered}\n---");
+    assert!(
+        rendered.contains("greeting.rs") || rendered.contains("five"),
+        "the transcript should carry what was asked: {rendered}",
+    );
+
+    // ---- F5: the expander reads the detail back out of the trace ------------
+    let steps = store.steps(result.run_id).expect("the steps read");
+    println!("{} step(s) in the trace", steps.len());
+    assert!(
+        !steps.is_empty(),
+        "a run that edited a file recorded steps, and /expand reads them back",
+    );
+
+    // ---- the tool cells, through the real renderer --------------------------
+    let events = collected.lock().expect("not poisoned").clone();
+    let mut renderer = Events::new(DARK);
+    let mut committed = Vec::new();
+    for (nth, event) in events.iter().enumerate() {
+        // A distinct age per event, stated by the test rather than measured, so
+        // each cell's duration is arithmetic this file chose. No clock is read
+        // here or anywhere under `tests/`.
+        committed.extend(renderer.event(event, std::time::Duration::from_millis(nth as u64 * 100)));
+    }
+    committed.extend(renderer.flush());
+    let text = as_text(&committed);
+    println!("--- as the interface renders it ---\n{text}\n---");
+
+    let announced = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::ToolCall { .. }))
+        .count();
+    println!("{announced} tool call(s) announced");
+    if announced > 0 {
+        assert!(
+            text.contains("~"),
+            "a committed tool cell carries the interface's observed duration, \
+             marked as an observation: {text}",
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f12_an_approval_shows_the_write_as_a_diff_against_the_real_file() {
+    use io_cli::approval::{self, Approval};
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    let target = root.join("notes.txt");
+    std::fs::write(&target, "one\ntwo\nthree\nfour\nfive\n").expect("the fixture");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    // The posture whose whole point is that it asks.
+    let policy = Policy {
+        layers: Policy::default().layers,
+        defaults: Posture::AskWrites.defaults(),
+    };
+    let (_steer, inbox) = Steer::channel();
+    let (asker, mut asks) = approval::channel();
+
+    // Answer whatever is asked, and render the overlay for the first write on the
+    // way past. The run stays paused for exactly as long as the `Ask` is held.
+    let drawn = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&drawn);
+    let answering = tokio::spawn({
+        let root = root.to_path_buf();
+        async move {
+            while let Some(ask) = asks.recv().await {
+                let approval = Approval::new(ask, &root);
+                // A viewport with room, so the hunk itself is exercised and not only
+                // the counts row a four-row session would leave.
+                let (mut screen, _recorder) = support::screen_of(100, 20, 12);
+                screen
+                    .draw(|frame| approval.render(frame, frame.area(), &DARK))
+                    .expect("frame");
+                seen.lock()
+                    .expect("not poisoned")
+                    .push(screen.viewport_text().to_string());
+                approval.answer(approval::Answer::Once);
+            }
+        }
+    });
+
+    let result = session
+        .turn_steered(
+            "Change the third line of notes.txt from `three` to `THREE`. \
+             Change nothing else. Then say done.",
+            &provider,
+            &store,
+            &policy,
+            &asker,
+            &io_harness::Ignore,
+            &inbox,
+        )
+        .await
+        .expect("the turn runs");
+    drop(asker);
+    answering.await.expect("the answering task did not panic");
+
+    println!("outcome: {:?}", result.outcome);
+    let overlays = drawn.lock().expect("not poisoned").clone();
+    for overlay in &overlays {
+        println!("--- approval overlay ---\n{overlay}\n---");
+    }
+    assert!(
+        !overlays.is_empty(),
+        "the ask-before-writes posture did not ask, so the approval diff was \
+         never exercised. outcome was {:?}",
+        result.outcome,
+    );
+
+    // The counts are the row that always survives, and they are the decision:
+    // a write that touches one line is not the same decision as one that
+    // rewrites the file.
+    let any = overlays.join("\n");
+    assert!(
+        any.contains('+') && any.contains('-'),
+        "the overlay showed no change at all: {any}",
+    );
+    assert!(
+        !any.contains("+one") || any.contains("-one"),
+        "an unchanged line was drawn as an addition, which means the old side \
+         was empty and the write reads as a whole-file rewrite: {any}",
     );
 }

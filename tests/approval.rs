@@ -200,7 +200,7 @@ async fn f2_the_overlay_states_act_then_target_then_rule_then_layer() {
     let (request, context) = flagged();
     let (ask, deciding) = asked(request, context).await;
 
-    let approval = Approval::new(ask);
+    let approval = Approval::new(ask, std::path::Path::new(""));
     let (mut screen, _recorder) = support::screen(80, 24);
     screen
         .draw(|frame| approval.render(frame, frame.area(), &DARK))
@@ -237,7 +237,7 @@ async fn f2_the_overlay_states_act_then_target_then_rule_then_layer() {
 async fn f2_an_unnamed_action_says_the_tier_default_decided() {
     let (ask, deciding) = asked(write(), ApprovalContext::new("tidy the parser")).await;
 
-    let approval = Approval::new(ask);
+    let approval = Approval::new(ask, std::path::Path::new(""));
     let (mut screen, _recorder) = support::screen(80, 24);
     screen
         .draw(|frame| approval.render(frame, frame.area(), &DARK))
@@ -253,11 +253,19 @@ async fn f2_an_unnamed_action_says_the_tier_default_decided() {
     deciding.await.expect("the approver did not panic");
 }
 
-/// The proposed content is what makes an answer an informed one, and it is the
+/// What a write would do is what makes an answer an informed one, and it is the
 /// only part that can be arbitrarily long. It is fitted into the rows that are
 /// left and says how many it did not show.
+///
+/// **Restated in 0.3.0.** Until then the overlay showed the proposed content as
+/// plain lines, so this asserted the first of them was on screen. Now a write
+/// whose target can be read is shown as a change, and at a session's four rows
+/// the one row available carries `+40 -855` rather than the first line of the
+/// file — which is the more useful row, and the one this test now pins. What has
+/// not changed is the part that mattered: whatever is not shown is counted out
+/// loud.
 #[tokio::test]
-async fn the_overlay_shows_the_proposed_content_and_says_what_it_cut() {
+async fn the_overlay_says_what_it_did_not_show() {
     let long: String = (0..40).map(|n| format!("line {n}\n")).collect();
     let (ask, deciding) = asked(
         Request::new(Act::Write, "src/main.rs").with_content(long),
@@ -265,17 +273,23 @@ async fn the_overlay_shows_the_proposed_content_and_says_what_it_cut() {
     )
     .await;
 
-    let approval = Approval::new(ask);
+    let approval = Approval::new(ask, std::path::Path::new(""));
     let (mut screen, _recorder) = support::screen(80, 24);
     screen
         .draw(|frame| approval.render(frame, frame.area(), &DARK))
         .expect("frame");
 
     let text = screen.viewport_text();
-    assert!(text.contains("line 0"), "the content is shown: {text:?}");
     assert!(
         text.contains("more lines"),
-        "what was cut has to be said, or the reader is approving a file they think they read: {text:?}",
+        "what was cut has to be said, or the reader is approving a file they think \
+         they read: {text:?}",
+    );
+    // The size of the change, which is the decision. `src/main.rs` exists, so
+    // this is a real diff against a real file rather than an all-addition wall.
+    assert!(
+        text.contains('+') && text.contains('-'),
+        "the counts are the row that always survives: {text:?}",
     );
 
     approval.answer(approval::Answer::Deny);
@@ -496,7 +510,10 @@ async fn overlay_for(target: &std::path::Path, content: &str, height: u16) -> St
     });
     let ask = asks.recv().await.expect("the question arrived");
 
-    let approval = Approval::new(ask);
+    // An empty root leaves an absolute target resolving to itself, which is what
+    // these fixtures use; the relative case is covered by the live run, which is
+    // where it was found.
+    let approval = Approval::new(ask, std::path::Path::new(""));
     // `height` is the VIEWPORT's height, which is what the overlay is drawn
     // into — not the terminal's. A session's is four; a taller one is what a
     // reader gets on a terminal with room, and both are worth asserting.

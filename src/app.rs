@@ -82,6 +82,12 @@ pub struct App {
     /// without this a *this session* answer would ask again on the next prompt.
     /// F5 asserts it on the policy handed to the next turn.
     remembered: Vec<io_harness::Rule>,
+    /// The workspace this session is held over.
+    ///
+    /// Kept so an approval can resolve a write's target: the harness sends it
+    /// relative to the workspace, and the process's working directory is not the
+    /// same thing under `io -C <dir>`.
+    root: std::path::PathBuf,
     /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
     /// unified, which is what every file written before 0.3.0 means.
     diff_style: crate::settings::DiffStyle,
@@ -106,9 +112,15 @@ impl App {
             pending: Vec::new(),
             approval: None,
             remembered: Vec::new(),
+            root: std::path::PathBuf::new(),
             diff_style: crate::settings::DiffStyle::default(),
             posture: None,
         }
+    }
+
+    /// Say which workspace this session is held over.
+    pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {
+        self.root = root.into();
     }
 
     /// Say how much of a change a diff should show. Read from the harness's own
@@ -123,7 +135,7 @@ impl App {
     /// scrolled away from a run which is blocked on it, which is what F1 asserts
     /// and the reason this surface is an overlay at all.
     pub fn open_approval(&mut self, ask: Ask) {
-        self.approval = Some(Approval::new(ask));
+        self.approval = Some(Approval::new(ask, &self.root));
     }
 
     /// The posture in force.

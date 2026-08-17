@@ -247,6 +247,9 @@ async fn loop_over<P: Provider>(
 ) -> Result<(), String> {
     let mut app = App::new(theme, model);
     app.set_diff_style(diff_style);
+    // Asked of the session rather than threaded down from `run`, so there is one
+    // answer to "which workspace is this" and it is the harness's.
+    app.set_root(session.root());
     // What the file already says, read back rather than assumed. `None` means the
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.

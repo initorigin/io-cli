@@ -109,7 +109,7 @@ async fn n5_the_approval_overlay_fits_eighty_columns() {
     });
     let ask = asks.recv().await.expect("the question arrived");
 
-    let approval = Approval::new(ask);
+    let approval = Approval::new(ask, std::path::Path::new(""));
     let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
     screen
         .draw(|frame| approval.render(frame, frame.area(), &DARK))
@@ -130,7 +130,15 @@ async fn n5_the_approval_overlay_fits_eighty_columns() {
     );
     // And so must the act and the target, in some form.
     assert!(viewport.contains("write"), "{viewport:?}");
-    assert!(viewport.contains('…'), "something was fitted: {viewport:?}");
+    // Something was cut and the overlay said so. Two markers can carry that: `…`
+    // when a single value was shortened to fit, and `⋯` when whole rows of a
+    // change were left out. 0.3.0 made the second the usual one here — the
+    // overlay's diff row leads with the counts rather than repeating the path, so
+    // the path no longer needs shortening and the rows do.
+    assert!(
+        viewport.contains('…') || viewport.contains('⋯'),
+        "something was cut and nothing said so: {viewport:?}",
+    );
     // The two facts no other core records must survive the narrow form. A widget
     // that "fits" by letting ratatui clip the row has not fitted anything — it has
     // silently cut the half of the sentence this release exists to show.

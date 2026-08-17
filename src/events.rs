@@ -260,7 +260,10 @@ impl Events {
                 let mut spans = vec![Span::styled(decision.clone(), theme.style(Tone::Normal))];
                 if !tool_call.is_empty() {
                     spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
-                    spans.push(Span::styled(tool_call.clone(), theme.style(Tone::Accent)));
+                    spans.push(Span::styled(
+                        tool_names(tool_call),
+                        theme.style(Tone::Accent),
+                    ));
                 }
                 // Always said, in both directions. A result that appears only
                 // sometimes is a column a reader cannot skim down, and `changed`
@@ -453,7 +456,11 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
         Span::styled("  ⋅ ", theme.style(Tone::Muted)),
         Span::styled(call.name.clone(), theme.style(Tone::Accent)),
     ];
-    if !call.target.is_empty() {
+    // `!= call.name` because io-harness falls the target back to the tool's own
+    // name when the call carries no path, pattern or key — so a `git_diff` with
+    // no argument arrived as `git_diff git_diff`, which reads like a stutter.
+    // Found in a live run, not in the suite.
+    if !call.target.is_empty() && call.target != call.name {
         spans.push(Span::styled(
             format!(" {}", call.target),
             theme.style(Tone::Muted),
@@ -560,6 +567,26 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+/// The tools a step called, by name.
+///
+/// `Step.tool_call` is `name:arguments` per call, joined by `" | "`, and the
+/// arguments are raw JSON. 0.1.1 put the whole thing on the step line, which was
+/// the best available then — a reader had nothing else saying what ran. A live
+/// run of 0.3.0 showed what it costs now that tool cells exist: every step
+/// printed its arguments as a wall of escaped JSON directly under a cell that had
+/// just said the same thing readably.
+///
+/// So the names are kept and the arguments are dropped. 0.1.1's F5 asks that a
+/// step read as decision, then what it ran, then what came back, and it still
+/// does — the tool cell above it is where the arguments live now.
+fn tool_names(tool_call: &str) -> String {
+    tool_call
+        .split(" | ")
+        .map(|call| call.split_once(':').map_or(call, |(name, _)| name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The snake-case name of a kind, taken from its `Debug` form.
