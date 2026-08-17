@@ -6,7 +6,7 @@
 //! typeface. The same constants feed `/help` and the README, and these tests fail
 //! when one of them stops agreeing.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use io_cli::commands::{COMMANDS, KEYS};
 
@@ -199,19 +199,14 @@ fn the_notice_carries_the_attribution_and_the_licence_body_is_untouched() {
 
 #[test]
 fn the_workspace_directory_is_not_shipped_inside_the_crate() {
-    // `.ultraship` is planning state. It is committed, because it is how this
-    // release is recorded, but it is not part of what a user installs — and the
-    // evidence directory under it is never committed at all.
+    // `.ultraship` is planning state: tool-written maintainer notes, not part of
+    // what a user installs and not a contributor-facing surface. The whole tree
+    // is ignored, so the rule is one line and there is no sub-path to keep in
+    // step with it. The bare entry is asserted rather than a `contains`, because
+    // a narrower rule such as `.ultraship/products/*/evidence/` also contains it.
     let gitignore = read(".gitignore");
     assert!(
-        gitignore.contains(".ultraship/products/*/evidence/"),
-        "release evidence must stay off the repository: {gitignore}",
-    );
-    assert!(
-        !Path::new(&repo())
-            .join(".ultraship/products/io-cli/evidence")
-            .exists()
-            || gitignore.contains("evidence"),
-        "evidence exists and is not ignored",
+        gitignore.lines().any(|line| line.trim() == ".ultraship/"),
+        "the planning tree must stay off the repository: {gitignore}",
     );
 }
