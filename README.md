@@ -183,6 +183,15 @@ A ceiling is `3` and not `0` because io-harness returns one as a *successful
 call* whose outcome says a limit was hit; a status read off the result alone
 would call a truncated run a finished one.
 
+**Give the goal an end condition.** How a run ends is the agent's behaviour, not
+this interface's: a goal with no clear stopping point can keep the agent working
+after the useful part is done, until io-harness's stall policy ends the run — and
+that is `5`, even though the work happened. The same goal on the same model
+reached `Finished` on one run and `Stalled` on another while this release was
+being tested. `io` reports what the harness decided and never relabels it, so
+"…, then stop" in the goal, or a `max_steps` in `[run]`, is worth more than
+retrying.
+
 ### The JSON
 
 One object per line, and nothing else on stdout, so it pipes straight into a
