@@ -491,7 +491,7 @@ tasks:
     why_required: "What this release ships is a moment — a run stopping to ask, and a person
       answering it. A test can assert that a decision reached the harness and cannot say whether the
       overlay read as clear or as alarming. The same human gate 0.1.0 and 0.1.1 both carried."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T09
     acceptance_criteria:
@@ -552,6 +552,15 @@ tasks:
         that is the model's choice rather than a property of this interface. It is `#[ignore]`d, CI
         never runs it, and it belongs to 0.1.0's F1 rather than to any criterion here. Left alone
         rather than reworded into passing."
+      - "**F10 — completed by the owner, 2026-08-17.** They ran the release binary at a real
+        terminal under *ask before writes*, approved a write, and gave the verdict: `working!
+        approved`. That is the gate: a person watched a run stop to ask and said the moment reads
+        right. Recorded in their words rather than paraphrased into something more formal."
+      - "**The deny half of F10's wording was proved by the live rehearsal rather than by the
+        owner's own run**, and the record says so rather than implying otherwise:
+        `live_f10_a_denial_leaves_the_file_alone` denied every request against a live provider and
+        asserted the file was untouched. The owner's verdict covers how the surface reads, which is
+        the half no test can reach."
       - "**O1 — CI green on macOS, Linux and Windows**, on `feat/0.2.0` at afcfb7c, PR #9. All eight
         checks pass: `build and test` on macos-latest (36s), ubuntu-latest (39s) and windows-latest
         (1m39s), plus `fmt and clippy`, `msrv`, `CodeQL`, `Analyze (actions)` and `Analyze (rust)`.
