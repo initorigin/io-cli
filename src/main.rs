@@ -105,7 +105,12 @@ async fn run() -> Result<u8, String> {
         drop(screen);
 
         match chosen? {
-            Some(chosen) => theme = chosen,
+            // Resolved rather than assigned, for the same reason the stored theme
+            // above is: what the user picked is a preference, and `NO_COLOR`
+            // outranks a preference wherever it came from. The wizard already
+            // resolves its own, so this is the second lock on the same door —
+            // cheap, and the door is the one a first run walks through.
+            Some(chosen) => theme = Theme::from_env(Some(chosen.name)),
             // Nothing was written and the user said so. Leaving is the whole
             // answer; starting a session against no configuration is not.
             None => return Ok(io_cli::exec::OK),
@@ -281,13 +286,34 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     match kind {
                         Pick::Theme => {
                             if let Some(chosen) = Theme::by_name(&label) {
-                                app.theme = chosen;
-                                app.events.set_theme(chosen);
+                                // Resolved, not assigned — the third and last
+                                // place a theme reaches a session, and the one
+                                // that would otherwise let `/theme` bring colour
+                                // back into a run the environment asked to be
+                                // uncoloured. The file lost to `NO_COLOR`
+                                // already, and 0.6.0 made the wizard's picker
+                                // lose to it too; a mid-session picker that still
+                                // won would make the variable mean *until you
+                                // touch anything*.
+                                let applied = Theme::from_env(Some(chosen.name));
+                                app.theme = applied;
+                                app.events.set_theme(applied);
+                                // The sentence has to say which of the two
+                                // happened. Under the variable the choice is
+                                // real but invisible, and reporting it the same
+                                // way would describe a change the operator
+                                // cannot see anywhere on their screen.
                                 app.say(
                                     Tone::Muted,
-                                    format!(
-                                        "theme {label} for this session; `io setup` to keep it"
-                                    ),
+                                    if applied.coloured {
+                                        format!(
+                                            "theme {label} for this session; `io setup` to keep it"
+                                        )
+                                    } else {
+                                        format!(
+                                            "theme {label} chosen; NO_COLOR is set, so this session stays uncoloured"
+                                        )
+                                    },
                                 );
                             }
                         }

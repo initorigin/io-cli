@@ -27,7 +27,7 @@ use tui_textarea::TextArea;
 
 use crate::picker::{Outcome, Picker, Row};
 use crate::settings::{self, Posture};
-use crate::theme::{Theme, Tone, THEMES};
+use crate::theme::{Background, Theme, Tone, THEMES};
 
 /// The providers on offer: the variants `io_harness::ProviderSpec` declares.
 /// Enumerated from the type, not invented here — a provider the harness gains is
@@ -163,6 +163,11 @@ pub struct Wizard {
     /// Typed by the user, or `None` when the environment already carries it.
     api_key: Option<String>,
     model: Option<String>,
+    /// The theme name that will be **written down**, which is not always the name
+    /// of the theme being rendered. Under `NO_COLOR` those two part company: the
+    /// rendered theme is `MONO` and the written one is whichever row the picker
+    /// was left on, because the file records a preference for the run that does
+    /// not have the variable set.
     theme_name: String,
     posture: Posture,
     picker: Option<Picker>,
@@ -173,6 +178,14 @@ pub struct Wizard {
     rejection: Option<String>,
     /// Whether the environment already carries a usable key for this provider.
     env_key_present: bool,
+    /// Whether colour is off for this whole run.
+    ///
+    /// Read from the theme handed in rather than from the environment, because
+    /// `MONO` is the only uncoloured theme there is and `Theme::resolve` hands
+    /// it back for one reason only. Holding the answer instead of re-reading the
+    /// variable also keeps the theme step drivable from a test that never has to
+    /// set a process-wide variable.
+    no_color: bool,
 }
 
 impl Wizard {
@@ -184,12 +197,22 @@ impl Wizard {
             base_url: None,
             api_key: None,
             model: None,
-            theme_name: theme.name.to_string(),
+            // Resolved again with colour forced on, which under `NO_COLOR` turns
+            // `MONO` into the coloured theme this terminal would otherwise have
+            // had. Seeding from `theme.name` directly would seed "mono", and
+            // "mono" is a label rather than a key — `Theme::by_name` searches the
+            // selectable themes and `MONO` is not among them — so it would open
+            // the picker on the wrong row and, if the file were written from it,
+            // record a preference no later launch could ever resolve.
+            theme_name: Theme::resolve(false, Background::detect(), Some(theme.name))
+                .name
+                .to_string(),
             posture: Posture::Workspace,
             picker: None,
             input: masked(),
             rejection: None,
             env_key_present: false,
+            no_color: !theme.coloured,
         }
     }
 
@@ -449,24 +472,7 @@ impl Wizard {
         match picker.key(key) {
             Outcome::Chosen(index) => {
                 self.model = picker.rows().get(index).map(|row| row.label.clone());
-                self.step = Step::Theme;
-                self.picker = Some(
-                    Picker::new(
-                        "Which theme?",
-                        THEMES
-                            .iter()
-                            .map(|theme| {
-                                Row::with_detail(theme.name, "the sample below re-renders")
-                            })
-                            .collect(),
-                    )
-                    .selecting(
-                        THEMES
-                            .iter()
-                            .position(|theme| theme.name == self.theme_name)
-                            .unwrap_or(0),
-                    ),
-                );
+                self.enter_theme_step();
                 Progress::Idle
             }
             Outcome::Cancelled => {
@@ -519,8 +525,14 @@ impl Wizard {
         // Read after every keystroke, not only on choice: this is the live
         // preview, and it costs nothing because the renderer is already there.
         if let Some(theme) = THEMES.get(picker.selected()) {
-            self.theme = *theme;
             self.theme_name = theme.name.to_string();
+            // Resolved, never assigned. A picked theme is a preference exactly as
+            // the configuration file's theme is, and `NO_COLOR` outranks both —
+            // so under it the preview and the session that follows stay `MONO`
+            // while the name above stays the one the user picked. Assigning here
+            // is how a user with the variable set used to choose a theme at this
+            // screen and get a coloured session anyway.
+            self.theme = Theme::resolve(self.no_color, theme.background, Some(theme.name));
         }
         match outcome {
             Outcome::Chosen(_) => {
@@ -724,8 +736,29 @@ impl Wizard {
         }
     }
 
-    fn render_theme(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_theme(&mut self, frame: &mut Frame, mut area: Rect) {
         let theme = self.theme;
+        // Said on the screen rather than left to be discovered. Under `NO_COLOR`
+        // the sample below cannot change, so a user arrowing through the list is
+        // watching nothing happen and would fairly read that as broken. The
+        // choice is still worth making — it is what the file records for a run
+        // without the variable set — and one line is the whole difference between
+        // a dead control and a deferred one.
+        if self.no_color && area.height > 1 {
+            paragraph(
+                frame,
+                Rect { height: 1, ..area },
+                vec![Line::from(Span::styled(
+                    "NO_COLOR is set, so this run stays uncoloured; the choice is saved for later.",
+                    theme.style(Tone::Muted),
+                ))],
+            );
+            area = Rect {
+                y: area.y + 1,
+                height: area.height - 1,
+                ..area
+            };
+        }
         // The sample sits below the picker and is redrawn in whichever theme is
         // highlighted. It is the one moment of delight in the flow and it costs
         // nothing, because the renderer is already here.
