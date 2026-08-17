@@ -6,7 +6,6 @@
 //! giving the terminal back.
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,10 +13,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{
-    Anthropic, Compatible, Config, OpenAi, OpenRouter, Policy, Provider, ProviderSpec, Session,
-    Steer, Store,
-};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
@@ -28,7 +24,7 @@ use io_cli::settings::{self, CliSettings, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
-use io_cli::{approval, bridge, splash, verify};
+use io_cli::{approval, bridge, provider, splash, verify};
 use ratatui::text::{Line, Span};
 
 fn main() -> ExitCode {
@@ -40,16 +36,16 @@ fn main() -> ExitCode {
         }
     };
     match runtime.block_on(run()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             // Printed after the terminal has been restored, never into raw mode.
             eprintln!("io: {error}");
-            ExitCode::FAILURE
+            ExitCode::from(io_cli::exec::FAILED)
         }
     }
 }
 
-async fn run() -> Result<(), String> {
+async fn run() -> Result<u8, String> {
     let cli = Cli::parse();
     let root = match cli.dir {
         Some(dir) => dir,
@@ -60,10 +56,22 @@ async fn run() -> Result<(), String> {
     let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
     let theme = Theme::from_env(stored.and_then(|s| s.theme).as_deref());
 
-    // Interactive-only in this release. A non-TTY stdout is detected well enough
-    // to refuse rather than to half-work; `io exec` and NDJSON are 0.5.0.
+    // The headless path leaves before anything takes the terminal, and before the
+    // wizard can be reached: `io exec` in a container with no configuration file
+    // must fail with a sentence, never sit at a prompt nobody can answer.
+    if let Some(Subcommand::Exec(args)) = cli.command {
+        return io_cli::exec::main(args, config, root, cli.model).await;
+    }
+
+    // A session draws, so it needs a terminal to draw on, and saying so is better
+    // than half-working. The check sits AFTER the subcommand is known rather than
+    // before it, because `io exec` is the answer to a non-TTY stdout rather than a
+    // victim of it.
     if !std::io::stdout().is_terminal() {
-        return Err("io is interactive in this release and stdout is not a terminal".into());
+        return Err(
+            "io is interactive and stdout is not a terminal; use `io exec \"<goal>\"` instead"
+                .into(),
+        );
     }
 
     let setup = matches!(cli.command, Some(Subcommand::Setup));
@@ -100,7 +108,7 @@ async fn run() -> Result<(), String> {
             Some(chosen) => theme = chosen,
             // Nothing was written and the user said so. Leaving is the whole
             // answer; starting a session against no configuration is not.
-            None => return Ok(()),
+            None => return Ok(io_cli::exec::OK),
         }
         // Read back what was written rather than trusting what was typed: the
         // file is the source of truth from here on, and if the harness disagrees
@@ -123,7 +131,7 @@ async fn run() -> Result<(), String> {
     // printed about how this ended.
     keys.stop();
     screen.restore();
-    result
+    result.map(|()| io_cli::exec::OK)
 }
 
 /// The session, once there is a configuration to run it against.
@@ -138,10 +146,6 @@ async fn drive(
     let Some(spec) = config.provider_spec().cloned() else {
         return Err("no provider is configured; run `io setup`".into());
     };
-    let spec = match model_override {
-        Some(model) => with_model(spec, model),
-        None => spec,
-    };
 
     let policy = config.policy().unwrap_or_default();
     // `[app.io-cli]` again, read through the harness rather than parsed here. It
@@ -149,7 +153,7 @@ async fn drive(
     // the wizard, which writes the file this then reads back.
     let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
     let diff_style = settings::DiffStyle::from_setting(stored.and_then(|s| s.diff).as_deref());
-    let store = store_path().ok_or("no place to keep the run store")?;
+    let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
 
@@ -158,111 +162,61 @@ async fn drive(
     // same call the wizard's model step makes, rather than a second one.
     let catalogue_spec = spec.clone();
 
-    // `Provider` is not dyn-compatible, so the session loop is generic and the
-    // spec is matched once, here, rather than behind a trait object.
-    //
-    // What each arm hands down is a **maker** rather than a provider. Every turn
-    // entry point in io-harness takes `provider: &P` as an argument while the
-    // conversation lives in the `Session`, so changing the model mid-session is a
-    // new provider handed to the next turn and nothing else — but building one
-    // needs the credential, which only this function has seen. A closure that
-    // captures it is the whole mechanism.
-    //
-    // It returns a `Result` for one arm's sake: a `Compatible` endpoint is
-    // resolved from a preset that can fail. Making every arm fallible keeps one
-    // signature and lets a failed switch report itself instead of ending the
-    // session.
-    match spec {
-        ProviderSpec::OpenRouter { model, api_key } => {
-            let key = key_for(api_key, "OPENROUTER_API_KEY")?;
-            let make = move |m: &str| Ok(OpenRouter::new(key.clone(), m));
-            loop_over(
-                screen,
-                inputs,
-                make,
-                catalogue_spec,
-                store,
-                session,
-                policy,
-                diff_style,
-                theme,
-                model,
-            )
-            .await
-        }
-        ProviderSpec::Anthropic { model, api_key } => {
-            let key = key_for(api_key, "ANTHROPIC_API_KEY")?;
-            let make = move |m: &str| Ok(Anthropic::new(key.clone(), m));
-            loop_over(
-                screen,
-                inputs,
-                make,
-                catalogue_spec,
-                store,
-                session,
-                policy,
-                diff_style,
-                theme,
-                model,
-            )
-            .await
-        }
-        ProviderSpec::OpenAi { model, api_key } => {
-            let key = key_for(api_key, "OPENAI_API_KEY")?;
-            let make = move |m: &str| Ok(OpenAi::new(key.clone(), m));
-            loop_over(
-                screen,
-                inputs,
-                make,
-                catalogue_spec,
-                store,
-                session,
-                policy,
-                diff_style,
-                theme,
-                model,
-            )
-            .await
-        }
-        ProviderSpec::Compatible {
+    // The provider is built by `provider::build`, which is the only match on
+    // `ProviderSpec` that constructs one — the interactive session and `io exec`
+    // both arrive there rather than each keeping a copy of it. `Provider` is not
+    // dyn-compatible, so what comes back from that call is not a provider: it is
+    // this session, run from inside the arm that built one.
+    provider::build(
+        spec,
+        model_override,
+        Interactive {
+            screen,
+            inputs,
+            catalogue_spec,
+            store,
+            session,
+            policy,
+            diff_style,
+            theme,
+        },
+    )
+    .await?
+}
+
+/// The interactive session, as something [`provider::build`] can run.
+struct Interactive<'a, 'b> {
+    screen: &'a mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    inputs: &'b mut UnboundedReceiver<Event>,
+    catalogue_spec: ProviderSpec,
+    store: Store,
+    session: Session,
+    policy: Policy,
+    diff_style: settings::DiffStyle,
+    theme: Theme,
+}
+
+impl provider::WithProvider for Interactive<'_, '_> {
+    type Out = Result<(), String>;
+
+    async fn call<P: Provider>(
+        self,
+        make: impl Fn(&str) -> Result<P, String>,
+        model: String,
+    ) -> Self::Out {
+        loop_over(
+            self.screen,
+            self.inputs,
+            make,
+            self.catalogue_spec,
+            self.store,
+            self.session,
+            self.policy,
+            self.diff_style,
+            self.theme,
             model,
-            preset,
-            base_url,
-            api_key,
-            auth,
-            ..
-        } => {
-            let key = api_key.unwrap_or_default();
-            if preset.is_none() && base_url.is_none() {
-                return Err("this provider names neither a preset nor a base URL".into());
-            }
-            let auth = auth.unwrap_or(io_harness::Auth::Bearer);
-            let make = move |m: &str| match (&preset, &base_url) {
-                (Some(preset), _) => {
-                    Compatible::preset(preset, key.clone(), m).map_err(|error| error.to_string())
-                }
-                (None, Some(base)) => Ok(Compatible::new(base.clone(), auth, key.clone(), m)),
-                // Refused above, before a session was opened, so this arm exists
-                // only to make the match total.
-                (None, None) => Err("this provider names neither a preset nor a base URL".into()),
-            };
-            loop_over(
-                screen,
-                inputs,
-                make,
-                catalogue_spec,
-                store,
-                session,
-                policy,
-                diff_style,
-                theme,
-                model,
-            )
-            .await
-        }
-        other => Err(format!(
-            "this release cannot drive a {other:?} provider yet"
-        )),
+        )
+        .await
     }
 }
 
@@ -998,49 +952,4 @@ impl Keyboard {
             let _ = thread.join();
         }
     }
-}
-
-fn key_for(api_key: Option<String>, var: &str) -> Result<String, String> {
-    if let Some(key) = api_key {
-        return Ok(key);
-    }
-    match std::env::var(var) {
-        Ok(key) if !key.is_empty() => Ok(key),
-        _ => Err(format!(
-            "no key in the configuration and ${var} is not set; run `io setup`"
-        )),
-    }
-}
-
-fn with_model(spec: ProviderSpec, model: String) -> ProviderSpec {
-    match spec {
-        ProviderSpec::OpenRouter { api_key, .. } => ProviderSpec::OpenRouter { model, api_key },
-        ProviderSpec::Anthropic { api_key, .. } => ProviderSpec::Anthropic { model, api_key },
-        ProviderSpec::OpenAi { api_key, .. } => ProviderSpec::OpenAi { model, api_key },
-        ProviderSpec::Compatible {
-            preset,
-            base_url,
-            api_key,
-            auth,
-            name,
-            reference_prices,
-            ..
-        } => ProviderSpec::Compatible {
-            model,
-            preset,
-            base_url,
-            api_key,
-            auth,
-            name,
-            reference_prices,
-        },
-        other => other,
-    }
-}
-
-/// Beside the configuration file, because that is the directory this product
-/// already owns and asking for a second one buys nothing.
-fn store_path() -> Option<PathBuf> {
-    let config = settings::user_path()?;
-    Some(config.parent()?.join("runs.db"))
 }
