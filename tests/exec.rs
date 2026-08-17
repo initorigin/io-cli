@@ -1,6 +1,8 @@
 //! F1 — `io exec` runs a goal to completion with no terminal.
 //! F2 — the exit status is the harness's outcome, and the mapping is total.
 //! F3 — a ceiling exits 3 rather than 0.
+//! F4 — `--json` writes one `RunEvent` per line and nothing else on stdout.
+//! F5 — the JSON is the harness's own shape, not io-cli's.
 //!
 //! The two mappings that look like taste are the release's research. A clean
 //! headless run ends in `RunOutcome::Finished` and never `Success`, because the
@@ -10,9 +12,11 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use io_harness::{
-    CompletionRequest, CompletionResponse, Config, Ignore, Policy, Provider, RunOutcome, Session,
-    Store,
+    CompletionRequest, CompletionResponse, Config, EventKind, Flow, Ignore, Observer, Policy,
+    Provider, RunEvent, RunOutcome, Session, Store,
 };
 use io_cli::exec;
 
@@ -214,5 +218,158 @@ async fn f3_a_step_ceiling_exits_three_rather_than_zero() {
         exec::CEILING,
         "a ceiling must not exit 0 — the harness returns it as Ok, so a status \
          derived from the Result would call this a success",
+    );
+}
+
+/// Counts what the observer was handed, so a line count can be compared against
+/// it rather than against a number a test decided in advance.
+struct Counting<'a> {
+    inner: &'a dyn Observer,
+    seen: AtomicUsize,
+}
+
+impl Observer for Counting<'_> {
+    fn event(&self, event: &RunEvent) -> Flow {
+        self.seen.fetch_add(1, Ordering::SeqCst);
+        self.inner.event(event)
+    }
+}
+
+#[tokio::test]
+async fn f4_json_writes_one_event_per_line_and_every_line_round_trips() {
+    let (_dir, store, mut session, config) = workspace("");
+    let provider = support::Scripted::writing(&[("notes.txt", "hello")]);
+
+    let json = exec::Ndjson::new(Vec::new());
+    let counting = Counting {
+        inner: &json,
+        seen: AtomicUsize::new(0),
+    };
+
+    let result = exec::turn(
+        &provider,
+        &store,
+        &mut session,
+        &config,
+        &Policy::permissive(),
+        "write the note".into(),
+        &counting,
+    )
+    .await
+    .expect("the turn runs");
+
+    let seen = counting.seen.load(Ordering::SeqCst);
+    let written = String::from_utf8(json.into_inner()).expect("the stream is UTF-8");
+    let lines: Vec<&str> = written.lines().collect();
+
+    assert!(seen > 0, "the run should have emitted events at all");
+    assert_eq!(
+        lines.len(),
+        seen,
+        "every event the observer saw should be exactly one line, and nothing \
+         else should reach the stream",
+    );
+
+    // The round trip is the criterion. A line that merely parses as JSON proves
+    // nothing; a line that deserializes back into the harness's own type proves
+    // the shape was not re-modelled on the way out.
+    for line in &lines {
+        let event: RunEvent =
+            serde_json::from_str(line).unwrap_or_else(|error| panic!("{line}\n{error}"));
+        let _ = event.run_id;
+    }
+
+    // The reply belongs to stdout in plain mode and must not also be in the
+    // stream as prose. It may appear inside a `finished` or `token` payload,
+    // which is the harness's business, so this asserts on the line's shape rather
+    // than on the absence of the word.
+    assert!(result.reply.is_some());
+    for line in &lines {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "a line that is not one JSON object is a line `jq` cannot read: {line}",
+        );
+    }
+}
+
+#[test]
+fn f5_the_json_is_the_harness_shape_with_no_envelope_of_our_own() {
+    let json = exec::Ndjson::new(Vec::new());
+    json.event(&RunEvent::new(
+        7,
+        3,
+        EventKind::Step {
+            decision: "wrote a file".into(),
+            tool_call: "write_file".into(),
+            tokens: 42,
+            changed: true,
+        },
+    ));
+    let written = String::from_utf8(json.into_inner()).expect("UTF-8");
+    let value: serde_json::Value = serde_json::from_str(written.trim()).expect("one JSON object");
+
+    // `kind` is flattened, so the variant's fields sit beside the envelope's
+    // rather than under a key of their own. This is the harness's own documented
+    // assertion about its serialization, restated here because it is what a
+    // published shape means.
+    assert_eq!(value["run_id"], 7);
+    assert_eq!(value["step"], 3);
+    assert_eq!(value["depth"], 0);
+    assert_eq!(value["event"], "step");
+    assert_eq!(value["tokens"], 42);
+    assert_eq!(value["changed"], true);
+    assert!(
+        value.get("kind").is_none(),
+        "`kind` is flattened; a `kind` key means a second serialization: {written}",
+    );
+}
+
+#[test]
+fn f5_an_event_the_renderer_cannot_draw_still_reaches_the_stream() {
+    // The whole difference between forwarding a stream and re-modelling one.
+    // io-cli's renderer handles eleven of `EventKind`'s fifty variants; a struct
+    // of io-cli's own would pass every test written from the renderer's
+    // vocabulary and drop this one silently.
+    let json = exec::Ndjson::new(Vec::new());
+    json.event(&RunEvent::new(
+        1,
+        0,
+        EventKind::MemoryWrote {
+            key: "what-the-renderer-never-draws".into(),
+        },
+    ));
+    json.event(&RunEvent::new(
+        1,
+        0,
+        EventKind::Speculated {
+            started: 3,
+            used: 1,
+            discarded: 2,
+        },
+    ));
+    let written = String::from_utf8(json.into_inner()).expect("UTF-8");
+    let lines: Vec<&str> = written.lines().collect();
+
+    assert_eq!(lines.len(), 2, "both events should reach the stream");
+    let first: serde_json::Value = serde_json::from_str(lines[0]).expect("JSON");
+    assert_eq!(first["event"], "memory_wrote");
+    assert_eq!(first["key"], "what-the-renderer-never-draws");
+    let second: serde_json::Value = serde_json::from_str(lines[1]).expect("JSON");
+    assert_eq!(second["event"], "speculated");
+    assert_eq!(second["discarded"], 2);
+}
+
+#[test]
+fn f4_nothing_but_the_stream_reaches_stdout_under_json() {
+    // The decision lives in the library rather than in a match arm in the binary,
+    // because a decision in the binary has no automated coverage at all and this
+    // is the one that keeps `io exec --json | jq` working.
+    assert_eq!(exec::to_stdout(false, Some("the reply")), Some("the reply"));
+    assert_eq!(exec::to_stdout(false, None), None);
+    assert_eq!(
+        exec::to_stdout(true, Some("the reply")),
+        None,
+        "under --json the stream is the whole of stdout; a reply printed beside \
+         it is a line no JSON reader can take",
     );
 }

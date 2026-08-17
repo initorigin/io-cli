@@ -17,10 +17,11 @@
 //! observer.
 
 use std::io::Write;
+use std::sync::Mutex;
 
 use io_harness::{
-    Config, DenyAll, Ignore, Observer, Policy, Provider, RunOutcome, Session, Store, TaskContract,
-    TurnResult,
+    Config, DenyAll, Flow, Ignore, Observer, Policy, Provider, RunEvent, RunOutcome, Session, Store,
+    TaskContract, TurnResult,
 };
 
 use crate::provider::{self, WithProvider};
@@ -104,6 +105,79 @@ pub fn describe(outcome: &RunOutcome) -> String {
     };
     let plural = if *steps == 1 { "step" } else { "steps" };
     format!("the run {what}, after {steps} {plural}")
+}
+
+/// The `--json` stream: one `RunEvent` per line.
+///
+/// **No shape is defined here.** The line is `serde_json::to_string` of
+/// io-harness's own `RunEvent`, which derives `Serialize` in that crate with
+/// `kind` flattened over an `event` tag — so a line reads
+/// `{"run_id":…,"step":…,"depth":…,"event":"step",…}`. It is the same
+/// serialization io-harness's `[[hook]]` writer appends to a file and the same
+/// string its store keeps in `run_events.json`; a consumer that can read one can
+/// read all three.
+///
+/// That is also why this forwards rather than matches. `EventKind` is
+/// `#[non_exhaustive]` and io-cli's renderer handles eleven of its fifty
+/// variants; a struct of io-cli's own with the fields the renderer knows would
+/// pass every test written from the renderer's vocabulary and silently drop the
+/// other thirty-nine.
+///
+/// The write is on the run's critical path, because `Observer::event` is
+/// synchronous and runs on the run's own task. For a headless run that is the
+/// right place for it: the stream *is* the output, and a consumer that reads
+/// slowly should slow the run down rather than have events buffered without
+/// bound or dropped. That is the opposite of the interactive `Bridge`, which
+/// hands events to an unbounded channel precisely so a slow terminal cannot
+/// stall the agent.
+pub struct Ndjson<W: Write + Send> {
+    out: Mutex<W>,
+}
+
+impl<W: Write + Send> Ndjson<W> {
+    pub fn new(out: W) -> Self {
+        Self {
+            out: Mutex::new(out),
+        }
+    }
+
+    /// The writer back, for a test that needs to read what was written.
+    pub fn into_inner(self) -> W {
+        self.out.into_inner().expect("the stream is not poisoned")
+    }
+}
+
+impl<W: Write + Send> Observer for Ndjson<W> {
+    fn event(&self, event: &RunEvent) -> Flow {
+        // A serialization failure and a broken pipe are both reasons to stop
+        // writing, and neither is a reason to cancel the run: the work is the
+        // operator's, the stream is a report on it, and `Flow::Cancel` here would
+        // let a closed `head -1` abort an agent mid-edit.
+        if let Ok(line) = serde_json::to_string(event) {
+            if let Ok(mut out) = self.out.lock() {
+                let _ = writeln!(out, "{line}");
+                let _ = out.flush();
+            }
+        }
+        Flow::Continue
+    }
+}
+
+/// What reaches stdout once the turn is done.
+///
+/// `None` means nothing at all. It exists as a function rather than as an `if`
+/// inside the run because a decision inside the binary has no automated coverage
+/// — no integration test links a binary — and this is the decision that keeps
+/// `io exec --json | jq` working. Sabotaging an `if` there would fail no test;
+/// sabotaging this fails one by name.
+pub fn to_stdout(json: bool, reply: Option<&str>) -> Option<&str> {
+    if json {
+        // The stream is the output. A reply printed beside it is a line that is
+        // not a JSON object, which is exactly what a reader chokes on.
+        None
+    } else {
+        reply
+    }
 }
 
 /// Run one goal to completion.
@@ -207,6 +281,13 @@ impl WithProvider for Headless {
         model: String,
     ) -> Self::Out {
         let provider = make(&model)?;
+
+        // The two observers are the whole difference between the modes. Built
+        // here rather than inside `turn` so that a test can hand in a writer it
+        // can read back.
+        let json = Ndjson::new(std::io::stdout());
+        let observer: &dyn Observer = if self.args.json { &json } else { &Ignore };
+
         let result = turn(
             &provider,
             &self.store,
@@ -214,19 +295,17 @@ impl WithProvider for Headless {
             &self.config,
             &self.policy,
             self.args.goal.clone(),
-            &Ignore,
+            observer,
         )
         .await?;
 
         // stdout is the data and stderr is everything else, so that
         // `io exec --json … | jq` needs no filtering and a plain run can be
         // captured with `$(…)` without catching a status line.
-        if !self.args.json {
-            if let Some(reply) = &result.reply {
-                let mut out = std::io::stdout().lock();
-                let _ = writeln!(out, "{reply}");
-                let _ = out.flush();
-            }
+        if let Some(reply) = to_stdout(self.args.json, result.reply.as_deref()) {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{reply}");
+            let _ = out.flush();
         }
         eprintln!("io: {}", describe(&result.outcome));
         Ok(code(&result.outcome))

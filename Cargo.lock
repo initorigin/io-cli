@@ -953,6 +953,7 @@ dependencies = [
  "io-harness",
  "ratatui",
  "serde",
+ "serde_json",
  "syntect",
  "tempfile",
  "tokio",
