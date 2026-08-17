@@ -51,7 +51,10 @@ fn f6_ctrl_c_during_a_turn_interrupts_it_and_keeps_the_partial_output() {
 
     // The model streams some of an answer.
     for word in ["Looking ", "at ", "the ", "parser"] {
-        app.event(&RunEvent::new(1, 1, EventKind::Token { text: word.into() }));
+        app.event(
+            &RunEvent::new(1, 1, EventKind::Token { text: word.into() }),
+            std::time::Duration::ZERO,
+        );
     }
     assert_eq!(app.events.live(), "Looking at the parser");
 
@@ -215,6 +218,9 @@ fn f9_a_streaming_answer_of_any_length_leaves_the_viewport_the_same_size() {
 fn app_lines(app: &mut App, text: &str) -> usize {
     let before = app.take_pending().len();
     assert_eq!(before, 0, "the caller should have drained first");
-    app.event(&RunEvent::new(1, 1, EventKind::Token { text: text.into() }));
+    app.event(
+        &RunEvent::new(1, 1, EventKind::Token { text: text.into() }),
+        std::time::Duration::ZERO,
+    );
     app.take_pending().len()
 }

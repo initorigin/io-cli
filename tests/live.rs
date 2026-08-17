@@ -160,7 +160,7 @@ async fn live_f1_a_real_turn_streams_and_edits_a_file() {
     let mut renderer = Events::new(DARK);
     let mut committed = Vec::new();
     for event in &events {
-        committed.extend(renderer.event(event));
+        committed.extend(renderer.event(event, std::time::Duration::ZERO));
     }
     committed.extend(renderer.flush());
     let transcript: String = committed
@@ -383,7 +383,7 @@ async fn live_f10_a_denial_leaves_the_file_alone() {
     let mut renderer = Events::new(DARK);
     let transcript: String = events
         .iter()
-        .flat_map(|event| renderer.event(event))
+        .flat_map(|event| renderer.event(event, std::time::Duration::ZERO))
         .map(|line| {
             line.spans
                 .iter()

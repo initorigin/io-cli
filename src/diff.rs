@@ -43,12 +43,29 @@ use ratatui::text::{Line, Span};
 use syntect::easy::ScopeRangeIterator;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
+use crate::settings::DiffStyle;
 use crate::status::SEPARATOR;
 use crate::theme::{Theme, Tone};
 
 /// What every line of the cell is indented by, so a hunk sits under its header
 /// the way a tool call sits under a step.
 const INDENT: &str = "  ";
+
+/// The most body lines one cell will draw.
+///
+/// A hunk is capped by the harness at a mebibyte, which is on the order of
+/// twenty-six thousand lines, and two separate things go wrong long before that.
+/// Highlighting is a fresh parse per line and runs synchronously on the loop that
+/// also delivers keystrokes, so a large hunk makes `Ctrl+C` unreachable for as
+/// long as it takes. And `Screen::commit` hands `insert_before` a `u16` height,
+/// which silently clamps: past sixty-five thousand rows the content is truncated
+/// rather than wrapped, and the buffer it allocates first is the terminal's width
+/// times that height.
+///
+/// Five hundred is far more of a change than anybody reads in a terminal and far
+/// less than either failure. What is cut is said, never dropped quietly — the
+/// whole change is still in the trace, and `/copy diff` still carries all of it.
+pub const MAX_BODY_LINES: usize = 500;
 
 /// The width below which word-level emphasis drops to the line.
 ///
@@ -209,6 +226,11 @@ pub fn for_step(edits: Vec<Edit>, step: u32) -> Vec<Edit> {
 /// path is the content and the rest is metadata, which is the rule the whole
 /// interface follows.
 pub fn cell(edit: &Edit, theme: &Theme, width: u16) -> Vec<Line<'static>> {
+    cell_styled(edit, theme, width, DiffStyle::Unified)
+}
+
+/// The same, at a chosen style.
+pub fn cell_styled(edit: &Edit, theme: &Theme, width: u16, style: DiffStyle) -> Vec<Line<'static>> {
     let mut lines = vec![header(edit, theme)];
 
     let Some(hunk) = edit.hunk.as_deref() else {
@@ -218,7 +240,16 @@ pub fn cell(edit: &Edit, theme: &Theme, width: u16) -> Vec<Line<'static>> {
         return lines;
     };
 
-    lines.extend(body(hunk, &edit.path, theme, width >= EMPHASIS_FLOOR));
+    let mut drawn = body(hunk, &edit.path, theme, width >= EMPHASIS_FLOOR, style);
+    let cut = drawn.len().saturating_sub(MAX_BODY_LINES);
+    if cut > 0 {
+        drawn.truncate(MAX_BODY_LINES);
+        drawn.push(Line::from(Span::styled(
+            format!("{INDENT}⋯ {cut} more lines of this change — the whole of it is in the trace, and `/copy diff` carries it"),
+            theme.style(Tone::Muted),
+        )));
+    }
+    lines.extend(drawn);
     lines.push(Line::from(""));
     lines
 }
@@ -264,42 +295,77 @@ fn header(edit: &Edit, theme: &Theme) -> Line<'static> {
 /// then emphasise the difference between lines that have nothing to do with each
 /// other, which is worse than no emphasis — it invents a relationship and paints
 /// it.
-fn body(hunk: &str, path: &str, theme: &Theme, emphasis: bool) -> Vec<Line<'static>> {
+fn body(
+    hunk: &str,
+    path: &str,
+    theme: &Theme,
+    emphasis: bool,
+    style: DiffStyle,
+) -> Vec<Line<'static>> {
     let syntax = syntax_for(path);
     let raw: Vec<&str> = hunk.lines().collect();
     let mut out = Vec::new();
     let mut at = 0;
 
     while at < raw.len() {
+        // A `\ No newline at end of file` marker is emitted on its own line
+        // immediately after the line it applies to, so it can land BETWEEN a
+        // removal and its addition. Scanned through rather than treated as the
+        // end of a run: otherwise the additions run comes back empty, the pair is
+        // never made, and the word-level emphasis is lost on exactly the lines
+        // where a file's last line changed.
+        let marker = |line: &str| line.starts_with('\\');
+
         let removals_from = at;
-        while at < raw.len() && raw[at].starts_with('-') {
+        while at < raw.len()
+            && (raw[at].starts_with('-') || (at > removals_from && marker(raw[at])))
+        {
             at += 1;
         }
         let removals = &raw[removals_from..at];
 
         let additions_from = at;
-        while at < raw.len() && raw[at].starts_with('+') {
+        while at < raw.len()
+            && (raw[at].starts_with('+') || (at > additions_from && marker(raw[at])))
+        {
             at += 1;
         }
         let additions = &raw[additions_from..at];
 
         if removals.is_empty() && additions.is_empty() {
-            out.push(unchanged(raw[at], syntax, theme));
+            // `minimal` keeps the `@@` header — a change with no line numbers is a
+            // change that does not say where it is — and drops the context, which
+            // is the only thing it drops.
+            let keep = style == DiffStyle::Unified || raw[at].starts_with("@@");
+            if keep {
+                out.push(unchanged(raw[at], syntax, theme));
+            }
             at += 1;
             continue;
         }
 
         // Below the emphasis floor nothing is paired, so every changed line takes
         // the whole wash — see `EMPHASIS_FLOOR`.
-        let paired = emphasis && !removals.is_empty() && removals.len() == additions.len();
-        for (n, line) in removals.iter().enumerate() {
-            let other = paired.then(|| additions[n]);
-            out.push(changed(line, other, Tone::Removed, syntax, theme));
-        }
-        for (n, line) in additions.iter().enumerate() {
-            let other = paired.then(|| removals[n]);
-            out.push(changed(line, other, Tone::Added, syntax, theme));
-        }
+        // Pairing counts only the changed lines; a marker is punctuation about
+        // the bytes and has no partner on the other side.
+        let removed: Vec<&&str> = removals.iter().filter(|l| !marker(l)).collect();
+        let added: Vec<&&str> = additions.iter().filter(|l| !marker(l)).collect();
+        let paired = emphasis && !removed.is_empty() && removed.len() == added.len();
+
+        let mut emit = |lines: &[&str], partners: &[&&str], tone| {
+            let mut nth = 0;
+            for line in lines {
+                if marker(line) {
+                    out.push(unchanged(line, syntax, theme));
+                    continue;
+                }
+                let other = paired.then(|| *partners[nth]);
+                out.push(changed(line, other, tone, syntax, theme));
+                nth += 1;
+            }
+        };
+        emit(removals, &added, Tone::Removed);
+        emit(additions, &removed, Tone::Added);
     }
 
     out

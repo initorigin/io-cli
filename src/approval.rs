@@ -25,7 +25,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use io_harness::approve::DecisionFuture;
-use io_harness::{Act, ApprovalContext, Approver, Decision, Effect, Request, Rule};
+use io_harness::{Act, ApprovalContext, Approver, Decision, Edit, Effect, Request, Rule};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -219,14 +219,28 @@ pub const REFUSED_BY_OPERATOR: &str = "the operator denied it";
 pub struct Approval {
     ask: Ask,
     chosen: usize,
+    /// The write, as a change rather than as a wall of text.
+    ///
+    /// Computed once, when the overlay opens, because `render` runs per frame and
+    /// reading a file per frame is a file read per keystroke. `None` means there
+    /// is nothing to diff — the act is not a write, or the target could not be
+    /// read for a reason that is not "it does not exist yet" — and the overlay
+    /// falls back to showing the proposed content plainly, which is what 0.2.0
+    /// did for every write.
+    proposed: Option<Edit>,
 }
 
 impl Approval {
     pub fn new(ask: Ask) -> Self {
+        let proposed = diff_of(&ask);
         // Opens on `Once`: the least committal answer, and never on a remembered
         // allow. A surface that opens on the widest answer is one where `Enter`
         // by reflex gives away the most.
-        Self { ask, chosen: 0 }
+        Self {
+            ask,
+            chosen: 0,
+            proposed,
+        }
     }
 
     /// Which answer is highlighted.
@@ -366,6 +380,9 @@ impl Approval {
     /// It says what it cut. A reader who thinks they have seen a whole file and
     /// has seen a third of it is worse off than one who was told.
     fn preview(&self, room: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        if let Some(edit) = &self.proposed {
+            return self.as_diff(edit, room, width, theme);
+        }
         let Some(content) = self.ask.content() else {
             return Vec::new();
         };
@@ -393,6 +410,40 @@ impl Approval {
                 ))
             })
             .collect()
+    }
+
+    /// The write as a diff, in the rows there are.
+    ///
+    /// The cell's own header comes first and that is deliberate rather than
+    /// redundant with the question row above it: at the tightest size the overlay
+    /// has one row here, and `+3 -1` is the single most useful thing an approver
+    /// can be told in one row. It is the difference between a write that touches
+    /// three lines and one that rewrites four hundred, which is a different
+    /// decision. The hunk itself fills whatever rows are left.
+    fn as_diff(&self, edit: &Edit, room: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let width = u16::try_from(width).unwrap_or(u16::MAX);
+        let mut lines = crate::diff::cell(edit, theme, width);
+        // `cell` ends with a blank line so a transcript breathes. An overlay four
+        // rows tall cannot spend one on breathing.
+        if lines.last().is_some_and(|line| line.width() == 0) {
+            lines.pop();
+        }
+
+        let total = lines.len();
+        let shown = total.min(room);
+        let cut = total.saturating_sub(shown);
+        lines.truncate(shown);
+        // Said, not silently dropped. A reader who thinks they have seen a whole
+        // change and has seen its first row is worse off than one who was told.
+        if cut > 0 {
+            if let Some(last) = lines.last_mut() {
+                last.spans.push(Span::styled(
+                    format!("  ⋯ {cut} more lines"),
+                    theme.style(Tone::Muted),
+                ));
+            }
+        }
+        lines
     }
 
     /// `› allow once · allow this session · deny`, on one row.
@@ -424,6 +475,55 @@ impl Approval {
 /// The word for an act. io-harness spells these in its own serde tags and in
 /// `EventKind::Refused`; this is the same vocabulary so a refusal and a request
 /// read as the same product.
+/// The change a write would make, as an `io_harness::Edit`.
+///
+/// **io-cli still computes no diff.** `Edit::with_hunk` is the harness's own
+/// renderer — the same one that produced every hunk in the durable trace — so an
+/// approval and a transcript show a change in exactly the same words. What io-cli
+/// supplies is the *old* side, because the write has not happened yet and the
+/// harness has nothing stored for it: the approver is handed the whole resulting
+/// file, never a patch.
+///
+/// **Only the request's own target is read**, and only for a write. This is the
+/// one workspace read the interface performs, it is of the file the operator is
+/// being asked about, and it exists so they can see what changes rather than what
+/// the file will end up containing.
+///
+/// The three outcomes are deliberately different:
+/// - the file is not there → an empty old side, so a new file reads as all
+///   addition, which is what it is;
+/// - the file is there → a real diff against it;
+/// - the file is there and cannot be read, or is not UTF-8 → `None`, and the
+///   overlay shows the proposed content plainly. Diffing against an empty old
+///   side here would show every existing line as new, which is a lie about the
+///   size of the change and exactly the wrong direction to be wrong in.
+fn diff_of(ask: &Ask) -> Option<Edit> {
+    if ask.act() != Act::Write {
+        return None;
+    }
+    let after = ask.content()?;
+    let target = ask.target();
+
+    // **Absolute only.** A relative target would resolve against this process's
+    // working directory, and `io -C <dir>` sets the workspace root without
+    // changing it — so a relative path could name a *different* file that
+    // happens to exist here, and the overlay would then show a confident diff
+    // against something the agent never touched. In practice the harness hands
+    // an approver the policy's resolved target, which is absolute; when it does
+    // not, showing the proposed content plainly is the honest answer.
+    if !std::path::Path::new(target).is_absolute() {
+        return None;
+    }
+
+    let before = match std::fs::read_to_string(target) {
+        Ok(before) => before,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+
+    Some(Edit::measure(0, "write_file", target, &before, after).with_hunk(&before, after))
+}
+
 pub fn act_word(act: Act) -> &'static str {
     match act {
         Act::Read => "read",

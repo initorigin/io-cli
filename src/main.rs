@@ -143,6 +143,11 @@ async fn drive(
     };
 
     let policy = config.policy().unwrap_or_default();
+    // `[app.io-cli]` again, read through the harness rather than parsed here. It
+    // is read in `drive` rather than in `run` because `run` may hand control to
+    // the wizard, which writes the file this then reads back.
+    let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
+    let diff_style = settings::DiffStyle::from_setting(stored.and_then(|s| s.diff).as_deref());
     let store = store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -159,6 +164,7 @@ async fn drive(
                 store,
                 session,
                 policy,
+                diff_style,
                 theme,
                 model,
             )
@@ -173,6 +179,7 @@ async fn drive(
                 store,
                 session,
                 policy,
+                diff_style,
                 theme,
                 model,
             )
@@ -187,6 +194,7 @@ async fn drive(
                 store,
                 session,
                 policy,
+                diff_style,
                 theme,
                 model,
             )
@@ -213,7 +221,7 @@ async fn drive(
                 }
             };
             loop_over(
-                screen, inputs, provider, store, session, policy, theme, model,
+                screen, inputs, provider, store, session, policy, diff_style, theme, model,
             )
             .await
         }
@@ -232,10 +240,12 @@ async fn loop_over<P: Provider>(
     store: Store,
     mut session: Session,
     policy: Policy,
+    diff_style: settings::DiffStyle,
     theme: Theme,
     model: String,
 ) -> Result<(), String> {
     let mut app = App::new(theme, model);
+    app.set_diff_style(diff_style);
     // What the file already says, read back rather than assumed. `None` means the
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.
@@ -413,9 +423,13 @@ async fn turn<P: Provider>(
                 }
             }
             Some(event) = events.recv() => {
-                app.event(&event);
+                // One clock read, used for both. `main.rs` is the only module in
+                // `src/` allowed one, which is what keeps a tool cell's duration
+                // assertable without a test ever measuring anything.
+                let at = started.elapsed();
+                app.status.elapsed = at;
+                app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
-                app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }
             Some(ask) = asks.recv() => {
@@ -452,8 +466,17 @@ async fn turn<P: Provider>(
 
     // Drain whatever the run emitted between its last event and its return, or
     // the tail of a turn is lost.
+    // One age for the whole drain. These events all arrived while the loop was
+    // not looking, and inventing distinct ages for them would be fiction.
+    let at = started.elapsed();
+    let width = screen.width();
     while let Ok(event) = events.try_recv() {
-        app.event(&event);
+        app.event(&event, at);
+        // The diff belongs here too. Without it a `Step { changed: true }` still
+        // queued when the turn's future won the select loses its diff silently —
+        // and the last step of a turn is exactly the one that loses that race,
+        // so the edit a reader most wants to see is the one that vanishes.
+        commit_edits(app, store, &event, width);
     }
     app.finished();
 

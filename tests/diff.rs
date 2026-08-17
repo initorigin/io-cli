@@ -512,3 +512,74 @@ fn f4_a_file_with_no_grammar_still_renders() {
     let text = rendered(&edit);
     assert!(text.contains("+hello"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// F6 — `minimal` shows changed lines only, and comes from the harness's own
+// configuration.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f6_minimal_keeps_the_changed_lines_and_the_header_and_drops_the_context() {
+    use io_cli::diff::cell_styled;
+    use io_cli::settings::DiffStyle;
+
+    let edit = edit_with_hunk();
+    let text = |style| {
+        cell_styled(&edit, &DARK, WIDE, style)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let unified = text(DiffStyle::Unified);
+    let minimal = text(DiffStyle::Minimal);
+
+    // What changed survives both.
+    for style in [&unified, &minimal] {
+        assert!(
+            style.contains("-    Tone::Muted => Style::default().fg(GREY),"),
+            "{style}"
+        );
+        assert!(
+            style.contains("+    Tone::Muted => Style::default().fg(self.muted),"),
+            "{style}"
+        );
+    }
+
+    // The context is what `minimal` drops, and only that.
+    assert!(unified.contains("fn one() {}"), "{unified}");
+    assert!(
+        !minimal.contains("fn one() {}"),
+        "minimal kept a context line:\n{minimal}"
+    );
+    assert!(!minimal.contains("fn two() {}"), "{minimal}");
+
+    // The `@@` header stays. A change with no line numbers is a change that does
+    // not say where in the file it is, which is not a smaller diff — it is a
+    // worse one.
+    assert!(
+        minimal.contains("@@ -12,5 +12,5 @@"),
+        "minimal dropped the line numbers:\n{minimal}",
+    );
+    assert!(minimal.contains("src/theme.rs"), "{minimal}");
+}
+
+#[test]
+fn f6_the_style_is_read_from_the_setting_and_an_unknown_value_is_unified() {
+    use io_cli::settings::DiffStyle;
+
+    assert_eq!(DiffStyle::from_setting(Some("minimal")), DiffStyle::Minimal);
+    assert_eq!(DiffStyle::from_setting(Some("unified")), DiffStyle::Unified);
+    // Absent means unified, which is what every file written before 0.3.0 means.
+    assert_eq!(DiffStyle::from_setting(None), DiffStyle::Unified);
+    // `[app.io-cli]` is the one section io-harness deliberately does not
+    // validate, so a typo in a cosmetic key must not stop a session starting.
+    assert_eq!(DiffStyle::from_setting(Some("minmal")), DiffStyle::Unified);
+    assert_eq!(DiffStyle::default(), DiffStyle::Unified);
+}

@@ -22,6 +22,41 @@ pub struct CliSettings {
     /// The theme by name. Absent means "detect from the terminal background".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// How much of a change to show: `unified` or `minimal`.
+    ///
+    /// Absent means `unified`, which is what every configuration file written
+    /// before 0.3.0 means — so this key needs no migration and an older binary
+    /// reading a file that has it ignores it, because `[app.io-cli]` is the one
+    /// section io-harness deliberately does not validate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+/// How much of a change a diff shows.
+///
+/// Two, not a number of context lines. The counter-pressure this answers is
+/// approval fatigue: someone reviewing by file rather than by hunk wants the
+/// changed lines and nothing else, and a dial from 0 to 3 is a dial nobody sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffStyle {
+    /// The hunk as the harness stored it, context and all.
+    #[default]
+    Unified,
+    /// Changed lines only, with the `@@` header kept so the change still says
+    /// where in the file it is.
+    Minimal,
+}
+
+impl DiffStyle {
+    /// What a configured value means. An unrecognised one is `Unified` rather
+    /// than an error: `[app.io-cli]` is unvalidated by design, and refusing to
+    /// start a session over a typo in a cosmetic key would be the wrong trade.
+    pub fn from_setting(value: Option<&str>) -> Self {
+        match value {
+            Some("minimal") => Self::Minimal,
+            _ => Self::Unified,
+        }
+    }
 }
 
 /// A default permission posture, in the words the wizard offers it in.
@@ -157,6 +192,11 @@ pub fn render(
         app: AppSection {
             io_cli: CliSettings {
                 theme: Some(theme.to_string()),
+                // Left out of the file the wizard writes. Its absence is
+                // `unified`, and a key written with its own default is a key a
+                // reader has to wonder about — and one that would have to be
+                // rewritten if the default ever changed.
+                diff: None,
             },
         },
     };

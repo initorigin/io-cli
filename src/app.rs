@@ -77,6 +77,9 @@ pub struct App {
     /// without this a *this session* answer would ask again on the next prompt.
     /// F5 asserts it on the policy handed to the next turn.
     remembered: Vec<io_harness::Rule>,
+    /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
+    /// unified, which is what every file written before 0.3.0 means.
+    diff_style: crate::settings::DiffStyle,
     /// The permission posture this session is running under.
     ///
     /// `None` means the configuration file holds a policy that is none of the
@@ -98,8 +101,15 @@ impl App {
             pending: Vec::new(),
             approval: None,
             remembered: Vec::new(),
+            diff_style: crate::settings::DiffStyle::default(),
             posture: None,
         }
+    }
+
+    /// Say how much of a change a diff should show. Read from the harness's own
+    /// configuration by the driver; never parsed here.
+    pub fn set_diff_style(&mut self, style: crate::settings::DiffStyle) {
+        self.diff_style = style;
     }
 
     /// A run stopped to ask. The overlay opens and takes the keyboard.
@@ -227,9 +237,15 @@ impl App {
     }
 
     /// Take an event from the harness.
-    pub fn event(&mut self, event: &RunEvent) {
+    ///
+    /// `at` is the session's age, handed in by the driver rather than read here.
+    /// It is what lets a tool cell report how long its call took without any
+    /// module but `src/main.rs` touching a clock — the same shape [`App::tick`]
+    /// established, and the reason `tests/timing.rs` can still assert that no
+    /// test anywhere reads one.
+    pub fn event(&mut self, event: &RunEvent, at: Duration) {
         self.status_from(event);
-        let lines = self.events.event(event);
+        let lines = self.events.event(event, at);
         self.pending.extend(lines);
     }
 

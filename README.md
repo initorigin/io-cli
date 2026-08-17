@@ -151,21 +151,29 @@ refusal, error and warning also carries a word.
 
 ## What this release is not
 
-0.2.0 is the permission boundary made visible and answerable: the approval
-overlay, the posture key, the refusal that names its rule and its layer, and the
-status fields around them. Diffs, syntax highlighting and collapsible tool output
-are 0.3.0; resume, fork and rewind are 0.4.0; the headless subcommand and NDJSON
-are 0.5.0; the screen-reader mode is 0.6.0; the slash palette and type-to-filter
-pickers are 0.7.0.
+0.3.0 is what the agent did to your files, made readable: diffs from the
+harness's own stored hunks, word-level emphasis, syntax highlighting, collapsed
+tool output, the transcript on one key and the clipboard over SSH. Resume, fork
+and rewind are 0.4.0; the headless subcommand and NDJSON are 0.5.0; the
+screen-reader mode is 0.6.0; the slash palette and type-to-filter pickers are
+0.7.0.
 
-Two things are absent for reasons worth stating rather than hiding. **Spend
+Three things are absent for reasons worth stating rather than hiding. **Spend
 against the tree ceiling is not in the status line**: io-harness emits
 `SpendDraw` only from a contained turn, and its contained entry point takes no
 steer inbox, so rendering spend today would cost `Ctrl+C`. It arrives at 0.8.0
-with the fleet, which is contained anyway. And **the overlay shows a write's
-proposed content plainly rather than as a diff** — the harness hands an approver
-the resulting file, not a patch, so the diff is io-cli's to compute and 0.3.0's
-to design.
+with the fleet, which is contained anyway. **A diff cannot be expanded beyond
+the context the harness stored** — three lines either side, which is what
+`diff -u` has always carried; more than that is not in the trace, and reading it
+off disk would be reading a version of the file that no longer exists. And
+**there is no split view**: this renderer commits into the terminal's own
+scrollback at its real width, a two-column comparison doubles the horizontal
+budget for every line, and word-level emphasis inside a unified diff already
+answers the question split view answers.
+
+One ceiling worth knowing about: a hunk is a fragment of a file, and each of its
+lines is highlighted from a clean parse. A block comment or a multi-line string
+that was opened *above* the hunk is not known here, so those lines read as code.
 
 ## Contributing
 

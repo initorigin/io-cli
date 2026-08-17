@@ -468,3 +468,128 @@ async fn nothing_remembered_changes_nothing() {
     let base = Policy::default();
     assert_eq!(approval::effective_policy(&base, &[]), base);
 }
+
+// ---------------------------------------------------------------------------
+// F7 — an approval shows a proposed write as a diff against the file on disk,
+// and a new file is all addition.
+// ---------------------------------------------------------------------------
+
+/// Open an overlay for a write of `content` to `target`, and return what it
+/// draws at `width` columns in `height` rows.
+///
+/// Rendered through a real `Screen` rather than by calling the private layout,
+/// because what matters is what reaches the terminal — and because the overlay
+/// is height-constrained, which is the whole reason its content flexes.
+async fn overlay_for(target: &std::path::Path, content: &str, height: u16) -> String {
+    use io_cli::approval::{self, Approval};
+    use io_cli::theme::DARK;
+    use io_harness::{Act, ApprovalContext, Approver, Decision, Request};
+
+    let (asker, mut asks) = approval::channel();
+    let request = Request::new(Act::Write, target.to_string_lossy().to_string())
+        .with_content(content.to_string());
+    let deciding = tokio::spawn(async move {
+        let asker = asker;
+        asker
+            .decide_in_context(&request, &ApprovalContext::new("tidy the parser"))
+            .await
+    });
+    let ask = asks.recv().await.expect("the question arrived");
+
+    let approval = Approval::new(ask);
+    // `height` is the VIEWPORT's height, which is what the overlay is drawn
+    // into — not the terminal's. A session's is four; a taller one is what a
+    // reader gets on a terminal with room, and both are worth asserting.
+    let (mut screen, _recorder) = support::screen_of(100, height + 4, height);
+    screen
+        .draw(|frame| approval.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let drawn = screen.viewport_text().to_string();
+
+    approval.answer(approval::Answer::Deny);
+    let decision = deciding.await.expect("the approver did not panic");
+    assert!(matches!(decision, Decision::Deny { .. }));
+    drawn
+}
+
+#[tokio::test]
+async fn f7_a_write_over_an_existing_file_is_shown_as_what_changes() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("parse.rs");
+    let before = "fn one() {}\nfn two() {}\nfn three() {}\n";
+    let after = "fn one() {}\nfn two(s: &str) {}\nfn three() {}\n";
+    std::fs::write(&target, before).expect("the file exists first");
+
+    let drawn = overlay_for(&target, after, 8).await;
+
+    // The counts are the single most useful row: this write touches one line.
+    assert!(drawn.contains("+1"), "{drawn}");
+    assert!(drawn.contains("-1"), "{drawn}");
+    // And the change itself, from the harness's own renderer.
+    assert!(drawn.contains("-fn two() {}"), "{drawn}");
+    assert!(drawn.contains("+fn two(s: &str) {}"), "{drawn}");
+    // The version that would ship by accident: every existing line shown as new.
+    assert!(
+        !drawn.contains("+fn one() {}"),
+        "an unchanged line was drawn as an addition, which means the old side was \
+         empty — the write reads as four hundred lines when it is one: {drawn}",
+    );
+}
+
+#[tokio::test]
+async fn f7_a_write_of_a_file_that_does_not_exist_yet_is_all_addition() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("brand-new.rs");
+    let after = "fn hello() {}\nfn goodbye() {}\n";
+
+    let drawn = overlay_for(&target, after, 8).await;
+
+    assert!(drawn.contains("+2"), "two lines arrive: {drawn}");
+    assert!(drawn.contains("-0"), "and none leave: {drawn}");
+    assert!(drawn.contains("+fn hello() {}"), "{drawn}");
+}
+
+#[tokio::test]
+async fn f7_no_file_other_than_the_request_s_own_target_is_read() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("parse.rs");
+    std::fs::write(&target, "fn one() {}\n").expect("the target");
+    // A neighbour with a distinctive string in it. io-cli is not a file browser:
+    // the one workspace read this interface performs is of the file the operator
+    // is being asked about, and nothing else in the directory is its business.
+    std::fs::write(
+        directory.path().join("secrets.env"),
+        "TOKEN=NEVERREADTHISFILE\n",
+    )
+    .expect("the neighbour");
+
+    let drawn = overlay_for(&target, "fn one() {}\nfn two() {}\n", 8).await;
+
+    assert!(
+        !drawn.contains("NEVERREADTHISFILE"),
+        "a file the request never named reached the screen: {drawn}",
+    );
+}
+
+#[tokio::test]
+async fn f7_at_the_tightest_size_the_counts_are_what_survives() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("big.rs");
+    std::fs::write(&target, "a\n".repeat(400)).expect("the target");
+
+    // Four rows: the question, its rule row, one row of content, the answers.
+    let drawn = overlay_for(&target, &"b\n".repeat(400), 4).await;
+
+    // One row for the change, and it is spent on the size of the change rather
+    // than on the first line of it. Four hundred lines out and four hundred in is
+    // a different decision from one line out and one in.
+    assert!(drawn.contains("+400"), "{drawn}");
+    assert!(drawn.contains("-400"), "{drawn}");
+    // And the overlay still says how to answer.
+    assert!(
+        drawn.contains("allow once") && drawn.contains("deny"),
+        "{drawn}"
+    );
+    // Nothing was silently dropped.
+    assert!(drawn.contains('⋯'), "the cut has to be said: {drawn}");
+}
