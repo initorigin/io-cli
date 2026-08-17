@@ -235,6 +235,22 @@ impl Theme {
         }
     }
 
+    /// A tone, emphasised — for the words inside a diff line that actually
+    /// changed.
+    ///
+    /// Bold rather than a background colour: a background paints the full cell
+    /// width of every character it covers, which on a diff line means a block
+    /// that survives being copied out of the terminal as trailing whitespace.
+    /// Under `NO_COLOR` this collapses to nothing along with everything else,
+    /// which is correct — the `+` and the `-` are the carriers there, and a
+    /// modifier is still a presentation-only channel.
+    pub fn emphasis(&self, tone: Tone) -> Style {
+        if !self.coloured {
+            return Style::default();
+        }
+        self.style(tone).add_modifier(Modifier::BOLD)
+    }
+
     /// One line carrying a state, with the tone's word in front of it.
     ///
     /// This is the only way a toned line is built, so "colour is never the sole

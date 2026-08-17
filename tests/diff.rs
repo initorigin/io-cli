@@ -228,3 +228,128 @@ fn f2_a_hunk_that_is_present_is_not_confused_for_an_absent_one() {
     let text = rendered(&edit_with_hunk());
     assert!(!text.contains("no diff stored"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// F3 — word-level emphasis inside a changed line.
+// ---------------------------------------------------------------------------
+
+/// The spans of the one line in a rendered cell that starts with `marker`,
+/// as (text, emphasised) pairs.
+///
+/// Emphasis is read off the style rather than off the text, because the whole
+/// point of F3 is *which part of the line* is marked — a test that looked at the
+/// text alone could not tell a line emphasised in one piece from a line
+/// emphasised in three.
+fn spans_of(edit: &Edit, marker: char) -> Vec<(String, bool)> {
+    let lines = cell(edit, &DARK);
+    let line = lines
+        .iter()
+        .find(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .trim_start()
+                .starts_with(marker)
+        })
+        .unwrap_or_else(|| panic!("no line starting with {marker:?}"));
+    line.spans
+        .iter()
+        .map(|span| {
+            (
+                span.content.to_string(),
+                span.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn f3_only_the_changed_words_are_emphasised() {
+    let removed = spans_of(&edit_with_hunk(), '-');
+    let added = spans_of(&edit_with_hunk(), '+');
+
+    let emphasised: Vec<&str> = removed
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(text, _)| text.as_str())
+        .collect();
+    assert_eq!(
+        emphasised,
+        ["GREY"],
+        "the removed side should emphasise exactly what went: {removed:?}",
+    );
+
+    let emphasised: Vec<&str> = added
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(text, _)| text.as_str())
+        .collect();
+    assert_eq!(
+        emphasised,
+        ["self.muted"],
+        "the added side should emphasise exactly what arrived: {added:?}",
+    );
+}
+
+#[test]
+fn f3_the_emphasis_sits_between_the_common_head_and_the_common_tail() {
+    let removed = spans_of(&edit_with_hunk(), '-');
+
+    // Asserted by POSITION: head, then the change, then tail. A membership
+    // assertion is just as green when the line is inside out, which 0.1.1 paid
+    // for and 0.2.0 paid for again.
+    let at = removed
+        .iter()
+        .position(|(_, on)| *on)
+        .expect("something is emphasised");
+    assert!(
+        at > 0,
+        "there is a common head before the change: {removed:?}"
+    );
+    assert!(
+        at + 1 < removed.len(),
+        "there is a common tail after the change: {removed:?}",
+    );
+    assert!(
+        removed[at - 1].0.ends_with(".fg("),
+        "the head stops where the lines stop agreeing: {removed:?}",
+    );
+    assert_eq!(
+        removed[at + 1].0,
+        "),",
+        "the tail starts where they agree again: {removed:?}",
+    );
+}
+
+#[test]
+fn f3_an_unpaired_line_is_emphasised_at_the_line_and_not_within_it() {
+    // Two lines out and one in. There is no honest pairing here — the harness
+    // renders a `write_file` that rewrote two distant regions as ONE hunk
+    // spanning both, so a rule that paired by position would emphasise the
+    // difference between lines that have nothing to do with each other.
+    let edit = Edit {
+        step: 1,
+        tool: "write_file".to_string(),
+        path: "a.rs".to_string(),
+        lines_added: 1,
+        lines_removed: 2,
+        hunk: Some(
+            "@@ -1,3 +1,2 @@\n-let a = 1;\n-let b = 2;\n+let everything = 0;\n ok\n".to_string(),
+        ),
+    };
+
+    for (text, emphasised) in spans_of(&edit, '-') {
+        assert!(
+            !emphasised,
+            "an unpaired removal was emphasised within the line: {text:?}",
+        );
+    }
+    assert_eq!(
+        spans_of(&edit, '-').len(),
+        1,
+        "an unpaired line is one span",
+    );
+}

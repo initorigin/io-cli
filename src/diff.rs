@@ -60,9 +60,128 @@ pub fn cell(edit: &Edit, theme: &Theme) -> Vec<Line<'static>> {
         return lines;
     };
 
-    lines.extend(hunk.lines().map(|line| body(line, theme)));
+    lines.extend(body(hunk, theme));
     lines.push(Line::from(""));
     lines
+}
+
+/// A hunk body, with the words that changed emphasised where they can be known.
+///
+/// **The pairing rule is deliberately timid.** A run of removals is paired with
+/// the run of additions immediately after it, and only when the two runs are the
+/// same length — then line *n* of one is compared with line *n* of the other.
+/// Anything else is drawn without emphasis.
+///
+/// The reason is in io-harness's own diff module: an `edit_file` is one
+/// contiguous replacement by construction, but a `write_file` that rewrote two
+/// distant regions of a file arrives as **one hunk spanning both**. A rule that
+/// paired greedily would then emphasise the difference between lines that have
+/// nothing to do with each other, which is worse than not emphasising at all —
+/// it invents a relationship and paints it in colour.
+fn body(hunk: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let raw: Vec<&str> = hunk.lines().collect();
+    let mut out = Vec::new();
+    let mut at = 0;
+
+    while at < raw.len() {
+        let removals_from = at;
+        while at < raw.len() && raw[at].starts_with('-') {
+            at += 1;
+        }
+        let removals = &raw[removals_from..at];
+
+        let additions_from = at;
+        while at < raw.len() && raw[at].starts_with('+') {
+            at += 1;
+        }
+        let additions = &raw[additions_from..at];
+
+        if removals.is_empty() && additions.is_empty() {
+            out.push(plain(raw[at], theme));
+            at += 1;
+            continue;
+        }
+
+        let paired = !removals.is_empty() && removals.len() == additions.len();
+        for (n, line) in removals.iter().enumerate() {
+            out.push(match paired {
+                true => against(line, additions[n], Tone::Removed, theme),
+                false => plain(line, theme),
+            });
+        }
+        for (n, line) in additions.iter().enumerate() {
+            out.push(match paired {
+                true => against(line, removals[n], Tone::Added, theme),
+                false => plain(line, theme),
+            });
+        }
+    }
+
+    out
+}
+
+/// One changed line, split into what both sides share and what only this one
+/// has.
+///
+/// Falls back to a plain line when the two share neither a head nor a tail:
+/// emphasising the whole line is the same as emphasising none of it, and it is
+/// exactly what a reader would have to un-learn on the next hunk.
+fn against(mine: &str, other: &str, tone: Tone, theme: &Theme) -> Line<'static> {
+    // The marker is the first byte and is ASCII, so this never splits a
+    // character. It stays on the line — it is what carries the meaning when
+    // colour does not.
+    let (marker, text) = mine.split_at(1);
+    let other = &other[1..];
+
+    let head = common_head(text, other);
+    // Measured on what is left after the head, so a line like `a` against `aa`
+    // cannot count the same byte twice and produce a middle of negative length.
+    let tail = common_tail(&text[head..], &other[head..]);
+
+    if head == 0 && tail == 0 {
+        return plain(mine, theme);
+    }
+
+    let mut spans = vec![Span::styled(
+        format!("{INDENT}{marker}{}", &text[..head]),
+        theme.style(tone),
+    )];
+    let middle = &text[head..text.len() - tail];
+    if !middle.is_empty() {
+        spans.push(Span::styled(middle.to_string(), theme.emphasis(tone)));
+    }
+    if tail > 0 {
+        spans.push(Span::styled(
+            text[text.len() - tail..].to_string(),
+            theme.style(tone),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// How many bytes `a` and `b` agree on from the front, always on a character
+/// boundary.
+fn common_head(a: &str, b: &str) -> usize {
+    let mut bytes = 0;
+    for (one, two) in a.chars().zip(b.chars()) {
+        if one != two {
+            break;
+        }
+        bytes += one.len_utf8();
+    }
+    bytes
+}
+
+/// The same from the back.
+fn common_tail(a: &str, b: &str) -> usize {
+    let mut bytes = 0;
+    for (one, two) in a.chars().rev().zip(b.chars().rev()) {
+        if one != two {
+            break;
+        }
+        bytes += one.len_utf8();
+    }
+    bytes
 }
 
 /// `  src/theme.rs · +1 -1 · edit_file`, and `· no diff stored` when there is
@@ -92,12 +211,13 @@ fn header(edit: &Edit, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-/// One line of a hunk body, coloured by the marker the harness put on it.
+/// One line of a hunk body, coloured by the marker the harness put on it and
+/// emphasised nowhere.
 ///
 /// The marker stays on the line. Colour is never the sole carrier of meaning
 /// here — under `NO_COLOR` every style collapses to nothing and the `+` and the
 /// `-` are what is left saying which side a line is on.
-fn body(line: &str, theme: &Theme) -> Line<'static> {
+fn plain(line: &str, theme: &Theme) -> Line<'static> {
     let tone = match line.as_bytes().first() {
         Some(b'+') => Tone::Added,
         Some(b'-') => Tone::Removed,
