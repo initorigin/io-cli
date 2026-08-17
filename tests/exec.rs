@@ -5,6 +5,7 @@
 //! F5 — the JSON is the harness's own shape, not io-cli's.
 //! F6 — `--sandbox` and `--policy` reach the run.
 //! F7 — `--policy ask-writes` is refused, and says what to use instead.
+//! F8 — a run with no configuration file works from the environment.
 //! F11 — `--sandbox full-access` announces itself on stderr.
 //!
 //! The two mappings that look like taste are the release's research. A clean
@@ -22,8 +23,8 @@ use io_harness::{
     Act, CompletionRequest, CompletionResponse, Config, Effect, EventKind, ExecMode, Flow, Ignore,
     Observer, Policy, Provider, RunEvent, RunOutcome, Session, Store,
 };
-use io_cli::cli::PolicyFlag;
-use io_cli::exec;
+use io_cli::cli::{FromEnv, PolicyFlag};
+use io_cli::{exec, provider};
 use io_cli::settings::Posture;
 
 /// A workspace and a store, with no configuration file anywhere near the
@@ -526,4 +527,94 @@ fn f11_full_access_announces_itself_and_nothing_else_does() {
     assert_eq!(exec::widening(None), None);
     assert_eq!(exec::widening(Some(ExecMode::ReadOnly)), None);
     assert_eq!(exec::widening(Some(ExecMode::WorkspaceWrite)), None);
+}
+
+#[test]
+fn f8_a_provider_comes_from_the_environment_with_no_file_anywhere() {
+    let spec = provider::spec_from(
+        FromEnv::Anthropic,
+        Some("a-key".into()),
+        Some("claude-sonnet-4".into()),
+    )
+    .expect("a key and a model are all it needs");
+
+    match spec {
+        io_harness::ProviderSpec::Anthropic { model, api_key } => {
+            assert_eq!(model, "claude-sonnet-4");
+            // The credential is deliberately not carried in the spec: `key_for`
+            // reads the same variable a moment later, so a key travels one path
+            // whether it came from a file or from the shell.
+            assert_eq!(api_key, None);
+        }
+        other => panic!("expected an anthropic spec, got {other:?}"),
+    }
+}
+
+#[test]
+fn f8_a_missing_variable_is_named_rather_than_guessed_at() {
+    let no_key = provider::spec_from(FromEnv::OpenRouter, None, Some("a-model".into()))
+        .expect_err("a provider with no credential cannot run");
+    assert!(no_key.contains("OPENROUTER_API_KEY"), "{no_key}");
+
+    let no_model = provider::spec_from(FromEnv::OpenAi, Some("a-key".into()), None)
+        .expect_err("a provider with no model cannot run");
+    assert!(no_model.contains("OPENAI_MODEL"), "{no_model}");
+    assert!(
+        no_model.contains("-m"),
+        "the other way to supply a model should be named too: {no_model}",
+    );
+
+    // An empty variable is not a set one. A CI job that exports a name with no
+    // value is the ordinary way this goes wrong.
+    let empty = provider::spec_from(FromEnv::Anthropic, Some(String::new()), Some("m".into()))
+        .expect_err("an empty credential is not a credential");
+    assert!(empty.contains("ANTHROPIC_API_KEY"), "{empty}");
+}
+
+#[test]
+fn f8_the_variables_are_the_harness_own_names() {
+    // Not io-cli's invention. These are the pairs `OpenRouter::from_env`,
+    // `Anthropic::from_env` and `OpenAi::from_env` read, so a shell that already
+    // works with io-harness works here unchanged.
+    assert_eq!(
+        FromEnv::OpenRouter.vars(),
+        ("OPENROUTER_API_KEY", "OPENROUTER_MODEL")
+    );
+    assert_eq!(
+        FromEnv::Anthropic.vars(),
+        ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL")
+    );
+    assert_eq!(FromEnv::OpenAi.vars(), ("OPENAI_API_KEY", "OPENAI_MODEL"));
+
+    // `compatible` is absent by decision, not by oversight: io-harness gives it
+    // no `from_env`, because a base URL has to come from somewhere.
+    assert_eq!(FromEnv::value_variants().len(), 3);
+}
+
+#[tokio::test]
+async fn f8_no_provider_and_no_flag_fails_with_a_sentence_rather_than_a_prompt() {
+    // The interactive binary opens the wizard when nothing is configured. A
+    // headless run must never reach it: in a container there is nobody to answer
+    // it, and a prompt on a pipe is a hang rather than an error.
+    let dir = tempfile::tempdir().expect("a workspace");
+    let error = exec::main(
+        io_cli::cli::Exec {
+            goal: "do the thing".into(),
+            json: false,
+            sandbox: None,
+            policy: None,
+            provider: None,
+        },
+        Config::from_toml("").expect("an empty configuration"),
+        dir.path().to_path_buf(),
+        None,
+    )
+    .await
+    .expect_err("a headless run with no provider cannot start");
+
+    assert!(
+        error.contains("--provider"),
+        "the error should name the way out: {error}",
+    );
+    assert!(!dir.path().join("io.toml").exists(), "nothing was written");
 }

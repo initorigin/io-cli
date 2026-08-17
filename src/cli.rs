@@ -67,6 +67,40 @@ pub struct Exec {
     /// approval, so honouring it would turn *ask* into *deny* without saying so.
     #[arg(long, value_enum, value_name = "POSTURE")]
     pub policy: Option<PolicyFlag>,
+
+    /// Take the provider from the environment instead of a configuration file.
+    ///
+    /// For CI, where nothing should be written to disk: the credential and the
+    /// model come from the pair of variables io-harness's own `from_env`
+    /// constructors read, and `-m` overrides the model half.
+    #[arg(long, value_enum, value_name = "NAME")]
+    pub provider: Option<FromEnv>,
+}
+
+/// `--provider`, for a run with no configuration file.
+///
+/// `compatible` is deliberately absent. io-harness gives it no `from_env` of its
+/// own, for the reason its source states: a base URL or a preset has to come
+/// from somewhere, and a base URL on a command line is a configuration file with
+/// worse ergonomics. A `compatible` endpoint reaches `io exec` through
+/// `io.toml`, which already works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum FromEnv {
+    OpenRouter,
+    Anthropic,
+    OpenAi,
+}
+
+impl FromEnv {
+    /// The credential and model variables, which are io-harness's own names —
+    /// so a shell that already works with the harness works here unchanged.
+    pub fn vars(self) -> (&'static str, &'static str) {
+        match self {
+            Self::OpenRouter => ("OPENROUTER_API_KEY", "OPENROUTER_MODEL"),
+            Self::Anthropic => ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"),
+            Self::OpenAi => ("OPENAI_API_KEY", "OPENAI_MODEL"),
+        }
+    }
 }
 
 /// `--sandbox`, in `io_harness::ExecMode`'s own kebab-case names.

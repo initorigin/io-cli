@@ -309,10 +309,26 @@ pub async fn main(
     // a refused posture costs nothing and leaves no run behind.
     let posture = args.policy.map(posture_for).transpose()?;
 
-    let Some(spec) = config.provider_spec().cloned() else {
-        return Err(
-            "no provider is configured; run `io setup`, or set one up in io.toml".into(),
-        );
+    // `--provider` wins over the file, and is the only path that works when
+    // there is no file at all — which is the CI case, and the case where an
+    // interactive `io` would open the wizard nobody can answer.
+    let spec = match (args.provider, config.provider_spec().cloned()) {
+        (Some(which), _) => {
+            let (key_var, model_var) = which.vars();
+            provider::spec_from(
+                which,
+                std::env::var(key_var).ok(),
+                model_override.clone().or_else(|| std::env::var(model_var).ok()),
+            )?
+        }
+        (None, Some(spec)) => spec,
+        (None, None) => {
+            return Err(
+                "no provider is configured; run `io setup`, or pass `--provider` with \
+                 its credential in the environment"
+                    .into(),
+            )
+        }
     };
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;

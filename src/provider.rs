@@ -19,6 +19,8 @@
 
 use io_harness::{Anthropic, Auth, Compatible, OpenAi, OpenRouter, Provider, ProviderSpec};
 
+use crate::cli::FromEnv;
+
 /// What a caller does once there is a provider to build.
 ///
 /// Implemented once per entry point — the interactive session and `io exec` — so
@@ -94,6 +96,51 @@ pub async fn build<W: WithProvider>(
         // this release has not seen is refused by name rather than driven wrongly.
         other => Err(format!("this release cannot drive a {other:?} provider yet")),
     }
+}
+
+/// A spec built from the environment rather than from a configuration file.
+///
+/// `key` and `model` are passed in rather than read here so that the decision
+/// this function makes — which variable is missing, and what to say about it —
+/// is testable without a test mutating the process's environment, which two
+/// tests running at once cannot do safely.
+///
+/// The credential is left as `None` on purpose: [`key_for`] reads the same
+/// variable a moment later, so the key travels one path whether it came from a
+/// file or from the shell, and a key never sits in a struct longer than it must.
+pub fn spec_from(
+    which: FromEnv,
+    key: Option<String>,
+    model: Option<String>,
+) -> Result<ProviderSpec, String> {
+    let (key_var, model_var) = which.vars();
+    if key.is_none_or(|key| key.is_empty()) {
+        return Err(format!(
+            "`--provider` needs a credential and ${key_var} is not set"
+        ));
+    }
+    let model = match model {
+        Some(model) if !model.is_empty() => model,
+        _ => {
+            return Err(format!(
+                "`--provider` needs a model: set ${model_var}, or pass `-m <model>`"
+            ))
+        }
+    };
+    Ok(match which {
+        FromEnv::OpenRouter => ProviderSpec::OpenRouter {
+            model,
+            api_key: None,
+        },
+        FromEnv::Anthropic => ProviderSpec::Anthropic {
+            model,
+            api_key: None,
+        },
+        FromEnv::OpenAi => ProviderSpec::OpenAi {
+            model,
+            api_key: None,
+        },
+    })
 }
 
 /// The key from the configuration, or from the provider's own environment
