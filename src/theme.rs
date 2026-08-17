@@ -1,10 +1,20 @@
-//! The theme: nine tokens, two shipped themes, and a rule that colour is never
+//! The theme: twelve tokens, two shipped themes, and a rule that colour is never
 //! the only thing carrying a meaning.
 //!
 //! The token set is deliberately small. Restraint is what makes a terminal
 //! product look considered; a palette with twenty names is a palette nobody uses
 //! consistently, and every extra token is another thing a second theme has to get
 //! right.
+//!
+//! It was nine until 0.3.0, when syntax highlighting inside a diff added three:
+//! keyword, string and literal. They are here rather than in the highlighter's
+//! own theme format on purpose — `syntect` ships themes and this product does not
+//! load them, so a highlighted diff and the rest of the interface stay one
+//! aesthetic, and `NO_COLOR` keeps working because there is still exactly one
+//! place that decides whether colour happens at all. A comment did not get a
+//! fourth token: a comment is muted, `muted` already exists, and a token whose
+//! value would always equal another's is a token that can drift out of agreement
+//! with itself.
 //!
 //! Nothing here paints a background. io-cli does not own the screen — the
 //! transcript is the terminal's own scrollback, sitting on whatever background
@@ -75,6 +85,17 @@ pub enum Tone {
     /// An act the permission boundary refused. Its own tone because it is not an
     /// error — the system worked.
     Refused,
+    /// A line a change added. The `diff_add` token, which has been in the theme
+    /// since 0.1.0 waiting for the release that draws a diff.
+    Added,
+    /// A line a change removed.
+    Removed,
+    /// A language keyword inside a diff.
+    Keyword,
+    /// A string literal inside a diff.
+    StringLiteral,
+    /// A number, a boolean, a named constant.
+    Literal,
 }
 
 impl Tone {
@@ -82,7 +103,17 @@ impl Tone {
     /// than meaning.
     pub fn word(self) -> Option<&'static str> {
         match self {
-            Self::Normal | Self::Muted | Self::Accent => None,
+            // A diff line's carrier is the `+` or the `-` the harness already
+            // put on it, which is why these two need no word of their own: the
+            // meaning survives `NO_COLOR` without one.
+            Self::Normal
+            | Self::Muted
+            | Self::Accent
+            | Self::Added
+            | Self::Removed
+            | Self::Keyword
+            | Self::StringLiteral
+            | Self::Literal => None,
             Self::Success => Some("ok"),
             Self::Warning => Some("warning"),
             Self::Error => Some("error"),
@@ -97,7 +128,7 @@ impl fmt::Display for Tone {
     }
 }
 
-/// The nine tokens.
+/// The twelve tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub name: &'static str,
@@ -112,6 +143,13 @@ pub struct Theme {
     pub error: Color,
     pub diff_add: Color,
     pub diff_delete: Color,
+    /// The three syntax tokens. Comments are deliberately not among them: a
+    /// comment is muted, and `muted` already exists — a fourth token whose value
+    /// would always equal an existing one is a token that can drift out of
+    /// agreement with itself.
+    pub syntax_keyword: Color,
+    pub syntax_string: Color,
+    pub syntax_literal: Color,
     /// Whether this theme emits colour at all. The `NO_COLOR` theme does not.
     pub coloured: bool,
 }
@@ -131,6 +169,14 @@ pub const DARK: Theme = Theme {
     error: Color::LightRed,
     diff_add: Color::LightGreen,
     diff_delete: Color::LightRed,
+    // Indexed rather than the sixteen, and the reason is crowding: the eight
+    // bright ANSI colours are already spoken for by accent, success, warning,
+    // error and the two diff tokens, so a syntax colour taken from them would
+    // read as one of those meanings. These three are muted enough to sit under
+    // a diff without competing with the green and red that carry it.
+    syntax_keyword: Color::Indexed(176),
+    syntax_string: Color::Indexed(114),
+    syntax_literal: Color::Indexed(180),
     coloured: true,
 };
 
@@ -150,6 +196,9 @@ pub const LIGHT: Theme = Theme {
     error: Color::Red,
     diff_add: Color::Green,
     diff_delete: Color::Red,
+    syntax_keyword: Color::Indexed(90),
+    syntax_string: Color::Indexed(28),
+    syntax_literal: Color::Indexed(130),
     coloured: true,
 };
 
@@ -165,6 +214,9 @@ pub const PLAIN: Theme = Theme {
     error: Color::Reset,
     diff_add: Color::Reset,
     diff_delete: Color::Reset,
+    syntax_keyword: Color::Reset,
+    syntax_string: Color::Reset,
+    syntax_literal: Color::Reset,
     coloured: false,
 };
 
@@ -222,7 +274,28 @@ impl Theme {
             Tone::Refused => Style::default()
                 .fg(self.warning)
                 .add_modifier(Modifier::BOLD),
+            Tone::Added => Style::default().fg(self.diff_add),
+            Tone::Removed => Style::default().fg(self.diff_delete),
+            Tone::Keyword => Style::default().fg(self.syntax_keyword),
+            Tone::StringLiteral => Style::default().fg(self.syntax_string),
+            Tone::Literal => Style::default().fg(self.syntax_literal),
         }
+    }
+
+    /// A tone, emphasised — for the words inside a diff line that actually
+    /// changed.
+    ///
+    /// Bold rather than a background colour: a background paints the full cell
+    /// width of every character it covers, which on a diff line means a block
+    /// that survives being copied out of the terminal as trailing whitespace.
+    /// Under `NO_COLOR` this collapses to nothing along with everything else,
+    /// which is correct — the `+` and the `-` are the carriers there, and a
+    /// modifier is still a presentation-only channel.
+    pub fn emphasis(&self, tone: Tone) -> Style {
+        if !self.coloured {
+            return Style::default();
+        }
+        self.style(tone).add_modifier(Modifier::BOLD)
     }
 
     /// One line carrying a state, with the tone's word in front of it.

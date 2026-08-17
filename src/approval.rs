@@ -25,7 +25,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use io_harness::approve::DecisionFuture;
-use io_harness::{Act, ApprovalContext, Approver, Decision, Effect, Request, Rule};
+use io_harness::{Act, ApprovalContext, Approver, Decision, Edit, Effect, Request, Rule};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -71,9 +71,12 @@ impl Ask {
         &self.request.target
     }
 
-    /// What a write would leave behind, whole. The harness hands an approver the
-    /// resulting file rather than a patch, so anything diff-shaped is this
-    /// product's to compute — and is 0.3.0's, not this release's.
+    /// What a write would leave behind, whole.
+    ///
+    /// The harness hands an approver the resulting file rather than a patch, so
+    /// the old side has to come from somewhere else — 0.3.0 reads it off disk and
+    /// hands both to `Edit::with_hunk`, which is the harness's own renderer. See
+    /// [`diff_of`].
     pub fn content(&self) -> Option<&str> {
         self.request.content.as_deref()
     }
@@ -219,14 +222,39 @@ pub const REFUSED_BY_OPERATOR: &str = "the operator denied it";
 pub struct Approval {
     ask: Ask,
     chosen: usize,
+    /// The write, as a change rather than as a wall of text.
+    ///
+    /// Computed once, when the overlay opens, because `render` runs per frame and
+    /// reading a file per frame is a file read per keystroke. `None` means there
+    /// is nothing to diff — the act is not a write, or the target could not be
+    /// read for a reason that is not "it does not exist yet" — and the overlay
+    /// falls back to showing the proposed content plainly, which is what 0.2.0
+    /// did for every write.
+    proposed: Option<Edit>,
 }
 
 impl Approval {
-    pub fn new(ask: Ask) -> Self {
+    /// Open an overlay for a question, resolving a write's target against
+    /// `root`.
+    ///
+    /// The root is required rather than inferred, and a live run is what settled
+    /// that. `Request.target` arrives **relative to the workspace** — `notes.txt`,
+    /// not `/tmp/x/notes.txt` — so an implementation that only read absolute
+    /// paths never found the file and quietly fell back to showing the proposed
+    /// content, which is a feature that ships looking like it works. Resolving
+    /// against this process's working directory instead would be worse: `io -C
+    /// <dir>` sets the workspace without changing it, so a relative name could
+    /// match a different file that happens to exist here.
+    pub fn new(ask: Ask, root: &std::path::Path) -> Self {
+        let proposed = diff_of(&ask, root);
         // Opens on `Once`: the least committal answer, and never on a remembered
         // allow. A surface that opens on the widest answer is one where `Enter`
         // by reflex gives away the most.
-        Self { ask, chosen: 0 }
+        Self {
+            ask,
+            chosen: 0,
+            proposed,
+        }
     }
 
     /// Which answer is highlighted.
@@ -366,6 +394,9 @@ impl Approval {
     /// It says what it cut. A reader who thinks they have seen a whole file and
     /// has seen a third of it is worse off than one who was told.
     fn preview(&self, room: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        if let Some(edit) = &self.proposed {
+            return self.as_diff(edit, room, width, theme);
+        }
         let Some(content) = self.ask.content() else {
             return Vec::new();
         };
@@ -393,6 +424,68 @@ impl Approval {
                 ))
             })
             .collect()
+    }
+
+    /// The write as a diff, in the rows there are.
+    ///
+    /// **The counts come first and the path does not come at all.** The
+    /// transcript's version of this cell leads with the path, because there a diff
+    /// arrives with nothing above it. Here the question row directly above already
+    /// names the target, and repeating it cost a whole assertion: at eighty
+    /// columns with a long path, ratatui clipped the row — silently, as it always
+    /// does — and what went was `+2 -0`, the one fact worth having when there is
+    /// only one row. That is 0.2.0's lesson arriving a second time in the same
+    /// overlay, and the answer is the same: put the load-bearing fact where it
+    /// cannot be the part that goes.
+    ///
+    /// At the tightest size that one row is `+3 -1`, which is the difference
+    /// between a write that touches three lines and one that rewrites four
+    /// hundred — a different decision, not a smaller one.
+    fn as_diff(&self, edit: &Edit, room: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from(vec![
+            Span::styled(format!("  +{}", edit.lines_added), theme.style(Tone::Added)),
+            Span::styled(" ".to_string(), theme.style(Tone::Muted)),
+            Span::styled(
+                format!("-{}", edit.lines_removed),
+                theme.style(Tone::Removed),
+            ),
+            Span::styled(
+                match &edit.hunk {
+                    Some(_) => format!("{SEPARATOR}{}", edit.tool),
+                    // Absent is a fact and not an empty diff — the counts beside
+                    // it are what say the file did change.
+                    None => format!("{SEPARATOR}{}{SEPARATOR}no diff stored", edit.tool),
+                },
+                theme.style(Tone::Muted),
+            ),
+        ])];
+
+        // Past the cell's own header, which the row above replaces, and without
+        // the blank line it ends with: an overlay four rows tall cannot spend one
+        // on breathing. Every line is fitted, because this viewport clips.
+        lines.extend(
+            crate::diff::cell(edit, theme, u16::try_from(width).unwrap_or(u16::MAX))
+                .into_iter()
+                .skip(1)
+                .filter(|line| line.width() > 0)
+                .map(|line| fit_line(line, width, theme)),
+        );
+
+        let total = lines.len();
+        let shown = total.min(room);
+        let cut = total.saturating_sub(shown);
+        lines.truncate(shown);
+        // Said, not silently dropped. A reader who thinks they have seen a whole
+        // change and has seen its first row is worse off than one who was told.
+        if cut > 0 {
+            if let Some(last) = lines.last_mut() {
+                last.spans.push(Span::styled(
+                    format!("  ⋯ {cut} more lines"),
+                    theme.style(Tone::Muted),
+                ));
+            }
+        }
+        lines
     }
 
     /// `› allow once · allow this session · deny`, on one row.
@@ -424,6 +517,83 @@ impl Approval {
 /// The word for an act. io-harness spells these in its own serde tags and in
 /// `EventKind::Refused`; this is the same vocabulary so a refusal and a request
 /// read as the same product.
+/// The change a write would make, as an `io_harness::Edit`.
+///
+/// **io-cli still computes no diff.** `Edit::with_hunk` is the harness's own
+/// renderer — the same one that produced every hunk in the durable trace — so an
+/// approval and a transcript show a change in exactly the same words. What io-cli
+/// supplies is the *old* side, because the write has not happened yet and the
+/// harness has nothing stored for it: the approver is handed the whole resulting
+/// file, never a patch.
+///
+/// **Only the request's own target is read**, and only for a write. This is the
+/// one workspace read the interface performs, it is of the file the operator is
+/// being asked about, and it exists so they can see what changes rather than what
+/// the file will end up containing.
+///
+/// The three outcomes are deliberately different:
+/// - the file is not there → an empty old side, so a new file reads as all
+///   addition, which is what it is;
+/// - the file is there → a real diff against it;
+/// - the file is there and cannot be read, or is not UTF-8 → `None`, and the
+///   overlay shows the proposed content plainly. Diffing against an empty old
+///   side here would show every existing line as new, which is a lie about the
+///   size of the change and exactly the wrong direction to be wrong in.
+fn diff_of(ask: &Ask, root: &std::path::Path) -> Option<Edit> {
+    if ask.act() != Act::Write {
+        return None;
+    }
+    let after = ask.content()?;
+    let target = ask.target();
+
+    // `join` with an absolute target returns the target, so one line covers both
+    // shapes — and the relative one is what a real run actually sends.
+    let path = root.join(target);
+
+    let before = match std::fs::read_to_string(&path) {
+        Ok(before) => before,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+
+    Some(Edit::measure(0, "write_file", target, &before, after).with_hunk(&before, after))
+}
+
+/// Cut a rendered line to `width`, keeping its styles and saying it was cut.
+///
+/// The overlay draws into a fixed-height viewport, where ratatui **clips** a row
+/// that does not fit rather than wrapping it — and clips it silently. A diff line
+/// is the widest thing this surface draws, so without this a hunk at eighty
+/// columns loses its right-hand end with nothing on screen to say so.
+///
+/// Spans are kept whole while they fit and the one that crosses the edge is cut,
+/// so syntax colour survives as far as the line does.
+fn fit_line(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    // One cell for the marker that says something went.
+    let room = width.saturating_sub(1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in line.spans {
+        let length = span.content.chars().count();
+        if used + length <= room {
+            used += length;
+            spans.push(span);
+            continue;
+        }
+        let take = room - used;
+        if take > 0 {
+            let cut: String = span.content.chars().take(take).collect();
+            spans.push(Span::styled(cut, span.style));
+        }
+        break;
+    }
+    spans.push(Span::styled("…".to_string(), theme.style(Tone::Muted)));
+    Line::from(spans)
+}
+
 pub fn act_word(act: Act) -> &'static str {
     match act {
         Act::Read => "read",

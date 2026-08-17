@@ -209,6 +209,25 @@ impl<B: Backend + Write> Screen<B> {
         Write::flush(self.terminal.backend_mut())
     }
 
+    /// Write a raw escape sequence straight to the terminal.
+    ///
+    /// For OSC 52, which is a message to the *terminal emulator* rather than
+    /// content for the screen: it puts a payload on the system clipboard and
+    /// draws nothing. It cannot be a widget, and it must not go through
+    /// [`Screen::commit`] — a clipboard sequence in the scrollback would be
+    /// text the user scrolls past rather than an instruction the terminal acted
+    /// on.
+    ///
+    /// Nothing here can confirm it worked. No terminal answers an OSC 52 write;
+    /// several cap the payload silently and tmux ignores it entirely without
+    /// `set -g set-clipboard on`. The `Ok` this returns means the bytes left the
+    /// process, which is the only thing that can honestly be reported.
+    pub fn escape(&mut self, sequence: &str) -> io::Result<()> {
+        let backend = self.terminal.backend_mut();
+        backend.write_all(sequence.as_bytes())?;
+        Write::flush(backend)
+    }
+
     /// Tell the renderer the terminal is a different size now.
     ///
     /// Recomputing the inline viewport is the whole job: the committed lines above

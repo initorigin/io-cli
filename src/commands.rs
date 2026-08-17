@@ -1,9 +1,16 @@
-//! The five slash commands, and the keybinding table they document.
+//! The slash commands, and the keybinding table they document.
 //!
-//! Five, and each one is a [`Picker`](crate::picker::Picker) or a print. The
-//! fuzzy palette that reaches every command and every harness skill is 0.7.0's;
-//! what matters now is that `/setup` exists, because it is what makes the wizard
-//! reachable after the first run.
+//! Each one is a [`Picker`](crate::picker::Picker), a print, or something
+//! committed into the terminal's own scrollback. The fuzzy palette that reaches
+//! every command and every harness skill is 0.7.0's; what matters now is that
+//! `/setup` exists, because it is what makes the wizard reachable after the
+//! first run.
+//!
+//! **Everything that shows more of something commits upward.** The viewport is
+//! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
+//! write into the scrollback, where the terminal's own search, selection and
+//! copy-mode already work. That is one answer to "show me more" rather than
+//! three, and it is the same answer the transcript gives.
 
 use ratatui::text::{Line, Span};
 
@@ -31,6 +38,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Ctrl+L", "clear the viewport, never the scrollback"),
     (
+        "Ctrl+T",
+        "put the whole conversation back into the scrollback",
+    ),
+    (
         "y / a / n",
         "answer an approval: allow once, allow this session, deny",
     ),
@@ -44,6 +55,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/setup", "run the first-run wizard again"),
     ("/theme", "change the theme for this session"),
     ("/model", "change the model for this session"),
+    (
+        "/expand",
+        "commit the last step's full detail into the scrollback",
+    ),
+    ("/copy", "put the last answer on the system clipboard"),
+    (
+        "/copy diff",
+        "put the whole run's patch on the system clipboard",
+    ),
 ];
 
 /// What the driver should do about a slash command.
@@ -57,6 +77,24 @@ pub enum Action {
     Theme,
     /// Open the model picker.
     Model,
+    /// Commit the last step's stored detail into the scrollback.
+    ///
+    /// The detail is in the run's durable trace already — this reads it back
+    /// rather than the screen having been the archive.
+    Expand,
+    /// Put something on the system clipboard over OSC 52.
+    Copy(Copied),
+    /// Put the whole conversation back into the scrollback.
+    Transcript,
+}
+
+/// What `/copy` was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Copied {
+    /// The last thing the agent said.
+    Answer,
+    /// Every change the run made, as one patch.
+    Diff,
 }
 
 /// Resolve a command. The leading `/` has already been removed.
@@ -70,6 +108,13 @@ pub fn parse(input: &str, theme: &Theme) -> Action {
         "setup" => Action::Setup,
         "theme" => Action::Theme,
         "model" => Action::Model,
+        "expand" => Action::Expand,
+        "copy" => match input.split_whitespace().nth(1) {
+            // `/copy diff` and `/copy patch` mean the same thing. A reader who
+            // has just been shown a diff will type the word they were shown.
+            Some("diff") | Some("patch") => Action::Copy(Copied::Diff),
+            _ => Action::Copy(Copied::Answer),
+        },
         unknown => {
             let mut lines = vec![theme.notice(
                 Tone::Warning,
