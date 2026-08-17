@@ -27,6 +27,11 @@ const ALLOWED: &[&str] = &[
     "tokio",
     "serde",
     "toml",
+    // Ninth, and the first name added since 0.1.0. Syntax highlighting inside a
+    // diff, argued in 0.3.0's release record. Its FEATURE SET is asserted below
+    // as well as its name — see `n2_syntect_is_taken_with_exactly_the_features_
+    // the_cross_compiles_survive`.
+    "syntect",
 ];
 
 /// Crates that would mean a subsystem had been rebuilt here. Matched against
@@ -229,5 +234,95 @@ fn n1_the_crate_is_never_published() {
         "the crate name holds seventeen yanked versions and a yank does not free \
          a number; `publish = false` is what makes that mechanical rather than \
          remembered",
+    );
+}
+
+/// N2 — the feature set, which is the load-bearing half of taking syntect.
+///
+/// The name alone is not the contract. `syntect`'s DEFAULT features include
+/// `regex-onig`, which is oniguruma — a C library. Two of this product's four
+/// release artifacts are cross-compiled, to `x86_64-unknown-linux-musl` and
+/// `x86_64-pc-windows-msvc`, and a native build step in that path fails inside
+/// the release workflow rather than in a test. So a later `default-features =
+/// true`, or a merge that drops the feature list, has to fail here — where it
+/// costs a red check — instead of there, where it costs the Release.
+#[test]
+fn n2_syntect_is_taken_with_exactly_the_features_the_cross_compiles_survive() {
+    let manifest = manifest();
+    let syntect = manifest
+        .get("dependencies")
+        .and_then(|table| table.get("syntect"))
+        .and_then(toml::Value::as_table)
+        .expect("syntect is a table, not a bare version string");
+
+    assert_eq!(
+        syntect
+            .get("default-features")
+            .and_then(toml::Value::as_bool),
+        Some(false),
+        "syntect's default features include regex-onig, which is a C library and \
+         breaks the musl and MSVC cross-compiles",
+    );
+
+    let features: Vec<&str> = syntect
+        .get("features")
+        .and_then(toml::Value::as_array)
+        .expect("a features array")
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(
+        features,
+        ["default-syntaxes", "regex-fancy"],
+        "the smallest syntect that highlights: the bundled grammars and the \
+         pure-Rust regex engine. `default-themes` is deliberately absent — the \
+         colours are io-cli's own tokens, which is what keeps a highlighted diff \
+         and the rest of the interface one aesthetic and NO_COLOR working from \
+         one place.",
+    );
+}
+
+/// N4 — the grammar table is never touched on the startup path.
+///
+/// `SyntaxSet::load_defaults_newlines` decompresses every grammar syntect ships.
+/// This product's own bar is a first paint inside a hundred milliseconds, and a
+/// session that never edits a file should never pay for a highlighter. Asserted
+/// structurally rather than by timing anything: the load appears once, in the
+/// module that draws diffs, behind a `OnceLock`.
+#[test]
+fn n4_the_syntax_set_is_loaded_lazily_and_only_by_the_diff_renderer() {
+    let mut loaders = Vec::new();
+    for (path, text) in sources() {
+        if text.contains("load_defaults") {
+            loaders.push(path.clone());
+        }
+    }
+
+    assert_eq!(
+        loaders.len(),
+        1,
+        "the grammar table should be loaded in exactly one place: {loaders:?}",
+    );
+    assert!(
+        loaders[0].ends_with("diff.rs"),
+        "only the diff renderer has any reason to load grammars: {loaders:?}",
+    );
+
+    let diff = std::fs::read_to_string(&loaders[0]).expect("the diff renderer");
+    assert!(
+        diff.contains("OnceLock<Highlighter>"),
+        "the load has to sit behind a once-cell, or it happens at startup",
+    );
+
+    // And the startup path does not reach it. `main.rs` builds the terminal, the
+    // config and the session before anything is drawn; a highlighter mentioned
+    // there is a highlighter built before the first frame.
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("the driver");
+    assert!(
+        !main.contains("Highlighter") && !main.contains("SyntaxSet"),
+        "the driver reached for the highlighter, which puts it on the startup path",
     );
 }

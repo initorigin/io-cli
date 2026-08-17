@@ -353,3 +353,157 @@ fn f3_an_unpaired_line_is_emphasised_at_the_line_and_not_within_it() {
         "an unpaired line is one span",
     );
 }
+
+// ---------------------------------------------------------------------------
+// F4 — highlighting is drawn in io-cli's own tokens and disappears under
+// NO_COLOR. N2 — the dependency set grows by exactly one name, with its
+// features pinned. N4 — the syntax set is never loaded on the startup path.
+// ---------------------------------------------------------------------------
+
+/// A hunk of Rust with a keyword, a string and a number in it, so each of the
+/// three syntax tokens has something to colour.
+fn edit_with_code() -> Edit {
+    Edit {
+        step: 1,
+        tool: "edit_file".to_string(),
+        path: "src/lib.rs".to_string(),
+        lines_added: 1,
+        lines_removed: 1,
+        hunk: Some(
+            "@@ -1,3 +1,3 @@\n \
+             // a comment\n\
+             -let name = \"old\";\n\
+             +let name = \"new\";\n \
+             const N: u32 = 42;\n"
+                .to_string(),
+        ),
+    }
+}
+
+#[test]
+fn f4_the_colours_come_from_io_cli_s_own_tokens() {
+    let edit = edit_with_code();
+    let coloured: Vec<(String, Option<ratatui::style::Color>)> = cell(&edit, &DARK)
+        .iter()
+        .flat_map(|line| {
+            line.spans
+                .iter()
+                .map(|span| (span.content.to_string(), span.style.fg))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let used: Vec<ratatui::style::Color> = coloured.iter().filter_map(|(_, fg)| *fg).collect();
+
+    // Every colour on a context line is one this theme declares. A colour from
+    // syntect's own theme set would be an RGB value that appears nowhere in
+    // `theme.rs` — which is the whole reason `default-themes` is off.
+    let mine = [
+        DARK.foreground,
+        DARK.muted,
+        DARK.accent,
+        DARK.syntax_keyword,
+        DARK.syntax_string,
+        DARK.syntax_literal,
+        DARK.diff_add,
+        DARK.diff_delete,
+    ];
+    for colour in &used {
+        assert!(
+            mine.contains(colour),
+            "{colour:?} is not one of io-cli's tokens: {coloured:?}",
+        );
+    }
+    assert!(
+        !used.is_empty(),
+        "nothing was coloured at all, so this asserts nothing: {coloured:?}",
+    );
+}
+
+#[test]
+fn f4_a_keyword_a_string_and_a_number_each_get_their_own_token() {
+    let edit = edit_with_code();
+    let all: Vec<(String, Option<ratatui::style::Color>)> = cell(&edit, &DARK)
+        .iter()
+        .flat_map(|line| {
+            line.spans
+                .iter()
+                .map(|span| (span.content.to_string(), span.style.fg))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    let has = |text: &str, colour: ratatui::style::Color| {
+        all.iter()
+            .any(|(content, fg)| content.contains(text) && *fg == Some(colour))
+    };
+
+    // `let` and `const` are `storage.*` in Sublime's scope vocabulary rather
+    // than `keyword.*`. Asserting on them rather than on an operator is what
+    // caught the missing `storage` entry in the scope table.
+    assert!(has("let", DARK.syntax_keyword), "let is a keyword: {all:?}");
+    assert!(
+        has("const", DARK.syntax_keyword),
+        "const is a keyword: {all:?}"
+    );
+    assert!(
+        has("old", DARK.diff_delete),
+        "the changed word keeps the diff colour: {all:?}"
+    );
+    assert!(has("42", DARK.syntax_literal), "literal: {all:?}");
+    assert!(
+        has("a comment", DARK.muted),
+        "comment reads as muted: {all:?}"
+    );
+}
+
+#[test]
+fn f4_no_color_leaves_the_markers_carrying_the_meaning() {
+    use io_cli::theme::PLAIN;
+
+    let lines = cell(&edit_with_code(), &PLAIN);
+    for line in &lines {
+        for span in &line.spans {
+            assert_eq!(
+                span.style.fg, None,
+                "NO_COLOR emitted a colour: {:?}",
+                span.content,
+            );
+            assert!(
+                span.style.add_modifier.is_empty(),
+                "NO_COLOR emitted a modifier, which is still a presentation-only \
+                 carrier: {:?}",
+                span.content,
+            );
+        }
+    }
+
+    // And the meaning survives, because the markers are text.
+    let text: String = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("-let name = \"old\";"), "{text}");
+    assert!(text.contains("+let name = \"new\";"), "{text}");
+}
+
+#[test]
+fn f4_a_file_with_no_grammar_still_renders() {
+    // `None` from `find_syntax_by_extension` is not a failure — it is what a
+    // file syntect has never heard of should look like.
+    let edit = Edit {
+        step: 1,
+        tool: "write_file".to_string(),
+        path: "notes.zzz".to_string(),
+        lines_added: 1,
+        lines_removed: 0,
+        hunk: Some("@@ -0,0 +1 @@\n+hello\n".to_string()),
+    };
+    let text = rendered(&edit);
+    assert!(text.contains("+hello"), "{text}");
+}

@@ -50,6 +50,27 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+# Syntax highlighting inside a diff, and the feature set is the load-bearing part
+# rather than the version.
+#
+# `default-features = false` excludes `regex-onig`, which is oniguruma — a C
+# library. Two of this product's four artifacts are cross-compiled, to
+# `x86_64-unknown-linux-musl` and `x86_64-pc-windows-msvc`, and a native build
+# step in that path fails inside the release workflow rather than in a test.
+# `regex-fancy` is the pure-Rust engine that replaces it.
+#
+# `default-themes` is off on purpose: the colours come from io-cli's own token
+# set, so a highlighted diff and the rest of the interface are one aesthetic
+# instead of two, and `NO_COLOR` keeps working because there is only one place
+# that decides colour. `html`, `plist-load` and `yaml-load` are for loading
+# grammars and emitting markup at runtime, which this product never does.
+#
+# `tests/dependencies.rs` asserts this exact feature list. A later
+# `default-features = true` would pull the C engine back in silently.
+syntect = { version = "5", default-features = false, features = [
+    "default-syntaxes",
+    "regex-fancy",
+] }
 
 [dev-dependencies]
 tempfile = "3"
