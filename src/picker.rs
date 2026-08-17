@@ -199,7 +199,11 @@ impl Picker {
 }
 
 /// Shorten `text` to at most `room` cells, marking that it was shortened.
-fn fit(text: &str, room: usize) -> String {
+///
+/// Public because the approval overlay fits a path and a line of file content
+/// with it. One fitting rule in the product, so a shortened row and a shortened
+/// target are shortened the same way and by the same character.
+pub fn fit(text: &str, room: usize) -> String {
     if text.chars().count() <= room {
         return text.to_string();
     }

@@ -86,12 +86,14 @@ fn the_key_table_covers_every_key_this_release_binds() {
         "Ctrl+D",
         "Ctrl+L",
         "Esc",
+        "Shift+Tab",
+        "y / a / n",
     ] {
         assert!(documented.contains(&key), "{key} is bound but undocumented");
     }
     assert_eq!(
         documented.len(),
-        7,
+        9,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );

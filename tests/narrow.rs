@@ -81,3 +81,65 @@ fn f9_multibyte_text_is_not_split_across_a_wrap() {
         );
     }
 }
+
+/// **N5.** The approval overlay at eighty columns, with a long path and content
+/// wider than the terminal. It is the widest thing this product draws, and it is
+/// the one surface where a line that overflows costs somebody a decision they did
+/// not mean to make.
+#[tokio::test]
+async fn n5_the_approval_overlay_fits_eighty_columns() {
+    use io_cli::approval::{self, Approval};
+    use io_cli::theme::DARK;
+    use io_harness::{Act, ApprovalContext, Approver, Decision, Request};
+
+    let target = "crates/some-rather-long-crate-name/src/subsystem/module/implementation.rs";
+    let content = format!("{}\n{}\n", "x".repeat(200), "y".repeat(200));
+    let (asker, mut asks) = approval::channel();
+    let deciding = tokio::spawn(async move {
+        let asker = asker;
+        asker
+            .decide_in_context(
+                &Request::new(Act::Write, target).with_content(content),
+                &ApprovalContext::new("tidy the parser").flagged_by(
+                    Some("crates/**/src/**/*.rs".into()),
+                    Some("ops-baseline".into()),
+                ),
+            )
+            .await
+    });
+    let ask = asks.recv().await.expect("the question arrived");
+
+    let approval = Approval::new(ask);
+    let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
+    screen
+        .draw(|frame| approval.render(frame, frame.area(), &DARK))
+        .expect("frame");
+
+    let viewport = screen.viewport_text();
+    for line in viewport.lines() {
+        assert!(
+            line.chars().count() <= WIDTH as usize,
+            "the overlay overflowed eighty columns: {line:?}",
+        );
+    }
+    // The answers are what the overlay exists for. A layout that fits by pushing
+    // them off the bottom has fitted nothing.
+    assert!(
+        viewport.contains("allow once") && viewport.contains("deny"),
+        "the answers must survive a narrow terminal: {viewport:?}",
+    );
+    // And so must the act and the target, in some form.
+    assert!(viewport.contains("write"), "{viewport:?}");
+    assert!(viewport.contains('…'), "something was fitted: {viewport:?}");
+    // The two facts no other core records must survive the narrow form. A widget
+    // that "fits" by letting ratatui clip the row has not fitted anything — it has
+    // silently cut the half of the sentence this release exists to show.
+    assert!(
+        viewport.contains("ops-baseline"),
+        "the layer was cut at eighty columns: {viewport:?}",
+    );
+
+    approval.answer(approval::Answer::Deny);
+    let decision = deciding.await.expect("the approver did not panic");
+    assert!(matches!(decision, Decision::Deny { .. }));
+}

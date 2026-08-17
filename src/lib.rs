@@ -11,6 +11,7 @@
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod app;
+pub mod approval;
 pub mod bridge;
 pub mod cli;
 pub mod commands;

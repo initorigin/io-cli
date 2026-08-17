@@ -25,7 +25,15 @@ pub const KEYS: &[(&str, &str)] = &[
         "interrupt the turn; twice at an empty prompt, exit",
     ),
     ("Ctrl+D", "exit, on an empty prompt"),
+    (
+        "Shift+Tab",
+        "cycle the permission posture, from the next turn",
+    ),
     ("Ctrl+L", "clear the viewport, never the scrollback"),
+    (
+        "y / a / n",
+        "answer an approval: allow once, allow this session, deny",
+    ),
     ("Esc", "close a picker without choosing"),
 ];
 

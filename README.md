@@ -92,7 +92,9 @@ writes no key to disk at all.
 | `Up / Down` | walk prompt history |
 | `Ctrl+C` | interrupt the turn; twice at an empty prompt, exit |
 | `Ctrl+D` | exit, on an empty prompt |
+| `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
+| `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
 
 <!-- keys:end -->
@@ -131,7 +133,10 @@ itself permission. The wizard therefore writes the user-scope file, which is
 where widening is your own decision.
 
 **What this release reads from that file, and what it does not.** io-cli reads
-the provider, the permission policy and its own `[app.io-cli]` section. It does
+the provider, the permission policy and its own `[app.io-cli]` section. The
+policy's own defaults are what `Shift+Tab` cycles; a posture chosen with the key
+lasts for the session and is not written back, because a keystroke that rewrites
+a permission boundary on disk is the opposite of what that key is for. io-cli does
 **not** yet apply `[sandbox]` limits, `[run]` budgets, `[[mcp]]`, `[[lsp]]`,
 `[[agent]]` or an `AGENTS.md` instruction file to a turn. The reason is specific
 rather than an oversight: io-harness's steerable turn builds its own task
@@ -146,12 +151,21 @@ refusal, error and warning also carries a word.
 
 ## What this release is not
 
-0.1.1 is the renderer, the composer, the wizard and one real session, now legible
-while it is happening. Approval
-overlays and the refusal surface that names the rule and the layer are 0.2.0;
-diffs and collapsible tool output are 0.3.0; resume, fork and rewind are 0.4.0;
-the headless subcommand and NDJSON are 0.5.0; the screen-reader mode is 0.6.0.
-An action that needs approval is declined in this release, and says so.
+0.2.0 is the permission boundary made visible and answerable: the approval
+overlay, the posture key, the refusal that names its rule and its layer, and the
+status fields around them. Diffs, syntax highlighting and collapsible tool output
+are 0.3.0; resume, fork and rewind are 0.4.0; the headless subcommand and NDJSON
+are 0.5.0; the screen-reader mode is 0.6.0; the slash palette and type-to-filter
+pickers are 0.7.0.
+
+Two things are absent for reasons worth stating rather than hiding. **Spend
+against the tree ceiling is not in the status line**: io-harness emits
+`SpendDraw` only from a contained turn, and its contained entry point takes no
+steer inbox, so rendering spend today would cost `Ctrl+C`. It arrives at 0.8.0
+with the fleet, which is contained anyway. And **the overlay shows a write's
+proposed content plainly rather than as a diff** — the harness hands an approver
+the resulting file, not a patch, so the diff is io-cli's to compute and 0.3.0's
+to design.
 
 ## Contributing
 
