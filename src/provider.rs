@@ -94,7 +94,9 @@ pub async fn build<W: WithProvider>(
         }
         // `ProviderSpec` is `#[non_exhaustive]`: a provider the harness gains and
         // this release has not seen is refused by name rather than driven wrongly.
-        other => Err(format!("this release cannot drive a {other:?} provider yet")),
+        other => Err(format!(
+            "this release cannot drive a {other:?} provider yet"
+        )),
     }
 }
 

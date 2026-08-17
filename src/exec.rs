@@ -60,9 +60,9 @@ pub fn code(outcome: &RunOutcome) -> u8 {
     match outcome {
         RunOutcome::Success { .. } | RunOutcome::Finished { .. } => OK,
 
-        RunOutcome::Denied { .. } | RunOutcome::Refused { .. } | RunOutcome::PlanRejected { .. } => {
-            REFUSED
-        }
+        RunOutcome::Denied { .. }
+        | RunOutcome::Refused { .. }
+        | RunOutcome::PlanRejected { .. } => REFUSED,
 
         RunOutcome::StepCapReached { .. }
         | RunOutcome::TimeBudgetExceeded { .. }
@@ -76,9 +76,9 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         | RunOutcome::AwaitingAnswer { .. }
         | RunOutcome::AwaitingPlan { .. } => PAUSED,
 
-        RunOutcome::Stalled { .. } | RunOutcome::Escalated { .. } | RunOutcome::Cancelled { .. } => {
-            UNFINISHED
-        }
+        RunOutcome::Stalled { .. }
+        | RunOutcome::Escalated { .. }
+        | RunOutcome::Cancelled { .. } => UNFINISHED,
     }
 }
 
@@ -93,7 +93,9 @@ pub fn describe(outcome: &RunOutcome) -> String {
         RunOutcome::StepCapReached { steps } => ("stopped at the step cap", steps),
         RunOutcome::TimeBudgetExceeded { steps } => ("stopped at the time budget", steps),
         RunOutcome::CostBudgetExceeded { steps } => ("stopped at the token budget", steps),
-        RunOutcome::BudgetCeilingReached { steps } => ("stopped at the tree's budget ceiling", steps),
+        RunOutcome::BudgetCeilingReached { steps } => {
+            ("stopped at the tree's budget ceiling", steps)
+        }
         RunOutcome::Denied { steps } => ("was denied", steps),
         RunOutcome::Refused { steps } => ("was refused before it began", steps),
         RunOutcome::PlanRejected { steps } => ("had its plan rejected", steps),
@@ -223,6 +225,11 @@ pub fn to_stdout(json: bool, reply: Option<&str>) -> Option<&str> {
 ///
 /// Separate from the printing so a test can assert on the outcome without
 /// capturing a process's streams.
+///
+/// Eight arguments rather than a struct, matching `loop_over` on the other
+/// entry point: every one of them is a distinct thing the harness needs and a
+/// wrapper would only move the list somewhere else.
+#[allow(clippy::too_many_arguments)]
 pub async fn turn<P: Provider>(
     provider: &P,
     store: &Store,
@@ -293,9 +300,8 @@ pub fn contract(
 /// is said out loud rather than reached in silence. On stderr, so `--json`
 /// stdout stays parseable.
 pub fn widening(sandbox: Option<ExecMode>) -> Option<&'static str> {
-    matches!(sandbox, Some(ExecMode::FullAccess)).then_some(
-        "--sandbox full-access: commands in this run are not confined to the workspace",
-    )
+    matches!(sandbox, Some(ExecMode::FullAccess))
+        .then_some("--sandbox full-access: commands in this run are not confined to the workspace")
 }
 
 /// `io exec`, from the command line to an exit status.
@@ -318,7 +324,9 @@ pub async fn main(
             provider::spec_from(
                 which,
                 std::env::var(key_var).ok(),
-                model_override.clone().or_else(|| std::env::var(model_var).ok()),
+                model_override
+                    .clone()
+                    .or_else(|| std::env::var(model_var).ok()),
             )?
         }
         (None, Some(spec)) => spec,

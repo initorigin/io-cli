@@ -22,13 +22,13 @@ mod support;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::ValueEnum;
+use io_cli::cli::{FromEnv, PolicyFlag};
+use io_cli::settings::Posture;
+use io_cli::{exec, provider};
 use io_harness::{
     Act, CompletionRequest, CompletionResponse, Config, Effect, EventKind, ExecMode, Flow, Ignore,
     Observer, Policy, Provider, RunEvent, RunOutcome, Session, Store,
 };
-use io_cli::cli::{FromEnv, PolicyFlag};
-use io_cli::{exec, provider};
-use io_cli::settings::Posture;
 
 /// A workspace and a store, with no configuration file anywhere near the
 /// developer's own.
@@ -76,7 +76,10 @@ async fn f1_a_goal_runs_to_completion_and_its_reply_comes_back() {
     // The run is in the same store an interactive session writes to, which is what
     // lets `/resume` list a run that CI started.
     assert!(
-        store.runs().expect("the store lists runs").contains(&result.run_id),
+        store
+            .runs()
+            .expect("the store lists runs")
+            .contains(&result.run_id),
         "the headless run should be recorded in the ordinary store",
     );
 }
@@ -171,7 +174,11 @@ fn f2_every_outcome_maps_to_its_documented_code() {
     let mut codes: Vec<u8> = cases.iter().map(|(_, code)| *code).collect();
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes, vec![0, 2, 3, 4, 5], "0, 2, 3, 4 and 5 are reachable from an outcome; 1 is reserved for never reaching one");
+    assert_eq!(
+        codes,
+        vec![0, 2, 3, 4, 5],
+        "0, 2, 3, 4 and 5 are reachable from an outcome; 1 is reserved for never reaching one"
+    );
 }
 
 #[test]
@@ -192,7 +199,10 @@ fn f2_every_outcome_describes_itself_with_the_harness_step_count() {
 struct Endless;
 
 impl Provider for Endless {
-    async fn complete(&self, _request: CompletionRequest) -> io_harness::Result<CompletionResponse> {
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> io_harness::Result<CompletionResponse> {
         Ok(CompletionResponse {
             text: None,
             tool_calls: vec![support::write_call("again.txt", "again")],
