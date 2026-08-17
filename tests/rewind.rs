@@ -76,101 +76,12 @@
 //!   conversation that is back to having said nothing is indistinguishable from a
 //!   conversation that carried on.
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
+mod support;
 
 use io_cli::rewind;
 use io_cli::theme::Tone;
-use io_harness::provider::{CompletionRequest, CompletionResponse, ToolCall};
-use io_harness::tools::WRITE_FILE_TOOL;
-use io_harness::{ApproveAll, MemoryKind, Policy, Provider, Session, Store};
-
-/// A provider that plays a script of tool-call batches and then stops talking.
-///
-/// One batch per completion, in order; once the script is exhausted every later
-/// completion is plain text with no calls, which is how the agent loop is told the
-/// turn is over. A provider that returned its calls forever would never end a
-/// turn, and a test that ended one with a step ceiling would be asserting the
-/// ceiling rather than the work.
-struct Scripted {
-    batches: Mutex<VecDeque<Vec<ToolCall>>>,
-}
-
-impl Scripted {
-    /// One batch that writes each `(path, content)` in the order given.
-    fn writing(files: &[(&str, &str)]) -> Self {
-        let batch = files
-            .iter()
-            .map(|(path, content)| write_call(path, content))
-            .collect();
-        Self {
-            batches: Mutex::new(VecDeque::from(vec![batch])),
-        }
-    }
-}
-
-impl Provider for Scripted {
-    async fn complete(
-        &self,
-        _request: CompletionRequest,
-    ) -> io_harness::Result<CompletionResponse> {
-        let calls: Vec<ToolCall> = self
-            .batches
-            .lock()
-            .expect("the script is not poisoned")
-            .pop_front()
-            .unwrap_or_default();
-        Ok(CompletionResponse {
-            // Text only once there is nothing left to do, so the loop has exactly
-            // one reason to stop and it is the ordinary one.
-            text: calls.is_empty().then(|| "done".to_string()),
-            tool_calls: calls,
-            ..Default::default()
-        })
-    }
-}
-
-/// One `write_file` call, with its arguments built as JSON text and parsed.
-///
-/// `ToolCall::arguments` is a `serde_json::Value`, and `serde_json` is not a
-/// dependency of this crate — io-harness carries it and does not re-export it, so
-/// the type cannot be named here at all. It can still be *produced*: `Value`
-/// implements `FromStr`, so `str::parse` builds one with the target type inferred
-/// from the field it is assigned to. That is the whole reason this helper writes
-/// its arguments as text rather than with a builder.
-fn write_call(path: &str, content: &str) -> ToolCall {
-    ToolCall {
-        name: WRITE_FILE_TOOL.to_string(),
-        arguments: format!(
-            "{{\"path\":{},\"content\":{}}}",
-            quoted(path),
-            quoted(content)
-        )
-        .parse()
-        .expect("the arguments were assembled as JSON and must parse as JSON"),
-    }
-}
-
-/// `text` as a JSON string literal.
-///
-/// Hand-written because the crate has no JSON encoder to reach for. It escapes
-/// only what the fixtures below actually contain — quotes, backslashes and
-/// newlines — and would produce invalid JSON for a control character, which is
-/// why `write_call` asserts that the result parses rather than trusting it.
-fn quoted(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
-}
+use io_harness::{ApproveAll, MemoryKind, Policy, Session, Store};
+use support::Scripted;
 
 /// A temporary workspace, an in-memory store, and a session over the two.
 struct Fixture {

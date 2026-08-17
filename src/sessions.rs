@@ -116,6 +116,23 @@ pub fn recent(store: &Store) -> Result<(Vec<Recent>, bool), io_harness::Error> {
     Ok((out, cut))
 }
 
+/// Reopen a session the picker chose.
+///
+/// One line, and it exists so that line is *testable*. `src/main.rs` is the
+/// binary: no integration test links it, so a decision made in a match arm there
+/// is a decision nothing can sabotage. And this is the decision F3 is about —
+/// `Session::reopen` continues the conversation the chosen row names, while
+/// `Session::open` against the same root starts a second one that merely shares a
+/// directory. The two compile identically and differ only in the parent of the
+/// next turn, which is exactly the kind of difference that ships.
+///
+/// A wrapper with one caller is usually noise. This one earns its place by moving
+/// a claim out of untestable code, and `tests/fork.rs` calls it rather than
+/// calling the harness directly, so a swap here fails a test instead of a demo.
+pub fn resume(store: &Store, id: i64) -> Result<io_harness::Session, io_harness::Error> {
+    io_harness::Session::reopen(store, id)
+}
+
 /// The store's own timestamp, cut to the minute.
 ///
 /// A stored string sliced, never a clock read and never a relative age. *Two

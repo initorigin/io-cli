@@ -360,7 +360,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // sensible thing a line of prose can do when chosen.
                         Pick::Resume(ids) => {
                             if let Some(id) = ids.get(index) {
-                                match Session::reopen(&store, *id) {
+                                match io_cli::sessions::resume(&store, *id) {
                                     Ok(reopened) => {
                                         session = reopened;
                                         app.set_root(session.root());

@@ -16,11 +16,25 @@
 //! This is deliberately not `TestBackend`. `TestBackend` renders into a cell grid
 //! and emits no escape sequences at all, so F5 — "these sequences never appear" —
 //! would pass against it for the wrong reason: nothing appears.
+//!
+//! [`Scripted`] is the third, and it answers a different question entirely: not
+//! what leaves the terminal, but what a real turn writes into a real store. It
+//! lives here rather than in one test file because more than one file now needs a
+//! turn that actually happened — a rewind needs a run that took a restore point,
+//! and a fork needs a conversation tree with more than one branch in it — and
+//! neither can be forged. `Store`'s snapshot writer is crate-private and
+//! `TranscriptTurn` is `#[non_exhaustive]`, so a hand-built fixture cannot exist
+//! at all from outside io-harness; the only way to have a turn is to drive one.
 
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
+
+use io_harness::provider::{CompletionRequest, CompletionResponse, ToolCall};
+use io_harness::tools::WRITE_FILE_TOOL;
+use io_harness::Provider;
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::layout::{Position, Size};
@@ -283,6 +297,99 @@ fn harness_observe_path() -> std::path::PathBuf {
         "io-harness {version} is not unpacked under {}",
         registries.display()
     );
+}
+
+/// A provider that plays a script of tool-call batches and then stops talking.
+///
+/// One batch per completion, in order; once the script is exhausted every later
+/// completion is plain text with no calls, which is how the agent loop is told the
+/// turn is over. A provider that returned its calls forever would never end a
+/// turn, and a test that ended one with a step ceiling would be asserting the
+/// ceiling rather than the work.
+pub struct Scripted {
+    batches: Mutex<VecDeque<Vec<ToolCall>>>,
+}
+
+impl Scripted {
+    /// One batch that writes each `(path, content)` in the order given.
+    ///
+    /// An empty slice is a legitimate script and the one a conversation-shaped
+    /// test wants: the single batch holds no calls, so the very first completion
+    /// comes back as plain text and the turn is one exchange that touches no file.
+    /// That is a turn in the tree exactly like any other — which is the whole point
+    /// for a test about branching, where what is on disk is beside the question.
+    pub fn writing(files: &[(&str, &str)]) -> Self {
+        let batch = files
+            .iter()
+            .map(|(path, content)| write_call(path, content))
+            .collect();
+        Self {
+            batches: Mutex::new(VecDeque::from(vec![batch])),
+        }
+    }
+}
+
+impl Provider for Scripted {
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> io_harness::Result<CompletionResponse> {
+        let calls: Vec<ToolCall> = self
+            .batches
+            .lock()
+            .expect("the script is not poisoned")
+            .pop_front()
+            .unwrap_or_default();
+        Ok(CompletionResponse {
+            // Text only once there is nothing left to do, so the loop has exactly
+            // one reason to stop and it is the ordinary one.
+            text: calls.is_empty().then(|| "done".to_string()),
+            tool_calls: calls,
+            ..Default::default()
+        })
+    }
+}
+
+/// One `write_file` call, with its arguments built as JSON text and parsed.
+///
+/// `ToolCall::arguments` is a `serde_json::Value`, and `serde_json` is not a
+/// dependency of this crate — io-harness carries it and does not re-export it, so
+/// the type cannot be named here at all. It can still be *produced*: `Value`
+/// implements `FromStr`, so `str::parse` builds one with the target type inferred
+/// from the field it is assigned to. That is the whole reason this helper writes
+/// its arguments as text rather than with a builder.
+pub fn write_call(path: &str, content: &str) -> ToolCall {
+    ToolCall {
+        name: WRITE_FILE_TOOL.to_string(),
+        arguments: format!(
+            "{{\"path\":{},\"content\":{}}}",
+            quoted(path),
+            quoted(content)
+        )
+        .parse()
+        .expect("the arguments were assembled as JSON and must parse as JSON"),
+    }
+}
+
+/// `text` as a JSON string literal.
+///
+/// Hand-written because the crate has no JSON encoder to reach for. It escapes
+/// only what the fixtures actually contain — quotes, backslashes and newlines —
+/// and would produce invalid JSON for a control character, which is why
+/// `write_call` asserts that the result parses rather than trusting it.
+fn quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// The escape sequences F5 forbids, with the names the contract uses.
