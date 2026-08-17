@@ -755,3 +755,311 @@ async fn live_f12_an_approval_shows_the_write_as_a_diff_against_the_real_file() 
          was empty and the write reads as a whole-file rewrite: {any}",
     );
 }
+
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f6_a_switched_model_inherits_the_conversation() {
+    // F6's real content, isolated from the fork. `/model` claims the context is
+    // not lost, and the only honest way to check that is against a real request.
+    //
+    // **Asserted on what the model was SHOWN, not on what it chose to say.** The
+    // first version of this test asserted the switched model's reply contained
+    // `alpha`, and it failed against two different alternates — one answered
+    // "What would you like to do next?", another returned nothing at all — then
+    // passed against the first of them on a later run, which answered
+    // "[agent] alpha". That looked exactly like the switch dropping the context.
+    //
+    // It was not. Two separate provider instances of the SAME model pass the same
+    // check, so a fresh provider carries the conversation; the variable was the
+    // alternate model's willingness to answer a question ABOUT the conversation
+    // rather than about the workspace. Isolate before believing a failure.
+    //
+    // So the assertion is on `Store::observations` — the durable record of what
+    // actually went to the provider, since io-harness seeds each prior turn as an
+    // `[operator]`/`[agent]` observation. That is the fact F6 claims, and it does
+    // not become false when a vendor retunes a small model. The reply is printed
+    // and deliberately not asserted.
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+
+    let first = io_harness::OpenRouter::new(&key, model());
+    let said = session
+        .turn_steered(
+            "Reply with exactly the word alpha and nothing else.",
+            &first,
+            &store,
+            &policy,
+            &DenyAll,
+            &io_harness::Ignore,
+            &inbox,
+        )
+        .await
+        .expect("the alpha turn runs");
+    println!("turn 1 ({}) outcome: {:?}", model(), said.outcome);
+
+    let alt =
+        std::env::var("OPENROUTER_MODEL_ALT").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let switched = io_harness::OpenRouter::new(&key, &alt);
+    let asked = session
+        .turn_steered(
+            "Which single word did you reply with a moment ago? Answer with that word only.",
+            &switched,
+            &store,
+            &policy,
+            &DenyAll,
+            &io_harness::Ignore,
+            &inbox,
+        )
+        .await
+        .expect("the switched turn runs");
+    println!("turn 2 ({alt}) outcome: {:?}", asked.outcome);
+    for turn in session.history(&store).expect("history") {
+        println!(
+            "  {:?} -> {:?}",
+            turn.prompt,
+            turn.reply.as_deref().unwrap_or("<no reply>")
+        );
+    }
+
+    let shown = shown_to(&store, asked.run_id);
+    println!("what the switched model was shown:\n{shown}");
+    assert!(
+        shown.contains("alpha"),
+        "the conversation did not reach the switched provider, so the context did \
+         not survive the switch. it was shown: {shown:?}",
+    );
+    assert!(
+        shown.contains("Reply with exactly the word alpha"),
+        "the operator's own earlier prompt is part of the conversation and has to \
+         reach the new model too: {shown:?}",
+    );
+}
+
+/// Everything a run's model was shown, from the durable trace.
+///
+/// io-harness seeds each prior turn of the conversation into the run's ledger as
+/// an `[operator]`/`[agent]` observation, so this is the conversation as the model
+/// received it — which is the only model-independent way to assert that context
+/// reached a provider.
+fn shown_to(store: &Store, run_id: i64) -> String {
+    store
+        .observations(run_id)
+        .expect("the run's observations")
+        .iter()
+        .map(|obs| obs.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f13_work_survives_the_session() {
+    // F13. All four of this release's surfaces, driven off real turns against a
+    // real provider, in the order an operator meets them: an edit, an undo, a
+    // fork, a model switch, and a session left and reopened.
+    //
+    // Every offline fixture in this release builds its own store. 0.3.0 shipped a
+    // feature that passed four hand-written tests and was dead in every real
+    // session, because the fixtures all shared a shape the real input did not
+    // have. This is the arm that would have caught it.
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    let target = root.join("notes.txt");
+    std::fs::write(&target, "one\ntwo\nthree\n").expect("the fixture");
+    let before = std::fs::read_to_string(&target).expect("read the fixture");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let session_id = session.id();
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+
+    // ---- a real edit ---------------------------------------------------------
+    let first = session
+        .turn_steered(
+            "Change the third line of notes.txt from `three` to `THREE`. \
+             Change nothing else. Then say done.",
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &io_harness::Ignore,
+            &inbox,
+        )
+        .await
+        .expect("the first turn runs");
+    println!("turn 1 outcome: {:?}", first.outcome);
+    assert_ne!(
+        before,
+        std::fs::read_to_string(&target).expect("read after the edit"),
+        "the turn did not edit the file, so nothing below is exercised. \
+         outcome was {:?}",
+        first.outcome,
+    );
+
+    // ---- Esc Esc: the undo puts the workspace back ---------------------------
+    let about = io_cli::rewind::preview(&session, &store).expect("a turn to undo");
+    println!("armed: {}", io_cli::rewind::armed_line(&about));
+    let undone = io_cli::rewind::last_turn(&mut session, &store)
+        .expect("the rewind runs")
+        .expect("there was a turn to undo");
+    for (tone, line) in io_cli::rewind::undone_lines(&undone) {
+        println!("  [{tone:?}] {line}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read after the undo"),
+        before,
+        "the rewind did not put the file back to what it was before the turn",
+    );
+    // That was the session's only turn, which is the case `branch_from` cannot
+    // express and the one nobody tries by hand.
+    assert_eq!(
+        session.head(),
+        None,
+        "undoing the only turn must leave the conversation with no head at all",
+    );
+    assert!(
+        session.history(&store).expect("history").is_empty(),
+        "the conversation should be back to having said nothing",
+    );
+    assert_eq!(
+        store.rewinds(about.run_id).expect("rewinds").len(),
+        1,
+        "the undo must be in the durable trace, not merely performed",
+    );
+
+    // ---- two turns, so there is a conversation to fork -----------------------
+    for prompt in [
+        "Reply with exactly the word alpha and nothing else.",
+        "Reply with exactly the word beta and nothing else.",
+    ] {
+        session
+            .turn_steered(
+                prompt,
+                &provider,
+                &store,
+                &policy,
+                &DenyAll,
+                &io_harness::Ignore,
+                &inbox,
+            )
+            .await
+            .expect("the turn runs");
+        if prompt.contains("alpha") {
+            // Captured before the beta turn moves the head.
+            println!("alpha turn is {:?}", session.head());
+        }
+    }
+    let path = session.history(&store).expect("history");
+    assert_eq!(path.len(), 2, "two turns on the path before the fork");
+    let alpha = path[0].id;
+    // The picker's own rows, so the live arm exercises what an operator reads and
+    // not only the call underneath it.
+    for row in io_cli::sessions::turn_rows(&path, 80) {
+        println!("  fork row: {} — {:?}", row.label, row.detail);
+    }
+
+    // ---- /fork: back to alpha, with beta left readable but off the path ------
+    session
+        .branch_from(&store, alpha)
+        .expect("branching from the alpha turn");
+    assert_eq!(
+        session.history(&store).expect("history").len(),
+        1,
+        "the fork must move the head back to alpha",
+    );
+    // Three, not two: the rewound edit turn is here as well. `rewind_run` puts
+    // files, memory and the head back and deletes NOTHING from the trace — the
+    // harness says so, and this is where it becomes visible. A test expecting two
+    // would be asserting that an undo erases history, which is the opposite of
+    // what this product records.
+    assert_eq!(
+        store.session_turns(session_id).expect("every turn").len(),
+        3,
+        "the branched-away turn and the undone turn must both still be in the \
+         store, because a rewind restores state without editing the trace",
+    );
+
+    // ---- /model: a different model, and the context is the FORKED one --------
+    let alt =
+        std::env::var("OPENROUTER_MODEL_ALT").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    println!("switching from {} to {alt}", model());
+    let switched = io_harness::OpenRouter::new(&key, &alt);
+    let third = session
+        .turn_steered(
+            "Which single word did you reply with a moment ago? Answer with that word only.",
+            &switched,
+            &store,
+            &policy,
+            &DenyAll,
+            &io_harness::Ignore,
+            &inbox,
+        )
+        .await
+        .expect("the switched turn runs");
+    println!("turn 3 outcome: {:?}", third.outcome);
+
+    // The one assertion that checks the fork and the switch together, and it is on
+    // the durable record of what the provider was shown rather than on the reply —
+    // see `live_f6_a_switched_model_inherits_the_conversation` for why a reply is
+    // the wrong thing to assert here.
+    let shown = shown_to(&store, third.run_id);
+    println!("what the switched model was shown:\n{shown}");
+    assert!(
+        shown.contains("alpha"),
+        "the forked conversation did not reach the switched provider: {shown:?}",
+    );
+    assert!(
+        !shown.contains("beta"),
+        "the branched-away turn was sent to the switched model, so the fork did \
+         not take: {shown:?}",
+    );
+
+    // ---- leave, and /resume -------------------------------------------------
+    let head_on_leaving = session.head();
+    drop(session);
+
+    let (found, cut) = io_cli::sessions::recent(&store).expect("the session list");
+    println!("resume list ({} rows, cut={cut}):", found.len());
+    for row in io_cli::sessions::rows(&found, 80) {
+        println!("  {} — {:?}", row.label, row.detail);
+    }
+    let listed = found
+        .iter()
+        .find(|session| session.id == session_id)
+        .expect("the session that just ran must be in the resume list");
+    assert_eq!(
+        listed.turns, 4,
+        "the row counts every turn the session holds — the branched-away one and \
+         the undone one included, because both are still in the store",
+    );
+    // The session's first prompt ever, not the first on the path it currently
+    // holds. Deliberate, and it is the row's identity: a session that is forked or
+    // rewound keeps the same label, so a list somebody is scanning does not
+    // reshuffle its own descriptions underneath them.
+    assert!(
+        listed.prompt.contains("Change the third line"),
+        "the row carries the session's first prompt as its stable identity: {:?}",
+        listed.prompt,
+    );
+
+    let reopened = Session::reopen(&store, session_id).expect("reopening the session");
+    assert_eq!(
+        reopened.head(),
+        head_on_leaving,
+        "a resumed session must come back at the turn it stopped on",
+    );
+    assert_eq!(
+        reopened.root(),
+        root,
+        "and pointed at the same workspace it was about",
+    );
+    println!("resumed session {session_id} at head {:?}", reopened.head());
+}
