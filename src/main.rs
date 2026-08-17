@@ -342,6 +342,11 @@ async fn loop_over<P: Provider>(
                 }
             },
             Command::Submit(text) => {
+                // Rebuilt every turn rather than kept, because `remembered` grows
+                // as the operator answers and the harness's own `remember` dies
+                // with the turn it was given in. With nothing remembered this is
+                // the session's policy unchanged.
+                let effective = approval::effective_policy(&policy, app.remembered());
                 turn(
                     screen,
                     inputs,
@@ -349,7 +354,7 @@ async fn loop_over<P: Provider>(
                     &provider,
                     &store,
                     &mut session,
-                    &policy,
+                    &effective,
                     text,
                     started,
                 )

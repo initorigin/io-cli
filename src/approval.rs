@@ -423,3 +423,28 @@ pub fn act_word(act: Act) -> &'static str {
         Act::Net => "reach",
     }
 }
+
+/// The policy a turn runs under, given the session's base policy and everything
+/// the operator has allowed for the rest of it.
+///
+/// This is io-harness's own recipe, not a second one: a permissive layer named
+/// `remembered` carrying the rules, merged onto the base. Merging takes the
+/// stricter of the two defaults per act, and a later layer may add capability but
+/// can never re-allow something an earlier layer denied — so a remembered allow
+/// widens an *asking* default and still cannot defeat a deny beneath it.
+///
+/// It exists because `Decision::Approve { remember }` is **run-scoped**: the
+/// harness applies it for the rest of the turn and it dies with it. Without this,
+/// *allow for the rest of this session* would ask again on the next prompt. io-cli
+/// evaluates nothing here — every value is a harness type and every verdict is
+/// still the harness's.
+pub fn effective_policy(base: &io_harness::Policy, remembered: &[Rule]) -> io_harness::Policy {
+    if remembered.is_empty() {
+        return base.clone();
+    }
+    let mut layer = io_harness::Policy::permissive().layer("remembered");
+    for rule in remembered {
+        layer = layer.rule(rule.act, rule.effect, rule.pattern.clone());
+    }
+    base.clone().merge(layer)
+}

@@ -165,7 +165,7 @@ tasks:
     why_required: "`Decision::Approve { remember }` installs a run-scoped layer that dies with the
       turn. Without this task, *allow for the rest of this session* asks again on the next prompt and
       reads as a defect in memory rather than as a scope this release chose."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T03
     acceptance_criteria:
@@ -180,7 +180,29 @@ tasks:
       - src/approval.rs
       - src/main.rs
       - tests/approval.rs
-    evidence: []
+    evidence:
+      - "`approval::effective_policy(base, remembered)` is io-harness's own recipe rather than a
+        second one: a permissive layer named `remembered` carrying the rules, merged onto the base.
+        It was copied from `run.rs`, where the harness applies `remember` for the rest of a run, so
+        the semantics across a turn boundary are the same ones as within a turn."
+      - "The driver rebuilds it before every turn from `App::remembered()`. With nothing remembered
+        it returns the session's policy unchanged, asserted as equality rather than assumed."
+      - "`cargo test --test approval` — 14 passed, 0 failed. F5 is asserted as a *verdict*, not as a
+        label: the base policy answers `Ask` for a write to `src/main.rs`, and after the operator
+        answers `allow this session` the next turn's policy answers `Allow`. A rule that is carried
+        but never consulted would pass a label check and fail this one."
+      - "Narrowness has its own assertion: the same next-turn policy still answers `Ask` for
+        `src/other.rs`. Saying yes to one file is not saying yes to writing."
+      - "**A remembered allow cannot defeat a deny**, and that is its own test against the case that
+        matters — `.env`, which the harness's `builtin-secrets` layer denies. Feeding an explicit
+        `Allow` rule for `.env` through `effective_policy` still yields `Deny`. This is the property
+        that makes it safe for io-cli to construct rules at all."
+      - "Sabotage F5 — hand the harness `remember` and keep nothing on this side: 1 failed, F5's
+        test alone. F3's `Session` case stayed green, which is exactly what the contract predicted
+        and the reason F5 exists as a separate criterion: the obvious implementation passes every
+        visible test and asks again on the next prompt."
+      - "`cargo test` — 23 test binaries, all ok, 0 failures. `cargo clippy --all-targets -- -D
+        warnings` exit 0."
 
   - id: US-IO-CLI-0.2.0-T05
     summary: Cycle the posture on Shift+Tab, name the layer in force, and run the next turn under it.

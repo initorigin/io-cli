@@ -389,3 +389,82 @@ async fn an_open_question_takes_the_keyboard() {
     app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
     deciding.await.expect("the approver did not panic");
 }
+
+/// **F5.** The harness's own `remember` is run-scoped: it applies for the rest of
+/// the turn and dies with it. So the answer is asserted where it has to survive —
+/// on the policy the *next* turn is handed — and asserted as a verdict rather than
+/// as a label, because a rule that is carried but never consulted is not an
+/// answer that was remembered.
+#[tokio::test]
+async fn f5_allowing_for_the_session_survives_into_the_next_turn() {
+    use io_harness::{Effect, Policy};
+
+    let base = Policy::default();
+    assert_eq!(
+        base.check(Act::Write, "src/main.rs").effect,
+        Effect::Ask,
+        "the base policy is what makes this question happen at all",
+    );
+
+    let (request, context) = flagged();
+    let (ask, deciding) = asked(request, context).await;
+
+    let mut app = App::new(DARK, "opus-5");
+    app.open_approval(ask);
+    app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    deciding.await.expect("the approver did not panic");
+
+    let next = approval::effective_policy(&base, app.remembered());
+    assert_eq!(
+        next.check(Act::Write, "src/main.rs").effect,
+        Effect::Allow,
+        "the next turn must not ask again about what was already allowed",
+    );
+    // Narrow, not blanket. Saying yes to one file is not saying yes to writing.
+    assert_eq!(
+        next.check(Act::Write, "src/other.rs").effect,
+        Effect::Ask,
+        "a remembered allow must not widen past the target it was given for",
+    );
+}
+
+/// The other half, and the reason the merge is io-harness's recipe rather than a
+/// second one: a remembered allow may widen an *asking* default and must never
+/// defeat a deny beneath it. The secrets layer is the case that matters — an
+/// agent that gets `.env` approved once must not have it approved for the session.
+#[tokio::test]
+async fn a_remembered_allow_cannot_defeat_a_deny() {
+    use io_harness::{Effect, Policy, Rule};
+
+    let base = Policy::default();
+    assert_eq!(
+        base.check(Act::Write, ".env").effect,
+        Effect::Deny,
+        "the harness's builtin-secrets layer is what this is asserting against",
+    );
+
+    let next = approval::effective_policy(
+        &base,
+        &[Rule {
+            act: Act::Write,
+            effect: Effect::Allow,
+            pattern: ".env".into(),
+        }],
+    );
+    assert_eq!(
+        next.check(Act::Write, ".env").effect,
+        Effect::Deny,
+        "a session allow must not be able to unlock a denied target",
+    );
+}
+
+/// With nothing remembered the next turn runs under exactly the policy it would
+/// have anyway. A release that quietly rebuilt the policy every turn would be one
+/// where a `merge` bug is invisible until somebody answers a question.
+#[tokio::test]
+async fn nothing_remembered_changes_nothing() {
+    use io_harness::Policy;
+
+    let base = Policy::default();
+    assert_eq!(approval::effective_policy(&base, &[]), base);
+}
