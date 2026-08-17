@@ -3,6 +3,9 @@
 //! F3 — a ceiling exits 3 rather than 0.
 //! F4 — `--json` writes one `RunEvent` per line and nothing else on stdout.
 //! F5 — the JSON is the harness's own shape, not io-cli's.
+//! F6 — `--sandbox` and `--policy` reach the run.
+//! F7 — `--policy ask-writes` is refused, and says what to use instead.
+//! F11 — `--sandbox full-access` announces itself on stderr.
 //!
 //! The two mappings that look like taste are the release's research. A clean
 //! headless run ends in `RunOutcome::Finished` and never `Success`, because the
@@ -14,11 +17,14 @@ mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use clap::ValueEnum;
 use io_harness::{
-    CompletionRequest, CompletionResponse, Config, EventKind, Flow, Ignore, Observer, Policy,
-    Provider, RunEvent, RunOutcome, Session, Store,
+    Act, CompletionRequest, CompletionResponse, Config, Effect, EventKind, ExecMode, Flow, Ignore,
+    Observer, Policy, Provider, RunEvent, RunOutcome, Session, Store,
 };
+use io_cli::cli::PolicyFlag;
 use io_cli::exec;
+use io_cli::settings::Posture;
 
 /// A workspace and a store, with no configuration file anywhere near the
 /// developer's own.
@@ -47,6 +53,7 @@ async fn f1_a_goal_runs_to_completion_and_its_reply_comes_back() {
         &config,
         &Policy::permissive(),
         "write the note".into(),
+        None,
         &Ignore,
     )
     .await
@@ -82,6 +89,7 @@ async fn f1_a_clean_run_finishes_rather_than_succeeding() {
         &config,
         &Policy::permissive(),
         "say something".into(),
+        None,
         &Ignore,
     )
     .await
@@ -203,6 +211,7 @@ async fn f3_a_step_ceiling_exits_three_rather_than_zero() {
         &config,
         &Policy::permissive(),
         "keep going".into(),
+        None,
         &Ignore,
     )
     .await
@@ -253,6 +262,7 @@ async fn f4_json_writes_one_event_per_line_and_every_line_round_trips() {
         &config,
         &Policy::permissive(),
         "write the note".into(),
+        None,
         &counting,
     )
     .await
@@ -372,4 +382,148 @@ fn f4_nothing_but_the_stream_reaches_stdout_under_json() {
         "under --json the stream is the whole of stdout; a reply printed beside \
          it is a line no JSON reader can take",
     );
+}
+
+#[test]
+fn f6_the_sandbox_flag_reaches_the_contract_the_harness_is_given() {
+    let (_dir, store, session, config) = workspace("");
+    let _ = &store;
+
+    // Read off the contract at the call boundary, not off the flag: the flag
+    // being parsed proves nothing about what the run was handed.
+    let plain = exec::contract(&config, &session, "do the thing".into(), None);
+    assert_eq!(
+        plain.exec_sandbox.mode,
+        ExecMode::WorkspaceWrite,
+        "`TaskContract::workspace` starts at workspace-write",
+    );
+
+    let confined = exec::contract(
+        &config,
+        &session,
+        "do the thing".into(),
+        Some(ExecMode::ReadOnly),
+    );
+    assert_eq!(confined.exec_sandbox.mode, ExecMode::ReadOnly);
+
+    let open = exec::contract(
+        &config,
+        &session,
+        "do the thing".into(),
+        Some(ExecMode::FullAccess),
+    );
+    assert_eq!(open.exec_sandbox.mode, ExecMode::FullAccess);
+}
+
+#[test]
+fn f6_the_flag_beats_the_file_and_keeps_the_file_s_limits() {
+    let (_dir, _store, session, config) =
+        workspace("[sandbox]\nmode = \"read-only\"\n\n[sandbox.limits]\nmax_wall_secs = 30\n");
+
+    let from_file = exec::contract(&config, &session, "go".into(), None);
+    assert_eq!(
+        from_file.exec_sandbox.mode,
+        ExecMode::ReadOnly,
+        "[sandbox] should reach the contract — this is the first path in the \
+         product where that section has any effect",
+    );
+    assert_eq!(from_file.exec_sandbox.limits.max_wall_secs, Some(30));
+
+    let overridden = exec::contract(
+        &config,
+        &session,
+        "go".into(),
+        Some(ExecMode::WorkspaceWrite),
+    );
+    assert_eq!(overridden.exec_sandbox.mode, ExecMode::WorkspaceWrite);
+    assert_eq!(
+        overridden.exec_sandbox.limits.max_wall_secs,
+        Some(30),
+        "the flag changes the mode; the limits are the operator's and are not \
+         this flag's to discard",
+    );
+}
+
+#[test]
+fn f6_the_policy_flag_reaches_the_policy_the_run_is_given() {
+    let (_dir, _store, _session, config) = workspace("");
+
+    let read_only = exec::policy_for(&config, Some(Posture::ReadOnly));
+    assert_eq!(read_only.defaults.write, Effect::Deny);
+    assert_eq!(read_only.defaults.exec, Effect::Deny);
+    assert_eq!(read_only.defaults.read, Effect::Allow);
+
+    let workspace_posture = exec::policy_for(&config, Some(Posture::Workspace));
+    assert_eq!(workspace_posture.defaults.write, Effect::Allow);
+    assert_eq!(workspace_posture.defaults.net, Effect::Deny);
+
+    // A posture replaces the tier defaults and never the layers, so the
+    // harness's own secret denials survive a flag.
+    assert!(
+        read_only
+            .layers
+            .iter()
+            .any(|layer| layer.name == "builtin-secrets"),
+        "a --policy flag must not drop the built-in secret denials",
+    );
+    assert_eq!(read_only.check(Act::Read, ".env").effect, Effect::Deny);
+}
+
+#[test]
+fn f7_ask_writes_is_refused_and_names_the_two_that_work() {
+    let error = exec::posture_for(PolicyFlag::AskWrites)
+        .expect_err("ask-writes cannot be honoured without a terminal");
+
+    assert!(error.contains("ask-writes"), "{error}");
+    assert!(error.contains("workspace"), "{error}");
+    assert!(error.contains("read-only"), "{error}");
+    assert!(
+        error.contains("denied"),
+        "the refusal must say what would otherwise happen, not merely decline: {error}",
+    );
+
+    // The two that do work are not refused.
+    assert_eq!(
+        exec::posture_for(PolicyFlag::Workspace).expect("workspace works"),
+        Posture::Workspace,
+    );
+    assert_eq!(
+        exec::posture_for(PolicyFlag::ReadOnly).expect("read-only works"),
+        Posture::ReadOnly,
+    );
+}
+
+#[test]
+fn f7_the_flag_speaks_the_same_words_as_the_status_line() {
+    // The flag's value names are `Posture::short()`, reused rather than
+    // re-spelled. A flag that disagrees with the status line teaches the wrong
+    // vocabulary, and this is what stops the two drifting.
+    let flags: Vec<String> = PolicyFlag::value_variants()
+        .iter()
+        .map(|flag| {
+            flag.to_possible_value()
+                .expect("every variant is selectable")
+                .get_name()
+                .to_string()
+        })
+        .collect();
+    let postures: Vec<String> = Posture::ALL
+        .iter()
+        .map(|posture| posture.short().to_string())
+        .collect();
+    assert_eq!(flags, postures);
+}
+
+#[test]
+fn f11_full_access_announces_itself_and_nothing_else_does() {
+    let line = exec::widening(Some(ExecMode::FullAccess)).expect("full-access announces itself");
+    assert!(line.contains("full-access"), "{line}");
+    assert!(
+        line.contains("not confined"),
+        "the line must say what it costs, not merely name the flag: {line}",
+    );
+
+    assert_eq!(exec::widening(None), None);
+    assert_eq!(exec::widening(Some(ExecMode::ReadOnly)), None);
+    assert_eq!(exec::widening(Some(ExecMode::WorkspaceWrite)), None);
 }

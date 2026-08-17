@@ -20,12 +20,13 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use io_harness::{
-    Config, DenyAll, Flow, Ignore, Observer, Policy, Provider, RunEvent, RunOutcome, Session, Store,
-    TaskContract, TurnResult,
+    Config, DenyAll, ExecMode, Flow, Ignore, Observer, Policy, Provider, RunEvent, RunOutcome,
+    Session, Store, TaskContract, TurnResult,
 };
 
+use crate::cli::PolicyFlag;
 use crate::provider::{self, WithProvider};
-use crate::settings;
+use crate::settings::{self, Posture};
 
 /// The run ended of its own accord.
 pub const OK: u8 = 0;
@@ -163,6 +164,44 @@ impl<W: Write + Send> Observer for Ndjson<W> {
     }
 }
 
+/// The posture a `--policy` value names, or a reason it is refused.
+///
+/// **`ask-writes` cannot mean what it says without a person.** Its whole content
+/// is `write: Ask, exec: Ask`, and the only thing that answers an ask in an
+/// unattended run is a denial — so honouring it would silently turn *ask before
+/// writes* into *deny writes*. That is not hypothetical: it is what this product
+/// shipped through 0.1.0 and 0.1.1, recorded in `settings::Posture::detail`,
+/// and 0.2.0 is the release that fixed it. Refusing the value is the honest
+/// answer; a posture whose name lies is worse than one that is missing.
+pub fn posture_for(flag: PolicyFlag) -> Result<Posture, String> {
+    match flag {
+        PolicyFlag::Workspace => Ok(Posture::Workspace),
+        PolicyFlag::ReadOnly => Ok(Posture::ReadOnly),
+        PolicyFlag::AskWrites => Err(format!(
+            "`--policy {}` cannot be honoured without a terminal: nothing in a \
+             headless run can answer an approval, so every write would be denied \
+             rather than asked about. Use `--policy {}` or `--policy {}`.",
+            Posture::AskWrites.short(),
+            Posture::Workspace.short(),
+            Posture::ReadOnly.short(),
+        )),
+    }
+}
+
+/// The policy a run is given: the file's, or the posture the flag names.
+///
+/// A posture replaces only the tier defaults. The layers stay, so the harness's
+/// own `builtin-secrets` denials on `.env`, `*.pem` and the rest survive a flag
+/// exactly as they survive a configuration file — `Config::policy` stacks onto
+/// `Policy::default()` for the same reason.
+pub fn policy_for(config: &Config, posture: Option<Posture>) -> Policy {
+    let mut policy = config.policy().unwrap_or_default();
+    if let Some(posture) = posture {
+        policy.defaults = posture.defaults();
+    }
+    policy
+}
+
 /// What reaches stdout once the turn is done.
 ///
 /// `None` means nothing at all. It exists as a function rather than as an `if`
@@ -191,11 +230,12 @@ pub async fn turn<P: Provider>(
     config: &Config,
     policy: &Policy,
     goal: String,
+    sandbox: Option<ExecMode>,
     observer: &dyn Observer,
 ) -> Result<TurnResult, String> {
     session
         .turn_bounded_observed(
-            &contract(config, session, goal),
+            &contract(config, session, goal, sandbox),
             provider,
             store,
             policy,
@@ -223,13 +263,39 @@ pub async fn turn<P: Provider>(
 /// `TaskContract::workspace` deliberately starts from `SandboxLimits::none()` —
 /// so attaching one unconditionally would impose caps on a run whose operator
 /// never asked for any.
-fn contract(config: &Config, session: &Session, goal: String) -> TaskContract {
+pub fn contract(
+    config: &Config,
+    session: &Session,
+    goal: String,
+    sandbox: Option<ExecMode>,
+) -> TaskContract {
     let contract = TaskContract::workspace(goal, session.root().to_path_buf());
     let contract = config.apply_to(contract);
-    match config.sandbox() {
+    let contract = match config.sandbox() {
         Some(sandbox) => contract.with_contained_exec(sandbox),
         None => contract,
+    };
+    // The flag last, so it beats the file, and applied with `with_exec_mode`
+    // rather than by replacing the whole `SandboxConfig` — the limits the file
+    // set are the operator's and are not this flag's to discard.
+    match sandbox {
+        Some(mode) => contract.with_exec_mode(mode),
+        None => contract,
     }
+}
+
+/// The line `--sandbox full-access` prints, or `None` for every other value.
+///
+/// It exists because `Config::from_toml` refuses `full-access` at project scope
+/// while the typed builder carries no such guard — so this flag reaches a
+/// setting a checked-in configuration file is not allowed to express. That is
+/// correct, since a flag is a person and a file in a repository is not, but it
+/// is said out loud rather than reached in silence. On stderr, so `--json`
+/// stdout stays parseable.
+pub fn widening(sandbox: Option<ExecMode>) -> Option<&'static str> {
+    matches!(sandbox, Some(ExecMode::FullAccess)).then_some(
+        "--sandbox full-access: commands in this run are not confined to the workspace",
+    )
 }
 
 /// `io exec`, from the command line to an exit status.
@@ -239,6 +305,10 @@ pub async fn main(
     root: std::path::PathBuf,
     model_override: Option<String>,
 ) -> Result<u8, String> {
+    // Before a store is opened, a session is created or a provider is built, so
+    // a refused posture costs nothing and leaves no run behind.
+    let posture = args.policy.map(posture_for).transpose()?;
+
     let Some(spec) = config.provider_spec().cloned() else {
         return Err(
             "no provider is configured; run `io setup`, or set one up in io.toml".into(),
@@ -247,7 +317,7 @@ pub async fn main(
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, &root).map_err(|error| error.to_string())?;
-    let policy = config.policy().unwrap_or_default();
+    let policy = policy_for(&config, posture);
 
     provider::build(
         spec,
@@ -285,6 +355,10 @@ impl WithProvider for Headless {
         // The two observers are the whole difference between the modes. Built
         // here rather than inside `turn` so that a test can hand in a writer it
         // can read back.
+        if let Some(line) = widening(self.args.sandbox.map(crate::cli::Sandbox::mode)) {
+            eprintln!("io: {line}");
+        }
+
         let json = Ndjson::new(std::io::stdout());
         let observer: &dyn Observer = if self.args.json { &json } else { &Ignore };
 
@@ -295,6 +369,7 @@ impl WithProvider for Headless {
             &self.config,
             &self.policy,
             self.args.goal.clone(),
+            self.args.sandbox.map(crate::cli::Sandbox::mode),
             observer,
         )
         .await?;

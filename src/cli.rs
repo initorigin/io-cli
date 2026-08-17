@@ -51,4 +51,64 @@ pub struct Exec {
     /// into a JSON reader.
     #[arg(long)]
     pub json: bool,
+
+    /// Where a command this run executes may write. Defaults to `[sandbox]`.
+    ///
+    /// This is not the same axis as `--policy`: `--sandbox` is where the
+    /// sandbox lets a command write, `--policy` is what the agent is permitted
+    /// to attempt at all. They share the word `read-only` and mean different
+    /// things by it.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub sandbox: Option<Sandbox>,
+
+    /// The permission posture for this run. Defaults to `[policy]`.
+    ///
+    /// `ask-writes` is refused here: nothing in an unattended run can answer an
+    /// approval, so honouring it would turn *ask* into *deny* without saying so.
+    #[arg(long, value_enum, value_name = "POSTURE")]
+    pub policy: Option<PolicyFlag>,
+}
+
+/// `--sandbox`, in `io_harness::ExecMode`'s own kebab-case names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Sandbox {
+    /// Commands may read the workspace and write nothing.
+    #[value(name = "read-only")]
+    ReadOnly,
+    /// Commands may write inside the workspace.
+    #[value(name = "workspace-write")]
+    WorkspaceWrite,
+    /// No confinement. A widening a checked-in configuration file is not
+    /// allowed to express, which is why using it prints a line on stderr.
+    #[value(name = "full-access")]
+    FullAccess,
+}
+
+impl Sandbox {
+    pub fn mode(self) -> io_harness::ExecMode {
+        match self {
+            Self::ReadOnly => io_harness::ExecMode::ReadOnly,
+            Self::WorkspaceWrite => io_harness::ExecMode::WorkspaceWrite,
+            Self::FullAccess => io_harness::ExecMode::FullAccess,
+        }
+    }
+}
+
+/// `--policy`, in the words the status line and the wizard already use.
+///
+/// The value names are `settings::Posture::short()`, reused rather than
+/// re-spelled; `tests/exec.rs` asserts the two lists are the same, because a
+/// flag that disagrees with the status line is a flag that teaches the wrong
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PolicyFlag {
+    /// Read, write and run inside the workspace; no outbound network.
+    #[value(name = "workspace")]
+    Workspace,
+    /// Read freely; writes and commands ask first. Refused for a headless run.
+    #[value(name = "ask-writes")]
+    AskWrites,
+    /// Read only.
+    #[value(name = "read-only")]
+    ReadOnly,
 }
