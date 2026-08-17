@@ -182,7 +182,15 @@ fn table(rows: &[(&str, &str)], theme: &Theme) -> Vec<Line<'static>> {
         .map(|(name, what)| {
             Line::from(vec![
                 Span::styled(format!("  {name:width$}  "), theme.style(Tone::Normal)),
-                Span::styled((*what).to_string(), theme.style(Tone::Muted)),
+                // The em dash in a description is prose rather than a marker,
+                // but it is still a glyph that reaches a terminal, and a table
+                // is the one surface a reader consults precisely because they
+                // could not read something else. Substituted here rather than
+                // spelled per row, so a row added later cannot forget.
+                Span::styled(
+                    what.replace('\u{2014}', theme.glyphs.dash),
+                    theme.style(Tone::Muted),
+                ),
             ])
         })
         .collect()

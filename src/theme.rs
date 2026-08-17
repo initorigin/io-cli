@@ -26,6 +26,8 @@ use std::fmt;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::glyphs::Glyphs;
+
 /// Which way round the terminal is. Detected, because the same colour that reads
 /// as "muted" on black is invisible on white.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,10 +130,29 @@ impl fmt::Display for Tone {
     }
 }
 
-/// The twelve tokens.
+/// The twelve tokens — and the glyph set that travels with them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub name: &'static str,
+    /// Which marks this run draws with.
+    ///
+    /// **Not a thirteenth token, and not on the same axis.** Colour and drawable
+    /// characters are two independent questions with two independent answers:
+    /// `NO_COLOR` leaves the Unicode set alone and `--plain` leaves a coloured
+    /// theme fully coloured. [`Theme::resolve`] proves it structurally — it takes
+    /// the set as an argument and cannot derive one, so nothing about the colour
+    /// decision can reach the glyph decision or the other way round.
+    ///
+    /// It lives here because the theme is the value this product already threads
+    /// by hand into every surface that draws. A second parameter beside it would
+    /// have been the same value, chosen at the same moment, taking the same route
+    /// under another name — and would have had to be added to every function
+    /// signature and every call site in the crate to say so. What the argument on
+    /// `resolve` buys is that the set can never be *re-derived*: a theme is
+    /// re-resolved three times as a session runs, and each of those places is now
+    /// obliged to hand over the set that was chosen at startup rather than
+    /// quietly working out a new one.
+    pub glyphs: Glyphs,
     /// The background this theme was designed for. Never painted; see the module
     /// documentation.
     pub background: Background,
@@ -157,6 +178,10 @@ pub struct Theme {
 /// For a dark terminal. The default.
 pub const DARK: Theme = Theme {
     name: "dark",
+    // The Unicode set, so a theme named in a test or a constant is the one
+    // this product has always drawn. A run picks its own set and hands it to
+    // `resolve`.
+    glyphs: crate::glyphs::UNICODE,
     background: Background::Dark,
     // `Reset` rather than a colour: the user's own foreground is the right
     // foreground, and overriding it is how a theme ends up unreadable in somebody
@@ -183,6 +208,10 @@ pub const DARK: Theme = Theme {
 /// For a light terminal.
 pub const LIGHT: Theme = Theme {
     name: "light",
+    // The Unicode set, so a theme named in a test or a constant is the one
+    // this product has always drawn. A run picks its own set and hands it to
+    // `resolve`.
+    glyphs: crate::glyphs::UNICODE,
     background: Background::Light,
     foreground: Color::Reset,
     muted: Color::DarkGray,
@@ -212,6 +241,10 @@ pub const LIGHT: Theme = Theme {
 /// switch, so the theme takes the word that describes what it actually is.
 pub const MONO: Theme = Theme {
     name: "mono",
+    // The Unicode set, so a theme named in a test or a constant is the one
+    // this product has always drawn. A run picks its own set and hands it to
+    // `resolve`.
+    glyphs: crate::glyphs::UNICODE,
     background: Background::Dark,
     foreground: Color::Reset,
     muted: Color::Reset,
@@ -240,29 +273,54 @@ impl Theme {
         THEMES.iter().copied().find(|theme| theme.name == name)
     }
 
+    /// The same theme, drawn with a different set of marks.
+    ///
+    /// The one way the glyph set is ever attached, which is what makes "chosen
+    /// once" checkable: search for this name and every attachment is in front of
+    /// you.
+    pub const fn with_glyphs(mut self, glyphs: Glyphs) -> Self {
+        self.glyphs = glyphs;
+        self
+    }
+
     /// Choose a theme from what the environment says.
     ///
     /// `NO_COLOR` wins outright and is honoured on presence, whatever its value,
     /// which is what the convention specifies.
-    pub fn resolve(no_color: bool, background: Background, chosen: Option<&str>) -> Self {
-        if no_color {
-            return MONO;
-        }
-        if let Some(theme) = chosen.and_then(Self::by_name) {
-            return theme;
-        }
-        match background {
-            Background::Dark => DARK,
-            Background::Light => LIGHT,
-        }
+    ///
+    /// `glyphs` is **handed in and never derived**, and that is the whole of how
+    /// the two axes stay independent. Nothing in this function reads it and
+    /// nothing it reads can change it: `NO_COLOR` selects `MONO` and leaves the
+    /// marks alone, and an ASCII set arrives at a fully coloured theme. It is a
+    /// parameter rather than a default because a theme is re-resolved three times
+    /// as a session runs — `/theme`, the wizard's seed, the wizard's live preview
+    /// — and a default there would silently discard a `--plain` at each one.
+    pub fn resolve(
+        no_color: bool,
+        background: Background,
+        chosen: Option<&str>,
+        glyphs: Glyphs,
+    ) -> Self {
+        let base = if no_color {
+            MONO
+        } else if let Some(theme) = chosen.and_then(Self::by_name) {
+            theme
+        } else {
+            match background {
+                Background::Dark => DARK,
+                Background::Light => LIGHT,
+            }
+        };
+        base.with_glyphs(glyphs)
     }
 
     /// The same, reading the environment.
-    pub fn from_env(chosen: Option<&str>) -> Self {
+    pub fn from_env(chosen: Option<&str>, glyphs: Glyphs) -> Self {
         Self::resolve(
             std::env::var_os("NO_COLOR").is_some(),
             Background::detect(),
             chosen,
+            glyphs,
         )
     }
 

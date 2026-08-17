@@ -146,6 +146,22 @@ impl App {
         self.diff_style = style;
     }
 
+    /// Say whether this session runs in plain mode.
+    ///
+    /// Decided once, by [`crate::settings::plain`], and handed down — never
+    /// re-derived here. There is one boolean and it lives on the status line,
+    /// which is the surface the mode is about; this reads it back off there
+    /// rather than keeping a second copy that could disagree with the one the
+    /// indicator consults.
+    pub fn set_plain(&mut self, plain: bool) {
+        self.status.plain = plain;
+    }
+
+    /// Whether this session runs in plain mode.
+    pub fn plain(&self) -> bool {
+        self.status.plain
+    }
+
     /// A run stopped to ask. The overlay opens and takes the keyboard.
     ///
     /// Nothing is committed here. A question in the scrollback is one that can be
@@ -192,7 +208,12 @@ impl App {
         self.set_posture(Some(next));
         self.say(
             Tone::Muted,
-            format!("policy:{} — {}", next.short(), next.detail()),
+            format!(
+                "policy:{} {} {}",
+                next.short(),
+                self.theme.glyphs.dash,
+                next.detail()
+            ),
         );
         Command::None
     }
@@ -221,7 +242,11 @@ impl App {
             } else {
                 Tone::Success
             },
-            format!("{act} {target} — {}", answer.spoken()),
+            format!(
+                "{act} {target} {} {}",
+                self.theme.glyphs.dash,
+                answer.spoken()
+            ),
         );
     }
 
@@ -241,6 +266,7 @@ impl App {
         self.mode = Mode::Running;
         self.status.working = true;
         self.quits = 0;
+        self.announce();
     }
 
     /// A turn ended, however it ended — finished, cancelled or failed.
@@ -257,6 +283,51 @@ impl App {
         self.approval = None;
         let tail = self.events.flush();
         self.pending.extend(tail);
+        // After the tail, so the line saying the session is idle again is the last
+        // thing in the scrollback rather than a claim made over content still
+        // arriving underneath it.
+        self.announce();
+    }
+
+    /// In plain mode, commit the state word the status line has just changed to.
+    ///
+    /// **This is the one thing plain mode puts in the scrollback that the default
+    /// does not, and it is deliberately the only one.** Every other state a run
+    /// produces already commits: `Started`, `Step`, `Refused`,
+    /// `ApprovalRequested`, `Finished` and the forty-odd kinds that fall through
+    /// [`crate::events::Events::event`] each write at least one line, and the
+    /// status fields fed from them — the token total, the context share, the
+    /// containment backend — are all restatements of an event that has already
+    /// been narrated. Committing those again would be a second rendering of the
+    /// same facts, which is what "plain mode is a second consumer of the event
+    /// stream, not a second renderer" rules out.
+    ///
+    /// What is left over is exactly this: whether a turn is running. It is
+    /// io-cli's own state rather than io-harness's — [`App::started`] is called
+    /// before the run exists and [`App::finished`] after it has returned, so the
+    /// pair brackets the turn even when the harness never emitted a `Started` at
+    /// all, which is what a provider that fails on its first call produces. In
+    /// the default interface that state is carried by a word that only ever
+    /// repaints and a spinner that only ever moves, so it is the one state change
+    /// a reader who cannot see the viewport cannot follow.
+    ///
+    /// The words are the status line's own, verbatim, so there is one vocabulary
+    /// for the state and not two spellings of it.
+    ///
+    /// The session's age is deliberately not narrated. It changes every second
+    /// with nothing having happened, which makes it a clock rather than a state
+    /// change — and a transcript that says the time once a second is one nobody
+    /// can read, in a screen reader least of all.
+    fn announce(&mut self) {
+        if !self.status.plain {
+            return;
+        }
+        let state = if self.status.working {
+            "working"
+        } else {
+            "ready"
+        };
+        self.say(Tone::Muted, state);
     }
 
     /// The clock moved. Returns whether the viewport has to be redrawn.
@@ -392,7 +463,11 @@ impl App {
                 if self.mode == Mode::Running {
                     self.say(
                         Tone::Muted,
-                        "not while a turn is running — a rewind moves the head this turn is writing to",
+                        format!(
+                            "not while a turn is running {} a rewind moves the head this \
+                             turn is writing to",
+                            self.theme.glyphs.dash
+                        ),
                     );
                     return Command::None;
                 }

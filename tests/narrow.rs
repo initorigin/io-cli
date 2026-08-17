@@ -292,7 +292,7 @@ fn n5_the_resume_picker_at_eighty_columns_keeps_the_end_of_the_path() {
         prompt: "make the retry loop back off instead of hammering the endpoint".into(),
         at: "2026-08-17 02:31".into(),
     }];
-    let rows = io_cli::sessions::rows(&sessions, WIDTH);
+    let rows = io_cli::sessions::rows(&sessions, WIDTH, &io_cli::theme::DARK.glyphs);
     let mut picker = io_cli::picker::Picker::new("Resume which session?", rows);
 
     screen
@@ -331,7 +331,7 @@ fn n5_the_fork_picker_at_eighty_columns_keeps_the_turn_number() {
     let long = "explain in as much detail as you possibly can, at length, without \
                 stopping, exactly why the retry loop hammers the endpoint";
     let turns = vec![turn(1, 11, "first, read the client"), turn(2, 12, long)];
-    let rows = io_cli::sessions::turn_rows(&turns, WIDTH);
+    let rows = io_cli::sessions::turn_rows(&turns, WIDTH, &io_cli::theme::DARK.glyphs);
     let mut picker = io_cli::picker::Picker::new("Continue from which turn?", rows);
 
     screen
@@ -389,7 +389,7 @@ fn n5_the_armed_rewind_line_keeps_both_halves_at_eighty_columns() {
                  every single failure"
             .into(),
     };
-    let line = io_cli::rewind::armed_line(&about);
+    let line = io_cli::rewind::armed_line(&about, &io_cli::theme::DARK.glyphs);
     assert!(
         line.chars().count() > WIDTH as usize,
         "this test is only meaningful while the line is wider than the terminal",

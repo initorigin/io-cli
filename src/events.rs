@@ -27,7 +27,6 @@ use std::time::Duration;
 use io_harness::{EventKind, RunEvent, MCP_TOOL_PREFIX, NAMESPACE};
 use ratatui::text::{Line, Span};
 
-use crate::status::SEPARATOR;
 use crate::theme::{Theme, Tone};
 
 /// A tool call that has been announced and not yet closed.
@@ -102,12 +101,14 @@ impl Events {
         let Some(call) = self.open.last() else {
             return self.live.clone();
         };
-        let mut row = format!("⋅ {}", call.name);
+        let glyphs = &self.theme.glyphs;
+        let mut row = format!("{} {}", glyphs.bullet, call.name);
         if !call.target.is_empty() {
             row.push(' ');
             row.push_str(&call.target);
         }
-        row.push_str(" …");
+        row.push(' ');
+        row.push_str(glyphs.ellipsis);
         if self.open.len() > 1 {
             row.push_str(&format!(" (+{} more)", self.open.len() - 1));
         }
@@ -170,6 +171,8 @@ impl Events {
     /// hand and assert on it without anything being timed.
     pub fn event(&mut self, event: &RunEvent, at: Duration) -> Vec<Line<'static>> {
         let theme = self.theme;
+        let separator = theme.glyphs.separator;
+        let dash = theme.glyphs.dash;
         match &event.kind {
             EventKind::Token { text } => {
                 self.live.push_str(text);
@@ -189,7 +192,7 @@ impl Events {
             }
             EventKind::Started { goal, provider } => {
                 let mut lines = vec![Line::from(vec![
-                    Span::styled("› ", theme.style(Tone::Accent)),
+                    Span::styled(theme.glyphs.marker, theme.style(Tone::Accent)),
                     Span::styled(goal.clone(), theme.style(Tone::Normal)),
                 ])];
                 lines.push(Line::from(Span::styled(
@@ -259,7 +262,7 @@ impl Events {
                 // the rest of the interface already follows.
                 let mut spans = vec![Span::styled(decision.clone(), theme.style(Tone::Normal))];
                 if !tool_call.is_empty() {
-                    spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                    spans.push(Span::styled(separator, theme.style(Tone::Muted)));
                     spans.push(Span::styled(
                         tool_names(tool_call),
                         theme.style(Tone::Accent),
@@ -268,7 +271,7 @@ impl Events {
                 // Always said, in both directions. A result that appears only
                 // sometimes is a column a reader cannot skim down, and `changed`
                 // is the one thing this event reports about what came back.
-                spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
                 spans.push(Span::styled(
                     if *changed {
                         "changed files"
@@ -278,7 +281,7 @@ impl Events {
                     theme.style(if *changed { Tone::Success } else { Tone::Muted }),
                 ));
                 spans.push(Span::styled(
-                    format!("{SEPARATOR}{tokens} tok{SEPARATOR}step {}", event.step),
+                    format!("{separator}{tokens} tok{separator}step {}", event.step),
                     theme.style(Tone::Muted),
                 ));
                 lines.push(Line::from(spans));
@@ -330,15 +333,15 @@ impl Events {
                 let mut text = format!("{act} {target}");
                 match (rule, layer) {
                     (Some(rule), Some(layer)) => {
-                        text.push_str(&format!("{SEPARATOR}rule {rule}{SEPARATOR}layer {layer}"));
+                        text.push_str(&format!("{separator}rule {rule}{separator}layer {layer}"));
                     }
-                    (Some(rule), None) => text.push_str(&format!("{SEPARATOR}rule {rule}")),
+                    (Some(rule), None) => text.push_str(&format!("{separator}rule {rule}")),
                     // Said, not left blank. In io-harness a missing rule means the
                     // policy's own default for that act decided — the *least*
                     // vouched-for kind of action rather than the most — so silence
                     // here would read as the opposite of what happened.
                     (None, _) => text.push_str(&format!(
-                        "{SEPARATOR}no rule named it: the tier default decided"
+                        "{separator}no rule named it: the tier default decided"
                     )),
                 }
                 let mut lines = self.flush_text();
@@ -353,8 +356,10 @@ impl Events {
                 // stopped, not the question itself — the question must never be
                 // committed, which is what F1 asserts.
                 let mut lines = self.flush_text();
-                lines
-                    .push(theme.notice(Tone::Warning, format!("{act} {target} — waiting for you")));
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!("{act} {target} {dash} waiting for you"),
+                ));
                 lines
             }
             EventKind::ApprovalDecided {
@@ -372,7 +377,7 @@ impl Events {
                     } else {
                         Tone::Muted
                     },
-                    format!("{act} {target}{SEPARATOR}{decision}"),
+                    format!("{act} {target}{separator}{decision}"),
                 ));
                 lines
             }
@@ -383,7 +388,10 @@ impl Events {
             } => {
                 let mut lines = self.flush_text();
                 let tone = outcome_tone(outcome);
-                lines.push(theme.notice(tone, format!("{outcome} · {steps} steps · {tokens} tok")));
+                lines.push(theme.notice(
+                    tone,
+                    format!("{outcome}{separator}{steps} steps{separator}{tokens} tok"),
+                ));
                 if let Some(help) = outcome_help(outcome) {
                     lines.push(Line::from(Span::styled(
                         format!("  {help}"),
@@ -424,7 +432,7 @@ impl Events {
                 // vanished from the transcript because something read a field off
                 // it is exactly the silence this module refuses.
                 vec![Line::from(vec![
-                    Span::styled("  · ", theme.style(Tone::Muted)),
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
                     Span::styled(kind_name(&event.kind), theme.style(Tone::Muted)),
                 ])]
             }
@@ -434,12 +442,23 @@ impl Events {
             // silent.
             other => {
                 vec![Line::from(vec![
-                    Span::styled("  · ", theme.style(Tone::Muted)),
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
                     Span::styled(kind_name(other), theme.style(Tone::Muted)),
                 ])]
             }
         }
     }
+}
+
+/// The muted leader an unstyled event line starts with: two spaces of indent,
+/// the separator's own mark, then a space.
+///
+/// The mark is trimmed out of the separator rather than written again, so there
+/// is one of it in the product and not two. An event line and the status line
+/// under it are meant to read as one surface, and two spellings of the same mark
+/// is how that stops being true.
+fn leader(separator: &str) -> String {
+    format!("  {} ", separator.trim())
 }
 
 /// One committed tool cell: the tool, its target, what came back, how long it
@@ -452,8 +471,12 @@ impl Events {
 /// `at` is the session age this cell is being closed at, or `None` when the cell
 /// is being closed without anything having reported on it.
 fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -> Line<'static> {
+    let separator = theme.glyphs.separator;
     let mut spans = vec![
-        Span::styled("  ⋅ ", theme.style(Tone::Muted)),
+        Span::styled(
+            format!("  {} ", theme.glyphs.bullet),
+            theme.style(Tone::Muted),
+        ),
         Span::styled(call.name.clone(), theme.style(Tone::Accent)),
     ];
     // `!= call.name` because io-harness falls the target back to the tool's own
@@ -466,7 +489,7 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
             theme.style(Tone::Muted),
         ));
     }
-    spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+    spans.push(Span::styled(separator, theme.style(Tone::Muted)));
     spans.push(Span::styled(result.to_string(), theme.style(Tone::Normal)));
 
     // Two different kinds of number, told apart on the line itself. A measured
@@ -481,7 +504,7 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
     let observed = at.map(|at| format!("~{}", format_millis(at.saturating_sub(call.opened_at))));
     if let Some(duration) = call.measured.map(format_millis).or(observed) {
         spans.push(Span::styled(
-            format!("{SEPARATOR}{duration}"),
+            format!("{separator}{duration}"),
             theme.style(Tone::Muted),
         ));
     }

@@ -28,7 +28,6 @@ use io_harness::{Transcript, TranscriptTurn};
 use ratatui::text::{Line, Span};
 
 use crate::events::outcome_tone;
-use crate::status::SEPARATOR;
 use crate::theme::{Theme, Tone};
 
 /// The words a turn the model can no longer see is labelled with.
@@ -47,9 +46,15 @@ pub const BRANCHED_AWAY: &str = "left behind by a branch";
 /// turn count, which is what tells a reader that the passage they just scrolled
 /// past was the whole conversation rather than as much of it as fitted.
 pub fn lines(transcript: &Transcript, theme: &Theme) -> Vec<Line<'static>> {
+    let separator = theme.glyphs.separator;
+    // Three of whatever the set draws a rule with. Spelled out rather than
+    // repeated through an iterator because three is the whole of the design: the
+    // edge has to read as a rule and not as a horizontal scrollbar, and a run
+    // long enough to wrap on a narrow terminal would be a row of its own.
+    let rule = theme.glyphs.rule;
     let mut out = vec![Line::from(Span::styled(
         format!(
-            "─── transcript begins{SEPARATOR}session {}{SEPARATOR}{}",
+            "{rule}{rule}{rule} transcript begins{separator}session {}{separator}{}",
             transcript.session_id,
             transcript.root.display()
         ),
@@ -72,11 +77,11 @@ pub fn lines(transcript: &Transcript, theme: &Theme) -> Vec<Line<'static>> {
     let count = transcript.turns.len();
     let branched = transcript.turns.iter().filter(|turn| !turn.on_path).count();
     let mut closing = format!(
-        "─── transcript ends{SEPARATOR}{count} turn{}",
+        "{rule}{rule}{rule} transcript ends{separator}{count} turn{}",
         if count == 1 { "" } else { "s" }
     );
     if branched > 0 {
-        closing.push_str(&format!("{SEPARATOR}{branched} {BRANCHED_AWAY}"));
+        closing.push_str(&format!("{separator}{branched} {BRANCHED_AWAY}"));
     }
     out.push(Line::from(Span::styled(closing, theme.style(Tone::Accent))));
     out
@@ -90,6 +95,7 @@ pub fn lines(transcript: &Transcript, theme: &Theme) -> Vec<Line<'static>> {
 /// unreadable, and the id is only ever wanted once the line has already been
 /// found.
 fn turn_lines(turn: &TranscriptTurn, theme: &Theme) -> Vec<Line<'static>> {
+    let separator = theme.glyphs.separator;
     // An empty prompt is still one row: `str::lines` yields nothing for an empty
     // string, and a turn with no row at all would lose its id and its branch
     // label along with it.
@@ -100,7 +106,11 @@ fn turn_lines(turn: &TranscriptTurn, theme: &Theme) -> Vec<Line<'static>> {
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (index, row) in rows.iter().enumerate() {
-        let marker = if index == 0 { "› " } else { "  " };
+        let marker = if index == 0 {
+            theme.glyphs.marker
+        } else {
+            "  "
+        };
         lines.push(Line::from(vec![
             Span::styled(marker, theme.style(Tone::Accent)),
             Span::styled((*row).to_string(), theme.style(Tone::Normal)),
@@ -112,12 +122,12 @@ fn turn_lines(turn: &TranscriptTurn, theme: &Theme) -> Vec<Line<'static>> {
     let tail = lines.last_mut().expect("a prompt is at least one row");
     if !turn.on_path {
         tail.spans
-            .push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+            .push(Span::styled(separator, theme.style(Tone::Muted)));
         tail.spans
             .push(Span::styled(BRANCHED_AWAY, theme.style(Tone::Warning)));
     }
     tail.spans.push(Span::styled(
-        format!("{SEPARATOR}turn {}", turn.turn_id),
+        format!("{separator}turn {}", turn.turn_id),
         theme.style(Tone::Muted),
     ));
 
@@ -147,7 +157,7 @@ fn turn_lines(turn: &TranscriptTurn, theme: &Theme) -> Vec<Line<'static>> {
         // remembering to put it there.
         lines.push(theme.notice(
             outcome_tone(outcome),
-            format!("{outcome}{SEPARATOR}run {}", turn.run_id),
+            format!("{outcome}{separator}run {}", turn.run_id),
         ));
     }
 

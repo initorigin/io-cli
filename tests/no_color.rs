@@ -8,6 +8,7 @@
 mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use io_cli::glyphs::UNICODE;
 use io_cli::settings::{self, CliSettings};
 use io_cli::splash;
 use io_cli::theme::{Background, Theme, Tone, DARK, LIGHT, MONO, THEMES};
@@ -91,7 +92,7 @@ fn n6_the_word_survives_no_color() {
 
 #[test]
 fn n6_a_scripted_session_runs_with_no_color_and_writes_no_colour() {
-    let theme = Theme::resolve(true, Background::Dark, Some("dark"));
+    let theme = Theme::resolve(true, Background::Dark, Some("dark"), UNICODE);
     assert_eq!(theme.name, "mono", "NO_COLOR must win over a chosen theme");
 
     let (mut screen, recorder) = support::screen(100, 30);
@@ -139,7 +140,7 @@ fn f3_no_color_survives_the_first_run() {
     std::env::remove_var("IO_CONFIG");
 
     // What the binary does before the wizard is reached, verbatim.
-    let theme = Theme::from_env(None);
+    let theme = Theme::from_env(None, UNICODE);
     assert_eq!(theme.name, "mono", "no file, and the variable is set");
 
     let (mut screen, recorder) = support::screen_of(100, 40, 20);
@@ -232,7 +233,7 @@ fn f3_no_color_survives_the_first_run() {
 
     // The session the driver starts next, on the theme the driver carries into
     // it — this expression is `src/main.rs`'s, not a paraphrase of it.
-    let session_theme = Theme::from_env(Some(wizard.theme().name));
+    let session_theme = Theme::from_env(Some(wizard.theme().name), wizard.theme().glyphs);
     assert_eq!(
         session_theme.name, "mono",
         "the wizard's answer must go back through resolution, not around it",

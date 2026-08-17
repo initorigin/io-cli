@@ -204,12 +204,12 @@ impl Wizard {
             // selectable themes and `MONO` is not among them — so it would open
             // the picker on the wrong row and, if the file were written from it,
             // record a preference no later launch could ever resolve.
-            theme_name: Theme::resolve(false, Background::detect(), Some(theme.name))
+            theme_name: Theme::resolve(false, Background::detect(), Some(theme.name), theme.glyphs)
                 .name
                 .to_string(),
             posture: Posture::Workspace,
             picker: None,
-            input: masked(),
+            input: masked(theme.glyphs.mask),
             rejection: None,
             env_key_present: false,
             no_color: !theme.coloured,
@@ -332,7 +332,7 @@ impl Wizard {
     /// confirmation screen, which this never reaches.
     pub fn rejected(&mut self, message: impl Into<String>) -> Progress {
         self.rejection = Some(message.into());
-        self.input = masked();
+        self.input = masked(self.theme.glyphs.mask);
         self.step = Step::Credential;
         Progress::Idle
     }
@@ -403,7 +403,7 @@ impl Wizard {
                     .map(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
                     .unwrap_or(false);
                 self.picker = None;
-                self.input = masked();
+                self.input = masked(self.theme.glyphs.mask);
                 self.step = if kind == Kind::Compatible {
                     self.input = plain();
                     Step::BaseUrl
@@ -427,7 +427,7 @@ impl Wizard {
                 return Progress::Idle;
             }
             self.base_url = Some(typed);
-            self.input = masked();
+            self.input = masked(self.theme.glyphs.mask);
             self.step = Step::Credential;
             return Progress::Idle;
         }
@@ -454,7 +454,7 @@ impl Wizard {
                 } else {
                     self.api_key = Some(typed);
                 }
-                self.input = masked();
+                self.input = masked(self.theme.glyphs.mask);
                 self.step = Step::Verifying;
                 self.spec().map(Progress::Verify).unwrap_or(Progress::Idle)
             }
@@ -532,7 +532,17 @@ impl Wizard {
             // while the name above stays the one the user picked. Assigning here
             // is how a user with the variable set used to choose a theme at this
             // screen and get a coloured session anyway.
-            self.theme = Theme::resolve(self.no_color, theme.background, Some(theme.name));
+            // The glyph set is handed straight back rather than resolved again.
+            // It was chosen once at startup from the locale, the configuration
+            // file and `--plain`, and none of those three is a thing the theme
+            // picker can have changed — a second resolution here would quietly
+            // discard a `--plain` the moment somebody arrowed down the list.
+            self.theme = Theme::resolve(
+                self.no_color,
+                theme.background,
+                Some(theme.name),
+                self.theme.glyphs,
+            );
         }
         match outcome {
             Outcome::Chosen(_) => {
@@ -706,7 +716,10 @@ impl Wizard {
                 frame,
                 area,
                 vec![Line::from(Span::styled(
-                    "Checking the key against the provider…",
+                    format!(
+                        "Checking the key against the provider{}",
+                        theme.glyphs.ellipsis
+                    ),
                     theme.style(Tone::Muted),
                 ))],
             ),
@@ -818,25 +831,34 @@ impl Wizard {
 /// judging before committing to a theme, and they are exactly the two that look
 /// alarming when nothing says they are a preview.
 pub fn sample(theme: &Theme) -> Vec<Line<'static>> {
+    // Drawn from the same set the session it is previewing will use, so the
+    // sample is a sample of this terminal and not of an idealised one. A preview
+    // showing marks the session that follows cannot draw is worse than no
+    // preview at all.
+    let glyphs = &theme.glyphs;
+    let (separator, dash) = (glyphs.separator, glyphs.dash);
     vec![
         Line::from(Span::styled(
-            "preview — not your session:".to_string(),
+            format!("preview {dash} not your session:"),
             theme.style(Tone::Muted),
         )),
         Line::from(vec![
-            Span::styled("› ", theme.style(Tone::Accent)),
+            Span::styled(glyphs.marker, theme.style(Tone::Accent)),
             Span::styled("make the failing test pass", theme.style(Tone::Normal)),
         ]),
         Line::from(vec![
-            Span::styled("  ⋅ ", theme.style(Tone::Muted)),
+            Span::styled(format!("  {} ", glyphs.bullet), theme.style(Tone::Muted)),
             Span::styled("exec", theme.style(Tone::Accent)),
             Span::styled(" cargo test", theme.style(Tone::Muted)),
         ]),
         theme.notice(
             Tone::Refused,
-            "write /etc/hosts — rule fs.deny, layer workspace",
+            format!("write /etc/hosts {dash} rule fs.deny, layer workspace"),
         ),
-        theme.notice(Tone::Success, "success · 4 steps · 8,912 tok"),
+        theme.notice(
+            Tone::Success,
+            format!("success{separator}4 steps{separator}8,912 tok"),
+        ),
     ]
 }
 
@@ -848,9 +870,14 @@ fn paragraph(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
 }
 
 /// A one-line field whose characters are never shown.
-fn masked() -> TextArea<'static> {
+///
+/// The mask comes off the chosen glyph set rather than being written here: a
+/// terminal that cannot draw a bullet shows a row of replacement boxes, and a
+/// credential field whose masking is itself unreadable is the one field where a
+/// reader cannot tell a rendering fault from having typed the wrong thing.
+fn masked(mask: char) -> TextArea<'static> {
     let mut area = plain();
-    area.set_mask_char('•');
+    area.set_mask_char(mask);
     area
 }
 

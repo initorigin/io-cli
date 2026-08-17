@@ -19,11 +19,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::glyphs::Glyphs;
 use crate::theme::{Theme, Tone};
 
-/// The marker in front of the selected row. Two cells, and a word — `>` is also
-/// what the composer uses, so the two never appear at once.
-const MARKER: &str = "› ";
+/// What an unselected row is drawn with: exactly the width of
+/// [`crate::glyphs::Glyphs::marker`], in either set, so the labels line up in a
+/// column whatever the terminal can draw.
+///
+/// The marker itself comes off the chosen set. Under the ASCII set it is `> `,
+/// which is also [`crate::composer::PROMPT`] — the same collision the Unicode
+/// marker's note has always described, and safe for the same reason: this widget
+/// is drawn *instead of* the composer, so the two never appear at once.
 const UNMARKED: &str = "  ";
 
 /// One choice.
@@ -176,7 +182,11 @@ impl Picker {
             .take(visible.max(1))
         {
             let chosen = index == self.selected;
-            let marker = if chosen { MARKER } else { UNMARKED };
+            let marker = if chosen {
+                theme.glyphs.marker
+            } else {
+                UNMARKED
+            };
             let mut spans = vec![
                 Span::styled(marker, theme.style(Tone::Accent)),
                 Span::styled(
@@ -192,7 +202,10 @@ impl Picker {
                 if let Some(room) = (area.width as usize).checked_sub(used) {
                     if room > 1 {
                         spans.push(Span::styled("  ", theme.style(Tone::Muted)));
-                        spans.push(Span::styled(fit(detail, room), theme.style(Tone::Muted)));
+                        spans.push(Span::styled(
+                            fit(detail, room, &theme.glyphs),
+                            theme.style(Tone::Muted),
+                        ));
                     }
                 }
             }
@@ -222,7 +235,8 @@ impl Picker {
         let row = (self.selected.saturating_sub(self.offset) + 1)
             .min(area.height.saturating_sub(1) as usize) as u16;
         frame.set_cursor_position(Position {
-            x: (area.x + MARKER.chars().count() as u16).min(area.right().saturating_sub(1)),
+            x: (area.x + theme.glyphs.marker.chars().count() as u16)
+                .min(area.right().saturating_sub(1)),
             y: area.y + row,
         });
     }
@@ -243,16 +257,32 @@ impl Picker {
 ///
 /// Public because the approval overlay fits a path and a line of file content
 /// with it. One fitting rule in the product, so a shortened row and a shortened
-/// target are shortened the same way and by the same character.
-pub fn fit(text: &str, room: usize) -> String {
+/// target are shortened the same way and by the same mark.
+///
+/// **The mark's own width is measured, never assumed, and this is the whole of
+/// why.** Until 0.6.0 the ellipsis was one character and this function reserved
+/// exactly one for it. The ASCII set spells it `...`, which is three — so a
+/// fitter that kept the old reservation would have returned a string two cells
+/// wider than the room it was given, on every shortened row of every surface at
+/// once. ratatui clips a viewport row silently, so the symptom would have been
+/// load-bearing text disappearing off the right-hand edge with nothing on screen
+/// to say so, which is the same failure this product has now shipped three times.
+/// The result of this function is `room` characters or fewer, always.
+///
+/// At a room too small for the mark itself the mark is what gets cut, and the
+/// text does not appear at all. A fragment of a word in two cells is not
+/// information; two dots at least say that something was there.
+pub fn fit(text: &str, room: usize, glyphs: &Glyphs) -> String {
     if text.chars().count() <= room {
         return text.to_string();
     }
-    // Counted in characters, and the ellipsis is one character rather than three
-    // dots, so a shortened row and a full one are the same width.
-    let keep = room.saturating_sub(1);
-    let mut out: String = text.chars().take(keep).collect();
-    out.push('…');
+    let mark = glyphs.ellipsis;
+    let width = mark.chars().count();
+    if room <= width {
+        return mark.chars().take(room).collect();
+    }
+    let mut out: String = text.chars().take(room - width).collect();
+    out.push_str(mark);
     out
 }
 
@@ -262,13 +292,20 @@ pub fn fit(text: &str, room: usize) -> String {
 /// shares its first several segments, so shortening a path from the right keeps
 /// the part that is the same on every row and drops the part that identifies it.
 /// `/Users/someone/code/io-cli` matters; `/Users/someone/co…` does not.
-pub fn fit_left(text: &str, room: usize) -> String {
+///
+/// Bounded by `room` on the same terms as [`fit`], and for the same reason.
+pub fn fit_left(text: &str, room: usize, glyphs: &Glyphs) -> String {
     let count = text.chars().count();
     if count <= room {
         return text.to_string();
     }
-    let keep = room.saturating_sub(1);
-    let mut out = String::from("…");
+    let mark = glyphs.ellipsis;
+    let width = mark.chars().count();
+    if room <= width {
+        return mark.chars().take(room).collect();
+    }
+    let keep = room - width;
+    let mut out = String::from(mark);
     out.extend(text.chars().skip(count - keep));
     out
 }

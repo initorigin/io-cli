@@ -906,11 +906,14 @@ async fn live_f13_work_survives_the_session() {
 
     // ---- Esc Esc: the undo puts the workspace back ---------------------------
     let about = io_cli::rewind::preview(&session, &store).expect("a turn to undo");
-    println!("armed: {}", io_cli::rewind::armed_line(&about));
+    println!(
+        "armed: {}",
+        io_cli::rewind::armed_line(&about, &DARK.glyphs)
+    );
     let undone = io_cli::rewind::last_turn(&mut session, &store)
         .expect("the rewind runs")
         .expect("there was a turn to undo");
-    for (tone, line) in io_cli::rewind::undone_lines(&undone) {
+    for (tone, line) in io_cli::rewind::undone_lines(&undone, &DARK.glyphs) {
         println!("  [{tone:?}] {line}");
     }
     assert_eq!(
@@ -962,7 +965,7 @@ async fn live_f13_work_survives_the_session() {
     let alpha = path[0].id;
     // The picker's own rows, so the live arm exercises what an operator reads and
     // not only the call underneath it.
-    for row in io_cli::sessions::turn_rows(&path, 80) {
+    for row in io_cli::sessions::turn_rows(&path, 80, &DARK.glyphs) {
         println!("  fork row: {} — {:?}", row.label, row.detail);
     }
 
@@ -1028,7 +1031,7 @@ async fn live_f13_work_survives_the_session() {
 
     let (found, cut) = io_cli::sessions::recent(&store).expect("the session list");
     println!("resume list ({} rows, cut={cut}):", found.len());
-    for row in io_cli::sessions::rows(&found, 80) {
+    for row in io_cli::sessions::rows(&found, 80, &DARK.glyphs) {
         println!("  {} — {:?}", row.label, row.detail);
     }
     let listed = found
