@@ -94,6 +94,7 @@ writes no key to disk at all.
 | `Ctrl+D` | exit, on an empty prompt |
 | `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
+| `Esc Esc` | at an empty prompt, undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
@@ -110,7 +111,9 @@ writes no key to disk at all.
 | `/quit` | leave |
 | `/setup` | run the first-run wizard again |
 | `/theme` | change the theme for this session |
-| `/model` | change the model for this session |
+| `/model` | change the model the next turn is sent to |
+| `/resume` | reopen an earlier session where it stopped |
+| `/fork` | continue from an earlier turn of this conversation |
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |

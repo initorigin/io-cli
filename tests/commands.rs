@@ -1,4 +1,4 @@
-//! The five slash commands and the keybinding table.
+//! The slash commands and the keybinding table.
 
 use io_cli::commands::{self, Action, COMMANDS, KEYS};
 use io_cli::theme::DARK;
@@ -27,6 +27,8 @@ fn the_commands_are_the_commands() {
             "/setup",
             "/theme",
             "/model",
+            "/resume",
+            "/fork",
             "/expand",
             "/copy",
             "/copy diff",
@@ -112,6 +114,10 @@ fn the_key_table_covers_every_key_this_release_binds() {
         "Ctrl+D",
         "Ctrl+L",
         "Esc",
+        // The one key in this product that changes the operator's files on
+        // io-cli's own initiative rather than the agent's, which is why it is two
+        // presses and why it is documented as two.
+        "Esc Esc",
         "Shift+Tab",
         "Ctrl+T",
         "y / a / n",
@@ -120,7 +126,7 @@ fn the_key_table_covers_every_key_this_release_binds() {
     }
     assert_eq!(
         documented.len(),
-        10,
+        11,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );
