@@ -7,7 +7,7 @@ tasks:
       can exist until an approval can reach the interface at all. It is also the one place the
       product can deadlock: the approver runs on the agent's own task, so the release is not correct
       unless a dropped answer denies rather than blocks."
-    status: todo
+    status: done
     depends_on: []
     acceptance_criteria:
       - >
@@ -21,7 +21,31 @@ tasks:
       - src/approval.rs
       - src/lib.rs
       - tests/approval.rs
-    evidence: []
+    evidence:
+      - "`Asker` is the approver and `Ask` is the question, with the way back inside it. Answering
+        consumes the `Ask`, so there is no way to answer twice and no way to hold one open by
+        accident — dropping it *is* the denial, which makes F4's behaviour a property of the type
+        rather than a rule somebody has to remember."
+      - "`cargo test --test approval` — 4 passed, 0 failed. Two of them are the denial: one drops the
+        whole receiver (the interface is gone), one takes the question and drops it (the interface
+        went away mid-question). No clock, no timeout, no sleep anywhere in the file."
+      - "Sabotage A2 — the unanswered path approves instead of denying: 2 failed, and they are
+        exactly the two denial tests. The other two passed, so the arm failed only its own criterion."
+      - "Sabotage A3, the arm the contract names — block on the receiver (`std::future::pending()`
+        on a closed channel): the suite never finished and had to be killed by a watchdog at 45
+        seconds. It fails by not terminating, which is what a deadlock looks like and why the
+        watchdog is in the shell rather than in a test. N1 is untouched: no test measures anything."
+      - "Sabotage A1 was a finding rather than a failure. An early return on `send` error was
+        written first; removing it failed no test, because a failed `send` returns the `Ask` and
+        drops it, which closes the oneshot inside it — so both ways of losing the interface already
+        arrive at one `unwrap_or_else`. The branch was a second spelling of the same line and was
+        deleted, with the reasoning left in a comment where the next reader will look for it."
+      - "The question carries what the overlay needs: act, target, content, rule, layer and goal. A
+        fourth test asserts each, because `EventKind::ApprovalRequested` carries only act and target
+        — if the rule and the layer do not arrive on this seam they cannot be rendered at all."
+      - "`cargo fmt --all -- --check` exit 0; `cargo clippy --all-targets -- -D warnings` exit 0;
+        `cargo test --test timing --test dependencies` — 9 passed, so the new test file neither
+        sleeps nor reads a clock, and the eight-name dependency set is unchanged."
 
   - id: US-IO-CLI-0.2.0-T02
     summary: Render the question as a viewport overlay that commits nothing to scrollback.
