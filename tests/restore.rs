@@ -6,6 +6,12 @@
 //!
 //! The signal case is a manual check; it cannot be asserted here because the test
 //! process is the one that would receive the signal.
+//!
+//! N5 grew a second half in 0.6.0: the restore now also pops the Kitty keyboard
+//! protocol where io-cli pushed it. That half is asserted over the byte stream in
+//! `tests/keyboard.rs`, because a keyboard mode has no other observable. What is
+//! asserted here is the property the pop rides on — that the restore happens at
+//! all, before the panic is reported, and exactly once.
 
 mod support;
 

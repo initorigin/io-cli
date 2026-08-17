@@ -89,6 +89,10 @@ impl Composer {
     pub fn key(&mut self, key: KeyEvent) -> Reply {
         match (key.code, key.modifiers) {
             // `Shift+Enter` is the newline every terminal that can report it uses.
+            // Reachable because `term::negotiate_keyboard` asks for
+            // `DISAMBIGUATE_ESCAPE_CODES` on the terminals that advertise it:
+            // without that flag no terminal reports a modifier on `Enter` at all,
+            // and this arm is a binding nobody can reach.
             (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => {
                 self.editing();
                 self.area.insert_newline();
@@ -98,6 +102,13 @@ impl Composer {
                 // The fallback for terminals that cannot distinguish `Shift+Enter`
                 // from `Enter` at all — which is most of them without the Kitty
                 // keyboard protocol. A trailing backslash means "continue".
+                //
+                // It stays even though the arm above now works: the protocol is
+                // negotiated only where the terminal advertises it, and the
+                // terminal on the far end of an ssh session, a tmux without
+                // `extended-keys`, or a plain xterm advertises nothing. Deleting a
+                // fallback because its replacement works on the developer's
+                // terminal is how somebody else loses the newline entirely.
                 if self.current_line().ends_with('\\') {
                     self.editing();
                     self.area.delete_char();

@@ -8,7 +8,7 @@
 //! few lines at the bottom holding the composer and the status line, and it is
 //! the only region that repaints.
 //!
-//! Four properties are structural rather than conventional, and each has a test
+//! Five properties are structural rather than conventional, and each has a test
 //! that fails if it is lost:
 //!
 //! - **No alternate screen and no mouse capture.** There is no code path here
@@ -20,6 +20,11 @@
 //!   is the viewport and nothing above it.
 //! - **The terminal is always given back.** A panic hook restores it before the
 //!   panic message is printed, and [`Drop`] restores it on every other path.
+//! - **What is pushed is popped.** The Kitty keyboard protocol is negotiated up
+//!   on the terminals that advertise it, and every way out of the process — an
+//!   orderly exit, a [`Drop`], a panic — pops it again. `tests/keyboard.rs`
+//!   asserts the two balance in the byte stream, panic included: a protocol left
+//!   pushed outlives the process, and what inherits it is the user's shell.
 //! - **A frame whose content did not change is not drawn.** Not drawn cheaply:
 //!   not drawn at all, no bytes. [`Screen::draw`] lays every frame out where
 //!   nothing can see it first, and only presents it if it differs from what the
@@ -28,9 +33,14 @@
 //!   cheap one.
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use crossterm::Command;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect, Size};
@@ -96,8 +106,9 @@ pub struct Screen<B: Backend + Write> {
 }
 
 impl Screen<CrosstermBackend<io::Stdout>> {
-    /// Take the terminal: raw mode on, bracketed paste on, and a panic hook that
-    /// gives it back before anything is printed.
+    /// Take the terminal: raw mode on, bracketed paste on, the Kitty keyboard
+    /// protocol negotiated up where it is offered, and a panic hook that gives
+    /// all of it back before anything is printed.
     ///
     /// Raw mode is the only thing taken. The alternate screen is not entered and
     /// the mouse is not captured, so the scrollback, the terminal's search and its
@@ -130,7 +141,7 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;
 
-        let terminal = Terminal::with_options(
+        let mut terminal = Terminal::with_options(
             CrosstermBackend::new(out),
             TerminalOptions {
                 // Clamped: a viewport taller than the terminal is not a viewport,
@@ -158,6 +169,15 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         })?;
 
         install_panic_hook(restore_terminal);
+
+        // Last, and deliberately after the hook that pops it: asking the terminal
+        // whether it speaks the protocol means writing a query and waiting for the
+        // reply, and a terminal that never answers costs two seconds of it. By
+        // here the inline viewport has already been placed, which is a round trip
+        // this same terminal has already answered — so the two seconds are only
+        // ever spent on a terminal that is talking back. The other order pays them
+        // on every pipe and every CI job, just before failing anyway.
+        negotiate_keyboard(terminal.backend_mut(), keyboard_advertised())?;
 
         Ok(Self {
             terminal,
@@ -472,18 +492,133 @@ fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
         .join("\n")
 }
 
-/// Put the real terminal back: bracketed paste off, cursor shown, cooked mode.
+/// The one keyboard enhancement io-cli asks for.
+///
+/// `DISAMBIGUATE_ESCAPE_CODES` and nothing else. It is the flag that makes
+/// `Shift+Enter` a distinguishable key at all: without it a terminal sends the
+/// same `CR` for `Enter` and for `Shift+Enter`, so the composer's newline binding
+/// is unreachable and the trailing backslash is the only spelling there is.
+///
+/// The other three are deliberately out:
+///
+/// - `REPORT_EVENT_TYPES` starts delivering `Release` and `Repeat` events. Every
+///   input loop in this product already discards anything that is not a `Press`
+///   (`main.rs`, twice, and `wizard.rs`), so asking for them buys nothing and
+///   doubles the events a streaming turn has to drain.
+/// - `REPORT_ALTERNATE_KEYS` replaces the base keycode with the shifted one,
+///   which silently moves bindings out from under the keys they are written for.
+/// - `REPORT_ALL_KEYS_AS_ESCAPE_CODES` turns plain text into CSI-u sequences.
+///   The one thing this product must not risk is a terminal where typing stops
+///   working, and it buys nothing `Shift+Enter` needs.
+///
+/// Asking for the least is also what makes the negotiation safe to *not* undo
+/// perfectly: one bit, popped once.
+pub const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
+
+/// Whether this process has a keyboard-protocol push outstanding.
+///
+/// Process-wide because the thing that has to pop it is [`restore_terminal`],
+/// which runs from a panic hook with no [`Screen`] anywhere in reach. `false`
+/// until a push actually goes out, which is what keeps a terminal that never
+/// advertised the protocol from seeing a stray pop.
+static KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the terminal advertises the Kitty keyboard protocol.
+///
+/// Separated from [`negotiate_keyboard`] the way [`crate::theme::Background`]
+/// separates `detect` from `from_colorfgbg`: this half talks to a real terminal
+/// and cannot run under `cargo test`, the half that decides what to write is
+/// pure and is driven both ways by `tests/keyboard.rs`.
+///
+/// An error is a "no". crossterm reports one when the terminal answers neither
+/// the enhancement query nor the device-attributes query within two seconds, and
+/// a terminal that will not say whether it speaks the protocol is not one to push
+/// a protocol at.
+pub fn keyboard_advertised() -> bool {
+    crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+}
+
+/// Negotiate the protocol up, if `advertised`; otherwise write nothing at all.
+///
+/// The whole decision is this one argument, which is why it is an argument. What
+/// is pushed here is popped by [`restore_terminal`] on every path out of the
+/// process, and the two are asserted to balance over the byte stream.
+pub fn negotiate_keyboard<W: Write>(out: &mut W, advertised: bool) -> io::Result<()> {
+    if !advertised {
+        return Ok(());
+    }
+    // Recorded before the write rather than after it. A push that fails halfway
+    // has still put part of a mode change on the wire, and the recovery for that
+    // is a pop; the reverse order would decide there was nothing to undo.
+    KEYBOARD_PUSHED.store(true, Ordering::SeqCst);
+    out.write_all(sequence(PushKeyboardEnhancementFlags(KEYBOARD_FLAGS)).as_bytes())?;
+    // Explicit, because stdout is line buffered and this sequence has no newline
+    // in it: unflushed, the protocol would come up whenever the first frame
+    // happened to be drawn.
+    out.flush()
+}
+
+/// Everything handing the terminal back *writes*, into any writer.
+///
+/// Split out of [`restore_terminal`] because [`restore_terminal`] writes to the
+/// real stdout, which no test can read. This is the same sequence aimed at
+/// somewhere a recorder can see it, so `tests/keyboard.rs` asserts the pop that
+/// actually ships rather than a copy of it written for the test.
+///
+/// The pop goes first, and the order is deliberate: a failure here takes the rest
+/// of the sequence with it, and of the three things this writes the pop is the one
+/// that must not be skipped. Bracketed paste left on is an annoyance in the next
+/// program; a keyboard protocol left pushed is a shell reporting every key
+/// differently, with nothing on screen to say why.
+pub fn restore_into<W: Write>(out: &mut W) -> io::Result<()> {
+    // `swap` is the whole safety argument, and it covers three cases at once.
+    // Nothing pushed: the flag is `false`, nothing is written, and a terminal that
+    // does not speak the protocol never sees a sequence it would print as text.
+    // Restored twice — `Screen::restore` and then `Drop`, which is the ordinary
+    // exit — the second call reads the `false` the first one left. And a panic on
+    // one thread racing an orderly exit on another is the same swap: exactly one
+    // of them takes the `true`, so one pop is written for one push, whichever
+    // thread gets there first.
+    if KEYBOARD_PUSHED.swap(false, Ordering::SeqCst) {
+        out.write_all(sequence(PopKeyboardEnhancementFlags).as_bytes())?;
+    }
+    crossterm::execute!(
+        out,
+        crossterm::event::DisableBracketedPaste,
+        crossterm::cursor::Show
+    )
+}
+
+/// A crossterm command as the bytes it puts on the wire.
+///
+/// The two keyboard commands are written this way instead of through `execute!`
+/// on purpose. Both declare the ANSI form unsupported on Windows and answer the
+/// legacy console API with `Unsupported` instead, so `execute!` turns a push into
+/// an error there — including on a Windows terminal that does speak the protocol
+/// and answered the query saying so. The sequence itself is not platform
+/// specific: a terminal that understood the query understands these bytes.
+///
+/// Public so the tests can name the exact sequences they count, rather than
+/// hard-coding two escape strings that would keep passing if crossterm changed
+/// what it emits.
+pub fn sequence(command: impl Command) -> String {
+    let mut ansi = String::new();
+    // The only error a `fmt::Write` into a `String` can report is one that a
+    // `String` has no way to produce.
+    let _ = command.write_ansi(&mut ansi);
+    ansi
+}
+
+/// Put the real terminal back: keyboard protocol popped, bracketed paste off,
+/// cursor shown, cooked mode.
 ///
 /// Deliberately ignores its errors. It runs on the panic path, where returning a
 /// `Result` nobody can act on would mean the terminal stays raw because restoring
 /// it failed halfway.
 pub fn restore_terminal() {
     let mut out = io::stdout();
-    let _ = crossterm::execute!(
-        out,
-        crossterm::event::DisableBracketedPaste,
-        crossterm::cursor::Show
-    );
+    let _ = restore_into(&mut out);
     let _ = crossterm::terminal::disable_raw_mode();
     let _ = out.flush();
 }
