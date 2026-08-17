@@ -32,13 +32,13 @@ versions:
       The operator can see and steer the boundary the agent is working under. One key cycles the
       permission posture and the status line names the io-harness policy layer now in force. A
       sensitive action stops the run in an overlay that cannot scroll away — showing the act, the
-      target, the rule and layer that are asking, and the content a write proposes — and is
-      resolved by keystroke into both the transcript and the durable trace. A refusal prints the
-      act, the target, and the rule and layer that produced it, which no other terminal agent can
-      render because no other core records it. The status line gains the fields the harness can
-      supply to a steerable turn: the policy layer, tokens, context pressure, containment.
+      target, the rule and layer that are asking, and the content a write proposes — and is resolved
+      by keystroke into both the transcript and the durable trace. A refusal prints the act, the
+      target, and the rule and layer that produced it, which no other terminal agent can render
+      because no other core records it. The status line gains the fields the harness can supply to a
+      steerable turn: the policy layer, tokens, context pressure, containment.
     detail: specified
-    status: planned
+    status: released
   - version: 0.3.0
     outcome: >
       The operator can read what the agent did without leaving the terminal or losing the thread.

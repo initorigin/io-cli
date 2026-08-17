@@ -1,6 +1,6 @@
 product: io-cli
 version: 0.2.0
-status: planned
+status: released
 release_type: minor
 outcome:
   user_can: >
@@ -494,3 +494,146 @@ open_questions:
     identical, so nothing here needs it. It is a deliberate decision to make with
     the changelog open at the start of development, not a side effect of a `cargo
     update`.
+released_at: "2026-08-17T02:24:43Z"
+mode: published
+delivered: >
+  The operator can see the boundary the agent is working under, change it, and
+  answer it when it asks. Through 0.1.0 and 0.1.1 the approver handed to
+  io-harness was `DenyAll`, so the *ask before writes* posture declined every
+  write and every command it was named for, and a live first run walked straight
+  into it. That dead end is closed.
+
+
+  The release is one seam and four surfaces drawn on it. Every other connection
+  this product has to io-harness is one-way: an observer is handed an event and
+  hands it on, and nothing waits. `Approver::decide_in_context` is the opposite
+  shape — it runs on the agent's own task and the run stays paused until the
+  future resolves — so the correctness question is not whether an answer arrives
+  but what happens when one never does. The answer is a type: answering consumes
+  the `Ask`, so dropping one *is* a denial, and both ways of losing the interface
+  arrive at one closed channel. Asserted with no clock anywhere; the arm that
+  blocks instead hangs the suite forever, which is what a deadlock looks like.
+
+
+  The overlay lives in the viewport and commits nothing, because a question in
+  the scrollback can be scrolled above the fold while the run is blocked on it.
+  It states the act and the target, then the rule and the layer on a row of their
+  own, then the content a write proposes. Three answers on keys and on arrows,
+  opening on the least committal one. `Shift+Tab` cycles the posture from both
+  spellings a terminal can send, and the status line names the one in force. A
+  refusal prints its rule and its layer — the two facts no other terminal agent
+  can render, because no other core records them.
+
+
+  Three of the status line's named placeholders are filled — tokens, context
+  pressure, containment as mode *and* backend — and each is absent rather than
+  zero until something supplies it. The fourth is not filled, and the roadmap
+  moved rather than the record pretending: spend against the tree ceiling is
+  emitted only by a contained turn, and the contained entry point takes no steer
+  inbox, so rendering it today would have cost `Ctrl+C`.
+evidence:
+  tests:
+    - "cargo test — 140 passing, 0 failing, 7 ignored (tests/live.rs, ignored by design) across 25 test binaries"
+    - "cargo test --test approval — 14 passing: F1 asserts an open question commits nothing, in the pending queue and in the recorder's bytes; F2 asserts act, target, rule and layer by POSITION; F3 runs all three answers and asserts the io_harness::Decision each produced plus exactly one committed line; F4 asserts a closed channel denies; F5 asserts the policy the NEXT turn is handed"
+    - "cargo test --test policy — 7 passing: F6 cycles from both BackTab and shift-Tab; F7 asserts the verdict on the policy (Allow, then Ask, then Deny) rather than the word beside it; and no posture can unlock what a layer denied, asserted against .env for all three"
+    - "cargo test --test events — 15 passing, including F8's three refusal cases: a named rule in a named layer, a rule with no layer, and neither, which renders the tier default as a sentence"
+    - "cargo test --test status — 12 passing, including F9's absent-not-zero and the narrow form at forty columns"
+    - "cargo test --test narrow — 4 passing, including the overlay at exactly eighty columns with a seventy-character path and two-hundred-character content lines"
+    - "cargo test --test timing --test dependencies — 9 passing: no test sleeps or reads a clock, src/main.rs is still the only module that does, and the dependency set is unchanged"
+    - "sabotage arms run for every functional criterion, each failing only its own criterion's tests: F1 (commit the question), F2 (rule first), F3 (every key allows), F4 (block on the receiver — hung the suite, killed by a watchdog at 45s), F5 (pass remember, keep nothing — F3 stayed green, which is why F5 is its own criterion), F6 (cycle without updating the field), F7 (update the label only), F8 (drop the layer), F9 (render zeros)"
+    - "one sabotage was a finding rather than a failure: an early return on send-error failed no test, because a failed send drops the Ask and closes the oneshot inside it. The branch was a second spelling of one line and was deleted"
+  builds:
+    - "cargo fmt --all -- --check — exit 0"
+    - "cargo clippy --all-targets -- -D warnings — exit 0"
+    - "cargo build --release — exit 0; ./target/release/io --version prints io 0.2.0"
+    - "cargo tree --depth 1 — the same eight names 0.1.0's N1 permits, plus tempfile as a dev-dependency. The approval channel is tokio::sync::oneshot, which was already here"
+  reviews:
+    - "F10 completed by the owner, 2026-08-17: the release binary run at a real terminal under the ask-before-writes posture, a write approved, verdict `working! approved`"
+    - "the deny half of F10's wording was proved by the live rehearsal rather than by the owner's own run, and this record says so rather than implying otherwise"
+    - "live rehearsal against a live provider (anthropic/claude-sonnet-4 over OpenRouter), four tests: a real turn reaches the approver and the approved write lands; a denied turn leaves the file byte-identical; answering `allow this session` collapses three questions into one inside a single turn; and the never-asks path stalls identically, which is how `Stalled` was shown to be the model rather than this release"
+  deployments:
+    - "CI green on macOS, Linux and Windows plus fmt-and-clippy, msrv, CodeQL and two CodeQL analyses — all eight checks, no re-runs and no flakes, on feat/0.2.0 at afcfb7c (PR #9)"
+  health_checks:
+    - "the release binary starts and prints io 0.2.0"
+    - "no secret is committed: no .env has ever been added in any commit on any branch (git log --all --diff-filter=A), and the only key-shaped literal in the tree is tests/wizard.rs's deliberate fixture, whose value is the string NEVERRENDERTHIS and whose test asserts it never reaches the screen"
+    - "scope.excluded verified absent in source: no Decision::Defer binding (it appears once, in a doc comment explaining the exclusion), no modified-request binding, no SpendDraw rendering, no turn_contained call, and no diff or syntax-highlighting crate in Cargo.toml"
+known_limitations:
+  - >
+    **Spend against the tree ceiling is not in the status line, and the roadmap
+    moved rather than this record pretending.** `EventKind::SpendDraw` is emitted
+    only by a contained turn, and io-harness's contained entry point takes no
+    steer inbox — rendering spend today would have cost `Ctrl+C`. It is the same
+    harness boundary that already blocks the configuration's `[sandbox]` and
+    `[run]` sections. Moved to 0.8.0, the fleet release, which is contained by
+    definition. If a harness turn that is both contained and steerable appears
+    sooner, it moves with it.
+  - >
+    **`rule` and `layer` are `None` in the ordinary case, not the exotic one.**
+    Every question and every refusal in the live rehearsal came through unnamed,
+    because the posture's own `write: Ask` default is what asks and no glob names
+    the action. So `no rule named it: the tier default decided` is what most
+    operators will see most of the time. That is accurate — io-harness is explicit
+    that an unnamed action in the grey tier is the least vouched-for kind — but
+    the sentence is long for a line that repeats, and a shorter form is worth
+    designing once it has been read a hundred times.
+  - >
+    **The overlay shows a write's proposed content plainly, not as a diff.** The
+    harness hands an approver the resulting file rather than a patch, so the diff
+    is this product's to compute and 0.3.0's to design. In a four-row viewport the
+    content gets one row, with the cut count riding its end.
+  - >
+    **The context field is quiet by design.** `Compacted` is the only event
+    carrying an observation-section size, so between folds nothing on the stream
+    knows it and the field is absent. The per-step estimate is durable in the
+    store as `ContextEvent::est_tokens`; the upgrade path is one store read and is
+    marked with a `ponytail:` comment where the field is declared.
+  - >
+    **`Decision::Defer` and `Decision::Approve { modified }` are unbound.**
+    Deferring stops the run and persists the request, which is only useful
+    alongside the resume that arrives in 0.4.0; approving a rewritten action is an
+    editor inside an overlay. Both are real harness affordances, deliberately not
+    half-built.
+  - >
+    **A question about intent is still a dead end.** `awaiting_answer` says so and
+    points at the next prompt. Answering one needs a `Responder` on a
+    caller-supplied contract, which is the same entry point that would cost
+    `Ctrl+C`. 0.7.0.
+  - >
+    **The answers row has a double space after each separator**, because the
+    two-cell selection marker sits after a spaced separator. Cosmetic, noticed
+    during the F10 preview, and deliberately not changed while the owner's gate
+    was in flight. A one-line fix for 0.2.1 or 0.3.0.
+  - >
+    **A turn commonly ends `Stalled` after its work succeeded.** Observed on every
+    live run of this release — and identically on the never-asks path 0.1.0
+    shipped, at the same step count on the same prompt. It is the model rather
+    than the approval flow, and it is recorded here because an operator will see
+    it and wonder.
+  - >
+    **`live_f1_a_real_turn_streams_and_edits_a_file` currently fails**, and this
+    release did not cause it. It asserts the turn streamed assistant tokens; the
+    model stalled without a closing message and streamed none. The test's own
+    comment records that exact fragility. It is `#[ignore]`d, CI never runs it,
+    and it belongs to 0.1.0's F1 — left alone rather than reworded into passing.
+  - >
+    **One low Dependabot advisory predates this release**: `lru`'s `IterMut`
+    violates Stacked Borrows, reached through `ratatui 0.29`, which `Cargo.toml`
+    pins deliberately because `tui-textarea 0.7` is built against exactly that
+    pair. Moving off it means depending on somebody's fork of the one widget the
+    composer is made of. A dependency release of its own.
+  - >
+    **The harness pin stays at 0.60.1 on purpose.** 0.60.2 and 0.60.3 are
+    published and API-identical, so nothing here needs them, and moving the pin
+    would have put an untested dependency change on a release that already changes
+    the permission surface.
+  - >
+    **This record is sealed before the Release exists, which is the flow rather
+    than a shortfall.** The sealed record and its lock pin ride `feat/0.2.0` and
+    merge with the code, so the seal necessarily precedes the tag that cuts the
+    Release. `mode: published` describes the channel this product has. The second
+    half of O1 — CI green again on the merge to `develop` — and O4's four
+    artifacts follow this point. If the tag or the matrix fails after it, the
+    correction is a new version, not an edit.
+supersedes: 0.1.1
+next_recommended_version: 0.3.0
+immutable: true

@@ -19,8 +19,8 @@ release_fit:
       product and the first place it can deadlock. The other eight tasks are the shape of work this
       repository has done twice."
     - "The workspace constraint that io-cli contains no agent loop, no provider client and no policy
-      engine is not touched. Every value this release constructs — `Decision`, `Rule`, `Policy` —
-      is an io-harness type, and every verdict is still the harness's. No io-harness change is
+      engine is not touched. Every value this release constructs — `Decision`, `Rule`, `Policy` — is
+      an io-harness type, and every verdict is still the harness's. No io-harness change is
       required: the approver seam, the approval context carrying rule and layer, and the `Refused`,
       `Contained`, `Compacted` and `Step` events all exist in the locked version, which was read
       from the source rather than assumed."
@@ -31,9 +31,9 @@ release_fit:
     - The two-way seam. The approver runs on the run's own task and must ask, wait and answer while
       the keyboard stays live so `Ctrl+C` still reaches the turn. F4 is the criterion that keeps it
       honest, and it is asserted on a closed channel rather than on a timeout.
-    - "A four-row viewport. An approval that shows a proposed file's content does not fit in it, and
+    - A four-row viewport. An approval that shows a proposed file's content does not fit in it, and
       what goes in the overlay versus what commits above it is a design decision the contract left
-      open on purpose."
+      open on purpose.
     - "`Decision::Approve { remember }` is run-scoped and dies with the turn. The obvious
       implementation of *allow for the rest of this session* passes every visible test and asks
       again on the next prompt; F5 exists because that is the version that would ship by accident."
