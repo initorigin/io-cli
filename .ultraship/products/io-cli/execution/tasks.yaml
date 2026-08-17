@@ -416,7 +416,7 @@ tasks:
       the code, and the README has told every reader since 0.1.0 that the approval overlay is 0.2.0's.
       The structural gates are what stop a release that adds an overlay from quietly adding a
       dependency, a clock or a full-screen clear."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T08
     acceptance_criteria:
@@ -448,9 +448,43 @@ tasks:
       - CHANGELOG.md
       - Cargo.toml
       - Cargo.lock
-      - src/commands.rs
       - tests/docs.rs
-    evidence: []
+    evidence:
+      - "`Cargo.toml` and `Cargo.lock` at `0.2.0`; `./target/release/io --version` prints `io
+        0.2.0`. **O2** — `cargo build --release` exit 0, which CI does not cover because it builds
+        the test profile only."
+      - "The CHANGELOG's `0.2.0` section carries an `Added`, a `Changed` and a **`Not in this
+        release`** block. The last one names the spend field and why it is absent, the diff surface
+        and why the overlay shows content instead, and the two `Decision` shapes left unbound. A
+        reader deciding whether to upgrade learns what is missing from the changelog rather than
+        from a surprise."
+      - "The README's `What this release is not` no longer says the approval overlay is 0.2.0's
+        future work, and no longer ends `an action that needs approval is declined in this release`
+        — a sentence that has been true since 0.1.0 and is now false. It states the two absences
+        plainly instead."
+      - "The configuration section now says what `Shift+Tab` does to the policy it describes, and
+        that a cycled posture is not written back: a keystroke that rewrites a permission boundary
+        on disk is the opposite of what that key is for."
+      - "**N2** — `cargo tree --depth 1` is the same eight names 0.1.0's N1 permits (clap,
+        crossterm, io-harness, ratatui, serde, tokio, toml, tui-textarea) plus `tempfile` as a
+        dev-dependency. The approval channel is `tokio::sync::oneshot`, which was already here."
+      - "**N1** — `cargo test --test timing` passes: no test in the repository sleeps or reads a
+        clock, and `src/main.rs` is still the only module that reads one. The approval path was the
+        shape most likely to be tested with a timeout, and F4 is asserted on a closed channel."
+      - "**N3** — the whole existing structural suite passes unchanged: no alternate screen, no
+        mouse capture, no full-screen clear, the terminal always restored, the credential never
+        rendered. The last matters more this release than any before it, because the overlay is the
+        first surface that puts a file's contents on screen."
+      - "**N4** — `cargo test --test dependencies` passes. Every value this release constructs is
+        an io-harness type (`Decision`, `Rule`, `Policy`, `Defaults`) and every verdict is still the
+        harness's; io-cli evaluates no rule."
+      - "**The harness pin stays at 0.60.1, deliberately.** 0.60.2 and 0.60.3 are published and
+        their public API is identical, so nothing here needs them. Moving the pin would put an
+        untested dependency change on a release that already changes the permission surface, and
+        `cargo update` doing it as a side effect is exactly what the contract's open question
+        existed to prevent."
+      - "`cargo test` — 24 test binaries, all ok, 0 failures. `cargo fmt --all -- --check` exit 0;
+        `cargo clippy --all-targets -- -D warnings` exit 0."
 
   - id: US-IO-CLI-0.2.0-T10
     summary: The owner runs a real turn under ask-before-writes, approving one write and denying another.
