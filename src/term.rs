@@ -8,7 +8,7 @@
 //! few lines at the bottom holding the composer and the status line, and it is
 //! the only region that repaints.
 //!
-//! Three properties are structural rather than conventional, and each has a test
+//! Four properties are structural rather than conventional, and each has a test
 //! that fails if it is lost:
 //!
 //! - **No alternate screen and no mouse capture.** There is no code path here
@@ -20,13 +20,20 @@
 //!   is the viewport and nothing above it.
 //! - **The terminal is always given back.** A panic hook restores it before the
 //!   panic message is printed, and [`Drop`] restores it on every other path.
+//! - **A frame whose content did not change is not drawn.** Not drawn cheaply:
+//!   not drawn at all, no bytes. [`Screen::draw`] lays every frame out where
+//!   nothing can see it first, and only presents it if it differs from what the
+//!   terminal is already showing. `tests/frames.rs` asserts it over the byte
+//!   count, which is the one thing that separates a skipped repaint from a
+//!   cheap one.
 
 use std::io::{self, Write};
 use std::sync::{Mutex, OnceLock};
 
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::Rect;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
@@ -71,6 +78,16 @@ type Restore = Box<dyn Fn() + Send + Sync + 'static>;
 /// they wrap the frame ratatui draws, so they cannot be a widget.
 pub struct Screen<B: Backend + Write> {
     terminal: Terminal<B>,
+    /// Where a frame is laid out before anyone can see it. See [`Screen::draw`].
+    probe: Terminal<Probe>,
+    /// What the terminal is currently showing, and where the frame that put it
+    /// there asked for the cursor. `None` means the next frame must be drawn
+    /// whatever it contains, because something outside `draw` — a commit, a
+    /// resize — has since erased the viewport.
+    last: Option<(Buffer, Option<Position>)>,
+    /// The terminal size the last frame was laid out against, kept only to
+    /// notice that it changed. See [`Screen::draw`].
+    size: Option<Size>,
     /// What the last frame drew, kept because ratatui's rendered buffer is not
     /// reachable once `draw` has returned. See [`Screen::viewport_text`].
     viewport: String,
@@ -144,6 +161,9 @@ impl Screen<CrosstermBackend<io::Stdout>> {
 
         Ok(Self {
             terminal,
+            probe: probe_terminal(),
+            last: None,
+            size: None,
             viewport: String::new(),
             restore: Some(Box::new(restore_terminal)),
             restored: false,
@@ -156,6 +176,9 @@ impl<B: Backend + Write> Screen<B> {
     pub fn from_terminal(terminal: Terminal<B>) -> Self {
         Self {
             terminal,
+            probe: probe_terminal(),
+            last: None,
+            size: None,
             viewport: String::new(),
             restore: None,
             restored: false,
@@ -173,6 +196,11 @@ impl<B: Backend + Write> Screen<B> {
             return Ok(());
         }
 
+        // `insert_before` ends by clearing the viewport off the screen, so what
+        // the terminal is showing is no longer what the last frame drew and the
+        // next frame is a repaint of an erased region however little it moved.
+        self.last = None;
+
         let width = self.terminal.current_buffer_mut().area.width.max(1);
         let text = Text::from(lines.to_vec());
         let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
@@ -185,24 +213,76 @@ impl<B: Backend + Write> Screen<B> {
             .insert_before(height, |buf| paragraph.render(buf.area, buf))
     }
 
-    /// Draw one viewport frame, wrapped in synchronized output.
+    /// Draw one viewport frame, wrapped in synchronized output — or draw nothing
+    /// at all, if the frame says exactly what the terminal is already showing.
     ///
     /// The wrapping is what stops a streaming turn from strobing: the terminal is
     /// told to hold the display until the frame is complete, so a partially drawn
     /// composer is never presented. ratatui already diffs the buffer, which
     /// decides *what* is written; this decides *when* it becomes visible.
+    ///
+    /// The skip is the other half, and it is why the frame is laid out twice.
+    /// ratatui's diff suppresses the *cells* of an unchanged frame but nothing
+    /// else: the synchronized-output pair, the colour resets its backend emits
+    /// after every diff however empty, and the cursor it re-places on every frame
+    /// are all written regardless, so a screen that has not moved still pays
+    /// forty-odd bytes per repaint of a session that repaints on every keystroke
+    /// and every token. To get that to zero the frame has to be *known* before
+    /// anything is written, and the only way to know it is to render it — so it
+    /// is rendered into a probe: a terminal whose backend discards its output
+    /// and remembers only where the frame asked the cursor to go. If the result
+    /// matches what the terminal is already showing, this returns having written
+    /// nothing; otherwise the already-rendered buffer is handed to the real
+    /// terminal, which does the diff, the cursor and the flush exactly as before.
+    ///
+    /// The comparison is over the whole buffer rather than over
+    /// [`Screen::viewport_text`]: text alone would skip a frame whose only change
+    /// is a style, which is what a picker's highlight moving between two rows
+    /// looks like. The cursor is in it too, because moving the caret through
+    /// unchanged text is a real change with no cell behind it.
     pub fn draw<F: FnOnce(&mut Frame)>(&mut self, render: F) -> io::Result<()> {
+        // ratatui autoresizes at the top of its own `draw` and so must this, or a
+        // terminal that changed size between frames is laid out against the old
+        // one. The size is read separately because `autoresize` does not say
+        // whether it fired, and a resize *clears* the viewport: the frame after
+        // one can never be skipped, whatever it contains.
+        let size = self.terminal.size()?;
+        if self.size.replace(size) != Some(size) {
+            self.last = None;
+        }
+        self.terminal.autoresize()?;
+
+        // The probe's viewport is pinned to the real one rather than computed, so
+        // `frame.area()` — which every widget lays out against — is the same
+        // rectangle in both. `Viewport::Fixed` is what makes that possible: it
+        // takes the area it is given and never autoresizes away from it.
+        let area = self.terminal.get_frame().area();
+        if self.probe.get_frame().area() != area {
+            self.probe.resize(area)?;
+        }
+        let drawn = self.probe.draw(render)?.buffer.clone();
+        let cursor = self.probe.backend_mut().cursor;
+        self.viewport = buffer_text(&drawn);
+
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|(shown, at)| *shown == drawn && *at == cursor)
+        {
+            return Ok(());
+        }
+        self.last = Some((drawn.clone(), cursor));
+
         crossterm::queue!(self.terminal.backend_mut(), BeginSynchronizedUpdate)?;
-        let mut drawn = String::new();
         self.terminal.draw(|frame| {
-            render(frame);
-            // Captured here because ratatui swaps its two buffers as the frame
-            // ends: after `draw` returns, the current buffer is the cleared one
-            // and what was just rendered is in the other, which has no public
-            // accessor. Inside the closure is the only place it can be read.
-            drawn = buffer_text(frame.buffer_mut());
+            // A move, not a render: the frame was laid out on the probe and the
+            // two buffers cover the same area, so this is the same content
+            // arriving by a shorter route.
+            *frame.buffer_mut() = drawn;
+            if let Some(position) = cursor {
+                frame.set_cursor_position(position);
+            }
         })?;
-        self.viewport = drawn;
         crossterm::queue!(self.terminal.backend_mut(), EndSynchronizedUpdate)?;
         // `Backend` and `Write` both name a `flush`; the write one is meant here,
         // because the queued escape sequences are sitting in the writer.
@@ -234,6 +314,9 @@ impl<B: Backend + Write> Screen<B> {
     /// it belong to the terminal and must not be redrawn, which is what produces
     /// the duplicated history a full-screen renderer shows on resize.
     pub fn resize(&mut self, width: u16, height: u16) -> io::Result<()> {
+        // Recomputing it clears it, so the next frame repaints an erased region
+        // rather than a screen that already says what it is about to say.
+        self.last = None;
         self.terminal.resize(Rect::new(0, 0, width, height))
     }
 
@@ -278,6 +361,100 @@ impl<B: Backend + Write> Screen<B> {
 impl<B: Backend + Write> Drop for Screen<B> {
     fn drop(&mut self) {
         self.restore();
+    }
+}
+
+/// The terminal a frame is laid out on before anyone can see it.
+///
+/// Zero-sized on purpose: it is only ever resized to the real viewport's area,
+/// and a fixed viewport takes the area it is given without asking the backend
+/// anything, so this cannot fail.
+fn probe_terminal() -> Terminal<Probe> {
+    Terminal::with_options(
+        Probe::default(),
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::ZERO),
+        },
+    )
+    .expect("a fixed viewport asks the backend nothing and writes nothing")
+}
+
+/// A backend that throws its output away and remembers one thing: where the
+/// frame it just drew asked the cursor to be.
+///
+/// That one thing is the reason this exists rather than an [`io::Sink`].
+/// `Frame::set_cursor_position` writes into a private field that ratatui 0.29
+/// exposes no way to read back, and [`Screen::draw`] has to know it to hand the
+/// frame on to the real terminal. It reaches a backend, though — `Terminal::draw`
+/// ends by calling either `hide_cursor` or `show_cursor` and `set_cursor_position`
+/// — so a backend is where it can be caught.
+#[derive(Default)]
+struct Probe {
+    /// Where the last frame drawn on this terminal put the cursor, or `None` if
+    /// it asked for the cursor to be hidden.
+    cursor: Option<Position>,
+}
+
+impl Backend for Probe {
+    fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.cursor = None;
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        // Deliberately not recorded. ratatui always follows it with the position,
+        // which is the call that says the cursor is wanted and where.
+        Ok(())
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        Ok(self.cursor.unwrap_or(Position::ORIGIN))
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.cursor = Some(position.into());
+        Ok(())
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn clear_region(&mut self, _clear_type: ClearType) -> io::Result<()> {
+        // Overridden because the default refuses everything but a full clear, and
+        // resizing a fixed viewport clears row by row.
+        Ok(())
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        Ok(Size {
+            width: 0,
+            height: 0,
+        })
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        Ok(WindowSize {
+            columns_rows: Size {
+                width: 0,
+                height: 0,
+            },
+            pixels: Size {
+                width: 0,
+                height: 0,
+            },
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
