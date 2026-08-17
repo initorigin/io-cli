@@ -78,6 +78,7 @@
 
 mod support;
 
+use io_cli::glyphs::UNICODE;
 use io_cli::rewind;
 use io_cli::theme::Tone;
 use io_harness::{ApproveAll, MemoryKind, Policy, Session, Store};
@@ -512,7 +513,7 @@ fn undone_with(restored: &[&str], declined: &[(&str, &str)], head: Option<i64>) 
 
 #[test]
 fn the_armed_line_discloses_that_a_hand_edit_since_the_turn_is_lost() {
-    let line = rewind::armed_line(&preview_of("tidy the notes"));
+    let line = rewind::armed_line(&preview_of("tidy the notes"), &UNICODE);
 
     // Quoting the turn. A confirmation of a keystroke is not a confirmation.
     assert!(
@@ -538,7 +539,7 @@ fn the_armed_line_discloses_that_a_hand_edit_since_the_turn_is_lost() {
 fn the_armed_line_names_the_turn_and_invents_no_file_count() {
     // A prompt with no digit of its own, so any digit in the result was produced
     // by the renderer rather than quoted from the operator.
-    let line = rewind::armed_line(&preview_of("tidy the notes and add a summary"));
+    let line = rewind::armed_line(&preview_of("tidy the notes and add a summary"), &UNICODE);
 
     assert!(
         line.contains("tidy the notes and add a summary"),
@@ -558,11 +559,10 @@ fn the_armed_line_names_the_turn_and_invents_no_file_count() {
 
 #[test]
 fn the_report_leads_with_what_was_declined_and_tones_it_differently() {
-    let lines = rewind::undone_lines(&undone_with(
-        &["notes.md"],
-        &[("logo.bin", "not valid UTF-8")],
-        Some(4),
-    ));
+    let lines = rewind::undone_lines(
+        &undone_with(&["notes.md"], &[("logo.bin", "not valid UTF-8")], Some(4)),
+        &UNICODE,
+    );
 
     // By position, not by membership. A decline mentioned after a success reads as
     // a footnote, and a `contains` assertion is exactly as green for that order.
@@ -593,7 +593,7 @@ fn the_report_leads_with_what_was_declined_and_tones_it_differently() {
 fn the_report_says_in_words_where_the_conversation_now_is() {
     // The only-turn case, which `Session::branch_from` cannot even express and
     // which nobody tries by hand.
-    let emptied = rewind::undone_lines(&undone_with(&["started.md"], &[], None));
+    let emptied = rewind::undone_lines(&undone_with(&["started.md"], &[], None), &UNICODE);
     let last = emptied.last().expect("the report is never empty");
     assert!(
         last.1.contains("back to having said nothing"),
@@ -601,7 +601,7 @@ fn the_report_says_in_words_where_the_conversation_now_is() {
          silence: {last:?}",
     );
 
-    let continued = rewind::undone_lines(&undone_with(&["notes.md"], &[], Some(4)));
+    let continued = rewind::undone_lines(&undone_with(&["notes.md"], &[], Some(4)), &UNICODE);
     let last = continued.last().expect("the report is never empty");
     assert!(
         last.1.contains("continues from the turn before"),
@@ -619,7 +619,7 @@ fn a_long_prompt_is_what_gets_cut_and_never_the_disclosure() {
                 while you are there fold the appendix into the body, drop the \
                 section that describes the read-only window twice, and make the \
                 summary at the top match what the rest of it actually says";
-    let line = rewind::armed_line(&preview_of(long));
+    let line = rewind::armed_line(&preview_of(long), &UNICODE);
 
     // Bounded whatever the prompt does: only the quoted prompt is shortened, and
     // the sentence around it is fixed. Two wrapped rows on an eighty-column

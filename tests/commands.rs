@@ -1,7 +1,15 @@
 //! The slash commands and the keybinding table.
 
 use io_cli::commands::{self, Action, COMMANDS, KEYS};
+use io_cli::keys::Keys;
 use io_cli::theme::DARK;
+
+/// The bindings a session with no `[app.io-cli.keys]` runs under. What each of
+/// these tests asserts about the defaults, `tests/keys.rs` asserts about a file
+/// that has moved them.
+fn defaults() -> Keys {
+    Keys::default()
+}
 
 fn text(lines: &[ratatui::text::Line<'_>]) -> String {
     lines
@@ -44,37 +52,49 @@ fn the_commands_are_the_commands() {
 
 #[test]
 fn each_command_resolves() {
-    assert!(matches!(commands::parse("help", &DARK), Action::Print(_)));
-    assert_eq!(commands::parse("quit", &DARK), Action::Quit);
-    assert_eq!(commands::parse("setup", &DARK), Action::Setup);
-    assert_eq!(commands::parse("theme", &DARK), Action::Theme);
-    assert_eq!(commands::parse("model", &DARK), Action::Model);
-    assert_eq!(commands::parse("expand", &DARK), Action::Expand);
+    assert!(matches!(
+        commands::parse("help", &defaults(), &DARK),
+        Action::Print(_)
+    ));
+    assert_eq!(commands::parse("quit", &defaults(), &DARK), Action::Quit);
+    assert_eq!(commands::parse("setup", &defaults(), &DARK), Action::Setup);
+    assert_eq!(commands::parse("theme", &defaults(), &DARK), Action::Theme);
+    assert_eq!(commands::parse("model", &defaults(), &DARK), Action::Model);
+    assert_eq!(
+        commands::parse("expand", &defaults(), &DARK),
+        Action::Expand
+    );
     // `/copy` with no argument is the answer; `diff` and `patch` are the same
     // thing, because a reader who has just been shown a diff types the word they
     // were shown.
     assert_eq!(
-        commands::parse("copy", &DARK),
+        commands::parse("copy", &defaults(), &DARK),
         Action::Copy(io_cli::commands::Copied::Answer),
     );
     assert_eq!(
-        commands::parse("copy diff", &DARK),
+        commands::parse("copy diff", &defaults(), &DARK),
         Action::Copy(io_cli::commands::Copied::Diff),
     );
     assert_eq!(
-        commands::parse("copy patch", &DARK),
+        commands::parse("copy patch", &defaults(), &DARK),
         Action::Copy(io_cli::commands::Copied::Diff),
     );
 
     // Arguments are tolerated; the first word decides.
-    assert_eq!(commands::parse("model gpt-5", &DARK), Action::Model);
+    assert_eq!(
+        commands::parse("model gpt-5", &defaults(), &DARK),
+        Action::Model
+    );
     // An empty command is help, which is what a bare `/` and Enter means.
-    assert!(matches!(commands::parse("", &DARK), Action::Print(_)));
+    assert!(matches!(
+        commands::parse("", &defaults(), &DARK),
+        Action::Print(_)
+    ));
 }
 
 #[test]
 fn an_unknown_command_says_what_does_exist() {
-    let Action::Print(lines) = commands::parse("models", &DARK) else {
+    let Action::Print(lines) = commands::parse("models", &defaults(), &DARK) else {
         panic!("an unknown command should print rather than do nothing");
     };
     let printed = text(&lines);
@@ -90,7 +110,7 @@ fn an_unknown_command_says_what_does_exist() {
 
 #[test]
 fn help_prints_every_key_and_every_command() {
-    let printed = text(&commands::help(&DARK));
+    let printed = text(&commands::help(&defaults(), &DARK));
     for (key, what) in KEYS {
         assert!(printed.contains(key), "{key} is missing from /help");
         assert!(printed.contains(what), "{key}'s description is missing");

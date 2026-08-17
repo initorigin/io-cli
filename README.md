@@ -101,6 +101,60 @@ writes no key to disk at all.
 
 <!-- keys:end -->
 
+**`Shift+Enter` works where the terminal reports it.** `io` negotiates the Kitty
+keyboard protocol on terminals that advertise it, asking for one flag —
+`DISAMBIGUATE_ESCAPE_CODES` — because without it a terminal sends the same byte
+for `Enter` and for `Shift+Enter` and the newline binding is unreachable. What is
+pushed is popped again on every path out of the process, a panic included. The
+trailing-backslash fallback still works everywhere, and on a terminal that does
+not advertise the protocol nothing is written at all.
+
+### Moving a key
+
+The keys the session itself owns can be rebound in `[app.io-cli.keys]`, by action
+name:
+
+```toml
+[app.io-cli.keys]
+clear = "ctrl+k"
+rewind = "ctrl+r ctrl+r"
+```
+
+| Action | Default |
+| --- | --- |
+| `exit` | `Ctrl+D` |
+| `posture` | `Shift+Tab` |
+| `clear` | `Ctrl+L` |
+| `transcript` | `Ctrl+T` |
+| `rewind` | `Esc Esc` |
+
+A binding is a chord, or two chords separated by a space. Modifiers are `ctrl`,
+`alt` and `shift`, joined to the key with `+`, in any order and any case; a key is
+a single character, a named key — `esc`, `enter`, `tab`, `backtab`, `space`, the
+four arrows, `home`, `end`, `pageup`, `pagedown`, `backspace`, `delete`, `insert`
+— or `f1` through `f12`. Because `+` is the join, `+` itself cannot be bound; that
+is a real limit of the syntax and stating it beats a rule that quietly works for
+`plus` and not for the character anyone would type. This spelling is public
+contract from 0.6.0 on: it is the one VS Code, Zed and helix already write.
+
+The rest of the table is not rebindable, because those keys belong to whatever
+owns the keyboard while it is up — the composer, an approval, a picker — and an
+approval's `y`, `a` and `n` are the *words* of the answer rather than shortcuts
+for it.
+
+**`Ctrl+C` is fixed, and it is the only one that is.** It interrupts a running
+turn and leaves `io`, so a configuration file able to take it away is one able to
+lock you inside a running agent. Both spellings of that mistake are refused out
+loud with the reason: naming `interrupt`, and putting any other action onto
+`ctrl+c`.
+
+Nothing about a bad line is fatal and nothing is silent. A value that cannot be
+read leaves its action on the default and names the key it kept; a name that is no
+action of ours says which names there are; and every notice is committed into the
+scrollback as the session starts, rather than left to be discovered by pressing
+something. `/help` renders the table as the session *actually behaves* rather than
+the defaults that shipped, and marks `Ctrl+C` as fixed.
+
 ## Commands
 
 <!-- commands:start -->
@@ -136,6 +190,53 @@ refuse a large payload without saying so.
 
 `/theme` and `/model` change this session only and say so. Making a choice
 permanent is `io setup`.
+
+## Reading it without seeing it
+
+`io --plain` runs the session without animation: nothing turns, nothing moves,
+the ASCII glyph set is forced, and each state the session enters — `working`,
+`ready` — is committed into the terminal's own scrollback as a line of text. In
+the default interface that one state is carried by a word that only ever repaints
+and an indicator that only ever moves, which makes it the single thing a reader
+who cannot see the viewport cannot follow; everything else a run does already
+writes a line. For a screen reader, a braille display, a serial console and a
+captured log.
+
+The flag is global, so `io --plain`, `io --plain exec "…"` and `io exec --plain
+"…"` are all accepted. `[app.io-cli] plain = true` is the same switch for every
+session. The flag wins over the file, and there is deliberately no `--no-plain`:
+accessibility is something switched on on purpose, and a mode that can be lost to
+a stray flag is not one to rely on. It reaches an interactive session and stops
+there — `io exec` constructs no theme, draws nothing and animates nothing already.
+
+Four properties this product keeps, whether or not that flag is set:
+
+- **Colour is never the only thing carrying a meaning.** Every refusal, error and
+  warning also carries a word, a diff's additions and removals are marked as well
+  as coloured, and an approval says what is being asked for in words before it
+  says it in colour. `NO_COLOR` is honoured on presence, whatever its value, and
+  now survives the first-run wizard and `/theme`: choosing a theme with the
+  variable set records the preference and leaves the session uncoloured, and says
+  so.
+- **Every mark has an ASCII form.** The separator, the tool bullet, the selection
+  marker, the ellipsis, the elision, the dash, the transcript rule, the quotes,
+  the credential mask and the working indicator each exist in two sets, and each
+  ASCII form carries its counterpart's *meaning* rather than merely standing in
+  the same column. `[app.io-cli] glyphs` names a set — `unicode` or `ascii` —
+  and an absent key asks the locale: `LC_ALL`, then `LC_CTYPE`, then `LANG`, the
+  first one present deciding. The set is an axis of its own, in both directions:
+  `NO_COLOR` keeps the Unicode marks, and the ASCII set arrives at a fully
+  coloured theme. The IO CLI wordmark is the one exception, and it is suppressed
+  rather than transliterated — a wordmark redrawn in `#` is a different and worse
+  image wearing its name.
+- **The cursor sits where input is expected**, on every frame that accepts any:
+  the composer, including at a width too narrow to draw it; the approval overlay;
+  the selected row of a picker; and every step of the wizard. It is the focus
+  indicator a screen reader follows, and a frame that leaves it hidden reports no
+  focus at all.
+- **A frame whose content did not change is not drawn.** An idle session writes
+  no bytes to the terminal, so nothing announces itself twice for having merely
+  repainted.
 
 ## Headless
 
@@ -187,8 +288,8 @@ would call a truncated run a finished one.
 this interface's: a goal with no clear stopping point can keep the agent working
 after the useful part is done, until io-harness's stall policy ends the run — and
 that is `5`, even though the work happened. The same goal on the same model
-reached `Finished` on one run and `Stalled` on another while this release was
-being tested. `io` reports what the harness decided and never relabels it, so
+reached `Finished` on one run and `Stalled` on another while `io exec` was being
+tested. `io` reports what the harness decided and never relabels it, so
 "…, then stop" in the goal, or a `max_steps` in `[run]`, is worth more than
 retrying.
 
@@ -219,11 +320,22 @@ io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
 
-Two keys live there: `theme`, and `diff`, which is `unified` (the default, and
-what an absent key means) or `minimal` — the changed lines and the `@@` header
-without the context, for reviewing by file rather than by hunk. Because the
-section is unvalidated by design, an unrecognised value reads as the default
-rather than stopping a session from starting.
+Four keys live there, and one table:
+
+| Key | Is |
+| --- | --- |
+| `theme` | `dark` or `light`. Absent detects from the terminal background. |
+| `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
+| `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
+| `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
+| `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
+
+Because the section is unvalidated by design, an unrecognised *value* reads as the
+default rather than stopping a session from starting. A section io-harness cannot
+parse **at all** is a different case and is no longer silent: through 0.5.0 that
+reverted the theme, the diff style and everything else in the section at once with
+nothing said about it, and the session now starts on the defaults carrying
+io-harness's own message — which names the key that broke — in its scrollback.
 
 The file is found in this order: `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`,
 else `$XDG_CONFIG_HOME/io/io.toml` or `~/.config/io/io.toml`, and
@@ -254,15 +366,16 @@ steer it, so it can hand the harness a contract of its own, which is what
 today has an effect in CI and none in your terminal, and that asymmetry is a
 property of the harness's entry points rather than a decision made here.
 
-`NO_COLOR` is honoured. Colour is never the only thing carrying a meaning — every
-refusal, error and warning also carries a word.
+`NO_COLOR` is read from the environment rather than from this file, and so is the
+locale behind `glyphs`. See [Reading it without seeing
+it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.5.0 is the release where the same agent runs unattended: `io exec`, NDJSON,
-and a boundary you can pick from the command line. The screen-reader mode is
-0.6.0; the slash palette and type-to-filter pickers are 0.7.0; the fleet tree is
-0.8.0; inline images are 0.9.0.
+0.6.0 is the release where the interface can be read without being seen:
+`--plain`, an ASCII form for every mark, keys that can be moved, and a cursor
+wherever input is expected. The slash palette and type-to-filter pickers are
+0.7.0; the fleet tree is 0.8.0; inline images are 0.9.0.
 
 **`io exec` runs one goal and stops, and a run that pauses stays paused.** An
 agent that asks a question about what you meant, or proposes a plan, ends the run

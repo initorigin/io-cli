@@ -47,9 +47,11 @@ model = "anthropic/claude-sonnet-4"
 #   ask before writes     read allow, write/exec ask, net deny
 #   read only             read allow, write/exec/net deny
 #
-# `ask` is answered by declining in 0.1.0; the overlay that asks a human is
-# 0.2.0's, and a posture whose behaviour is not what its name suggests should say
-# so rather than imply otherwise.
+# `ask` stops the turn and asks in an overlay. It was answered by declining
+# through 0.1.1, and the release that changed it said so at the time: a posture
+# whose behaviour is not what its name suggests has to say so rather than imply
+# otherwise. In a headless `io exec` run `ask` is still a decline, because nothing
+# there can answer it — see the README.
 #
 # NOTE: a PROJECT-scoped file may narrow this and may never widen it — a
 # repository you cloned must not be able to grant itself permission. Widening
@@ -68,25 +70,33 @@ net = "deny"
 # name = "no-secrets"
 # rules = [{ act = "read", effect = "deny", pattern = ".env" }]
 
-# --- Not read by io-cli 0.1.0 -----------------------------------------------
+# --- Not read by an interactive session -------------------------------------
 #
-# io-harness reads all of these; io-cli 0.1.0 does not pass them to a turn, so
-# writing them here has no effect on an `io` session yet. See the README: the
-# harness's steerable turn builds its own contract, and the entry point that
-# takes a caller's contract does not take a steer inbox, so honouring them today
-# would mean giving up Ctrl+C.
+# io-harness reads all of these; an `io` SESSION does not pass them to a turn, so
+# writing them here has no effect on what you type in a terminal. See the README:
+# the harness's steerable turn builds its own contract, and the entry point that
+# takes a caller's contract does not take a steer inbox, so honouring them in a
+# session would mean giving up Ctrl+C.
 #
 #   [sandbox]      limits and network allowances
 #   [run]          step, token and duration budgets
 #   [instructions] AGENTS.md and friends
 #   [[mcp]] [[lsp]] [[agent]] [web] [browser]
 #
-# The sandbox itself IS on: a workspace turn runs commands inside it. What is
-# missing is the configured ceilings, not the containment.
+# `io exec` DOES apply [sandbox] and [run], from 0.5.0 on. A headless run has
+# nobody to steer it, so it can hand the harness a contract of its own — which is
+# what those two sections travel in. The same file, the same boundary, reached
+# from the other side.
+#
+# The sandbox itself IS on in a session: a workspace turn runs commands inside it.
+# What is missing there is the configured ceilings, not the containment.
 
 # --- io-cli's own section ---------------------------------------------------
 #
-# One key in this release. io-harness does not validate this table.
+# Four keys and a table of keybindings. io-harness does not validate any of it, so
+# an unrecognised VALUE reads as the default rather than stopping a session. A
+# table io-harness cannot parse at all is different: the session starts on the
+# defaults and says so, carrying the harness's own message.
 
 [app.io-cli]
 # "dark" or "light". Absent means detect from the terminal background.
@@ -99,3 +109,50 @@ theme = "dark"
 #   "minimal"  the changed lines and the @@ header, without the context. For
 #              reviewing by file rather than by hunk.
 diff = "unified"
+# Which marks to draw with: "unicode" or "ascii".
+#
+# Absent — the default — asks the locale: LC_ALL, then LC_CTYPE, then LANG, and
+# the first one PRESENT decides, whatever it says. Name a set here when the locale
+# is right about the encoding and wrong about the font, which is what a working
+# indicator drawn as boxes looks like.
+#
+# Independent of colour in both directions: the ASCII set arrives at a fully
+# coloured theme, and NO_COLOR keeps the Unicode marks.
+#
+# glyphs = "ascii"
+#
+# Run every session in plain mode: no animation, the ASCII set forced, and each
+# state the session enters committed to the scrollback as a line of text. The same
+# switch as `--plain`, and the flag wins — there is no `--no-plain`, so a file that
+# says true here cannot be turned off for one run.
+#
+# false is the default and what an absent key means; it is written out so the file
+# says which way round it is.
+plain = false
+
+# The session's own keys, by action name. Absent means the defaults, which are the
+# ones in the README's table; every line below states its default and so changes
+# nothing.
+#
+# A binding is a chord, or two chords separated by a space. Modifiers are ctrl,
+# alt and shift, joined to the key with +, in any order and any case. A key is a
+# single character, a named key (esc, enter, tab, backtab, space, up, down, left,
+# right, home, end, pageup, pagedown, backspace, delete, insert) or f1 .. f12.
+# Because + is the join, + itself cannot be bound.
+#
+# `interrupt` — Ctrl+C — is absent because it cannot be moved, and naming it here
+# earns a refusal rather than being ignored: it is the key that interrupts a
+# running turn and leaves io, and a file able to take it away is one able to lock
+# you inside a running agent. Putting any other action onto ctrl+c is refused for
+# the same reason.
+#
+# A line that cannot be read leaves its action on the default and says which key
+# it kept; a name that is no action says which names there are. Neither stops the
+# session, and `/help` always shows the keys actually in force.
+
+[app.io-cli.keys]
+exit = "ctrl+d"
+posture = "shift+tab"
+clear = "ctrl+l"
+transcript = "ctrl+t"
+rewind = "esc esc"

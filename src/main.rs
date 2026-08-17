@@ -19,8 +19,9 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use io_cli::app::{App, Command};
 use io_cli::cli::{Cli, Command as Subcommand};
 use io_cli::commands::{self, Action, Copied};
+use io_cli::glyphs::Glyphs;
 use io_cli::picker::{Outcome, Picker, Row};
-use io_cli::settings::{self, CliSettings, Posture};
+use io_cli::settings::{self, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
@@ -53,8 +54,26 @@ async fn run() -> Result<u8, String> {
     };
 
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
-    let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
-    let theme = Theme::from_env(stored.and_then(|s| s.theme).as_deref());
+    // The notice this read produces is dropped *here* and only here: `run` may
+    // hand control to the wizard, which rewrites the very file this just failed
+    // to read, so a complaint raised now could be about a file that no longer
+    // exists in that state by the time there is a session to say it in. The read
+    // in `drive` happens after the wizard and is the one that discloses.
+    let (stored, _) = settings::stored(&config);
+    // Plain mode is decided ONCE, and by a function in the library rather than by
+    // an expression written here: nothing under `tests/` can link this binary, so
+    // a decision made in this file is one no test drives and no sabotage can make
+    // fail. It has to be settled at this point rather than later because the glyph
+    // set on the next line is chosen from it, and that set is never re-derived.
+    let plain = settings::plain(cli.plain, stored.as_ref());
+    // The glyph set is chosen ONCE, here, and every later resolution is handed
+    // the same one. `Theme::resolve` takes it as a required argument rather than
+    // defaulting it for exactly this reason: a theme is re-resolved three times
+    // as a session runs — after the wizard, on `/theme`, and inside the wizard's
+    // own theme step — and a default at any of those would silently discard the
+    // set startup chose the moment somebody arrowed a list.
+    let glyphs = Glyphs::from_env(plain, stored.as_ref().and_then(|s| s.glyphs.as_deref()));
+    let theme = Theme::from_env(stored.and_then(|s| s.theme).as_deref(), glyphs);
 
     // The headless path leaves before anything takes the terminal, and before the
     // wizard can be reached: `io exec` in a container with no configuration file
@@ -105,7 +124,12 @@ async fn run() -> Result<u8, String> {
         drop(screen);
 
         match chosen? {
-            Some(chosen) => theme = chosen,
+            // Resolved rather than assigned, for the same reason the stored theme
+            // above is: what the user picked is a preference, and `NO_COLOR`
+            // outranks a preference wherever it came from. The wizard already
+            // resolves its own, so this is the second lock on the same door —
+            // cheap, and the door is the one a first run walks through.
+            Some(chosen) => theme = Theme::from_env(Some(chosen.name), glyphs),
             // Nothing was written and the user said so. Leaving is the whole
             // answer; starting a session against no configuration is not.
             None => return Ok(io_cli::exec::OK),
@@ -125,7 +149,16 @@ async fn run() -> Result<u8, String> {
             .map_err(|error| error.to_string())?;
     }
 
-    let result = drive(&mut screen, &mut inputs, config, theme, cli.model, &root).await;
+    let result = drive(
+        &mut screen,
+        &mut inputs,
+        config,
+        theme,
+        cli.model,
+        plain,
+        &root,
+    )
+    .await;
 
     // Explicit as well as on `Drop`, so the terminal is back before anything is
     // printed about how this ended.
@@ -135,12 +168,18 @@ async fn run() -> Result<u8, String> {
 }
 
 /// The session, once there is a configuration to run it against.
+#[allow(clippy::too_many_arguments)]
 async fn drive(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &mut UnboundedReceiver<Event>,
     config: Config,
     theme: Theme,
     model_override: Option<String>,
+    // Threaded down from `run` rather than read out of `config` again here, the
+    // way `diff_style` below is. `--plain` is a flag, the flag outranks the file,
+    // and a second read of the file at this depth would be a second answer to a
+    // question already settled — one that silently drops the flag.
+    plain: bool,
     root: &std::path::Path,
 ) -> Result<(), String> {
     let Some(spec) = config.provider_spec().cloned() else {
@@ -151,8 +190,25 @@ async fn drive(
     // `[app.io-cli]` again, read through the harness rather than parsed here. It
     // is read in `drive` rather than in `run` because `run` may hand control to
     // the wizard, which writes the file this then reads back.
-    let stored: Option<CliSettings> = config.app(settings::APP_KEY).unwrap_or_default();
-    let diff_style = settings::DiffStyle::from_setting(stored.and_then(|s| s.diff).as_deref());
+    //
+    // **This is the read that discloses.** A section io-harness could not parse
+    // comes back here as a sentence rather than as silence, and the session
+    // starts on the defaults with that sentence in its scrollback — see
+    // [`settings::stored`] for why the old `.unwrap_or_default()` was a defect
+    // and not a shortcut.
+    let (stored, complaint) = settings::stored(&config);
+    let diff_style =
+        settings::DiffStyle::from_setting(stored.as_ref().and_then(|s| s.diff.as_deref()));
+    // The keys are resolved once, here, and handed down. Every notice the file
+    // earned — a key that could not be read, a name that is no action, an
+    // attempt on `Ctrl+C` — is carried with the section's own complaint, so the
+    // session says everything it ignored in one place at the start rather than
+    // leaving the operator to discover it by pressing something.
+    let (keys, mut notices) =
+        io_cli::keys::Keys::resolve(stored.as_ref().and_then(|s| s.keys.as_ref()));
+    if let Some(complaint) = complaint {
+        notices.insert(0, complaint);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -178,7 +234,10 @@ async fn drive(
             session,
             policy,
             diff_style,
+            keys,
+            notices,
             theme,
+            plain,
         },
     )
     .await?
@@ -193,7 +252,11 @@ struct Interactive<'a, 'b> {
     session: Session,
     policy: Policy,
     diff_style: settings::DiffStyle,
+    keys: io_cli::keys::Keys,
+    /// What `[app.io-cli]` earned itself, in the order it will be said.
+    notices: Vec<String>,
     theme: Theme,
+    plain: bool,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -213,7 +276,10 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.session,
             self.policy,
             self.diff_style,
+            self.keys,
+            self.notices,
             self.theme,
+            self.plain,
             model,
         )
         .await
@@ -231,7 +297,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     mut session: Session,
     policy: Policy,
     diff_style: settings::DiffStyle,
+    keys: io_cli::keys::Keys,
+    notices: Vec<String>,
     theme: Theme,
+    plain: bool,
     model: String,
 ) -> Result<(), String> {
     // Built here rather than handed in, so there is one place a provider comes
@@ -239,6 +308,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     let mut provider = make(&model)?;
     let mut app = App::new(theme, model);
     app.set_diff_style(diff_style);
+    // Before anything is drawn and before the first keystroke, so the keys are
+    // never briefly the defaults, and so the notices are the first thing in the
+    // scrollback rather than something that appears under an answer.
+    app.set_keys(keys);
+    for notice in notices {
+        app.say(Tone::Warning, notice);
+    }
+    // Said once, before anything is drawn or any turn starts. Everything the mode
+    // governs — the indicator, and the state words that go to scrollback in its
+    // place — is downstream of this one call.
+    app.set_plain(plain);
     // Asked of the session rather than threaded down from `run`, so there is one
     // answer to "which workspace is this" and it is the harness's.
     app.set_root(session.root());
@@ -281,13 +361,34 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     match kind {
                         Pick::Theme => {
                             if let Some(chosen) = Theme::by_name(&label) {
-                                app.theme = chosen;
-                                app.events.set_theme(chosen);
+                                // Resolved, not assigned — the third and last
+                                // place a theme reaches a session, and the one
+                                // that would otherwise let `/theme` bring colour
+                                // back into a run the environment asked to be
+                                // uncoloured. The file lost to `NO_COLOR`
+                                // already, and 0.6.0 made the wizard's picker
+                                // lose to it too; a mid-session picker that still
+                                // won would make the variable mean *until you
+                                // touch anything*.
+                                let applied = Theme::from_env(Some(chosen.name), app.theme.glyphs);
+                                app.theme = applied;
+                                app.events.set_theme(applied);
+                                // The sentence has to say which of the two
+                                // happened. Under the variable the choice is
+                                // real but invisible, and reporting it the same
+                                // way would describe a change the operator
+                                // cannot see anywhere on their screen.
                                 app.say(
                                     Tone::Muted,
-                                    format!(
-                                        "theme {label} for this session; `io setup` to keep it"
-                                    ),
+                                    if applied.coloured {
+                                        format!(
+                                            "theme {label} for this session; `io setup` to keep it"
+                                        )
+                                    } else {
+                                        format!(
+                                            "theme {label} chosen; NO_COLOR is set, so this session stays uncoloured"
+                                        )
+                                    },
                                 );
                             }
                         }
@@ -376,20 +477,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // one would change, in the turn's own words, so a confirmation is a
             // confirmation of something specific rather than of a keystroke.
             Command::ArmRewind => match io_cli::rewind::preview(&session, &store) {
-                Some(about) => app.say(Tone::Warning, io_cli::rewind::armed_line(&about)),
+                Some(about) => app.say(
+                    Tone::Warning,
+                    io_cli::rewind::armed_line(&about, &app.theme.glyphs),
+                ),
                 None => app.say(Tone::Muted, "there is no turn to undo"),
             },
             // The second. This is where the operator's files change.
             Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
                 Ok(Some(undone)) => {
-                    for (tone, line) in io_cli::rewind::undone_lines(&undone) {
+                    for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                         app.say(tone, line);
                     }
                 }
                 Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
                 Err(error) => app.say(Tone::Error, format!("nothing was undone: {error}")),
             },
-            Command::Slash(text) => match commands::parse(&text, &app.theme) {
+            Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
@@ -443,7 +547,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                     Ok((found, cut)) => {
                         let ids: Vec<i64> = found.iter().map(|session| session.id).collect();
-                        let mut rows = io_cli::sessions::rows(&found, screen.width());
+                        let mut rows =
+                            io_cli::sessions::rows(&found, screen.width(), &app.theme.glyphs);
                         // Last, and a row rather than a notice, so a list that was
                         // cut cannot read as a complete one. It carries no id, and
                         // choosing it does nothing.
@@ -467,7 +572,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     ),
                     Ok(turns) => {
                         let ids: Vec<i64> = turns.iter().map(|turn| turn.id).collect();
-                        let rows = io_cli::sessions::turn_rows(&turns, screen.width());
+                        let rows =
+                            io_cli::sessions::turn_rows(&turns, screen.width(), &app.theme.glyphs);
                         let at = ids.len().saturating_sub(1);
                         picker = Some((
                             Picker::new("Continue from which turn?", rows).selecting(at),
@@ -605,10 +711,16 @@ async fn turn<P: Provider>(
                             // predict — so all four wait, and the operator is told
                             // that is what is happening rather than left pressing
                             // a key that appears to do nothing.
-                            Command::Slash(_) => app.say(
-                                Tone::Muted,
-                                "not while a turn is running — Ctrl+C interrupts it first",
-                            ),
+                            Command::Slash(_) => {
+                                let dash = app.theme.glyphs.dash;
+                                app.say(
+                                    Tone::Muted,
+                                    format!(
+                                        "not while a turn is running {dash} Ctrl+C interrupts it \
+                                         first"
+                                    ),
+                                )
+                            }
                             _ => {}
                         }
                     }
@@ -738,7 +850,7 @@ fn expand(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>>
 
     let mut lines = vec![theme.notice(
         Tone::Muted,
-        format!("step {} — {}", step.step, step.decision),
+        format!("step {} {} {}", step.step, theme.glyphs.dash, step.decision),
     )];
     lines.extend(
         step.result

@@ -44,7 +44,6 @@ use syntect::easy::ScopeRangeIterator;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
 use crate::settings::DiffStyle;
-use crate::status::SEPARATOR;
 use crate::theme::{Theme, Tone};
 
 /// What every line of the cell is indented by, so a hunk sits under its header
@@ -231,6 +230,7 @@ pub fn cell(edit: &Edit, theme: &Theme, width: u16) -> Vec<Line<'static>> {
 
 /// The same, at a chosen style.
 pub fn cell_styled(edit: &Edit, theme: &Theme, width: u16, style: DiffStyle) -> Vec<Line<'static>> {
+    let glyphs = &theme.glyphs;
     let mut lines = vec![header(edit, theme)];
 
     let Some(hunk) = edit.hunk.as_deref() else {
@@ -244,8 +244,9 @@ pub fn cell_styled(edit: &Edit, theme: &Theme, width: u16, style: DiffStyle) -> 
     let cut = drawn.len().saturating_sub(MAX_BODY_LINES);
     if cut > 0 {
         drawn.truncate(MAX_BODY_LINES);
+        let (elision, dash) = (glyphs.elision, glyphs.dash);
         drawn.push(Line::from(Span::styled(
-            format!("{INDENT}⋯ {cut} more lines of this change — the whole of it is in the trace, and `/copy diff` carries it"),
+            format!("{INDENT}{elision} {cut} more lines of this change {dash} the whole of it is in the trace, and `/copy diff` carries it"),
             theme.style(Tone::Muted),
         )));
     }
@@ -257,10 +258,11 @@ pub fn cell_styled(edit: &Edit, theme: &Theme, width: u16, style: DiffStyle) -> 
 /// `  src/theme.rs · +1 -1 · edit_file`, and `· no diff stored` when there is
 /// no hunk to draw under it.
 fn header(edit: &Edit, theme: &Theme) -> Line<'static> {
+    let separator = theme.glyphs.separator;
     let mut spans = vec![
         Span::styled(INDENT.to_string(), theme.style(Tone::Muted)),
         Span::styled(edit.path.clone(), theme.style(Tone::Accent)),
-        Span::styled(SEPARATOR.to_string(), theme.style(Tone::Muted)),
+        Span::styled(separator.to_string(), theme.style(Tone::Muted)),
         Span::styled(format!("+{}", edit.lines_added), theme.style(Tone::Added)),
         Span::styled(" ".to_string(), theme.style(Tone::Muted)),
         Span::styled(
@@ -268,13 +270,13 @@ fn header(edit: &Edit, theme: &Theme) -> Line<'static> {
             theme.style(Tone::Removed),
         ),
         Span::styled(
-            format!("{SEPARATOR}{}", edit.tool),
+            format!("{separator}{}", edit.tool),
             theme.style(Tone::Muted),
         ),
     ];
     if edit.hunk.is_none() {
         spans.push(Span::styled(
-            format!("{SEPARATOR}no diff stored"),
+            format!("{separator}no diff stored"),
             theme.style(Tone::Muted),
         ));
     }

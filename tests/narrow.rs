@@ -292,7 +292,7 @@ fn n5_the_resume_picker_at_eighty_columns_keeps_the_end_of_the_path() {
         prompt: "make the retry loop back off instead of hammering the endpoint".into(),
         at: "2026-08-17 02:31".into(),
     }];
-    let rows = io_cli::sessions::rows(&sessions, WIDTH);
+    let rows = io_cli::sessions::rows(&sessions, WIDTH, &io_cli::theme::DARK.glyphs);
     let mut picker = io_cli::picker::Picker::new("Resume which session?", rows);
 
     screen
@@ -331,7 +331,7 @@ fn n5_the_fork_picker_at_eighty_columns_keeps_the_turn_number() {
     let long = "explain in as much detail as you possibly can, at length, without \
                 stopping, exactly why the retry loop hammers the endpoint";
     let turns = vec![turn(1, 11, "first, read the client"), turn(2, 12, long)];
-    let rows = io_cli::sessions::turn_rows(&turns, WIDTH);
+    let rows = io_cli::sessions::turn_rows(&turns, WIDTH, &io_cli::theme::DARK.glyphs);
     let mut picker = io_cli::picker::Picker::new("Continue from which turn?", rows);
 
     screen
@@ -349,6 +349,405 @@ fn n5_the_fork_picker_at_eighty_columns_keeps_the_turn_number() {
             "a row overflowed eighty columns: {line:?}",
         );
     }
+}
+
+/// **F12 — the picker fits eighty columns, title and label included.**
+///
+/// The two surfaces this file could not see until 0.6.0 were the picker's title
+/// and its row label: `Picker::render` passed only the *detail* through
+/// `picker::fit`, and the other two went to a viewport `Paragraph` raw. `/resume`
+/// and `/fork` escaped it only because `sessions::rows` happens to shorten a
+/// prompt to a third of the width before the widget ever sees it — a property of
+/// one caller, not of the widget. The wizard's model step, whose labels are model
+/// ids straight out of a provider's catalogue, had no such caller.
+///
+/// **Every assertion here is on surviving content, and the load-bearing one is
+/// `ends_with(ellipsis)`.** `Screen::viewport_text` right-trims each row
+/// (`term.rs:292`), so a row clipped at eighty and a row fitted to eighty are the
+/// same length and `chars().count() <= 80` cannot tell them apart — it fails only
+/// on a wrap, which is not the failure this product keeps shipping. A *fitted* row
+/// ends with the whole mark; a *clipped* row is the mark's last character short,
+/// which is one cell in the Unicode set and one of three dots in the ASCII set.
+/// That is exactly the contract's sabotage — one cell of overrun in the `used`
+/// budget — and it is why the ellipsis is asserted at the end of the row rather
+/// than merely somewhere in the frame.
+///
+/// Both glyph sets, because the arithmetic differs between them: the ellipsis is
+/// one character in Unicode and three in ASCII, and a fitter that reserved the
+/// wrong number of cells would clip every shortened row of every surface at once.
+#[test]
+fn f12_the_picker_fits_eighty_columns_with_a_long_title_and_a_long_label() {
+    for glyphs in [io_cli::glyphs::UNICODE, io_cli::glyphs::ASCII] {
+        let set = glyphs.name;
+        let mut theme = io_cli::theme::DARK;
+        theme.glyphs = glyphs;
+        let mark = glyphs.ellipsis;
+
+        let mut picker = io_cli::picker::Picker::new(
+            "Which model should this session run against, of the ones this provider \
+             is actually serving today?",
+            vec![
+                // A label longer than the terminal, which is what a model id from
+                // a self-hosted catalogue looks like. It leaves no room for a
+                // detail at all, which is correct: the label identifies the row.
+                io_cli::picker::Row::with_detail(
+                    "a-self-hosted-vendor/an-extremely-long-model-identifier-that-nobody-would-\
+                     ever-type-by-hand-v2",
+                    "128k context",
+                ),
+                // A short label with a long detail: the row whose width is decided
+                // by the `used` budget, and therefore the row the contract's
+                // one-cell sabotage lands on.
+                io_cli::picker::Row::with_detail(
+                    "gpt-5",
+                    "served direct by the vendor, with the reference price list and no proxy \
+                     in front of it",
+                ),
+            ],
+        );
+
+        let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
+        screen
+            .draw(|frame| picker.render(frame, frame.area(), &theme))
+            .expect("frame");
+        let drawn = screen.viewport_text().to_string();
+        let mut rows = drawn.lines();
+        let title = rows.next().unwrap_or_default();
+        let first = rows.next().unwrap_or_default();
+        let second = rows.next().unwrap_or_default();
+
+        assert!(
+            title.starts_with("Which model should this session run against"),
+            "the picker's title lost the beginning of its question ({set}): {drawn:?}",
+        );
+        assert!(
+            title.ends_with(mark),
+            "the picker's title was clipped rather than fitted ({set}): {title:?}",
+        );
+
+        assert!(
+            first.starts_with(glyphs.marker),
+            "the selection marker is the only thing that says which row Enter takes \
+             and it did not survive ({set}): {drawn:?}",
+        );
+        assert!(
+            first.contains("a-self-hosted-vendor/an-extremely-long-model-identifier"),
+            "the identifying part of the selected row's label was cut ({set}): {drawn:?}",
+        );
+        assert!(
+            first.ends_with(mark),
+            "the selected row's label was clipped rather than fitted ({set}): {first:?}",
+        );
+
+        assert!(
+            second.starts_with("  gpt-5"),
+            "an unselected row must keep its label, in the marker's own column ({set}): {drawn:?}",
+        );
+        assert!(
+            second.contains("served direct by the vendor"),
+            "the beginning of the detail is the part that carries it ({set}): {drawn:?}",
+        );
+        assert!(
+            second.ends_with(mark),
+            "the row overran its budget and ratatui took the end of the mark off it \
+             ({set}): {second:?}",
+        );
+    }
+}
+
+/// **F12 — every wizard step fits eighty columns.**
+///
+/// The wizard had no width test at any width before this one: every test in
+/// `tests/wizard.rs` renders at a hundred columns, and `wizard::paragraph` does
+/// not wrap. Eight-plus screens, each with its own layout, none of them ever drawn
+/// at the size the contract calls supported.
+///
+/// The audit's finding was that the *questions* all fit — every fixed string the
+/// wizard draws is under seventy characters — and the three things that do not are
+/// the three that come from outside it: the provider's rejection message, the
+/// configuration path, and a model id from a catalogue. Those three are fitted
+/// now; the questions are asserted verbatim so that a step whose wording grows
+/// past eighty columns fails here rather than losing its second half in silence.
+///
+/// `Step::Done` and `Step::Cancelled` are deliberately absent: they draw nothing,
+/// so there is no row for a width to be wrong about.
+#[test]
+fn f12_every_wizard_step_fits_eighty_columns() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use io_cli::wizard::{Step, Wizard};
+
+    // A configuration path longer than the sixty-four columns the confirmation
+    // screen's lead text leaves for it. Fabricated rather than created: nothing is
+    // written here, because the wizard hands `Progress::Write` back to a driver
+    // this test never runs.
+    std::env::set_var(
+        "IO_CONFIG",
+        "/Users/a-rather-long-account-name/Library/Preferences/io-cli/first-run/io.toml",
+    );
+    std::env::remove_var("IO_CONFIG_HOME");
+
+    // Longer than the seventy-eight columns a marker leaves a picker row, so the
+    // model step and the confirmation screen both have something to shorten.
+    const MODEL: &str = "a-self-hosted-vendor/an-extremely-long-model-identifier-that-nobody-\
+                         would-ever-type-by-hand-v2";
+    // What a provider actually sends back when a key is wrong: its own prose, at
+    // its own length, and none of this crate's business to shorten at the source.
+    const REJECTION: &str = "401 Unauthorized: no auth credentials found for this request; \
+                             check that the key is for this account and has not been revoked";
+
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    for glyphs in [io_cli::glyphs::UNICODE, io_cli::glyphs::ASCII] {
+        let set = glyphs.name;
+        let mark = glyphs.ellipsis;
+        let mut theme = io_cli::theme::DARK;
+        theme.glyphs = glyphs;
+
+        let (mut screen, _recorder) =
+            support::screen_of(WIDTH, HEIGHT, io_cli::term::WIZARD_VIEWPORT_HEIGHT);
+        let mut wizard = Wizard::new(theme);
+
+        // --- Welcome. ---
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Welcome. Four questions and you have a working agent."),
+            "the welcome step's sentence did not survive ({set}): {drawn:?}",
+        );
+        assert!(
+            drawn.contains("Enter to begin, Esc to leave."),
+            "the welcome step's instruction did not survive ({set}): {drawn:?}",
+        );
+
+        // --- Provider. ---
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Provider);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Which provider?"),
+            "the provider step lost its question ({set}): {drawn:?}",
+        );
+        for label in [
+            "OpenRouter",
+            "Anthropic",
+            "OpenAI",
+            "Any OpenAI-compatible endpoint",
+        ] {
+            assert!(
+                drawn.contains(label),
+                "the provider step lost the row {label:?} ({set}): {drawn:?}",
+            );
+        }
+        assert!(
+            drawn.contains("a base URL of your own"),
+            "the longest row's detail lost the words that explain it ({set}): {drawn:?}",
+        );
+
+        // --- Credential, and the provider's own rejection on it. ---
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Credential);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Paste an API key"),
+            "the credential step lost its question ({set}): {drawn:?}",
+        );
+
+        wizard.paste("sk-not-a-real-key");
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Verifying);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Checking the key against the provider"),
+            "the verifying step lost the only sentence it draws ({set}): {drawn:?}",
+        );
+
+        wizard.rejected(REJECTION);
+        assert_eq!(wizard.step(), Step::Credential);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        let notice = drawn
+            .lines()
+            .find(|line| line.starts_with("error: "))
+            .unwrap_or_else(|| panic!("the rejection is not on the screen ({set}): {drawn:?}"));
+        assert!(
+            notice.contains("401 Unauthorized: no auth credentials found"),
+            "the beginning of the provider's message is the informative half and it \
+             was cut ({set}): {notice:?}",
+        );
+        assert!(
+            notice.ends_with(mark),
+            "the rejection was clipped rather than fitted, so nothing on screen says \
+             the message continues ({set}): {notice:?}",
+        );
+        assert!(
+            drawn.contains("Paste an API key"),
+            "the rejection pushed the question off the credential step ({set}): {drawn:?}",
+        );
+
+        // --- Model, from a catalogue whose ids are longer than the terminal. ---
+        wizard.paste("sk-not-a-real-key");
+        wizard.key(key(KeyCode::Enter));
+        wizard.verified();
+        wizard.catalogue(vec![MODEL.to_string()]);
+        assert_eq!(wizard.step(), Step::Model);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Which model?"),
+            "the model step lost its question ({set}): {drawn:?}",
+        );
+        let row = drawn
+            .lines()
+            .find(|line| line.contains("a-self-hosted-vendor"))
+            .unwrap_or_else(|| panic!("the model row is not on the screen ({set}): {drawn:?}"));
+        assert!(
+            row.starts_with(glyphs.marker),
+            "the model row lost the marker that says Enter would take it ({set}): {drawn:?}",
+        );
+        assert!(
+            row.ends_with(mark),
+            "the model id was clipped rather than fitted ({set}): {row:?}",
+        );
+
+        // --- Theme, which is a picker with a sample transcript under it. ---
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Theme);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Which theme?"),
+            "the theme step lost its question ({set}): {drawn:?}",
+        );
+        for name in ["dark", "light"] {
+            assert!(
+                drawn.contains(name),
+                "the theme step lost the row {name:?} ({set}): {drawn:?}",
+            );
+        }
+        assert!(
+            drawn.contains("not your session"),
+            "the sample's own label is what stops it reading as a real failure, and it \
+             was cut ({set}): {drawn:?}",
+        );
+        assert!(
+            drawn.contains("rule fs.deny, layer workspace"),
+            "the sample's refusal lost the half that makes it worth previewing \
+             ({set}): {drawn:?}",
+        );
+
+        // --- Posture. ---
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Posture);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("How much should it be allowed to do?"),
+            "the posture step lost its question ({set}): {drawn:?}",
+        );
+        for label in ["Sandboxed workspace", "Ask before writes", "Read only"] {
+            assert!(
+                drawn.contains(label),
+                "the posture step lost the row {label:?}, which is what the operator is \
+                 choosing between ({set}): {drawn:?}",
+            );
+        }
+        assert!(
+            drawn.contains("read, write and run inside this repository"),
+            "the chosen posture's explanation lost the words that describe it \
+             ({set}): {drawn:?}",
+        );
+
+        // --- Confirm: the screen that promises to name the exact path. ---
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Confirm);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        let written = drawn
+            .lines()
+            .find(|line| line.starts_with("This will write "))
+            .unwrap_or_else(|| panic!("the path line is not on the screen ({set}): {drawn:?}"));
+        assert!(
+            written.ends_with("first-run/io.toml"),
+            "the end of the path is what identifies the file and it must survive — a \
+             confirmation that names a different file has broken the wizard's one \
+             promise ({set}): {written:?}",
+        );
+        assert!(
+            written.contains(mark),
+            "the path was clipped rather than shortened from the left ({set}): {written:?}",
+        );
+        let model = drawn
+            .lines()
+            .find(|line| line.starts_with("  model "))
+            .unwrap_or_else(|| panic!("the model line is not on the screen ({set}): {drawn:?}"));
+        assert!(
+            model.contains("a-self-hosted-vendor"),
+            "the confirmation named a model the operator cannot recognise ({set}): {model:?}",
+        );
+        assert!(
+            model.ends_with(mark),
+            "the model id was clipped rather than fitted ({set}): {model:?}",
+        );
+        for fact in [
+            "provider",
+            "OpenRouter",
+            "credential",
+            "permission",
+            "Sandboxed workspace",
+            "theme",
+            "Enter to write it, Esc to leave without writing.",
+        ] {
+            assert!(
+                drawn.contains(fact),
+                "the confirmation lost {fact:?}, which is one of the facts it exists to \
+                 state ({set}): {drawn:?}",
+            );
+        }
+
+        // `Step::Done` draws nothing at all, so there is no row here for eighty
+        // columns to be wrong about — only that the walk arrived.
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Done);
+
+        // --- The two steps only a compatible endpoint reaches. ---
+        let mut wizard = Wizard::new(theme);
+        wizard.key(key(KeyCode::Enter));
+        for _ in 0..3 {
+            wizard.key(key(KeyCode::Down));
+        }
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::BaseUrl);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("The base URL of the endpoint, for example http://localhost:11434/v1"),
+            "the base URL step's example is the whole of its instruction and the end of \
+             it was cut ({set}): {drawn:?}",
+        );
+
+        wizard.paste("http://localhost:11434/v1");
+        wizard.key(key(KeyCode::Enter));
+        wizard.paste("sk-not-a-real-key");
+        wizard.key(key(KeyCode::Enter));
+        wizard.verified();
+        // No catalogue and no default to fall back on: the one route to the typed
+        // model step.
+        wizard.catalogue(Vec::new());
+        assert_eq!(wizard.step(), Step::ModelText);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("No catalogue to offer. Type the model id this endpoint serves."),
+            "the typed-model step lost its question ({set}): {drawn:?}",
+        );
+    }
+}
+
+/// Draw whichever step the wizard is on, and read the real render buffer back.
+///
+/// The buffer rather than the `Line`s the wizard built, because the whole subject
+/// is what survives the last hop: a `Paragraph` in the viewport does not wrap, and
+/// what it cannot fit it drops on the floor without telling anybody.
+fn draw_step(
+    wizard: &mut io_cli::wizard::Wizard,
+    screen: &mut io_cli::term::Screen<support::Fixed>,
+) -> String {
+    screen
+        .draw(|frame| wizard.render(frame, frame.area()))
+        .expect("frame");
+    screen.viewport_text().to_string()
 }
 
 /// A `Turn` built by hand.
@@ -389,7 +788,7 @@ fn n5_the_armed_rewind_line_keeps_both_halves_at_eighty_columns() {
                  every single failure"
             .into(),
     };
-    let line = io_cli::rewind::armed_line(&about);
+    let line = io_cli::rewind::armed_line(&about, &io_cli::theme::DARK.glyphs);
     assert!(
         line.chars().count() > WIDTH as usize,
         "this test is only meaningful while the line is wider than the terminal",

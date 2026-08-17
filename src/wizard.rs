@@ -25,9 +25,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tui_textarea::TextArea;
 
-use crate::picker::{Outcome, Picker, Row};
+use crate::picker::{fit, fit_left, Outcome, Picker, Row};
 use crate::settings::{self, Posture};
-use crate::theme::{Theme, Tone, THEMES};
+use crate::theme::{Background, Theme, Tone, THEMES};
 
 /// The providers on offer: the variants `io_harness::ProviderSpec` declares.
 /// Enumerated from the type, not invented here — a provider the harness gains is
@@ -163,6 +163,11 @@ pub struct Wizard {
     /// Typed by the user, or `None` when the environment already carries it.
     api_key: Option<String>,
     model: Option<String>,
+    /// The theme name that will be **written down**, which is not always the name
+    /// of the theme being rendered. Under `NO_COLOR` those two part company: the
+    /// rendered theme is `MONO` and the written one is whichever row the picker
+    /// was left on, because the file records a preference for the run that does
+    /// not have the variable set.
     theme_name: String,
     posture: Posture,
     picker: Option<Picker>,
@@ -173,6 +178,14 @@ pub struct Wizard {
     rejection: Option<String>,
     /// Whether the environment already carries a usable key for this provider.
     env_key_present: bool,
+    /// Whether colour is off for this whole run.
+    ///
+    /// Read from the theme handed in rather than from the environment, because
+    /// `MONO` is the only uncoloured theme there is and `Theme::resolve` hands
+    /// it back for one reason only. Holding the answer instead of re-reading the
+    /// variable also keeps the theme step drivable from a test that never has to
+    /// set a process-wide variable.
+    no_color: bool,
 }
 
 impl Wizard {
@@ -184,12 +197,22 @@ impl Wizard {
             base_url: None,
             api_key: None,
             model: None,
-            theme_name: theme.name.to_string(),
+            // Resolved again with colour forced on, which under `NO_COLOR` turns
+            // `MONO` into the coloured theme this terminal would otherwise have
+            // had. Seeding from `theme.name` directly would seed "mono", and
+            // "mono" is a label rather than a key — `Theme::by_name` searches the
+            // selectable themes and `MONO` is not among them — so it would open
+            // the picker on the wrong row and, if the file were written from it,
+            // record a preference no later launch could ever resolve.
+            theme_name: Theme::resolve(false, Background::detect(), Some(theme.name), theme.glyphs)
+                .name
+                .to_string(),
             posture: Posture::Workspace,
             picker: None,
-            input: masked(),
+            input: masked(theme.glyphs.mask),
             rejection: None,
             env_key_present: false,
+            no_color: !theme.coloured,
         }
     }
 
@@ -309,7 +332,7 @@ impl Wizard {
     /// confirmation screen, which this never reaches.
     pub fn rejected(&mut self, message: impl Into<String>) -> Progress {
         self.rejection = Some(message.into());
-        self.input = masked();
+        self.input = masked(self.theme.glyphs.mask);
         self.step = Step::Credential;
         Progress::Idle
     }
@@ -380,7 +403,7 @@ impl Wizard {
                     .map(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
                     .unwrap_or(false);
                 self.picker = None;
-                self.input = masked();
+                self.input = masked(self.theme.glyphs.mask);
                 self.step = if kind == Kind::Compatible {
                     self.input = plain();
                     Step::BaseUrl
@@ -404,7 +427,7 @@ impl Wizard {
                 return Progress::Idle;
             }
             self.base_url = Some(typed);
-            self.input = masked();
+            self.input = masked(self.theme.glyphs.mask);
             self.step = Step::Credential;
             return Progress::Idle;
         }
@@ -431,7 +454,7 @@ impl Wizard {
                 } else {
                     self.api_key = Some(typed);
                 }
-                self.input = masked();
+                self.input = masked(self.theme.glyphs.mask);
                 self.step = Step::Verifying;
                 self.spec().map(Progress::Verify).unwrap_or(Progress::Idle)
             }
@@ -449,24 +472,7 @@ impl Wizard {
         match picker.key(key) {
             Outcome::Chosen(index) => {
                 self.model = picker.rows().get(index).map(|row| row.label.clone());
-                self.step = Step::Theme;
-                self.picker = Some(
-                    Picker::new(
-                        "Which theme?",
-                        THEMES
-                            .iter()
-                            .map(|theme| {
-                                Row::with_detail(theme.name, "the sample below re-renders")
-                            })
-                            .collect(),
-                    )
-                    .selecting(
-                        THEMES
-                            .iter()
-                            .position(|theme| theme.name == self.theme_name)
-                            .unwrap_or(0),
-                    ),
-                );
+                self.enter_theme_step();
                 Progress::Idle
             }
             Outcome::Cancelled => {
@@ -519,8 +525,24 @@ impl Wizard {
         // Read after every keystroke, not only on choice: this is the live
         // preview, and it costs nothing because the renderer is already there.
         if let Some(theme) = THEMES.get(picker.selected()) {
-            self.theme = *theme;
             self.theme_name = theme.name.to_string();
+            // Resolved, never assigned. A picked theme is a preference exactly as
+            // the configuration file's theme is, and `NO_COLOR` outranks both —
+            // so under it the preview and the session that follows stay `MONO`
+            // while the name above stays the one the user picked. Assigning here
+            // is how a user with the variable set used to choose a theme at this
+            // screen and get a coloured session anyway.
+            // The glyph set is handed straight back rather than resolved again.
+            // It was chosen once at startup from the locale, the configuration
+            // file and `--plain`, and none of those three is a thing the theme
+            // picker can have changed — a second resolution here would quietly
+            // discard a `--plain` the moment somebody arrowed down the list.
+            self.theme = Theme::resolve(
+                self.no_color,
+                theme.background,
+                Some(theme.name),
+                self.theme.glyphs,
+            );
         }
         match outcome {
             Outcome::Chosen(_) => {
@@ -577,15 +599,48 @@ impl Wizard {
         Progress::Write(path, contents)
     }
 
+    /// The lines the confirmation screen shows, unbounded.
+    ///
+    /// For a caller that wants the *facts* rather than the layout — what is on the
+    /// screen, not how much of it a given terminal has room for.
+    pub fn summary(&self) -> Vec<Line<'static>> {
+        self.summary_at(usize::MAX)
+    }
+
     /// The lines the confirmation screen shows: the exact path, and what will be
     /// in the file. Never the credential itself.
-    pub fn summary(&self) -> Vec<Line<'static>> {
+    ///
+    /// **Fitted to `width`, because two of these lines are unbounded and this
+    /// paragraph does not wrap.** The path comes from the environment and the
+    /// model id from a provider's catalogue; either can be longer than eighty
+    /// columns on an ordinary machine, and a viewport `Paragraph` answers a line
+    /// it cannot fit by clipping it and saying nothing. On this screen in
+    /// particular that is not a cosmetic loss: the whole promise of the wizard is
+    /// that nothing is written until a screen has named the exact path, and a
+    /// path silently missing its last segments names a different file.
+    ///
+    /// The path is shortened from the **left** ([`fit_left`]) and the model from
+    /// the right ([`fit`]), which is the same split the resume picker makes and
+    /// for the same reason: every configuration path on one machine shares its
+    /// first segments and is identified by its last, while a model id is
+    /// identified by its vendor and family, which come first.
+    pub fn summary_at(&self, width: usize) -> Vec<Line<'static>> {
         let theme = self.theme;
+        let glyphs = &theme.glyphs;
+        // The width of the fixed text each line leads with. Written as the
+        // strings themselves so the reservation cannot drift from the `format!`
+        // below it.
+        let lead = |prefix: &str| width.saturating_sub(prefix.chars().count());
         let path = settings::user_path()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "(no configuration directory could be found)".into());
+        let path = fit_left(&path, lead("This will write "), glyphs);
         let kind = self.kind.map(Kind::label).unwrap_or("(none)");
-        let model = self.model.clone().unwrap_or_default();
+        let model = fit(
+            self.model.as_deref().unwrap_or_default(),
+            lead("  model       "),
+            glyphs,
+        );
 
         let credential = match (&self.api_key, self.kind.and_then(Kind::env_var)) {
             // Said as a fact about the file, with no part of the value in it.
@@ -632,6 +687,23 @@ impl Wizard {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        // Every step sets a cursor, and this is the position a step that draws no
+        // field of its own is left with. ratatui hides the terminal cursor on any
+        // frame that sets no position, and a hidden cursor removes the only focus
+        // indicator a screen reader has — through a whole flow whose every screen
+        // is a question. Set before the match rather than in ten places inside it:
+        // the steps below overwrite it when they have somewhere better to point,
+        // and the last write of a frame is the one that lands, so no step can
+        // forget by omission.
+        //
+        // It matters most where it is least visible. `render_input` places the
+        // caret in the field only `if area.height > used`, and a viewport too
+        // short for the field is exactly when a reader most needs telling where
+        // they are; without this the cramped frame had no position at all.
+        frame.set_cursor_position(ratatui::layout::Position {
+            x: area.x,
+            y: area.y,
+        });
         let theme = self.theme;
         match self.step {
             Step::Welcome => paragraph(
@@ -677,11 +749,14 @@ impl Wizard {
                 frame,
                 area,
                 vec![Line::from(Span::styled(
-                    "Checking the key against the provider…",
+                    format!(
+                        "Checking the key against the provider{}",
+                        theme.glyphs.ellipsis
+                    ),
                     theme.style(Tone::Muted),
                 ))],
             ),
-            Step::Confirm => paragraph(frame, area, self.summary()),
+            Step::Confirm => paragraph(frame, area, self.summary_at(area.width as usize)),
             Step::Done | Step::Cancelled => {}
         }
     }
@@ -693,7 +768,24 @@ impl Wizard {
             // The provider's own words, not a generic failure. Every provider
             // reports a bad credential differently and the difference is the
             // information.
-            lines.push(theme.notice(Tone::Error, rejection.clone()));
+            //
+            // **Cut to fit rather than wrapped, and this is the one place in the
+            // wizard where that is the harder call.** A provider's rejection is
+            // an arbitrary string — several of them return a whole JSON body —
+            // and this paragraph does not wrap, so past eighty columns the tail
+            // is clipped with nothing on screen to say so. Wrapping would keep
+            // every word, but the height of the wrap is not knowable from
+            // `lines.len()`, and `lines.len()` is what places the credential
+            // field and the caret on the rows below. A rejection that grew the
+            // block would draw the field on top of its own last line and put the
+            // caret on text rather than on the input, which trades a visible loss
+            // for an invisible one.
+            //
+            // The reservation is measured off an empty notice rather than
+            // assumed, so the word `Tone::Error` prefixes and the colon and space
+            // after it are counted by the code that draws them.
+            let room = (area.width as usize).saturating_sub(theme.notice(Tone::Error, "").width());
+            lines.push(theme.notice(Tone::Error, fit(rejection, room, &theme.glyphs)));
         }
         lines.push(Line::from(Span::styled(
             prompt.to_string(),
@@ -724,8 +816,29 @@ impl Wizard {
         }
     }
 
-    fn render_theme(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_theme(&mut self, frame: &mut Frame, mut area: Rect) {
         let theme = self.theme;
+        // Said on the screen rather than left to be discovered. Under `NO_COLOR`
+        // the sample below cannot change, so a user arrowing through the list is
+        // watching nothing happen and would fairly read that as broken. The
+        // choice is still worth making — it is what the file records for a run
+        // without the variable set — and one line is the whole difference between
+        // a dead control and a deferred one.
+        if self.no_color && area.height > 1 {
+            paragraph(
+                frame,
+                Rect { height: 1, ..area },
+                vec![Line::from(Span::styled(
+                    "NO_COLOR is set, so this run stays uncoloured; the choice is saved for later.",
+                    theme.style(Tone::Muted),
+                ))],
+            );
+            area = Rect {
+                y: area.y + 1,
+                height: area.height - 1,
+                ..area
+            };
+        }
         // The sample sits below the picker and is redrawn in whichever theme is
         // highlighted. It is the one moment of delight in the flow and it costs
         // nothing, because the renderer is already here.
@@ -768,25 +881,34 @@ impl Wizard {
 /// judging before committing to a theme, and they are exactly the two that look
 /// alarming when nothing says they are a preview.
 pub fn sample(theme: &Theme) -> Vec<Line<'static>> {
+    // Drawn from the same set the session it is previewing will use, so the
+    // sample is a sample of this terminal and not of an idealised one. A preview
+    // showing marks the session that follows cannot draw is worse than no
+    // preview at all.
+    let glyphs = &theme.glyphs;
+    let (separator, dash) = (glyphs.separator, glyphs.dash);
     vec![
         Line::from(Span::styled(
-            "preview — not your session:".to_string(),
+            format!("preview {dash} not your session:"),
             theme.style(Tone::Muted),
         )),
         Line::from(vec![
-            Span::styled("› ", theme.style(Tone::Accent)),
+            Span::styled(glyphs.marker, theme.style(Tone::Accent)),
             Span::styled("make the failing test pass", theme.style(Tone::Normal)),
         ]),
         Line::from(vec![
-            Span::styled("  ⋅ ", theme.style(Tone::Muted)),
+            Span::styled(format!("  {} ", glyphs.bullet), theme.style(Tone::Muted)),
             Span::styled("exec", theme.style(Tone::Accent)),
             Span::styled(" cargo test", theme.style(Tone::Muted)),
         ]),
         theme.notice(
             Tone::Refused,
-            "write /etc/hosts — rule fs.deny, layer workspace",
+            format!("write /etc/hosts {dash} rule fs.deny, layer workspace"),
         ),
-        theme.notice(Tone::Success, "success · 4 steps · 8,912 tok"),
+        theme.notice(
+            Tone::Success,
+            format!("success{separator}4 steps{separator}8,912 tok"),
+        ),
     ]
 }
 
@@ -798,9 +920,14 @@ fn paragraph(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
 }
 
 /// A one-line field whose characters are never shown.
-fn masked() -> TextArea<'static> {
+///
+/// The mask comes off the chosen glyph set rather than being written here: a
+/// terminal that cannot draw a bullet shows a row of replacement boxes, and a
+/// credential field whose masking is itself unreadable is the one field where a
+/// reader cannot tell a rendering fault from having typed the wrong thing.
+fn masked(mask: char) -> TextArea<'static> {
     let mut area = plain();
-    area.set_mask_char('•');
+    area.set_mask_char(mask);
     area
 }
 

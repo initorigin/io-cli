@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// The key io-cli's own section sits under: `[app.io-cli]`.
 pub const APP_KEY: &str = "io-cli";
 
-/// Everything io-cli itself remembers. One field in this release.
+/// Everything io-cli itself remembers.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliSettings {
     /// The theme by name. Absent means "detect from the terminal background".
@@ -30,6 +30,91 @@ pub struct CliSettings {
     /// section io-harness deliberately does not validate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    /// Which glyph set to draw with: `unicode` or `ascii`.
+    ///
+    /// Absent means "ask the locale", which is what every file written before
+    /// 0.6.0 means. It is a separate key from the theme and from `plain` on
+    /// purpose: a terminal that cannot draw `›` may still be perfectly happy
+    /// with colour, and a reader who wants the animation stilled may be reading
+    /// on a terminal that draws every glyph in the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyphs: Option<String>,
+    /// Whether to run in plain mode without being asked each time.
+    ///
+    /// The same switch as `--plain`, and the flag wins when both are present —
+    /// a flag is this run and a file is every run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plain: Option<bool>,
+    /// The session's keys, by action name: `[app.io-cli.keys]`.
+    ///
+    /// A map rather than a struct of named fields on purpose. A struct would
+    /// make an action nobody has heard of a *deserialization* failure, which
+    /// would take the whole section down — theme, diff style, glyphs and plain
+    /// mode with it — over a misspelt keybinding. A map lets
+    /// [`crate::keys::Keys::resolve`] answer for each line on its own and say
+    /// which names it does know, which is the difference between a typo that
+    /// costs one key and a typo that costs every setting in the file.
+    ///
+    /// `BTreeMap` rather than `HashMap` so the notices a bad file produces come
+    /// out in the same order every time; a diagnostic that shuffles is one
+    /// nobody can compare against the last run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// io-cli's own section, and what was wrong with it.
+///
+/// **This is F10, and it exists because `.unwrap_or_default()` on the `Result`
+/// was the whole of the old behaviour.** io-harness answers `Config::app` with
+/// three distinct outcomes — the section is there and parsed, the section is not
+/// there at all, or the section is there and could not be read — and collapsing
+/// the third into the second meant that one mistyped value silently reverted the
+/// theme, the diff style, the glyph set, plain mode and every keybinding at
+/// once, with nothing said about any of it. A setting that quietly goes back to
+/// its default is worse than one that fails loudly: the operator sees a session
+/// that looks almost right and has no thread to pull.
+///
+/// The notice carries **the harness's own message**, which already names the
+/// section and the key that broke — rewording it here would drop the only part
+/// that says where to look.
+///
+/// It lives in the library rather than at the two call sites in `src/main.rs`
+/// because nothing under `tests/` can link the binary: a decision written there
+/// is one no test drives and no sabotage can make fail.
+pub fn stored(config: &io_harness::Config) -> (Option<CliSettings>, Option<String>) {
+    match config.app(APP_KEY) {
+        Ok(stored) => (stored, None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "{error}; this session is running on the default settings until that is fixed"
+            )),
+        ),
+    }
+}
+
+/// Whether this session runs in plain mode: `--plain`, or `[app.io-cli] plain`.
+///
+/// **A pure function, and it lives here rather than in `src/main.rs` on purpose.**
+/// The binary has no automated coverage by construction — an integration test
+/// cannot link it — so a decision written inline there is one no test can drive
+/// and no sabotage can be made to fail. Two earlier releases had to move a
+/// decision out of `main.rs` for exactly that reason, and this is the third.
+///
+/// **The flag wins over the file**, because a flag is this run and a file is
+/// every run. That has teeth in one direction only, and saying so is more honest
+/// than implying a precedence there is no way to exercise: there is no
+/// `--no-plain`, so a file that says `plain = true` cannot be turned off from the
+/// command line for one session. The asymmetry is the right way round —
+/// accessibility is a thing somebody switched on deliberately, and a mode that
+/// can be lost to a stray flag is not one you can rely on.
+///
+/// An absent key is `false`, which is what every configuration file written
+/// before 0.6.0 means. `Some(false)` and `None` therefore answer the same, and
+/// the distinction is kept in the type only so that a file can state the default
+/// without the wizard ever writing it — plain mode is asked for, never inferred.
+pub fn plain(flag: bool, stored: Option<&CliSettings>) -> bool {
+    flag || stored.is_some_and(|settings| settings.plain.unwrap_or(false))
 }
 
 /// How much of a change a diff shows.
@@ -197,6 +282,20 @@ pub fn render(
                 // reader has to wonder about — and one that would have to be
                 // rewritten if the default ever changed.
                 diff: None,
+                // Left out for the same reason, and with more force. The glyph
+                // set the wizard ran under was chosen from the locale of the
+                // machine it ran on; writing it down would freeze that answer
+                // into a file that may later be read on another terminal, and
+                // turn a detected default into a stated preference nobody
+                // stated. Plain mode likewise: it is asked for, never inferred.
+                glyphs: None,
+                plain: None,
+                // Left out for the strongest reason of the four: writing the
+                // defaults down would make every later change to a default a
+                // change that only reaches new installations, and would put a
+                // table of five bindings in a file the wizard's user never
+                // asked to edit. The keys are documented; they are not written.
+                keys: None,
             },
         },
     };

@@ -17,6 +17,7 @@
 
 use io_harness::Store;
 
+use crate::glyphs::Glyphs;
 use crate::picker::{fit, fit_left, Row};
 
 /// How many sessions `/resume` offers.
@@ -162,27 +163,30 @@ fn stamp(created_at: &str) -> String {
 /// only if the whole of it fits, in order of how much the operator needs it. A
 /// narrow terminal therefore loses the timestamp entirely, which is legible,
 /// instead of keeping a fragment of it, which is not.
-pub fn rows(recent: &[Recent], width: u16) -> Vec<Row> {
+pub fn rows(recent: &[Recent], width: u16, glyphs: &Glyphs) -> Vec<Row> {
     // A third rather than a half. The label is the prompt, which is unbounded, and
     // every column it takes is one the workspace cannot have.
     let room = ((width as usize) / 3).max(12);
+    let separator = glyphs.separator;
     recent
         .iter()
         .map(|session| {
-            let label = fit(&session.prompt, room);
+            let label = fit(&session.prompt, room, glyphs);
             // The picker's own arithmetic, mirrored: two cells of marker, the
             // label, two cells of gap. Mirrored rather than guessed, because a
-            // budget that is one cell out puts the ellipsis back.
+            // budget that is one cell out puts the ellipsis back. Four in either
+            // glyph set — the marker is two cells in both, which is the property
+            // that lets this stay a number.
             let mut left = (width as usize)
                 .saturating_sub(4)
                 .saturating_sub(label.chars().count());
 
-            let path = fit_left(&session.root, ROOT_ROOM.min(left));
+            let path = fit_left(&session.root, ROOT_ROOM.min(left), glyphs);
             left = left.saturating_sub(path.chars().count());
             let mut detail = path;
 
             let turns = format!(
-                " · {} turn{}",
+                "{separator}{} turn{}",
                 session.turns,
                 if session.turns == 1 { "" } else { "s" }
             );
@@ -191,7 +195,7 @@ pub fn rows(recent: &[Recent], width: u16) -> Vec<Row> {
                 detail.push_str(&turns);
             }
 
-            let at = format!(" · {}", session.at);
+            let at = format!("{separator}{}", session.at);
             if at.chars().count() <= left {
                 detail.push_str(&at);
             }
@@ -208,15 +212,16 @@ pub fn rows(recent: &[Recent], width: u16) -> Vec<Row> {
 /// lists the line the operator is actually on, which is what they mean by *this
 /// conversation*. Numbered from one, because a turn id is a database key and
 /// nobody counts in database keys.
-pub fn turn_rows(turns: &[io_harness::Turn], width: u16) -> Vec<Row> {
+pub fn turn_rows(turns: &[io_harness::Turn], width: u16, glyphs: &Glyphs) -> Vec<Row> {
     let room = ((width as usize) * 2 / 3).max(12);
+    let separator = glyphs.separator;
     turns
         .iter()
         .enumerate()
         .map(|(index, turn)| {
             Row::with_detail(
-                fit(turn.prompt.trim(), room),
-                format!("turn {} · {}", index + 1, stamp(&turn.created_at)),
+                fit(turn.prompt.trim(), room, glyphs),
+                format!("turn {}{separator}{}", index + 1, stamp(&turn.created_at)),
             )
         })
         .collect()

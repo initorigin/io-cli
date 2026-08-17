@@ -1,5 +1,9 @@
-//! The command line. Five flags and one subcommand, because everything else is
-//! a slash command inside the session.
+//! The command line. A handful of flags and two subcommands, because everything
+//! else is a slash command inside the session.
+//!
+//! The count is deliberately not stated. It said "five" from 0.2.0 until 0.6.0
+//! and was wrong for most of that time, which is the argument against writing a
+//! number into prose that nothing checks.
 
 use std::path::PathBuf;
 
@@ -21,6 +25,28 @@ pub struct Cli {
     /// The model to use for this run, overriding the configured one.
     #[arg(short, long, value_name = "MODEL", global = true)]
     pub model: Option<String>,
+
+    /// Run without animation: nothing turns, nothing moves, and every state the
+    /// session enters is written into the terminal's scrollback as one line of
+    /// text. Forces the ASCII glyph set.
+    ///
+    /// For a screen reader, a braille display, a serial console and a captured
+    /// log — surfaces on which a spinner is not a quiet decoration but a cell
+    /// that changes ten times a second with no new information in it, and on
+    /// which a status line that only ever repaints is a state nobody can read.
+    ///
+    /// `global` for the same reason `-C` and `-m` are: `io --plain exec "…"` and
+    /// `io exec --plain "…"` are one command, and 0.5.0 shipped a defect where
+    /// `-m` after the subcommand was rejected. A flag whose acceptance depends on
+    /// which side of a word it is typed is a flag that works on the author's
+    /// machine.
+    ///
+    /// It reaches an interactive session and stops there. `io exec` constructs no
+    /// theme, draws nothing and animates nothing already — see `crate::exec` —
+    /// so there is no second thing for the flag to switch off there, and wiring
+    /// it in would be a knob with no wire behind it.
+    #[arg(long, global = true)]
+    pub plain: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

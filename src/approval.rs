@@ -26,13 +26,12 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use io_harness::approve::DecisionFuture;
 use io_harness::{Act, ApprovalContext, Approver, Decision, Edit, Effect, Request, Rule};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::status::SEPARATOR;
 use crate::theme::{Theme, Tone};
 
 /// What the model is told when nobody answered.
@@ -340,30 +339,78 @@ impl Approval {
         if room > 0 {
             lines.extend(self.preview(room, width, theme));
         }
+        // The cursor goes on the answer `Enter` would take, and it is put there
+        // here rather than by `App::render`. The overlay takes the whole viewport
+        // — `App::render` returns as soon as this has drawn — so there is no
+        // composer on this frame to own the caret, and ratatui hides the cursor
+        // on any frame that sets no position. That removes the only focus
+        // indicator a screen reader has at the one moment a person is being asked
+        // to give a permission away. Owned by the widget that owns the selection,
+        // the way `Composer::render` owns its insertion point.
+        //
+        // The fallback is the first row rather than nothing: at two rows there is
+        // no room for the answers line at all, and a frame too cramped to show the
+        // choices is exactly when a reader most needs telling where they are.
+        let mut cursor = Position {
+            x: area.x,
+            y: area.y,
+        };
         if area.height >= 2 {
-            lines.push(self.answers(theme));
+            let (answers, column) = self.answers(theme);
+            cursor = Position {
+                x: (area.x + column).min(area.right().saturating_sub(1)),
+                y: (area.y + lines.len() as u16).min(area.bottom().saturating_sub(1)),
+            };
+            lines.push(answers);
         }
         frame.render_widget(Paragraph::new(lines), area);
+        frame.set_cursor_position(cursor);
     }
 
-    /// `write src/main.rs · rule src/*.rs · layer app`.
+    /// `warning: write src/main.rs · rule src/*.rs · layer app`.
     ///
     /// Act, then target, then the rule, then the layer — content before metadata,
     /// the same order the rest of the interface reads in, and the order F2 asserts
     /// by position rather than by presence.
+    ///
+    /// **The act carries its tone's word, and that is 0.6.0's F4** — a different
+    /// criterion from the 0.3.0 F4 this module's own documentation names. Until
+    /// 0.6.0 this row styled the act `Tone::Warning` through a bare
+    /// `Span::styled`, which made it
+    /// the one place left in the product where a colour was the sole carrier of a
+    /// meaning: with `NO_COLOR` set the row read `write src/main.rs`, and nothing
+    /// on it said a decision was being asked for. The overlay around it carried
+    /// that, but no word did. Routing it through [`Theme::notice`] — the same
+    /// constructor every other toned line in the product is built with, and the
+    /// one the transcript already uses to announce this very event — puts
+    /// `warning: ` in front of the act, whatever the terminal can render.
+    ///
+    /// The word **leads** the row rather than trailing it, for the reason the row
+    /// below exists: this viewport clips, and the load-bearing fact has to sit
+    /// where it cannot be the part that goes. The target is still what gives way,
+    /// and its room is now the width less the word as well as the act.
     fn question(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let separator = theme.glyphs.separator;
         let act = act_word(self.ask.act());
-        let asked = Line::from(vec![
-            Span::styled(act.to_string(), theme.style(Tone::Warning)),
-            Span::styled(" ", theme.style(Tone::Normal)),
-            Span::styled(
+        // Measured from the tone rather than written out, so this and `notice`
+        // cannot drift: `word` plus the colon and the space it is prefixed with.
+        let prefix = Tone::Warning
+            .word()
+            .map_or(0, |word| word.chars().count() + 2);
+        let asked = theme.notice(
+            Tone::Warning,
+            format!(
+                "{act} {}",
                 // The target is what gets shortened, because it is the only part
                 // that can be arbitrarily long and the only part whose middle a
                 // reader can infer. The act cannot be shortened at all.
-                crate::picker::fit(self.ask.target(), width.saturating_sub(act.len() + 1)),
-                theme.style(Tone::Normal),
+                crate::picker::fit(
+                    self.ask.target(),
+                    width.saturating_sub(prefix + act.len() + 1),
+                    &theme.glyphs,
+                ),
             ),
-        ]);
+        );
 
         // **On its own row, and this cost a test to learn.** Laid out beside the
         // target, the rule and the layer are the first thing off the end of an
@@ -372,7 +419,7 @@ impl Approval {
         // supported terminal size. A row of their own is the only layout where they
         // cannot be the part that goes.
         let why = match (self.ask.rule(), self.ask.layer()) {
-            (Some(rule), Some(layer)) => format!("rule {rule}{SEPARATOR}layer {layer}"),
+            (Some(rule), Some(layer)) => format!("rule {rule}{separator}layer {layer}"),
             (Some(rule), None) => format!("rule {rule}"),
             // Said plainly rather than left blank. In io-harness a missing rule
             // means the tier default decided — the least vouched-for kind of
@@ -383,7 +430,7 @@ impl Approval {
         vec![
             asked,
             Line::from(Span::styled(
-                crate::picker::fit(&why, width),
+                crate::picker::fit(&why, width, &theme.glyphs),
                 theme.style(Tone::Muted),
             )),
         ]
@@ -413,13 +460,19 @@ impl Approval {
             .enumerate()
             .map(|(index, line)| {
                 let suffix = if cut > 0 && index + 1 == shown {
-                    format!("  ⋯ {cut} more lines")
+                    // Measured, not assumed: the ASCII elision is three cells
+                    // where the Unicode one is one, and the room left for the
+                    // line itself is the width less whatever this actually took.
+                    format!("  {} {cut} more lines", theme.glyphs.elision)
                 } else {
                     String::new()
                 };
                 let room = width.saturating_sub(2 + suffix.chars().count());
                 Line::from(Span::styled(
-                    format!("  {}{suffix}", crate::picker::fit(line, room)),
+                    format!(
+                        "  {}{suffix}",
+                        crate::picker::fit(line, room, &theme.glyphs)
+                    ),
                     theme.style(Tone::Muted),
                 ))
             })
@@ -442,6 +495,7 @@ impl Approval {
     /// between a write that touches three lines and one that rewrites four
     /// hundred — a different decision, not a smaller one.
     fn as_diff(&self, edit: &Edit, room: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let separator = theme.glyphs.separator;
         let mut lines = vec![Line::from(vec![
             Span::styled(format!("  +{}", edit.lines_added), theme.style(Tone::Added)),
             Span::styled(" ".to_string(), theme.style(Tone::Muted)),
@@ -451,10 +505,10 @@ impl Approval {
             ),
             Span::styled(
                 match &edit.hunk {
-                    Some(_) => format!("{SEPARATOR}{}", edit.tool),
+                    Some(_) => format!("{separator}{}", edit.tool),
                     // Absent is a fact and not an empty diff — the counts beside
                     // it are what say the file did change.
-                    None => format!("{SEPARATOR}{}{SEPARATOR}no diff stored", edit.tool),
+                    None => format!("{separator}{}{separator}no diff stored", edit.tool),
                 },
                 theme.style(Tone::Muted),
             ),
@@ -480,7 +534,7 @@ impl Approval {
         if cut > 0 {
             if let Some(last) = lines.last_mut() {
                 last.spans.push(Span::styled(
-                    format!("  ⋯ {cut} more lines"),
+                    format!("  {} {cut} more lines", theme.glyphs.elision),
                     theme.style(Tone::Muted),
                 ));
             }
@@ -494,23 +548,39 @@ impl Approval {
     /// above have first claim on them. The marker is the same `›` every other
     /// selection surface uses, so the answer that `Enter` would take is marked by
     /// more than a colour.
-    fn answers(&self, theme: &Theme) -> Line<'static> {
+    ///
+    /// It hands back **where on the row the chosen answer starts** as well as the
+    /// row itself, because the terminal cursor is placed there. Counted in the
+    /// same loop that lays the spans out rather than recomputed by the caller: a
+    /// second copy of this layout is a second thing to keep in step, and the one
+    /// that drifts is the one nothing is drawn from.
+    fn answers(&self, theme: &Theme) -> (Line<'static>, u16) {
+        let separator = theme.glyphs.separator;
         let mut spans = Vec::new();
+        let mut width = 0usize;
+        let mut column = 0usize;
         for (index, answer) in Answer::ALL.into_iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled(SEPARATOR, theme.style(Tone::Muted)));
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                width += separator.chars().count();
             }
             let chosen = index == self.chosen;
+            let marker = if chosen { theme.glyphs.marker } else { "  " };
+            spans.push(Span::styled(marker.to_string(), theme.style(Tone::Accent)));
+            width += marker.chars().count();
+            let text = format!("{} {}", answer.key(), answer.label());
+            // Past the marker, which is decoration: a reader following the caret
+            // should land on the key and the words, not on the arrow.
+            if chosen {
+                column = width;
+            }
+            width += text.chars().count();
             spans.push(Span::styled(
-                if chosen { "› " } else { "  " }.to_string(),
-                theme.style(Tone::Accent),
-            ));
-            spans.push(Span::styled(
-                format!("{} {}", answer.key(), answer.label()),
+                text,
                 theme.style(if chosen { Tone::Accent } else { Tone::Muted }),
             ));
         }
-        Line::from(spans)
+        (Line::from(spans), u16::try_from(column).unwrap_or(u16::MAX))
     }
 }
 
@@ -572,8 +642,12 @@ fn fit_line(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
     if line.width() <= width {
         return line;
     }
-    // One cell for the marker that says something went.
-    let room = width.saturating_sub(1);
+    // Room for the mark that says something went — its own width, measured off
+    // the chosen set. Reserving one cell and then appending the ASCII ellipsis's
+    // three is how this function would hand back a line two cells wider than the
+    // viewport it was asked to fit, on the one surface that clips silently.
+    let mark = theme.glyphs.ellipsis;
+    let room = width.saturating_sub(mark.chars().count());
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0;
     for span in line.spans {
@@ -590,7 +664,7 @@ fn fit_line(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
         }
         break;
     }
-    spans.push(Span::styled("…".to_string(), theme.style(Tone::Muted)));
+    spans.push(Span::styled(mark.to_string(), theme.style(Tone::Muted)));
     Line::from(spans)
 }
 
