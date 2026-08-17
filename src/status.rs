@@ -71,6 +71,28 @@ pub struct Status {
     pub policy: Option<String>,
     /// How long the session has been open.
     pub elapsed: Duration,
+    /// Tokens this session has spent, accumulated from the steps that reported
+    /// them. `None` until one does — a session that has spent nothing yet is not
+    /// a session that has spent zero, and the difference is the whole of F9.
+    pub tokens: Option<u64>,
+    /// How full the assembled context was the last time io-harness said so, as a
+    /// share of the budget io-harness itself declares.
+    ///
+    /// `None` until a fold reports one, which is the honest answer: `Compacted` is
+    /// the only event carrying an observation-section size, and between folds
+    /// nothing on the event stream knows it.
+    ///
+    /// ponytail: derived from the last fold. The per-step estimate is durable in
+    /// the harness store as `ContextEvent::est_tokens`, so a live share is one
+    /// store read away if this field turns out too quiet to be useful.
+    pub context: Option<u8>,
+    /// How this run's commands are contained: the mode asked for and the backend
+    /// that actually answered on this host.
+    ///
+    /// Both, always. io-harness's own documentation is explicit that a surface
+    /// showing the mode alone is reading an intention — `workspace-write` reaching
+    /// a portable floor means resource caps and nothing else.
+    pub containment: Option<String>,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
     /// the clock: an indicator that read the time would be a second timer.
     frame: usize,
@@ -81,6 +103,9 @@ impl Status {
         Self {
             model: model.into(),
             policy: None,
+            tokens: None,
+            context: None,
+            containment: None,
             working: false,
             elapsed: Duration::ZERO,
             frame: 0,
@@ -120,7 +145,22 @@ impl Status {
             fields.push(Field::new(format!("policy:{policy}"), Tone::Normal));
         }
         fields.push(state);
+        // Elapsed stays fourth: it is the field 0.1.1 exists for, and the one a
+        // reader checks to answer "is this alive". Everything this release adds
+        // goes to the right of it, which is the order they drop in.
         fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
+        if let Some(tokens) = self.tokens {
+            fields.push(Field::new(
+                format!("{} tok", format_tokens(tokens)),
+                Tone::Muted,
+            ));
+        }
+        if let Some(context) = self.context {
+            fields.push(Field::new(format!("ctx {context}%"), Tone::Muted));
+        }
+        if let Some(containment) = &self.containment {
+            fields.push(Field::new(containment.clone(), Tone::Muted));
+        }
         fields
     }
 
@@ -182,4 +222,22 @@ pub fn format_elapsed(elapsed: Duration) -> String {
         60..=3599 => format!("{}m{:02}s", seconds / 60, seconds % 60),
         _ => format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60),
     }
+}
+
+/// `840`, `1.5k`, `12.4k`. A running total is read for its magnitude, and six
+/// digits of it are six characters of a line that has to fit in eighty columns.
+pub fn format_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    format!("{:.1}k", tokens as f64 / 1_000.0)
+}
+
+/// What a `Contained` event reads as: the mode, then the backend that answered.
+///
+/// Never the mode alone. The two disagree often — a `workspace-write` run on a
+/// host with no sandbox available reaches the portable floor — and it is the
+/// second word that says what is actually enforcing anything.
+pub fn format_containment(mode: &str, backend: &str) -> String {
+    format!("{mode}/{backend}")
 }

@@ -228,8 +228,43 @@ impl App {
 
     /// Take an event from the harness.
     pub fn event(&mut self, event: &RunEvent) {
+        self.status_from(event);
         let lines = self.events.event(event);
         self.pending.extend(lines);
+    }
+
+    /// The status line's share of an event.
+    ///
+    /// Only the events that carry a fact set a field, and nothing sets one to a
+    /// default. A field this has never heard about stays `None`, which is what the
+    /// line renders as nothing at all rather than as a zero.
+    fn status_from(&mut self, event: &RunEvent) {
+        match &event.kind {
+            io_harness::EventKind::Step { tokens, .. } => {
+                // The session's total, not the step's own. A field that swings
+                // rather than climbs cannot be read at a glance.
+                self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
+            }
+            // The run's own total, which is authoritative over the sum of the steps
+            // we happened to see. Guarded on the tag rather than inside the arm:
+            // a run that reported no usage at all reports `0`, and overwriting a
+            // real total with it would turn a known number into a wrong one.
+            io_harness::EventKind::Finished { tokens, .. } if *tokens > 0 => {
+                self.status.tokens = Some(*tokens);
+            }
+            io_harness::EventKind::Compacted { after_tokens, .. } => {
+                // The denominator is io-harness's own declared budget, asked of the
+                // harness rather than copied here — a `24_000` written into this
+                // file would be wrong after some harness patch, and wrong silently.
+                let budget = io_harness::ContextBudget::default().effective_tokens(None);
+                let share = (*after_tokens as f64 / budget.max(1) as f64 * 100.0).round();
+                self.status.context = Some(share.clamp(0.0, 100.0) as u8);
+            }
+            io_harness::EventKind::Contained { mode, backend, .. } => {
+                self.status.containment = Some(crate::status::format_containment(mode, backend));
+            }
+            _ => {}
+        }
     }
 
     /// Add a line of io-cli's own, rather than the harness's.

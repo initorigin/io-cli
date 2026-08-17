@@ -321,7 +321,7 @@ tasks:
     why_required: "The status line is where this product's differentiation is meant to be visible at
       a glance, and it has carried three fields and four named placeholders since 0.1.0. A field that
       invents a value it did not receive would be worse than the placeholder."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T06
     acceptance_criteria:
@@ -334,9 +334,40 @@ tasks:
     files:
       - src/status.rs
       - src/app.rs
-      - src/events.rs
       - tests/status.rs
-    evidence: []
+    evidence:
+      - "Three fields, each `Option` and each set only by the event that carries its fact:
+        `tokens` from `Step` (and from `Finished`, which is authoritative), `context` from
+        `Compacted`, `containment` from `Contained`. Nothing initialises to a default, so a fact
+        that has not arrived renders as nothing at all."
+      - "`cargo test --test status` — 12 passed, 0 failed. F9's own test asserts a fresh line
+        carries no `tok`, no `ctx` and no containment."
+      - "Sabotage F9 — initialise the three to `Some(0)`, `Some(0)` and `Some(\"unknown\")`: 3
+        failed, all three of them status tests, including the narrow-form one, which is the same
+        criterion's other half. The rest of the suite was untouched."
+      - "**The elapsed field stays fourth and the new ones go to its right**, so the field 0.1.1
+        exists for is not the first thing a narrow terminal drops. Asserted at forty columns: the
+        line stays one row, keeps the model, and has lost the containment field."
+      - "Containment renders as `workspace-write/seatbelt` — the mode asked for *and* the backend
+        that answered on this host. io-harness's own documentation is explicit that showing the mode
+        alone is reading an intention: `workspace-write` reaching a portable floor means resource
+        caps and nothing else. Its own test, against exactly that pair."
+      - "Context pressure's denominator is `io_harness::ContextBudget::default().effective_tokens
+        (None)` — asked of the harness rather than copied here. A `24_000` written into this
+        repository would be wrong after some harness patch, and wrong silently."
+      - "**The field is quiet by design and that is recorded rather than hidden.** `Compacted` is
+        the only event carrying an observation-section size, so between folds nothing on the stream
+        knows it and the field is absent. The per-step estimate is durable in the store as
+        `ContextEvent::est_tokens`; the upgrade path is one store read and is marked with a
+        `ponytail:` comment where the field is declared. The contract left this decision to the
+        first rendering against a real session, and this is it."
+      - "The token field is the session's running total rather than the last step's own count — a
+        field that swings rather than climbs cannot be read at a glance — and it is formatted
+        `12.4k`, because six digits are six columns of a line that must fit in eighty."
+      - "`cargo test` — 24 test binaries, all ok. `cargo clippy --all-targets -- -D warnings` exit
+        0 (one collapsible-if moved into a match guard, which reads better anyway: a run reporting
+        no usage reports `0`, and overwriting a real total with it would turn a known number into a
+        wrong one). `cargo fmt --all -- --check` exit 0."
 
   - id: US-IO-CLI-0.2.0-T08
     summary: Give every new surface a defined form at eighty columns.
