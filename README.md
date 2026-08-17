@@ -176,7 +176,7 @@ what it already does with a policy refusal.
 | `1` | it never got that far — no provider, a bad credential, an unreadable configuration, a usage error |
 | `2` | a boundary said no: denied, refused, or a rejected plan |
 | `3` | a ceiling was reached: steps, time, tokens, or the tree's shared budget |
-| `4` | the run stopped needing a human — not reachable today, and reserved so it will not renumber |
+| `4` | the run stopped needing a human: it asked a question, or proposed a plan |
 | `5` | it ended without finishing: stalled, escalated, or cancelled |
 
 A ceiling is `3` and not `0` because io-harness returns one as a *successful
@@ -264,12 +264,18 @@ and a boundary you can pick from the command line. The screen-reader mode is
 0.6.0; the slash palette and type-to-filter pickers are 0.7.0; the fleet tree is
 0.8.0; inline images are 0.9.0.
 
-**`io exec` runs one goal and stops.** There is no `io resume` to continue a run
-that paused for a human, which is why every approval is declined rather than
-deferred, and why exit code `4` cannot happen yet. There are no `--max-steps`,
-`--timeout` or `--max-tokens` flags either: `[run]` in the configuration file
-expresses all three, and a CI job's limits belong with the project rather than
-in every invocation.
+**`io exec` runs one goal and stops, and a run that pauses stays paused.** An
+agent that asks a question about what you meant, or proposes a plan, ends the run
+at exit `4` with the question persisted in the store. That is io-harness's
+behaviour and it is the right one — a machine answering a question about intent
+on your behalf sends the agent down a path nobody chose — but there is no `io
+resume` in this release to answer it and carry on, so the run is parked rather
+than lost. The closing line names its id. Approvals are the one pause that cannot
+happen, because they are declined rather than deferred.
+
+There are no `--max-steps`, `--timeout` or `--max-tokens` flags either: `[run]`
+in the configuration file expresses all three, and a CI job's limits belong with
+the project rather than in every invocation.
 
 **A rewind does not check whether you edited a file yourself since the turn.** It
 puts each file back to the state before that turn first wrote it, and it does not

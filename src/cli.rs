@@ -10,11 +10,16 @@ use clap::{Parser, Subcommand};
 #[command(name = "io", version, about, long_about = None)]
 pub struct Cli {
     /// The workspace to work in. Defaults to the current directory.
-    #[arg(short = 'C', long, value_name = "DIR")]
+    ///
+    /// `global` so it is accepted on either side of a subcommand: `io -C dir
+    /// exec "…"` and `io exec -C dir "…"` are the same command. Without it clap
+    /// takes a flag declared here as belonging strictly before the subcommand,
+    /// which is not how anyone types it and not how the README documents it.
+    #[arg(short = 'C', long, value_name = "DIR", global = true)]
     pub dir: Option<PathBuf>,
 
-    /// The model to use for this session, overriding the configured one.
-    #[arg(short, long, value_name = "MODEL")]
+    /// The model to use for this run, overriding the configured one.
+    #[arg(short, long, value_name = "MODEL", global = true)]
     pub model: Option<String>,
 
     #[command(subcommand)]
@@ -86,8 +91,13 @@ pub struct Exec {
 /// `io.toml`, which already works.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FromEnv {
+    /// Named as io-harness's own `ProviderSpec` tag spells it, not as clap
+    /// would derive it from the variant — `openrouter`, never `open-router`.
+    #[value(name = "openrouter")]
     OpenRouter,
+    #[value(name = "anthropic")]
     Anthropic,
+    #[value(name = "openai")]
     OpenAi,
 }
 

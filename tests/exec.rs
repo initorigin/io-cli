@@ -182,6 +182,44 @@ fn f2_every_outcome_maps_to_its_documented_code() {
 }
 
 #[test]
+fn f2_a_paused_run_names_what_was_parked_and_nothing_else_does() {
+    // Exit 4 is reachable, and the first end-to-end run of the release binary is
+    // what proved it: the agent asked a question and the run stopped. Denying
+    // approvals makes `AwaitingApproval` unreachable and does nothing to a
+    // question about intent or a proposed plan, neither of which passes through
+    // an approver at all.
+    let waiting = exec::parked(
+        &RunOutcome::AwaitingAnswer {
+            question_id: 2,
+            steps: 8,
+        },
+        41,
+    )
+    .expect("a paused run names what was parked");
+    assert!(waiting.contains("41"), "{waiting}");
+    assert!(
+        waiting.contains("not in this release"),
+        "it must say that answering it is not possible yet, rather than implying \
+         the run is lost: {waiting}",
+    );
+
+    assert!(exec::parked(
+        &RunOutcome::AwaitingPlan {
+            plan_id: 1,
+            steps: 2
+        },
+        7
+    )
+    .is_some());
+    assert_eq!(exec::parked(&RunOutcome::Finished { steps: 3 }, 7), None);
+    assert_eq!(
+        exec::parked(&RunOutcome::StepCapReached { steps: 3 }, 7),
+        None
+    );
+    assert_eq!(exec::parked(&RunOutcome::Cancelled { steps: 3 }, 7), None);
+}
+
+#[test]
 fn f2_every_outcome_describes_itself_with_the_harness_step_count() {
     // The summary line names the harness's own number rather than one recounted
     // afterwards, and it pluralises. Asserted on a one-step run because that is
@@ -508,6 +546,59 @@ fn f7_ask_writes_is_refused_and_names_the_two_that_work() {
 }
 
 #[test]
+fn f7_a_configured_posture_that_asks_warns_rather_than_denying_in_silence() {
+    // The same defect the flag is refused for, arriving through the
+    // configuration file. Found by running the release binary against this
+    // machine's own config, which asks — the posture the wizard recommends — and
+    // watching every write get denied with nothing said about why.
+    let (_dir, _store, _session, config) = workspace("");
+
+    let asking = exec::policy_for(&config, Some(Posture::AskWrites));
+    let line = exec::asks_nobody_can_answer(&asking)
+        .expect("a posture that asks must say so before the run");
+    assert!(line.contains("denied"), "{line}");
+    assert!(line.contains("workspace"), "{line}");
+    assert!(line.contains("read-only"), "{line}");
+
+    // A posture that does not ask says nothing, so a run that is going to work
+    // is not decorated with a warning about a problem it does not have.
+    assert_eq!(
+        exec::asks_nobody_can_answer(&exec::policy_for(&config, Some(Posture::Workspace))),
+        None,
+    );
+    assert_eq!(
+        exec::asks_nobody_can_answer(&exec::policy_for(&config, Some(Posture::ReadOnly))),
+        None,
+    );
+}
+
+#[test]
+fn f7_the_warning_names_only_what_actually_asks() {
+    // A file can ask about writes and not commands, or the reverse. Naming both
+    // when only one asks is the kind of true-sounding sentence that teaches the
+    // wrong thing about the boundary in force.
+    // `exec = "deny"` rather than `"allow"`: `Config::from_toml` parses at
+    // PROJECT scope, where a value that widens the boundary is refused outright,
+    // because a repository you cloned must not be able to grant itself
+    // permission. Narrowing is always allowed.
+    let write_only = Config::from_toml(
+        "[policy.defaults]\nread = \"allow\"\nwrite = \"ask\"\nexec = \"deny\"\nnet = \"deny\"\n",
+    )
+    .expect("the configuration parses");
+    let line = exec::asks_nobody_can_answer(&exec::policy_for(&write_only, None))
+        .expect("a write that asks still warns");
+    assert!(line.contains("every write will be denied"), "{line}");
+
+    let exec_only = Config::from_toml(
+        "[policy.defaults]\nread = \"allow\"\nwrite = \"deny\"\nexec = \"ask\"\nnet = \"deny\"\n",
+    )
+    .expect("the configuration parses");
+    let line = exec::asks_nobody_can_answer(&exec::policy_for(&exec_only, None))
+        .expect("a command that asks still warns");
+    assert!(line.contains("every command will be denied"), "{line}");
+}
+
+#[test]
 fn f7_the_flag_speaks_the_same_words_as_the_status_line() {
     // The flag's value names are `Posture::short()`, reused rather than
     // re-spelled. A flag that disagrees with the status line teaches the wrong
@@ -602,6 +693,35 @@ fn f8_the_variables_are_the_harness_own_names() {
     // `compatible` is absent by decision, not by oversight: io-harness gives it
     // no `from_env`, because a base URL has to come from somewhere.
     assert_eq!(FromEnv::value_variants().len(), 3);
+}
+
+#[test]
+fn f8_the_provider_names_are_spelled_the_way_the_harness_spells_them() {
+    // clap derives a kebab-case name from the variant, which would make this
+    // flag take `open-router` and `open-ai` — names io-harness does not use, the
+    // README does not document, and nobody would guess. Found by running the
+    // release binary, because no test links one.
+    let names: Vec<String> = FromEnv::value_variants()
+        .iter()
+        .map(|which| {
+            which
+                .to_possible_value()
+                .expect("every variant is selectable")
+                .get_name()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(names, vec!["openrouter", "anthropic", "openai"]);
+
+    // The same words io-harness's own `ProviderSpec` is tagged with, so one
+    // vocabulary spans the configuration file and the command line.
+    for name in &names {
+        let toml = format!("[[provider]]\nkind = \"{name}\"\nmodel = \"m\"\n");
+        assert!(
+            Config::from_toml(&toml).is_ok(),
+            "io-harness does not know a provider called `{name}`",
+        );
+    }
 }
 
 #[tokio::test]
@@ -785,5 +905,37 @@ fn n6_the_plain_output_is_never_composed_to_a_width() {
             "src/exec.rs measures its output (`{measuring}`). A headless stream \
              is not a viewport: clipping it loses data a machine was going to read.",
         );
+    }
+}
+
+#[test]
+fn the_global_flags_are_accepted_on_either_side_of_the_subcommand() {
+    use clap::Parser;
+
+    // `src/main.rs` has no automated coverage, so a flag that parses only in one
+    // position is invisible to every other test here — and this one was: the
+    // README documented `io exec -m <model> "…"` while clap rejected it, and the
+    // first end-to-end run of the release binary is what found it.
+    for argv in [
+        vec!["io", "-m", "a-model", "exec", "the goal"],
+        vec!["io", "exec", "-m", "a-model", "the goal"],
+        vec!["io", "exec", "the goal", "-m", "a-model"],
+    ] {
+        let cli = io_cli::cli::Cli::try_parse_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?} should parse\n{error}"));
+        assert_eq!(cli.model.as_deref(), Some("a-model"), "{argv:?}");
+        match cli.command {
+            Some(io_cli::cli::Command::Exec(exec)) => assert_eq!(exec.goal, "the goal"),
+            other => panic!("{argv:?} should be an exec command, got {other:?}"),
+        }
+    }
+
+    for argv in [
+        vec!["io", "-C", "/tmp/x", "exec", "the goal"],
+        vec!["io", "exec", "-C", "/tmp/x", "the goal"],
+    ] {
+        let cli = io_cli::cli::Cli::try_parse_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?} should parse\n{error}"));
+        assert_eq!(cli.dir.as_deref(), Some(std::path::Path::new("/tmp/x")));
     }
 }

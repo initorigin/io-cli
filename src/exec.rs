@@ -204,6 +204,53 @@ pub fn policy_for(config: &Config, posture: Option<Posture>) -> Policy {
     policy
 }
 
+/// The warning a policy that asks earns, before the run starts.
+///
+/// **This is the same defect F7 refuses for the flag, arriving by a different
+/// route.** `--policy ask-writes` is rejected outright because nothing in a
+/// headless run can answer an approval, so *ask* becomes *deny* without saying
+/// so. A configuration file can express the identical posture — and it is the
+/// one the wizard recommends and most people have — so refusing it would make
+/// `io exec` unusable out of the box for exactly the operators who took the
+/// safe advice.
+///
+/// So this discloses rather than prevents, which is the standard 0.4.0's rewind
+/// set for a cost that cannot be designed away. The line names what will happen
+/// and both ways to change it. `None` when nothing asks, so a run that is going
+/// to work says nothing.
+pub fn asks_nobody_can_answer(policy: &Policy) -> Option<String> {
+    let write = policy.defaults.write == io_harness::Effect::Ask;
+    let exec = policy.defaults.exec == io_harness::Effect::Ask;
+    let what = match (write, exec) {
+        (true, true) => "every write and command",
+        (true, false) => "every write",
+        (false, true) => "every command",
+        (false, false) => return None,
+    };
+    Some(format!(
+        "the configured posture asks before writes and nothing in a headless run \
+         can answer, so {what} will be denied. Pass `--policy {}` to allow them, \
+         or `--policy {}` to say so plainly.",
+        Posture::Workspace.short(),
+        Posture::ReadOnly.short(),
+    ))
+}
+
+/// The extra line a paused run gets, naming what was parked.
+///
+/// A run that stops for a human is persisted and resumable in principle, but
+/// this release has no `io resume` to continue it — so the honest thing is to
+/// say where it went rather than to imply it is gone. `None` for every outcome
+/// that did not pause.
+pub fn parked(outcome: &RunOutcome, run_id: i64) -> Option<String> {
+    (code(outcome) == PAUSED).then(|| {
+        format!(
+            "run {run_id} is parked in the store; answering it and carrying on \
+             is not in this release"
+        )
+    })
+}
+
 /// What reaches stdout once the turn is done.
 ///
 /// `None` means nothing at all. It exists as a function rather than as an `if`
@@ -382,6 +429,9 @@ impl WithProvider for Headless {
         if let Some(line) = widening(self.args.sandbox.map(crate::cli::Sandbox::mode)) {
             eprintln!("io: {line}");
         }
+        if let Some(line) = asks_nobody_can_answer(&self.policy) {
+            eprintln!("io: {line}");
+        }
 
         let json = Ndjson::new(std::io::stdout());
         let observer: &dyn Observer = if self.args.json { &json } else { &Ignore };
@@ -407,6 +457,9 @@ impl WithProvider for Headless {
             let _ = out.flush();
         }
         eprintln!("io: {}", describe(&result.outcome));
+        if let Some(parked) = parked(&result.outcome, result.run_id) {
+            eprintln!("io: {parked}");
+        }
         Ok(code(&result.outcome))
     }
 }
