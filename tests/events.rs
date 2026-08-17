@@ -7,13 +7,21 @@
 
 mod support;
 
+use std::time::Duration;
+
 use io_cli::events::{kind_name, Events};
 use io_cli::theme::DARK;
 use io_harness::{EventKind, RunEvent};
 
-/// The kinds this release styles, in the contract's own words: `started`,
+/// The kinds this release handles, in the contract's own words: `started`,
 /// `token`, `step`, `tool_call` and `finished` rendered fully, `refused` and
 /// `approval_requested` as a plain one-line notice.
+///
+/// `mcp` is here from 0.3.0 for a reason that is not visible in its own line: it
+/// is the only event io-harness emits carrying how long a tool actually ran, and
+/// that number is harvested onto the open tool cell. Its own line is still the
+/// muted one naming the kind — an event is never consumed silently — but it is no
+/// longer a kind this release merely passes through.
 const STYLED: &[&str] = &[
     "started",
     "token",
@@ -22,6 +30,7 @@ const STYLED: &[&str] = &[
     "finished",
     "refused",
     "approval_requested",
+    "mcp",
 ];
 
 /// Every other kind io-harness 0.60.1 emits. Each renders as a muted single line
@@ -50,7 +59,6 @@ const FALLS_THROUGH: &[&str] = &[
     "reasoning",
     "server_tool_used",
     "sandbox",
-    "mcp",
     "handle_started",
     "handle_polled",
     "handle_killed",
@@ -78,9 +86,22 @@ fn event(kind: EventKind) -> RunEvent {
     RunEvent::new(1, 1, kind)
 }
 
+/// What one event commits, at a session age nothing measured.
+///
+/// `Duration::ZERO` is the right default for every test that is not about a tool
+/// cell's duration: the age is an argument handed in by the driver, so a test
+/// that does not care about it states zero rather than arranging for a clock.
 fn rendered(events: &mut Events, kind: EventKind) -> String {
-    events
-        .event(&event(kind))
+    rendered_at(events, kind, Duration::ZERO)
+}
+
+/// The same, at a stated session age. Stated, never measured — N1.
+fn rendered_at(events: &mut Events, kind: EventKind, at: Duration) -> String {
+    flatten(events.event(&event(kind), at))
+}
+
+fn flatten(lines: Vec<ratatui::text::Line<'static>>) -> String {
+    lines
         .iter()
         .flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref())
@@ -90,8 +111,8 @@ fn rendered(events: &mut Events, kind: EventKind) -> String {
 #[test]
 fn f5_a_step_reads_decision_then_tool_then_result_then_its_metadata() {
     let mut events = Events::new(DARK);
-    let line: String = events
-        .event(&RunEvent::new(
+    let line: String = flatten(events.event(
+        &RunEvent::new(
             1,
             7,
             EventKind::Step {
@@ -100,11 +121,9 @@ fn f5_a_step_reads_decision_then_tool_then_result_then_its_metadata() {
                 tokens: 1234,
                 changed: true,
             },
-        ))
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .map(|span| span.content.as_ref())
-        .collect();
+        ),
+        Duration::ZERO,
+    ));
 
     // The order is the assertion, not the contents. A line carrying all five
     // facts in the wrong order is the line 0.1.0 shipped.
@@ -136,8 +155,8 @@ fn f5_a_step_reads_decision_then_tool_then_result_then_its_metadata() {
 #[test]
 fn f5_a_step_that_changed_nothing_still_says_so() {
     let mut events = Events::new(DARK);
-    let line: String = events
-        .event(&RunEvent::new(
+    let line: String = flatten(events.event(
+        &RunEvent::new(
             1,
             2,
             EventKind::Step {
@@ -146,11 +165,9 @@ fn f5_a_step_that_changed_nothing_still_says_so() {
                 tokens: 88,
                 changed: false,
             },
-        ))
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .map(|span| span.content.as_ref())
-        .collect();
+        ),
+        Duration::ZERO,
+    ));
 
     // The result is always present, so a skim down the transcript reads the same
     // column of answers whether or not a step touched anything.
@@ -179,15 +196,29 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     );
     assert!(started.contains("openrouter"), "{started:?}");
 
-    let tool = rendered(
-        &mut events,
-        EventKind::ToolCall {
+    // A tool call's facts are asserted where they are committed, which is the step
+    // that finished it. The announcement itself commits nothing, because when it
+    // arrives io-harness does not yet know what came back.
+    events.event(
+        &event(EventKind::ToolCall {
             name: "exec".into(),
             target: "cargo test".into(),
+        }),
+        Duration::ZERO,
+    );
+    let tool = rendered_at(
+        &mut events,
+        EventKind::Step {
+            decision: "ran cargo test".into(),
+            tool_call: "exec".into(),
+            tokens: 12,
+            changed: false,
         },
+        Duration::from_millis(900),
     );
     assert!(tool.contains("exec"), "{tool:?}");
     assert!(tool.contains("cargo test"), "{tool:?}");
+    assert!(tool.contains("ran cargo test"), "{tool:?}");
 
     let step = rendered(
         &mut events,
@@ -261,7 +292,10 @@ fn f8_a_kind_this_release_does_not_style_still_renders_and_names_itself() {
 fn f8_tokens_are_coalesced_rather_than_committed_one_at_a_time() {
     let mut events = Events::new(DARK);
     for word in ["Here ", "is ", "the ", "answer."] {
-        let committed = events.event(&event(EventKind::Token { text: word.into() }));
+        let committed = events.event(
+            &event(EventKind::Token { text: word.into() }),
+            Duration::ZERO,
+        );
         assert!(
             committed.is_empty(),
             "a token committed a line to scrollback on its own",
@@ -282,8 +316,16 @@ fn f8_tokens_are_coalesced_rather_than_committed_one_at_a_time() {
     assert_eq!(events.live(), "", "the live buffer should be emptied");
 }
 
+/// **F8.** No event is dropped.
+///
+/// The invariant is not "every event commits a line" — a token does not, and from
+/// 0.3.0 neither does a tool call. Both are *deferred* rather than discarded: the
+/// token into the live buffer, the call into an open cell that `live()` shows
+/// immediately and that the step commits complete. So each kind must leave a mark
+/// somewhere a reader can see it, and the two that defer are named here rather
+/// than exempted, so that a third one cannot be added silently.
 #[test]
-fn f8_no_event_renders_to_nothing_except_a_token() {
+fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
     let mut events = Events::new(DARK);
     let kinds = vec![
         EventKind::Started {
@@ -297,7 +339,7 @@ fn f8_no_event_renders_to_nothing_except_a_token() {
             changed: false,
         },
         EventKind::ToolCall {
-            name: "n".into(),
+            name: "read_file".into(),
             target: String::new(),
         },
         EventKind::Refused {
@@ -321,12 +363,32 @@ fn f8_no_event_renders_to_nothing_except_a_token() {
 
     for kind in kinds {
         let name = kind_name(&kind);
-        let lines = events.event(&event(kind));
+        let lines = events.event(&event(kind), Duration::ZERO);
+        if name == "tool_call" {
+            // Deferred, and visible while it is deferred. An open call that
+            // committed nothing AND showed nothing would be the discarded event
+            // this test exists to catch.
+            assert!(
+                lines.is_empty(),
+                "a tool call committed a line before its result was known",
+            );
+            assert!(
+                events.live().contains("read_file"),
+                "a deferred tool call must be visible in the viewport: {:?}",
+                events.live(),
+            );
+            continue;
+        }
         assert!(
             !lines.is_empty(),
             "{name} rendered to nothing, which is an event silently discarded",
         );
     }
+
+    // The turn ends, and the call that nothing ever reported on is still accounted
+    // for rather than lost with the turn.
+    let closed = flatten(events.flush());
+    assert!(closed.contains("read_file"), "{closed:?}");
 }
 
 #[test]
@@ -539,6 +601,215 @@ fn f8_a_refusal_with_no_rule_says_the_tier_default_decided() {
         refused.contains("tier default"),
         "an unnamed refusal must say what refused it: {refused:?}",
     );
+}
+
+/// **F2.** A call announced is not a call finished.
+///
+/// `EventKind::ToolCall` is emitted before the tool runs, so anything committed
+/// here could only say what the agent was about to do — which is the line 0.2.0
+/// shipped and the reason a transcript never said what came back. It is held
+/// open instead, and shown live, which is the half of the design that keeps the
+/// deferral from being a disappearance.
+#[test]
+fn f2_a_tool_call_commits_nothing_until_its_step_lands() {
+    let mut events = Events::new(DARK);
+    let lines = events.event(
+        &event(EventKind::ToolCall {
+            name: "read_file".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+
+    assert!(
+        lines.is_empty(),
+        "a call committed a line before anything knew its result: {lines:?}",
+    );
+    let live = events.live();
+    assert!(live.contains("read_file"), "{live:?}");
+    assert!(live.contains("src/lib.rs"), "{live:?}");
+}
+
+/// **F2.** The whole cell, in one line, when the step that ran it commits.
+///
+/// Asserted by position rather than by presence. A line carrying all four facts
+/// inside out passes `contains` just as green, which this repository has now paid
+/// to learn twice.
+#[test]
+fn f2_a_tool_cell_commits_its_result_and_its_observed_duration() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "read_file".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    let line = rendered_at(
+        &mut events,
+        EventKind::Step {
+            // io-harness's own sentence about what the call did, written after it
+            // ran. The cell says this and never a word io-cli made up.
+            decision: "read src/lib.rs".into(),
+            tool_call: "read_file".into(),
+            tokens: 5,
+            changed: false,
+        },
+        Duration::from_millis(250),
+    );
+
+    let at = |needle: &str| {
+        line.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is missing from {line:?}"))
+    };
+    assert!(
+        at("read_file") < at("src/lib.rs"),
+        "the tool before its target: {line:?}",
+    );
+    assert!(
+        at("src/lib.rs") < at("read src/lib.rs"),
+        "the target before what came back: {line:?}",
+    );
+    assert!(
+        at("read src/lib.rs") < at("~250ms"),
+        "content before metadata: {line:?}",
+    );
+
+    // The `~` is load-bearing. io-cli did not time the tool; it observed the
+    // interval between two events, which also contains the model's turnaround and
+    // whatever queued in front of the call. A bare `250ms` here would be io-cli
+    // claiming a measurement it never made.
+    assert!(
+        !line.contains(" 250ms"),
+        "an observed interval must not read as a measured duration: {line:?}",
+    );
+}
+
+/// **F2.** A refused call never closes as a completed one.
+///
+/// A refusal does not end the step — io-harness feeds it back to the model as an
+/// observation and the step commits anyway — so the cell is still closed by that
+/// step. What it must not do is close wearing the step's own verdict, which would
+/// report a call that was stopped as a call that ran.
+#[test]
+fn f2_a_refused_call_does_not_close_as_a_completed_one() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "write_file".into(),
+            target: "src/main.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "write".into(),
+            target: "/repo/src/main.rs".into(),
+            rule: Some("fs.deny".into()),
+            layer: Some("workspace".into()),
+        },
+    );
+
+    // Two decisions against one open call: the count does not pair, which is the
+    // ordinary shape of a step that also waited on an approval. The refusal is
+    // then the only true thing left to say about the call.
+    let line = rendered_at(
+        &mut events,
+        EventKind::Step {
+            decision: "write refused; awaiting approval (write)".into(),
+            tool_call: "write_file".into(),
+            tokens: 40,
+            changed: false,
+        },
+        Duration::from_millis(300),
+    );
+
+    assert!(line.contains("refused"), "{line:?}");
+    assert!(
+        !line.contains("changed files"),
+        "a refused call must not close as one that changed something: {line:?}",
+    );
+    assert!(
+        line.find("refused") < line.find("no change"),
+        "the cell closes before the step it belonged to: {line:?}",
+    );
+}
+
+/// **F2.** A call nothing ever reported on closes as unfinished, with no number.
+///
+/// `Step` may never arrive: io-harness skips `commit_step` when a sub-agent's
+/// child deferred, and a turn can be interrupted mid-call. The cell is still
+/// accounted for — and carries no duration, because io-cli knows when the call
+/// was announced and nothing whatever about when it stopped.
+#[test]
+fn f2_an_unfinished_call_closes_without_inventing_a_duration() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "read_file".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+
+    let line = flatten(events.flush());
+    assert!(line.contains("read_file"), "{line:?}");
+    assert!(line.contains("unfinished"), "{line:?}");
+    assert!(
+        !line.contains('~') && !line.contains("ms"),
+        "a duration here would be a guess wearing a measurement's clothes: {line:?}",
+    );
+
+    // Closed once. A cell that survived its own closing would arrive again in the
+    // next turn's scrollback.
+    assert_eq!(events.live(), "");
+}
+
+/// **F2.** A parallel batch is the ordinary case, not the edge one.
+///
+/// `read_batch` announces every call in a batch up front and only then runs any of
+/// them, so two calls before one step is what a normal parallel read looks like. A
+/// single-slot design is wrong on the first one, and a single shared duration
+/// would hide which of the two was slow.
+#[test]
+fn f2_two_calls_before_one_step_each_close_with_their_own_duration() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "read_file".into(),
+            target: "src/a.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "read_file".into(),
+            target: "src/b.rs".into(),
+        }),
+        Duration::from_millis(100),
+    );
+
+    let line = rendered_at(
+        &mut events,
+        EventKind::Step {
+            decision: "read src/a.rs; read src/b.rs".into(),
+            tool_call: "read_file".into(),
+            tokens: 60,
+            changed: false,
+        },
+        Duration::from_millis(300),
+    );
+
+    let at = |needle: &str| {
+        line.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is missing from {line:?}"))
+    };
+    // In the order they were announced, each paired with the decision written for
+    // it — and each measured from its own announcement, so the second call is not
+    // charged for the time the first one spent.
+    assert!(at("src/a.rs") < at("src/b.rs"), "{line:?}");
+    assert!(at("~300ms") < at("~200ms"), "{line:?}");
 }
 
 /// A rule with no layer is possible and is not the same as no rule at all. It is

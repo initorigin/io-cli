@@ -227,8 +227,8 @@ fn f9_a_field_with_nothing_behind_it_is_absent_rather_than_zero() {
 #[test]
 fn the_token_field_is_the_session_and_not_the_last_step() {
     let mut app = App::new(DARK, "opus-5");
-    app.event(&step(1, 1_200));
-    app.event(&step(2, 300));
+    app.event(&step(1, 1_200), std::time::Duration::ZERO);
+    app.event(&step(2, 300), std::time::Duration::ZERO);
 
     let line = app.status.line(120, &DARK).to_string();
     assert!(
@@ -244,11 +244,14 @@ fn the_token_field_is_the_session_and_not_the_last_step() {
 #[test]
 fn the_containment_field_carries_the_backend_and_not_only_the_mode() {
     let mut app = App::new(DARK, "opus-5");
-    app.event(&event(EventKind::Contained {
-        mode: "workspace-write".into(),
-        backend: "portable-floor".into(),
-        roots: 0,
-    }));
+    app.event(
+        &event(EventKind::Contained {
+            mode: "workspace-write".into(),
+            backend: "portable-floor".into(),
+            roots: 0,
+        }),
+        std::time::Duration::ZERO,
+    );
 
     let line = app.status.line(120, &DARK).to_string();
     assert!(line.contains("workspace-write"), "{line:?}");
@@ -266,11 +269,14 @@ fn the_context_field_appears_when_a_fold_reports_one() {
     let mut app = App::new(DARK, "opus-5");
     assert!(!app.status.line(120, &DARK).to_string().contains("ctx"));
 
-    app.event(&event(EventKind::Compacted {
-        through_step: 4,
-        before_tokens: 11_000,
-        after_tokens: 6_000,
-    }));
+    app.event(
+        &event(EventKind::Compacted {
+            through_step: 4,
+            before_tokens: 11_000,
+            after_tokens: 6_000,
+        }),
+        std::time::Duration::ZERO,
+    );
 
     let line = app.status.line(120, &DARK).to_string();
     assert!(
@@ -287,12 +293,15 @@ fn the_context_field_appears_when_a_fold_reports_one() {
 fn the_new_fields_drop_from_the_right_rather_than_wrapping() {
     let mut app = App::new(DARK, "opus-5");
     app.set_posture(Some(io_cli::settings::Posture::Workspace));
-    app.event(&step(1, 12_400));
-    app.event(&event(EventKind::Contained {
-        mode: "workspace-write".into(),
-        backend: "seatbelt".into(),
-        roots: 2,
-    }));
+    app.event(&step(1, 12_400), std::time::Duration::ZERO);
+    app.event(
+        &event(EventKind::Contained {
+            mode: "workspace-write".into(),
+            backend: "seatbelt".into(),
+            roots: 2,
+        }),
+        std::time::Duration::ZERO,
+    );
 
     let wide = app.status.line(160, &DARK).to_string();
     assert!(wide.contains("seatbelt"), "{wide:?}");

@@ -52,6 +52,11 @@ pub enum Command {
     Exit,
     /// Repaint the viewport from scratch, never the scrollback.
     ClearViewport,
+    /// Put the whole conversation back into the terminal's own scrollback.
+    ///
+    /// A command rather than something this type does, because the transcript
+    /// lives in the harness's store and the store belongs to the driver.
+    Transcript,
 }
 
 pub struct App {
@@ -77,6 +82,15 @@ pub struct App {
     /// without this a *this session* answer would ask again on the next prompt.
     /// F5 asserts it on the policy handed to the next turn.
     remembered: Vec<io_harness::Rule>,
+    /// The workspace this session is held over.
+    ///
+    /// Kept so an approval can resolve a write's target: the harness sends it
+    /// relative to the workspace, and the process's working directory is not the
+    /// same thing under `io -C <dir>`.
+    root: std::path::PathBuf,
+    /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
+    /// unified, which is what every file written before 0.3.0 means.
+    diff_style: crate::settings::DiffStyle,
     /// The permission posture this session is running under.
     ///
     /// `None` means the configuration file holds a policy that is none of the
@@ -98,8 +112,21 @@ impl App {
             pending: Vec::new(),
             approval: None,
             remembered: Vec::new(),
+            root: std::path::PathBuf::new(),
+            diff_style: crate::settings::DiffStyle::default(),
             posture: None,
         }
+    }
+
+    /// Say which workspace this session is held over.
+    pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {
+        self.root = root.into();
+    }
+
+    /// Say how much of a change a diff should show. Read from the harness's own
+    /// configuration by the driver; never parsed here.
+    pub fn set_diff_style(&mut self, style: crate::settings::DiffStyle) {
+        self.diff_style = style;
     }
 
     /// A run stopped to ask. The overlay opens and takes the keyboard.
@@ -108,7 +135,7 @@ impl App {
     /// scrolled away from a run which is blocked on it, which is what F1 asserts
     /// and the reason this surface is an overlay at all.
     pub fn open_approval(&mut self, ask: Ask) {
-        self.approval = Some(Approval::new(ask));
+        self.approval = Some(Approval::new(ask, &self.root));
     }
 
     /// The posture in force.
@@ -227,10 +254,29 @@ impl App {
     }
 
     /// Take an event from the harness.
-    pub fn event(&mut self, event: &RunEvent) {
+    ///
+    /// `at` is the session's age, handed in by the driver rather than read here.
+    /// It is what lets a tool cell report how long its call took without any
+    /// module but `src/main.rs` touching a clock — the same shape [`App::tick`]
+    /// established, and the reason `tests/timing.rs` can still assert that no
+    /// test anywhere reads one.
+    pub fn event(&mut self, event: &RunEvent, at: Duration) {
         self.status_from(event);
-        let lines = self.events.event(event);
+        let lines = self.events.event(event, at);
         self.pending.extend(lines);
+    }
+
+    /// What a step changed, as diffs.
+    ///
+    /// Handed in by the driver rather than read here. The store belongs to the
+    /// driver — it is the only thing that holds one — and keeping this a function
+    /// of values is what lets a test state a hunk by hand instead of standing up
+    /// a database to hold one.
+    pub fn edits(&mut self, edits: &[io_harness::Edit], width: u16) {
+        for edit in edits {
+            self.pending
+                .extend(crate::diff::cell(edit, &self.theme, width));
+        }
     }
 
     /// The status line's share of an event.
@@ -316,6 +362,11 @@ impl App {
             // destroy the transcript, which on this renderer is the terminal's own
             // buffer rather than something this process can redraw.
             (KeyCode::Char('l'), true) => Command::ClearViewport,
+            // Upward, never into a pane. The conversation is already in the
+            // terminal's scrollback; this puts back the part that has scrolled
+            // out of reach, branched-away turns included, where the terminal's
+            // own search and copy-mode already work on it.
+            (KeyCode::Char('t'), true) => Command::Transcript,
             _ => {
                 self.quits = 0;
                 match self.composer.key(key) {

@@ -6,6 +6,52 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
+The operator can read what the agent did to their files without leaving the
+terminal and without losing the thread. An edit stops being a line saying a file
+changed and becomes the change itself.
+
+### Added
+
+- **Edits render as diffs.** Not diffs io-cli computed — io-harness already
+  renders a unified diff for every edit its tools make and keeps it in the run's
+  durable trace, so what you see carries the file's own `@@` line numbers and is
+  the same text `Store::patch` would hand `patch`. Additions and removals are
+  coloured *and* marked, so the meaning survives `NO_COLOR`.
+- **Word-level emphasis inside a changed line.** A run of removals is paired with
+  the run of additions after it only when the two are the same length; anything
+  else takes the whole wash. A `write_file` that rewrote two distant regions of a
+  file arrives as one hunk spanning both, and a greedier rule would emphasise the
+  difference between lines that have nothing to do with each other.
+- **Syntax highlighting**, drawn in io-cli's own theme tokens rather than in a
+  second palette. The three new tokens — keyword, string, literal — are the
+  theme's, so a highlighted diff and the rest of the interface stay one look, and
+  `NO_COLOR` is still decided in one place. Green still means added: the parts of
+  a line both sides share are syntax coloured and the words that actually changed
+  keep the diff's colour, so the add/remove colour now points at the exact words
+  instead of washing the line.
+- **A defined form below a hundred columns**, where word-level emphasis gives way
+  to the line — a bolded fragment in the middle of a line that now takes three
+  rows is harder to find than a whole row that is red. Nothing is truncated.
+- **`diff = "minimal"` in `[app.io-cli]`** for reviewing by file rather than by
+  hunk: the changed lines and the `@@` header, without the context. Its absence
+  means `unified`, so no existing configuration file needs touching.
+
+### Changed
+
+- **An approval shows a write as a diff** against the file on disk, which is the
+  clause of the approval surface 0.2.0 shipped unmet — the harness hands an
+  approver the whole resulting file rather than a patch, so the old side is
+  io-cli's to supply. A file that does not exist yet reads as all addition. At
+  the tightest size the one row available is spent on `+3 -1` rather than on the
+  first line of the change, because the size of a write is the decision.
+
+### Fixed
+
+- The answers row in the approval overlay no longer carries a double space after
+  each separator.
+
 ## [0.2.0] - 2026-08-17
 
 The operator can see the boundary the agent is working under, change it, and
