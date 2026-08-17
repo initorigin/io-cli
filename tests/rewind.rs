@@ -45,11 +45,42 @@
 //!
 //! * **The empty-session block** catches an undo that errors, or panics on an
 //!   `unwrap`, when an operator presses it on a fresh session.
+//!
+//! The last four blocks are about the two rendering functions, and need no store:
+//! they are pure functions over this module's own types, so their fixtures are
+//! literals. What they catch:
+//!
+//! * **The disclosure block** is the second half of F9, and it exists because the
+//!   first half cannot be fixed here. io-harness restores from the snapshot taken
+//!   before the run's first write and never compares it against what is on disk,
+//!   so a hand edit made after the turn is overwritten silently — and io-cli cannot
+//!   see it coming. Disclosure is therefore the whole of this product's answer.
+//!   Sabotage it by deleting the clause about hand edits: nothing else in this file
+//!   fails, which is exactly why the clause is asserted on its own rather than
+//!   folded into the assertion about quoting the prompt.
+//!
+//! * **The no-count block** is F11. It asserts the armed line contains no digit at
+//!   all, for a prompt that has none. Sabotage it by adding "puts 3 files back":
+//!   the number can only have come from listing the workspace, because the set of
+//!   paths a run snapshotted is not readable from this crate — so a plausible
+//!   number is a fabricated one, and this is the assertion that says so.
+//!
+//! * **The order block** asserts by position, never by membership. Sabotage it by
+//!   pushing the restored line before the declined one and every `contains`
+//!   assertion stays green while the report now reads as a success with a
+//!   footnote — which is how an operator misses that the agent's version of a file
+//!   is still on disk.
+//!
+//! * **The closing-line block** covers both heads. Sabotage it by omitting the
+//!   head line for `None` and only the `None` assertion fails: silence about a
+//!   conversation that is back to having said nothing is indistinguishable from a
+//!   conversation that carried on.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use io_cli::rewind;
+use io_cli::theme::Tone;
 use io_harness::provider::{CompletionRequest, CompletionResponse, ToolCall};
 use io_harness::tools::WRITE_FILE_TOOL;
 use io_harness::{ApproveAll, MemoryKind, Policy, Provider, Session, Store};
@@ -537,5 +568,169 @@ async fn the_preview_names_the_turn_that_would_be_undone() {
         Some(preview.turn_id),
         fixture.session.head(),
         "and it is the turn the head points at",
+    );
+}
+
+/// A `Preview` of a turn that said `prompt`. The ids are arbitrary — nothing the
+/// two rendering functions do depends on them, which is the point of their being
+/// pure functions over this crate's own types.
+fn preview_of(prompt: &str) -> rewind::Preview {
+    rewind::Preview {
+        turn_id: 7,
+        run_id: 11,
+        prompt: prompt.to_string(),
+    }
+}
+
+/// An `Undone` carrying whatever the test is about. Everything not named is the
+/// quiet case, so each assertion below is about exactly one thing.
+fn undone_with(restored: &[&str], declined: &[(&str, &str)], head: Option<i64>) -> rewind::Undone {
+    rewind::Undone {
+        prompt: "rewrite everything".to_string(),
+        restored: restored.iter().map(|path| path.to_string()).collect(),
+        declined: declined
+            .iter()
+            .map(|(path, why)| (path.to_string(), why.to_string()))
+            .collect(),
+        memory_restored: 0,
+        memory_removed: 0,
+        queue_cleared: 0,
+        head,
+    }
+}
+
+#[test]
+fn the_armed_line_discloses_that_a_hand_edit_since_the_turn_is_lost() {
+    let line = rewind::armed_line(&preview_of("tidy the notes"));
+
+    // Quoting the turn. A confirmation of a keystroke is not a confirmation.
+    assert!(
+        line.contains("tidy the notes"),
+        "the armed line must quote the turn it is about: {line}",
+    );
+
+    // The disclosure, asserted on its own words and separately from the quoting —
+    // this is the half F9's first test cannot cover, because io-harness overwrites
+    // a hand edit without reporting it and io-cli cannot detect that it did.
+    assert!(
+        line.contains("BEFORE that turn"),
+        "the armed line must say the files go back to before the turn, not to \
+         before the last write: {line}",
+    );
+    assert!(
+        line.contains("by hand") && line.contains("lost"),
+        "the armed line must say an edit made by hand since the turn is lost: {line}",
+    );
+}
+
+#[test]
+fn the_armed_line_names_the_turn_and_invents_no_file_count() {
+    // A prompt with no digit of its own, so any digit in the result was produced
+    // by the renderer rather than quoted from the operator.
+    let line = rewind::armed_line(&preview_of("tidy the notes and add a summary"));
+
+    assert!(
+        line.contains("tidy the notes and add a summary"),
+        "the turn is named: {line}",
+    );
+    // F11. The set of paths a run recorded a restore point for is behind
+    // io-harness's crate-private snapshot queries, so a count here could only have
+    // come from listing the workspace — a number that is true whether or not the
+    // rewind will do anything. No digit at all is the assertion that pins it,
+    // because it fails for any invented number rather than for one particular
+    // wording of one.
+    assert!(
+        !line.chars().any(char::is_numeric),
+        "the armed line must state no count of anything: {line}",
+    );
+}
+
+#[test]
+fn the_report_leads_with_what_was_declined_and_tones_it_differently() {
+    let lines = rewind::undone_lines(&undone_with(
+        &["notes.md"],
+        &[("logo.bin", "not valid UTF-8")],
+        Some(4),
+    ));
+
+    // By position, not by membership. A decline mentioned after a success reads as
+    // a footnote, and a `contains` assertion is exactly as green for that order.
+    assert!(
+        lines[0].1.contains("logo.bin") && lines[0].1.contains("not valid UTF-8"),
+        "the first line must be the decline, with its reason: {:?}",
+        lines,
+    );
+    assert!(
+        lines[1].1.contains("notes.md"),
+        "the restoration comes after it: {:?}",
+        lines,
+    );
+    // And the two are told apart without colour being the only carrier: the tones
+    // differ, and each line also says in words what happened to its file.
+    assert_ne!(
+        lines[0].0, lines[1].0,
+        "a decline and a restoration must not share a tone",
+    );
+    assert_eq!(
+        lines[0].0,
+        Tone::Warning,
+        "a decline is something to act on"
+    );
+}
+
+#[test]
+fn the_report_says_in_words_where_the_conversation_now_is() {
+    // The only-turn case, which `Session::branch_from` cannot even express and
+    // which nobody tries by hand.
+    let emptied = rewind::undone_lines(&undone_with(&["started.md"], &[], None));
+    let last = emptied.last().expect("the report is never empty");
+    assert!(
+        last.1.contains("back to having said nothing"),
+        "an emptied conversation must say so rather than be inferred from \
+         silence: {last:?}",
+    );
+
+    let continued = rewind::undone_lines(&undone_with(&["notes.md"], &[], Some(4)));
+    let last = continued.last().expect("the report is never empty");
+    assert!(
+        last.1.contains("continues from the turn before"),
+        "a conversation that carried on must say where from: {last:?}",
+    );
+}
+
+#[test]
+fn a_long_prompt_is_what_gets_cut_and_never_the_disclosure() {
+    // Far longer than any row, and with no digits of its own so the F11 assertion
+    // above is not accidentally what this one is testing.
+    let long = "tidy the notes and then rewrite the whole of the migration plan \
+                so that it reads as one document rather than as a pile of \
+                fragments that nobody has looked at since the cutover, and \
+                while you are there fold the appendix into the body, drop the \
+                section that describes the read-only window twice, and make the \
+                summary at the top match what the rest of it actually says";
+    let line = rewind::armed_line(&preview_of(long));
+
+    // Bounded whatever the prompt does: only the quoted prompt is shortened, and
+    // the sentence around it is fixed. Two wrapped rows on an eighty-column
+    // terminal, with headroom for a wording change — not a count to maintain.
+    assert!(
+        line.chars().count() < 200,
+        "the armed line must stay bounded; got {} characters: {line}",
+        line.chars().count(),
+    );
+    assert!(
+        line.chars().count() < long.chars().count(),
+        "the prompt is the part that gets shortened: {line}",
+    );
+
+    // And the half that was cut is the quotation, never the warning. Two releases
+    // have shipped a row whose important half was the half that went.
+    assert!(
+        line.contains("BEFORE that turn") && line.contains("by hand") && line.contains("lost"),
+        "the disclosure survives any prompt length: {line}",
+    );
+    assert!(
+        line.contains('…'),
+        "and the shortening is visible, so a reader knows the quotation is partial: {line}",
     );
 }

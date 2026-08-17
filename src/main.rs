@@ -422,13 +422,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // one would change, in the turn's own words, so a confirmation is a
             // confirmation of something specific rather than of a keystroke.
             Command::ArmRewind => match io_cli::rewind::preview(&session, &store) {
-                Some(about) => app.say(Tone::Warning, armed_line(&about)),
+                Some(about) => app.say(Tone::Warning, io_cli::rewind::armed_line(&about)),
                 None => app.say(Tone::Muted, "there is no turn to undo"),
             },
             // The second. This is where the operator's files change.
             Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
                 Ok(Some(undone)) => {
-                    for (tone, line) in undone_lines(&undone) {
+                    for (tone, line) in io_cli::rewind::undone_lines(&undone) {
                         app.say(tone, line);
                     }
                 }
@@ -792,88 +792,6 @@ fn expand(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>>
             .map(|line| Line::from(Span::styled(format!("  {line}"), theme.style(Tone::Muted)))),
     );
     lines.push(Line::from(""));
-    lines
-}
-
-/// What the first `Esc` says, before anything has been undone.
-///
-/// It quotes the turn's own prompt, because that is what makes a confirmation a
-/// confirmation of something rather than of a keystroke. It deliberately does
-/// **not** name a file count: the set of paths a run recorded a restore point for
-/// lives behind the store's crate-private snapshot queries, so the only way to
-/// produce a number here would be to list the workspace — which is precisely the
-/// recount this release forbids for the report, one keystroke earlier. A number
-/// that might be wrong is worse than no number in the sentence that asks
-/// permission.
-///
-/// **It does warn about the one thing an operator can lose.** `rewind_run`
-/// restores each path from the snapshot taken before the run's first write to it,
-/// and it does not compare that against what is on disk now — so an edit the
-/// operator made by hand *after* the turn is overwritten without a word. io-cli
-/// cannot detect that: the snapshot is not readable from here. What it can do is
-/// say so before the second keystroke, which is why this sentence names the
-/// consequence rather than only the action. Anything else would be a confirmation
-/// prompt that concealed the risk it existed to disclose.
-fn armed_line(about: &io_cli::rewind::Preview) -> String {
-    format!(
-        "undo “{}”? Esc again puts its files back as they were BEFORE that turn — \
-         anything you have edited by hand since is lost. Any other key cancels.",
-        io_cli::picker::fit(about.prompt.trim(), 40)
-    )
-}
-
-/// The report after a rewind, as tone-carrying lines.
-///
-/// Declined paths come **first** and carry a tone of their own, because they are
-/// the half an operator has to act on: a decline means the agent's version is
-/// still on disk. A report that led with two restorations and mentioned the
-/// decline afterwards would read as a success with a footnote.
-///
-/// Every number here is read off the `Undone` the harness's own return value
-/// produced. Nothing lists the workspace to check.
-fn undone_lines(undone: &io_cli::rewind::Undone) -> Vec<(Tone, String)> {
-    let mut lines = Vec::new();
-    for (path, why) in &undone.declined {
-        lines.push((
-            Tone::Warning,
-            format!("left as the turn left it: {path} — {why}"),
-        ));
-    }
-    lines.push((
-        Tone::Success,
-        match undone.restored.len() {
-            0 => "no file was put back".to_string(),
-            1 => format!("put back {}", undone.restored[0]),
-            n => format!("put back {n} files: {}", undone.restored.join(", ")),
-        },
-    ));
-    if undone.memory_restored > 0 || undone.memory_removed > 0 {
-        lines.push((
-            Tone::Muted,
-            format!(
-                "{} note{} put back, {} removed",
-                undone.memory_restored,
-                if undone.memory_restored == 1 { "" } else { "s" },
-                undone.memory_removed
-            ),
-        ));
-    }
-    if undone.queue_cleared > 0 {
-        lines.push((
-            Tone::Muted,
-            format!("{} queued child cleared", undone.queue_cleared),
-        ));
-    }
-    lines.push((
-        Tone::Muted,
-        match undone.head {
-            Some(_) => "the conversation continues from the turn before it".to_string(),
-            // Said in words rather than left to be inferred from silence: this is
-            // the case `Session::branch_from` cannot express, and the one nobody
-            // tries by hand.
-            None => "this conversation is back to having said nothing".to_string(),
-        },
-    ));
     lines
 }
 

@@ -135,21 +135,51 @@ fn stamp(created_at: &str) -> String {
 /// the part that goes. The path itself is shortened from the *left*, since the
 /// end of a path is what identifies it and the beginning is the same for every
 /// row on the machine.
+///
+/// **The detail is composed to a budget rather than assembled and then trimmed.**
+/// Four facts do not fit in eighty columns, and the version of this function that
+/// wrote all four and let the picker cut the overflow produced
+/// `…/that/go/on/io-cli · 6 …` — a turn count amputated to a digit and an
+/// ellipsis. That is the third time this product has cut a row's load-bearing
+/// half, so the rule here is stronger than "order them well": each field is added
+/// only if the whole of it fits, in order of how much the operator needs it. A
+/// narrow terminal therefore loses the timestamp entirely, which is legible,
+/// instead of keeping a fragment of it, which is not.
 pub fn rows(recent: &[Recent], width: u16) -> Vec<Row> {
-    let room = ((width as usize) / 2).max(12);
+    // A third rather than a half. The label is the prompt, which is unbounded, and
+    // every column it takes is one the workspace cannot have.
+    let room = ((width as usize) / 3).max(12);
     recent
         .iter()
         .map(|session| {
-            Row::with_detail(
-                fit(&session.prompt, room),
-                format!(
-                    "{} · {} turn{} · {}",
-                    fit_left(&session.root, ROOT_ROOM),
-                    session.turns,
-                    if session.turns == 1 { "" } else { "s" },
-                    session.at
-                ),
-            )
+            let label = fit(&session.prompt, room);
+            // The picker's own arithmetic, mirrored: two cells of marker, the
+            // label, two cells of gap. Mirrored rather than guessed, because a
+            // budget that is one cell out puts the ellipsis back.
+            let mut left = (width as usize)
+                .saturating_sub(4)
+                .saturating_sub(label.chars().count());
+
+            let path = fit_left(&session.root, ROOT_ROOM.min(left));
+            left = left.saturating_sub(path.chars().count());
+            let mut detail = path;
+
+            let turns = format!(
+                " · {} turn{}",
+                session.turns,
+                if session.turns == 1 { "" } else { "s" }
+            );
+            if turns.chars().count() <= left {
+                left -= turns.chars().count();
+                detail.push_str(&turns);
+            }
+
+            let at = format!(" · {}", session.at);
+            if at.chars().count() <= left {
+                detail.push_str(&at);
+            }
+
+            Row::with_detail(label, detail)
         })
         .collect()
 }

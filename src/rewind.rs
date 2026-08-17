@@ -36,6 +36,7 @@
 //! single-turn case — where the parent is `None` — is the one that needs the
 //! explanation in [`last_turn`]'s own documentation.
 
+use crate::theme::Tone;
 use io_harness::tools::Workspace;
 use io_harness::{rewind_run, Error, Rewind, Session, Store};
 
@@ -94,6 +95,15 @@ pub struct Undone {
     /// having said nothing.
     pub head: Option<i64>,
 }
+
+/// How much of a turn's prompt a sentence quotes back.
+///
+/// Fixed rather than scaled to the terminal, and deliberately: these lines are
+/// committed into scrollback, which wraps, so a wider terminal buys fewer rows
+/// rather than more quotation. Forty characters is enough to recognise a prompt
+/// you typed minutes ago, which is all the quotation is for — the operator is
+/// being asked to confirm a thing, not to re-read it.
+const QUOTED_PROMPT: usize = 40;
 
 /// What undoing the last turn would be about, or `None` when there is nothing
 /// to undo.
@@ -210,4 +220,111 @@ pub fn last_turn(session: &mut Session, store: &Store) -> Result<Option<Undone>,
         queue_cleared: rewound.queue_cleared.len(),
         head: session.head(),
     }))
+}
+
+/// What the first `Esc` says, before anything has been undone.
+///
+/// It quotes the turn's own prompt, because that is what makes a confirmation a
+/// confirmation of something rather than of a keystroke. It deliberately does
+/// **not** name a file count: the set of paths a run recorded a restore point for
+/// lives behind the store's crate-private snapshot queries, so the only way to
+/// produce a number here would be to list the workspace — which is precisely the
+/// recount this release forbids for the report, one keystroke earlier. A number
+/// that might be wrong is worse than no number in the sentence that asks
+/// permission.
+///
+/// **It does warn about the one thing an operator can lose.** `rewind_run`
+/// restores each path from the snapshot taken before the run's first write to it,
+/// and it does not compare that against what is on disk now — so an edit the
+/// operator made by hand *after* the turn is overwritten without a word. io-cli
+/// cannot detect that: the snapshot is not readable from here. What it can do is
+/// say so before the second keystroke, which is why this sentence names the
+/// consequence rather than only the action. Anything else would be a confirmation
+/// prompt that concealed the risk it existed to disclose.
+///
+/// **The disclosure sits at the end of the sentence, and that is safe here for a
+/// reason worth writing down rather than assuming.** Twice this product has
+/// shipped a row whose load-bearing half was the half that got cut, so the
+/// instinct is to move the warning to the front. It is not needed: this line is
+/// *committed* — it goes through `Screen::commit` into the terminal's own
+/// scrollback, which wraps, and `tests/narrow.rs` proves that a committed line
+/// wider than the terminal wraps rather than truncating. The rows that were cut
+/// before were rows *drawn in the viewport*, where there is no second line to
+/// wrap onto. A test pins this so the distinction is checked and not merely
+/// argued.
+pub fn armed_line(about: &Preview) -> String {
+    format!(
+        "undo “{}”? Esc again puts its files back as they were BEFORE that turn — \
+         anything you have edited by hand since is lost. Any other key cancels.",
+        crate::picker::fit(about.prompt.trim(), QUOTED_PROMPT)
+    )
+}
+
+/// The report after a rewind, as tone-carrying lines.
+///
+/// Declined paths come **first** and carry a tone of their own, because they are
+/// the half an operator has to act on: a decline means the agent's version is
+/// still on disk. A report that led with two restorations and mentioned the
+/// decline afterwards would read as a success with a footnote.
+///
+/// Every number here is read off the `Undone` the harness's own return value
+/// produced. Nothing lists the workspace to check.
+pub fn undone_lines(undone: &Undone) -> Vec<(Tone, String)> {
+    let mut lines = Vec::new();
+    for (path, why) in &undone.declined {
+        lines.push((
+            Tone::Warning,
+            format!("left as the turn left it: {path} — {why}"),
+        ));
+    }
+    lines.push((
+        Tone::Success,
+        match undone.restored.len() {
+            0 => "no file was put back".to_string(),
+            1 => format!("put back {}", undone.restored[0]),
+            n => format!("put back {n} files: {}", undone.restored.join(", ")),
+        },
+    ));
+    if undone.memory_restored > 0 || undone.memory_removed > 0 {
+        lines.push((
+            Tone::Muted,
+            format!(
+                "{} note{} put back, {} removed",
+                undone.memory_restored,
+                if undone.memory_restored == 1 { "" } else { "s" },
+                undone.memory_removed
+            ),
+        ));
+    }
+    if undone.queue_cleared > 0 {
+        lines.push((
+            Tone::Muted,
+            format!(
+                "{} queued child{} cleared",
+                undone.queue_cleared,
+                if undone.queue_cleared == 1 { "" } else { "ren" }
+            ),
+        ));
+    }
+    lines.push((
+        Tone::Muted,
+        // The report names the turn it undid, which the armed line also did —
+        // but the armed line is a question that scrolls past, and this is the
+        // record that stays in the scrollback. A reader coming back to it an hour
+        // later should not have to scroll up one line to learn what went.
+        match undone.head {
+            Some(_) => format!(
+                "“{}” is undone; the conversation continues from the turn before it",
+                crate::picker::fit(undone.prompt.trim(), QUOTED_PROMPT)
+            ),
+            // Said in words rather than left to be inferred from silence: this is
+            // the case `Session::branch_from` cannot express, and the one nobody
+            // tries by hand.
+            None => format!(
+                "“{}” is undone; this conversation is back to having said nothing",
+                crate::picker::fit(undone.prompt.trim(), QUOTED_PROMPT)
+            ),
+        },
+    ));
+    lines
 }

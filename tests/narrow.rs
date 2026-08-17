@@ -274,3 +274,142 @@ mod diff {
         );
     }
 }
+
+#[test]
+fn n5_the_resume_picker_at_eighty_columns_keeps_the_end_of_the_path() {
+    // The resume picker is the first surface in this product to put a path from
+    // outside the current workspace on screen, and paths are exactly the content
+    // that does not fit. Asserted through a real render buffer rather than over
+    // the row strings, because what matters is what reaches the terminal: twice
+    // now this product has shipped a row whose load-bearing half was the half
+    // ratatui clipped, and a string assertion cannot see that happen.
+    let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
+
+    let sessions = [io_cli::sessions::Recent {
+        id: 7,
+        root: "/Users/someone/work/very/deeply/nested/directories/that/go/on/io-cli".into(),
+        turns: 6,
+        prompt: "make the retry loop back off instead of hammering the endpoint".into(),
+        at: "2026-08-17 02:31".into(),
+    }];
+    let rows = io_cli::sessions::rows(&sessions, WIDTH);
+    let mut picker = io_cli::picker::Picker::new("Resume which session?", rows);
+
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &io_cli::theme::DARK))
+        .expect("frame");
+    let drawn = screen.viewport_text();
+
+    assert!(
+        drawn.contains("io-cli"),
+        "the end of the path is what identifies the session and it must survive: {drawn:?}",
+    );
+    assert!(
+        !drawn.contains("/Users/someone/work/very"),
+        "the beginning of the path is the same on every row and is what should go: {drawn:?}",
+    );
+    assert!(
+        drawn.contains("6 turns"),
+        "the turn count is a load-bearing fact and must not be the part that is cut: {drawn:?}",
+    );
+    for line in drawn.lines() {
+        assert!(
+            line.chars().count() <= WIDTH as usize,
+            "a row overflowed eighty columns: {line:?}",
+        );
+    }
+}
+
+#[test]
+fn n5_the_fork_picker_at_eighty_columns_keeps_the_turn_number() {
+    // The fork picker's rows are prompts, which are arbitrarily long, and its
+    // load-bearing fact is which turn a row *is* — that is what the operator is
+    // choosing. It sits in the detail, which the picker shortens from the right,
+    // so this asserts the number is still there after the shortening.
+    let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
+
+    let long = "explain in as much detail as you possibly can, at length, without \
+                stopping, exactly why the retry loop hammers the endpoint";
+    let turns = vec![turn(1, 11, "first, read the client"), turn(2, 12, long)];
+    let rows = io_cli::sessions::turn_rows(&turns, WIDTH);
+    let mut picker = io_cli::picker::Picker::new("Continue from which turn?", rows);
+
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &io_cli::theme::DARK))
+        .expect("frame");
+    let drawn = screen.viewport_text();
+
+    assert!(
+        drawn.contains("turn 1") && drawn.contains("turn 2"),
+        "both turn numbers must survive the shortening: {drawn:?}",
+    );
+    for line in drawn.lines() {
+        assert!(
+            line.chars().count() <= WIDTH as usize,
+            "a row overflowed eighty columns: {line:?}",
+        );
+    }
+}
+
+/// A `Turn` built by hand.
+///
+/// `io_harness::Turn` is a plain struct of public fields, so a rendering test can
+/// make one without a store — which is the point: what is under test here is the
+/// row, not the walk that produced it.
+fn turn(id: i64, run_id: i64, prompt: &str) -> io_harness::Turn {
+    io_harness::Turn {
+        id,
+        session_id: 1,
+        parent_turn_id: (id > 1).then_some(id - 1),
+        run_id,
+        prompt: prompt.to_string(),
+        reply: Some("done".into()),
+        outcome: Some("finished".into()),
+        created_at: "2026-08-17T02:31:13.841Z".into(),
+    }
+}
+
+#[test]
+fn n5_the_armed_rewind_line_keeps_both_halves_at_eighty_columns() {
+    // The armed line is long — a quoted prompt plus a disclosure — and the
+    // instinct after two clipped rows in this product is to assume its tail is at
+    // risk. It is not, and the distinction is what this test pins rather than
+    // argues: the line is COMMITTED into the terminal's own scrollback, which
+    // wraps, and the rows this product has lost halves of before were rows drawn
+    // in the viewport, where there is no second line to wrap onto.
+    //
+    // If a later release ever draws this line in the viewport instead, this test
+    // is what fails and says why.
+    let (mut screen, recorder) = support::screen(WIDTH, HEIGHT);
+
+    let about = io_cli::rewind::Preview {
+        turn_id: 4,
+        run_id: 9,
+        prompt: "make the retry loop back off instead of hammering the endpoint on \
+                 every single failure"
+            .into(),
+    };
+    let line = io_cli::rewind::armed_line(&about);
+    assert!(
+        line.chars().count() > WIDTH as usize,
+        "this test is only meaningful while the line is wider than the terminal",
+    );
+
+    screen
+        .commit(&[Line::from(line)])
+        .expect("commit the armed line");
+
+    let written = recorder.text();
+    assert!(
+        written.contains("make the retry loop back off"),
+        "the quoted prompt never reached the terminal: {written:?}",
+    );
+    assert!(
+        written.contains("BEFORE that turn"),
+        "the disclosure is the half that must not be lost, and it was: {written:?}",
+    );
+    assert!(
+        written.contains("is lost"),
+        "the consequence has to survive the wrap, not just the warning word: {written:?}",
+    );
+}
