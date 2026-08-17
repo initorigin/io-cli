@@ -239,9 +239,10 @@ impl App {
     /// driver — it is the only thing that holds one — and keeping this a function
     /// of values is what lets a test state a hunk by hand instead of standing up
     /// a database to hold one.
-    pub fn edits(&mut self, edits: &[io_harness::Edit]) {
+    pub fn edits(&mut self, edits: &[io_harness::Edit], width: u16) {
         for edit in edits {
-            self.pending.extend(crate::diff::cell(edit, &self.theme));
+            self.pending
+                .extend(crate::diff::cell(edit, &self.theme, width));
         }
     }
 

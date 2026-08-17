@@ -414,7 +414,7 @@ async fn turn<P: Provider>(
             }
             Some(event) = events.recv() => {
                 app.event(&event);
-                commit_edits(app, store, &event);
+                commit_edits(app, store, &event, screen.width());
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }
@@ -482,12 +482,12 @@ async fn turn<P: Provider>(
 /// A read that fails degrades to a line saying so. A run whose work succeeded is
 /// not a run to panic over because the trace could not be re-read, and silence
 /// would say the step changed nothing.
-fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
+fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, width: u16) {
     let io_harness::EventKind::Step { changed: true, .. } = &event.kind else {
         return;
     };
     match store.edits(event.run_id) {
-        Ok(edits) => app.edits(&io_cli::diff::for_step(edits, event.step)),
+        Ok(edits) => app.edits(&io_cli::diff::for_step(edits, event.step), width),
         Err(error) => app.say(
             Tone::Muted,
             format!("the diff for this step could not be read: {error}"),

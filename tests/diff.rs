@@ -13,9 +13,14 @@ use io_cli::diff::cell;
 use io_cli::theme::DARK;
 use io_harness::Edit;
 
+/// A terminal wide enough that word-level emphasis applies. Every test that is
+/// not about the narrow form states it, so none of them depends on the floor by
+/// accident.
+const WIDE: u16 = 120;
+
 /// The text of a rendered cell, one line per line, as a reader would see it.
 fn rendered(edit: &Edit) -> String {
-    cell(edit, &DARK)
+    cell(edit, &DARK, WIDE)
         .iter()
         .map(|line| {
             line.spans
@@ -155,7 +160,7 @@ fn f2_an_absent_hunk_never_renders_as_an_empty_diff() {
     // `unwrap_or_default()` leaves behind — which is precisely the empty-patch
     // shape this assertion exists to catch. The sabotage arm found it.
     assert_eq!(
-        cell(&edit, &DARK).len(),
+        cell(&edit, &DARK, WIDE).len(),
         1,
         "an absent hunk is one line and nothing else:\n\n{text}",
     );
@@ -241,7 +246,7 @@ fn f2_a_hunk_that_is_present_is_not_confused_for_an_absent_one() {
 /// text alone could not tell a line emphasised in one piece from a line
 /// emphasised in three.
 fn spans_of(edit: &Edit, marker: char) -> Vec<(String, bool)> {
-    let lines = cell(edit, &DARK);
+    let lines = cell(edit, &DARK, WIDE);
     let line = lines
         .iter()
         .find(|line| {
@@ -383,7 +388,7 @@ fn edit_with_code() -> Edit {
 #[test]
 fn f4_the_colours_come_from_io_cli_s_own_tokens() {
     let edit = edit_with_code();
-    let coloured: Vec<(String, Option<ratatui::style::Color>)> = cell(&edit, &DARK)
+    let coloured: Vec<(String, Option<ratatui::style::Color>)> = cell(&edit, &DARK, WIDE)
         .iter()
         .flat_map(|line| {
             line.spans
@@ -422,7 +427,7 @@ fn f4_the_colours_come_from_io_cli_s_own_tokens() {
 #[test]
 fn f4_a_keyword_a_string_and_a_number_each_get_their_own_token() {
     let edit = edit_with_code();
-    let all: Vec<(String, Option<ratatui::style::Color>)> = cell(&edit, &DARK)
+    let all: Vec<(String, Option<ratatui::style::Color>)> = cell(&edit, &DARK, WIDE)
         .iter()
         .flat_map(|line| {
             line.spans
@@ -460,7 +465,7 @@ fn f4_a_keyword_a_string_and_a_number_each_get_their_own_token() {
 fn f4_no_color_leaves_the_markers_carrying_the_meaning() {
     use io_cli::theme::PLAIN;
 
-    let lines = cell(&edit_with_code(), &PLAIN);
+    let lines = cell(&edit_with_code(), &PLAIN, WIDE);
     for line in &lines {
         for span in &line.spans {
             assert_eq!(

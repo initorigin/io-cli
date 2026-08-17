@@ -50,6 +50,20 @@ use crate::theme::{Theme, Tone};
 /// the way a tool call sits under a step.
 const INDENT: &str = "  ";
 
+/// The width below which word-level emphasis drops to the line.
+///
+/// A hunk line is committed into the terminal's own scrollback, where a line
+/// wider than the terminal wraps rather than truncating — nothing is lost. What
+/// is lost is *findability*: a bolded fragment in the middle of a line that now
+/// occupies three rows is harder to locate than a whole row that is red. So
+/// below a hundred columns the emphasis is the line, which is the same
+/// information at a scale the terminal can still show.
+///
+/// A hundred rather than eighty because the floor is about the wrap, not about
+/// the supported size: an eighty-column terminal is supported, and a
+/// ninety-column one wraps just as badly.
+pub const EMPHASIS_FLOOR: u16 = 100;
+
 /// The syntax highlighter, built once and only if a diff is ever drawn.
 ///
 /// **Never on the startup path.** `SyntaxSet::load_defaults_newlines`
@@ -194,7 +208,7 @@ pub fn for_step(edits: Vec<Edit>, step: u32) -> Vec<Edit> {
 /// The header first — the path, then the counts, then the tool — because the
 /// path is the content and the rest is metadata, which is the rule the whole
 /// interface follows.
-pub fn cell(edit: &Edit, theme: &Theme) -> Vec<Line<'static>> {
+pub fn cell(edit: &Edit, theme: &Theme, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![header(edit, theme)];
 
     let Some(hunk) = edit.hunk.as_deref() else {
@@ -204,7 +218,7 @@ pub fn cell(edit: &Edit, theme: &Theme) -> Vec<Line<'static>> {
         return lines;
     };
 
-    lines.extend(body(hunk, &edit.path, theme));
+    lines.extend(body(hunk, &edit.path, theme, width >= EMPHASIS_FLOOR));
     lines.push(Line::from(""));
     lines
 }
@@ -250,7 +264,7 @@ fn header(edit: &Edit, theme: &Theme) -> Line<'static> {
 /// then emphasise the difference between lines that have nothing to do with each
 /// other, which is worse than no emphasis — it invents a relationship and paints
 /// it.
-fn body(hunk: &str, path: &str, theme: &Theme) -> Vec<Line<'static>> {
+fn body(hunk: &str, path: &str, theme: &Theme, emphasis: bool) -> Vec<Line<'static>> {
     let syntax = syntax_for(path);
     let raw: Vec<&str> = hunk.lines().collect();
     let mut out = Vec::new();
@@ -275,7 +289,9 @@ fn body(hunk: &str, path: &str, theme: &Theme) -> Vec<Line<'static>> {
             continue;
         }
 
-        let paired = !removals.is_empty() && removals.len() == additions.len();
+        // Below the emphasis floor nothing is paired, so every changed line takes
+        // the whole wash — see `EMPHASIS_FLOOR`.
+        let paired = emphasis && !removals.is_empty() && removals.len() == additions.len();
         for (n, line) in removals.iter().enumerate() {
             let other = paired.then(|| additions[n]);
             out.push(changed(line, other, Tone::Removed, syntax, theme));
