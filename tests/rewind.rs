@@ -734,3 +734,95 @@ fn a_long_prompt_is_what_gets_cut_and_never_the_disclosure() {
         "and the shortening is visible, so a reader knows the quotation is partial: {line}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// F11 — the arming state machine itself.
+//
+// These exist because a sabotage found nothing. Rewiring `App::key` to return
+// `Command::Rewind` on the FIRST `Esc` — deleting the confirmation outright from
+// the only key in this product that changes the operator's files on its own
+// initiative — failed no test in the suite. The tests above cover `armed_line`,
+// which is the sentence; nothing covered the state machine that decides whether
+// the sentence is shown or the files are changed. A sabotage that fails nothing
+// is a finding, and this is the finding.
+// ---------------------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use io_cli::app::{App, Command};
+use io_cli::theme::DARK;
+
+fn app() -> App {
+    App::new(DARK, "test-model".to_string())
+}
+
+fn press(app: &mut App, code: KeyCode) -> Command {
+    app.key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+#[test]
+fn f11_the_first_escape_arms_and_the_second_performs() {
+    let mut app = app();
+    assert!(!app.armed(), "a session does not begin armed");
+
+    assert_eq!(press(&mut app, KeyCode::Esc), Command::ArmRewind);
+    assert!(app.armed(), "the first press must arm rather than act");
+
+    assert_eq!(press(&mut app, KeyCode::Esc), Command::Rewind);
+    assert!(
+        !app.armed(),
+        "performing must disarm, or a third press would undo a second turn",
+    );
+}
+
+#[test]
+fn f11_any_other_key_disarms_and_the_next_escape_arms_again() {
+    let mut app = app();
+    assert_eq!(press(&mut app, KeyCode::Esc), Command::ArmRewind);
+
+    // A keystroke in between. The operator went to type something and changed
+    // their mind; the arming must not survive it.
+    press(&mut app, KeyCode::Char('h'));
+    assert!(!app.armed(), "any other key cancels the arming");
+
+    // And the composer now holds text, so `Esc` is no longer the rewind key at
+    // all — clear it and check the arming restarts from the beginning rather than
+    // firing, which is what a stale flag would do.
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(
+        press(&mut app, KeyCode::Esc),
+        Command::ArmRewind,
+        "after a cancel the next Esc must arm, never perform",
+    );
+}
+
+#[test]
+fn f11_escape_with_text_in_the_composer_is_not_a_rewind() {
+    let mut app = app();
+    press(&mut app, KeyCode::Char('n'));
+    press(&mut app, KeyCode::Char('o'));
+
+    let what = press(&mut app, KeyCode::Esc);
+    assert_ne!(
+        what,
+        Command::ArmRewind,
+        "a typed prompt is not an empty one"
+    );
+    assert_ne!(what, Command::Rewind);
+    assert!(!app.armed());
+}
+
+#[test]
+fn f11_nothing_arms_while_a_turn_is_running() {
+    // F12's half of this: a rewind moves the conversation head the running turn
+    // is about to write to, so it is refused with a sentence rather than queued.
+    let mut app = app();
+    app.started();
+
+    assert_eq!(press(&mut app, KeyCode::Esc), Command::None);
+    assert!(!app.armed(), "a turn in flight must leave nothing armed");
+    assert_eq!(
+        press(&mut app, KeyCode::Esc),
+        Command::None,
+        "and pressing it twice mid-turn must not perform a rewind either",
+    );
+}
