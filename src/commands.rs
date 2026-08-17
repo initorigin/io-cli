@@ -38,6 +38,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Ctrl+L", "clear the viewport, never the scrollback"),
     (
+        "Esc Esc",
+        "at an empty prompt, undo the last turn — its files and all",
+    ),
+    (
         "Ctrl+T",
         "put the whole conversation back into the scrollback",
     ),
@@ -54,7 +58,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/quit", "leave"),
     ("/setup", "run the first-run wizard again"),
     ("/theme", "change the theme for this session"),
-    ("/model", "change the model for this session"),
+    ("/model", "change the model the next turn is sent to"),
+    ("/resume", "reopen an earlier session where it stopped"),
+    (
+        "/fork",
+        "continue from an earlier turn of this conversation",
+    ),
     (
         "/expand",
         "commit the last step's full detail into the scrollback",
@@ -77,6 +86,10 @@ pub enum Action {
     Theme,
     /// Open the model picker.
     Model,
+    /// Open the picker over the sessions the store holds.
+    Resume,
+    /// Open the picker over the turns of the conversation that is open.
+    Fork,
     /// Commit the last step's stored detail into the scrollback.
     ///
     /// The detail is in the run's durable trace already — this reads it back
@@ -108,6 +121,11 @@ pub fn parse(input: &str, theme: &Theme) -> Action {
         "setup" => Action::Setup,
         "theme" => Action::Theme,
         "model" => Action::Model,
+        // `/resume` and `/continue` mean the same thing. Both words are in the
+        // field's vocabulary and a reader who has used another agent will type
+        // whichever one that agent taught them.
+        "resume" | "continue" => Action::Resume,
+        "fork" | "branch" => Action::Fork,
         "expand" => Action::Expand,
         "copy" => match input.split_whitespace().nth(1) {
             // `/copy diff` and `/copy patch` mean the same thing. A reader who

@@ -57,6 +57,17 @@ pub enum Command {
     /// A command rather than something this type does, because the transcript
     /// lives in the harness's store and the store belongs to the driver.
     Transcript,
+    /// The first `Esc` at an empty prompt: say what undoing the last turn would
+    /// undo, and wait for the second.
+    ///
+    /// Armed rather than fired, because this is the only key in the product that
+    /// changes the operator's files on io-cli's own initiative rather than the
+    /// agent's. Every write before it arrived through a tool call and passed a
+    /// policy layer; this one does not, so it asks.
+    ArmRewind,
+    /// The second `Esc`: undo the last turn — its files, its memory and the
+    /// conversation head.
+    Rewind,
 }
 
 pub struct App {
@@ -68,6 +79,11 @@ pub struct App {
     /// How many times `Ctrl+C` has been pressed with nothing to interrupt and
     /// nothing typed. Two in succession exits.
     quits: u8,
+    /// Whether the last keystroke was the first `Esc` of a rewind.
+    ///
+    /// Cleared by *any* other key rather than by a timer, so nothing here reads a
+    /// clock and an arming cannot outlive the moment the operator meant it.
+    armed: bool,
     /// Lines waiting to be committed to scrollback.
     pending: Vec<Line<'static>>,
     /// The question on screen, if the run is waiting on one.
@@ -109,6 +125,7 @@ impl App {
             theme,
             mode: Mode::Idle,
             quits: 0,
+            armed: false,
             pending: Vec::new(),
             approval: None,
             remembered: Vec::new(),
@@ -139,6 +156,16 @@ impl App {
     }
 
     /// The posture in force.
+    /// Whether the next `Esc` at an empty prompt would perform a rewind.
+    ///
+    /// Read by the tests rather than by the driver, which is told what to do by
+    /// the `Command` it gets back. A destructive key needs its state assertable
+    /// from outside, or "one press does nothing" is a claim with nothing behind
+    /// it.
+    pub fn armed(&self) -> bool {
+        self.armed
+    }
+
     pub fn posture(&self) -> Option<Posture> {
         self.posture
     }
@@ -344,8 +371,38 @@ impl App {
             }
             return Command::None;
         }
+        // Any key at all disarms a pending rewind, and the arming is read back
+        // here rather than left standing. Taking it before the match means every
+        // arm below clears it without having to remember to — the alternative is
+        // a `self.armed = false` in a dozen places, one of which would be missing
+        // and would leave a destructive key armed across an unrelated keystroke.
+        let was_armed = std::mem::take(&mut self.armed);
         match (key.code, control) {
             (KeyCode::Char('c'), true) => self.interrupt_or_quit(),
+            // The one key in this product that changes the operator's files on
+            // io-cli's own initiative rather than the agent's. Every write before
+            // it arrived through a tool call and passed a policy layer; this one
+            // does not, so it arms, says what it would undo, and waits for the
+            // second press.
+            //
+            // Only at an empty prompt, so it never discards something typed, and
+            // never while a turn runs: a rewind moves the conversation head the
+            // running turn is about to write to.
+            (KeyCode::Esc, false) if self.composer.is_empty() => {
+                if self.mode == Mode::Running {
+                    self.say(
+                        Tone::Muted,
+                        "not while a turn is running — a rewind moves the head this turn is writing to",
+                    );
+                    return Command::None;
+                }
+                if was_armed {
+                    Command::Rewind
+                } else {
+                    self.armed = true;
+                    Command::ArmRewind
+                }
+            }
             // Two spellings of one key. A terminal without the Kitty keyboard
             // protocol sends `BackTab` with no modifier; one that has negotiated it
             // sends `Tab` with shift. Binding either alone ships a key that works

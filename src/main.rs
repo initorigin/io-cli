@@ -153,15 +153,34 @@ async fn drive(
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
 
+    // Kept whole before the match consumes it, because `/model` needs a
+    // `ProviderSpec` to ask `verify::catalogue` what this endpoint serves — the
+    // same call the wizard's model step makes, rather than a second one.
+    let catalogue_spec = spec.clone();
+
     // `Provider` is not dyn-compatible, so the session loop is generic and the
     // spec is matched once, here, rather than behind a trait object.
+    //
+    // What each arm hands down is a **maker** rather than a provider. Every turn
+    // entry point in io-harness takes `provider: &P` as an argument while the
+    // conversation lives in the `Session`, so changing the model mid-session is a
+    // new provider handed to the next turn and nothing else — but building one
+    // needs the credential, which only this function has seen. A closure that
+    // captures it is the whole mechanism.
+    //
+    // It returns a `Result` for one arm's sake: a `Compatible` endpoint is
+    // resolved from a preset that can fail. Making every arm fallible keeps one
+    // signature and lets a failed switch report itself instead of ending the
+    // session.
     match spec {
         ProviderSpec::OpenRouter { model, api_key } => {
             let key = key_for(api_key, "OPENROUTER_API_KEY")?;
+            let make = move |m: &str| Ok(OpenRouter::new(key.clone(), m));
             loop_over(
                 screen,
                 inputs,
-                OpenRouter::new(key, &model),
+                make,
+                catalogue_spec,
                 store,
                 session,
                 policy,
@@ -173,10 +192,12 @@ async fn drive(
         }
         ProviderSpec::Anthropic { model, api_key } => {
             let key = key_for(api_key, "ANTHROPIC_API_KEY")?;
+            let make = move |m: &str| Ok(Anthropic::new(key.clone(), m));
             loop_over(
                 screen,
                 inputs,
-                Anthropic::new(key, &model),
+                make,
+                catalogue_spec,
                 store,
                 session,
                 policy,
@@ -188,10 +209,12 @@ async fn drive(
         }
         ProviderSpec::OpenAi { model, api_key } => {
             let key = key_for(api_key, "OPENAI_API_KEY")?;
+            let make = move |m: &str| Ok(OpenAi::new(key.clone(), m));
             loop_over(
                 screen,
                 inputs,
-                OpenAi::new(key, &model),
+                make,
+                catalogue_spec,
                 store,
                 session,
                 policy,
@@ -210,19 +233,30 @@ async fn drive(
             ..
         } => {
             let key = api_key.unwrap_or_default();
-            let provider = match (preset, base_url) {
+            if preset.is_none() && base_url.is_none() {
+                return Err("this provider names neither a preset nor a base URL".into());
+            }
+            let auth = auth.unwrap_or(io_harness::Auth::Bearer);
+            let make = move |m: &str| match (&preset, &base_url) {
                 (Some(preset), _) => {
-                    Compatible::preset(&preset, key, &model).map_err(|error| error.to_string())?
+                    Compatible::preset(preset, key.clone(), m).map_err(|error| error.to_string())
                 }
-                (None, Some(base)) => {
-                    Compatible::new(base, auth.unwrap_or(io_harness::Auth::Bearer), key, &model)
-                }
-                (None, None) => {
-                    return Err("this provider names neither a preset nor a base URL".into())
-                }
+                (None, Some(base)) => Ok(Compatible::new(base.clone(), auth, key.clone(), m)),
+                // Refused above, before a session was opened, so this arm exists
+                // only to make the match total.
+                (None, None) => Err("this provider names neither a preset nor a base URL".into()),
             };
             loop_over(
-                screen, inputs, provider, store, session, policy, diff_style, theme, model,
+                screen,
+                inputs,
+                make,
+                catalogue_spec,
+                store,
+                session,
+                policy,
+                diff_style,
+                theme,
+                model,
             )
             .await
         }
@@ -234,10 +268,11 @@ async fn drive(
 
 /// The interactive session.
 #[allow(clippy::too_many_arguments)]
-async fn loop_over<P: Provider>(
+async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &mut UnboundedReceiver<Event>,
-    provider: P,
+    make: F,
+    spec: ProviderSpec,
     store: Store,
     mut session: Session,
     policy: Policy,
@@ -245,6 +280,9 @@ async fn loop_over<P: Provider>(
     theme: Theme,
     model: String,
 ) -> Result<(), String> {
+    // Built here rather than handed in, so there is one place a provider comes
+    // from and `/model` cannot drift from startup.
+    let mut provider = make(&model)?;
     let mut app = App::new(theme, model);
     app.set_diff_style(diff_style);
     // Asked of the session rather than threaded down from `run`, so there is one
@@ -299,15 +337,66 @@ async fn loop_over<P: Provider>(
                                 );
                             }
                         }
-                        Pick::Model => {
-                            app.status.model = label.clone();
-                            app.say(
-                                Tone::Muted,
-                                format!(
-                                    "the status line says {label}, but this release cannot swap \
-                                     the provider mid-session; run `io -m {label}`"
-                                ),
-                            );
+                        // The switch is the provider and nothing else. The
+                        // conversation is held by the `Session`, which is not
+                        // involved, so there is no context to lose — that is a
+                        // property of io-harness taking the provider per turn
+                        // rather than per session, not something this does
+                        // carefully.
+                        Pick::Model => match make(&label) {
+                            Ok(built) => {
+                                provider = built;
+                                app.status.model = label.clone();
+                                app.say(Tone::Muted, format!("{label}, from the next turn"));
+                            }
+                            Err(error) => app.say(
+                                Tone::Error,
+                                format!("{label} could not be reached: {error}"),
+                            ),
+                        },
+                        // `if let` rather than a match on `Option`: an index past
+                        // the end is the row saying the list was cut, which
+                        // carries no id, and closing the picker is the only
+                        // sensible thing a line of prose can do when chosen.
+                        Pick::Resume(ids) => {
+                            if let Some(id) = ids.get(index) {
+                                match io_cli::sessions::resume(&store, *id) {
+                                    Ok(reopened) => {
+                                        session = reopened;
+                                        app.set_root(session.root());
+                                        // Where they were, in the terminal's own
+                                        // buffer rather than in a four-row
+                                        // viewport.
+                                        commit_transcript(screen, &session, &store, &app.theme)?;
+                                        app.say(
+                                            Tone::Success,
+                                            format!("resumed {}", session.root().display()),
+                                        );
+                                    }
+                                    Err(error) => app.say(
+                                        Tone::Error,
+                                        format!("that session could not be reopened: {error}"),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::Fork(ids) => {
+                            if let Some(turn) = ids.get(index) {
+                                match session.branch_from(&store, *turn) {
+                                    Ok(()) => app.say(
+                                        Tone::Success,
+                                        format!(
+                                            "continuing from turn {}; what came after is still \
+                                             in the transcript, marked as branched away",
+                                            index + 1
+                                        ),
+                                    ),
+                                    Err(error) => app.say(
+                                        Tone::Error,
+                                        format!("that turn could not be branched from: {error}"),
+                                    ),
+                                }
+                            }
                         }
                     }
                     picker = None;
@@ -329,6 +418,23 @@ async fn loop_over<P: Provider>(
                 paint(screen, &mut app)?;
             }
             Command::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
+            // The first `Esc`. Nothing has changed yet; this says what the second
+            // one would change, in the turn's own words, so a confirmation is a
+            // confirmation of something specific rather than of a keystroke.
+            Command::ArmRewind => match io_cli::rewind::preview(&session, &store) {
+                Some(about) => app.say(Tone::Warning, io_cli::rewind::armed_line(&about)),
+                None => app.say(Tone::Muted, "there is no turn to undo"),
+            },
+            // The second. This is where the operator's files change.
+            Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
+                Ok(Some(undone)) => {
+                    for (tone, line) in io_cli::rewind::undone_lines(&undone) {
+                        app.say(tone, line);
+                    }
+                }
+                Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
+                Err(error) => app.say(Tone::Error, format!("nothing was undone: {error}")),
+            },
             Command::Slash(text) => match commands::parse(&text, &app.theme) {
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -353,12 +459,72 @@ async fn loop_over<P: Provider>(
                     ));
                 }
                 Action::Model => {
-                    let rows = vec![Row::with_detail(
-                        app.status.model.clone(),
-                        "the model this session started with",
-                    )];
-                    picker = Some((Picker::new("Which model?", rows), Pick::Model));
+                    // The provider's live catalogue, through the same call the
+                    // wizard's model step makes. A catalogue that cannot be read
+                    // offers the configured model and says why, exactly as the
+                    // wizard does — an empty picker would be a dead end where the
+                    // session is still perfectly able to continue.
+                    let models = verify::catalogue(&spec).await;
+                    let rows = if models.is_empty() {
+                        app.say(
+                            Tone::Muted,
+                            "the catalogue could not be read; only the configured model is offered",
+                        );
+                        vec![Row::with_detail(
+                            app.status.model.clone(),
+                            "the model this session is using",
+                        )]
+                    } else {
+                        models.iter().map(Row::new).collect()
+                    };
+                    let at = models
+                        .iter()
+                        .position(|name| *name == app.status.model)
+                        .unwrap_or(0);
+                    picker = Some((Picker::new("Which model?", rows).selecting(at), Pick::Model));
                 }
+                Action::Resume => match io_cli::sessions::recent(&store) {
+                    Ok((found, _)) if found.is_empty() => {
+                        app.say(Tone::Muted, "no session in this store has run a turn yet")
+                    }
+                    Ok((found, cut)) => {
+                        let ids: Vec<i64> = found.iter().map(|session| session.id).collect();
+                        let mut rows = io_cli::sessions::rows(&found, screen.width());
+                        // Last, and a row rather than a notice, so a list that was
+                        // cut cannot read as a complete one. It carries no id, and
+                        // choosing it does nothing.
+                        if let Some(note) = io_cli::sessions::cut_note(cut, rows.len()) {
+                            rows.push(Row::new(note));
+                        }
+                        picker = Some((
+                            Picker::new("Resume which session?", rows),
+                            Pick::Resume(ids),
+                        ));
+                    }
+                    Err(error) => app.say(
+                        Tone::Muted,
+                        format!("the sessions could not be read: {error}"),
+                    ),
+                },
+                Action::Fork => match session.history(&store) {
+                    Ok(turns) if turns.is_empty() => app.say(
+                        Tone::Muted,
+                        "this conversation has no turn to fork from yet",
+                    ),
+                    Ok(turns) => {
+                        let ids: Vec<i64> = turns.iter().map(|turn| turn.id).collect();
+                        let rows = io_cli::sessions::turn_rows(&turns, screen.width());
+                        let at = ids.len().saturating_sub(1);
+                        picker = Some((
+                            Picker::new("Continue from which turn?", rows).selecting(at),
+                            Pick::Fork(ids),
+                        ));
+                    }
+                    Err(error) => app.say(
+                        Tone::Muted,
+                        format!("this conversation could not be read: {error}"),
+                    ),
+                },
                 Action::Expand => {
                     let lines = expand(&session, &store, &app.theme);
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -472,10 +638,24 @@ async fn turn<P: Provider>(
                         // changes state, and a match guard is not a place to put
                         // something that does.
                         let command = app.key(key);
-                        if command == Command::Interrupt {
-                            // Best effort: the turn may already have ended, in
-                            // which case there is nobody left to tell.
-                            let _ = steer.interrupt();
+                        match command {
+                            Command::Interrupt => {
+                                // Best effort: the turn may already have ended, in
+                                // which case there is nobody left to tell.
+                                let _ = steer.interrupt();
+                            }
+                            // Refused with a sentence rather than dropped in
+                            // silence. `/resume`, `/fork` and the rewind each move
+                            // the session head this turn is about to write, and
+                            // `/model` would take effect at a moment nobody could
+                            // predict — so all four wait, and the operator is told
+                            // that is what is happening rather than left pressing
+                            // a key that appears to do nothing.
+                            Command::Slash(_) => app.say(
+                                Tone::Muted,
+                                "not while a turn is running — Ctrl+C interrupts it first",
+                            ),
+                            _ => {}
                         }
                     }
                     Event::Resize(width, height) => {
@@ -710,10 +890,21 @@ async fn wizard(
     }
 }
 
-/// Which picker is open.
+/// Which picker is open, and what its rows point at.
+///
+/// A `Picker` row carries a label and nothing else, so a surface whose rows stand
+/// for database ids keeps them here, parallel to the rows, and reads the id back
+/// by index. Matching a label back to a session would be matching a prompt, and
+/// two sessions can begin with the same prompt.
 enum Pick {
     Theme,
     Model,
+    /// Session ids, in the order the rows are drawn. The resume picker may carry
+    /// one row more than there are ids — the line saying the list was cut — and
+    /// an index past the end is that row, which does nothing.
+    Resume(Vec<i64>),
+    /// Turn ids, in the order the rows are drawn.
+    Fork(Vec<i64>),
 }
 
 fn paint(

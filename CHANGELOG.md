@@ -6,6 +6,75 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-17
+
+Work survives the session. A conversation can be come back to, restarted from the
+turn it went wrong at, moved to a different model, or undone.
+
+### Added
+
+- **`/resume` lists the sessions the store already holds** — each with its
+  workspace, how many turns it ran, when it last ran and what it was first asked
+  to do — and reopens the one you pick where it stopped, putting the conversation
+  back into the terminal's own scrollback so you can read where you were. Every
+  session `io` has ever run on this machine is there, including the ones from
+  before this release: they were always being recorded, and nothing was reading
+  them.
+- **`/fork` continues from an earlier turn of the open conversation.** What came
+  after the fork point is not deleted and not hidden — it stays in the store, and
+  `Ctrl+T` marks it as branched away. That marking has been in the product since
+  0.3.0 with nothing able to produce the state it renders; this is what produces
+  it.
+- **`/model` now changes the model.** It previously opened a picker holding one
+  row and changed nothing at all, so a session that started on the wrong model had
+  to be abandoned to correct it. The model list comes from the provider's live
+  catalogue, the same call the first-run wizard makes, and a catalogue that cannot
+  be read offers the configured model and says why rather than showing an empty
+  list. No context is lost, because the conversation lives in the session and only
+  the provider changes.
+- **`Esc Esc` at an empty prompt undoes the last turn** — the files it wrote, the
+  files it created, the notes it left, the children it queued, and the
+  conversation head, so the next thing you type answers from where you actually
+  are. The undo is written into the run's durable trace as a record of its own;
+  nothing in the trace is deleted.
+
+  It arms on the first press and acts on the second, and any other key cancels.
+  This is the only key in `io` that changes your files on the interface's own
+  initiative rather than the agent's, and the prompt says what it will cost before
+  you confirm: **files go back to the state before that turn first wrote them, so
+  anything you have edited by hand since is lost.** A path whose earlier contents
+  could not be kept — over the snapshot cap, or not text — is reported as left
+  alone, with the reason, ahead of anything that was restored.
+
+- Three new rows in the key and command tables, which `/help` and the README
+  render from the same constants.
+
+### Changed
+
+- **io-harness moves to 0.62.0**, from 0.60.1. Its run leases mean that two `io`
+  processes driving one run now get a refusal instead of silently interleaving
+  their steps into a single trace — which is exactly the hazard a resume feature
+  introduces, so this release wants that version rather than merely tolerating it.
+
+### Known limitations
+
+- **A rewind does not check whether you edited a file yourself since the turn.**
+  It restores from the snapshot taken before the run's first write and does not
+  compare that against what is on disk now, so a hand edit made afterwards is
+  overwritten. `io` cannot detect this — the snapshot is not readable from
+  outside io-harness — so what it does instead is say so before the second
+  keystroke. This is the behaviour of `git checkout -- <path>`. Making it
+  preventable is an io-harness change.
+- **The resume picker does not filter as you type**, so the list is bounded at the
+  twenty most recent sessions, and it says when it has cut the list rather than
+  quietly showing you a subset. Filtering arrives with the rest of the composer
+  work in 0.7.0.
+- **The resume picker cannot tell you which sessions another `io` process is
+  driving.** Choosing one that is busy fails at the moment of use, loudly, rather
+  than being greyed out in the list.
+- A rewind undoes one turn — the last one. Walking a run further back is a
+  surface with its own confirmation problem and is not in this release.
+
 ## [0.3.0] - 2026-08-17
 
 The operator can read what the agent did to their files without leaving the

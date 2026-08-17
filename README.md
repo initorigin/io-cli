@@ -94,6 +94,7 @@ writes no key to disk at all.
 | `Ctrl+D` | exit, on an empty prompt |
 | `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
+| `Esc Esc` | at an empty prompt, undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
@@ -110,7 +111,9 @@ writes no key to disk at all.
 | `/quit` | leave |
 | `/setup` | run the first-run wizard again |
 | `/theme` | change the theme for this session |
-| `/model` | change the model for this session |
+| `/model` | change the model the next turn is sent to |
+| `/resume` | reopen an earlier session where it stopped |
+| `/fork` | continue from an earlier turn of this conversation |
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
@@ -175,14 +178,27 @@ refusal, error and warning also carries a word.
 
 ## What this release is not
 
-0.3.0 is what the agent did to your files, made readable: diffs from the
-harness's own stored hunks, word-level emphasis, syntax highlighting, collapsed
-tool output, the transcript on one key and the clipboard over SSH. Resume, fork
-and rewind are 0.4.0; the headless subcommand and NDJSON are 0.5.0; the
+0.4.0 is the release where work survives the session: `/resume`, `/fork`,
+`/model` and `Esc Esc`. The headless subcommand and NDJSON are 0.5.0; the
 screen-reader mode is 0.6.0; the slash palette and type-to-filter pickers are
-0.7.0.
+0.7.0; the fleet tree is 0.8.0; inline images are 0.9.0.
 
-Three things are absent for reasons worth stating rather than hiding. **Spend
+**A rewind does not check whether you edited a file yourself since the turn.** It
+puts each file back to the state before that turn first wrote it, and it does not
+compare that against what is on disk now — so a hand edit made afterwards is
+overwritten. `io` cannot detect this, because the snapshot it restores from is not
+readable from outside io-harness; what it does instead is tell you, in the prompt,
+before the second keystroke. This is what `git checkout -- <path>` does too, and
+it is said here rather than left to be discovered. Making it preventable is a
+change to io-harness, not to this interface.
+
+**A rewind undoes one turn**, the last one, and **`/resume` lists the twenty most
+recent sessions** — saying so when it has cut the list, rather than quietly
+showing you a subset. Filtering a picker as you type arrives at 0.7.0, and until
+then a list nobody can reach the bottom of is worse than a short one that admits
+its edges.
+
+Three more things are absent for reasons worth stating rather than hiding. **Spend
 against the tree ceiling is not in the status line**: io-harness emits
 `SpendDraw` only from a contained turn, and its contained entry point takes no
 steer inbox, so rendering spend today would cost `Ctrl+C`. It arrives at 0.8.0
