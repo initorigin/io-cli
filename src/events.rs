@@ -158,26 +158,57 @@ impl Events {
                 rule,
                 layer,
             } => {
-                // A plain notice in this release. The surface that names the rule
-                // and the layer properly is 0.2.0's; what must not happen now is
-                // pretending to a surface that does not exist, or losing the two
-                // facts no other core records.
+                // Act, target, rule, layer — in that order, and the last two are
+                // the facts no other terminal agent can print, because no other
+                // core records them. Asserted by position rather than by presence:
+                // a `contains` assertion is just as green when the sentence is
+                // inside out.
                 let mut text = format!("{act} {target}");
-                if let Some(rule) = rule {
-                    text.push_str(&format!(" — rule {rule}"));
-                }
-                if let Some(layer) = layer {
-                    text.push_str(&format!(", layer {layer}"));
+                match (rule, layer) {
+                    (Some(rule), Some(layer)) => {
+                        text.push_str(&format!("{SEPARATOR}rule {rule}{SEPARATOR}layer {layer}"));
+                    }
+                    (Some(rule), None) => text.push_str(&format!("{SEPARATOR}rule {rule}")),
+                    // Said, not left blank. In io-harness a missing rule means the
+                    // policy's own default for that act decided — the *least*
+                    // vouched-for kind of action rather than the most — so silence
+                    // here would read as the opposite of what happened.
+                    (None, _) => text.push_str(&format!(
+                        "{SEPARATOR}no rule named it: the tier default decided"
+                    )),
                 }
                 let mut lines = self.flush();
                 lines.push(theme.notice(Tone::Refused, text));
                 lines
             }
             EventKind::ApprovalRequested { act, target } => {
+                // One line, and deliberately a thin one. The event carries only the
+                // act and the target; the rule, the layer and the content a write
+                // proposes arrive on the approver seam instead, and the overlay is
+                // drawn from those. This is the transcript's note that the run
+                // stopped, not the question itself — the question must never be
+                // committed, which is what F1 asserts.
+                let mut lines = self.flush();
+                lines
+                    .push(theme.notice(Tone::Warning, format!("{act} {target} — waiting for you")));
+                lines
+            }
+            EventKind::ApprovalDecided {
+                act,
+                target,
+                decision,
+            } => {
+                // The harness's own record of what it was told, which is not the
+                // same line as io-cli's. They agree because the answer travelled
+                // one way; if they ever disagree, this is where it shows.
                 let mut lines = self.flush();
                 lines.push(theme.notice(
-                    Tone::Warning,
-                    format!("{act} {target} needs approval; this release answers from the configured posture"),
+                    if decision == "deny" {
+                        Tone::Refused
+                    } else {
+                        Tone::Muted
+                    },
+                    format!("{act} {target}{SEPARATOR}{decision}"),
                 ));
                 lines
             }
@@ -256,19 +287,24 @@ pub fn outcome_tone(outcome: &str) -> Tone {
 /// and the session had no way to give it.
 pub fn outcome_help(outcome: &str) -> Option<&'static str> {
     match outcome {
+        // Still a dead end, and a different one: a question about *intent*, which
+        // io-harness deliberately distinguishes from an approval about permission.
+        // Answering one needs a responder on a caller-supplied contract, which is
+        // the same entry point that would cost `Ctrl+C`. 0.7.0.
         "awaiting_answer" => Some(
-            "the agent asked a question, and this release has no way to answer one. \
-             Say the answer in your next prompt, or run `io setup` to choose a \
-             posture that does not need approval.",
+            "the agent asked what you meant, and this release has no way to answer \
+             that. Say it in your next prompt.",
         ),
+        // A turn that still ends here after 0.2.0 is one whose question was never
+        // answered — the overlay was dropped when the turn ended, or the run asked
+        // for something this interface does not bind, such as a plan gate.
         "awaiting_approval" | "awaiting_plan" => Some(
-            "the agent asked permission, and the approval surface is not in this \
-             release. Run `io setup` and choose the sandboxed-workspace posture, \
-             which allows writes and commands inside this repository.",
+            "the run stopped waiting on a decision it never got. Ask again, or \
+             press Shift+Tab to choose a posture that does not need one.",
         ),
         "denied" | "refused" => Some(
-            "the permission boundary stopped it. Run `io setup` to change the \
-             posture if that is not what you wanted.",
+            "the permission boundary stopped it. The line above names the rule and \
+             the layer; press Shift+Tab to change the posture for the next turn.",
         ),
         _ => None,
     }

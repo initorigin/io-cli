@@ -273,7 +273,7 @@ tasks:
     why_required: "This is the product's third success measure written as a test, and the two facts
       no competing core records. 0.1.0 shipped a plain notice as a placeholder and named this release
       as the one that replaces it."
-    status: todo
+    status: done
     depends_on:
       - US-IO-CLI-0.2.0-T05
     acceptance_criteria:
@@ -287,7 +287,34 @@ tasks:
     files:
       - src/events.rs
       - tests/events.rs
-    evidence: []
+    evidence:
+      - "A refusal now reads `write /etc/hosts · rule fs.deny · layer ops-baseline`, separated by
+        the same ` · ` the status line and the step line use. Act, target, rule, layer — and the
+        last two are the facts no other terminal agent can print."
+      - "`cargo test --test events` — 15 passed, 0 failed. The order is asserted by position with a
+        lookup closure, never by `contains`."
+      - "Three cases, three tests, because io-harness has three: a named rule in a named layer; a
+        rule with no layer; and neither, which means the *tier default* decided. The third renders
+        `no rule named it: the tier default decided` rather than a blank — the harness's own
+        documentation is explicit that an unnamed action in the grey tier is the least
+        vouched-for kind, so silence there would tell the reader the opposite of what happened."
+      - "Sabotage F8 — drop the layer from the line: 2 failed, F8's ordering test and the
+        pre-existing every-styled-kind test, which also asserts the layer. Both belong to this
+        criterion; nothing outside it moved."
+      - "`ApprovalRequested` stopped claiming what it used to. It said the release `answers from the
+        configured posture`, which was `DenyAll`; it now says `waiting for you` and stays one thin
+        line, because the event carries only the act and the target — the rule, the layer and the
+        content reach the overlay on the approver seam instead."
+      - "`ApprovalDecided` gained an arm of its own. It is io-harness's record of what it was told,
+        which is not the same line as io-cli's own; they agree because the answer travelled one way,
+        and if they ever disagree this is where it shows."
+      - "Two pre-existing tests pinned 0.1.1's wording — that every awaiting-help names `io setup` —
+        and 0.2.0 changes what the way out *is*, because an approval is now answered on screen. They
+        were widened to assert the property rather than the sentence: each help must name something
+        the operator can actually do (`io setup`, `Shift+Tab`, or answering in the next prompt).
+        `awaiting_answer` is still a dead end and still says so, because a question about intent
+        needs a responder on a caller-supplied contract — the entry point that would cost `Ctrl+C`."
+      - "`cargo test` — 24 test binaries, all ok. `cargo clippy --all-targets -- -D warnings` exit 0."
 
   - id: US-IO-CLI-0.2.0-T07
     summary: Fill the status line's remaining fields, each absent until something supplies it.
