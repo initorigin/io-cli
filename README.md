@@ -94,6 +94,7 @@ writes no key to disk at all.
 | `Ctrl+D` | exit, on an empty prompt |
 | `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
+| `Ctrl+T` | put the whole conversation back into the scrollback |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
 
@@ -110,8 +111,25 @@ writes no key to disk at all.
 | `/setup` | run the first-run wizard again |
 | `/theme` | change the theme for this session |
 | `/model` | change the model for this session |
+| `/expand` | commit the last step's full detail into the scrollback |
+| `/copy` | put the last answer on the system clipboard |
+| `/copy diff` | put the whole run's patch on the system clipboard |
 
 <!-- commands:end -->
+
+**Everything that shows you more of something writes it into the terminal's own
+scrollback.** `Ctrl+T` and `/expand` do not open a pane: the viewport is a few
+rows and this product has no alternate screen, so the place to read something
+long is the buffer where the terminal's search, selection and tmux copy-mode
+already work. `/expand` reads the step's full output back out of the run's
+durable trace, which is where it went in the first place — the screen is not the
+archive.
+
+`/copy` uses OSC 52, so it reaches the clipboard of the machine you are *sitting
+at* rather than the one you are ssh'd into. Nothing acknowledges an OSC 52 write:
+the line it prints says what was sent and how large it was, never that it
+succeeded. Inside tmux it needs `set -g set-clipboard on`, and some terminals
+refuse a large payload without saying so.
 
 `/theme` and `/model` change this session only and say so. Making a choice
 permanent is `io setup`.
@@ -121,6 +139,12 @@ permanent is `io setup`.
 io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
+
+Two keys live there: `theme`, and `diff`, which is `unified` (the default, and
+what an absent key means) or `minimal` — the changed lines and the `@@` header
+without the context, for reviewing by file rather than by hunk. Because the
+section is unvalidated by design, an unrecognised value reads as the default
+rather than stopping a session from starting.
 
 The file is found in this order: `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`,
 else `$XDG_CONFIG_HOME/io/io.toml` or `~/.config/io/io.toml`, and

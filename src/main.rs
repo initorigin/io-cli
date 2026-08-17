@@ -22,13 +22,14 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
 use io_cli::cli::{Cli, Command as Subcommand};
-use io_cli::commands::{self, Action};
+use io_cli::commands::{self, Action, Copied};
 use io_cli::picker::{Outcome, Picker, Row};
 use io_cli::settings::{self, CliSettings, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
 use io_cli::{approval, bridge, splash, verify};
+use ratatui::text::{Line, Span};
 
 fn main() -> ExitCode {
     let runtime = match tokio::runtime::Runtime::new() {
@@ -324,6 +325,7 @@ async fn loop_over<P: Provider>(
                 // The viewport, and nothing above it.
                 paint(screen, &mut app)?;
             }
+            Command::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
             Command::Slash(text) => match commands::parse(&text, &app.theme) {
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -354,6 +356,26 @@ async fn loop_over<P: Provider>(
                     )];
                     picker = Some((Picker::new("Which model?", rows), Pick::Model));
                 }
+                Action::Expand => {
+                    let lines = expand(&session, &store, &app.theme);
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
+                Action::Copy(what) => {
+                    let (payload, said) = to_copy(&session, &store, what);
+                    match payload {
+                        Some(payload) => {
+                            screen
+                                .escape(&io_cli::clipboard::sequence(&payload))
+                                .map_err(|error| error.to_string())?;
+                            // What was sent and how big it was — never "copied".
+                            // Nothing answers an OSC 52 write, so a success
+                            // message would be a claim this product cannot make.
+                            app.say(Tone::Muted, io_cli::clipboard::describe(&payload));
+                        }
+                        None => app.say(Tone::Muted, said),
+                    }
+                }
+                Action::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
             },
             Command::Submit(text) => {
                 // Rebuilt every turn rather than kept, because `remembered` grows
@@ -515,6 +537,98 @@ fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, widt
             Tone::Muted,
             format!("the diff for this step could not be read: {error}"),
         ),
+    }
+}
+
+/// Put the whole conversation back into the terminal's own scrollback.
+///
+/// Upward and never into a pane. The viewport is four rows and cannot grow, and
+/// there is no alternate screen in this product — so the place a reader reads
+/// something long is the terminal's own buffer, where its search, its selection
+/// and tmux copy-mode already work. A failure to read the store says so and
+/// changes nothing else: a session is not worth ending over a transcript.
+fn commit_transcript(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    session: &Session,
+    store: &Store,
+    theme: &Theme,
+) -> Result<(), String> {
+    let lines = match session.transcript(store) {
+        Ok(transcript) => io_cli::transcript::lines(&transcript, theme),
+        Err(error) => vec![theme.notice(
+            Tone::Muted,
+            format!("the transcript could not be read: {error}"),
+        )],
+    };
+    screen.commit(&lines).map_err(|error| error.to_string())
+}
+
+/// The last run of this session, if it has had one.
+fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
+    session
+        .transcript(store)
+        .ok()?
+        .turns
+        .into_iter()
+        .rfind(|turn| turn.on_path)
+}
+
+/// The last step's full detail, from the run's durable trace.
+///
+/// This is the other half of collapsing a tool cell: the screen is not the
+/// archive, so the output goes to the store when it happens and comes back here
+/// when somebody asks for it. Committed upward like everything else that shows
+/// more of something.
+fn expand(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
+    let Some(turn) = last_run(session, store) else {
+        return vec![theme.notice(Tone::Muted, "nothing has run in this session yet")];
+    };
+    let steps = match store.steps(turn.run_id) {
+        Ok(steps) => steps,
+        Err(error) => {
+            return vec![theme.notice(Tone::Muted, format!("the trace could not be read: {error}"))]
+        }
+    };
+    let Some(step) = steps.last() else {
+        return vec![theme.notice(Tone::Muted, "that turn recorded no steps")];
+    };
+    if step.result.trim().is_empty() {
+        return vec![theme.notice(
+            Tone::Muted,
+            format!("step {} recorded no detail", step.step),
+        )];
+    }
+
+    let mut lines = vec![theme.notice(
+        Tone::Muted,
+        format!("step {} — {}", step.step, step.decision),
+    )];
+    lines.extend(
+        step.result
+            .lines()
+            .map(|line| Line::from(Span::styled(format!("  {line}"), theme.style(Tone::Muted)))),
+    );
+    lines.push(Line::from(""));
+    lines
+}
+
+/// What `/copy` should put on the clipboard, or why there is nothing to put.
+fn to_copy(session: &Session, store: &Store, what: Copied) -> (Option<String>, String) {
+    let Some(turn) = last_run(session, store) else {
+        return (None, "nothing has run in this session yet".into());
+    };
+    match what {
+        Copied::Answer => match turn.reply {
+            Some(reply) if !reply.trim().is_empty() => (Some(reply), String::new()),
+            // A turn that stopped on a ceiling, a refusal or an interrupt has no
+            // closing message, and inventing one would misreport the ending.
+            _ => (None, "that turn ended without an answer to copy".into()),
+        },
+        Copied::Diff => match store.patch(turn.run_id) {
+            Ok(patch) if !patch.trim().is_empty() => (Some(patch), String::new()),
+            Ok(_) => (None, "that turn changed no files".into()),
+            Err(error) => (None, format!("the patch could not be read: {error}")),
+        },
     }
 }
 

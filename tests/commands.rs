@@ -17,12 +17,22 @@ fn text(lines: &[ratatui::text::Line<'_>]) -> String {
 }
 
 #[test]
-fn the_five_commands_are_the_five_commands() {
+fn the_commands_are_the_commands() {
     let names: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(
         names,
-        ["/help", "/quit", "/setup", "/theme", "/model"],
-        "the palette is 0.7.0; this release ships five",
+        [
+            "/help",
+            "/quit",
+            "/setup",
+            "/theme",
+            "/model",
+            "/expand",
+            "/copy",
+            "/copy diff",
+        ],
+        "the fuzzy palette is still 0.7.0; this list is written out so that adding \
+         a command is a decision somebody makes rather than a line somebody adds",
     );
     for (name, what) in COMMANDS {
         assert!(name.starts_with('/'), "{name}");
@@ -37,6 +47,22 @@ fn each_command_resolves() {
     assert_eq!(commands::parse("setup", &DARK), Action::Setup);
     assert_eq!(commands::parse("theme", &DARK), Action::Theme);
     assert_eq!(commands::parse("model", &DARK), Action::Model);
+    assert_eq!(commands::parse("expand", &DARK), Action::Expand);
+    // `/copy` with no argument is the answer; `diff` and `patch` are the same
+    // thing, because a reader who has just been shown a diff types the word they
+    // were shown.
+    assert_eq!(
+        commands::parse("copy", &DARK),
+        Action::Copy(io_cli::commands::Copied::Answer),
+    );
+    assert_eq!(
+        commands::parse("copy diff", &DARK),
+        Action::Copy(io_cli::commands::Copied::Diff),
+    );
+    assert_eq!(
+        commands::parse("copy patch", &DARK),
+        Action::Copy(io_cli::commands::Copied::Diff),
+    );
 
     // Arguments are tolerated; the first word decides.
     assert_eq!(commands::parse("model gpt-5", &DARK), Action::Model);
@@ -87,13 +113,14 @@ fn the_key_table_covers_every_key_this_release_binds() {
         "Ctrl+L",
         "Esc",
         "Shift+Tab",
+        "Ctrl+T",
         "y / a / n",
     ] {
         assert!(documented.contains(&key), "{key} is bound but undocumented");
     }
     assert_eq!(
         documented.len(),
-        9,
+        10,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );

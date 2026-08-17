@@ -52,6 +52,11 @@ pub enum Command {
     Exit,
     /// Repaint the viewport from scratch, never the scrollback.
     ClearViewport,
+    /// Put the whole conversation back into the terminal's own scrollback.
+    ///
+    /// A command rather than something this type does, because the transcript
+    /// lives in the harness's store and the store belongs to the driver.
+    Transcript,
 }
 
 pub struct App {
@@ -345,6 +350,11 @@ impl App {
             // destroy the transcript, which on this renderer is the terminal's own
             // buffer rather than something this process can redraw.
             (KeyCode::Char('l'), true) => Command::ClearViewport,
+            // Upward, never into a pane. The conversation is already in the
+            // terminal's scrollback; this puts back the part that has scrolled
+            // out of reach, branched-away turns included, where the terminal's
+            // own search and copy-mode already work on it.
+            (KeyCode::Char('t'), true) => Command::Transcript,
             _ => {
                 self.quits = 0;
                 match self.composer.key(key) {

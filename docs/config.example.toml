@@ -91,3 +91,11 @@ net = "deny"
 [app.io-cli]
 # "dark" or "light". Absent means detect from the terminal background.
 theme = "dark"
+# How much of a change a diff shows.
+#
+#   "unified"  the hunk as the harness stored it, context and all. The default,
+#              and what an absent key means — so a file written before 0.3.0
+#              needs no change.
+#   "minimal"  the changed lines and the @@ header, without the context. For
+#              reviewing by file rather than by hunk.
+diff = "unified"
