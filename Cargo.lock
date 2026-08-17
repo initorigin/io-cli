@@ -946,13 +946,14 @@ dependencies = [
 
 [[package]]
 name = "io-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "crossterm",
  "io-harness",
  "ratatui",
  "serde",
+ "serde_json",
  "syntect",
  "tempfile",
  "tokio",

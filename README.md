@@ -137,6 +137,82 @@ refuse a large payload without saying so.
 `/theme` and `/model` change this session only and say so. Making a choice
 permanent is `io setup`.
 
+## Headless
+
+`io exec "<goal>"` runs one goal to completion with no terminal, prints the
+agent's reply on stdout, and exits with a status that says how the run ended.
+It is the same session layer, the same policy, the same store and the same
+events as the interactive product — a second consumer of io-harness rather than
+a second program.
+
+```sh
+io exec "add a test for the parser and run it"
+io exec --json "fix the failing test" | jq -r 'select(.event=="step") | .decision'
+ANTHROPIC_API_KEY=… io exec --provider anthropic -m claude-sonnet-4 "tidy the imports"
+```
+
+| Flag | Does |
+| --- | --- |
+| `--json` | write the run's events to stdout as newline-delimited JSON instead of the reply |
+| `--sandbox <mode>` | `read-only`, `workspace-write` or `full-access` — where a command this run executes may write |
+| `--policy <posture>` | `workspace` or `read-only` — what the agent may attempt at all |
+| `--provider <name>` | `openrouter`, `anthropic` or `openai` — take the credential and model from the environment instead of a file |
+
+`--sandbox` and `--policy` are different axes and share the word `read-only`.
+One is where the sandbox lets a command write; the other is what the policy
+permits the agent to try.
+
+**`--policy ask-writes` is refused.** Nothing in a headless run can answer an
+approval, so honouring it would turn *ask before writes* into *deny writes*
+without saying so. Every approval in a headless run is declined, and the
+refusal is fed back to the agent as an observation it can adapt to — which is
+what it already does with a policy refusal.
+
+### Exit status
+
+| Code | Means |
+| --- | --- |
+| `0` | the run ended of its own accord |
+| `1` | it never got that far — no provider, a bad credential, an unreadable configuration, a usage error |
+| `2` | a boundary said no: denied, refused, or a rejected plan |
+| `3` | a ceiling was reached: steps, time, tokens, or the tree's shared budget |
+| `4` | the run stopped needing a human: it asked a question, or proposed a plan |
+| `5` | it ended without finishing: stalled, escalated, or cancelled |
+
+A ceiling is `3` and not `0` because io-harness returns one as a *successful
+call* whose outcome says a limit was hit; a status read off the result alone
+would call a truncated run a finished one.
+
+**Give the goal an end condition.** How a run ends is the agent's behaviour, not
+this interface's: a goal with no clear stopping point can keep the agent working
+after the useful part is done, until io-harness's stall policy ends the run — and
+that is `5`, even though the work happened. The same goal on the same model
+reached `Finished` on one run and `Stalled` on another while this release was
+being tested. `io` reports what the harness decided and never relabels it, so
+"…, then stop" in the goal, or a `max_steps` in `[run]`, is worth more than
+retrying.
+
+### The JSON
+
+One object per line, and nothing else on stdout, so it pipes straight into a
+reader. The objects are `io_harness::RunEvent` serialized by io-harness's own
+derive — the same shape its `[[hook]]` writer appends to a file and its store
+keeps in `run_events.json`:
+
+```json
+{"run_id":41,"step":2,"depth":0,"event":"step","decision":"wrote src/lib.rs","tool_call":"write_file","tokens":812,"changed":true}
+```
+
+The variant's fields sit beside the envelope's rather than under a key of their
+own. Because io-cli forwards the harness's type rather than modelling one of its
+own, every event kind reaches the stream — including the thirty-nine the
+interactive renderer has no way to draw. **There is no timestamp**: `RunEvent`
+does not carry one, and inventing an envelope to add one would make this a
+format io-cli owns rather than one it passes through.
+
+Progress, warnings and the closing summary go to stderr, so redirecting it
+leaves the data alone.
+
 ## Configuration
 
 io-cli has no configuration parser. io-harness owns discovery and layering, and
@@ -163,25 +239,43 @@ where widening is your own decision.
 the provider, the permission policy and its own `[app.io-cli]` section. The
 policy's own defaults are what `Shift+Tab` cycles; a posture chosen with the key
 lasts for the session and is not written back, because a keystroke that rewrites
-a permission boundary on disk is the opposite of what that key is for. io-cli does
-**not** yet apply `[sandbox]` limits, `[run]` budgets, `[[mcp]]`, `[[lsp]]`,
-`[[agent]]` or an `AGENTS.md` instruction file to a turn. The reason is specific
-rather than an oversight: io-harness's steerable turn builds its own task
-contract, and the entry point that takes a caller's contract does not take a
-steer inbox — so honouring those sections today would mean giving up `Ctrl+C`.
-The sandbox itself **is** on: a workspace turn runs commands inside it, with no
-resource ceilings until the harness offers a turn that is both contracted and
-steerable.
+a permission boundary on disk is the opposite of what that key is for. **An interactive session** does **not** yet apply `[sandbox]` limits, `[run]`
+budgets, `[[mcp]]`, `[[lsp]]`, `[[agent]]` or an `AGENTS.md` instruction file to
+a turn. The reason is specific rather than an oversight: io-harness's steerable
+turn builds its own task contract, and the entry point that takes a caller's
+contract does not take a steer inbox — so honouring those sections in a session
+would mean giving up `Ctrl+C`. The sandbox itself **is** on: a workspace turn
+runs commands inside it, with no resource ceilings.
+
+**`io exec` does apply them**, and that is not a second implementation — it is
+the same boundary reached from the other side. A headless run has nobody to
+steer it, so it can hand the harness a contract of its own, which is what
+`[sandbox]` and `[run]` travel in. So a `max_steps` or a `max_wall_secs` you set
+today has an effect in CI and none in your terminal, and that asymmetry is a
+property of the harness's entry points rather than a decision made here.
 
 `NO_COLOR` is honoured. Colour is never the only thing carrying a meaning — every
 refusal, error and warning also carries a word.
 
 ## What this release is not
 
-0.4.0 is the release where work survives the session: `/resume`, `/fork`,
-`/model` and `Esc Esc`. The headless subcommand and NDJSON are 0.5.0; the
-screen-reader mode is 0.6.0; the slash palette and type-to-filter pickers are
-0.7.0; the fleet tree is 0.8.0; inline images are 0.9.0.
+0.5.0 is the release where the same agent runs unattended: `io exec`, NDJSON,
+and a boundary you can pick from the command line. The screen-reader mode is
+0.6.0; the slash palette and type-to-filter pickers are 0.7.0; the fleet tree is
+0.8.0; inline images are 0.9.0.
+
+**`io exec` runs one goal and stops, and a run that pauses stays paused.** An
+agent that asks a question about what you meant, or proposes a plan, ends the run
+at exit `4` with the question persisted in the store. That is io-harness's
+behaviour and it is the right one — a machine answering a question about intent
+on your behalf sends the agent down a path nobody chose — but there is no `io
+resume` in this release to answer it and carry on, so the run is parked rather
+than lost. The closing line names its id. Approvals are the one pause that cannot
+happen, because they are declined rather than deferred.
+
+There are no `--max-steps`, `--timeout` or `--max-tokens` flags either: `[run]`
+in the configuration file expresses all three, and a CI job's limits belong with
+the project rather than in every invocation.
 
 **A rewind does not check whether you edited a file yourself since the turn.** It
 puts each file back to the state before that turn first wrote it, and it does not
