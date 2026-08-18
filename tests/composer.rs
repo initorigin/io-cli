@@ -241,6 +241,79 @@ fn big_paste() -> String {
     text
 }
 
+/// A paste large enough to collapse and made of nothing but whitespace: a blank
+/// region of a file, a run of indentation, a column of empty lines. Every other
+/// fixture here pastes something visible, which is why the collapsed form and
+/// the expanded one were free to disagree about whether the prompt is empty.
+fn blank_paste() -> String {
+    let text = "    \n".repeat(40);
+    assert!(
+        text.chars().count() > PASTE_THRESHOLD,
+        "the fixture has to be over the threshold or it never collapses",
+    );
+    text
+}
+
+#[test]
+fn f6_a_paste_of_nothing_but_whitespace_leaves_an_empty_composer() {
+    // The placeholder is on screen, so what is rendered is not blank. What it
+    // stands for is. `Enter` reads the expanded text and will not send it, and
+    // `is_empty` used to read the screen and say the composer was full — so the
+    // operator held a prompt that looked full, could not be sent, could not be
+    // exited with `Ctrl+D` and whose `Esc` cleared instead of arming the rewind,
+    // with nothing on the frame saying why.
+    let mut composer = Composer::new();
+    composer.paste(&blank_paste());
+
+    assert_eq!(composer.height(80), 1, "the paste was not collapsed");
+    assert_eq!(
+        composer.key(key(KeyCode::Enter)),
+        Reply::Idle,
+        "whitespace is not a prompt, however it arrived",
+    );
+    assert!(
+        composer.is_empty(),
+        "the composer claims to hold something it will not send",
+    );
+}
+
+#[test]
+fn f6_a_blank_paste_beside_typed_text_still_arrives_whole() {
+    // The other half of the same question: emptiness is decided on the expanded
+    // text, and deciding it there must not start trimming the text that is sent.
+    let blank = blank_paste();
+    let mut composer = Composer::new();
+    type_text(&mut composer, "run this on: ");
+    composer.paste(&blank);
+
+    assert!(!composer.is_empty(), "there is a prompt here to send");
+    assert_eq!(
+        composer.key(key(KeyCode::Enter)),
+        Reply::Submitted(format!("run this on: {blank}")),
+        "the whitespace was trimmed out of a paste that arrives byte for byte",
+    );
+}
+
+#[test]
+fn f6_a_blank_paste_does_not_empty_a_prompt_that_holds_another_one() {
+    // Two pastes, one blank and one a whole file: the prompt is as full as the
+    // fullest thing in it, and both blocks come back in the order they arrived.
+    let blank = blank_paste();
+    let code = big_paste();
+    let mut composer = Composer::new();
+    composer.paste(&blank);
+    composer.paste(&code);
+
+    assert!(
+        !composer.is_empty(),
+        "one of the two pastes is a whole file"
+    );
+    assert_eq!(
+        composer.key(key(KeyCode::Enter)),
+        Reply::Submitted(format!("{blank}{code}")),
+    );
+}
+
 #[test]
 fn f6_a_large_paste_leaves_one_line_naming_what_it_is() {
     let paste = big_paste();

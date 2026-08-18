@@ -137,10 +137,28 @@ impl Composer {
         out
     }
 
-    /// Whether there is nothing typed. `Ctrl+D` exits on an empty composer, so
-    /// this decides whether a keystroke ends the session.
+    /// Whether there is nothing here worth sending or worth keeping. `Ctrl+D`
+    /// exits, `Esc` arms the rewind and `/` opens the palette on an empty
+    /// composer, so this decides what three keystrokes mean.
+    ///
+    /// Asked of [`Composer::text`] rather than of the widget's lines, because
+    /// those two disagree the moment a paste is not what it looks like. Paste a
+    /// blank region of a file — a run of indentation, a column of empty lines —
+    /// and it is over [`PASTE_THRESHOLD`], so it collapses to a placeholder that
+    /// is emphatically not whitespace, while the prompt it stands for is nothing
+    /// at all. Read the screen and the composer looks full; `Enter` reads the
+    /// expanded text and will not send it. The operator is then holding a prompt
+    /// that cannot be submitted, cannot be exited and cannot be cleared, and
+    /// nothing on the frame says why.
+    ///
+    /// So there is one question and `Enter` is where it is answered: what the
+    /// callers gate on is exactly what would be sent. The cost is expanding the
+    /// pastes for a keystroke that only wanted to know whether the prompt is
+    /// blank, which is bounded by what a terminal hands over in one paste event.
+    /// A cheaper second predicate that could drift from the first is precisely
+    /// what this was.
     pub fn is_empty(&self) -> bool {
-        self.area.lines().iter().all(|line| line.trim().is_empty())
+        self.text().trim().is_empty()
     }
 
     /// The prompts submitted so far, oldest first.
@@ -190,6 +208,11 @@ impl Composer {
                     return Reply::Idle;
                 }
                 let text = self.text();
+                // The same test [`Composer::is_empty`] makes, on the same
+                // expanded text — it is written out here only because the text
+                // is already in hand. Change one and change the other, or the
+                // composer goes back to refusing to send a prompt it also
+                // refuses to call empty.
                 if text.trim().is_empty() {
                     return Reply::Idle;
                 }
