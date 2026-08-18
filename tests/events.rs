@@ -33,7 +33,7 @@ const STYLED: &[&str] = &[
     "mcp",
 ];
 
-/// Every other kind io-harness 0.60.1 emits. Each renders as a muted single line
+/// Every other kind the locked io-harness emits. Each renders as a muted single line
 /// naming itself. This list is not decoration: the drift test below fails when
 /// io-harness grows a kind that is in neither list, which is the moment somebody
 /// has to decide what it should look like.
@@ -517,7 +517,7 @@ fn f8_this_release_has_seen_every_kind_io_harness_emits() {
     assert_eq!(
         declared.len(),
         50,
-        "io-harness 0.60.1 declares fifty event kinds; found {}",
+        "the locked io-harness declares fifty event kinds; found {}",
         declared.len(),
     );
 
