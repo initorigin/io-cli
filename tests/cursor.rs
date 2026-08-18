@@ -455,3 +455,180 @@ fn f2_the_composer_frame_sets_a_cursor_even_when_it_is_too_narrow_to_draw() {
         drawn.area,
     );
 }
+
+// ---------------------------------------------------------------------------
+// F12 — the frames 0.7.0 added.
+//
+// The palette, the completion list and the filtered picker are all `Picker`,
+// which is the claim rather than a redundancy: every product that grows a
+// completion list grows a second overlay for it, and a second overlay is a second
+// frame that can forget the caret. There is one widget here, so there is one
+// place the caret is set — and the two states below are the ones that widget had
+// never been in before this release.
+//
+// The plan block and the `!` shell block are deliberately absent. Both are
+// committed into the terminal's own scrollback rather than drawn, so neither is a
+// frame and there is nothing for ratatui to hide a cursor on; their eighty-column
+// audit is in `tests/narrow.rs`.
+// ---------------------------------------------------------------------------
+
+/// The palette as the driver opens it, over the command inventory alone.
+fn palette() -> Picker {
+    Picker::new(
+        "Which command?",
+        io_cli::commands::palette(&io_harness::Templates::none()),
+    )
+}
+
+fn type_at(picker: &mut Picker, text: &str) {
+    for character in text.chars() {
+        picker.key(key(KeyCode::Char(character)));
+    }
+}
+
+/// **F12.** The palette sets a caret, and a query moves it to the row the ranking
+/// left under the marker rather than to the row that was there before.
+///
+/// `Picker` draws the match set in ranked order and holds its intended row as an
+/// index into the caller's own list, so a caret placed from an unfiltered index
+/// would sit on whichever row happened to fall under it — pointing a reader at
+/// one command while `Enter` took another.
+#[test]
+fn f2_the_slash_palette_sets_a_cursor_on_the_row_the_query_left_under_the_marker() {
+    let mut picker = palette();
+
+    let opened = draw(io_cli::term::VIEWPORT_HEIGHT, |frame| {
+        picker.render(frame, frame.area(), &DARK)
+    });
+    assert!(
+        opened
+            .row_from_cursor("the slash palette")
+            .starts_with("help"),
+        "the cursor belongs at the start of the row Enter would take: {:?}",
+        opened.text,
+    );
+
+    type_at(&mut picker, "fork");
+    let filtered = draw(io_cli::term::VIEWPORT_HEIGHT, |frame| {
+        picker.render(frame, frame.area(), &DARK)
+    });
+    assert!(
+        filtered
+            .row_from_cursor("the filtered slash palette")
+            .starts_with("fork"),
+        "the cursor stayed at a position instead of following the row the query \
+         left under the marker: {:?}",
+        filtered.text,
+    );
+}
+
+/// **F12.** A query that admits nothing still sets a caret.
+///
+/// The frame this release added and the one most easily left without one: there
+/// is no selected row for a cursor to sit on, so the obvious implementation sets
+/// none — and a caret that disappears the moment the list goes empty removes the
+/// only focus indicator at exactly the moment the operator is trying to work out
+/// whether the thing has broken.
+///
+/// Asserted on the caret's **row** rather than its column on purpose. The column
+/// is the marker's width, which is right for a row with a marker in front of it
+/// and puts the caret two characters into the sentence here; that is recorded as
+/// a finding rather than pinned as the contract.
+#[test]
+fn f2_a_picker_whose_query_matches_nothing_still_sets_a_cursor() {
+    let mut picker = palette();
+    type_at(&mut picker, "zzzz");
+    assert_eq!(
+        picker.matching(),
+        0,
+        "the fixture must really admit nothing, or the line under audit is never \
+         drawn",
+    );
+
+    let drawn = draw(io_cli::term::VIEWPORT_HEIGHT, |frame| {
+        picker.render(frame, frame.area(), &DARK)
+    });
+    let at = drawn.position("a picker whose query matches nothing");
+    assert!(
+        drawn.area.contains(at),
+        "the cursor left the frame: {at:?} in {:?}",
+        drawn.area,
+    );
+
+    let row = drawn
+        .text
+        .lines()
+        .nth((at.y - drawn.area.y) as usize)
+        .unwrap_or("");
+    assert!(
+        row.starts_with("No row matches"),
+        "the caret belongs on the only line there is, which is the one saying why \
+         the list is empty: {:?}",
+        drawn.text,
+    );
+}
+
+/// **F12.** The `@` completion picker sets a caret on the path `Enter` would take.
+#[test]
+fn f2_the_completion_picker_frame_sets_a_cursor_on_the_selected_path() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(dir.path().join("notes.md"), "what to do\n").expect("a file");
+    std::fs::create_dir(dir.path().join("src")).expect("a directory");
+
+    let (found, _cut) =
+        io_cli::complete::entries(dir.path(), &io_harness::Policy::permissive(), "")
+            .expect("a listing");
+    let rows = io_cli::complete::rows(&found);
+    let first = rows
+        .first()
+        .expect("the fixture is not empty")
+        .label
+        .clone();
+    let mut picker = Picker::new(io_cli::complete::title("", &DARK.glyphs), rows);
+
+    let drawn = draw(io_cli::term::VIEWPORT_HEIGHT, |frame| {
+        picker.render(frame, frame.area(), &DARK)
+    });
+    assert!(
+        drawn
+            .row_from_cursor("the completion picker")
+            .starts_with(&first),
+        "the cursor belongs at the start of the path Enter would take: {:?}",
+        drawn.text,
+    );
+}
+
+/// **F12.** The composer sets its caret past the placeholder *as drawn*, not past
+/// the block it stands for.
+///
+/// A paste over the threshold is one line on screen and its whole text inside the
+/// composer, so the two disagree by however large the paste was. A caret computed
+/// from `Composer::text` would land hundreds of columns off the right-hand edge of
+/// an eighty-column terminal.
+#[test]
+fn f2_the_composer_sets_a_cursor_past_a_collapsed_paste() {
+    let pasted = "x".repeat(io_cli::composer::PASTE_THRESHOLD + 1);
+    let placeholder = format!("[pasted text #1, {} characters]", pasted.chars().count());
+
+    let mut app = App::new(DARK, "opus-5");
+    assert!(
+        app.paste(&pasted, false),
+        "nothing was open, so the paste had nowhere to go but the composer",
+    );
+
+    let drawn = draw(io_cli::term::VIEWPORT_HEIGHT, |frame| {
+        app.render(frame, frame.area())
+    });
+    let at = drawn.position("the composer holding a collapsed paste");
+    assert_eq!(
+        at.x,
+        drawn.area.x + PROMPT.len() as u16 + placeholder.chars().count() as u16,
+        "the caret belongs after the placeholder as it is drawn: {:?}",
+        drawn.text,
+    );
+    assert!(
+        drawn.area.contains(at),
+        "the cursor left the viewport: {at:?} in {:?}",
+        drawn.area,
+    );
+}

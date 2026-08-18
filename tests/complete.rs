@@ -356,11 +356,11 @@ fn f3_the_row_count_is_bounded_and_a_cut_listing_says_so() {
 /// title is the only thing that tells the operator which descent they are in.
 #[test]
 fn f3_the_title_names_the_directory_being_listed() {
-    assert_eq!(complete::title(""), "Which path?");
+    assert_eq!(complete::title("", &DARK.glyphs), "Which path?");
     assert!(
-        complete::title("src").contains("src"),
+        complete::title("src", &DARK.glyphs).contains("src"),
         "a descent says where it is: {:?}",
-        complete::title("src"),
+        complete::title("src", &DARK.glyphs),
     );
 }
 

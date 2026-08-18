@@ -28,7 +28,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_harness::tools::{Entry, EntryKind, Workspace};
 use io_harness::Policy;
 
-use crate::picker::Row;
+use crate::glyphs::Glyphs;
+use crate::picker::{fit_left, Row};
 
 /// How many entries of one directory the picker is given.
 ///
@@ -120,12 +121,31 @@ pub fn entries(root: &Path, policy: &Policy, dir: &str) -> Result<(Vec<Entry>, b
 /// last component: at one level down, `app.rs` under `src` and `app.rs` under
 /// `tests` are the same three rows of characters, and the directory is the only
 /// thing on the screen that tells them apart.
-pub fn title(dir: &str) -> String {
+pub fn title(dir: &str, glyphs: &Glyphs) -> String {
     if dir.is_empty() {
-        "Which path?".to_string()
-    } else {
-        format!("Which path under {dir}?")
+        return "Which path?".to_string();
     }
+    // The path is shortened here rather than left to the picker, and from the
+    // LEFT rather than the right. `Picker` fits its head with `fit`, which keeps
+    // the beginning — correct for a question, wrong for a path, because the part
+    // that identifies a directory is its tail. Rows are labelled with an entry's
+    // last component, so `app.rs` under `src` and `app.rs` under `tests` are the
+    // same row and this title is the only thing telling them apart; a title that
+    // lost its tail would take the one fact it exists to carry.
+    //
+    // `Picker` cannot do this itself: it is handed a string and has no way to
+    // know a path is inside it.
+    // Fitted against the audited eighty-column floor rather than the live width,
+    // which this is built before knowing — the same choice, for the same reason,
+    // that the committed transcript makes. A wider terminal draws the whole of
+    // whatever comes back, so the only cost is a path shortened on a wide screen
+    // that need not have been.
+    const ROW: usize = 80;
+    let around = "Which path under ?".chars().count();
+    format!(
+        "Which path under {}?",
+        fit_left(dir, ROW.saturating_sub(around), glyphs)
+    )
 }
 
 /// The picker's rows: one per entry, in the order `list_dir` sorted them.

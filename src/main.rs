@@ -566,7 +566,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     app.posture(),
                                     app.remembered(),
                                 );
-                                match completion(session.root(), &effective, &dir) {
+                                match completion(
+                                    session.root(),
+                                    &effective,
+                                    &dir,
+                                    &app.theme.glyphs,
+                                ) {
                                     Ok(Some(open)) => descended = Some(open),
                                     Ok(None) => app
                                         .say(Tone::Muted, format!("nothing to complete in {dir}")),
@@ -627,7 +632,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // so what the picker offers and what the agent may read cannot differ.
         if complete::opens(key, &app.composer.text(), app.armed()) {
             let effective = approval::session_policy(&policy, app.posture(), app.remembered());
-            match completion(session.root(), &effective, "") {
+            match completion(session.root(), &effective, "", &app.theme.glyphs) {
                 Ok(Some(open)) => picker = Some(open),
                 // An empty root, or one the policy reads as empty. Said rather
                 // than opened onto nothing, the same way `/resume` declines.
@@ -1212,6 +1217,7 @@ fn completion(
     root: &std::path::Path,
     policy: &Policy,
     dir: &str,
+    glyphs: &io_cli::glyphs::Glyphs,
 ) -> Result<Option<(Picker, Pick)>, String> {
     let (found, cut) = complete::entries(root, policy, dir)?;
     if found.is_empty() {
@@ -1225,7 +1231,7 @@ fn completion(
         rows.push(Row::new(note));
     }
     Ok(Some((
-        Picker::new(complete::title(dir), rows),
+        Picker::new(complete::title(dir, glyphs), rows),
         Pick::Complete(found),
     )))
 }

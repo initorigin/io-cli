@@ -206,16 +206,6 @@ impl Picker {
         self.matches.len()
     }
 
-    /// Rows the picker wants, given the rows it has and the space available.
-    ///
-    /// At least one row's worth even when nothing matches, because the empty
-    /// result has a line of its own to say so and a picker sized to zero rows
-    /// would draw a query with nothing under it.
-    pub fn height(&self, available: u16) -> u16 {
-        let wanted = self.matches.len().max(1) as u16 + 1; // the title, or the query
-        wanted.min(available.max(1))
-    }
-
     /// Re-rank against the query, keeping the marker on the row it was on.
     ///
     /// The row rather than the position: on a backspace the list widens and the
@@ -477,9 +467,17 @@ impl Picker {
         // told.
         let row = (self.cursor.saturating_sub(self.offset) + 1)
             .min(area.height.saturating_sub(1) as usize) as u16;
+        // Past the marker on a row that has one. The line saying nothing matched
+        // does not, so the caret goes to its first character instead of two cells
+        // inside its own sentence — a reader following the caret should land on
+        // the start of what it is being told.
+        let indent = if self.matches.is_empty() {
+            0
+        } else {
+            theme.glyphs.marker.chars().count() as u16
+        };
         frame.set_cursor_position(Position {
-            x: (area.x + theme.glyphs.marker.chars().count() as u16)
-                .min(area.right().saturating_sub(1)),
+            x: (area.x + indent).min(area.right().saturating_sub(1)),
             y: area.y + row,
         });
     }
