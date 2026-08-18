@@ -13,6 +13,15 @@
 //! configuration becomes a set, [`palette_pick`] is what a chosen row stands for,
 //! and [`expand`] is what a chosen template puts in the composer.
 //!
+//! **It does not reach harness skills, and that is a limit rather than an
+//! omission.** A skill is read by the model through a tool, and whether it may
+//! be is decided by a `TaskContract`; a steered session builds its own contract
+//! and no io-harness entry point takes one from the caller alongside a steer
+//! inbox, so io-cli can neither learn which directory holds them nor make the
+//! model able to read one. Templates are the opposite case, and are here
+//! precisely because they are: the caller expands one into prompt text and no
+//! contract is involved.
+//!
 //! **Everything that shows more of something commits upward.** The viewport is
 //! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
 //! write into the scrollback, where the terminal's own search, selection and
@@ -72,6 +81,12 @@ pub const KEYS: &[(&str, &str)] = &[
         "answer an approval: allow once, allow this session, deny",
     ),
     ("Esc", "close a picker without choosing"),
+    ("/", "at an empty prompt, open the command palette"),
+    ("@", "after a space, complete a path from the workspace"),
+    (
+        "!",
+        "run the rest of the line in your shell; the agent never sees it",
+    ),
 ];
 
 /// Every slash command, likewise.

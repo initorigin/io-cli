@@ -141,12 +141,19 @@ fn the_key_table_covers_every_key_this_release_binds() {
         "Shift+Tab",
         "Ctrl+T",
         "y / a / n",
+        // The three prefixes 0.7.0 adds. None is a chord, and none is
+        // rebindable: they are characters the composer would otherwise have
+        // taken, so what they cost is a literal `/`, `@` or `!` in the one
+        // position each is claimed in.
+        "/",
+        "@",
+        "!",
     ] {
         assert!(documented.contains(&key), "{key} is bound but undocumented");
     }
     assert_eq!(
         documented.len(),
-        11,
+        14,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );

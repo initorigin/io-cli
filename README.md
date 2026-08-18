@@ -98,6 +98,9 @@ writes no key to disk at all.
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
+| `/` | at an empty prompt, open the command palette |
+| `@` | after a space, complete a path from the workspace |
+| `!` | run the rest of the line in your shell; the agent never sees it |
 
 <!-- keys:end -->
 
@@ -372,10 +375,21 @@ it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.6.0 is the release where the interface can be read without being seen:
-`--plain`, an ASCII form for every mark, keys that can be moved, and a cursor
-wherever input is expected. The slash palette and type-to-filter pickers are
-0.7.0; the fleet tree is 0.8.0; inline images are 0.9.0.
+0.7.0 is the release where the composer becomes the way the product is driven:
+a slash palette over every command and prompt template, `@` completion under the
+session's own permission boundary, `!` for your own shell, type-to-filter on
+every picker, and the agent's plan on screen. The fleet tree is 0.8.0; inline
+images are 0.9.0.
+
+**Harness skills are not in the palette, and prompt templates are.** The
+difference is not effort. A template is expanded by io-cli into prompt text, so
+nothing but this program is involved. A skill is read by the *model*, through a
+tool, and whether it may be is decided by a task contract — and io-harness has no
+session entry point that takes a contract from the caller alongside the steer
+inbox that carries `Ctrl+C`. So an interface can offer skills or it can offer
+interruption, and this one keeps interruption. The same boundary is why the agent
+asking what you meant still cannot be answered in the session, and why a proposed
+plan is not shown: all three wait on the same change to io-harness.
 
 **`io exec` runs one goal and stops, and a run that pauses stays paused.** An
 agent that asks a question about what you meant, or proposes a plan, ends the run
@@ -399,11 +413,11 @@ before the second keystroke. This is what `git checkout -- <path>` does too, and
 it is said here rather than left to be discovered. Making it preventable is a
 change to io-harness, not to this interface.
 
-**A rewind undoes one turn**, the last one, and **`/resume` lists the twenty most
-recent sessions** — saying so when it has cut the list, rather than quietly
-showing you a subset. Filtering a picker as you type arrives at 0.7.0, and until
-then a list nobody can reach the bottom of is worse than a short one that admits
-its edges.
+**A rewind undoes one turn**, the last one. **`/resume` lists every session the
+walk found** — the twenty-row cap is gone, because it existed only to keep a list
+short that nobody could filter. One bound is left, on how many runs the walk will
+look at, and the list still says so when it has cut rather than quietly showing
+you a subset.
 
 Three more things are absent for reasons worth stating rather than hiding. **Spend
 against the tree ceiling is not in the status line**: io-harness emits

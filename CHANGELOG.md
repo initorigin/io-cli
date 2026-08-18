@@ -6,6 +6,76 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-18
+
+The composer stops being a text box and becomes the way the product is driven.
+A palette reaches every command and every prompt template, `@` completes paths
+under the same permission boundary the agent runs under, `!` hands a line to
+your own shell, a pasted file no longer floods the prompt, every picker filters
+as you type, and the agent's own plan is on screen instead of being a word in
+grey.
+
+### Added
+
+- **A slash palette.** `/` at an empty prompt opens a picker over every command,
+  narrowing as you type and matched on a subsequence rather than a prefix, so
+  `fk` reaches `/fork`. Enter puts the command in the prompt rather than running
+  it, so you can see and edit it before it is sent.
+- **Prompt templates in the palette.** Templates configured through `[run]
+  templates` appear as rows carrying their name and description, and choosing
+  one expands it into the composer. A templates directory that is missing or is
+  not a directory is reported with io-harness's own message rather than being
+  silently treated as an empty set.
+- **`@` completes workspace paths**, one directory at a time, rooted at the
+  session's own root and served by io-harness's `Workspace` under the policy the
+  next turn will run under — so a path your posture denies is never offered.
+  Listings are bounded per directory and a cut listing says so.
+- **`!` runs a line in your own shell** — `$SHELL -c`, or `%COMSPEC% /C` on
+  Windows — with its output, its errors and its exit status committed into the
+  scrollback beside the conversation. The agent never sees the line. The child
+  gets no terminal, so interactive programs such as `vim` and `less` are out of
+  scope, and a slow command holds the interface until it finishes.
+- **Type-to-filter on every picker** — the model list, the theme list, `/resume`,
+  `/fork`, the palette and path completion. The query is drawn in place of the
+  title, so it costs no row in a viewport that has four. `j` and `k` are query
+  characters now; the arrows still move.
+- **The agent's plan is rendered.** Each time the agent rewrites its todo list
+  the whole list is committed to the scrollback, every item with its own state
+  word, and the status line carries how much of it the agent claims is done. A
+  plan longer than the store keeps says so rather than showing a trimmed one.
+- **A large paste collapses to one line** naming what it is and how big, and is
+  restored whole when the prompt is sent.
+
+### Changed
+
+- `/resume` offers every session the walk found rather than the twenty most
+  recent. The cap existed only because a list nobody could filter was a list
+  nobody could reach the bottom of.
+- io-harness moves from 0.63 to 0.64.
+
+### Fixed
+
+- A paste during a turn was silently discarded, and a paste with a picker open
+  was inserted into the composer hidden behind the overlay. Both now behave the
+  way the surface they land on says they should.
+- A picker's selection survived only as long as every keystroke matched
+  something. One character that matched nothing lost it, and backspacing did not
+  bring it back — so a typo before choosing could branch `/fork` from the first
+  turn of a conversation, switch `/model` to the first of four hundred, or write
+  a theme you never chose into your configuration.
+- The theme step's live preview read a row index that could be fabricated when
+  nothing matched, so typing a letter no theme contains changed the theme that
+  would be saved.
+- The matcher ranked a row that merely spelled your query above one that
+  contained it whole, which on a real model catalogue put the wrong row first.
+- An empty plan from the agent rendered as a plan of nothing and pinned `0/0` to
+  the status line.
+- The status line's tokens, context, containment and plan outlived the run that
+  set them, so they went on describing a conversation you had already left after
+  a resume, a fork or a rewind.
+- A prompt holding only a large paste of whitespace could not be sent, would not
+  let `Ctrl+D` exit, and said nothing about why.
+
 ## [0.6.0] - 2026-08-18
 
 The interface can be read without being seen. Every mark has an ASCII form, the
