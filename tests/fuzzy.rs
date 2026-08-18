@@ -69,6 +69,98 @@ fn f8_a_consecutive_run_beats_the_same_letters_scattered() {
 }
 
 #[test]
+fn f8_the_row_that_contains_the_needle_whole_is_the_row_on_top() {
+    // The defect this exists for, in the shape it actually shipped in. Every row of
+    // a real catalogue opens with a vendor prefix, so every row donates an `o` to
+    // `o4` at index 0; a walk that takes that first `o` and never reconsiders finds
+    // the `4` of `openai/o4-mini` seven characters later and buried inside a word,
+    // and scores it *below* `openai/gpt-4o`, whose `4` at least starts one. The row
+    // holding the needle contiguously sat under the row that merely holds its
+    // letters, and Enter took the wrong model.
+    let run = score("openai/o4-mini", "o4").expect("the run matches");
+    let scattered = score("openai/gpt-4o", "o4").expect("the scatter matches");
+    assert!(
+        run > scattered,
+        "the row containing `o4` must outrank the row that only spells it: \
+         openai/o4-mini {run} vs openai/gpt-4o {scattered}",
+    );
+
+    let catalogue = [
+        "openai/gpt-4o",
+        "anthropic/claude-opus-4",
+        "openai/o4-mini",
+        "google/gemini-2.5-pro",
+    ];
+    assert_eq!(
+        rank(catalogue, "o4").first().copied(),
+        Some(2),
+        "typing `o4` at a catalogue must put `openai/o4-mini` under the marker",
+    );
+}
+
+#[test]
+fn f8_a_run_outranks_a_scatter_wherever_the_run_starts() {
+    // Not just when the run happens to start a word. `zzzab` opens its run in the
+    // middle of one and pays the full gap for getting there, while `x-a-b` spends
+    // both its letters on word starts — and the run still has to win, because a run
+    // is what the operator typing a name produces and a scatter is not.
+    let buried = score("zzzab", "ab").expect("the buried run matches");
+    let boundaries = score("x-a-b", "ab").expect("the boundary scatter matches");
+    assert!(
+        buried > boundaries,
+        "a run must beat a scatter from anywhere: zzzab {buried} vs x-a-b {boundaries}",
+    );
+}
+
+#[test]
+fn f8_a_run_beats_a_scatter_over_every_short_label_there_is() {
+    // The claim above is an ordering rule, not one example, so it is asserted over
+    // every label the alphabet can spell rather than over the two that happen to
+    // have caught the defect. Three characters — two letters and the separator that
+    // makes word boundaries — and every label up to six of them: about a thousand,
+    // which is a millisecond's work and the only proof that the run bonus is large
+    // enough to cover a run that starts late.
+    let labels = every_label_up_to(6);
+    for needle in ["ab", "ba", "aab", "aba", "abb", "bab"] {
+        let (worst_run, worst_label) = labels
+            .iter()
+            .filter(|label| label.contains(needle))
+            .filter_map(|label| score(label, needle).map(|score| (score, label)))
+            .min_by_key(|(score, _)| *score)
+            .expect("some label contains the needle");
+        let (best_scatter, best_label) = labels
+            .iter()
+            .filter(|label| !label.contains(needle))
+            .filter_map(|label| score(label, needle).map(|score| (score, label)))
+            .max_by_key(|(score, _)| *score)
+            .expect("some label spells the needle without containing it");
+        assert!(
+            worst_run > best_scatter,
+            "`{needle}`: the worst label containing it ({worst_label} at {worst_run}) \
+             must still beat the best label merely spelling it \
+             ({best_label} at {best_scatter})",
+        );
+    }
+}
+
+/// Every string over `a`, `b` and `-` up to `longest` characters.
+fn every_label_up_to(longest: usize) -> Vec<String> {
+    let mut all = Vec::new();
+    let mut shorter = vec![String::new()];
+    for _ in 0..longest {
+        let mut longer = Vec::new();
+        for label in &shorter {
+            for letter in ['a', 'b', '-'] {
+                longer.push(format!("{label}{letter}"));
+            }
+        }
+        all.extend_from_slice(&longer);
+        shorter = longer;
+    }
+    all
+}
+
+#[test]
 fn f8_a_word_boundary_beats_a_hit_inside_a_word() {
     // The labels these rank are full of separators — `Any OpenAI-compatible
     // endpoint`, `claude-opus`, `openai/gpt-4o` — and a reader typing `c` for

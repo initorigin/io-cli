@@ -15,7 +15,7 @@
 //!
 //! Deliberately not a crate. `tests/dependencies.rs` asserts this crate's exact
 //! dependency list in both directions, and a fuzzy finder is not something worth
-//! spending an entry on: the whole of the ranking below is forty lines, and the
+//! spending an entry on: the whole of the ranking below is sixty lines, and the
 //! rows it ranks are a handful of labels typed against by a human, so nothing here
 //! is on a path where an optimised implementation would be noticeable.
 
@@ -24,7 +24,18 @@
 /// The largest of the three because a consecutive run is the strongest evidence
 /// that the operator is typing the row's actual name rather than picking letters
 /// out of it.
-const CONSECUTIVE: i32 = 8;
+///
+/// Fifteen rather than eight, and the extra seven is load-bearing: it is what
+/// makes a run beat a scatter *wherever the run starts*. Worst case, a run opens
+/// mid-word and pays the full gap cap — `1 - GAP_CAP`, so −2 — while the scatter
+/// it is up against opens at index 0 on a boundary, `1 + BOUNDARY`, so 7; and a
+/// scatter, being a scatter, has at least one later character that is not
+/// consecutive and so earns at most `1 + BOUNDARY - 1`, so 6, where the run earns
+/// `1 + CONSECUTIVE`. Every other character is a wash, so the run wins by
+/// `(1 + CONSECUTIVE) - (-2) - 7 - 6`, which is `CONSECUTIVE - 14`: positive from
+/// fifteen up, and at eight it was negative, which is exactly how `openai/gpt-4o`
+/// used to sit above `openai/o4-mini` for `o4`.
+const CONSECUTIVE: i32 = 15;
 
 /// What a match adds for starting a word.
 ///
@@ -46,9 +57,13 @@ const EXACT: i32 = 200;
 
 /// What a prefix match adds.
 ///
-/// Larger than any run of per-character bonuses a scattered match can accumulate,
-/// which is what makes the three tiers of the contract's ordering — exact, then
-/// prefix, then scattered — hold for every needle rather than for the short ones.
+/// It does not have to out-weigh what a scattered match accumulates, and a fixed
+/// number never could once the needle is long enough. It does not have to because
+/// a prefix *is* a contiguous run starting at index 0, which is the highest a walk
+/// can score at all — `1 + BOUNDARY` for the first character and `1 + CONSECUTIVE`
+/// for every one after it, with no gap to pay anywhere. So a prefix row already
+/// out-walks a scattered row before this is added, and this and [`EXACT`] are
+/// separators between tiers rather than the thing holding the tiers apart.
 const PREFIX: i32 = 100;
 
 /// Score `needle` against `haystack`, case-insensitively.
@@ -58,11 +73,15 @@ const PREFIX: i32 = 100;
 /// with the same score, which is what makes an empty query mean "no filter"
 /// without the caller having to special-case it.
 ///
-/// The walk is greedy and leftmost: each needle character takes the first
-/// occurrence after the one before it. That is not the highest-scoring assignment
-/// in general — `oo` against `octopus zoo` would score better taking the pair at
-/// the end — but finding the best one costs a table, and the leftmost walk is what
-/// a reader predicts from watching the highlight move as they type.
+/// Each character after the first is still taken greedily — the first occurrence
+/// after the one before it — but the *first* one is not: every position it could
+/// occupy is walked and the best-scoring walk wins. Leftmost-only was wrong on the
+/// case the filter exists for. Every row of a real catalogue opens with a vendor
+/// prefix, so `o4` spent its `o` on the `o` of `openai/` in `openai/o4-mini` and
+/// then found the `4` seven characters away, scoring below `openai/gpt-4o`, whose
+/// `4` at least started a word — the row containing the needle *contiguously* sat
+/// under the row that merely contained its letters. Only the second `o` can see
+/// the `4` sitting next to it, and only a walk that starts there finds it.
 pub fn score(haystack: &str, needle: &str) -> Option<i32> {
     let needle: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
     if needle.is_empty() {
@@ -70,10 +89,40 @@ pub fn score(haystack: &str, needle: &str) -> Option<i32> {
     }
     let hay: Vec<char> = haystack.chars().flat_map(char::to_lowercase).collect();
 
+    // Every start the needle's first character could take, scored in full, best
+    // kept. Bounded by how often that one character occurs, times the length of
+    // the label: on a four-hundred-row catalogue of forty-character model ids that
+    // is a few thousand character comparisons a keystroke, which is nothing. The
+    // table that would find the genuinely optimal assignment is not worth it.
+    let mut best: Option<i32> = None;
+    for (start, found) in hay.iter().enumerate() {
+        if *found != needle[0] {
+            continue;
+        }
+        // `None` orders below every `Some`, so this is "keep the better of the
+        // two" and the first successful walk with no special case around it.
+        best = best.max(walk(&hay, &needle, start));
+    }
+    let mut total = best?;
+
+    if hay.starts_with(&needle) {
+        total += PREFIX;
+    }
+    if hay == needle {
+        total += EXACT;
+    }
+    Some(total)
+}
+
+/// Score one assignment: the needle's first character pinned at `start`, every
+/// character after it taken greedily. `None` when the rest of the needle does not
+/// fit after `start`, which is a dead start rather than a failed match — another
+/// start may still carry the whole needle.
+fn walk(hay: &[char], needle: &[char], start: usize) -> Option<i32> {
     let mut total = 0;
-    let mut from = 0;
+    let mut from = start;
     let mut previous: Option<usize> = None;
-    for wanted in &needle {
+    for wanted in needle {
         let at = from + hay[from..].iter().position(|found| found == wanted)?;
         total += 1;
         if previous.is_some_and(|before| before + 1 == at) {
@@ -83,7 +132,9 @@ pub fn score(haystack: &str, needle: &str) -> Option<i32> {
         }
         // The distance skipped to reach this character, measured from the previous
         // match or from the start of the label for the first one. Scattered hits
-        // pay for their scatter; a run pays nothing.
+        // pay for their scatter; a run pays nothing. The first character pays from
+        // the start of the label even though the walk began at `start`, so that a
+        // late start is still a worse match than an early one, all else equal.
         let skipped = match previous {
             Some(before) => at - before - 1,
             None => at,
@@ -91,13 +142,6 @@ pub fn score(haystack: &str, needle: &str) -> Option<i32> {
         total -= skipped.min(GAP_CAP) as i32;
         previous = Some(at);
         from = at + 1;
-    }
-
-    if hay.starts_with(&needle) {
-        total += PREFIX;
-    }
-    if hay == needle {
-        total += EXACT;
     }
     Some(total)
 }
