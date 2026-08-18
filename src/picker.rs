@@ -12,6 +12,15 @@
 //!
 //! It lives in the viewport, never in scrollback. A choice that has scrolled away
 //! cannot be answered.
+//!
+//! **It filters as it is typed**, through [`crate::fuzzy`], and it is the widget
+//! the filter landed in first because the slash palette is a filtering picker: the
+//! other order would have meant writing the filter twice. A printable character
+//! narrows the rows, backspace widens them, and the query is drawn where the title
+//! was rather than on a line of its own — see [`Picker::render`] for why that
+//! choice is load-bearing rather than cosmetic. What leaves this widget is
+//! unaffected: [`Outcome::Chosen`] and [`Picker::selected`] are indices into the
+//! caller's own row list at every point, filtered or not.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
@@ -19,6 +28,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::fuzzy;
 use crate::glyphs::Glyphs;
 use crate::theme::{Theme, Tone};
 
@@ -71,7 +81,22 @@ pub enum Outcome {
 pub struct Picker {
     title: String,
     rows: Vec<Row>,
-    selected: usize,
+    /// What has been typed. Empty until the first printable character, which is
+    /// the state every picker in the product opens in.
+    query: String,
+    /// Which rows the query admits, best first, **as indices into `rows`**.
+    ///
+    /// The whole of the outward-facing contract rests on this being indices into
+    /// the caller's own list rather than a filtered copy of it. Five of the nine
+    /// call sites read the chosen index back positionally and three of them index
+    /// a slice raw — `Kind::ALL[index]`, `Posture::ALL[index]`, `open.rows()[index]`
+    /// — so a filtered index is a panic; `/resume` and `/fork` do `ids.get(index)`
+    /// and would resume a different session without saying so.
+    matches: Vec<usize>,
+    /// Where the marker is **within `matches`**, which is the only place it can
+    /// live: the row under the marker has to stay under the marker as the list
+    /// reorders, and a position in `rows` says nothing about where a row was drawn.
+    cursor: usize,
     /// The first row currently drawn, so a long list scrolls instead of being cut.
     offset: usize,
 }
@@ -80,33 +105,94 @@ impl Picker {
     pub fn new(title: impl Into<String>, rows: Vec<Row>) -> Self {
         Self {
             title: title.into(),
+            matches: (0..rows.len()).collect(),
             rows,
-            selected: 0,
+            query: String::new(),
+            cursor: 0,
             offset: 0,
         }
     }
 
     /// Open with a row already selected — what `/theme` does, so the picker opens
     /// on the theme in use rather than on the first one in the list.
+    ///
+    /// The argument is a row index, like every other index this widget takes and
+    /// returns. Nothing has been typed yet when a caller uses this, so the two
+    /// numbering schemes agree; going through `matches` anyway is what keeps that
+    /// an observation rather than an assumption.
     pub fn selecting(mut self, index: usize) -> Self {
-        self.selected = index.min(self.rows.len().saturating_sub(1));
+        self.cursor = self
+            .matches
+            .iter()
+            .position(|row| *row == index)
+            // Out of range is clamped rather than panicking: the caller is passing
+            // an index derived from configuration, which can name a row that no
+            // longer exists.
+            .unwrap_or_else(|| self.matches.len().saturating_sub(1));
         self
     }
 
+    /// Every row the caller handed in, in the order they handed them in.
+    ///
+    /// Unfiltered on purpose. A caller reading a label back out of this is holding
+    /// an index this widget gave it, and that index addresses this list.
     pub fn rows(&self) -> &[Row] {
         &self.rows
     }
 
-    /// Which row is highlighted. Read every frame by the theme step, which
-    /// re-renders its sample transcript behind the picker as this moves.
+    /// Which row is highlighted, as an index into [`Picker::rows`]. Read every
+    /// frame by the theme step, which re-renders its sample transcript behind the
+    /// picker as this moves — and whose value is also what gets written to
+    /// `io.toml`, so a filtered index here would preview one theme and persist
+    /// another.
+    ///
+    /// Zero when nothing matches, which is the same answer an empty picker has
+    /// always given and is safe for the same reason: nothing can be chosen from a
+    /// picker with no rows under the marker, so no caller ever indexes with it.
     pub fn selected(&self) -> usize {
-        self.selected
+        self.matches.get(self.cursor).copied().unwrap_or(0)
+    }
+
+    /// What has been typed so far, which is what the top line shows.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// How many rows the query currently admits.
+    pub fn matching(&self) -> usize {
+        self.matches.len()
     }
 
     /// Rows the picker wants, given the rows it has and the space available.
+    ///
+    /// At least one row's worth even when nothing matches, because the empty
+    /// result has a line of its own to say so and a picker sized to zero rows
+    /// would draw a query with nothing under it.
     pub fn height(&self, available: u16) -> u16 {
-        let wanted = self.rows.len() as u16 + 1; // the title
+        let wanted = self.matches.len().max(1) as u16 + 1; // the title, or the query
         wanted.min(available.max(1))
+    }
+
+    /// Re-rank against the query, keeping the marker on the row it was on.
+    ///
+    /// The row rather than the position: on a backspace the list widens and the
+    /// row the operator was looking at moves down it, and a marker that stayed at
+    /// position 0 would have silently changed what Enter takes. When the selected
+    /// row no longer matches there is nothing to keep, and the best match is where
+    /// the marker belongs.
+    ///
+    /// **The label is matched and the detail is not.** The detail is the first
+    /// thing [`Picker::render`] drops when the terminal is narrow, so a row kept by
+    /// a hit inside it would be a row matching text that is not on screen — a
+    /// filter whose result the operator cannot account for is worse than a filter
+    /// that misses.
+    fn refilter(&mut self) {
+        let was = self.matches.get(self.cursor).copied();
+        self.matches = fuzzy::rank(self.rows.iter().map(|row| row.label.as_str()), &self.query);
+        self.cursor = was
+            .and_then(|row| self.matches.iter().position(|index| *index == row))
+            .unwrap_or(0);
+        self.offset = 0;
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
@@ -130,32 +216,62 @@ impl Picker {
             // Clamped at both ends rather than wrapping, for the same reason the
             // composer's history is: a list that jumps from the last row to the
             // first on one keypress loses the reader's place.
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.selected = self.selected.saturating_sub(1);
+            //
+            // The arrows only. `j` and `k` moved the marker until 0.7.0 and are
+            // ordinary query characters now, which is a behaviour change made on
+            // purpose: they are printable, and a picker that filters cannot hold
+            // back two letters of the alphabet without the operator discovering it
+            // by typing a model name and watching the wrong thing happen. The
+            // shipped keybinding table names the arrows and has never named these
+            // two, so the documented way to move is the way that still works.
+            KeyCode::Up => {
+                self.cursor = self.cursor.saturating_sub(1);
                 Outcome::Idle
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected + 1 < self.rows.len() {
-                    self.selected += 1;
+            KeyCode::Down => {
+                if self.cursor + 1 < self.matches.len() {
+                    self.cursor += 1;
                 }
                 Outcome::Idle
             }
             KeyCode::Home => {
-                self.selected = 0;
+                self.cursor = 0;
                 Outcome::Idle
             }
             KeyCode::End => {
-                self.selected = self.rows.len().saturating_sub(1);
+                self.cursor = self.matches.len().saturating_sub(1);
                 Outcome::Idle
             }
             KeyCode::Enter => {
-                if self.rows.is_empty() {
+                if self.matches.is_empty() {
                     Outcome::Idle
                 } else {
-                    Outcome::Chosen(self.selected)
+                    Outcome::Chosen(self.selected())
                 }
             }
+            // `Esc` cancels the picker, and never merely clears the query. An
+            // operator who has learned one escape should not find that the same
+            // key means "leave" on some screens and "undo what I typed" on others;
+            // `tests/wizard.rs` asserts `Esc` leaves at every depth, and a query
+            // is cleared by holding backspace, which is where it came from.
             KeyCode::Esc => Outcome::Cancelled,
+            KeyCode::Backspace => {
+                if self.query.pop().is_some() {
+                    self.refilter();
+                }
+                Outcome::Idle
+            }
+            // Every printable character narrows. Modified characters are left
+            // alone — `Ctrl+C` has already returned above, and a `Ctrl` or `Alt`
+            // chord is a command somebody meant, not a letter they typed.
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.query.push(character);
+                self.refilter();
+                Outcome::Idle
+            }
             _ => Outcome::Idle,
         }
     }
@@ -175,22 +291,53 @@ impl Picker {
         // both only because `sessions::rows` happened to shorten them first,
         // which is a property of one caller and not of the widget.
         let width = area.width as usize;
+        // **The query is drawn in place of the title, never above it.** The
+        // in-session viewport is four rows and is fixed at attach, so a query line
+        // of its own would leave `/resume` two visible rows — and the note on
+        // `term::WIZARD_VIEWPORT_HEIGHT` already records that three was the count
+        // a live first run found unusable, which is why that constant exists. The
+        // title is what the picker is *for*, which the operator has just read; the
+        // query is what they are doing, which changes under their hands. Swapping
+        // one for the other also leaves every piece of arithmetic downstream of
+        // this alone: the row slots are still `height - 1` and the cursor is still
+        // one past the top line.
+        let (head, tone) = if self.query.is_empty() {
+            (self.title.as_str(), Tone::Muted)
+        } else {
+            (self.query.as_str(), Tone::Accent)
+        };
         let mut lines = vec![Line::from(Span::styled(
-            fit(&self.title, width, &theme.glyphs),
-            theme.style(Tone::Muted),
+            fit(head, width, &theme.glyphs),
+            theme.style(tone),
         ))];
 
         let visible = area.height.saturating_sub(1) as usize;
         self.scroll_to_selection(visible);
 
-        for (index, row) in self
-            .rows
+        // A query that admits nothing says so. Without this the screen is a query
+        // over blank rows, which looks exactly like a picker that has broken —
+        // and the difference between "no row is spelled that way" and "this thing
+        // has stopped working" is the whole of what the operator needs to know.
+        if self.matches.is_empty() && !self.query.is_empty() {
+            let nothing = format!(
+                "No row matches {}{}{}",
+                theme.glyphs.quote_open, self.query, theme.glyphs.quote_close
+            );
+            lines.push(Line::from(Span::styled(
+                fit(&nothing, width, &theme.glyphs),
+                theme.style(Tone::Muted),
+            )));
+        }
+
+        for (position, row) in self
+            .matches
             .iter()
+            .map(|index| &self.rows[*index])
             .enumerate()
             .skip(self.offset)
             .take(visible.max(1))
         {
-            let chosen = index == self.selected;
+            let chosen = position == self.cursor;
             let marker = if chosen {
                 theme.glyphs.marker
             } else {
@@ -262,7 +409,11 @@ impl Picker {
         // The row is measured from `offset`, which `scroll_to_selection` has
         // already moved, so a selection in a scrolled list is placed where it was
         // actually drawn and not where an unscrolled list would have put it.
-        let row = (self.selected.saturating_sub(self.offset) + 1)
+        // Measured in drawn positions, which is what `cursor` already is. When
+        // nothing matches this lands on the line saying so, which is the only line
+        // there is and is still the thing a reader following the caret should be
+        // told.
+        let row = (self.cursor.saturating_sub(self.offset) + 1)
             .min(area.height.saturating_sub(1) as usize) as u16;
         frame.set_cursor_position(Position {
             x: (area.x + theme.glyphs.marker.chars().count() as u16)
@@ -271,14 +422,16 @@ impl Picker {
         });
     }
 
+    /// Counted over the rows the query admits, not over every row the caller
+    /// handed in: the list that scrolls is the list that is drawn.
     fn scroll_to_selection(&mut self, visible: usize) {
         let visible = visible.max(1);
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + visible {
-            self.offset = self.selected + 1 - visible;
+        if self.cursor < self.offset {
+            self.offset = self.cursor;
+        } else if self.cursor >= self.offset + visible {
+            self.offset = self.cursor + 1 - visible;
         }
-        let last_offset = self.rows.len().saturating_sub(visible);
+        let last_offset = self.matches.len().saturating_sub(visible);
         self.offset = self.offset.min(last_offset);
     }
 }
