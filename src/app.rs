@@ -432,6 +432,18 @@ impl App {
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));
             }
+            io_harness::EventKind::TodoWrote { items } => {
+                // io-harness's own arithmetic for a done count, off the event's own
+                // items. A write carries the whole list rather than a delta, so the
+                // field is the plan as it now stands and no store is read to
+                // complete it — a later write that moves an item back replaces this
+                // instead of climbing past it.
+                let done = items
+                    .iter()
+                    .filter(|item| item.state == io_harness::TodoState::Done)
+                    .count();
+                self.status.plan = Some((done, items.len()));
+            }
             _ => {}
         }
     }

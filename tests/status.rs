@@ -318,3 +318,138 @@ fn the_new_fields_drop_from_the_right_rather_than_wrapping() {
         "the rightmost fields are the ones that drop: {narrow:?}",
     );
 }
+
+/// A plan of three items, one of which the agent says it has finished.
+fn plan() -> EventKind {
+    EventKind::TodoWrote {
+        items: vec![
+            io_harness::TodoItem::new("read the file", io_harness::TodoState::Done),
+            io_harness::TodoItem::new("change it", io_harness::TodoState::Active),
+            io_harness::TodoItem::new("check it", io_harness::TodoState::Pending),
+        ],
+    }
+}
+
+/// **F12.** The plan field is absent until the agent writes a list — not zero, not
+/// a placeholder, the same rule every other field on this line already keeps. This
+/// is the test a field rendered as `0/0` from the start fails, and the only one.
+#[test]
+fn f12_the_plan_field_is_absent_until_the_agent_writes_a_list() {
+    let mut app = App::new(DARK, "opus-5");
+
+    let quiet = app.status.line(120, &DARK).to_string();
+    assert!(
+        !quiet.contains("plan"),
+        "no plan has been written yet: {quiet:?}",
+    );
+    assert!(
+        !quiet.contains("0/0"),
+        "a session with no plan has not written a plan of nothing: {quiet:?}",
+    );
+
+    app.event(&event(plan()), Duration::ZERO);
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(
+        line.contains("plan 1/3"),
+        "one of three items says it is done: {line:?}",
+    );
+    // Worded as the agent's own account, because io-harness's `state.rs` says an
+    // item claiming `Done` is a claim and nothing verifies it.
+    assert!(
+        line.contains("claimed"),
+        "the count is what the agent says, not what anything checked: {line:?}",
+    );
+}
+
+/// **F12.** The count comes off the event's own items, so a later write that moves
+/// an item back replaces the field rather than climbing past it — `TodoWrote`
+/// carries the whole list every time and is never a delta.
+#[test]
+fn f12_the_plan_field_is_the_last_list_written_and_not_a_running_total() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(&event(plan()), Duration::ZERO);
+    app.event(
+        &event(EventKind::TodoWrote {
+            items: vec![io_harness::TodoItem::new(
+                "start again",
+                io_harness::TodoState::Pending,
+            )],
+        }),
+        Duration::ZERO,
+    );
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(
+        line.contains("plan 0/1"),
+        "the field is the list as it now stands: {line:?}",
+    );
+}
+
+/// **F12.** Rightmost, and therefore the first field to go when the terminal is
+/// narrow: it drops before the containment field that sits to its left.
+#[test]
+fn f12_the_plan_field_drops_before_every_field_to_its_left() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(
+        &event(EventKind::Contained {
+            mode: "workspace-write".into(),
+            backend: "seatbelt".into(),
+            roots: 2,
+        }),
+        Duration::ZERO,
+    );
+    app.event(&event(plan()), Duration::ZERO);
+
+    let wide = app.status.line(200, &DARK).to_string();
+    assert!(wide.contains("plan 1/3"), "{wide:?}");
+    assert!(wide.contains("seatbelt"), "{wide:?}");
+
+    // One column short of the whole line, measured off the line itself rather than
+    // off arithmetic repeated here — the width that drops exactly one field.
+    let width = wide.chars().count() as u16 - 1;
+    let narrow = app.status.line(width, &DARK).to_string();
+    assert!(
+        !narrow.contains("plan"),
+        "the rightmost field is the first to go: {narrow:?}",
+    );
+    assert!(
+        narrow.contains("seatbelt"),
+        "containment sits to its left and outlives it: {narrow:?}",
+    );
+}
+
+/// **F12.** It reads at eighty columns in *both* glyph sets, on one row, with the
+/// separator each set spells rather than one typed in here. The ASCII half is the
+/// half nothing else on this line covers: a terminal that cannot draw a middle dot
+/// still has to be able to read the plan's progress.
+#[test]
+fn f12_the_plan_field_reads_at_eighty_columns_in_both_glyph_sets() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(&event(plan()), Duration::ZERO);
+
+    for theme in [DARK, DARK.with_glyphs(io_cli::glyphs::ASCII)] {
+        let (mut screen, _recorder) = support::screen(80, 24);
+        screen
+            .draw(|frame| app.status.render(frame, frame.area(), &theme))
+            .expect("frame");
+
+        let viewport = screen.viewport_text();
+        assert_eq!(
+            viewport.lines().filter(|line| !line.is_empty()).count(),
+            1,
+            "the {} status line took more than one row: {viewport:?}",
+            theme.glyphs.name,
+        );
+        assert!(
+            viewport.contains("plan 1/3 claimed"),
+            "the {} set lost the plan field: {viewport:?}",
+            theme.glyphs.name,
+        );
+        assert!(
+            viewport.contains(&format!("{}plan", theme.glyphs.separator)),
+            "the separator comes from the {} set: {viewport:?}",
+            theme.glyphs.name,
+        );
+    }
+}

@@ -91,6 +91,19 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// How much of the agent's plan the agent says is done, as done over total.
+    ///
+    /// `None` until the agent writes a list, and that is the whole of F12: a
+    /// session with no plan has not written a plan of nothing, so this renders as
+    /// nothing at all rather than as `0/0`. Set from a `TodoWrote`'s own items,
+    /// which carry the whole list on every write and are never a delta — there is
+    /// nothing to read back out of the store to complete it.
+    ///
+    /// It is drawn as a *claim*. io-harness's own documentation is explicit that
+    /// nothing verifies a plan item, so an item saying `Done` is what the agent
+    /// said about its own work; a field that stated it as a fact would be the one
+    /// place in this product where the plan stopped being the agent's account.
+    pub plan: Option<(usize, usize)>,
     /// Whether this session runs in plain mode.
     ///
     /// It lives on the status line rather than beside it because the status line
@@ -118,6 +131,7 @@ impl Status {
             tokens: None,
             context: None,
             containment: None,
+            plan: None,
             working: false,
             elapsed: Duration::ZERO,
             plain: false,
@@ -184,6 +198,21 @@ impl Status {
         }
         if let Some(containment) = &self.containment {
             fields.push(Field::new(containment.clone(), Tone::Muted));
+        }
+        // Rightmost, and so the first field to go when the terminal narrows. It is
+        // the only field on this line that is not an observation — everything to
+        // its left is something the harness reported happening, and this is what
+        // the agent says about its own work — and the plan itself is in the
+        // transcript a row above for a reader who wants more than the count.
+        //
+        // `claimed` rather than `done` for that reason, in the same words the
+        // transcript's own plan header uses. The one-word form is what fits beside
+        // six other fields at eighty columns.
+        if let Some((done, total)) = self.plan {
+            fields.push(Field::new(
+                format!("plan {done}/{total} claimed"),
+                Tone::Muted,
+            ));
         }
         fields
     }
