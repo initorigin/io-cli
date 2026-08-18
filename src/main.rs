@@ -19,6 +19,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use io_cli::app::{App, Command};
 use io_cli::cli::{Cli, Command as Subcommand};
 use io_cli::commands::{self, Action, Copied};
+use io_cli::complete;
 use io_cli::glyphs::Glyphs;
 use io_cli::picker::{Outcome, Picker, Row};
 use io_cli::settings::{self, Posture};
@@ -377,6 +378,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             match open.key(key) {
                 Outcome::Chosen(index) => {
                     let label = open.rows()[index].label.clone();
+                    // Every other surface closes on a choice, and the assignment
+                    // below is unconditional. A completion that descends is the
+                    // one that replaces itself instead, so its next picker is
+                    // built here — while `kind` still borrows `picker` — and
+                    // installed the moment that borrow ends.
+                    let mut descended = None;
                     match kind {
                         Pick::Theme => {
                             if let Some(chosen) = Theme::by_name(&label) {
@@ -503,8 +510,47 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             }
                             None => {}
                         },
+                        // A directory replaces the picker with the level below
+                        // it, which is the whole of "one directory at a time":
+                        // nothing walks a tree, and the operator pays for the
+                        // level they asked to see. A file goes into the prompt
+                        // as the path relative to the session root, at the
+                        // cursor and beside whatever was already typed — the
+                        // `@` never reached the composer, so what is inserted is
+                        // the path and not a marker the model would have to
+                        // learn. `None` is the row saying the list was cut.
+                        //
+                        // `paste` rather than the palette's `set`: `set`
+                        // replaces the prompt, and a path belongs beside what
+                        // was already typed rather than instead of it. A path
+                        // long enough to be collapsed to a placeholder is still
+                        // the path on the wire — `Composer::text` is what puts a
+                        // paste back, and it does it on the submit path.
+                        Pick::Complete(entries) => match complete::pick(entries, index) {
+                            Some(complete::Picked::Insert(path)) => app.composer.paste(&path),
+                            Some(complete::Picked::Descend(dir)) => {
+                                // Read again rather than carried: the posture can
+                                // have moved since the picker opened, and what is
+                                // offered has to be what the next turn may read.
+                                let effective = approval::session_policy(
+                                    &policy,
+                                    app.posture(),
+                                    app.remembered(),
+                                );
+                                match completion(session.root(), &effective, &dir) {
+                                    Ok(Some(open)) => descended = Some(open),
+                                    Ok(None) => app
+                                        .say(Tone::Muted, format!("nothing to complete in {dir}")),
+                                    Err(error) => app.say(Tone::Error, error),
+                                }
+                            }
+                            None => {}
+                        },
                     }
-                    picker = None;
+                    // `None` in every arm but the descent, so this closes the
+                    // picker exactly as it always did and replaces it in the one
+                    // case that asked for it.
+                    picker = descended;
                 }
                 Outcome::Cancelled => picker = None,
                 Outcome::Idle => {}
@@ -525,6 +571,30 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Picker::new("Which command?", commands::palette(&templates)),
                 Pick::Palette,
             ));
+            app.status.elapsed = started.elapsed();
+            paint_picker(screen, &mut app, picker.as_mut())?;
+            continue;
+        }
+
+        // `@` at a word boundary opens the completion picker, in front of the
+        // session for the same two reasons `/` is: the keystroke never reaches
+        // the composer, so `Esc` leaves the prompt exactly as it was, and `App`
+        // goes on treating `@` as the ordinary character an address needs it to
+        // be. The condition is `complete::opens` rather than a test written here.
+        //
+        // The policy is the one this session is running under — the file's, with
+        // the posture `Shift+Tab` chose folded in, and the rules the operator has
+        // already answered `a` to. Built the same way the turn below builds it,
+        // so what the picker offers and what the agent may read cannot differ.
+        if complete::opens(key, &app.composer.text(), app.armed()) {
+            let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+            match completion(session.root(), &effective, "") {
+                Ok(Some(open)) => picker = Some(open),
+                // An empty root, or one the policy reads as empty. Said rather
+                // than opened onto nothing, the same way `/resume` declines.
+                Ok(None) => app.say(Tone::Muted, "nothing in this workspace to complete"),
+                Err(error) => app.say(Tone::Error, error),
+            }
             app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
@@ -1042,6 +1112,40 @@ enum Pick {
     /// index reads straight back through `commands::palette_pick` — no list is
     /// carried here because the rows already address the thing they stand for.
     Palette,
+    /// One directory of the workspace, in the order `list_dir` sorted it, so a
+    /// chosen index reads straight back through `complete::pick`. The rows are
+    /// last components rather than paths — see `complete::rows` for why — which
+    /// is exactly why the entries are carried here and not read off a label.
+    Complete(Vec<io_harness::tools::Entry>),
+}
+
+/// The completion picker over one directory of the workspace, or `None` when the
+/// policy leaves nothing in it to offer.
+///
+/// Both the `@` that opens it and the descent that replaces it come through
+/// here, so the bound, the cut note and the title are applied in one place
+/// rather than in two that could drift. Every decision it makes is a library
+/// call; what is here is the wiring, which is all this file may hold.
+fn completion(
+    root: &std::path::Path,
+    policy: &Policy,
+    dir: &str,
+) -> Result<Option<(Picker, Pick)>, String> {
+    let (found, cut) = complete::entries(root, policy, dir)?;
+    if found.is_empty() {
+        return Ok(None);
+    }
+    let mut rows = complete::rows(&found);
+    // Last, and a row rather than a notice, so a list that was cut cannot read as
+    // a complete one — the shape `/resume` already uses. It stands for no entry,
+    // and choosing it does nothing.
+    if let Some(note) = complete::cut_note(cut, rows.len()) {
+        rows.push(Row::new(note));
+    }
+    Ok(Some((
+        Picker::new(complete::title(dir), rows),
+        Pick::Complete(found),
+    )))
 }
 
 fn paint(
