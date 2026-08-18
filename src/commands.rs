@@ -1,10 +1,11 @@
 //! The slash commands, and the keybinding table they document.
 //!
 //! Each one is a [`Picker`](crate::picker::Picker), a print, or something
-//! committed into the terminal's own scrollback. The fuzzy palette that reaches
-//! every command and every harness skill is 0.7.0's; what matters now is that
-//! `/setup` exists, because it is what makes the wizard reachable after the
-//! first run.
+//! committed into the terminal's own scrollback — and as of 0.7.0 there is a
+//! [`Picker`](crate::picker::Picker) in front of the whole list as well. `/` at
+//! an empty prompt opens the palette over [`COMMANDS`]; see [`opens_palette`]
+//! for why that decision lives here rather than in [`crate::app`], and
+//! [`palette`] for why its rows drop the slash the composer gets back.
 //!
 //! **Everything that shows more of something commits upward.** The viewport is
 //! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
@@ -12,12 +13,14 @@
 //! copy-mode already work. That is one answer to "show me more" rather than
 //! three, and it is the same answer the transcript gives.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 
 // Qualified rather than imported: `Action` in this module is already a slash
 // command's outcome, and two types with one name in one file is how a reader
 // ends up reading the wrong one.
 use crate::keys::{self, Keys};
+use crate::picker::Row;
 use crate::theme::{Theme, Tone};
 
 /// Every key this release binds **by default**, as data rather than as prose.
@@ -86,6 +89,81 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "put the whole run's patch on the system clipboard",
     ),
 ];
+
+/// Whether this keystroke opens the slash palette.
+///
+/// `/` at an empty prompt, and only there. A `/` inside a line is a path
+/// separator or a fraction, and it stays an ordinary character: a palette that
+/// took the keyboard away in the middle of a sentence would make the composer
+/// unusable for exactly the prompts that name files.
+///
+/// **The driver asks this in front of [`crate::app::App::key`], not inside it**,
+/// and both halves of that matter. In front, because the palette is a picker and
+/// every picker in this product is opened and owned by the driver — and because
+/// a `/` that never reaches the composer is what makes backing out leave the
+/// prompt untouched. Not inside, because `App` must go on treating `/` as a
+/// letter: `/theme` typed by hand submits through `Reply::Submitted` and
+/// [`parse`] whether or not a palette exists, which is what keeps the palette a
+/// faster way to type rather than a second dispatcher.
+///
+/// `armed` is the price of asking in front. `App::key` is what clears a
+/// half-pressed sequence, so a keystroke that never reaches it clears nothing —
+/// and the only sequence this product ships is the rewind, whose second press
+/// changes the operator's files on io-cli's own initiative. So the palette
+/// declines while something is armed: the `/` falls through to the session, the
+/// arming is cleared by it exactly as any other key clears it, and one literal
+/// slash is typed. That is the behaviour every release before the palette had,
+/// which is the right thing for a rejected case to fall back to.
+pub fn opens_palette(key: KeyEvent, prompt_empty: bool, armed: bool) -> bool {
+    key.code == KeyCode::Char('/')
+        // A `Ctrl` or `Alt` chord is a command somebody meant, not a letter they
+        // typed — the same rule `Picker::key` applies to its own filter.
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && prompt_empty
+        && !armed
+}
+
+/// The palette's rows: every command in [`COMMANDS`], in order.
+///
+/// **The label is the command with its leading `/` removed**, and that is a
+/// matching decision rather than a cosmetic one. [`crate::fuzzy`] ranks an exact
+/// name above a prefix above a scattered subsequence, and with the slash left on
+/// every label begins with the same character — so no query the operator can
+/// type is ever a prefix of a row, both of the top tiers are unreachable, and
+/// `f` would order `fork` against `copy diff` by gap arithmetic alone. Stripped,
+/// typing a command's name puts that command first, which is the whole promise.
+///
+/// The slash comes back at the other end: [`palette_command`] is what the chosen
+/// row puts in the composer, and it reads the name out of [`COMMANDS`] whole.
+///
+/// The description rides along as the row's detail. It is the first thing the
+/// picker drops on a narrow terminal and it is deliberately not matched — a row
+/// kept by a hit inside text that is not on screen is a filter whose result the
+/// operator cannot account for.
+pub fn palette() -> Vec<Row> {
+    COMMANDS
+        .iter()
+        // `strip_prefix` rather than a trim of every leading slash: a command is
+        // spelled with exactly one, and a trim would quietly swallow a second.
+        .map(|(name, what)| Row::with_detail(name.strip_prefix('/').unwrap_or(name), *what))
+        .collect()
+}
+
+/// What choosing the palette's row at `index` puts in the composer.
+///
+/// The index is the one [`crate::picker::Outcome::Chosen`] carries, which
+/// addresses the rows the picker was given — and those are [`palette`]'s, which
+/// are [`COMMANDS`] in order. So this reads the inventory positionally, the same
+/// way the `/resume` and `/fork` pickers read their id lists, and returns the
+/// name whole: `/copy diff` rather than the two words the row was labelled with.
+///
+/// `None` for an index past the end. There is no such row today, and a caller
+/// that finds one should put nothing in the prompt rather than a command it
+/// guessed at.
+pub fn palette_command(index: usize) -> Option<&'static str> {
+    COMMANDS.get(index).map(|(name, _)| *name)
+}
 
 /// What the driver should do about a slash command.
 #[derive(Debug, Clone, PartialEq, Eq)]

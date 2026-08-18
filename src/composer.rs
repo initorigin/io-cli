@@ -257,6 +257,22 @@ impl Composer {
         self.pastes.push((placeholder, text.to_string()));
     }
 
+    /// Put `text` in the prompt, replacing whatever is there, cursor at the end.
+    ///
+    /// The slash palette's `Enter`, and its only caller. The command is *typed*
+    /// rather than run: the submit path stays the one path — `Enter`, then
+    /// `strip_prefix('/')`, then [`crate::commands::parse`] — so the palette adds
+    /// no second way for a command to be dispatched, and the operator sees and
+    /// can edit what they are about to send.
+    ///
+    /// It goes through the same replacement a walk back through history uses, so
+    /// there is one answer to "what happens to the pasted blocks" and not two.
+    /// The palette only opens on an empty prompt, so in practice there is nothing
+    /// to carry across.
+    pub fn set(&mut self, text: &str) {
+        self.replace(text);
+    }
+
     /// Empty the composer, keeping the history.
     ///
     /// The pasted blocks go with the text. They belong to the prompt being

@@ -453,12 +453,40 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
+                        // Typed, not run. The command goes into the prompt and
+                        // the operator presses `Enter` on it themselves, so the
+                        // submit path below — `strip_prefix('/')`, then
+                        // `commands::parse` — stays the only way a command is
+                        // dispatched. `if let` for the same reason `Pick::Resume`
+                        // uses one: an index with no command behind it puts
+                        // nothing in the prompt rather than a guess.
+                        Pick::Palette => {
+                            if let Some(command) = commands::palette_command(index) {
+                                app.composer.set(command);
+                            }
+                        }
                     }
                     picker = None;
                 }
                 Outcome::Cancelled => picker = None,
                 Outcome::Idle => {}
             }
+            app.status.elapsed = started.elapsed();
+            paint_picker(screen, &mut app, picker.as_mut())?;
+            continue;
+        }
+
+        // `/` at an empty prompt opens the palette, in front of the session
+        // rather than inside it: the keystroke never reaches the composer, which
+        // is what makes backing out leave the prompt exactly as it was, and
+        // `App` goes on treating `/` as the ordinary character a hand-typed
+        // `/theme` needs it to be. The condition is `commands::opens_palette`
+        // rather than a test written here, because nothing can reach this file.
+        if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
+            picker = Some((
+                Picker::new("Which command?", commands::palette()),
+                Pick::Palette,
+            ));
             app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
@@ -971,6 +999,11 @@ enum Pick {
     Resume(Vec<i64>),
     /// Turn ids, in the order the rows are drawn.
     Fork(Vec<i64>),
+    /// The slash palette. Its rows are `commands::palette()`, which is the
+    /// command inventory in order, so the chosen index reads straight back
+    /// through `commands::palette_command` — no list is carried here because the
+    /// rows already address the thing they stand for.
+    Palette,
 }
 
 fn paint(
