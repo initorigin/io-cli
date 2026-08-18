@@ -97,6 +97,19 @@ pub struct Picker {
     /// live: the row under the marker has to stay under the marker as the list
     /// reorders, and a position in `rows` says nothing about where a row was drawn.
     cursor: usize,
+    /// The row the marker is *meant* to be on, **as an index into `rows`**, and
+    /// held here rather than derived from `cursor` because `cursor` cannot express
+    /// it: a query that admits no row leaves nothing under the marker at all, and
+    /// a query that hides one row leaves the marker on a different one.
+    ///
+    /// This is what a widening query restores. Without it the intent lived only in
+    /// the current match set, so one keystroke that hid the opening row destroyed
+    /// it and the backspace that followed had a *different* row to remember —
+    /// `/fork` opened on the newest turn and branched from turn 0, and the wizard
+    /// opened on the theme in use and wrote `dark`.
+    ///
+    /// `None` when there is no row to intend: an empty picker, and nothing else.
+    intent: Option<usize>,
     /// The first row currently drawn, so a long list scrolls instead of being cut.
     offset: usize,
 }
@@ -106,6 +119,7 @@ impl Picker {
         Self {
             title: title.into(),
             matches: (0..rows.len()).collect(),
+            intent: (!rows.is_empty()).then_some(0),
             rows,
             query: String::new(),
             cursor: 0,
@@ -121,15 +135,29 @@ impl Picker {
     /// numbering schemes agree; going through `matches` anyway is what keeps that
     /// an observation rather than an assumption.
     pub fn selecting(mut self, index: usize) -> Self {
-        self.cursor = self
-            .matches
-            .iter()
-            .position(|row| *row == index)
-            // Out of range is clamped rather than panicking: the caller is passing
-            // an index derived from configuration, which can name a row that no
-            // longer exists.
-            .unwrap_or_else(|| self.matches.len().saturating_sub(1));
+        self.aim(index);
         self
+    }
+
+    /// Replace every row, keeping what has been typed and aiming at `selecting`.
+    ///
+    /// For a caller whose rows arrive after the picker is already on the screen —
+    /// the wizard's model step opens on the provider's default while the catalogue
+    /// request is in flight. Building a fresh `Picker` instead would throw away
+    /// whatever was typed during the wait, which on a four-hundred-model list is
+    /// the only thing anybody does.
+    pub fn set_rows(&mut self, rows: Vec<Row>, selecting: usize) {
+        self.rows = rows;
+        self.aim(selecting);
+    }
+
+    /// Intend the row at `index`, then put the marker where the query allows.
+    fn aim(&mut self, index: usize) {
+        // Out of range is clamped rather than panicking: the caller is passing an
+        // index derived from configuration, or from a catalogue that has just
+        // changed under it, either of which can name a row that no longer exists.
+        self.intent = self.rows.len().checked_sub(1).map(|last| index.min(last));
+        self.refilter();
     }
 
     /// Every row the caller handed in, in the order they handed them in.
@@ -147,10 +175,25 @@ impl Picker {
     /// another.
     ///
     /// Zero when nothing matches, which is the same answer an empty picker has
-    /// always given and is safe for the same reason: nothing can be chosen from a
-    /// picker with no rows under the marker, so no caller ever indexes with it.
+    /// always given — and a row 0 that nothing is standing on. A caller that
+    /// indexes with this on every keystroke, rather than on a choice, wants
+    /// [`Picker::selection`] instead: the theme step did index with it, and a
+    /// letter no theme name carries used to preview *and persist* `dark`.
     pub fn selected(&self) -> usize {
-        self.matches.get(self.cursor).copied().unwrap_or(0)
+        self.selection().unwrap_or(0)
+    }
+
+    /// Which row is highlighted, or `None` when no row is: an empty picker, or a
+    /// query that admits nothing.
+    ///
+    /// The honest half of [`Picker::selected`], kept as a second accessor rather
+    /// than as a changed signature because the two questions are genuinely
+    /// different. `Enter` is already guarded on there being a match, so every
+    /// caller reading a *choice* has a row by construction and wants the plain
+    /// index; a caller reading the marker every frame — the theme step's live
+    /// preview — has to be able to see that there is nothing there.
+    pub fn selection(&self) -> Option<usize> {
+        self.matches.get(self.cursor).copied()
     }
 
     /// What has been typed so far, which is what the top line shows.
@@ -177,9 +220,16 @@ impl Picker {
     ///
     /// The row rather than the position: on a backspace the list widens and the
     /// row the operator was looking at moves down it, and a marker that stayed at
-    /// position 0 would have silently changed what Enter takes. When the selected
-    /// row no longer matches there is nothing to keep, and the best match is where
-    /// the marker belongs.
+    /// position 0 would have silently changed what Enter takes.
+    ///
+    /// **The row is read from `intent`, never from the current match set**, which
+    /// is the whole of the difference. A row read from `matches` is only there for
+    /// as long as the query admits it — so the keystroke that hid it also forgot
+    /// it, and the next keystroke remembered whatever had fallen under the marker
+    /// in its place. Held separately, the intended row survives a query that hides
+    /// it and comes back when the query widens again, and the marker in the
+    /// meantime sits on the best match, which is where it belongs when the row it
+    /// wants is not on the screen.
     ///
     /// **The label is matched and the detail is not.** The detail is the first
     /// thing [`Picker::render`] drops when the terminal is narrow, so a row kept by
@@ -187,12 +237,24 @@ impl Picker {
     /// filter whose result the operator cannot account for is worse than a filter
     /// that misses.
     fn refilter(&mut self) {
-        let was = self.matches.get(self.cursor).copied();
         self.matches = fuzzy::rank(self.rows.iter().map(|row| row.label.as_str()), &self.query);
-        self.cursor = was
+        self.cursor = self
+            .intent
             .and_then(|row| self.matches.iter().position(|index| *index == row))
             .unwrap_or(0);
         self.offset = 0;
+    }
+
+    /// Record what the marker was just moved onto, and answer `Idle`.
+    ///
+    /// A deliberate move is the operator saying which row they want, so it
+    /// replaces the row the picker was opened on. It is only ever a move onto a
+    /// matched row: with nothing under the marker there is nothing to intend, and
+    /// the previous intent — which a widening query will restore — is what an
+    /// arrow pressed at an empty list must not throw away.
+    fn moved(&mut self) -> Outcome {
+        self.intent = self.matches.get(self.cursor).copied().or(self.intent);
+        Outcome::Idle
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
@@ -226,21 +288,21 @@ impl Picker {
             // two, so the documented way to move is the way that still works.
             KeyCode::Up => {
                 self.cursor = self.cursor.saturating_sub(1);
-                Outcome::Idle
+                self.moved()
             }
             KeyCode::Down => {
                 if self.cursor + 1 < self.matches.len() {
                     self.cursor += 1;
                 }
-                Outcome::Idle
+                self.moved()
             }
             KeyCode::Home => {
                 self.cursor = 0;
-                Outcome::Idle
+                self.moved()
             }
             KeyCode::End => {
                 self.cursor = self.matches.len().saturating_sub(1);
-                Outcome::Idle
+                self.moved()
             }
             KeyCode::Enter => {
                 if self.matches.is_empty() {

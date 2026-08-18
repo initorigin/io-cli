@@ -429,6 +429,95 @@ fn f9_the_theme_step_previews_and_writes_the_row_the_query_left_visible() {
 }
 
 #[test]
+fn f9_a_query_that_matches_no_theme_leaves_the_preview_alone() {
+    // The theme step reads the picker after EVERY keystroke to redraw the sample
+    // behind the list, and what it read was `selected()`, which answers 0 when
+    // nothing matches. Zero is a real theme — so `z`, a letter no theme name
+    // carries, recoloured the whole wizard and reassigned `theme_name`, which is
+    // the exact string `settings::render` writes into `io.toml`. Nothing on the
+    // screen said so, and backspacing the `z` out did not undo it.
+    let _guard = env_lock();
+    config_home();
+    let mut wizard = at_the_theme_step();
+    wizard.key(key(KeyCode::Down)); // light, deliberately
+    assert_eq!(wizard.theme().name, "light");
+
+    wizard.key(key(KeyCode::Char('z')));
+    assert_eq!(
+        wizard.theme().name,
+        "light",
+        "a query admitting no row previewed a theme nobody chose",
+    );
+
+    // And the marker comes back to it, so the choice below is the one that was
+    // being previewed all along.
+    wizard.key(key(KeyCode::Backspace));
+    wizard.key(key(KeyCode::Enter)); // theme -> posture
+    wizard.key(key(KeyCode::Enter)); // the first posture, unfiltered
+    let progress = wizard.key(key(KeyCode::Enter));
+    let Progress::Write(_, contents) = progress else {
+        panic!("the confirmation screen should produce a write, got {progress:?}");
+    };
+    assert!(
+        contents.contains("light"),
+        "a typo and a backspace wrote a theme the operator never chose: {contents}",
+    );
+}
+
+#[test]
+fn f8_a_model_typed_while_the_catalogue_loads_survives_its_arrival() {
+    // `verified()` opens a one-row picker holding the provider's default while the
+    // catalogue request is in flight, and the catalogue then replaced every row by
+    // replacing the whole picker. A four-hundred-model list is a list nobody
+    // scrolls, so typing is the first thing anybody does — and everything typed
+    // during the wait went out with the placeholder, with the marker jumping at
+    // the same moment.
+    let mut wizard = Wizard::new(DARK);
+    wizard.key(key(KeyCode::Enter)); // welcome
+    wizard.key(key(KeyCode::Enter)); // OpenRouter
+    for character in "sk-test".chars() {
+        wizard.key(key(KeyCode::Char(character)));
+    }
+    wizard.key(key(KeyCode::Enter)); // -> verifying
+    wizard.verified();
+    assert_eq!(wizard.step(), Step::Model);
+
+    // Typed against the placeholder, before a single catalogue row exists.
+    for character in "gemini".chars() {
+        wizard.key(key(KeyCode::Char(character)));
+    }
+    wizard.catalogue(vec![
+        "anthropic/claude-sonnet-4".into(),
+        "openai/gpt-5".into(),
+        "google/gemini-3-pro".into(),
+    ]);
+
+    let (mut screen, recorder) = support::screen_of(100, 40, 10);
+    screen
+        .draw(|frame| wizard.render(frame, frame.area()))
+        .expect("frame");
+    let viewport = screen.viewport_text();
+    let drawn: Vec<&str> = viewport.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(
+        drawn[0], "gemini",
+        "the query typed during the wait was discarded: {viewport:?}",
+    );
+    assert!(
+        !viewport.contains("openai/gpt-5"),
+        "the catalogue arrived unfiltered: {viewport:?}",
+    );
+    assert!(recorder.contains("google/gemini-3-pro"));
+
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Theme);
+    let spec = wizard.spec().expect("a spec once the kind is known");
+    assert!(
+        matches!(&spec, ProviderSpec::OpenRouter { model, .. } if model == "google/gemini-3-pro"),
+        "the wizard took a model the query never left on the screen: {spec:?}",
+    );
+}
+
+#[test]
 fn f9_the_posture_step_resolves_the_row_the_query_left_visible() {
     // `Posture::ALL[index]` is the second of the two raw slice reads, and the one
     // whose consequence lasts longest: a stale index in range writes a permission

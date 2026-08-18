@@ -378,6 +378,134 @@ fn it_opens_on_the_row_the_caller_names() {
 }
 
 #[test]
+fn f9_a_query_that_admits_nothing_does_not_destroy_the_opening_row() {
+    // Every caller that opens on a row means it: `/fork` opens on the newest turn,
+    // `/model` on the model in use, the wizard's theme step on the theme in use.
+    // The marker used to be remembered as a row read out of the CURRENT match set,
+    // so a query admitting nothing had nothing to read — the opening row was gone
+    // after one keystroke, and the backspace that put the list back put the marker
+    // on row 0. `/fork` then branched from turn 0 and discarded the conversation.
+    let mut picker = providers().selecting(3);
+    assert_eq!(picker.selected(), 3);
+
+    // `z` is in no provider label, so there is no row under the marker at all.
+    picker.key(key(KeyCode::Char('z')));
+    assert_eq!(picker.matching(), 0);
+
+    picker.key(key(KeyCode::Backspace));
+    assert_eq!(picker.query(), "");
+    assert_eq!(picker.matching(), 4);
+    assert_eq!(
+        picker.selected(),
+        3,
+        "a typo and a backspace changed what Enter takes",
+    );
+
+    // On the screen, which is the only place the operator can check it.
+    let (mut screen, recorder) = support::screen_of(80, 24, 6);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let viewport = screen.viewport_text();
+    let marked: Vec<&str> = viewport
+        .lines()
+        .filter(|line| line.starts_with(DARK.glyphs.marker))
+        .collect();
+    assert_eq!(marked.len(), 1, "exactly one row is marked: {viewport:?}");
+    assert!(
+        marked[0].contains("Any OpenAI-compatible endpoint"),
+        "the marker is not on the row the picker was opened with: {marked:?}",
+    );
+    assert!(recorder.contains("Any OpenAI-compatible endpoint"));
+
+    assert_eq!(picker.key(key(KeyCode::Enter)), Outcome::Chosen(3));
+}
+
+#[test]
+fn f9_the_opening_row_comes_back_when_the_query_widens_again() {
+    // The narrowing case, which is the one an operator actually hits: the query
+    // still admits rows, just not the one the picker opened on. While it is hidden
+    // the marker is on the best match — Enter takes what is under it, and nothing
+    // else would be honest — and the opening row is what a backspace restores.
+    let mut picker = providers().selecting(3);
+    // `h` admits `Anthropic` alone; no other provider label carries one.
+    picker.key(key(KeyCode::Char('h')));
+    assert_eq!(picker.matching(), 1);
+    assert_eq!(picker.selected(), 1, "Enter takes the row under the marker");
+
+    picker.key(key(KeyCode::Backspace));
+    assert_eq!(
+        picker.selected(),
+        3,
+        "the row the picker was opened on was not restored",
+    );
+
+    // A deliberate move replaces it. What is remembered is the row the operator
+    // last put the marker on, which after an arrow is no longer the opening one.
+    picker.key(key(KeyCode::Up));
+    picker.key(key(KeyCode::Char('h')));
+    picker.key(key(KeyCode::Backspace));
+    assert_eq!(
+        picker.selected(),
+        2,
+        "the arrows are what say which row to keep",
+    );
+}
+
+#[test]
+fn f8_no_row_under_the_marker_is_a_state_the_picker_can_state() {
+    // `selected()` answers 0 when nothing matches, and 0 is a real row. The
+    // wizard's theme step indexed `THEMES` with it after every keystroke, so a
+    // letter no theme name carries previewed — and then wrote — `dark`. The fix is
+    // an answer that can say "nothing", not a caller-side guard: `matching() == 0`
+    // at each of the nine call sites is nine chances to forget.
+    let mut picker = providers();
+    assert_eq!(picker.selection(), Some(0));
+
+    picker.key(key(KeyCode::Char('z')));
+    assert_eq!(picker.matching(), 0);
+    assert_eq!(
+        picker.selection(),
+        None,
+        "row 0 is not under the marker; nothing is",
+    );
+    // And an empty picker, which has never had a row under its marker either.
+    assert_eq!(Picker::new("Nothing here", vec![]).selection(), None);
+}
+
+#[test]
+fn f8_rows_can_be_replaced_without_losing_what_was_typed() {
+    // The wizard's model step opens on the provider's default while the catalogue
+    // request is in flight, so the rows arrive after the picker is on the screen.
+    // Replacing the whole picker discarded the query with it.
+    let mut picker = Picker::new("Which model?", vec![Row::new("anthropic/claude-sonnet-4")]);
+    for character in "gemini".chars() {
+        picker.key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(picker.matching(), 0, "the placeholder does not match it");
+
+    picker.set_rows(
+        vec![
+            Row::new("anthropic/claude-sonnet-4"),
+            Row::new("openai/gpt-5"),
+            Row::new("google/gemini-3-pro"),
+        ],
+        0,
+    );
+    assert_eq!(
+        picker.query(),
+        "gemini",
+        "the query did not survive the rows",
+    );
+    assert_eq!(picker.matching(), 1);
+    assert_eq!(
+        picker.key(key(KeyCode::Enter)),
+        Outcome::Chosen(2),
+        "the row the query left visible is not the row Enter took",
+    );
+}
+
+#[test]
 fn a_long_list_scrolls_so_the_selection_stays_visible() {
     let rows: Vec<Row> = (0..40).map(|n| Row::new(format!("model-{n}"))).collect();
     let mut picker = Picker::new("Which model?", rows);
