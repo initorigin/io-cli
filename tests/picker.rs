@@ -144,6 +144,98 @@ fn f8_the_chosen_index_addresses_the_callers_rows_and_not_the_filtered_view() {
 }
 
 #[test]
+fn f9_the_label_read_back_is_the_row_that_was_marked() {
+    // `src/main.rs:360` does `open.rows()[index]` — a **raw** slice index, so a
+    // stale index panics the session rather than misbehaving in it — and hands
+    // the label it gets to `/theme` and `/model`, which apply it. Those rows are
+    // built here the way `Action::Theme` builds them.
+    let themes = || Picker::new("Which theme?", vec![Row::new("dark"), Row::new("light")]);
+
+    let mut picker = themes();
+    // `l` admits `light` and not `dark`, so the list is one row long and that row
+    // is row 1 — while the filtered position is 0, which is `dark`.
+    picker.key(key(KeyCode::Char('l')));
+    assert_eq!(picker.matching(), 1);
+
+    // What the operator can see, through the terminal the product actually
+    // writes to, so the row the assertion below names is a row that was drawn.
+    let (mut screen, recorder) = support::screen_of(80, 24, 6);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    assert!(recorder.contains("light"));
+    assert!(
+        !screen.viewport_text().contains("dark"),
+        "the query did not narrow the list, so the choice below proves nothing: {:?}",
+        screen.viewport_text(),
+    );
+
+    let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
+        panic!("Enter on a matched row must choose it");
+    };
+    assert_eq!(
+        picker.rows()[index].label,
+        "light",
+        "the driver would have applied a theme that was not on the screen",
+    );
+
+    // The control, and the reason the assertion above has to be made against a
+    // filtered list: with nothing typed the two index spaces are the same list,
+    // so this passes whichever of them `Chosen` carries.
+    let mut picker = themes();
+    picker.key(key(KeyCode::Down));
+    assert_eq!(picker.key(key(KeyCode::Enter)), Outcome::Chosen(1));
+    assert_eq!(picker.rows()[1].label, "light");
+}
+
+#[test]
+fn f9_resume_and_fork_key_their_ids_by_the_row_the_operator_saw() {
+    // `/resume` and `/fork` are the two sites that do **not** panic on a stale
+    // index. Each builds a `Vec<i64>` alongside its rows and reads it back with
+    // `ids.get(index)`, so a filtered index reopens a different conversation, or
+    // branches from a different turn, and says nothing at all — and `/fork` then
+    // prints `index + 1` as the turn number, naming the turn it did not take.
+    //
+    // Neither arm can be driven from a test as it stands: the selection lives in
+    // the event loop in `src/main.rs`, which no integration test links. What is
+    // asserted here is the property both arms rest on entirely, against lists
+    // built and paired the way `sessions::rows` and `sessions::turn_rows` pair
+    // theirs.
+    let ids: Vec<i64> = vec![41, 42, 43, 44];
+    let mut picker = Picker::new(
+        "Resume which session?",
+        vec![
+            Row::new("~/code/io-gateway   3 turns"),
+            Row::new("~/code/io-harness   9 turns"),
+            Row::new("~/code/io-cli       1 turn"),
+            Row::new("~/notes             2 turns"),
+        ],
+    );
+    // `harn` admits the second row alone: it is the only label with an `h` in it.
+    for character in "harn".chars() {
+        picker.key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(picker.matching(), 1);
+
+    let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
+        panic!("Enter on a matched row must choose it");
+    };
+    assert_eq!(
+        ids.get(index),
+        Some(&42),
+        "a session other than the visible one would have been reopened, silently",
+    );
+    // The same index is `/fork`'s turn number, one-based. A row that resolves to
+    // the wrong id also announces the wrong turn, which is the only thing the
+    // operator would have to notice the swap by.
+    assert_eq!(
+        index + 1,
+        2,
+        "the turn number printed is not the visible row's place in the caller's list",
+    );
+}
+
+#[test]
 fn f8_j_and_k_are_query_characters_and_the_arrows_are_what_move() {
     // A deliberate, documented behaviour change. `j` and `k` moved the marker
     // until 0.7.0; they are printable, and a picker that held back two letters

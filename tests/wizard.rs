@@ -318,13 +318,11 @@ fn a_paste_on_a_picker_screen_is_ignored_rather_than_swallowed() {
     assert_eq!(wizard.step(), Step::Credential);
 }
 
-#[test]
-fn the_theme_step_draws_its_picker_and_labels_its_sample() {
-    // The defect this exists for: `render_theme` reserved rows for the live
-    // sample out of a viewport that had exactly that many, so the PICKER never
-    // drew. A live first run saw only the sample — which contains a refusal and a
-    // success, by design, so the palette can be judged — and read it as the
-    // session having gone wrong.
+/// Walk to the theme step, which is where the last two picker screens are.
+///
+/// The credential is typed rather than taken from the environment, so this walk
+/// is the same one on a machine that happens to have `$OPENROUTER_API_KEY` set.
+fn at_the_theme_step() -> Wizard {
     let mut wizard = Wizard::new(DARK);
     wizard.key(key(KeyCode::Enter)); // welcome
     wizard.key(key(KeyCode::Enter)); // OpenRouter
@@ -336,6 +334,157 @@ fn the_theme_step_draws_its_picker_and_labels_its_sample() {
     wizard.catalogue(vec!["a/one".into(), "a/two".into()]);
     wizard.key(key(KeyCode::Enter)); // model chosen -> theme
     assert_eq!(wizard.step(), Step::Theme);
+    wizard
+}
+
+#[test]
+fn f9_the_provider_step_resolves_the_row_the_query_left_visible() {
+    // `Kind::ALL[index]` reads the chosen index back **raw**, so this site does
+    // not merely misbehave on a stale index — it panics, on the first screen of
+    // the first run.
+    //
+    // The query is the whole of what makes the assertion mean anything. An
+    // unfiltered picker cannot tell the two index spaces apart, because with
+    // nothing typed they are the same list; only a narrowed list can say whether
+    // what came back addresses `Kind::ALL` or the view drawn on top of it.
+    let mut wizard = Wizard::new(DARK);
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Provider);
+
+    // `h` admits `Anthropic` and nothing else — no other provider label carries
+    // one — so the one visible row is row 1 of `Kind::ALL`, and row 0 is exactly
+    // what a filtered index would report.
+    wizard.key(key(KeyCode::Char('h')));
+
+    let (mut screen, recorder) = support::screen_of(100, 40, 10);
+    screen
+        .draw(|frame| wizard.render(frame, frame.area()))
+        .expect("frame");
+    let viewport = screen.viewport_text();
+    assert!(
+        !viewport.contains("OpenRouter"),
+        "the query did not narrow the list, so the choice below proves nothing: {viewport:?}",
+    );
+    assert!(
+        recorder.contains("Anthropic"),
+        "the row the operator is about to choose never reached the terminal",
+    );
+
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(
+        wizard.step(),
+        Step::Credential,
+        "Anthropic has a vendor endpoint, so no base URL is asked for",
+    );
+    let spec = wizard.spec();
+    assert!(
+        matches!(&spec, Some(ProviderSpec::Anthropic { .. })),
+        "the wizard resolved a provider that was not on the screen: {spec:?}",
+    );
+}
+
+#[test]
+fn f9_the_theme_step_previews_and_writes_the_row_the_query_left_visible() {
+    // The theme step is the separate case, and the worse one. It reads
+    // `picker.selected()` on **every** keystroke to redraw the sample behind the
+    // list, so a filtered index does not wait for Enter to do damage: it previews
+    // one theme, and `settings::render` then writes that name into `io.toml`,
+    // where it outlives the run.
+    let _guard = env_lock();
+    config_home();
+    let mut wizard = at_the_theme_step();
+    assert_eq!(
+        wizard.theme().name,
+        "dark",
+        "the theme in use opens the list"
+    );
+
+    // `l` admits `light` and not `dark`, so the one visible row is row 1 of
+    // `THEMES` — and row 0, the filtered position, is the theme the preview was
+    // already showing, which is how this defect hides.
+    wizard.key(key(KeyCode::Char('l')));
+    assert_eq!(
+        wizard.theme().name,
+        "light",
+        "the preview followed the filtered position rather than the visible row",
+    );
+
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Posture);
+    wizard.key(key(KeyCode::Enter)); // the first posture, unfiltered
+    assert_eq!(wizard.step(), Step::Confirm);
+
+    let progress = wizard.key(key(KeyCode::Enter));
+    let Progress::Write(_, contents) = progress else {
+        panic!("the confirmation screen should produce a write, got {progress:?}");
+    };
+    assert!(
+        contents.contains("light"),
+        "the file records a theme the operator never saw: {contents}",
+    );
+    assert!(
+        !contents.contains("dark"),
+        "the previewed theme and the written theme parted company: {contents}",
+    );
+}
+
+#[test]
+fn f9_the_posture_step_resolves_the_row_the_query_left_visible() {
+    // `Posture::ALL[index]` is the second of the two raw slice reads, and the one
+    // whose consequence lasts longest: a stale index in range writes a permission
+    // boundary nobody chose into a file every later run reads.
+    let _guard = env_lock();
+    config_home();
+    let mut wizard = at_the_theme_step();
+    wizard.key(key(KeyCode::Enter)); // the theme in use, unfiltered
+    assert_eq!(wizard.step(), Step::Posture);
+
+    // `only` admits `Read only` and neither of the other two: `Sandboxed
+    // workspace` and `Ask before writes` each carry an `o` with no `n` after it.
+    // So the one visible row is row 2 of `Posture::ALL`, two rows away from the
+    // filtered position.
+    for character in "only".chars() {
+        wizard.key(key(KeyCode::Char(character)));
+    }
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Confirm);
+
+    let summary: String = wizard
+        .summary()
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(
+        summary.contains("Read only"),
+        "the confirmation screen names a posture that was not chosen: {summary:?}",
+    );
+
+    let progress = wizard.key(key(KeyCode::Enter));
+    let Progress::Write(_, contents) = progress else {
+        panic!("the confirmation screen should produce a write, got {progress:?}");
+    };
+    // Read the way io-harness reads it. A narrowing posture parses in any scope,
+    // and row 0 — `Sandboxed workspace`, which is what a filtered index would
+    // have resolved to — widens, so a wrong row fails here twice over: on this
+    // parse, and on the effect below.
+    let config = Config::from_toml(&contents).expect("a narrowing posture parses in any scope");
+    let policy = config.policy().expect("a policy was written");
+    assert_eq!(
+        policy.defaults.write,
+        Effect::Deny,
+        "the file grants a permission the chosen row refuses: {contents}",
+    );
+}
+
+#[test]
+fn the_theme_step_draws_its_picker_and_labels_its_sample() {
+    // The defect this exists for: `render_theme` reserved rows for the live
+    // sample out of a viewport that had exactly that many, so the PICKER never
+    // drew. A live first run saw only the sample — which contains a refusal and a
+    // success, by design, so the palette can be judged — and read it as the
+    // session having gone wrong.
+    let mut wizard = at_the_theme_step();
 
     let (mut screen, _recorder) = support::screen_of(100, 40, io_cli::term::WIZARD_VIEWPORT_HEIGHT);
     screen
