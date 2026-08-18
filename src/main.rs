@@ -435,60 +435,79 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 format!("{label} could not be reached: {error}"),
                             ),
                         },
-                        // `if let` rather than a match on `Option`: an index past
-                        // the end is the row saying the list was cut, which
-                        // carries no id, and closing the picker is the only
-                        // sensible thing a line of prose can do when chosen.
-                        Pick::Resume(ids) => {
-                            if let Some(id) = ids.get(index) {
-                                match io_cli::sessions::resume(&store, *id) {
-                                    Ok(reopened) => {
-                                        session = reopened;
-                                        app.set_root(session.root());
-                                        // The tokens, the context, the
-                                        // containment and the plan were facts
-                                        // about the run just left. Carrying them
-                                        // across would leave the line describing
-                                        // a conversation that is no longer on
-                                        // screen.
-                                        app.status.forget_run();
-                                        // Where they were, in the terminal's own
-                                        // buffer rather than in a four-row
-                                        // viewport.
-                                        commit_transcript(screen, &session, &store, &app.theme)?;
-                                        app.say(
-                                            Tone::Success,
-                                            format!("resumed {}", session.root().display()),
-                                        );
-                                    }
-                                    Err(error) => app.say(
-                                        Tone::Error,
-                                        format!("that session could not be reopened: {error}"),
-                                    ),
+                        // The index resolves in the library, not here. This file
+                        // is `[[bin]] name = "io"` and nothing links it, so an
+                        // `ids.get(index)` written inline was a lookup no
+                        // sabotage could reach — `sessions::pick` is the same
+                        // line where a test can stand on it.
+                        Pick::Resume(ids) => match io_cli::sessions::pick(ids, index) {
+                            Some(id) => match io_cli::sessions::resume(&store, id) {
+                                Ok(reopened) => {
+                                    session = reopened;
+                                    app.set_root(session.root());
+                                    // The tokens, the context, the containment
+                                    // and the plan were facts about the run just
+                                    // left. Carrying them across would leave the
+                                    // line describing a conversation that is no
+                                    // longer on screen.
+                                    app.status.forget_run();
+                                    // Where they were, in the terminal's own
+                                    // buffer rather than in a four-row viewport.
+                                    commit_transcript(screen, &session, &store, &app.theme)?;
+                                    app.say(
+                                        Tone::Success,
+                                        format!("resumed {}", session.root().display()),
+                                    );
                                 }
-                            }
-                        }
-                        Pick::Fork(ids) => {
-                            if let Some(turn) = ids.get(index) {
-                                match session.branch_from(&store, *turn) {
-                                    Ok(()) => {
-                                        app.status.forget_run();
-                                        app.say(
-                                            Tone::Success,
-                                            format!(
-                                            "continuing from turn {}; what came after is still \
-                                             in the transcript, marked as branched away",
-                                            index + 1
+                                Err(error) => app.say(
+                                    Tone::Error,
+                                    format!("that session could not be reopened: {error}"),
+                                ),
+                            },
+                            // The cut note, chosen. It carries no id, and until
+                            // 0.7.0 it was last and effectively unreachable — but
+                            // the filter ranks it against the session rows, so a
+                            // query can put it under the marker and `Enter` on it
+                            // closed the picker and did nothing, with nothing
+                            // said. A picker that vanishes after a choice and
+                            // leaves no trace is indistinguishable from a resume
+                            // that failed, so the row answers for itself.
+                            None => app.say(
+                                Tone::Muted,
+                                "that row is the note, not a session — older sessions are \
+                                 not listed",
+                            ),
+                        },
+                        // The turn number in the sentence comes back with the id
+                        // rather than being computed here a second time: it is
+                        // the same index, and the operator is being told which
+                        // turn they are now continuing from.
+                        Pick::Fork(ids) => match io_cli::sessions::pick_turn(ids, index) {
+                            Some((turn, number)) => match session.branch_from(&store, turn) {
+                                Ok(()) => {
+                                    app.status.forget_run();
+                                    app.say(
+                                        Tone::Success,
+                                        format!(
+                                            "continuing from turn {number}; what came after is \
+                                             still in the transcript, marked as branched away"
                                         ),
-                                        )
-                                    }
-                                    Err(error) => app.say(
-                                        Tone::Error,
-                                        format!("that turn could not be branched from: {error}"),
-                                    ),
+                                    )
                                 }
+                                Err(error) => app.say(
+                                    Tone::Error,
+                                    format!("that turn could not be branched from: {error}"),
+                                ),
+                            },
+                            // Unreachable rather than impossible: `/fork` has no
+                            // note row, so every row is a turn. Said rather than
+                            // swallowed for the reason above — a choice that
+                            // silently does nothing is the one outcome an
+                            // operator cannot tell from a failure.
+                            None => {
+                                app.say(Tone::Muted, "that row is not a turn in this conversation")
                             }
-                        }
+                        },
                         // Typed, not run. The command goes into the prompt and
                         // the operator presses `Enter` on it themselves, so the
                         // submit path below — `strip_prefix('/')`, then
@@ -554,7 +573,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Err(error) => app.say(Tone::Error, error),
                                 }
                             }
-                            None => {}
+                            // The cut note is a row like any other now that a
+                            // query can rank it, and it stands for no entry. A
+                            // picker that closed on a choice and said nothing
+                            // would be indistinguishable from a completion that
+                            // failed — the same answer `/resume` gives its own
+                            // note row.
+                            None => app.say(
+                                Tone::Muted,
+                                "that row is the note, not a file — the rest of the \
+                                 listing is not shown",
+                            ),
                         },
                     }
                     // `None` in every arm but the descent, so this closes the
@@ -698,8 +727,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         let mut rows =
                             io_cli::sessions::rows(&found, screen.width(), &app.theme.glyphs);
                         // Last, and a row rather than a notice, so a list that was
-                        // cut cannot read as a complete one. It carries no id, and
-                        // choosing it does nothing.
+                        // cut cannot read as a complete one. It carries no id, so
+                        // `sessions::pick` answers `None` for it and the arm above
+                        // says so — being last stopped being protection the moment
+                        // the picker started ranking rows by what is typed.
                         if let Some(note) = io_cli::sessions::cut_note(cut, rows.len()) {
                             rows.push(Row::new(note));
                         }
@@ -1149,11 +1180,14 @@ async fn wizard(
 enum Pick {
     Theme,
     Model,
-    /// Session ids, in the order the rows are drawn. The resume picker may carry
-    /// one row more than there are ids — the line saying the list was cut — and
-    /// an index past the end is that row, which does nothing.
+    /// Session ids, in the order the rows are drawn, read back through
+    /// `sessions::pick`. The resume picker may carry one row more than there are
+    /// ids — the line saying the list was cut — and an index past the end is that
+    /// row, which the arm answers with a sentence.
     Resume(Vec<i64>),
-    /// Turn ids, in the order the rows are drawn.
+    /// Turn ids, in the order the rows are drawn, read back through
+    /// `sessions::pick_turn` — which also hands back the turn number the row was
+    /// drawn with, so the sentence and the branch cannot disagree.
     Fork(Vec<i64>),
     /// The slash palette. Its rows are `commands::palette()`, which is the
     /// command inventory and then the templates, in that order, so the chosen

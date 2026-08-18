@@ -20,14 +20,50 @@
 //! actually has teeth — the *uncut* case, because a function that always claimed
 //! it had cut would sail through a test that only checked the cut.
 //!
+//! **F10 — there is one bound left, and it is not a list length.** The twenty-row
+//! session cap existed only because a picker that could not be typed at was a list
+//! nobody could reach the bottom of; 0.7.0 filters, so the cap is gone and
+//! `/resume` offers what the walk found. `MAX_RUNS_SCANNED` stays, because it
+//! bounds the *cost* of the walk rather than the length of its result — a ceiling
+//! of five hundred runs that leaves a single session on screen, which is exactly
+//! why `cut_note` takes its number from what is drawn and never from a constant.
+//!
+//! **The index the picker returns is resolved in the library, and tested here.**
+//! `/resume` and `/fork` used to read their id lists back inside `src/main.rs`,
+//! which is `[[bin]] name = "io"` and which nothing under `tests/` can link — so
+//! the one lookup that decides which session reopens was unsabotageable. It is
+//! `sessions::pick` and `sessions::pick_turn` now, driven below through a real
+//! `Picker` with a query typed into it, because the index is only interesting once
+//! the drawn order and the caller's order have been made to disagree.
+//!
 //! **No clock.** `Recent::at` is the store's own stamp, sliced. It is not a
 //! relative age, precisely so that neither the module nor this file has to read a
 //! clock — which `tests/timing.rs` forbids outright, and which a resume picker is
 //! the most tempting surface yet shipped to break.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::glyphs::UNICODE;
-use io_cli::sessions::{cut_note, recent, rows, MAX_RUNS_SCANNED, MAX_SESSIONS};
+use io_cli::picker::{Outcome, Picker, Row};
+use io_cli::sessions::{cut_note, pick, pick_turn, recent, rows, turn_rows, MAX_RUNS_SCANNED};
 use io_harness::Store;
+
+/// More sessions than the twenty-row cap 0.7.0 removed, so a list of this length
+/// is itself the evidence the cap is gone. A literal rather than a constant: the
+/// constant it used to be derived from is what these tests exist to prove absent,
+/// and a fixture sized off the surviving bound would be sized off a run count.
+const PAST_THE_OLD_CAP: usize = 25;
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// Type `query` into `picker`, one character at a time, exactly as an operator
+/// does — the filter is fed by keystrokes and there is no other way in.
+fn typed(picker: &mut Picker, query: &str) {
+    for character in query.chars() {
+        picker.key(key(KeyCode::Char(character)));
+    }
+}
 
 /// A workspace path longer than eighty columns, whose identifying segment is at
 /// the very end — which is the shape every real workspace on one machine has.
@@ -207,37 +243,46 @@ fn f1_the_turn_count_includes_the_turns_a_branch_left_behind() {
 }
 
 #[test]
-fn f2_the_list_stops_at_the_bound_and_admits_it() {
+fn f10_the_list_is_as_long_as_the_walk_found_not_twenty() {
     let store = store();
     let mut seeded = Vec::new();
-    for n in 0..MAX_SESSIONS + 5 {
+    for n in 0..PAST_THE_OLD_CAP {
         let prompt = format!("task {n}");
         seeded.push(seed(&store, &format!("/work/{n}"), &[prompt.as_str()]));
     }
 
     let (list, cut) = recent(&store).expect("the list reads");
+
+    // The whole of F10. Twenty rows here would mean the cap is back — and it would
+    // look entirely reasonable on screen, because a truncated list with a note
+    // under it is exactly what this surface used to be. The cap existed only
+    // because a picker that could not be typed at was a list nobody could reach
+    // the bottom of; the picker filters as of this release, so the reason is gone
+    // and so is the bound.
     assert_eq!(
         list.len(),
-        MAX_SESSIONS,
-        "the walk stops at the bound rather than handing the picker a list nobody \
-         can arrow to the bottom of",
+        PAST_THE_OLD_CAP,
+        "every session the walk found is offered, not the first twenty: {list:?}",
     );
-    assert!(cut, "a list that stopped at the bound must say so");
-
-    // Newest first means the ones that fell off are the OLDEST, which is the only
-    // acceptable direction for a bound like this.
-    assert_eq!(list[0].id, *seeded.last().expect("seeded"), "got {list:?}");
+    assert_eq!(list[0].id, *seeded.last().expect("seeded"), "newest first");
     assert!(
-        !list.iter().any(|s| s.id == seeded[0]),
-        "the oldest session is the one dropped, not a newer one",
+        list.iter().any(|session| session.id == seeded[0]),
+        "the oldest session is reachable now: nothing cut it off",
     );
+    // The half with teeth. A list of twenty-five rows that still claimed it had
+    // stopped short would put a permanent note under a complete list, and a note
+    // that is always there is a note nobody reads — which is the same failure the
+    // uncut assertions below guard, reached from the direction the removed bound
+    // used to cause.
+    assert!(!cut, "nothing was cut, so nothing may say it was");
+    assert_eq!(cut_note(cut, list.len()), None, "and therefore no note");
 }
 
 #[test]
 fn f2_a_full_list_with_a_session_that_ran_twice_is_not_a_cut_list() {
     let store = store();
     let mut seeded = Vec::new();
-    for n in 0..MAX_SESSIONS {
+    for n in 0..PAST_THE_OLD_CAP {
         let prompt = format!("task {n}");
         seeded.push(seed(&store, &format!("/work/{n}"), &[prompt.as_str()]));
     }
@@ -247,15 +292,17 @@ fn f2_a_full_list_with_a_session_that_ran_twice_is_not_a_cut_list() {
 
     let (list, cut) = recent(&store).expect("the list reads");
 
-    // A regression test, and it is the one this pair got wrong first time.
-    // Charging the bound at the top of the walk made this exact store — the list
-    // full, and one more run belonging to a session already in it — report that
-    // older sessions were hidden when every session in the store was on screen.
-    // Nothing on the screen distinguishes a wrongly-cut list from a rightly-cut
-    // one, so the defect was invisible to everything except this assertion.
+    // A regression test, and it is the one this pair got wrong first time. Under
+    // the session bound this exact store — the list full, and one more run
+    // belonging to a session already in it — reported that older sessions were
+    // hidden when every session was on screen. The bound is gone, so the arm that
+    // was wrong cannot be reached; what is asserted now is the property that
+    // outlives it, that more runs than sessions is the ordinary state of a store
+    // and is not a cut. Nothing on the screen distinguishes a wrongly-cut list
+    // from a rightly-cut one, so this stays the only thing watching for it.
     assert_eq!(
         list.len(),
-        MAX_SESSIONS,
+        PAST_THE_OLD_CAP,
         "every session is listed: {list:?}"
     );
     assert!(
@@ -318,9 +365,11 @@ fn n4_the_walk_gives_up_after_five_hundred_runs() {
     let (list, cut) = recent(&store).expect("the list reads");
 
     // The bound is a promise about cost: at most five hundred `turn_for_run`
-    // lookups, whatever the store holds. A constant nothing checks is a constant
-    // that stops being true the first time someone raises the session bound and
-    // assumes this one scales with it.
+    // lookups, whatever the store holds. It is also the bound F10 KEEPS, and this
+    // is the test that says why — the walk stopped, and it stopped with one row
+    // on screen. A ceiling of five hundred that leaves a list of one is not a list
+    // length by any reading, which is the whole argument for removing the session
+    // cap and none of the argument for removing this.
     assert_eq!(
         list.len(),
         1,
@@ -333,9 +382,9 @@ fn n4_the_walk_gives_up_after_five_hundred_runs() {
     );
     assert!(
         cut,
-        "giving up on the scan is a cut list even though the session bound was \
-         never reached — this is the half of the bound that has nothing to do \
-         with how many sessions were found",
+        "giving up on the scan is a cut list however few sessions were found — \
+         this is the bound that has nothing to do with how long the list is, and \
+         it is the assertion that fails if it is lifted along with the session cap",
     );
     assert!(
         cut_note(cut, list.len()).is_some(),
@@ -344,23 +393,176 @@ fn n4_the_walk_gives_up_after_five_hundred_runs() {
 }
 
 #[test]
-fn f2_the_cut_note_names_how_many_are_shown_not_the_bound() {
-    let note = cut_note(true, MAX_SESSIONS).expect("a cut list carries a note");
+fn f10_the_cut_note_row_stands_for_no_session() {
+    let store = store();
+    seed(&store, "/work/one", &["alpha the parser"]);
+    seed(&store, "/work/two", &["beta the lexer"]);
+
+    let (list, _) = recent(&store).expect("the list reads");
+    let ids: Vec<i64> = list.iter().map(|session| session.id).collect();
+
+    // Every row the walk produced resolves, in the order the walk produced them.
+    // `ids.first()` written in place of the lookup passes nothing here, which is
+    // the point of the function existing at all: this arm lived in `src/main.rs`
+    // until 0.7.0, and `src/main.rs` is `[[bin]] name = "io"` — no integration
+    // test links it, so a swap there failed nothing.
+    assert_eq!(pick(&ids, 0), Some(ids[0]), "the first row is the first id");
+    assert_eq!(pick(&ids, 1), Some(ids[1]), "the second row is the second");
+
+    // And the row past the end is the cut note, which stands for nothing. The
+    // driver answers `None` with a sentence rather than by closing in silence.
+    assert_eq!(
+        pick(&ids, ids.len()),
+        None,
+        "the note carries no id, and a resume that guessed one would reopen a \
+         session the operator never chose",
+    );
+}
+
+#[test]
+fn f10_a_filtered_choice_resolves_the_row_the_operator_saw() {
+    let store = store();
+    seed(&store, "/work/alpha", &["alpha the parser"]);
+    seed(&store, "/work/beta", &["beta the lexer"]);
+    seed(&store, "/work/gamma", &["gamma the tests"]);
+
+    let (list, cut) = recent(&store).expect("the list reads");
+    let ids: Vec<i64> = list.iter().map(|session| session.id).collect();
+    let mut built = rows(&list, 80, &UNICODE);
+    assert_eq!(cut_note(cut, built.len()), None, "three sessions is no cut");
+
+    // The picker the driver builds, keystroke for keystroke. Newest first, so
+    // `alpha` was seeded first and is the LAST row — which is what makes this
+    // assertion able to fail: a resolution that read the chosen index against the
+    // filtered list would answer with `gamma`, the row that sits at position zero
+    // of what is drawn, and would do it silently.
+    let mut picker = Picker::new("Resume which session?", built.clone());
+    typed(&mut picker, "alpha");
+    assert_eq!(picker.matching(), 1, "one prompt is spelled that way");
+    let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
+        panic!("Enter over a matching row chooses it");
+    };
+    assert_eq!(
+        pick(&ids, index),
+        Some(ids[2]),
+        "the row the operator was looking at is the session that reopens",
+    );
+
+    // The hole the filter opened, and the reason `pick` may not answer an index
+    // it cannot honour. The note is appended as an ordinary row, so it is ranked
+    // against the sessions like any other and a query can put it under the marker
+    // — where before 0.7.0 it was last and effectively unreachable.
+    built.push(Row::new(
+        cut_note(true, built.len()).expect("a cut list carries a note"),
+    ));
+    let mut picker = Picker::new("Resume which session?", built);
+    typed(&mut picker, "older");
+    assert_eq!(
+        picker.matching(),
+        1,
+        "no prompt here is spelled that way, so the note is what is left",
+    );
+    let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
+        panic!("Enter over the note chooses it, because it is a row");
+    };
+    assert_eq!(index, ids.len(), "the note is the row past the last id");
+    assert_eq!(
+        pick(&ids, index),
+        None,
+        "and it resolves to nothing, which the driver has to SAY — a picker that \
+         closed here and did nothing is indistinguishable from a resume that failed",
+    );
+}
+
+#[test]
+fn f10_a_forked_row_carries_the_turn_number_it_was_drawn_with() {
+    let store = store();
+    let session = seed(
+        &store,
+        "/work/fork",
+        &["the first", "the second", "the third"],
+    );
+    let turns = store.session_turns(session).expect("the turns read");
+    let ids: Vec<i64> = turns.iter().map(|turn| turn.id).collect();
+
+    // The id and the number come back together because they are one index read
+    // once. They were read twice until 0.7.0 — the id in the driver's match arm,
+    // the number in the sentence that arm printed — and a sentence naming a turn
+    // the branch did not take is a lie about what just happened.
+    for (index, drawn) in turn_rows(&turns, 80, &UNICODE).iter().enumerate() {
+        let (id, number) = pick_turn(&ids, index).expect("every fork row is a turn");
+        assert_eq!(id, ids[index], "the row branches from the turn it names");
+        let detail = drawn.detail.as_deref().expect("a turn row has a detail");
+        assert!(
+            detail.starts_with(&format!("turn {number}")),
+            "the number the operator was told is the number on the row: {detail:?}",
+        );
+    }
+
+    // Numbered from one, because a turn id is a database key and nobody counts in
+    // database keys. Asserted outright rather than left to the loop, which would
+    // pass just as happily on two copies of the same off-by-one.
+    assert_eq!(pick_turn(&ids, 0).map(|(_, n)| n), Some(1));
+    assert_eq!(
+        pick_turn(&ids, ids.len()),
+        None,
+        "`/fork` has no note row, so this is unreachable rather than impossible — \
+         and an index with no turn behind it must not branch from anything",
+    );
+}
+
+#[test]
+fn f10_a_filtered_fork_choice_resolves_the_turn_the_operator_saw() {
+    let store = store();
+    let session = seed(
+        &store,
+        "/work/fork",
+        &[
+            "describe the parser",
+            "rename the lexer",
+            "delete the tests",
+        ],
+    );
+    let turns = store.session_turns(session).expect("the turns read");
+    let ids: Vec<i64> = turns.iter().map(|turn| turn.id).collect();
+
+    // `/fork` opens on the newest turn, which is what the driver's `selecting`
+    // does — so the marker starts on row 2 and the query has to move it. A
+    // resolution that read the filtered position would answer row 0 here, and row
+    // 0 is `describe the parser`: branching from the wrong turn, silently, having
+    // been asked for the one in the middle.
+    let mut picker = Picker::new("Continue from which turn?", turn_rows(&turns, 80, &UNICODE))
+        .selecting(ids.len() - 1);
+    typed(&mut picker, "rename");
+    assert_eq!(picker.matching(), 1, "one prompt is spelled that way");
+    let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
+        panic!("Enter over a matching row chooses it");
+    };
+    assert_eq!(
+        pick_turn(&ids, index),
+        Some((ids[1], 2)),
+        "the middle turn, and the number the row was drawn with",
+    );
+}
+
+#[test]
+fn f10_the_cut_note_names_how_many_are_shown_not_the_bound() {
+    let note = cut_note(true, 7).expect("a cut list carries a note");
     assert!(
-        note.contains(&MAX_SESSIONS.to_string()),
+        note.contains('7'),
         "the note has to say HOW MANY are shown, or it is an apology rather than \
          information the operator can act on: {note:?}",
     );
-    // And the number is the number of rows, never the constant. There are two
-    // bounds and they cut to different sizes: a store where one workspace ran
-    // five hundred turns trips the RUN bound and leaves a single row, so a note
-    // quoting MAX_SESSIONS would tell that operator they were looking at twenty
-    // sessions while one was on screen. The note is the whole of this
-    // behaviour's honesty, so it may not be the part that is wrong.
+    // And the number is the number of rows, never a constant. Removing the session
+    // bound did not make the surviving one safe to quote — it made it worse. The
+    // run ceiling counts RUNS, so a store where one workspace ran five hundred
+    // turns leaves a single row, and a note quoting the ceiling would tell that
+    // operator they were looking at five hundred sessions while one was on screen.
+    // 0.4.0 paid for this once with a run-bound cut that claimed twenty.
     let one = cut_note(true, 1).expect("a run-bound cut carries a note too");
     assert!(
-        one.contains('1') && !one.contains(&MAX_SESSIONS.to_string()),
-        "a one-row cut list must say one, not twenty: {one:?}",
+        one.contains('1') && !one.contains(&MAX_RUNS_SCANNED.to_string()),
+        "a one-row cut list must say one, not five hundred: {one:?}",
     );
     assert_eq!(
         cut_note(false, 3),

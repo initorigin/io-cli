@@ -20,19 +20,22 @@ use io_harness::Store;
 use crate::glyphs::Glyphs;
 use crate::picker::{fit, fit_left, Row};
 
-/// How many sessions `/resume` offers.
-///
-/// A bound before it is a saving. Pickers do not filter as you type until 0.7.0,
-/// so a list longer than a screen is a list nobody can reach the bottom of;
-/// twenty rows that arrive at once beat four hundred an arrow key has to walk.
-pub const MAX_SESSIONS: usize = 20;
-
 /// How many run ids the walk will look at before giving up.
 ///
-/// The other half of the bound, and the one that matters for a long-lived store:
-/// a session's runs are contiguous only if nothing else ran in between, so twenty
-/// sessions can sit behind far more than twenty runs. Five hundred point queries
-/// on an indexed column is the ceiling this release accepts.
+/// The only bound left, and it bounds *cost* rather than the length of the list:
+/// a session's runs are contiguous only if nothing else ran in between, so a
+/// hundred sessions can sit behind far more than a hundred runs. Five hundred
+/// point queries on an indexed column is the ceiling this release accepts.
+///
+/// There was a second bound until 0.7.0 — twenty sessions, and its own comment
+/// said it existed because a picker that could not be typed at was a list nobody
+/// could reach the bottom of. The picker filters now, so the reason has gone and
+/// the bound went with it: `/resume` offers what the walk found.
+///
+/// **This is not a row count and must never be read as one.** What it leaves is
+/// however many distinct sessions those five hundred runs served — one, if a
+/// single busy workspace ran them all — which is why [`cut_note`] takes its
+/// number from what is on screen.
 pub const MAX_RUNS_SCANNED: usize = 500;
 
 /// How much of a workspace path a row keeps before the picker fits it again.
@@ -80,25 +83,14 @@ pub fn recent(store: &Store) -> Result<(Vec<Recent>, bool), io_harness::Error> {
         if ids.contains(&turn.session_id) {
             continue;
         }
-        // The bound is charged **only when a session that is not already listed
-        // turns up**, and never merely on reaching the count. Checking it at the
-        // top of the loop instead is wrong in a way that is easy to miss and
-        // impossible to spot from the screen: twenty sessions in which any one
-        // has run twice produce twenty-one runs, so the walk takes one more step
-        // after the list is full, finds a session it already has, and reports
-        // that older sessions are hidden when none are. A note that cries wolf
-        // is worse than no note, because the note is the whole of F2.
-        if ids.len() >= MAX_SESSIONS {
-            cut = true;
-            break;
-        }
         ids.push(turn.session_id);
     }
 
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        // No query at all for a row that is not shown — which is the whole of
-        // what the bound above buys, and why it is applied before this loop.
+        // Three queries per row, and none at all for a run the walk never
+        // reached — which is what splitting the walk from this loop buys, and why
+        // the scan ceiling is charged above rather than here.
         let Some(root) = store.session_root(id)? else {
             continue;
         };
@@ -115,6 +107,30 @@ pub fn recent(store: &Store) -> Result<(Vec<Recent>, bool), io_harness::Error> {
         });
     }
     Ok((out, cut))
+}
+
+/// The session the row at `index` stands for, or `None` for the cut note.
+///
+/// One line, in the library, for exactly the reason [`resume`] is one line in the
+/// library: `src/main.rs` is `[[bin]] name = "io"`, no integration test links it,
+/// and until 0.7.0 this lookup lived inline in a match arm there. `ids.first()`
+/// written in its place resumes the wrong session on every choice the operator
+/// makes and fails no test at all, because there was no test that could reach it.
+///
+/// The index is [`crate::picker::Outcome::Chosen`]'s, which addresses the rows the
+/// picker was *given* whatever has since been typed into it. So this reads the id
+/// list back positionally, and a choice made out of a filtered list resolves the
+/// row the operator was looking at rather than the row that happens to sit at that
+/// position in what is drawn.
+///
+/// **`None` is the cut note.** [`cut_note`]'s line is pushed after the session
+/// rows, so it is the one index with no id behind it. It was unreachable in
+/// practice until this release — it was last, and nothing could move it — but the
+/// filter ranks it against the session rows like any other row and can put it
+/// under the marker, so the caller has to answer it with a sentence rather than by
+/// closing the picker and doing nothing.
+pub fn pick(ids: &[i64], index: usize) -> Option<i64> {
+    ids.get(index).copied()
 }
 
 /// Reopen a session the picker chose.
@@ -227,19 +243,42 @@ pub fn turn_rows(turns: &[io_harness::Turn], width: u16, glyphs: &Glyphs) -> Vec
         .collect()
 }
 
+/// The turn the row at `index` stands for: its id, and the number drawn beside it.
+///
+/// Both from one call, because both are derived from the one index and they used
+/// to be derived in two different places — the id in the driver's match arm, the
+/// number in the sentence that arm printed. Two readings of one index is two
+/// chances to be off by one, and the sentence names the turn the operator is being
+/// told they are now continuing from, so a number that disagrees with the branch
+/// is a lie about what just happened.
+///
+/// Numbered from one, matching [`turn_rows`] — which is the only place the two
+/// have to agree, and they agree here by being the same arithmetic rather than by
+/// two copies of it staying in step.
+///
+/// `None` for an index past the end. `/fork` carries no cut note, so that is
+/// unreachable rather than impossible; the caller says something anyway, because
+/// the alternative is a chosen row that closes the picker and branches from
+/// nothing.
+pub fn pick_turn(ids: &[i64], index: usize) -> Option<(i64, usize)> {
+    ids.get(index).map(|id| (*id, index + 1))
+}
+
 /// The line that says the list was cut, or `None` when it was not.
 ///
 /// A silently truncated list reads as a complete one. This is the sentence that
 /// stops it, and it names the size of what is on screen rather than apologising
 /// for it.
 ///
-/// **The number comes from `shown`, never from [`MAX_SESSIONS`].** There are two
-/// bounds and they cut to different sizes: the session bound leaves exactly
-/// twenty rows, while the run bound can leave far fewer — a store in which one
-/// workspace has run five hundred turns yields a single row, and a note quoting
-/// the constant would tell that operator they were looking at twenty sessions
-/// while one was on screen. The note is the whole of this behaviour's honesty, so
-/// it may not be the part that is wrong.
+/// **The number comes from `shown`, never from a constant.** There is one bound
+/// left and it counts runs rather than rows: five hundred runs served by a single
+/// busy workspace leave one session on screen, so a note quoting
+/// [`MAX_RUNS_SCANNED`] would tell that operator they were looking at five hundred
+/// sessions while one was there. Losing the session bound has not made a constant
+/// safe to quote — it has widened the gap between the ceiling and the row count
+/// from *sometimes* to *always*. 0.4.0 paid for this once, when a run-bound cut
+/// showing one row claimed twenty. The note is the whole of this behaviour's
+/// honesty, so it may not be the part that is wrong.
 pub fn cut_note(cut: bool, shown: usize) -> Option<String> {
     cut.then(|| format!("the {shown} most recent; older sessions are not listed"))
 }
