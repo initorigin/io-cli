@@ -145,6 +145,35 @@ impl Status {
         self.frame = self.frame.wrapping_add(1);
     }
 
+    /// Forget everything the *run* said, keeping what the *session* is.
+    ///
+    /// Called when the conversation under this line changes: `/resume` onto
+    /// another session, `/fork` away from this one, a rewind that undoes the turn
+    /// that set a field. Every field cleared here is a per-run fact — the tokens
+    /// that run spent, how full its context got, how its commands were contained,
+    /// how much of its plan the agent claimed — and none of them outlives the run
+    /// that reported it. A line that goes on asserting them is describing a
+    /// conversation that is no longer on the screen.
+    ///
+    /// The whole class rather than `plan` alone. `tokens`, `context` and
+    /// `containment` have had the same hole since they were added and would want
+    /// the same call at the same three sites, and four methods to make one moment
+    /// true is three more than the moment has.
+    ///
+    /// Nothing is read back to replace them, though the store holds the resumed
+    /// run's plan: F12 sets that field from `TodoWrote`'s own items with no store
+    /// read, and absent is the honest answer until the agent writes a list in the
+    /// run that is now on screen.
+    ///
+    /// The model, the posture, plain mode and the session's age are not run facts
+    /// and are left alone — the session is the same session either way.
+    pub fn forget_run(&mut self) {
+        self.tokens = None;
+        self.context = None;
+        self.containment = None;
+        self.plan = None;
+    }
+
     /// The indicator, if there is anything to indicate and anywhere to show it.
     ///
     /// `None` under `NO_COLOR`, where an animation is noise a reader cannot use —

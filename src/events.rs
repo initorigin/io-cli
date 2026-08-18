@@ -450,9 +450,23 @@ impl Events {
                     Span::styled(kind_name(&event.kind), theme.style(Tone::Muted)),
                 ])]
             }
-            EventKind::TodoWrote { items } => {
-                // The plan commits after whatever streamed before it, so it lands
-                // under the sentence that announced it rather than above it.
+            // Guarded on the items rather than only on the tag, because io-harness
+            // accepts a write of none: `parse_todo_items` validates each item it is
+            // given and never rejects an empty list, so `{"items": []}` dispatches
+            // as a real `TodoWrote`. A header reading `0 of 0 done` over nothing at
+            // all is the placeholder F12's sabotage arm names, arriving through the
+            // transcript's door instead of the status line's. An empty write falls
+            // through to the catch-all below and commits the muted `todo_wrote`
+            // word: the event still happened, and this module never drops one.
+            EventKind::TodoWrote { items } if !items.is_empty() => {
+                // The plan commits after whatever streamed before it, so the prose
+                // that led up to it is above rather than below. Not under the
+                // `todo_write` cell that announced it: `ToolCall` commits nothing
+                // and only holds the call open, and the next `Step` writes the cell
+                // — so the cell lands *after* this list, and the transcript reads
+                // plan, then the call that wrote it. Reordering that would mean
+                // committing an open call early, which is the one thing `live()`
+                // and every other tool cell in this module depend on not happening.
                 let mut lines = self.flush_text();
 
                 // io-harness's own arithmetic for a done count, and io-harness's

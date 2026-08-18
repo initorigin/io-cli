@@ -453,3 +453,95 @@ fn f12_the_plan_field_reads_at_eighty_columns_in_both_glyph_sets() {
         );
     }
 }
+
+/// **F12.** A write of *no* items leaves the field absent, and clears one already
+/// set. io-harness accepts an empty list — `parse_todo_items` validates each item
+/// it is given and never rejects a list of none — so `{"items": []}` arrives as a
+/// real `TodoWrote`, and setting the field from its length pins `plan 0/0 claimed`
+/// to the line for the rest of the session. That is the sabotage arm's own
+/// outcome, reached through the event rather than through the renderer.
+#[test]
+fn f12_a_plan_of_no_items_is_absent_rather_than_zero() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(
+        &event(EventKind::TodoWrote { items: Vec::new() }),
+        Duration::ZERO,
+    );
+
+    let quiet = app.status.line(120, &DARK).to_string();
+    assert!(
+        !quiet.contains("plan"),
+        "an empty write is not a plan: {quiet:?}",
+    );
+    assert!(
+        !quiet.contains("0/0"),
+        "a plan of nothing is not a plan of zero: {quiet:?}",
+    );
+
+    // And a plan erased after one was written goes back to absent, rather than
+    // standing at the count it last had.
+    app.event(&event(plan()), Duration::ZERO);
+    assert!(app.status.line(120, &DARK).to_string().contains("plan 1/3"));
+    app.event(
+        &event(EventKind::TodoWrote { items: Vec::new() }),
+        Duration::ZERO,
+    );
+
+    let erased = app.status.line(120, &DARK).to_string();
+    assert!(
+        !erased.contains("plan"),
+        "the agent erased its plan and the line kept the old count: {erased:?}",
+    );
+}
+
+/// **F12.** Every field on this line that is a fact about the *run* is forgotten
+/// when the run under the line changes — `/resume` onto another session, `/fork`
+/// away from this one, a rewind that undoes the turn that set one. Nothing else
+/// clears them: `TodoWrote` is the only writer of `plan`, and `Status::new` the
+/// only other assignment, so without this the line goes on asserting the previous
+/// conversation's spend, context, containment and plan.
+///
+/// Asserted over the whole class rather than over `plan` alone, because the hole
+/// is the class's and the fix is one call.
+#[test]
+fn the_run_fields_do_not_outlive_the_run_that_set_them() {
+    let mut app = App::new(DARK, "opus-5");
+    app.set_posture(Some(io_cli::settings::Posture::Workspace));
+    app.event(&step(1, 12_400), Duration::ZERO);
+    app.event(
+        &event(EventKind::Compacted {
+            through_step: 4,
+            before_tokens: 11_000,
+            after_tokens: 6_000,
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::Contained {
+            mode: "workspace-write".into(),
+            backend: "seatbelt".into(),
+            roots: 2,
+        }),
+        Duration::ZERO,
+    );
+    app.event(&event(plan()), Duration::ZERO);
+
+    let before = app.status.line(200, &DARK).to_string();
+    for fact in ["12.4k tok", "ctx ", "seatbelt", "plan 1/3"] {
+        assert!(before.contains(fact), "{fact:?} was never set: {before:?}");
+    }
+
+    app.status.forget_run();
+
+    let after = app.status.line(200, &DARK).to_string();
+    for fact in ["tok", "ctx", "seatbelt", "plan"] {
+        assert!(
+            !after.contains(fact),
+            "{fact:?} outlived the run that reported it: {after:?}",
+        );
+    }
+    // Nothing here is a fact about the run, and a swapped session is still the
+    // same session with the same model under the same posture.
+    assert!(after.contains("opus-5"), "{after:?}");
+    assert!(after.contains("policy:"), "{after:?}");
+}

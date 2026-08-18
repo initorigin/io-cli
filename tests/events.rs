@@ -992,3 +992,41 @@ fn f11_a_plan_longer_than_the_store_keeps_says_how_much_longer() {
         "and what the store keeps of it: {notice:?}",
     );
 }
+
+/// **F11.** A write of *no* items is not a plan, and does not commit one.
+///
+/// io-harness accepts it: `parse_todo_items` validates each item it is handed and
+/// never rejects an empty list, so `{"items": []}` reaches this module as a real
+/// `TodoWrote`. Before the guard, that committed a header reading `0 of 0 done, by
+/// the agent's own account` with not one row under it — the placeholder F12's
+/// sabotage arm names, written into the transcript instead of the status line.
+///
+/// The event is still committed, as the muted word naming itself: an empty write
+/// happened, and no kind in this module renders to nothing.
+#[test]
+fn f11_a_plan_of_no_items_is_not_committed_as_a_plan() {
+    let mut events = Events::new(DARK);
+    let committed = rows(events.event(
+        &event(EventKind::TodoWrote { items: Vec::new() }),
+        Duration::ZERO,
+    ));
+
+    for row in &committed {
+        assert!(
+            !row.contains("plan"),
+            "an empty write was committed as a plan: {committed:?}",
+        );
+        assert!(
+            !row.contains("0 of 0"),
+            "a plan of nothing is not a plan of zero: {committed:?}",
+        );
+    }
+    assert_eq!(
+        committed
+            .iter()
+            .filter(|row| row.contains(&kind_name(&EventKind::TodoWrote { items: Vec::new() })))
+            .count(),
+        1,
+        "the event still arrives as the word naming itself: {committed:?}",
+    );
+}

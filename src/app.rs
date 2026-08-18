@@ -258,6 +258,31 @@ impl App {
         self.approval.is_some()
     }
 
+    /// Take a bracketed paste, from either of the driver's input loops.
+    ///
+    /// Library-side and named for the same reason [`crate::sessions::resume`]
+    /// is: the driver lives in a binary no integration test can link, so a
+    /// paste routed inside a match arm there is a decision nothing can assert
+    /// and nothing can sabotage. `picker_open` is passed in rather than read
+    /// here because the picker belongs to the driver, the way the approval
+    /// belongs to this type.
+    ///
+    /// Returns whether the text reached the composer, so a test can name which
+    /// surface swallowed it instead of asserting that something, somewhere,
+    /// did nothing.
+    ///
+    /// A modal surface refuses it. Both a picker and an approval take the
+    /// keyboard while they are up, and a paste that slipped past either would
+    /// land in a composer sitting behind the overlay — typed by nobody, seen by
+    /// nobody, and sent with the next prompt.
+    pub fn paste(&mut self, text: &str, picker_open: bool) -> bool {
+        if picker_open || self.approval.is_some() {
+            return false;
+        }
+        self.composer.paste(text);
+        true
+    }
+
     /// Answer the open question. The overlay closes, the run goes on, and the
     /// decision commits one line — so it is in the transcript as well as in the
     /// harness's own trace.
@@ -452,7 +477,11 @@ impl App {
                     .iter()
                     .filter(|item| item.state == io_harness::TodoState::Done)
                     .count();
-                self.status.plan = Some((done, items.len()));
+                // And `None` when the agent wrote no items at all, which io-harness
+                // accepts — `parse_todo_items` never rejects an empty list. That is
+                // a plan erased rather than a plan of zero, and `0/0` pinned to the
+                // line is the exact placeholder F12's sabotage arm names.
+                self.status.plan = (!items.is_empty()).then_some((done, items.len()));
             }
             _ => {}
         }
