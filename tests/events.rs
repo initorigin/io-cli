@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use io_cli::events::{kind_name, Events};
 use io_cli::theme::DARK;
-use io_harness::{EventKind, RunEvent};
+use io_harness::{EventKind, RunEvent, TodoItem, TodoState, TODO_MAX_ITEMS};
 
 /// The kinds this release handles, in the contract's own words: `started`,
 /// `token`, `step`, `tool_call` and `finished` rendered fully, `refused` and
@@ -22,6 +22,11 @@ use io_harness::{EventKind, RunEvent};
 /// that number is harvested onto the open tool cell. Its own line is still the
 /// muted one naming the kind — an event is never consumed silently — but it is no
 /// longer a kind this release merely passes through.
+///
+/// `todo_wrote` joins them in 0.7.0, and being in this list is the smallest part
+/// of that: a name moved here with no arm behind it still renders through the
+/// wildcard and still passes this file. What makes the move true is the F11 tests
+/// at the end, which assert the items and their state words themselves.
 const STYLED: &[&str] = &[
     "started",
     "token",
@@ -31,6 +36,7 @@ const STYLED: &[&str] = &[
     "refused",
     "approval_requested",
     "mcp",
+    "todo_wrote",
 ];
 
 /// Every other kind the locked io-harness emits. Each renders as a muted single line
@@ -51,7 +57,6 @@ const FALLS_THROUGH: &[&str] = &[
     "fleet",
     "memory_wrote",
     "memory_forgot",
-    "todo_wrote",
     "question_asked",
     "question_answered",
     "plan_proposed",
@@ -98,6 +103,24 @@ fn rendered(events: &mut Events, kind: EventKind) -> String {
 /// The same, at a stated session age. Stated, never measured — N1.
 fn rendered_at(events: &mut Events, kind: EventKind, at: Duration) -> String {
     flatten(events.event(&event(kind), at))
+}
+
+/// The same lines kept apart, one string per committed row.
+///
+/// [`flatten`] glues every line into one string, which is enough for a claim
+/// about order and blind to a claim about a *row*. A plan is a list, so the facts
+/// that matter — this item carries this state, and no row is wider than the
+/// terminal it was written for — are per-row facts and are asserted as such.
+fn rows(lines: Vec<ratatui::text::Line<'static>>) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect()
 }
 
 fn flatten(lines: Vec<ratatui::text::Line<'static>>) -> String {
@@ -831,5 +854,141 @@ fn f8_a_rule_without_a_layer_is_neither_of_the_other_two_cases() {
     assert!(
         !refused.contains("tier default"),
         "a named rule did decide this one: {refused:?}",
+    );
+}
+
+/// **F11.** The plan is the assertion: every item's own words and its own state,
+/// in the order the agent wrote them.
+///
+/// Asserted per row rather than over the whole passage, because a state word
+/// sitting somewhere in the transcript is not the same claim as a state word
+/// sitting on the item it belongs to — a list whose states had all slid down by
+/// one would pass a `contains` sweep unchanged. The three words are read off
+/// `TodoState::as_str` rather than typed here, so a release that renames one
+/// fails this test instead of quietly inventing a label of io-cli's own.
+///
+/// This is the test the sabotage kills. Deleting the match arm sends the kind
+/// back through the wildcard, which commits the single word `todo_wrote` and not
+/// one item of the plan.
+#[test]
+fn f11_a_plan_commits_every_item_with_its_own_state_word_in_order() {
+    let mut events = Events::new(DARK);
+    let plan = rows(events.event(
+        &event(EventKind::TodoWrote {
+            items: vec![
+                TodoItem::new("read the current parser", TodoState::Done),
+                TodoItem::new("port the tokenizer", TodoState::Active),
+                TodoItem::new("port the error paths", TodoState::Pending),
+            ],
+        }),
+        Duration::ZERO,
+    ));
+
+    let row_of = |text: &str, state: TodoState| {
+        let (index, row) = plan
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} never reached the transcript: {plan:?}"));
+        let word = state.as_str();
+        assert!(
+            row.contains(word),
+            "the state is carried as a word and not only as a colour: {row:?}",
+        );
+        assert!(
+            row.find(text) < row.find(word),
+            "content before its state, like every other line here: {row:?}",
+        );
+        index
+    };
+
+    let read = row_of("read the current parser", TodoState::Done);
+    let tokenizer = row_of("port the tokenizer", TodoState::Active);
+    let errors = row_of("port the error paths", TodoState::Pending);
+    assert!(
+        read < tokenizer && tokenizer < errors,
+        "the plan is committed in the order the agent wrote it: {plan:?}",
+    );
+}
+
+/// **F11.** An item is fitted to the row, and what it was cut with says so.
+///
+/// `TODO_TEXT_CAP` is two hundred characters and the terminal this product is
+/// audited at is eighty columns, so an unfitted plan of any length is a wall of
+/// wrapped rows rather than a list. The elision mark is the half that keeps the
+/// shortening honest: a row cut with nothing to show for it reads as an item the
+/// agent wrote that way.
+#[test]
+fn f11_an_item_longer_than_the_row_is_fitted_and_says_it_was_cut() {
+    let mut events = Events::new(DARK);
+    // Two hundred and ten characters — longer than the store's own text cap, which
+    // the event is not subject to either.
+    let long = "port the error paths ".repeat(10);
+    let plan = rows(events.event(
+        &event(EventKind::TodoWrote {
+            items: vec![TodoItem::new(long, TodoState::Pending)],
+        }),
+        Duration::ZERO,
+    ));
+
+    let row = plan
+        .iter()
+        .find(|row| row.contains("port the error paths"))
+        .unwrap_or_else(|| panic!("the item never reached the transcript: {plan:?}"));
+    assert!(
+        row.contains(DARK.glyphs.ellipsis),
+        "a shortened item has to say it was shortened: {row:?}",
+    );
+    assert!(
+        row.contains(TodoState::Pending.as_str()),
+        "the state survives the fitting; it is not what gets cut: {row:?}",
+    );
+    for row in &plan {
+        // Counted in characters, never in bytes: this row is not ASCII.
+        assert!(
+            row.chars().count() <= 80,
+            "a plan row overran the eighty columns this product is audited at: {row:?}",
+        );
+    }
+}
+
+/// **F11.** A plan longer than the store keeps is disclosed, not silently cut.
+///
+/// The event carries the model's list *before* the cap is applied — the
+/// dispatcher clones `items` and only then does `Store::write_todos` keep
+/// `TODO_MAX_ITEMS` of them, and the dropped count never reaches any event. So
+/// this line is the only place the whole length is knowable, and an operator who
+/// is not told here will read a plan of sixty-four and never learn the agent
+/// wrote more.
+#[test]
+fn f11_a_plan_longer_than_the_store_keeps_says_how_much_longer() {
+    let mut events = Events::new(DARK);
+    // Deliberately wordless: an item named "item 70" would make the assertions
+    // below green on its own text rather than on the disclosure.
+    let total = TODO_MAX_ITEMS + 6;
+    let items: Vec<TodoItem> = (0..total)
+        .map(|_| TodoItem::new("a step in the plan", TodoState::Pending))
+        .collect();
+    let plan = rows(events.event(&event(EventKind::TodoWrote { items }), Duration::ZERO));
+
+    assert_eq!(
+        plan.iter()
+            .filter(|row| row.contains("a step in the plan"))
+            .count(),
+        total,
+        "the whole list is committed, since the event is what carries it: {plan:?}",
+    );
+
+    let notice = plan
+        .iter()
+        .find(|row| row.contains("warning"))
+        .unwrap_or_else(|| panic!("a plan over the cap was committed in silence: {plan:?}"));
+    assert!(
+        notice.contains(&total.to_string()),
+        "the disclosure states what the agent wrote: {notice:?}",
+    );
+    assert!(
+        notice.contains(&TODO_MAX_ITEMS.to_string()),
+        "and what the store keeps of it: {notice:?}",
     );
 }

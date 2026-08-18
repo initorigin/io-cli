@@ -24,10 +24,24 @@
 
 use std::time::Duration;
 
-use io_harness::{EventKind, RunEvent, MCP_TOOL_PREFIX, NAMESPACE};
+use io_harness::{EventKind, RunEvent, TodoState, MCP_TOOL_PREFIX, NAMESPACE, TODO_MAX_ITEMS};
 use ratatui::text::{Line, Span};
 
+use crate::picker::fit;
 use crate::theme::{Theme, Tone};
+
+/// The width one committed plan row is fitted to.
+///
+/// A constant rather than the terminal's real width, because `event` is a
+/// function of an event and a session age and nothing hands it a width. Eighty is
+/// the terminal this product is audited at, and a committed line that overruns a
+/// narrower one wraps rather than truncating — `tests/narrow.rs` pins that — so
+/// being wrong here costs a wrapped row and never a lost fact.
+///
+/// The reason to fit at all is io-harness's own `TODO_TEXT_CAP`: one item may be
+/// two hundred characters, and sixty-four of those wrapping three rows each is
+/// not a list an operator reads, it is the transcript buried under one.
+const ROW: usize = 80;
 
 /// A tool call that has been announced and not yet closed.
 ///
@@ -436,7 +450,85 @@ impl Events {
                     Span::styled(kind_name(&event.kind), theme.style(Tone::Muted)),
                 ])]
             }
-            // The other forty-two kinds. Not styled in this release, and not
+            EventKind::TodoWrote { items } => {
+                // The plan commits after whatever streamed before it, so it lands
+                // under the sentence that announced it rather than above it.
+                let mut lines = self.flush_text();
+
+                // io-harness's own arithmetic for a done count, and io-harness's
+                // own caveat with it: nothing in the core verifies an item, so
+                // this is what the agent says about its own work rather than a
+                // checked fact, and the header says so in those words.
+                let done = items
+                    .iter()
+                    .filter(|item| item.state == TodoState::Done)
+                    .count();
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  plan{separator}{done} of {} done, by the agent's own account",
+                        items.len(),
+                    ),
+                    theme.style(Tone::Muted),
+                )));
+
+                // A bullet, two spaces of indent and a space after the mark — the
+                // same leader a tool cell wears, because both are one row of a
+                // list under a heading.
+                let bullet_leader = theme.glyphs.bullet.chars().count() + 3;
+                for item in items {
+                    // io-harness's own three words, from `TodoState::as_str`, and
+                    // not a spelling io-cli invented: they are the wire form the
+                    // model wrote and the column the store holds. A word rather
+                    // than only a tone, because a colour is nothing under
+                    // `NO_COLOR`, on a monochrome terminal or to a screen reader.
+                    let state = item.state.as_str();
+                    let tone = match item.state {
+                        TodoState::Done => Tone::Success,
+                        TodoState::Active => Tone::Accent,
+                        TodoState::Pending => Tone::Muted,
+                    };
+                    // What is left of the row once the leader, the separator and
+                    // the state word have taken theirs. Counted in characters,
+                    // never in bytes.
+                    let taken = bullet_leader + separator.chars().count() + state.chars().count();
+                    let room = ROW.saturating_sub(taken);
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {} ", theme.glyphs.bullet),
+                            theme.style(Tone::Muted),
+                        ),
+                        Span::styled(
+                            fit(&item.text, room, &theme.glyphs),
+                            theme.style(Tone::Normal),
+                        ),
+                        Span::styled(separator, theme.style(Tone::Muted)),
+                        Span::styled(state, theme.style(tone)),
+                    ]));
+                }
+
+                // The event carries the model's list *before* the store's cap is
+                // applied: the dispatcher clones `items` and only then does
+                // `Store::write_todos` keep `TODO_MAX_ITEMS` of them, and the
+                // dropped count reaches no event at all. So this line is the only
+                // place the whole length is knowable, and an operator not told
+                // here would read a plan of sixty-four and never learn the agent
+                // wrote more.
+                if items.len() > TODO_MAX_ITEMS {
+                    lines.push(theme.notice(
+                        Tone::Warning,
+                        format!(
+                            "the agent wrote {} items; the run's store keeps the first \
+                             {TODO_MAX_ITEMS}, so the last {} are in this transcript and \
+                             nowhere else",
+                            items.len(),
+                            items.len() - TODO_MAX_ITEMS,
+                        ),
+                    ));
+                }
+                lines.push(Line::from(""));
+                lines
+            }
+            // The other forty-one kinds. Not styled in this release, and not
             // discarded either: each arrives as one muted line naming itself, so a
             // release that starts emitting something new is visible rather than
             // silent.
