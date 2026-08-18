@@ -170,26 +170,175 @@ fn f7_no_source_file_loops_over_provider_responses() {
     );
 }
 
+/// The one module 0.7.0 permits a spawn in. A **path**, not a name: a second
+/// `shell.rs` nested somewhere else in the tree would be a second spawn, which is
+/// exactly what is being prevented.
+fn spawning_module() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell.rs")
+}
+
 #[test]
 fn f7_no_source_file_runs_a_command_or_touches_the_network() {
-    // Running commands is the harness's tool layer, inside its sandbox. A
-    // `std::process::Command` here would be a tool implementation that no policy
-    // governs and no trace records.
+    // Running commands **for the agent** is the harness's tool layer, inside its
+    // sandbox: a command there is governed by a policy and recorded in the run's
+    // trace. A `std::process::Command` written here for that purpose would be a
+    // tool implementation that no policy governs and no trace records, and it
+    // stays forbidden in every file.
+    //
+    // 0.7.0 permits the literal in exactly one module, `src/shell.rs`, for
+    // exactly one thing that is not that. A `!` line is the operator's own
+    // keystroke: they typed it, they govern it, and its output goes into the
+    // scrollback and NOT into the run's trace — because the agent did not do it,
+    // and a trace that recorded it would be a trace that lies about who acted.
+    // That distinction is the whole argument, and it is why one permission does
+    // not reopen the rest.
+    //
+    // The network half is permitted nowhere at all, this module included.
+    let permitted = spawning_module();
+    let mut spawns = Vec::new();
+
     for (path, text) in sources() {
-        for forbidden in [
-            "std::process::Command",
-            "process::Command::new",
-            "TcpStream",
-            "reqwest::",
-            "std::net::",
-        ] {
+        for forbidden in ["TcpStream", "reqwest::", "std::net::"] {
             assert!(
                 !text.contains(forbidden),
                 "{} contains {forbidden}, which belongs to io-harness",
                 path.display(),
             );
         }
+
+        // Spelling the name around is the same act as writing it, and the
+        // criterion names it as evasion. `use std::process as p` and
+        // `use std::process::{Command}` both put a spawn in a file where neither
+        // literal below ever appears, so those spellings are forbidden
+        // everywhere — including in the permitted module, which therefore has to
+        // write `std::process::Command` in full and is asserted to below. What
+        // that buys is that this test, and a reader, only ever have to look for
+        // one string.
+        for evasion in [
+            "use std::process as ",
+            "use std::process::{",
+            "use std::process::*",
+        ] {
+            assert!(
+                !text.contains(evasion),
+                "{} imports std::process under another spelling; a spawn is written \
+                 out in full or it is not written",
+                path.display(),
+            );
+        }
+
+        if text.contains("std::process::Command") || text.contains("process::Command::new") {
+            spawns.push(path);
+        }
     }
+
+    // `read_dir` hands its entries back in whatever order the filesystem holds
+    // them, so every list this file compares is sorted first. A test that passes
+    // on one machine and fails on another is worse than no test.
+    spawns.sort();
+    assert_eq!(
+        spawns,
+        vec![permitted],
+        "a process spawn appears somewhere other than src/shell.rs. There is one \
+         module permitted to run a command and it is the one the release record \
+         argues for; anywhere else is a tool implementation that no policy governs \
+         and no trace records.",
+    );
+}
+
+/// F5 — and the half that a file list cannot state.
+///
+/// Permitting the spawn in one module is the first half of the argument. The
+/// second is that nothing io-harness drives can reach it: the day a `RunEvent`
+/// handler can run a command is the day this crate has written a tool and the
+/// harness's policy has a hole in it, and that day would arrive without the test
+/// above going red.
+///
+/// Asserted at module granularity — the same coarseness
+/// `f7_no_source_file_loops_over_provider_responses` uses, for the same reason.
+/// It is crude, and being crude is what makes it hard to creep past.
+///
+/// Three facts, and together they are the reachability argument:
+///
+/// 1. **The spawning module names nothing the event stream carries.** No
+///    `RunEvent`, no `EventKind`, no `Observer` — and no `Session` or `Store`
+///    either, which is also what keeps a `!` line's output out of the trace. So
+///    it cannot itself *be* an event handler, whoever calls it.
+/// 2. **Nothing but the driver mentions the module.** The event path is
+///    `bridge::Observer` → `App::event` → `Events::event` → `diff::cell`, and
+///    none of those files may spell a call into it. Aliasing the module is the
+///    same evasion as aliasing the type, so `use crate::shell` is forbidden
+///    alongside the call syntax.
+/// 3. **The value that asks for a spawn is built in one place.**
+///    `app::Command::Shell` is constructed exactly once, in `src/app.rs`, by
+///    `App::compose` — a `KeyEvent` handler. The driver matches on it. Nothing
+///    io-harness drives can produce one, so nothing io-harness drives can reach
+///    the spawn. Counted with its opening parenthesis, which is what a
+///    construction and a pattern have in common and a doc link does not.
+#[test]
+fn f5_the_spawn_is_unreachable_from_the_event_path() {
+    let permitted = spawning_module();
+    let shell = std::fs::read_to_string(&permitted).expect("the spawning module");
+
+    for name in ["RunEvent", "EventKind", "Observer", "Session", "Store"] {
+        assert!(
+            !shell.contains(name),
+            "src/shell.rs names {name}. A module that can see the event stream, the \
+             conversation or the trace is a module the agent can reach — or one that \
+             can write the operator's own keystroke into a record of what the agent \
+             did.",
+        );
+    }
+    assert!(
+        shell.contains("std::process::Command"),
+        "src/shell.rs is the module permitted to spawn, so it is the module that has \
+         to spell the spawn in full — otherwise the gate above is watching a string \
+         that is no longer there",
+    );
+
+    let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
+    let mut callers = Vec::new();
+    let mut builders = Vec::new();
+    for (path, text) in sources() {
+        if path == permitted {
+            continue;
+        }
+        if text.contains("shell::") || text.contains("use crate::shell") {
+            callers.push(path.clone());
+        }
+        if text.contains("Command::Shell(") {
+            builders.push((path, text.matches("Command::Shell(").count()));
+        }
+    }
+    callers.sort();
+    builders.sort();
+
+    assert_eq!(
+        callers,
+        vec![driver.clone()],
+        "only the driver may call into the spawning module. Anything else is a \
+         second route to a process, and the event path is full of things that would \
+         look like a reasonable place for one.",
+    );
+
+    // The driver's mentions are all matches; `app.rs`'s one is the single
+    // construction, and it is inside `App::compose`, which takes a `KeyEvent`.
+    let named: Vec<&PathBuf> = builders.iter().map(|(path, _)| path).collect();
+    assert_eq!(
+        named,
+        vec![&app, &driver],
+        "`Command::Shell` is spelled somewhere unexpected: {builders:?}",
+    );
+    assert_eq!(
+        builders
+            .iter()
+            .find(|(path, _)| *path == app)
+            .map(|(_, count)| *count),
+        Some(1),
+        "src/app.rs should build a `Command::Shell` exactly once. Two is two ways to \
+         ask for a process, and only one of them was argued.",
+    );
 }
 
 #[test]

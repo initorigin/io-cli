@@ -26,7 +26,7 @@ use io_cli::settings::{self, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
-use io_cli::{approval, bridge, provider, splash, verify};
+use io_cli::{approval, bridge, provider, shell, splash, verify};
 use ratatui::text::{Line, Span};
 
 fn main() -> ExitCode {
@@ -742,6 +742,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 }
                 Action::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
             },
+            // The operator's own line, in the operator's own shell. It reaches
+            // this arm and no other: `App::compose` is the only thing that builds
+            // a `Command::Shell`, so nothing io-harness drives can get here, and
+            // `tests/dependencies.rs` asserts that rather than trusting it.
+            //
+            // Committed through `Screen::commit`, the same call `/expand` and
+            // `Action::Print` make, and nothing else happens to the terminal:
+            // the viewport is not handed over, not restored and not rebuilt, so
+            // its inline origin cannot go stale. `io_cli::shell` is where that
+            // constraint is argued.
+            //
+            // Not written to the run's trace, and there is nothing here that
+            // could — the store is not touched. The agent did not run this.
+            Command::Shell(line) => {
+                let ran = shell::run(&line);
+                let lines = shell::lines(&line, &ran, &app.theme);
+                screen.commit(&lines).map_err(|error| error.to_string())?;
+            }
             Command::Submit(text) => {
                 // Rebuilt every turn rather than kept, because `remembered` grows
                 // as the operator answers and the harness's own `remember` dies
@@ -847,7 +865,16 @@ async fn turn<P: Provider>(
                             // predict — so all four wait, and the operator is told
                             // that is what is happening rather than left pressing
                             // a key that appears to do nothing.
-                            Command::Slash(_) => {
+                            //
+                            // A `!` line waits for a different reason and the
+                            // same sentence covers it: `shell::run` blocks until
+                            // the child exits, and blocking here is blocking the
+                            // select loop — the turn's events would stop being
+                            // drained, the ticker would stop, and `Ctrl+C` would
+                            // be unreadable for as long as the command took. So
+                            // the block is confined to the idle prompt, where
+                            // there is no turn for it to stall.
+                            Command::Slash(_) | Command::Shell(_) => {
                                 let dash = app.theme.glyphs.dash;
                                 app.say(
                                     Tone::Muted,

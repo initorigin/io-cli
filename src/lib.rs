@@ -29,6 +29,7 @@ pub mod provider;
 pub mod rewind;
 pub mod sessions;
 pub mod settings;
+pub mod shell;
 pub mod splash;
 pub mod status;
 pub mod term;

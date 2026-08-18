@@ -47,6 +47,16 @@ pub enum Command {
     Submit(String),
     /// Run this slash command — the leading `/` removed.
     Slash(String),
+    /// Run this line in the operator's own shell — the leading `!` removed.
+    ///
+    /// **The only value in this product that asks for a process to be spawned**,
+    /// and it is built in exactly one place: `App::compose`, off a submitted
+    /// composer line. That is the whole of the reachability argument
+    /// `tests/dependencies.rs` asserts — nothing io-harness drives can produce
+    /// one, so nothing on the event path can run a command. See
+    /// [`crate::shell`] for what happens to it and why the terminal is never
+    /// handed over.
+    Shell(String),
     /// Call `Steer::interrupt` on the running turn.
     Interrupt,
     /// Leave.
@@ -572,13 +582,27 @@ impl App {
     }
 
     /// Hand the keystroke to the prompt.
+    ///
+    /// A submitted line is one of three things, decided here by its first
+    /// character and nowhere else. `/` is a slash command. `!` is a line for the
+    /// operator's own shell — see [`Command::Shell`] — and, like `/`, it is
+    /// **not sent to the agent**: the point of `!` is that the agent never hears
+    /// about it. Anything else is a prompt.
+    ///
+    /// `!` with nothing after it is nothing to run, and does nothing. It is not
+    /// treated as a prompt, because a bare `!` submitted to a model is a
+    /// keystroke that missed rather than a question.
     fn compose(&mut self, key: KeyEvent) -> Command {
         self.quits = 0;
         match self.composer.key(key) {
             Reply::Idle => Command::None,
             Reply::Submitted(text) => match text.strip_prefix('/') {
                 Some(command) => Command::Slash(command.trim().to_string()),
-                None => Command::Submit(text),
+                None => match text.strip_prefix('!').map(str::trim) {
+                    Some("") => Command::None,
+                    Some(line) => Command::Shell(line.to_string()),
+                    None => Command::Submit(text),
+                },
             },
         }
     }
