@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
@@ -209,6 +209,17 @@ async fn drive(
     if let Some(complaint) = complaint {
         notices.insert(0, complaint);
     }
+    // The prompt templates, discovered ONCE and here — not per keystroke into the
+    // palette, which filters on every character typed. A `[run] templates` that
+    // could not be walked comes back as an empty set *and* a sentence, and the
+    // sentence joins the notices rather than being dropped: a palette with no
+    // templates in it looks exactly the same whether none were configured or the
+    // directory is missing, which is the difference this notice is the only
+    // carrier of.
+    let (templates, complaint) = commands::templates(&config);
+    if let Some(complaint) = complaint {
+        notices.push(complaint);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -236,6 +247,7 @@ async fn drive(
             diff_style,
             keys,
             notices,
+            templates,
             theme,
             plain,
         },
@@ -253,8 +265,13 @@ struct Interactive<'a, 'b> {
     policy: Policy,
     diff_style: settings::DiffStyle,
     keys: io_cli::keys::Keys,
-    /// What `[app.io-cli]` earned itself, in the order it will be said.
+    /// What `[app.io-cli]` and `[run] templates` earned themselves, in the order
+    /// they will be said.
     notices: Vec<String>,
+    /// What `[run] templates` points at, walked once at startup. Empty when
+    /// nothing is configured and empty when the walk failed — the notice above is
+    /// what tells those two apart.
+    templates: Templates,
     theme: Theme,
     plain: bool,
 }
@@ -278,6 +295,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.diff_style,
             self.keys,
             self.notices,
+            self.templates,
             self.theme,
             self.plain,
             model,
@@ -299,6 +317,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     diff_style: settings::DiffStyle,
     keys: io_cli::keys::Keys,
     notices: Vec<String>,
+    templates: Templates,
     theme: Theme,
     plain: bool,
     model: String,
@@ -457,14 +476,33 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // the operator presses `Enter` on it themselves, so the
                         // submit path below — `strip_prefix('/')`, then
                         // `commands::parse` — stays the only way a command is
-                        // dispatched. `if let` for the same reason `Pick::Resume`
-                        // uses one: an index with no command behind it puts
-                        // nothing in the prompt rather than a guess.
-                        Pick::Palette => {
-                            if let Some(command) = commands::palette_command(index) {
-                                app.composer.set(command);
+                        // dispatched. A template follows the same rule, which is
+                        // why one arm answers both. `None` for the same reason
+                        // `Pick::Resume` uses an `if let`: an index with nothing
+                        // behind it puts nothing in the prompt rather than a
+                        // guess.
+                        Pick::Palette => match commands::palette_pick(&templates, index) {
+                            Some(commands::Chosen::Command(command)) => app.composer.set(command),
+                            // The rendered template, in the prompt and not on the
+                            // wire. A template is a starting point for a goal
+                            // rather than the goal itself, so the operator reads
+                            // it, edits it and presses `Enter` themselves — the
+                            // same rule the commands follow, for the same reason.
+                            //
+                            // A render that fails is said rather than swallowed.
+                            // The one way it fails in this release is a
+                            // placeholder with no argument, and the sentence is
+                            // io-harness's own: it names the template, the
+                            // placeholder and what to do about it, which is more
+                            // than anything written here could.
+                            Some(commands::Chosen::Template(name)) => {
+                                match commands::expand(&templates, &name) {
+                                    Ok(prompt) => app.composer.set(&prompt),
+                                    Err(error) => app.say(Tone::Error, error),
+                                }
                             }
-                        }
+                            None => {}
+                        },
                     }
                     picker = None;
                 }
@@ -484,7 +522,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // rather than a test written here, because nothing can reach this file.
         if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
             picker = Some((
-                Picker::new("Which command?", commands::palette()),
+                Picker::new("Which command?", commands::palette(&templates)),
                 Pick::Palette,
             ));
             app.status.elapsed = started.elapsed();
@@ -1000,9 +1038,9 @@ enum Pick {
     /// Turn ids, in the order the rows are drawn.
     Fork(Vec<i64>),
     /// The slash palette. Its rows are `commands::palette()`, which is the
-    /// command inventory in order, so the chosen index reads straight back
-    /// through `commands::palette_command` — no list is carried here because the
-    /// rows already address the thing they stand for.
+    /// command inventory and then the templates, in that order, so the chosen
+    /// index reads straight back through `commands::palette_pick` — no list is
+    /// carried here because the rows already address the thing they stand for.
     Palette,
 }
 

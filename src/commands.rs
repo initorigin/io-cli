@@ -7,6 +7,12 @@
 //! for why that decision lives here rather than in [`crate::app`], and
 //! [`palette`] for why its rows drop the slash the composer gets back.
 //!
+//! The palette also reaches the prompt templates `[run] templates` points at —
+//! one list rather than two, because a second palette would be a second thing to
+//! learn and a second place a keystroke could go. [`templates`] is where a
+//! configuration becomes a set, [`palette_pick`] is what a chosen row stands for,
+//! and [`expand`] is what a chosen template puts in the composer.
+//!
 //! **Everything that shows more of something commits upward.** The viewport is
 //! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
 //! write into the scrollback, where the terminal's own search, selection and
@@ -14,6 +20,7 @@
 //! three, and it is the same answer the transcript gives.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use io_harness::{Config, Templates};
 use ratatui::text::{Line, Span};
 
 // Qualified rather than imported: `Action` in this module is already a slash
@@ -124,7 +131,32 @@ pub fn opens_palette(key: KeyEvent, prompt_empty: bool, armed: bool) -> bool {
         && !armed
 }
 
-/// The palette's rows: every command in [`COMMANDS`], in order.
+/// What a template row's detail begins with, so a template is never mistaken for
+/// a command.
+///
+/// It rides at the **front** of the detail rather than at the back, and that is
+/// where the picker's own truncation rule puts the decision: a detail is fitted
+/// rather than wrapped, so the head is what survives a narrow terminal and the
+/// tail is what goes. A marker at the end would be the first thing to disappear
+/// on exactly the screen where a row is hardest to read.
+///
+/// Not on the label, because the label is the haystack [`crate::fuzzy`] ranks. A
+/// prefix there would give every template row the same first character, which is
+/// the same defect [`palette`] strips the slash to avoid — no query could ever be
+/// an exact name or a prefix of one, and the whole top of the ranking would be
+/// unreachable for templates.
+pub const TEMPLATE: &str = "template: ";
+
+/// The palette's rows: every command in [`COMMANDS`], then every template.
+///
+/// Commands first because they are the inventory this product ships and the
+/// operator did not have to write; templates after, in the order
+/// [`Templates::discover`] sorted them, which is by name and identical across
+/// runs. Nothing renumbers between the two halves — see [`palette_pick`], which
+/// reads an index back against exactly this ordering.
+///
+/// A configuration with no templates contributes no rows and no notice. That is
+/// the whole of the "not configured" state: an empty section, not an error.
 ///
 /// **The label is the command with its leading `/` removed**, and that is a
 /// matching decision rather than a cosmetic one. [`crate::fuzzy`] ranks an exact
@@ -134,35 +166,124 @@ pub fn opens_palette(key: KeyEvent, prompt_empty: bool, armed: bool) -> bool {
 /// `f` would order `fork` against `copy diff` by gap arithmetic alone. Stripped,
 /// typing a command's name puts that command first, which is the whole promise.
 ///
-/// The slash comes back at the other end: [`palette_command`] is what the chosen
-/// row puts in the composer, and it reads the name out of [`COMMANDS`] whole.
+/// The slash comes back at the other end: [`palette_pick`] is what the chosen
+/// row stands for, and it reads the name out of [`COMMANDS`] whole.
+///
+/// A template's label is its name, unadorned, for the same reason and with the
+/// same effect. What says a row is a template is its detail — see [`TEMPLATE`].
 ///
 /// The description rides along as the row's detail. It is the first thing the
 /// picker drops on a narrow terminal and it is deliberately not matched — a row
 /// kept by a hit inside text that is not on screen is a filter whose result the
 /// operator cannot account for.
-pub fn palette() -> Vec<Row> {
+pub fn palette(templates: &Templates) -> Vec<Row> {
     COMMANDS
         .iter()
         // `strip_prefix` rather than a trim of every leading slash: a command is
         // spelled with exactly one, and a trim would quietly swallow a second.
         .map(|(name, what)| Row::with_detail(name.strip_prefix('/').unwrap_or(name), *what))
+        .chain(templates.iter().map(|template| {
+            Row::with_detail(
+                template.name.clone(),
+                format!("{TEMPLATE}{}", template.description),
+            )
+        }))
         .collect()
 }
 
-/// What choosing the palette's row at `index` puts in the composer.
+/// What the palette's row at `index` stands for.
 ///
 /// The index is the one [`crate::picker::Outcome::Chosen`] carries, which
 /// addresses the rows the picker was given — and those are [`palette`]'s, which
-/// are [`COMMANDS`] in order. So this reads the inventory positionally, the same
-/// way the `/resume` and `/fork` pickers read their id lists, and returns the
-/// name whole: `/copy diff` rather than the two words the row was labelled with.
+/// are [`COMMANDS`] and then the templates, in that order. So this reads both
+/// inventories positionally, the same way the `/resume` and `/fork` pickers read
+/// their id lists, and there is no parallel array to drift: the one function that
+/// lays the rows out and the one function that reads them back are these two, and
+/// they are next to each other on purpose.
 ///
-/// `None` for an index past the end. There is no such row today, and a caller
-/// that finds one should put nothing in the prompt rather than a command it
-/// guessed at.
-pub fn palette_command(index: usize) -> Option<&'static str> {
-    COMMANDS.get(index).map(|(name, _)| *name)
+/// A command comes back whole — `/copy diff` rather than the two words the row
+/// was labelled with — because what the composer gets is what the operator would
+/// have typed. A template comes back by **name**, which is what
+/// [`Templates::render`] asks for; the body is not carried here, so nothing has
+/// to keep a rendered string alive next to the set it came from.
+///
+/// `None` for an index past the end. A caller that finds one should put nothing
+/// in the prompt rather than something it guessed at.
+pub fn palette_pick(templates: &Templates, index: usize) -> Option<Chosen> {
+    match COMMANDS.get(index) {
+        Some((name, _)) => Some(Chosen::Command(name)),
+        // Saturating is not needed: this arm is only reached when `index` is at
+        // or past `COMMANDS.len()`.
+        None => templates
+            .iter()
+            .nth(index - COMMANDS.len())
+            .map(|template| Chosen::Template(template.name.clone())),
+    }
+}
+
+/// What a chosen palette row is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Chosen {
+    /// A slash command, spelled the way the composer wants it.
+    Command(&'static str),
+    /// A prompt template, by the name [`Templates::render`] knows it by.
+    Template(String),
+}
+
+/// Render a template into the text the composer is about to be given.
+///
+/// **The arguments are empty, deliberately.** There is no argument-collection
+/// surface in this release, and inventing one inside a picker's `Enter` would be
+/// a second modal in the middle of an existing one. So a template with a
+/// `{{placeholder}}` in it is refused here, with io-harness's own sentence — which
+/// already names the template, the placeholder and the two ways out of it — and
+/// the operator can either pass the value by editing the template or use one that
+/// does not need one. Refused rather than sent with a hole in it, because a goal
+/// with a hole in it still reads like a goal.
+///
+/// It lives in the library rather than at its one call site in `src/main.rs`
+/// because nothing under `tests/` can link the binary: what arguments this passes
+/// is a decision, and a decision written there is one no test drives and no
+/// sabotage can make fail.
+pub fn expand(templates: &Templates, name: &str) -> Result<String, String> {
+    templates
+        .render(name, &[])
+        .map_err(|error| error.to_string())
+}
+
+/// The prompt templates this configuration points at, and what went wrong.
+///
+/// **Three states, and the seam keeps all three**, because io-harness
+/// distinguishes all three: `[run] templates` absent is [`Templates::none`] and
+/// silence; a directory that reads is the set; and a path that is missing or is
+/// not a directory is an empty set *and a sentence*. Collapsing the third into
+/// the second is the shape 0.6.0 already paid for once — see [`crate::settings`],
+/// where `.unwrap_or_default()` on `Config::app`'s `Result` silently reverted
+/// every setting in the file — and it is worse here for the same reason: a
+/// palette that quietly shows no templates looks exactly like a palette that was
+/// never configured, and the operator has no thread to pull.
+///
+/// The notice carries **the harness's own message**, which already names the path
+/// and, for the not-a-directory case, says what to point it at instead. Rewording
+/// it would drop the only part that says where to look.
+///
+/// `Config::templates` reads nothing from disk and cannot fail; the walk is
+/// [`Templates::discover`]'s, it is fallible, and it happens **once**, when the
+/// session starts. A directory walk per keystroke into the palette would be the
+/// wrong shape for a filter that runs on every character typed.
+pub fn templates(config: &Config) -> (Templates, Option<String>) {
+    let Some(dir) = config.templates() else {
+        return (Templates::none(), None);
+    };
+    match Templates::discover(dir) {
+        Ok(found) => (found, None),
+        Err(error) => (
+            Templates::none(),
+            Some(format!(
+                "{error}; this session has no templates until that is fixed"
+            )),
+        ),
+    }
 }
 
 /// What the driver should do about a slash command.
