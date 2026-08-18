@@ -3,6 +3,7 @@
 mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use io_cli::app::App;
 use io_cli::composer::{Composer, Reply, PASTE_THRESHOLD, PROMPT};
 use io_cli::glyphs::ASCII;
 use io_cli::theme::DARK;
@@ -490,4 +491,35 @@ fn f6_the_placeholder_line_draws_under_the_ascii_glyph_set() {
         viewport.is_ascii(),
         "the placeholder drew something the ASCII set cannot: {viewport:?}",
     );
+}
+
+/// F7: a paste reaches the composer when nothing modal is up.
+///
+/// The control for the two refusals below. Without it, a `paste` that refused
+/// everything would satisfy them both.
+#[test]
+fn f7_a_paste_reaches_the_composer_when_nothing_is_in_the_way() {
+    let mut app = App::new(DARK, "opus-5");
+
+    assert!(
+        app.paste("from the clipboard", false),
+        "nothing was open, so the paste had nowhere else to go",
+    );
+    assert_eq!(app.composer.text(), "from the clipboard");
+}
+
+/// F7: a paste during a turn is not discarded.
+///
+/// The defect this fixes: the driver's mid-turn arm matched a key press and a
+/// resize and let everything else fall into a catch-all, so a bracketed paste
+/// while the agent worked was dropped on the floor. Typing already reached the
+/// composer on that path, so a paste that did not was the same keystroke
+/// treated two ways.
+#[test]
+fn f7_a_paste_while_a_turn_is_running_is_not_dropped() {
+    let mut app = App::new(DARK, "opus-5");
+    app.started();
+
+    assert!(app.paste("typed while it worked", false));
+    assert_eq!(app.composer.text(), "typed while it worked");
 }

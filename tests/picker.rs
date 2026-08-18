@@ -4,6 +4,7 @@
 mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use io_cli::app::App;
 use io_cli::picker::{Outcome, Picker, Row};
 use io_cli::theme::DARK;
 
@@ -593,4 +594,30 @@ fn the_selected_row_is_marked_by_more_than_colour() {
         "exactly one row carries the marker: {viewport:?}",
     );
     assert!(marked[0].contains("Anthropic"), "got {:?}", marked[0]);
+}
+
+/// F7: a paste does not leak past an open picker.
+///
+/// The driver used to take a paste above the check that hands a picker the
+/// keyboard, so pasting with `/model` open inserted the text into the composer
+/// sitting *behind* the overlay — typed by nobody, seen by nobody, and sent
+/// with the next prompt. A picker's own documentation says it owns the keyboard
+/// while it is up, and this is what makes that true of a paste as well as a
+/// key.
+///
+/// This is the assertion the criterion's sabotage kills: fix the mid-turn arm,
+/// leave the picker's, and only this one goes red.
+#[test]
+fn f7_a_paste_does_not_leak_past_an_open_picker() {
+    let mut app = App::new(DARK, "opus-5");
+
+    assert!(
+        !app.paste("from the clipboard", true),
+        "a picker owns the keyboard, and a paste is the keyboard",
+    );
+    assert!(
+        app.composer.is_empty(),
+        "the paste landed in the composer behind the overlay: {:?}",
+        app.composer.text(),
+    );
 }

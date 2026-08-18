@@ -362,7 +362,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     .map_err(|error| error.to_string())?;
             }
             if let Event::Paste(text) = event {
-                app.composer.paste(&text);
+                app.paste(&text, picker.is_some());
             }
             app.status.elapsed = started.elapsed();
             paint(screen, &mut app)?;
@@ -445,6 +445,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Ok(reopened) => {
                                         session = reopened;
                                         app.set_root(session.root());
+                                        // The tokens, the context, the
+                                        // containment and the plan were facts
+                                        // about the run just left. Carrying them
+                                        // across would leave the line describing
+                                        // a conversation that is no longer on
+                                        // screen.
+                                        app.status.forget_run();
                                         // Where they were, in the terminal's own
                                         // buffer rather than in a four-row
                                         // viewport.
@@ -464,14 +471,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         Pick::Fork(ids) => {
                             if let Some(turn) = ids.get(index) {
                                 match session.branch_from(&store, *turn) {
-                                    Ok(()) => app.say(
-                                        Tone::Success,
-                                        format!(
+                                    Ok(()) => {
+                                        app.status.forget_run();
+                                        app.say(
+                                            Tone::Success,
+                                            format!(
                                             "continuing from turn {}; what came after is still \
                                              in the transcript, marked as branched away",
                                             index + 1
                                         ),
-                                    ),
+                                        )
+                                    }
                                     Err(error) => app.say(
                                         Tone::Error,
                                         format!("that turn could not be branched from: {error}"),
@@ -622,6 +632,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // The second. This is where the operator's files change.
             Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
                 Ok(Some(undone)) => {
+                    // The undone turn is where those numbers came from.
+                    app.status.forget_run();
                     for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                         app.say(tone, line);
                     }
@@ -889,6 +901,15 @@ async fn turn<P: Provider>(
                     }
                     Event::Resize(width, height) => {
                         screen.resize(width, height).map_err(|error| error.to_string())?;
+                    }
+                    // A turn in flight is not a reason to drop what the operator
+                    // pasted. Typing already reaches the composer here; a paste
+                    // that did not would be the same keystroke treated two ways.
+                    // No picker can be open on this path — one owns the keyboard
+                    // before a turn starts — and the approval is refused inside
+                    // `App::paste`.
+                    Event::Paste(text) => {
+                        app.paste(&text, false);
                     }
                     _ => {}
                 }
