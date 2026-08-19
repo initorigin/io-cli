@@ -2,7 +2,7 @@
 //!
 //! Three rules shape this module.
 //!
-//! **Nothing is dropped.** `EventKind` is `#[non_exhaustive]` and has fifty
+//! **Nothing is dropped.** `EventKind` is `#[non_exhaustive]` and has fifty-one
 //! variants today, so a wildcard arm is not a shortcut here, it is required by
 //! the type. What matters is that the wildcard *renders* — an event this release
 //! has no design for arrives as a muted single line naming its kind, rather than
@@ -318,6 +318,29 @@ impl Events {
                     measured: None,
                 });
                 Vec::new()
+            }
+            // 0.65.0 — a resume found a call that was started and never finished,
+            // and refused to drive rather than make it a second time. It is styled
+            // rather than left to the catch-all because the muted word
+            // `recovery_paused` says nothing an operator can act on, and the two
+            // things they need — which tool, and the attempt id a decision has to
+            // name — are both carried by the event.
+            EventKind::RecoveryPaused { attempt_id, tool } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Warning)),
+                    Span::styled(
+                        format!("paused {dash} {tool} was interrupted"),
+                        theme.style(Tone::Warning),
+                    ),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  whether it ran is unknown, so nothing was repeated; attempt {attempt_id}"
+                    ),
+                    theme.style(Tone::Muted),
+                )));
+                lines
             }
             EventKind::Refused {
                 act,

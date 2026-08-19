@@ -939,3 +939,54 @@ fn the_global_flags_are_accepted_on_either_side_of_the_subcommand() {
         assert_eq!(cli.dir.as_deref(), Some(std::path::Path::new("/tmp/x")));
     }
 }
+
+/// 0.8.0 F9 — the outcome table names every outcome the locked io-harness declares.
+///
+/// This test exists because a compile error stopped existing. `RunOutcome` was
+/// exhaustive until io-harness 0.65 and `exec::code`'s match had no `_` arm, so a
+/// variant a later harness added broke the build. 0.65 marked the enum
+/// `#[non_exhaustive]`, the catch-all became mandatory, and with it a new outcome
+/// would arrive as `UNFINISHED` with nothing said. The property is asserted here
+/// instead: the table is compared against the variants declared in the source this
+/// crate is locked to, so a pin bump that adds one fails a test that names it.
+#[test]
+fn the_outcome_table_names_every_outcome_the_locked_harness_declares() {
+    let declared = support::harness_run_outcomes();
+    assert!(
+        declared.contains(&"AwaitingRecovery".to_string()),
+        "io-harness 0.65 declares AwaitingRecovery; found {declared:?}"
+    );
+
+    let source = std::fs::read_to_string("src/exec.rs").expect("this crate's source is readable");
+    let table = source
+        .split_once("pub fn code(outcome: &RunOutcome) -> u8 {")
+        .expect("the exit-code table is here")
+        .1
+        .split_once("\n}\n")
+        .expect("the table is closed")
+        .0;
+
+    let missing: Vec<&String> = declared
+        .iter()
+        .filter(|variant| !table.contains(&format!("RunOutcome::{variant}")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "io-harness declares outcomes the exit-code table does not name, so each of \
+         them exits as UNFINISHED with nothing said about it: {missing:?}"
+    );
+}
+
+/// 0.8.0 F9 — the recovery pause is a pause, and an unnamed outcome invents no count.
+#[test]
+fn a_recovery_pause_exits_paused_and_is_described_as_a_pause() {
+    let outcome = RunOutcome::AwaitingRecovery {
+        attempt_id: 7,
+        steps: 3,
+    };
+    assert_eq!(exec::code(&outcome), exec::PAUSED);
+    assert_eq!(
+        exec::describe(&outcome),
+        "the run is waiting for a recovery decision, after 3 steps"
+    );
+}

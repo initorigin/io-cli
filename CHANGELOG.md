@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-19
+
+A decomposed task becomes visible while it runs.
+
+### Added
+
+- **Containment, and with it the fleet.** A `[app.io-cli.containment]` table
+  turns a session's turns into contained turns, which is the only shape that
+  reaches io-harness's spawn loop.
+
+### Changed
+
+- **io-harness moves from 0.64 to 0.65.**
+
 ## [0.7.0] - 2026-08-18
 
 The composer stops being a text box and becomes the way the product is driven.

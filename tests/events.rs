@@ -37,6 +37,7 @@ const STYLED: &[&str] = &[
     "approval_requested",
     "mcp",
     "todo_wrote",
+    "recovery_paused",
 ];
 
 /// Every other kind the locked io-harness emits. Each renders as a muted single line
@@ -539,8 +540,8 @@ fn f8_this_release_has_seen_every_kind_io_harness_emits() {
     let declared = support::harness_event_kinds();
     assert_eq!(
         declared.len(),
-        50,
-        "the locked io-harness declares fifty event kinds; found {}",
+        51,
+        "the locked io-harness declares fifty-one event kinds; found {}",
         declared.len(),
     );
 
