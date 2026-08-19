@@ -136,21 +136,25 @@ impl Fleet {
     /// Fold one event in.
     pub fn event(&mut self, event: &RunEvent) {
         match &event.kind {
-            EventKind::Spawned { child_run_id, goal } => {
-                // Keyed by the child's own run id rather than appended blindly:
-                // a resumed tree announces children it already had, and a second
-                // row for one agent is a fleet that looks twice its size.
-                if self.child(*child_run_id).is_none() {
-                    self.children.push(Child {
-                        run_id: *child_run_id,
-                        depth: event.depth + 1,
-                        goal: goal.clone(),
-                        state: State::Working,
-                        drawn: 0,
-                    });
-                    if self.selected.is_none() {
-                        self.selected = Some(0);
-                    }
+            // Keyed by the child's own run id rather than appended blindly: a
+            // resumed tree announces children it already had, and a second row
+            // for one agent is a fleet that looks twice its size.
+            //
+            // **A guard, and where a rejected arm falls through was checked
+            // rather than assumed** — 0.6.0 shipped a rewind armed by exactly
+            // this shape. A `Spawned` this fleet already holds matches no arm
+            // below it and lands in the `_` no-op, which is the intent; the
+            // arms between are keyed on other variants and cannot take it.
+            EventKind::Spawned { child_run_id, goal } if self.child(*child_run_id).is_none() => {
+                self.children.push(Child {
+                    run_id: *child_run_id,
+                    depth: event.depth + 1,
+                    goal: goal.clone(),
+                    state: State::Working,
+                    drawn: 0,
+                });
+                if self.selected.is_none() {
+                    self.selected = Some(0);
                 }
             }
             EventKind::Fleet {

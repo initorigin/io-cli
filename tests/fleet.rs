@@ -57,7 +57,12 @@ fn f4_a_tier_is_replaced_rather_than_added_up() {
     fleet.event(&tier(1, 1, 3, 0));
     fleet.event(&tier(1, 2, 2, 0));
     fleet.event(&tier(1, 4, 0, 2));
-    assert_eq!(fleet.tiers().len(), 1, "one entry per tier: {:?}", fleet.tiers());
+    assert_eq!(
+        fleet.tiers().len(),
+        1,
+        "one entry per tier: {:?}",
+        fleet.tiers()
+    );
     let held = fleet.tiers()[0];
     assert_eq!((held.working, held.queued, held.done), (4, 0, 2));
 }
@@ -70,7 +75,10 @@ fn f4_each_tier_is_counted_on_its_own() {
     fleet.event(&tier(2, 1, 9, 0));
     assert_eq!(fleet.tiers().len(), 2);
     let summary = fleet.summary();
-    assert!(summary.contains("tier 1: 4 working, 0 queued, 1 done"), "{summary}");
+    assert!(
+        summary.contains("tier 1: 4 working, 0 queued, 1 done"),
+        "{summary}"
+    );
     assert!(
         summary.contains("tier 2: 1 working, 9 queued, 0 done"),
         "a fan-out stuck at depth two is exactly what one tree-wide number \
@@ -208,7 +216,11 @@ fn f4_forgetting_a_run_forgets_its_fleet() {
     fleet.event(&tier(1, 1, 0, 0));
     fleet.forget();
     assert!(fleet.is_empty());
-    assert_eq!(fleet.selection(), None, "nothing is selected, rather than row zero");
+    assert_eq!(
+        fleet.selection(),
+        None,
+        "nothing is selected, rather than row zero"
+    );
 }
 
 /// F5 — the view opens over the composer and closes back to it, text intact.
@@ -241,7 +253,10 @@ fn f5_the_view_opens_over_the_composer_and_gives_it_back() {
 #[test]
 fn f5_the_model_is_folded_while_the_view_is_shut() {
     let mut app = App::new(DARK, "a-model");
-    app.event(&spawned(1, 0, 7, "read every file under src/"), Duration::ZERO);
+    app.event(
+        &spawned(1, 0, 7, "read every file under src/"),
+        Duration::ZERO,
+    );
     app.event(&tier(1, 1, 0, 0), Duration::ZERO);
     assert!(!app.fleet_open());
     assert_eq!(app.fleet.children().len(), 1);
@@ -263,7 +278,10 @@ fn f5_the_view_takes_the_composers_rows_and_not_the_status_line() {
         .draw(|frame| app.render(frame, frame.area()))
         .expect("frame");
     let viewport = screen.viewport_text();
-    assert!(viewport.contains("5 queued"), "the tier line is first: {viewport:?}");
+    assert!(
+        viewport.contains("5 queued"),
+        "the tier line is first: {viewport:?}"
+    );
     assert!(viewport.contains("run 7"), "{viewport:?}");
     assert!(
         viewport.contains("spend 1.2k/9.2k"),
@@ -292,7 +310,10 @@ fn f5_a_long_goal_is_cut_and_the_row_still_identifies_itself() {
     let rows = fleet.rows(80, &DARK.glyphs);
     let row = &rows[0];
     assert!(row.chars().count() <= 80, "{row:?}");
-    assert!(row.contains("run 7"), "the identity survives the cut: {row:?}");
+    assert!(
+        row.contains("run 7"),
+        "the identity survives the cut: {row:?}"
+    );
     assert!(row.contains("working"), "{row:?}");
 }
 
@@ -308,7 +329,11 @@ fn f5_the_marker_moves_and_cannot_leave_the_list() {
     app.key(key(KeyCode::Down));
     app.key(key(KeyCode::Down));
     app.key(key(KeyCode::Down));
-    assert_eq!(app.fleet.selection(), Some(2), "the marker stops at the last row");
+    assert_eq!(
+        app.fleet.selection(),
+        Some(2),
+        "the marker stops at the last row"
+    );
     for _ in 0..5 {
         app.key(key(KeyCode::Up));
     }
@@ -324,7 +349,10 @@ fn f5_the_marker_moves_and_cannot_leave_the_list() {
 #[test]
 fn f5_the_view_sets_a_cursor_on_the_marked_row() {
     let mut app = App::new(DARK, "a-model");
-    app.event(&spawned(1, 0, 7, "read every file under src/"), Duration::ZERO);
+    app.event(
+        &spawned(1, 0, 7, "read every file under src/"),
+        Duration::ZERO,
+    );
     app.toggle_fleet();
 
     let (mut screen, recorder) = support::screen_of(80, 24, 4);
@@ -335,7 +363,7 @@ fn f5_the_view_sets_a_cursor_on_the_marked_row() {
     let shown = bytes.rfind("\x1b[?25h");
     let hidden = bytes.rfind("\x1b[?25l");
     assert!(
-        shown.is_some() && !hidden.is_some_and(|at| at > shown.expect("shown")),
+        shown.is_some() && hidden.is_none_or(|at| at <= shown.expect("shown")),
         "the fleet view left the terminal cursor hidden",
     );
 }

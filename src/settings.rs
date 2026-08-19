@@ -100,10 +100,7 @@ pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
         "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \
          tree. A contained turn cannot be steered mid-flight, and takes no agent roster, no \
          [run] budget and no [sandbox]; Ctrl+C still ends it.",
-        caps.max_total_agents,
-        caps.max_concurrent_agents,
-        caps.max_depth,
-        caps.max_total_tokens,
+        caps.max_total_agents, caps.max_concurrent_agents, caps.max_depth, caps.max_total_tokens,
     )
 }
 

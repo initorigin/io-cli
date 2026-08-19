@@ -886,7 +886,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // contained mode, so `/contain off` is a real switch and not
                     // a label: with `None` here the turn built below is the
                     // steered turn, byte for byte.
-                    contained.then(|| containment.as_ref()).flatten(),
+                    contained.then_some(containment.as_ref()).flatten(),
                     text,
                     started,
                 )
@@ -938,9 +938,10 @@ async fn turn<P: Provider>(
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {
-        Some(caps) => Box::pin(session.turn_contained_observed(
-            text, provider, store, policy, &approver, caps, &observer,
-        )),
+        Some(caps) => Box::pin(
+            session
+                .turn_contained_observed(text, provider, store, policy, &approver, caps, &observer),
+        ),
         None => Box::pin(
             session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox),
         ),

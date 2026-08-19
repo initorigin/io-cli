@@ -1453,3 +1453,77 @@ fn f12_the_paste_placeholder_is_whole_at_eighty_columns_in_both_glyph_sets() {
         );
     }
 }
+
+/// 0.8.0 F5 — the fleet view fits eighty columns in both glyph sets.
+///
+/// Two rows are audited together because they are cut by different rules: the
+/// tier line is one string that grows with the depth of the tree, and a child row
+/// is an identity that must survive with a goal that must not.
+#[test]
+fn f5_the_fleet_view_fits_eighty_columns_in_both_glyph_sets() {
+    use io_cli::fleet::Fleet;
+    use io_harness::{EventKind, RunEvent};
+
+    let mut fleet = Fleet::new();
+    // Four tiers, which is a tree deeper than anything a default containment
+    // allows, so the summary is longer than the line it has to fit in.
+    for tier in 0..4 {
+        fleet.event(&RunEvent::at_depth(
+            1,
+            1,
+            0,
+            EventKind::Fleet {
+                tier,
+                working: 12,
+                queued: 144,
+                done: 36,
+            },
+        ));
+    }
+    fleet.event(&RunEvent::at_depth(
+        1,
+        1,
+        0,
+        EventKind::Spawned {
+            child_run_id: 7,
+            goal: "port the tokenizer, the error paths, and everything that reads either \
+                   of them, one at a time, without changing behaviour"
+                .to_string(),
+        },
+    ));
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mark = theme.glyphs.ellipsis;
+
+        let (mut screen, _) = support::screen_of(WIDTH, HEIGHT, 4);
+        let mut app = io_cli::app::App::new(theme, "a-model");
+        app.fleet = fleet.clone();
+        app.toggle_fleet();
+        screen
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("frame");
+        let drawn = screen.viewport_text().to_string();
+        within_eighty(set, &drawn);
+        assert!(
+            drawn.contains("tier 0"),
+            "{set}: the first tier is what a cut summary keeps: {drawn:?}",
+        );
+
+        let rows = fleet.rows(WIDTH, &theme.glyphs);
+        let row = rows.first().expect("one child");
+        assert!(
+            row.chars().count() <= WIDTH as usize,
+            "{set}: {row:?} is wider than the terminal",
+        );
+        assert!(
+            row.contains("run 7") && row.contains("working"),
+            "{set}: the identity survives the cut: {row:?}",
+        );
+        assert!(
+            row.ends_with(mark),
+            "{set}: the goal is what gets cut, and says so with the set's own \
+             mark: {row:?}",
+        );
+    }
+}

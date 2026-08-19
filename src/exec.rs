@@ -125,9 +125,7 @@ pub fn describe(outcome: &RunOutcome) -> String {
         RunOutcome::Stalled { steps } => ("stalled", steps),
         RunOutcome::Escalated { steps, .. } => ("escalated", steps),
         RunOutcome::Cancelled { steps } => ("was cancelled", steps),
-        RunOutcome::AwaitingRecovery { steps, .. } => {
-            ("is waiting for a recovery decision", steps)
-        }
+        RunOutcome::AwaitingRecovery { steps, .. } => ("is waiting for a recovery decision", steps),
         // An outcome added by a later harness. Every arm above reads its own
         // `steps` field out of its own variant, and there is no field to read
         // here — so this returns early rather than printing a count of zero,

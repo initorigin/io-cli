@@ -76,7 +76,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "Ctrl+T",
         "put the whole conversation back into the scrollback",
     ),
-    ("Ctrl+F", "show the fleet: the children this turn has spawned"),
+    (
+        "Ctrl+F",
+        "show the fleet: the children this turn has spawned",
+    ),
     (
         "y / a / n",
         "answer an approval: allow once, allow this session, deny",

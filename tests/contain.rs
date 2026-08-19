@@ -159,7 +159,10 @@ fn f7_the_bridge_continues_until_it_is_told_to_cancel() {
     let event = RunEvent::new(1, 1, EventKind::Stalled);
 
     assert_eq!(observer.event(&event), Flow::Continue);
-    assert!(events.try_recv().is_ok(), "the event still reaches the interface");
+    assert!(
+        events.try_recv().is_ok(),
+        "the event still reaches the interface"
+    );
 
     canceller.store(true, Ordering::Relaxed);
     assert_eq!(observer.event(&event), Flow::Cancel);
@@ -167,7 +170,10 @@ fn f7_the_bridge_continues_until_it_is_told_to_cancel() {
     // boundary io-harness honours it at are exactly the ones showing a fleet
     // draining, and dropping them would blank the screen at the moment an
     // operator is waiting to see something happen.
-    assert!(events.try_recv().is_ok(), "events keep flowing while it ends");
+    assert!(
+        events.try_recv().is_ok(),
+        "events keep flowing while it ends"
+    );
 }
 
 /// F7 — the sentence `Ctrl+C` prints depends on which kind of turn is running.
