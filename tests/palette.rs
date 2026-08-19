@@ -27,7 +27,7 @@ mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::{App, Command};
-use io_cli::commands::{self, Chosen, COMMANDS, TEMPLATE};
+use io_cli::commands::{self, Chosen, COMMANDS, SKILL, TEMPLATE};
 use io_cli::picker::{Outcome, Picker};
 use io_cli::theme::DARK;
 use io_harness::{Config, Templates};
@@ -47,7 +47,7 @@ fn palette() -> Picker {
 
 /// The palette as the driver opens it over a set of templates.
 fn palette_over(templates: &Templates) -> Picker {
-    Picker::new("Which command?", commands::palette(templates))
+    Picker::new("Which command?", commands::palette(templates, &io_harness::Skills::none()))
 }
 
 /// A templates directory with two templates in it: one that renders as it
@@ -152,7 +152,7 @@ fn f1_a_slash_at_an_empty_prompt_opens_the_palette_and_nowhere_else() {
 
 #[test]
 fn f1_the_palette_opens_showing_every_command() {
-    let rows = commands::palette(&Templates::none());
+    let rows = commands::palette(&Templates::none(), &io_harness::Skills::none());
     assert_eq!(rows.len(), COMMANDS.len());
     for (row, (name, what)) in rows.iter().zip(COMMANDS) {
         // The label is the command with its leading `/` removed, and that is a
@@ -234,7 +234,7 @@ fn f1_fk_selects_fork_though_no_command_begins_with_it() {
         panic!("Enter on the one matched row must choose it");
     };
     assert_eq!(
-        commands::palette_pick(&Templates::none(), index),
+        commands::palette_pick(&Templates::none(), &io_harness::Skills::none(),index),
         Some(Chosen::Command("/fork")),
     );
 }
@@ -325,7 +325,7 @@ fn f1_enter_puts_the_chosen_command_in_the_composer_rather_than_running_it() {
     let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter must choose");
     };
-    let Some(Chosen::Command(command)) = commands::palette_pick(&Templates::none(), index) else {
+    let Some(Chosen::Command(command)) = commands::palette_pick(&Templates::none(), &io_harness::Skills::none(),index) else {
         panic!("a chosen row in the command half is a command");
     };
     app.composer.set(command);
@@ -347,15 +347,15 @@ fn f1_a_palette_row_addresses_the_command_it_was_built_from() {
     let none = Templates::none();
     for (index, (name, _)) in COMMANDS.iter().enumerate() {
         assert_eq!(
-            commands::palette_pick(&none, index),
+            commands::palette_pick(&none, &io_harness::Skills::none(),index),
             Some(Chosen::Command(name))
         );
         assert_eq!(
-            commands::palette(&none)[index].label,
+            commands::palette(&none, &io_harness::Skills::none())[index].label,
             name.strip_prefix('/').expect("a command"),
         );
     }
-    assert_eq!(commands::palette_pick(&none, COMMANDS.len()), None);
+    assert_eq!(commands::palette_pick(&none, &io_harness::Skills::none(),COMMANDS.len()), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +377,7 @@ fn f2_no_templates_configured_is_an_empty_section_and_not_an_error() {
         "a configuration that never mentioned templates has nothing to complain about",
     );
     assert_eq!(
-        commands::palette(&found).len(),
+        commands::palette(&found, &io_harness::Skills::none()).len(),
         COMMANDS.len(),
         "an empty section contributes no rows",
     );
@@ -390,7 +390,7 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
     assert_eq!(complaint, None, "this directory is exactly what it says");
     assert_eq!(found.len(), 2);
 
-    let rows = commands::palette(&found);
+    let rows = commands::palette(&found, &io_harness::Skills::none());
     assert_eq!(rows.len(), COMMANDS.len() + found.len());
     for (offset, template) in found.iter().enumerate() {
         let row = &rows[COMMANDS.len() + offset];
@@ -444,7 +444,7 @@ fn f2_a_configured_directory_that_cannot_be_walked_is_disclosed_with_the_harness
     let (found, complaint) = commands::templates(&configured(&missing));
     assert!(found.is_empty(), "nothing was discovered, which is true");
     assert_eq!(
-        commands::palette(&found).len(),
+        commands::palette(&found, &io_harness::Skills::none()).len(),
         COMMANDS.len(),
         "and the palette therefore looks exactly like the unconfigured one",
     );
@@ -485,7 +485,7 @@ fn f2_choosing_a_template_puts_the_rendered_text_in_the_composer_rather_than_sen
     let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter must choose");
     };
-    let Some(Chosen::Template(name)) = commands::palette_pick(&found, index) else {
+    let Some(Chosen::Template(name)) = commands::palette_pick(&found, &io_harness::Skills::none(),index) else {
         panic!("the row under the marker is a template");
     };
     assert_eq!(name, "review");
@@ -546,11 +546,11 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
     // one under the marker, and nothing on screen would say so.
     let dir = written();
     let (found, _) = commands::templates(&configured(dir.path()));
-    let rows = commands::palette(&found);
+    let rows = commands::palette(&found, &io_harness::Skills::none());
 
     for (index, (name, _)) in COMMANDS.iter().enumerate() {
         assert_eq!(
-            commands::palette_pick(&found, index),
+            commands::palette_pick(&found, &io_harness::Skills::none(),index),
             Some(Chosen::Command(name)),
         );
     }
@@ -558,9 +558,101 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
         let index = COMMANDS.len() + offset;
         assert_eq!(rows[index].label, template.name);
         assert_eq!(
-            commands::palette_pick(&found, index),
+            commands::palette_pick(&found, &io_harness::Skills::none(),index),
             Some(Chosen::Template(template.name.clone())),
         );
     }
-    assert_eq!(commands::palette_pick(&found, rows.len()), None);
+    assert_eq!(commands::palette_pick(&found, &io_harness::Skills::none(),rows.len()), None);
+}
+
+/// **F5 — the palette lists what the workspace actually taught the agent.**
+///
+/// Three inventories now, in one order: the commands, the templates, then the
+/// skills io-harness discovered. The names and the descriptions are the harness's
+/// own `Skill` fields, asserted against those fields rather than against strings
+/// written here — what the contract promises is *the* skill, not a restatement of
+/// one.
+///
+/// Sabotage: build the list from filenames with `std::fs` instead of
+/// `Skills::discover`, under which only these tests fail — and they fail by
+/// putting a second skill model in a product whose whole rule is that it holds
+/// none. (The `SKILL.md` case is what catches it: its name is its *directory*.)
+#[test]
+fn f5_every_discovered_skill_is_a_row_after_the_templates() {
+    let dir = tempfile::tempdir().expect("a directory");
+    std::fs::write(
+        dir.path().join("migrations.md"),
+        "---\nname: migrations\ndescription: how this repo changes a schema\n---\nbody\n",
+    )
+    .expect("write");
+    std::fs::create_dir(dir.path().join("api-style")).expect("mkdir");
+    std::fs::write(
+        dir.path().join("api-style").join("SKILL.md"),
+        "the house style for an endpoint\n",
+    )
+    .expect("write");
+
+    let (skills, complaint) = commands::skills(Some(dir.path()));
+    assert_eq!(complaint, None, "this directory is exactly what it says");
+    assert_eq!(skills.len(), 2, "both layouts are discovered");
+
+    let none = Templates::none();
+    let rows = commands::palette(&none, &skills);
+    assert_eq!(rows.len(), COMMANDS.len() + 2);
+
+    for (offset, skill) in skills.iter().enumerate() {
+        let index = COMMANDS.len() + offset;
+        assert_eq!(rows[index].label, skill.name, "the row is not the skill");
+        assert_eq!(
+            rows[index].detail,
+            Some(format!("{SKILL}{}", skill.description)),
+            "the marker is at the front, where the picker's fitting rule leaves it",
+        );
+        assert_eq!(
+            commands::palette_pick(&none, &skills, index),
+            Some(Chosen::Skill(skill.name.clone())),
+            "and the row addresses the skill it was built from",
+        );
+    }
+    assert_eq!(commands::palette_pick(&none, &skills, rows.len()), None);
+}
+
+/// A skill goes into the prompt by name. The body is the agent's to read, under
+/// the run's own policy — a picker that pasted the instructions in would be this
+/// crate holding a copy of a skill.
+#[test]
+fn f5_choosing_a_skill_puts_its_name_in_the_prompt_and_not_its_body() {
+    let invocation = commands::invoke_skill("migrations");
+
+    assert!(invocation.contains("migrations"), "{invocation}");
+    assert!(
+        !invocation.contains("how this repo changes a schema"),
+        "no description, and certainly no body: {invocation}",
+    );
+    assert!(
+        invocation.ends_with(' '),
+        "the operator has more to say than the name: {invocation:?}",
+    );
+}
+
+/// No skills directory configured is silence; one that will not walk is an empty
+/// set **and a sentence**. Collapsing the second into the first is the shape this
+/// product has already paid for twice.
+#[test]
+fn f5_a_skills_directory_that_will_not_walk_says_so() {
+    assert_eq!(
+        commands::skills(None).1,
+        None,
+        "a session that configured none has nothing to complain about",
+    );
+    assert!(commands::skills(None).0.is_empty());
+
+    let missing = std::path::Path::new("/tmp/io-cli-no-such-skills-dir");
+    let (skills, complaint) = commands::skills(Some(missing));
+    assert!(skills.is_empty());
+    let complaint = complaint.expect("a path that is not there is a sentence, not silence");
+    assert!(
+        complaint.contains("io-cli-no-such-skills-dir"),
+        "the harness's own message names the path: {complaint}",
+    );
 }

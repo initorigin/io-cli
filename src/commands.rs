@@ -175,6 +175,14 @@ pub fn opens_palette(key: KeyEvent, prompt_empty: bool, armed: bool) -> bool {
 /// unreachable for templates.
 pub const TEMPLATE: &str = "template: ";
 
+/// What marks a palette row as one of the agent's own skills.
+///
+/// A third kind of row and a third source: a command is this crate's, a template
+/// is `[run] templates`, and a skill is whatever io-harness discovered in the
+/// configured directory. io-cli parses no skill file — the name and the one-line
+/// description below are `Skill`'s own fields.
+pub const SKILL: &str = "skill: ";
+
 /// The palette's rows: every command in [`COMMANDS`], then every template.
 ///
 /// Commands first because they are the inventory this product ships and the
@@ -204,7 +212,10 @@ pub const TEMPLATE: &str = "template: ";
 /// picker drops on a narrow terminal and it is deliberately not matched — a row
 /// kept by a hit inside text that is not on screen is a filter whose result the
 /// operator cannot account for.
-pub fn palette(templates: &Templates) -> Vec<Row> {
+/// A skill's rows come last, after the commands and the templates, and a session
+/// that configured no skills directory contributes none — the same "not
+/// configured" shape the templates have.
+pub fn palette(templates: &Templates, skills: &io_harness::Skills) -> Vec<Row> {
     COMMANDS
         .iter()
         // `strip_prefix` rather than a trim of every leading slash: a command is
@@ -214,6 +225,12 @@ pub fn palette(templates: &Templates) -> Vec<Row> {
             Row::with_detail(
                 template.name.clone(),
                 format!("{TEMPLATE}{}", template.description),
+            )
+        }))
+        .chain(skills.iter().map(|skill| {
+            Row::with_detail(
+                skill.name.clone(),
+                format!("{SKILL}{}", skill.description),
             )
         }))
         .collect()
@@ -237,16 +254,39 @@ pub fn palette(templates: &Templates) -> Vec<Row> {
 ///
 /// `None` for an index past the end. A caller that finds one should put nothing
 /// in the prompt rather than something it guessed at.
-pub fn palette_pick(templates: &Templates, index: usize) -> Option<Chosen> {
+pub fn palette_pick(
+    templates: &Templates,
+    skills: &io_harness::Skills,
+    index: usize,
+) -> Option<Chosen> {
     match COMMANDS.get(index) {
         Some((name, _)) => Some(Chosen::Command(name)),
         // Saturating is not needed: this arm is only reached when `index` is at
         // or past `COMMANDS.len()`.
-        None => templates
-            .iter()
-            .nth(index - COMMANDS.len())
-            .map(|template| Chosen::Template(template.name.clone())),
+        None => {
+            let after_commands = index - COMMANDS.len();
+            match templates.iter().nth(after_commands) {
+                Some(template) => Some(Chosen::Template(template.name.clone())),
+                None => skills
+                    .iter()
+                    .nth(after_commands - templates.iter().count())
+                    .map(|skill| Chosen::Skill(skill.name.clone())),
+            }
+        }
     }
+}
+
+/// The prompt a chosen skill puts in the composer.
+///
+/// **By name, and nothing else.** io-harness gives the model a catalogue of the
+/// skills discovered for the run and the model opens the file itself, under the
+/// run's own policy — so a picker that pasted the instructions into the prompt
+/// would be io-cli holding a copy of a skill, which is exactly the kind of model
+/// this crate is forbidden to grow. It is left in the composer rather than sent,
+/// like every other palette row, because the operator has more to say than the
+/// name.
+pub fn invoke_skill(name: &str) -> String {
+    format!("use the {name} skill: ")
 }
 
 /// What a chosen palette row is.
@@ -256,6 +296,8 @@ pub enum Chosen {
     Command(&'static str),
     /// A prompt template, by the name [`Templates::render`] knows it by.
     Template(String),
+    /// One of the agent's own skills, by the name io-harness discovered it under.
+    Skill(String),
 }
 
 /// Render a template into the text the composer is about to be given.
@@ -309,6 +351,32 @@ pub fn templates(config: &Config) -> (Templates, Option<String>) {
             Templates::none(),
             Some(format!(
                 "{error}; this session has no templates until that is fixed"
+            )),
+        ),
+    }
+}
+
+/// The agent's skills, and what went wrong finding them.
+///
+/// The same three states as [`templates`], for the same reason and with the same
+/// consequence if they are collapsed: no directory configured is silence, a
+/// directory that reads is the set, and a path that will not walk is an empty set
+/// **and a sentence** carrying io-harness's own message. A palette that quietly
+/// lists no skills looks exactly like one that was never pointed at any.
+///
+/// Discovered once, when the session starts — the same walk the contract's
+/// `skills` field will do for the run, done here so the palette can list what the
+/// agent will be told about without walking the directory on every keystroke.
+pub fn skills(dir: Option<&std::path::Path>) -> (io_harness::Skills, Option<String>) {
+    let Some(dir) = dir else {
+        return (io_harness::Skills::none(), None);
+    };
+    match io_harness::Skills::discover(dir) {
+        Ok(found) => (found, None),
+        Err(error) => (
+            io_harness::Skills::none(),
+            Some(format!(
+                "{error}; this session lists no skills until that is fixed"
             )),
         ),
     }

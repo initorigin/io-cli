@@ -227,6 +227,13 @@ async fn drive(
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
     let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
+    // The agent's own skills, walked once beside the templates and for the same
+    // reasons — the palette filters on every character typed, and a directory
+    // that would not walk has to say so or it reads as one nobody configured.
+    let (skills, complaint) = commands::skills(capabilities.skills.as_deref());
+    if let Some(complaint) = complaint {
+        notices.push(complaint);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -259,6 +266,7 @@ async fn drive(
             plain,
             containment,
             capabilities,
+            skills,
         },
     )
     .await?
@@ -291,6 +299,10 @@ struct Interactive<'a, 'b> {
     /// where the contract does, which is the contained turn — see
     /// [`io_cli::contract`].
     capabilities: io_cli::contract::Capabilities,
+    /// What io-harness discovered in the configured skills directory, walked once
+    /// at startup. Empty when nothing is configured and empty when the walk
+    /// failed — the notice above is what tells those two apart.
+    skills: io_harness::Skills,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -317,6 +329,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.plain,
             self.containment,
             self.capabilities,
+            self.skills,
             model,
         )
         .await
@@ -341,6 +354,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     plain: bool,
     containment: Option<io_harness::Containment>,
     capabilities: io_cli::contract::Capabilities,
+    skills: io_harness::Skills,
     model: String,
 ) -> Result<(), String> {
     // Built here rather than handed in, so there is one place a provider comes
@@ -550,7 +564,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `Pick::Resume` uses an `if let`: an index with nothing
                         // behind it puts nothing in the prompt rather than a
                         // guess.
-                        Pick::Palette => match commands::palette_pick(&templates, index) {
+                        Pick::Palette => match commands::palette_pick(&templates, &skills, index) {
                             Some(commands::Chosen::Command(command)) => app.composer.set(command),
                             // The rendered template, in the prompt and not on the
                             // wire. A template is a starting point for a goal
@@ -569,6 +583,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Ok(prompt) => app.composer.set(&prompt),
                                     Err(error) => app.say(Tone::Error, error),
                                 }
+                            }
+                            // A skill goes into the prompt by NAME and nothing
+                            // more. The body is the agent's to read — io-harness
+                            // hands it the catalogue and it opens the file under
+                            // the run's own policy — so a picker that pasted the
+                            // instructions in would be this crate holding a copy
+                            // of a skill, which is the one thing it must not do.
+                            Some(commands::Chosen::Skill(name)) => {
+                                app.composer.set(&commands::invoke_skill(&name));
                             }
                             None => {}
                         },
@@ -645,7 +668,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // rather than a test written here, because nothing can reach this file.
         if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
             picker = Some((
-                Picker::new("Which command?", commands::palette(&templates)),
+                Picker::new("Which command?", commands::palette(&templates, &skills)),
                 Pick::Palette,
             ));
             app.status.elapsed = started.elapsed();
