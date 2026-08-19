@@ -246,13 +246,17 @@ impl Status {
         if let Some(context) = self.context {
             fields.push(Field::new(format!("ctx {context}%"), Tone::Muted));
         }
-        if let Some(containment) = &self.containment {
-            fields.push(Field::new(containment.clone(), Tone::Muted));
-        }
-        // The design's sixth field, in the design's own place: right of the token
-        // count and the containment word, left of the plan. It is a fact only a
-        // core that runs a contained tree can report, which is why it is here at
-        // all and why it is absent in every session that configures no caps.
+        // **Left of the containment word, which is where the design put it and
+        // where a live run proved it has to be.** Drafted to the right of it, the
+        // field never appeared: a real containment word is `workspace-write/
+        // macos-sandbox-exec`, thirty-three characters, and at a hundred columns
+        // beside the model, the posture, the state, the clock and the token count
+        // there was nothing left — so the one field this release exists to fill
+        // was the first one dropped, on the first terminal it was run in.
+        //
+        // What it outranks is the honest ordering too: the containment word says
+        // how commands are sandboxed and does not change during a turn; this says
+        // what the fan-out is spending, and changes every step.
         if let Some((drawn, remaining)) = self.spend {
             let text = match remaining {
                 Some(left) => format!(
@@ -266,6 +270,9 @@ impl Status {
                 None => format!("spend {}", format_tokens(drawn)),
             };
             fields.push(Field::new(text, Tone::Muted));
+        }
+        if let Some(containment) = &self.containment {
+            fields.push(Field::new(containment.clone(), Tone::Muted));
         }
         // Rightmost, and so the first field to go when the terminal narrows. It is
         // the only field on this line that is not an observation — everything to

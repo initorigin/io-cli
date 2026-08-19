@@ -367,3 +367,39 @@ fn f5_the_view_sets_a_cursor_on_the_marked_row() {
         "the fleet view left the terminal cursor hidden",
     );
 }
+
+/// F5 — the view closes with the turn, and the tree it drew is still there.
+///
+/// A live run found this: with the view up when the turn ended, the composer
+/// stayed hidden behind a tree that had stopped moving, and a session saying
+/// `ready` with nowhere to type reads as one that has hung.
+#[test]
+fn f5_the_view_closes_when_the_turn_ends_and_the_model_survives() {
+    let mut app = App::new(DARK, "a-model");
+    app.started();
+    app.event(&spawned(1, 0, 7, "read every file under src/"), Duration::ZERO);
+    app.toggle_fleet();
+    assert!(app.fleet_open());
+
+    app.finished();
+    assert!(!app.fleet_open(), "the prompt comes back on its own");
+    assert_eq!(
+        app.fleet.children().len(),
+        1,
+        "and `/fleet` still has something to reopen",
+    );
+}
+
+/// F5 — the conversation changing under the view forgets it.
+///
+/// `/resume`, `/fork` and a rewind each put a different run on screen. The same
+/// rule `Status::forget_run` holds, for the same reason.
+#[test]
+fn f5_forgetting_a_run_forgets_the_fleet_and_shuts_the_view() {
+    let mut app = App::new(DARK, "a-model");
+    app.event(&spawned(1, 0, 7, "work"), Duration::ZERO);
+    app.toggle_fleet();
+    app.forget_fleet();
+    assert!(!app.fleet_open());
+    assert!(app.fleet.is_empty());
+}

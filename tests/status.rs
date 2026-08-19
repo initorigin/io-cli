@@ -630,3 +630,32 @@ fn f6_forgetting_a_run_forgets_its_spend() {
         "/resume and /fork must not leave another run's spend on the line",
     );
 }
+
+/// 0.8.0 F6 — the spend outranks the containment word, which is what a live run
+/// proved rather than what looked tidy.
+///
+/// Drafted to the right of it, the field never appeared on a real terminal: a
+/// containment word is `workspace-write/macos-sandbox-exec` — thirty-three
+/// characters — and at a hundred columns beside the model, the posture, the
+/// state, the clock and the token count there was nothing left for it. The one
+/// field this release exists to fill was the first one dropped.
+#[test]
+fn f6_the_spend_survives_a_width_the_containment_word_does_not() {
+    let mut status = Status::new("openai/gpt-5.6-luna");
+    status.policy = Some("workspace".into());
+    status.working = true;
+    status.elapsed = Duration::from_secs(52);
+    status.tokens = Some(3_900);
+    status.containment = Some("read-only/macos-sandbox-exec".into());
+    status.spend = Some((3_900, Some(116_100)));
+
+    let line = rendered(&status, 100);
+    assert!(
+        line.contains("spend 3.9k/120.0k"),
+        "the spend is what this release is for, and it fits: {line:?}",
+    );
+    assert!(
+        !line.contains("macos-sandbox-exec"),
+        "and the field it outranks is the one that goes: {line:?}",
+    );
+}

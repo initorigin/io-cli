@@ -474,6 +474,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     // line describing a conversation that is no
                                     // longer on screen.
                                     app.status.forget_run();
+                                    app.forget_fleet();
                                     // Where they were, in the terminal's own
                                     // buffer rather than in a four-row viewport.
                                     commit_transcript(screen, &session, &store, &app.theme)?;
@@ -509,6 +510,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             Some((turn, number)) => match session.branch_from(&store, turn) {
                                 Ok(()) => {
                                     app.status.forget_run();
+                                    app.forget_fleet();
                                     app.say(
                                         Tone::Success,
                                         format!(
@@ -691,6 +693,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Ok(Some(undone)) => {
                     // The undone turn is where those numbers came from.
                     app.status.forget_run();
+                    app.forget_fleet();
                     for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                         app.say(tone, line);
                     }

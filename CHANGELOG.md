@@ -67,6 +67,10 @@ this core emits.
   ceiling is what bounds it.
 - **A collected report is attributed to the tree and not to a child**, because
   `ChildCollected` carries no run id.
+- **The view closes when the turn ends.** The tree is kept — `/fleet` reopens it,
+  and every spawn, refusal and report is in the transcript — but the prompt comes
+  back on its own rather than staying hidden behind a tree that has stopped
+  moving.
 - **The fleet view is four rows.** The viewport's height is fixed for the life of
   the terminal, and rebuilding it while a run is committing into scrollback is
   not a trade this release takes.

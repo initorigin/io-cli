@@ -361,6 +361,13 @@ impl App {
         // words of a turn that is no longer running — and `/contain off` between
         // turns would leave the sentence disagreeing with the mode.
         self.contained = false;
+        // **The view closes with the turn, and the model does not.** A live run
+        // found this: with the view up when the turn ended, the composer stayed
+        // hidden behind a tree that had stopped moving, and a session that says
+        // `ready` with nowhere to type reads as one that has hung. The tree is
+        // still there — `/fleet` reopens it, and every spawn, refusal and report
+        // is in the transcript — but the prompt comes back on its own.
+        self.fleet_open = false;
         // A question outlives its run only as a stuck overlay over a session that
         // has moved on. Dropping it is the denial — see `Ask` — and the run it
         // belonged to has already ended, so there is nobody left to tell.
@@ -470,6 +477,17 @@ impl App {
     /// Whether the fleet view is up.
     pub fn fleet_open(&self) -> bool {
         self.fleet_open
+    }
+
+    /// Forget the run the fleet describes, and close the view.
+    ///
+    /// Called where the conversation changes under it — `/resume`, `/fork`, a
+    /// rewind — beside `Status::forget_run`, and for the same reason: every fact
+    /// in it belongs to one tree, and a view that went on showing them would be
+    /// describing a run that is no longer on screen.
+    pub fn forget_fleet(&mut self) {
+        self.fleet.forget();
+        self.fleet_open = false;
     }
 
     /// Open the view, or close it.
