@@ -47,6 +47,16 @@ pub enum Command {
     Submit(String),
     /// Run this slash command — the leading `/` removed.
     Slash(String),
+    /// Run this line in the operator's own shell — the leading `!` removed.
+    ///
+    /// **The only value in this product that asks for a process to be spawned**,
+    /// and it is built in exactly one place: `App::compose`, off a submitted
+    /// composer line. That is the whole of the reachability argument
+    /// `tests/dependencies.rs` asserts — nothing io-harness drives can produce
+    /// one, so nothing on the event path can run a command. See
+    /// [`crate::shell`] for what happens to it and why the terminal is never
+    /// handed over.
+    Shell(String),
     /// Call `Steer::interrupt` on the running turn.
     Interrupt,
     /// Leave.
@@ -248,6 +258,31 @@ impl App {
         self.approval.is_some()
     }
 
+    /// Take a bracketed paste, from either of the driver's input loops.
+    ///
+    /// Library-side and named for the same reason [`crate::sessions::resume`]
+    /// is: the driver lives in a binary no integration test can link, so a
+    /// paste routed inside a match arm there is a decision nothing can assert
+    /// and nothing can sabotage. `picker_open` is passed in rather than read
+    /// here because the picker belongs to the driver, the way the approval
+    /// belongs to this type.
+    ///
+    /// Returns whether the text reached the composer, so a test can name which
+    /// surface swallowed it instead of asserting that something, somewhere,
+    /// did nothing.
+    ///
+    /// A modal surface refuses it. Both a picker and an approval take the
+    /// keyboard while they are up, and a paste that slipped past either would
+    /// land in a composer sitting behind the overlay — typed by nobody, seen by
+    /// nobody, and sent with the next prompt.
+    pub fn paste(&mut self, text: &str, picker_open: bool) -> bool {
+        if picker_open || self.approval.is_some() {
+            return false;
+        }
+        self.composer.paste(text);
+        true
+    }
+
     /// Answer the open question. The overlay closes, the run goes on, and the
     /// decision commits one line — so it is in the transcript as well as in the
     /// harness's own trace.
@@ -432,6 +467,22 @@ impl App {
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));
             }
+            io_harness::EventKind::TodoWrote { items } => {
+                // io-harness's own arithmetic for a done count, off the event's own
+                // items. A write carries the whole list rather than a delta, so the
+                // field is the plan as it now stands and no store is read to
+                // complete it — a later write that moves an item back replaces this
+                // instead of climbing past it.
+                let done = items
+                    .iter()
+                    .filter(|item| item.state == io_harness::TodoState::Done)
+                    .count();
+                // And `None` when the agent wrote no items at all, which io-harness
+                // accepts — `parse_todo_items` never rejects an empty list. That is
+                // a plan erased rather than a plan of zero, and `0/0` pinned to the
+                // line is the exact placeholder F12's sabotage arm names.
+                self.status.plan = (!items.is_empty()).then_some((done, items.len()));
+            }
             _ => {}
         }
     }
@@ -560,13 +611,27 @@ impl App {
     }
 
     /// Hand the keystroke to the prompt.
+    ///
+    /// A submitted line is one of three things, decided here by its first
+    /// character and nowhere else. `/` is a slash command. `!` is a line for the
+    /// operator's own shell — see [`Command::Shell`] — and, like `/`, it is
+    /// **not sent to the agent**: the point of `!` is that the agent never hears
+    /// about it. Anything else is a prompt.
+    ///
+    /// `!` with nothing after it is nothing to run, and does nothing. It is not
+    /// treated as a prompt, because a bare `!` submitted to a model is a
+    /// keystroke that missed rather than a question.
     fn compose(&mut self, key: KeyEvent) -> Command {
         self.quits = 0;
         match self.composer.key(key) {
             Reply::Idle => Command::None,
             Reply::Submitted(text) => match text.strip_prefix('/') {
                 Some(command) => Command::Slash(command.trim().to_string()),
-                None => Command::Submit(text),
+                None => match text.strip_prefix('!').map(str::trim) {
+                    Some("") => Command::None,
+                    Some(line) => Command::Shell(line.to_string()),
+                    None => Command::Submit(text),
+                },
             },
         }
     }

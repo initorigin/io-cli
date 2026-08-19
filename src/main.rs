@@ -13,19 +13,20 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
 use io_cli::cli::{Cli, Command as Subcommand};
 use io_cli::commands::{self, Action, Copied};
+use io_cli::complete;
 use io_cli::glyphs::Glyphs;
 use io_cli::picker::{Outcome, Picker, Row};
 use io_cli::settings::{self, Posture};
 use io_cli::term::Screen;
 use io_cli::theme::{Theme, Tone};
 use io_cli::wizard::{Progress, Wizard};
-use io_cli::{approval, bridge, provider, splash, verify};
+use io_cli::{approval, bridge, provider, shell, splash, verify};
 use ratatui::text::{Line, Span};
 
 fn main() -> ExitCode {
@@ -209,6 +210,17 @@ async fn drive(
     if let Some(complaint) = complaint {
         notices.insert(0, complaint);
     }
+    // The prompt templates, discovered ONCE and here — not per keystroke into the
+    // palette, which filters on every character typed. A `[run] templates` that
+    // could not be walked comes back as an empty set *and* a sentence, and the
+    // sentence joins the notices rather than being dropped: a palette with no
+    // templates in it looks exactly the same whether none were configured or the
+    // directory is missing, which is the difference this notice is the only
+    // carrier of.
+    let (templates, complaint) = commands::templates(&config);
+    if let Some(complaint) = complaint {
+        notices.push(complaint);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -236,6 +248,7 @@ async fn drive(
             diff_style,
             keys,
             notices,
+            templates,
             theme,
             plain,
         },
@@ -253,8 +266,13 @@ struct Interactive<'a, 'b> {
     policy: Policy,
     diff_style: settings::DiffStyle,
     keys: io_cli::keys::Keys,
-    /// What `[app.io-cli]` earned itself, in the order it will be said.
+    /// What `[app.io-cli]` and `[run] templates` earned themselves, in the order
+    /// they will be said.
     notices: Vec<String>,
+    /// What `[run] templates` points at, walked once at startup. Empty when
+    /// nothing is configured and empty when the walk failed — the notice above is
+    /// what tells those two apart.
+    templates: Templates,
     theme: Theme,
     plain: bool,
 }
@@ -278,6 +296,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.diff_style,
             self.keys,
             self.notices,
+            self.templates,
             self.theme,
             self.plain,
             model,
@@ -299,6 +318,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     diff_style: settings::DiffStyle,
     keys: io_cli::keys::Keys,
     notices: Vec<String>,
+    templates: Templates,
     theme: Theme,
     plain: bool,
     model: String,
@@ -342,7 +362,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     .map_err(|error| error.to_string())?;
             }
             if let Event::Paste(text) = event {
-                app.composer.paste(&text);
+                app.paste(&text, picker.is_some());
             }
             app.status.elapsed = started.elapsed();
             paint(screen, &mut app)?;
@@ -358,6 +378,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             match open.key(key) {
                 Outcome::Chosen(index) => {
                     let label = open.rows()[index].label.clone();
+                    // Every other surface closes on a choice, and the assignment
+                    // below is unconditional. A completion that descends is the
+                    // one that replaces itself instead, so its next picker is
+                    // built here — while `kind` still borrows `picker` — and
+                    // installed the moment that borrow ends.
+                    let mut descended = None;
                     match kind {
                         Pick::Theme => {
                             if let Some(chosen) = Theme::by_name(&label) {
@@ -409,55 +435,209 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 format!("{label} could not be reached: {error}"),
                             ),
                         },
-                        // `if let` rather than a match on `Option`: an index past
-                        // the end is the row saying the list was cut, which
-                        // carries no id, and closing the picker is the only
-                        // sensible thing a line of prose can do when chosen.
-                        Pick::Resume(ids) => {
-                            if let Some(id) = ids.get(index) {
-                                match io_cli::sessions::resume(&store, *id) {
-                                    Ok(reopened) => {
-                                        session = reopened;
-                                        app.set_root(session.root());
-                                        // Where they were, in the terminal's own
-                                        // buffer rather than in a four-row
-                                        // viewport.
-                                        commit_transcript(screen, &session, &store, &app.theme)?;
-                                        app.say(
-                                            Tone::Success,
-                                            format!("resumed {}", session.root().display()),
-                                        );
-                                    }
-                                    Err(error) => app.say(
-                                        Tone::Error,
-                                        format!("that session could not be reopened: {error}"),
-                                    ),
+                        // The index resolves in the library, not here. This file
+                        // is `[[bin]] name = "io"` and nothing links it, so an
+                        // `ids.get(index)` written inline was a lookup no
+                        // sabotage could reach — `sessions::pick` is the same
+                        // line where a test can stand on it.
+                        Pick::Resume(ids) => match io_cli::sessions::pick(ids, index) {
+                            Some(id) => match io_cli::sessions::resume(&store, id) {
+                                Ok(reopened) => {
+                                    session = reopened;
+                                    app.set_root(session.root());
+                                    // The tokens, the context, the containment
+                                    // and the plan were facts about the run just
+                                    // left. Carrying them across would leave the
+                                    // line describing a conversation that is no
+                                    // longer on screen.
+                                    app.status.forget_run();
+                                    // Where they were, in the terminal's own
+                                    // buffer rather than in a four-row viewport.
+                                    commit_transcript(screen, &session, &store, &app.theme)?;
+                                    app.say(
+                                        Tone::Success,
+                                        format!("resumed {}", session.root().display()),
+                                    );
                                 }
-                            }
-                        }
-                        Pick::Fork(ids) => {
-                            if let Some(turn) = ids.get(index) {
-                                match session.branch_from(&store, *turn) {
-                                    Ok(()) => app.say(
+                                Err(error) => app.say(
+                                    Tone::Error,
+                                    format!("that session could not be reopened: {error}"),
+                                ),
+                            },
+                            // The cut note, chosen. It carries no id, and until
+                            // 0.7.0 it was last and effectively unreachable — but
+                            // the filter ranks it against the session rows, so a
+                            // query can put it under the marker and `Enter` on it
+                            // closed the picker and did nothing, with nothing
+                            // said. A picker that vanishes after a choice and
+                            // leaves no trace is indistinguishable from a resume
+                            // that failed, so the row answers for itself.
+                            None => app.say(
+                                Tone::Muted,
+                                "that row is the note, not a session — older sessions are \
+                                 not listed",
+                            ),
+                        },
+                        // The turn number in the sentence comes back with the id
+                        // rather than being computed here a second time: it is
+                        // the same index, and the operator is being told which
+                        // turn they are now continuing from.
+                        Pick::Fork(ids) => match io_cli::sessions::pick_turn(ids, index) {
+                            Some((turn, number)) => match session.branch_from(&store, turn) {
+                                Ok(()) => {
+                                    app.status.forget_run();
+                                    app.say(
                                         Tone::Success,
                                         format!(
-                                            "continuing from turn {}; what came after is still \
-                                             in the transcript, marked as branched away",
-                                            index + 1
+                                            "continuing from turn {number}; what came after is \
+                                             still in the transcript, marked as branched away"
                                         ),
-                                    ),
-                                    Err(error) => app.say(
-                                        Tone::Error,
-                                        format!("that turn could not be branched from: {error}"),
-                                    ),
+                                    )
+                                }
+                                Err(error) => app.say(
+                                    Tone::Error,
+                                    format!("that turn could not be branched from: {error}"),
+                                ),
+                            },
+                            // Unreachable rather than impossible: `/fork` has no
+                            // note row, so every row is a turn. Said rather than
+                            // swallowed for the reason above — a choice that
+                            // silently does nothing is the one outcome an
+                            // operator cannot tell from a failure.
+                            None => {
+                                app.say(Tone::Muted, "that row is not a turn in this conversation")
+                            }
+                        },
+                        // Typed, not run. The command goes into the prompt and
+                        // the operator presses `Enter` on it themselves, so the
+                        // submit path below — `strip_prefix('/')`, then
+                        // `commands::parse` — stays the only way a command is
+                        // dispatched. A template follows the same rule, which is
+                        // why one arm answers both. `None` for the same reason
+                        // `Pick::Resume` uses an `if let`: an index with nothing
+                        // behind it puts nothing in the prompt rather than a
+                        // guess.
+                        Pick::Palette => match commands::palette_pick(&templates, index) {
+                            Some(commands::Chosen::Command(command)) => app.composer.set(command),
+                            // The rendered template, in the prompt and not on the
+                            // wire. A template is a starting point for a goal
+                            // rather than the goal itself, so the operator reads
+                            // it, edits it and presses `Enter` themselves — the
+                            // same rule the commands follow, for the same reason.
+                            //
+                            // A render that fails is said rather than swallowed.
+                            // The one way it fails in this release is a
+                            // placeholder with no argument, and the sentence is
+                            // io-harness's own: it names the template, the
+                            // placeholder and what to do about it, which is more
+                            // than anything written here could.
+                            Some(commands::Chosen::Template(name)) => {
+                                match commands::expand(&templates, &name) {
+                                    Ok(prompt) => app.composer.set(&prompt),
+                                    Err(error) => app.say(Tone::Error, error),
                                 }
                             }
-                        }
+                            None => {}
+                        },
+                        // A directory replaces the picker with the level below
+                        // it, which is the whole of "one directory at a time":
+                        // nothing walks a tree, and the operator pays for the
+                        // level they asked to see. A file goes into the prompt
+                        // as the path relative to the session root, at the
+                        // cursor and beside whatever was already typed — the
+                        // `@` never reached the composer, so what is inserted is
+                        // the path and not a marker the model would have to
+                        // learn. `None` is the row saying the list was cut.
+                        //
+                        // `paste` rather than the palette's `set`: `set`
+                        // replaces the prompt, and a path belongs beside what
+                        // was already typed rather than instead of it. A path
+                        // long enough to be collapsed to a placeholder is still
+                        // the path on the wire — `Composer::text` is what puts a
+                        // paste back, and it does it on the submit path.
+                        Pick::Complete(entries) => match complete::pick(entries, index) {
+                            Some(complete::Picked::Insert(path)) => app.composer.paste(&path),
+                            Some(complete::Picked::Descend(dir)) => {
+                                // Read again rather than carried: the posture can
+                                // have moved since the picker opened, and what is
+                                // offered has to be what the next turn may read.
+                                let effective = approval::session_policy(
+                                    &policy,
+                                    app.posture(),
+                                    app.remembered(),
+                                );
+                                match completion(
+                                    session.root(),
+                                    &effective,
+                                    &dir,
+                                    &app.theme.glyphs,
+                                ) {
+                                    Ok(Some(open)) => descended = Some(open),
+                                    Ok(None) => app
+                                        .say(Tone::Muted, format!("nothing to complete in {dir}")),
+                                    Err(error) => app.say(Tone::Error, error),
+                                }
+                            }
+                            // The cut note is a row like any other now that a
+                            // query can rank it, and it stands for no entry. A
+                            // picker that closed on a choice and said nothing
+                            // would be indistinguishable from a completion that
+                            // failed — the same answer `/resume` gives its own
+                            // note row.
+                            None => app.say(
+                                Tone::Muted,
+                                "that row is the note, not a file — the rest of the \
+                                 listing is not shown",
+                            ),
+                        },
                     }
-                    picker = None;
+                    // `None` in every arm but the descent, so this closes the
+                    // picker exactly as it always did and replaces it in the one
+                    // case that asked for it.
+                    picker = descended;
                 }
                 Outcome::Cancelled => picker = None,
                 Outcome::Idle => {}
+            }
+            app.status.elapsed = started.elapsed();
+            paint_picker(screen, &mut app, picker.as_mut())?;
+            continue;
+        }
+
+        // `/` at an empty prompt opens the palette, in front of the session
+        // rather than inside it: the keystroke never reaches the composer, which
+        // is what makes backing out leave the prompt exactly as it was, and
+        // `App` goes on treating `/` as the ordinary character a hand-typed
+        // `/theme` needs it to be. The condition is `commands::opens_palette`
+        // rather than a test written here, because nothing can reach this file.
+        if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
+            picker = Some((
+                Picker::new("Which command?", commands::palette(&templates)),
+                Pick::Palette,
+            ));
+            app.status.elapsed = started.elapsed();
+            paint_picker(screen, &mut app, picker.as_mut())?;
+            continue;
+        }
+
+        // `@` at a word boundary opens the completion picker, in front of the
+        // session for the same two reasons `/` is: the keystroke never reaches
+        // the composer, so `Esc` leaves the prompt exactly as it was, and `App`
+        // goes on treating `@` as the ordinary character an address needs it to
+        // be. The condition is `complete::opens` rather than a test written here.
+        //
+        // The policy is the one this session is running under — the file's, with
+        // the posture `Shift+Tab` chose folded in, and the rules the operator has
+        // already answered `a` to. Built the same way the turn below builds it,
+        // so what the picker offers and what the agent may read cannot differ.
+        if complete::opens(key, &app.composer.text(), app.armed()) {
+            let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+            match completion(session.root(), &effective, "", &app.theme.glyphs) {
+                Ok(Some(open)) => picker = Some(open),
+                // An empty root, or one the policy reads as empty. Said rather
+                // than opened onto nothing, the same way `/resume` declines.
+                Ok(None) => app.say(Tone::Muted, "nothing in this workspace to complete"),
+                Err(error) => app.say(Tone::Error, error),
             }
             app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
@@ -486,6 +666,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // The second. This is where the operator's files change.
             Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
                 Ok(Some(undone)) => {
+                    // The undone turn is where those numbers came from.
+                    app.status.forget_run();
                     for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                         app.say(tone, line);
                     }
@@ -550,8 +732,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         let mut rows =
                             io_cli::sessions::rows(&found, screen.width(), &app.theme.glyphs);
                         // Last, and a row rather than a notice, so a list that was
-                        // cut cannot read as a complete one. It carries no id, and
-                        // choosing it does nothing.
+                        // cut cannot read as a complete one. It carries no id, so
+                        // `sessions::pick` answers `None` for it and the arm above
+                        // says so — being last stopped being protection the moment
+                        // the picker started ranking rows by what is typed.
                         if let Some(note) = io_cli::sessions::cut_note(cut, rows.len()) {
                             rows.push(Row::new(note));
                         }
@@ -606,6 +790,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 }
                 Action::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
             },
+            // The operator's own line, in the operator's own shell. It reaches
+            // this arm and no other: `App::compose` is the only thing that builds
+            // a `Command::Shell`, so nothing io-harness drives can get here, and
+            // `tests/dependencies.rs` asserts that rather than trusting it.
+            //
+            // Committed through `Screen::commit`, the same call `/expand` and
+            // `Action::Print` make, and nothing else happens to the terminal:
+            // the viewport is not handed over, not restored and not rebuilt, so
+            // its inline origin cannot go stale. `io_cli::shell` is where that
+            // constraint is argued.
+            //
+            // Not written to the run's trace, and there is nothing here that
+            // could — the store is not touched. The agent did not run this.
+            Command::Shell(line) => {
+                let ran = shell::run(&line);
+                let lines = shell::lines(&line, &ran, &app.theme);
+                screen.commit(&lines).map_err(|error| error.to_string())?;
+            }
             Command::Submit(text) => {
                 // Rebuilt every turn rather than kept, because `remembered` grows
                 // as the operator answers and the harness's own `remember` dies
@@ -711,7 +913,16 @@ async fn turn<P: Provider>(
                             // predict — so all four wait, and the operator is told
                             // that is what is happening rather than left pressing
                             // a key that appears to do nothing.
-                            Command::Slash(_) => {
+                            //
+                            // A `!` line waits for a different reason and the
+                            // same sentence covers it: `shell::run` blocks until
+                            // the child exits, and blocking here is blocking the
+                            // select loop — the turn's events would stop being
+                            // drained, the ticker would stop, and `Ctrl+C` would
+                            // be unreadable for as long as the command took. So
+                            // the block is confined to the idle prompt, where
+                            // there is no turn for it to stall.
+                            Command::Slash(_) | Command::Shell(_) => {
                                 let dash = app.theme.glyphs.dash;
                                 app.say(
                                     Tone::Muted,
@@ -726,6 +937,15 @@ async fn turn<P: Provider>(
                     }
                     Event::Resize(width, height) => {
                         screen.resize(width, height).map_err(|error| error.to_string())?;
+                    }
+                    // A turn in flight is not a reason to drop what the operator
+                    // pasted. Typing already reaches the composer here; a paste
+                    // that did not would be the same keystroke treated two ways.
+                    // No picker can be open on this path — one owns the keyboard
+                    // before a turn starts — and the approval is refused inside
+                    // `App::paste`.
+                    Event::Paste(text) => {
+                        app.paste(&text, false);
                     }
                     _ => {}
                 }
@@ -965,12 +1185,55 @@ async fn wizard(
 enum Pick {
     Theme,
     Model,
-    /// Session ids, in the order the rows are drawn. The resume picker may carry
-    /// one row more than there are ids — the line saying the list was cut — and
-    /// an index past the end is that row, which does nothing.
+    /// Session ids, in the order the rows are drawn, read back through
+    /// `sessions::pick`. The resume picker may carry one row more than there are
+    /// ids — the line saying the list was cut — and an index past the end is that
+    /// row, which the arm answers with a sentence.
     Resume(Vec<i64>),
-    /// Turn ids, in the order the rows are drawn.
+    /// Turn ids, in the order the rows are drawn, read back through
+    /// `sessions::pick_turn` — which also hands back the turn number the row was
+    /// drawn with, so the sentence and the branch cannot disagree.
     Fork(Vec<i64>),
+    /// The slash palette. Its rows are `commands::palette()`, which is the
+    /// command inventory and then the templates, in that order, so the chosen
+    /// index reads straight back through `commands::palette_pick` — no list is
+    /// carried here because the rows already address the thing they stand for.
+    Palette,
+    /// One directory of the workspace, in the order `list_dir` sorted it, so a
+    /// chosen index reads straight back through `complete::pick`. The rows are
+    /// last components rather than paths — see `complete::rows` for why — which
+    /// is exactly why the entries are carried here and not read off a label.
+    Complete(Vec<io_harness::tools::Entry>),
+}
+
+/// The completion picker over one directory of the workspace, or `None` when the
+/// policy leaves nothing in it to offer.
+///
+/// Both the `@` that opens it and the descent that replaces it come through
+/// here, so the bound, the cut note and the title are applied in one place
+/// rather than in two that could drift. Every decision it makes is a library
+/// call; what is here is the wiring, which is all this file may hold.
+fn completion(
+    root: &std::path::Path,
+    policy: &Policy,
+    dir: &str,
+    glyphs: &io_cli::glyphs::Glyphs,
+) -> Result<Option<(Picker, Pick)>, String> {
+    let (found, cut) = complete::entries(root, policy, dir)?;
+    if found.is_empty() {
+        return Ok(None);
+    }
+    let mut rows = complete::rows(&found);
+    // Last, and a row rather than a notice, so a list that was cut cannot read as
+    // a complete one — the shape `/resume` already uses. It stands for no entry,
+    // and choosing it does nothing.
+    if let Some(note) = complete::cut_note(cut, rows.len()) {
+        rows.push(Row::new(note));
+    }
+    Ok(Some((
+        Picker::new(complete::title(dir, glyphs), rows),
+        Pick::Complete(found),
+    )))
 }
 
 fn paint(

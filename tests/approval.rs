@@ -779,3 +779,29 @@ async fn f7_at_the_tightest_size_the_counts_are_what_survives() {
     // Nothing was silently dropped.
     assert!(drawn.contains('⋯'), "the cut has to be said: {drawn}");
 }
+
+/// F7: a paste does not land behind an open approval.
+///
+/// The overlay answers `y`, `a` and `n`, and it takes the whole viewport while
+/// it is up. A paste that slipped past it would go into a composer nobody can
+/// see, and ride out with the next prompt after the decision.
+#[tokio::test]
+async fn f7_a_paste_does_not_land_behind_an_open_approval() {
+    let (request, context) = flagged();
+    let (ask, deciding) = asked(request, context).await;
+    let mut app = App::new(DARK, "opus-5");
+    app.open_approval(ask);
+
+    assert!(
+        !app.paste("from the clipboard", false),
+        "a question is on screen, and it takes the keyboard",
+    );
+    assert!(
+        app.composer.is_empty(),
+        "the paste landed in the composer behind the overlay: {:?}",
+        app.composer.text(),
+    );
+
+    app.answer_approval(io_cli::approval::Answer::Deny);
+    deciding.await.expect("the run was told");
+}
