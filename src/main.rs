@@ -792,6 +792,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         format!("this conversation could not be read: {error}"),
                     ),
                 },
+                // At an idle prompt. Mid-turn the key is the way in, since the
+                // driver refuses a slash command while a run is in flight.
+                Action::Fleet => app.toggle_fleet(),
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —

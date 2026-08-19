@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use io_harness::RunEvent;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -134,6 +134,14 @@ pub struct App {
     /// interface that promised the first while doing the second would look as
     /// though it had swallowed the key.
     pub contained: bool,
+    /// The tree this turn has spawned, as the events have described it.
+    ///
+    /// Always folded, whether or not the view is open: an operator who opens it
+    /// mid-turn must see what has already happened, and a model built only while
+    /// somebody is watching would start empty at the moment it is wanted.
+    pub fleet: crate::fleet::Fleet,
+    /// Whether the fleet view has the composer's rows.
+    fleet_open: bool,
     /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
     /// unified, which is what every file written before 0.3.0 means.
     diff_style: crate::settings::DiffStyle,
@@ -157,6 +165,8 @@ impl App {
             quits: 0,
             armed: None,
             contained: false,
+            fleet: crate::fleet::Fleet::new(),
+            fleet_open: false,
             keys: Keys::default(),
             pending: Vec::new(),
             approval: None,
@@ -434,6 +444,7 @@ impl App {
     /// test anywhere reads one.
     pub fn event(&mut self, event: &RunEvent, at: Duration) {
         self.status_from(event);
+        self.fleet.event(event);
         let lines = self.events.event(event, at);
         self.pending.extend(lines);
     }
@@ -456,6 +467,20 @@ impl App {
     /// Only the events that carry a fact set a field, and nothing sets one to a
     /// default. A field this has never heard about stays `None`, which is what the
     /// line renders as nothing at all rather than as a zero.
+    /// Whether the fleet view is up.
+    pub fn fleet_open(&self) -> bool {
+        self.fleet_open
+    }
+
+    /// Open the view, or close it.
+    ///
+    /// Opening a view of nothing is not refused: a session in contained mode
+    /// before its first spawn has an answer to give — "nothing has been spawned
+    /// yet" — and a key that appeared to do nothing would read as broken.
+    pub fn toggle_fleet(&mut self) {
+        self.fleet_open = !self.fleet_open;
+    }
+
     fn status_from(&mut self, event: &RunEvent) {
         match &event.kind {
             io_harness::EventKind::Step { tokens, .. } => {
@@ -562,6 +587,29 @@ impl App {
         // unrelated keystroke.
         let armed = std::mem::take(&mut self.armed);
         let hit = self.keys.hit(chord, armed);
+        // The view owns three keys while it is up, and nothing else: the arrows
+        // move the marker and `Esc` closes it. Every other key falls through to
+        // the match below, so `Ctrl+C` still interrupts and the composer still
+        // takes typing — the view is drawn over the prompt, not in front of the
+        // keyboard, because the moment it is worth reading is mid-turn and a
+        // reader must not have to close it to stop the turn.
+        if self.fleet_open {
+            match key.code {
+                KeyCode::Up => {
+                    self.fleet.move_by(-1);
+                    return Command::None;
+                }
+                KeyCode::Down => {
+                    self.fleet.move_by(1);
+                    return Command::None;
+                }
+                KeyCode::Esc if self.armed.is_none() => {
+                    self.fleet_open = false;
+                    return Command::None;
+                }
+                _ => {}
+            }
+        }
         match hit {
             Some(Hit::Fire(Action::Interrupt)) => self.interrupt_or_quit(),
             // The one key in this product that changes the operator's files on
@@ -628,6 +676,11 @@ impl App {
             // out of reach, branched-away turns included, where the terminal's
             // own search and copy-mode already work on it.
             Some(Hit::Fire(Action::Transcript)) => Command::Transcript,
+            // Reachable mid-turn, which is the point of it having a key at all.
+            Some(Hit::Fire(Action::Fleet)) => {
+                self.toggle_fleet();
+                Command::None
+            }
             // The rewind chord with something typed, and every key this session
             // does not bind: the composer's, which is where they belong.
             _ => self.compose(key),
@@ -730,7 +783,14 @@ impl App {
             height: composer_rows,
             ..area
         };
-        self.composer.render(frame, composer, &self.theme);
+        // Over the composer and never over the status line: the spend field is
+        // on that line, and a view of what the fan-out is doing that hid what it
+        // was costing would be the wrong half of the release.
+        if self.fleet_open {
+            self.fleet.render(frame, composer, &self.theme);
+        } else {
+            self.composer.render(frame, composer, &self.theme);
+        }
 
         if status_rows == 1 {
             let status = Rect {

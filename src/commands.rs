@@ -76,6 +76,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "Ctrl+T",
         "put the whole conversation back into the scrollback",
     ),
+    ("Ctrl+F", "show the fleet: the children this turn has spawned"),
     (
         "y / a / n",
         "answer an approval: allow once, allow this session, deny",
@@ -114,6 +115,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
+    ("/fleet", "show the children this turn has spawned"),
 ];
 
 /// Whether this keystroke opens the slash palette.
@@ -329,6 +331,8 @@ pub enum Action {
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
     Transcript,
+    /// Open the fleet view, or close it.
+    Fleet,
     /// Run later turns contained, stop doing so, or say which it is now.
     ///
     /// `None` is a question and never a toggle: the two modes differ in what a
@@ -408,6 +412,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             Some("off") | Some("no") => Action::Contain(Some(false)),
             _ => Action::Contain(None),
         },
+        "fleet" | "agents" => Action::Fleet,
         "expand" => Action::Expand,
         "copy" => match input.split_whitespace().nth(1) {
             // `/copy diff` and `/copy patch` mean the same thing. A reader who

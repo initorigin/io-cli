@@ -21,6 +21,7 @@ pub mod composer;
 pub mod diff;
 pub mod events;
 pub mod exec;
+pub mod fleet;
 pub mod fuzzy;
 pub mod glyphs;
 pub mod keys;

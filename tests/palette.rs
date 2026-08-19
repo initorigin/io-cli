@@ -165,9 +165,9 @@ fn f1_the_palette_opens_showing_every_command() {
     }
 
     // What the operator can see, through the terminal the product actually
-    // writes to. Twelve rows so the ten commands and the title all fit.
+    // writes to. Fourteen rows so the twelve commands and the title all fit.
     let mut picker = palette();
-    let (mut screen, recorder) = support::screen_of(80, 24, 12);
+    let (mut screen, recorder) = support::screen_of(80, 24, 14);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
@@ -402,9 +402,9 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
     }
 
     // What the operator can actually see, through the terminal the product writes
-    // to. Fourteen rows so the ten commands, the two templates and the title fit.
+    // to. Sixteen rows so the twelve commands, the two templates and the title fit.
     let mut picker = palette_over(&found);
-    let (mut screen, recorder) = support::screen_of(80, 24, 14);
+    let (mut screen, recorder) = support::screen_of(80, 24, 16);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");

@@ -488,6 +488,14 @@ fn every_event_this_release_renders_draws_in_ascii() {
             child_run_id: 11,
             after: Some(std::time::Duration::from_secs(30)),
         },
+        // An arm that commits nothing — the draw is a status field, not a row —
+        // and it is swept anyway: the sweep's question is whether an arm can put
+        // a glyph on a terminal that cannot draw it, and "it renders no row" is
+        // an answer this list has to have checked rather than assumed.
+        EventKind::SpendDraw {
+            tokens: 21,
+            remaining: Some(500),
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is

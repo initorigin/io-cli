@@ -96,6 +96,7 @@ writes no key to disk at all.
 | `Ctrl+L` | clear the viewport, never the scrollback |
 | `Esc Esc` | at an empty prompt, undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
+| `Ctrl+F` | show the fleet: the children this turn has spawned |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
 | `/` | at an empty prompt, open the command palette |
@@ -130,6 +131,7 @@ rewind = "ctrl+r ctrl+r"
 | `clear` | `Ctrl+L` |
 | `transcript` | `Ctrl+T` |
 | `rewind` | `Esc Esc` |
+| `fleet` | `Ctrl+F` |
 
 A binding is a chord, or two chords separated by a space. Modifiers are `ctrl`,
 `alt` and `shift`, joined to the key with `+`, in any order and any case; a key is
@@ -175,6 +177,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
+| `/fleet` | show the children this turn has spawned |
 
 <!-- commands:end -->
 

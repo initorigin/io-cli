@@ -41,6 +41,7 @@ fn the_commands_are_the_commands() {
             "/copy",
             "/copy diff",
             "/contain",
+            "/fleet",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",
@@ -141,6 +142,9 @@ fn the_key_table_covers_every_key_this_release_binds() {
         "Esc Esc",
         "Shift+Tab",
         "Ctrl+T",
+        // 0.8.0. It has a key as well as `/fleet` because the moment it is worth
+        // opening is mid-turn, and a slash command cannot be typed then.
+        "Ctrl+F",
         "y / a / n",
         // The three prefixes 0.7.0 adds. None is a chord, and none is
         // rebindable: they are characters the composer would otherwise have
@@ -154,7 +158,7 @@ fn the_key_table_covers_every_key_this_release_binds() {
     }
     assert_eq!(
         documented.len(),
-        14,
+        15,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );
