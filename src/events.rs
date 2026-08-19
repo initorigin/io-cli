@@ -2,7 +2,7 @@
 //!
 //! Three rules shape this module.
 //!
-//! **Nothing is dropped.** `EventKind` is `#[non_exhaustive]` and has fifty
+//! **Nothing is dropped.** `EventKind` is `#[non_exhaustive]` and has fifty-one
 //! variants today, so a wildcard arm is not a shortcut here, it is required by
 //! the type. What matters is that the wildcard *renders* — an event this release
 //! has no design for arrives as a muted single line naming its kind, rather than
@@ -319,6 +319,134 @@ impl Events {
                 });
                 Vec::new()
             }
+            // **Committed nowhere, and not dropped either.** A draw is emitted
+            // on every step of a contained turn, so a line each would double the
+            // transcript's length and say in prose what the status line says in
+            // one field — and the field is where the design puts it. This is the
+            // same shape as `ToolCall` above, whose fact is committed by the
+            // `Step` that follows it rather than by a line of its own: the event
+            // reaches a surface, just not this one. `App::status_from` is that
+            // surface, and `tests/status.rs` asserts it.
+            EventKind::SpendDraw { .. } => Vec::new(),
+            // **The fleet, committed where it happens.** Four events, four lines,
+            // and every one of them indented by the event's OWN depth: a spawn is
+            // attributed to the PARENT's run id at the parent's depth, and the
+            // child's events arrive afterwards one level deeper under the child's
+            // own id. Indenting by the child's depth would put the spawn a level
+            // too far in, which is invisible at depth one and wrong past it.
+            EventKind::Spawned { child_run_id, goal } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(nest(event.depth), theme.style(Tone::Muted)),
+                    Span::styled(leader(separator), theme.style(Tone::Accent)),
+                    Span::styled(
+                        format!("run {child_run_id} {dash} {goal}"),
+                        theme.style(Tone::Normal),
+                    ),
+                ]));
+                lines
+            }
+            // A refusal, and never an error. The parent is told and carries on
+            // with what it has, so this says which ceiling was reached and that
+            // the run continues. **The cap is io-harness's own word** — `agents`,
+            // `depth` or `budget` — and one it does not know is printed as it
+            // came rather than folded into the nearest one this release knows,
+            // which would be a line asserting a cap that did not refuse anything.
+            //
+            // Concurrency never appears here by construction: crossing
+            // `max_concurrent_agents` queues a child and reports `Fleet`.
+            EventKind::SpawnRefused { cap } => {
+                let why = match cap.as_str() {
+                    "agents" => "the tree already holds as many agents as it may".to_string(),
+                    "depth" => "the child would nest deeper than allowed".to_string(),
+                    "budget" => "the tree's token ceiling is spent".to_string(),
+                    other => format!("the {other} cap refused it"),
+                };
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(nest(event.depth), theme.style(Tone::Muted)),
+                    Span::styled(leader(separator), theme.style(Tone::Warning)),
+                    Span::styled(
+                        format!("spawn refused {dash} {why}"),
+                        theme.style(Tone::Warning),
+                    ),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    format!("{}  the agent goes on with what it has", nest(event.depth)),
+                    theme.style(Tone::Muted),
+                )));
+                lines
+            }
+            // **Attributed to the tree and to no child, because the event carries
+            // no run id.** `ChildDetached` carries one and `ChildCollected` does
+            // not, and with several children in flight their reports arrive in
+            // whatever order they finish — so naming one here would be a guess
+            // rendered in the same words as a fact.
+            EventKind::ChildCollected { text } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(nest(event.depth), theme.style(Tone::Muted)),
+                    Span::styled(leader(separator), theme.style(Tone::Accent)),
+                    Span::styled("a child reported back", theme.style(Tone::Normal)),
+                ]));
+                for line in text.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("{}    {line}", nest(event.depth)),
+                        theme.style(Tone::Muted),
+                    )));
+                }
+                lines
+            }
+            // The parent stopped waiting; the child did not stop. `after` is what
+            // says which of the two ways that happened — a wall clock it crossed,
+            // or a spawn that never waited at all — and both are stated, because
+            // "still running" is the part an operator would otherwise assume the
+            // opposite of.
+            EventKind::ChildDetached {
+                child_run_id,
+                after,
+            } => {
+                let how = match after {
+                    Some(after) => format!("after {} seconds", after.as_secs()),
+                    None => "without waiting".to_string(),
+                };
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(nest(event.depth), theme.style(Tone::Muted)),
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(
+                        format!(
+                            "run {child_run_id} left to itself {dash} {how}, and it is still \
+                             running"
+                        ),
+                        theme.style(Tone::Muted),
+                    ),
+                ]));
+                lines
+            }
+            // 0.65.0 — a resume found a call that was started and never finished,
+            // and refused to drive rather than make it a second time. It is styled
+            // rather than left to the catch-all because the muted word
+            // `recovery_paused` says nothing an operator can act on, and the two
+            // things they need — which tool, and the attempt id a decision has to
+            // name — are both carried by the event.
+            EventKind::RecoveryPaused { attempt_id, tool } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Warning)),
+                    Span::styled(
+                        format!("paused {dash} {tool} was interrupted"),
+                        theme.style(Tone::Warning),
+                    ),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  whether it ran is unknown, so nothing was repeated; attempt {attempt_id}"
+                    ),
+                    theme.style(Tone::Muted),
+                )));
+                lines
+            }
             EventKind::Refused {
                 act,
                 target,
@@ -542,7 +670,7 @@ impl Events {
                 lines.push(Line::from(""));
                 lines
             }
-            // The other forty-one kinds. Not styled in this release, and not
+            // The other thirty-seven kinds. Not styled in this release, and not
             // discarded either: each arrives as one muted line naming itself, so a
             // release that starts emitting something new is visible rather than
             // silent.
@@ -565,6 +693,16 @@ impl Events {
 /// is how that stops being true.
 fn leader(separator: &str) -> String {
     format!("  {} ", separator.trim())
+}
+
+/// The indent for an event at `depth`, so a tree reads as a tree.
+///
+/// Two spaces a level, and nothing at the root — which is every event in a
+/// session that configures no containment, so this costs an unconstrained
+/// session exactly nothing. Not a glyph: a box-drawing tree would need to know
+/// what comes next to close a branch, and the stream is arriving.
+fn nest(depth: u32) -> String {
+    "  ".repeat(depth as usize)
 }
 
 /// One committed tool cell: the tool, its target, what came back, how long it

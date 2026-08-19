@@ -60,6 +60,48 @@ pub struct CliSettings {
     /// nobody can compare against the last run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<std::collections::BTreeMap<String, String>>,
+    /// The caps a fan-out runs under: `[app.io-cli.containment]`.
+    ///
+    /// **This key is what turns the fleet on, and it is not a preference.**
+    /// `Session::turn_contained_observed` is the only session entry point that
+    /// passes a containment into the driver, and therefore the only one that
+    /// reaches the loop owning the spawn tool — so a session with no caps
+    /// configured cannot decompose anything, and one with them runs a materially
+    /// different turn. Absent means every turn is the steered turn 0.7.0 shipped.
+    ///
+    /// io-harness's own type rather than four fields of io-cli's own, because it
+    /// is `Serialize`/`Deserialize` for exactly this purpose and because a
+    /// second spelling of the caps would be a second thing to keep true. It
+    /// carries the crate's own `#[serde(alias = "max_concurrent")]`, so a file
+    /// written against the pre-0.32.0 name still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub containment: Option<io_harness::Containment>,
+}
+
+/// The caps this session runs its turns under, if any.
+///
+/// A function rather than a field read at the call site so that the decision has
+/// somewhere a test can reach: `src/main.rs` cannot be linked by anything under
+/// `tests/`, which is the same reason [`plain`] lives here.
+pub fn containment(stored: Option<&CliSettings>) -> Option<&io_harness::Containment> {
+    stored.and_then(|settings| settings.containment.as_ref())
+}
+
+/// What a contained turn gives up, in the words the session says it in.
+///
+/// **Disclosure rather than decoration.** A contained turn is built from
+/// `Session`'s own `default_contract`, so three things an operator may have
+/// configured stop applying to it — the agent roster, `[run]`'s budgets and
+/// `[sandbox]` — and it takes no `SteerInbox`, so text typed mid-turn cannot
+/// redirect it. None of that is visible from the screen, and a mode that
+/// silently drops a step cap somebody set is the worst kind of quiet.
+pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
+    format!(
+        "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \
+         tree. A contained turn cannot be steered mid-flight, and takes no agent roster, no \
+         [run] budget and no [sandbox]; Ctrl+C still ends it.",
+        caps.max_total_agents, caps.max_concurrent_agents, caps.max_depth, caps.max_total_tokens,
+    )
 }
 
 /// io-cli's own section, and what was wrong with it.
@@ -296,6 +338,11 @@ pub fn render(
                 // table of five bindings in a file the wizard's user never
                 // asked to edit. The keys are documented; they are not written.
                 keys: None,
+                // Left out with the most force of all: this key changes what a
+                // turn *is*, not how it looks. The wizard asks nothing about
+                // fan-out, and a file that arrived with caps already in it would
+                // have turned steering off for somebody who never chose to.
+                containment: None,
             },
         },
     };

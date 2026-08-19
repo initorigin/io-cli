@@ -545,3 +545,117 @@ fn the_run_fields_do_not_outlive_the_run_that_set_them() {
     assert!(after.contains("opus-5"), "{after:?}");
     assert!(after.contains("policy:"), "{after:?}");
 }
+
+/// 0.8.0 F6 — the spend field is absent until a draw arrives, and never zero.
+#[test]
+fn f6_spend_is_absent_until_a_draw_reports_one() {
+    let status = Status::new("a-model");
+    assert_eq!(status.spend, None);
+    assert!(
+        !rendered(&status, 120).contains("spend"),
+        "a turn that has drawn nothing has not drawn zero",
+    );
+}
+
+/// 0.8.0 F6 — the draw climbs and the remainder is replaced.
+#[test]
+fn f6_the_draw_accumulates_and_the_remainder_is_the_ledgers_latest() {
+    let mut app = App::new(DARK, "a-model");
+    app.event(
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::SpendDraw {
+                tokens: 200,
+                remaining: Some(800),
+            },
+        ),
+        Duration::ZERO,
+    );
+    assert_eq!(app.status.spend, Some((200, Some(800))));
+    app.event(
+        &RunEvent::new(
+            1,
+            2,
+            EventKind::SpendDraw {
+                tokens: 300,
+                remaining: Some(500),
+            },
+        ),
+        Duration::ZERO,
+    );
+    assert_eq!(
+        app.status.spend,
+        Some((500, Some(500))),
+        "the draw climbs; the remainder is what the ledger says now",
+    );
+    let line = rendered(&app.status, 120);
+    assert!(line.contains("spend 500/1.0k"), "{line}");
+}
+
+/// 0.8.0 F6 — a tree with no ceiling reports no ceiling.
+///
+/// The sabotage arm renders `remaining: None` as `0`, which would report a tree
+/// that has all of its budget as one that has spent every token of it.
+#[test]
+fn f6_no_ceiling_is_not_an_exhausted_one() {
+    let mut app = App::new(DARK, "a-model");
+    app.event(
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::SpendDraw {
+                tokens: 200,
+                remaining: None,
+            },
+        ),
+        Duration::ZERO,
+    );
+    let line = rendered(&app.status, 120);
+    assert!(line.contains("spend 200"), "{line}");
+    assert!(
+        !line.contains("spend 200/0") && !line.contains("/0"),
+        "no ceiling was reported, so none is stated: {line}",
+    );
+}
+
+/// 0.8.0 F6 — the spend belongs to the run that reported it.
+#[test]
+fn f6_forgetting_a_run_forgets_its_spend() {
+    let mut status = Status::new("a-model");
+    status.spend = Some((500, Some(500)));
+    status.forget_run();
+    assert_eq!(
+        status.spend, None,
+        "/resume and /fork must not leave another run's spend on the line",
+    );
+}
+
+/// 0.8.0 F6 — the spend outranks the containment word, which is what a live run
+/// proved rather than what looked tidy.
+///
+/// Drafted to the right of it, the field never appeared on a real terminal: a
+/// containment word is `workspace-write/macos-sandbox-exec` — thirty-three
+/// characters — and at a hundred columns beside the model, the posture, the
+/// state, the clock and the token count there was nothing left for it. The one
+/// field this release exists to fill was the first one dropped.
+#[test]
+fn f6_the_spend_survives_a_width_the_containment_word_does_not() {
+    let mut status = Status::new("openai/gpt-5.6-luna");
+    status.policy = Some("workspace".into());
+    status.working = true;
+    status.elapsed = Duration::from_secs(52);
+    status.tokens = Some(3_900);
+    status.containment = Some("read-only/macos-sandbox-exec".into());
+    status.spend = Some((3_900, Some(116_100)));
+
+    let line = rendered(&status, 100);
+    assert!(
+        line.contains("spend 3.9k/120.0k"),
+        "the spend is what this release is for, and it fits: {line:?}",
+    );
+    assert!(
+        !line.contains("macos-sandbox-exec"),
+        "and the field it outranks is the one that goes: {line:?}",
+    );
+}

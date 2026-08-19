@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use io_harness::RunEvent;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -126,6 +126,22 @@ pub struct App {
     /// relative to the workspace, and the process's working directory is not the
     /// same thing under `io -C <dir>`.
     root: std::path::PathBuf,
+    /// Whether the turn now running is a *contained* turn.
+    ///
+    /// Set by the driver as a turn starts and cleared as it ends. It exists for
+    /// one sentence: `Ctrl+C` stops a steered turn at the next step boundary and
+    /// a contained one at the next boundary where no child is in flight, and an
+    /// interface that promised the first while doing the second would look as
+    /// though it had swallowed the key.
+    pub contained: bool,
+    /// The tree this turn has spawned, as the events have described it.
+    ///
+    /// Always folded, whether or not the view is open: an operator who opens it
+    /// mid-turn must see what has already happened, and a model built only while
+    /// somebody is watching would start empty at the moment it is wanted.
+    pub fleet: crate::fleet::Fleet,
+    /// Whether the fleet view has the composer's rows.
+    fleet_open: bool,
     /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
     /// unified, which is what every file written before 0.3.0 means.
     diff_style: crate::settings::DiffStyle,
@@ -148,6 +164,9 @@ impl App {
             mode: Mode::Idle,
             quits: 0,
             armed: None,
+            contained: false,
+            fleet: crate::fleet::Fleet::new(),
+            fleet_open: false,
             keys: Keys::default(),
             pending: Vec::new(),
             approval: None,
@@ -337,6 +356,18 @@ impl App {
     pub fn finished(&mut self) {
         self.mode = Mode::Idle;
         self.status.working = false;
+        // A per-turn fact, cleared with the turn. Left standing, an idle session
+        // that had contained one turn would go on describing `Ctrl+C` in the
+        // words of a turn that is no longer running — and `/contain off` between
+        // turns would leave the sentence disagreeing with the mode.
+        self.contained = false;
+        // **The view closes with the turn, and the model does not.** A live run
+        // found this: with the view up when the turn ended, the composer stayed
+        // hidden behind a tree that had stopped moving, and a session that says
+        // `ready` with nowhere to type reads as one that has hung. The tree is
+        // still there — `/fleet` reopens it, and every spawn, refusal and report
+        // is in the transcript — but the prompt comes back on its own.
+        self.fleet_open = false;
         // A question outlives its run only as a stuck overlay over a session that
         // has moved on. Dropping it is the denial — see `Ask` — and the run it
         // belonged to has already ended, so there is nobody left to tell.
@@ -420,6 +451,7 @@ impl App {
     /// test anywhere reads one.
     pub fn event(&mut self, event: &RunEvent, at: Duration) {
         self.status_from(event);
+        self.fleet.event(event);
         let lines = self.events.event(event, at);
         self.pending.extend(lines);
     }
@@ -442,6 +474,31 @@ impl App {
     /// Only the events that carry a fact set a field, and nothing sets one to a
     /// default. A field this has never heard about stays `None`, which is what the
     /// line renders as nothing at all rather than as a zero.
+    /// Whether the fleet view is up.
+    pub fn fleet_open(&self) -> bool {
+        self.fleet_open
+    }
+
+    /// Forget the run the fleet describes, and close the view.
+    ///
+    /// Called where the conversation changes under it — `/resume`, `/fork`, a
+    /// rewind — beside `Status::forget_run`, and for the same reason: every fact
+    /// in it belongs to one tree, and a view that went on showing them would be
+    /// describing a run that is no longer on screen.
+    pub fn forget_fleet(&mut self) {
+        self.fleet.forget();
+        self.fleet_open = false;
+    }
+
+    /// Open the view, or close it.
+    ///
+    /// Opening a view of nothing is not refused: a session in contained mode
+    /// before its first spawn has an answer to give — "nothing has been spawned
+    /// yet" — and a key that appeared to do nothing would read as broken.
+    pub fn toggle_fleet(&mut self) {
+        self.fleet_open = !self.fleet_open;
+    }
+
     fn status_from(&mut self, event: &RunEvent) {
         match &event.kind {
             io_harness::EventKind::Step { tokens, .. } => {
@@ -463,6 +520,16 @@ impl App {
                 let budget = io_harness::ContextBudget::default().effective_tokens(None);
                 let share = (*after_tokens as f64 / budget.max(1) as f64 * 100.0).round();
                 self.status.context = Some(share.clamp(0.0, 100.0) as u8);
+            }
+            // The draw is per step and the ceiling is the tree's. `tokens`
+            // accumulates because a field that swings rather than climbs cannot
+            // be read at a glance — the same argument the session token count
+            // above rests on — while `remaining` is replaced, because it is what
+            // the ledger says NOW and an accumulated remainder would be
+            // arithmetic on somebody else's subtraction.
+            io_harness::EventKind::SpendDraw { tokens, remaining } => {
+                let drawn = self.status.spend.map(|(drawn, _)| drawn).unwrap_or(0) + tokens;
+                self.status.spend = Some((drawn, *remaining));
             }
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));
@@ -538,6 +605,29 @@ impl App {
         // unrelated keystroke.
         let armed = std::mem::take(&mut self.armed);
         let hit = self.keys.hit(chord, armed);
+        // The view owns three keys while it is up, and nothing else: the arrows
+        // move the marker and `Esc` closes it. Every other key falls through to
+        // the match below, so `Ctrl+C` still interrupts and the composer still
+        // takes typing — the view is drawn over the prompt, not in front of the
+        // keyboard, because the moment it is worth reading is mid-turn and a
+        // reader must not have to close it to stop the turn.
+        if self.fleet_open {
+            match key.code {
+                KeyCode::Up => {
+                    self.fleet.move_by(-1);
+                    return Command::None;
+                }
+                KeyCode::Down => {
+                    self.fleet.move_by(1);
+                    return Command::None;
+                }
+                KeyCode::Esc if self.armed.is_none() => {
+                    self.fleet_open = false;
+                    return Command::None;
+                }
+                _ => {}
+            }
+        }
         match hit {
             Some(Hit::Fire(Action::Interrupt)) => self.interrupt_or_quit(),
             // The one key in this product that changes the operator's files on
@@ -604,6 +694,11 @@ impl App {
             // out of reach, branched-away turns included, where the terminal's
             // own search and copy-mode already work on it.
             Some(Hit::Fire(Action::Transcript)) => Command::Transcript,
+            // Reachable mid-turn, which is the point of it having a key at all.
+            Some(Hit::Fire(Action::Fleet)) => {
+                self.toggle_fleet();
+                Command::None
+            }
             // The rewind chord with something typed, and every key this session
             // does not bind: the composer's, which is where they belong.
             _ => self.compose(key),
@@ -641,7 +736,17 @@ impl App {
             // The turn is what gets stopped, not the process. `Steer::interrupt`
             // ends it at a step boundary, whole, and leaves it resumable.
             self.quits = 0;
-            self.say(Tone::Warning, "interrupting at the next step boundary");
+            // The two paths end a turn at different moments, and the sentence
+            // says which one this is. A contained turn is cancelled through the
+            // observer, and io-harness honours that at the next boundary where
+            // no child is in flight — so a wide fan-out can take a while, and an
+            // operator told "the next step boundary" would think the key missed.
+            let where_it_stops = if self.contained {
+                "cancelling at the next point where no child is in flight"
+            } else {
+                "interrupting at the next step boundary"
+            };
+            self.say(Tone::Warning, where_it_stops);
             return Command::Interrupt;
         }
         if !self.composer.is_empty() {
@@ -696,7 +801,14 @@ impl App {
             height: composer_rows,
             ..area
         };
-        self.composer.render(frame, composer, &self.theme);
+        // Over the composer and never over the status line: the spend field is
+        // on that line, and a view of what the fan-out is doing that hid what it
+        // was costing would be the wrong half of the release.
+        if self.fleet_open {
+            self.fleet.render(frame, composer, &self.theme);
+        } else {
+            self.composer.render(frame, composer, &self.theme);
+        }
 
         if status_rows == 1 {
             let status = Rect {

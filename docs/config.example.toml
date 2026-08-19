@@ -156,3 +156,30 @@ posture = "shift+tab"
 clear = "ctrl+l"
 transcript = "ctrl+t"
 rewind = "esc esc"
+fleet = "ctrl+f"
+
+# The caps a fan-out runs under. **This table is what lets the agent decompose a
+# task at all**, and it is absent by default: io-harness has one session entry
+# point that reaches its spawn loop, and these caps are what selects it.
+#
+# It is not a preference, and turning it on costs something. A contained turn
+# cannot be steered while it runs — the entry point that fans out takes no steer
+# inbox — and it is built from the session's own default contract, so an agent
+# roster, `[run]` budgets and `[sandbox]` do not apply to it. `Ctrl+C` still ends
+# it, at the next point where no child is in flight. The session says all of that
+# when it starts, and `/contain off` gives a turn back to steering.
+#
+# All four keys are required, because there is no safe default for somebody
+# else's token ceiling.
+#
+# max_total_agents refuses: the spawn that would cross it comes back to the
+# parent, which adapts. max_concurrent_agents throttles: a spawn past it waits
+# for a slot, per tier, so a fleet drains rather than failing. max_depth counts
+# from the root, which is 0. max_total_tokens is the whole tree's, drawn down
+# together — tokens, because a provider reports tokens and never money.
+#
+# [app.io-cli.containment]
+# max_total_agents = 12
+# max_concurrent_agents = 4
+# max_depth = 2
+# max_total_tokens = 200000

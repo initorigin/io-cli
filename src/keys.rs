@@ -281,6 +281,13 @@ pub enum Action {
     Transcript,
     /// Undo the last turn — its files and all. Two presses.
     Rewind,
+    /// Show the fleet: the children this turn has spawned, live.
+    ///
+    /// It has a key as well as `/fleet` because the moment it is worth looking at
+    /// is *during* a turn, and a slash command cannot be typed then — the driver
+    /// refuses one while a run is in flight, since every command it dispatches
+    /// moves something the running turn is about to write.
+    Fleet,
 }
 
 impl Action {
@@ -293,6 +300,7 @@ impl Action {
         Action::Clear,
         Action::Transcript,
         Action::Rewind,
+        Action::Fleet,
     ];
 
     /// The name this action is called by in `[app.io-cli.keys]`.
@@ -304,6 +312,7 @@ impl Action {
             Self::Clear => "clear",
             Self::Transcript => "transcript",
             Self::Rewind => "rewind",
+            Self::Fleet => "fleet",
         }
     }
 
@@ -329,6 +338,10 @@ impl Action {
             Self::Clear => "ctrl+l",
             Self::Transcript => "ctrl+t",
             Self::Rewind => "esc esc",
+            // It displaces `tui-textarea`'s forward-char, which the right arrow
+            // already does — the same trade `Ctrl+T` already makes against its
+            // transpose-chars, and the reason both are rebindable.
+            Self::Fleet => "ctrl+f",
         }
     }
 

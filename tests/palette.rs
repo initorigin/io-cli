@@ -165,9 +165,9 @@ fn f1_the_palette_opens_showing_every_command() {
     }
 
     // What the operator can see, through the terminal the product actually
-    // writes to. Twelve rows so the ten commands and the title all fit.
+    // writes to. Fourteen rows so the twelve commands and the title all fit.
     let mut picker = palette();
-    let (mut screen, recorder) = support::screen_of(80, 24, 12);
+    let (mut screen, recorder) = support::screen_of(80, 24, 14);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
@@ -262,16 +262,17 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // Both rows begin with `c`, so both score the same and the tie-break is the
-    // order they were handed in. The defect: an unstable sort swaps them on a
-    // keystroke that did not change the result, and `Enter` takes a row nobody
-    // chose.
+    // Three rows begin with `c` since 0.8.0 added `/contain`, and `co` is a
+    // prefix of all three — `contain` is c-o-n-t-a-i-n. They score the same and
+    // the tie-break is the order they were handed in. The defect: an unstable
+    // sort swaps them on a keystroke that did not change the result, and `Enter`
+    // takes a row nobody chose.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 2);
+    assert_eq!(picker.matching(), 3);
     assert_eq!(marked(&picker), "copy");
     type_at(&mut picker, "o");
-    assert_eq!(picker.matching(), 2);
+    assert_eq!(picker.matching(), 3);
     assert_eq!(
         marked(&picker),
         "copy",
@@ -401,9 +402,9 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
     }
 
     // What the operator can actually see, through the terminal the product writes
-    // to. Fourteen rows so the ten commands, the two templates and the title fit.
+    // to. Sixteen rows so the twelve commands, the two templates and the title fit.
     let mut picker = palette_over(&found);
-    let (mut screen, recorder) = support::screen_of(80, 24, 14);
+    let (mut screen, recorder) = support::screen_of(80, 24, 16);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");

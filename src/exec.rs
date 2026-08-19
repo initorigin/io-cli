@@ -44,10 +44,19 @@ pub const UNFINISHED: u8 = 5;
 
 /// The exit status for a run that reached the harness.
 ///
-/// **This match has no `_` arm on purpose.** `io_harness::RunOutcome` is not
-/// `#[non_exhaustive]`, so a variant added by a later harness breaks this build
-/// rather than being silently folded into one of the six codes — which is the
-/// only way a table published as public contract stays true across a pin bump.
+/// **The `_` arm is mandatory now, and it is not free.** Until io-harness 0.64
+/// `RunOutcome` was exhaustive, so a variant a later harness added broke this
+/// build rather than being folded into one of the six codes, and that break was
+/// the only thing keeping a table published as public contract true across a pin
+/// bump. 0.65 made the enum `#[non_exhaustive]`; the compiler now insists on a
+/// catch-all and has nothing left to say. The property moved to a test —
+/// `the_outcome_table_names_every_outcome_the_locked_harness_declares` reads
+/// the variants out of the locked source, so a new one fails a test that names it
+/// instead of arriving here as `UNFINISHED`.
+///
+/// An unrecognised outcome maps to `UNFINISHED` because it is the only honest
+/// answer: the run reached the harness and did not report finishing, and a code
+/// that claimed success or a crash would both be inventions.
 ///
 /// Two of the mappings are the release's research rather than its taste.
 /// `Finished` is `OK` because a contract with no verification criterion is what
@@ -76,9 +85,20 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         | RunOutcome::AwaitingAnswer { .. }
         | RunOutcome::AwaitingPlan { .. } => PAUSED,
 
+        // 0.65.0 — a resume that found a call started and never finished. It is a
+        // pause needing a decision, so it belongs with the other three rather than
+        // with the failures. **Not unreachable, and the claim is deliberately not
+        // made:** a session turn registers no tool and no MCP server and cannot
+        // journal an attempt, but `io exec` applies the configuration to its own
+        // contract, so a configured `[[mcp]]` server puts a run of this subcommand
+        // exactly one interrupted call away from it.
+        RunOutcome::AwaitingRecovery { .. } => PAUSED,
+
         RunOutcome::Stalled { .. }
         | RunOutcome::Escalated { .. }
         | RunOutcome::Cancelled { .. } => UNFINISHED,
+
+        _ => UNFINISHED,
     }
 }
 
@@ -105,6 +125,12 @@ pub fn describe(outcome: &RunOutcome) -> String {
         RunOutcome::Stalled { steps } => ("stalled", steps),
         RunOutcome::Escalated { steps, .. } => ("escalated", steps),
         RunOutcome::Cancelled { steps } => ("was cancelled", steps),
+        RunOutcome::AwaitingRecovery { steps, .. } => ("is waiting for a recovery decision", steps),
+        // An outcome added by a later harness. Every arm above reads its own
+        // `steps` field out of its own variant, and there is no field to read
+        // here — so this returns early rather than printing a count of zero,
+        // which would be a number this build made up.
+        _ => return "the run ended in a way this build does not have a name for".to_string(),
     };
     let plural = if *steps == 1 { "step" } else { "steps" };
     format!("the run {what}, after {steps} {plural}")
