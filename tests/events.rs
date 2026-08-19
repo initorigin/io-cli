@@ -1056,9 +1056,17 @@ fn f2_a_spawn_names_the_child_and_indents_by_the_parents_depth() {
         root.contains("read every file under src/"),
         "and what it was asked to do: {root:?}",
     );
-    // The leader itself begins with two spaces, so "not indented" means the row
-    // starts at the leader rather than a level in front of it.
+    // **Absolute, not only relative.** The leader itself begins with two spaces,
+    // so a spawn by the root starts exactly there — and this line is the whole
+    // point of the pair: a sabotage that indents every row by one level too many
+    // is invisible to a test that only compares two rows with each other, which
+    // is what this test did until the arm for it killed nothing.
     let root_indent = root.len() - root.trim_start().len();
+    assert_eq!(
+        root_indent, 2,
+        "a spawn by the root sits at the leader and not a level in front of it: \
+         {root:?}",
+    );
 
     let deeper = events.event(
         &RunEvent::at_depth(
@@ -1174,9 +1182,13 @@ fn f8_a_collected_report_names_no_child() {
         collected.contains("found three call sites"),
         "with what it said: {collected:?}",
     );
+    // No run id AT ALL, rather than "not one of the two we spawned". The
+    // plausible mistake is reaching for the id that is on the event — which is
+    // the PARENT's — and a test naming only the children would pass while the
+    // screen said the root had reported to itself.
     assert!(
-        !collected.contains("run 4") && !collected.contains("run 5"),
-        "and with no child named, because the event names none: {collected:?}",
+        !collected.contains("run "),
+        "and with no run named, because the event names none: {collected:?}",
     );
 }
 
