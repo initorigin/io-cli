@@ -101,6 +101,32 @@ pub fn cells(picture: &::image::DynamicImage, cols: u16, rows: u16) -> Vec<Line<
     lines
 }
 
+/// Whether a picture may be drawn from coloured cells at all.
+///
+/// One expression, for the reason `Status::indicator` is one expression: three
+/// separate suppressions written at three call sites drift, and the first time
+/// one of them is forgotten it is forgotten on the surface whose reader can least
+/// afford it.
+///
+/// - `--plain` removes it because a half-block picture is pure decoration to a
+///   screen reader and thousands of cells of it are worse than none.
+/// - `NO_COLOR` removes it because the picture IS the colour: with no colour a
+///   half block carries nothing at all.
+/// - The ASCII glyph set removes it because `▀` is not in it, and a terminal that
+///   asked for ASCII would be sent a character it cannot draw.
+pub fn drawable(coloured: bool, plain: bool, glyphs: &crate::glyphs::Glyphs) -> bool {
+    coloured && !plain && glyphs.name != crate::glyphs::ASCII.name
+}
+
+/// How tall a committed picture is allowed to be.
+///
+/// ponytail: a constant rather than a fraction of the terminal, because a
+/// committed picture goes into scrollback where the terminal's height is not the
+/// bound that matters — what matters is how much of the conversation it pushes
+/// off the screen, and twenty rows is about one screenful on a normal terminal.
+/// Make it a fraction of the height if anyone ever asks for a taller one.
+pub const MAX_ROWS: u16 = 20;
+
 /// The one line a picture becomes where cells are not allowed to carry it.
 ///
 /// Under `--plain`, under `NO_COLOR`, and under the ASCII glyph set, a half-block

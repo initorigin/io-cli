@@ -119,6 +119,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
     ("/fleet", "show the children this turn has spawned"),
+    (
+        "/attach",
+        "put an image in front of the agent, for the next turn only",
+    ),
 ];
 
 /// Whether this keystroke opens the slash palette.
@@ -336,6 +340,13 @@ pub enum Action {
     Transcript,
     /// Open the fleet view, or close it.
     Fleet,
+    /// Attach an image to the next turn, from a path under the session root.
+    ///
+    /// The string is the rest of the line rather than its first word, because a
+    /// path may contain spaces and the completion that produced it does not
+    /// quote. Empty when nothing followed the command, which is a request for
+    /// the sentence saying how to use it rather than an error.
+    Attach(String),
     /// Run later turns contained, stop doing so, or say which it is now.
     ///
     /// `None` is a question and never a toggle: the two modes differ in what a
@@ -416,6 +427,18 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             _ => Action::Contain(None),
         },
         "fleet" | "agents" => Action::Fleet,
+        // The REST of the line, not its second word: `@` completion inserts a
+        // path verbatim and a path may contain spaces, so taking one token would
+        // silently attach the wrong file — or nothing — for exactly the paths a
+        // reader is least able to retype.
+        "attach" | "image" => Action::Attach(
+            input
+                .trim_start()
+                .split_once(char::is_whitespace)
+                .map(|(_, rest)| rest.trim())
+                .unwrap_or_default()
+                .to_string(),
+        ),
         "expand" => Action::Expand,
         "copy" => match input.split_whitespace().nth(1) {
             // `/copy diff` and `/copy patch` mean the same thing. A reader who

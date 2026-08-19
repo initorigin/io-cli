@@ -798,6 +798,34 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // At an idle prompt. Mid-turn the key is the way in, since the
                 // driver refuses a slash command while a run is in flight.
                 Action::Fleet => app.toggle_fleet(),
+                // The policy the NEXT turn would run under, built exactly the way
+                // the completion above and the turn below build it — so what may
+                // be attached and what the agent may read are the same set by
+                // construction rather than by two agreeing lists.
+                Action::Attach(path) => {
+                    let effective =
+                        approval::session_policy(&policy, app.posture(), app.remembered());
+                    match io_cli::attach::prepare(
+                        session.root(),
+                        &effective,
+                        // The provider's own answer, asked here rather than left
+                        // to `ensure_media_accepted` inside the turn — that one
+                        // fires after a prompt has been typed.
+                        provider.accepts_images(),
+                        &path,
+                    ) {
+                        Ok(staged) => {
+                            let lines = attached_lines(&staged, &app, screen.width());
+                            // Staged on the session, so io-harness's `drive` folds
+                            // it in and `mem::take`s it. Nothing is kept here: the
+                            // one-turn-only property is the harness's, and a copy
+                            // on this side would quietly undo it.
+                            session.attach([staged.media]);
+                            screen.commit(&lines).map_err(|error| error.to_string())?;
+                        }
+                        Err(error) => app.say(Tone::Error, error),
+                    }
+                }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —
@@ -900,6 +928,49 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         app.status.elapsed = started.elapsed();
         paint_picker(screen, &mut app, picker.as_mut())?;
     }
+}
+
+/// What an attachment commits into the scrollback: the picture, then the sentence.
+///
+/// The picture first and the sentence under it, because the sentence is the part
+/// a reader can find again by scrolling and the picture is the part they are
+/// looking at now. Under `--plain`, `NO_COLOR` or the ASCII glyph set there is no
+/// picture and the file is named instead — see [`io_cli::picture::drawable`],
+/// which is the single expression all three suppressions go through.
+///
+/// A file that will not decode is NOT an error here. io-harness has already
+/// accepted it for the wire, so the agent will see it; what failed is this
+/// crate's ability to show the operator the same thing, and saying so beats
+/// refusing an attachment that is going to work.
+fn attached_lines(
+    staged: &io_cli::attach::Staged,
+    app: &App,
+    width: u16,
+) -> Vec<ratatui::text::Line<'static>> {
+    let note = io_cli::attach::staged_note(staged);
+    let decoded = io_cli::picture::decode(&staged.bytes);
+    let mut lines = match (
+        &decoded,
+        io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs),
+    ) {
+        (Ok(picture), true) => io_cli::picture::cells(picture, width, io_cli::picture::MAX_ROWS),
+        (Ok(picture), false) => {
+            use image::GenericImageView;
+            let (w, h) = picture.dimensions();
+            vec![io_cli::picture::describe(
+                &staged.path,
+                staged.media_type,
+                w,
+                h,
+            )]
+        }
+        (Err(_), _) => vec![ratatui::text::Line::from(format!(
+            "{} could not be drawn here, but it is on the next turn",
+            staged.path,
+        ))],
+    };
+    lines.push(app.theme.notice(Tone::Muted, note));
+    lines
 }
 
 /// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
