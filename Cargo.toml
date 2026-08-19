@@ -33,7 +33,14 @@ path = "src/lib.rs"
 [dependencies]
 # The agent loop, the providers, the tools, the sandbox, the policy engine and the
 # session store — all of it. This crate adds none of them; see the F7 test.
-io-harness = "0.65"
+#
+# `media` is on from 0.9.0. It is what makes `Media`, `Session::attach` and
+# `TaskContract::images` exist at all — and it also puts io-harness's own
+# `view_image` into `workspace_tools()`, so the agent gains a tool as a
+# consequence of enabling it. That is a capability change arriving inside an
+# interface release and it is stated in the README and the CHANGELOG rather than
+# left to be discovered. It is governed by the same policy as any other read.
+io-harness = { version = "0.65", features = ["media"] }
 # ratatui stays at 0.29 and crossterm at 0.28 because `tui-textarea` 0.7 — the
 # composer — is built against exactly that pair. The 0.30 line has forks of the
 # textarea widget rather than a release of it, and taking one would mean depending
@@ -78,6 +85,38 @@ toml = "1"
 syntect = { version = "5", default-features = false, features = [
     "default-syntaxes",
     "regex-fancy",
+] }
+# The eleventh name, and the first added since 0.5.0. Decoding an image into
+# pixels, so a picture can be drawn as half-block cells on a terminal that speaks
+# no graphics protocol — the form that has to work everywhere, and the only part
+# of 0.9.0 that needs a decoder at all.
+#
+# `default-features = false` again, and for the same class of reason syntect's is:
+# the defaults are `rayon` plus `default-formats`, and `default-formats` pulls
+# `avif`, which is `ravif` — an AV1 *encoder* — along with `exr`, `hdr`, `dds`,
+# `qoi` and `ff`. None of that decodes anything this crate can be handed.
+#
+# The list is exactly the formats io-harness will accept from a file, which is the
+# set this renderer can ever see: the four that go on a wire unchanged
+# (`png`, `jpeg`, `gif`, `webp`) and the five it transcodes to PNG on the way in
+# (`bmp`, `tiff`, `ico`, `tga`, `pnm`). io-harness itself declares seven of the
+# nine; `gif` and `webp` are added here because the harness never decodes those —
+# it passes them through — while a half-block cell needs their pixels. SVG, HEIC
+# and AVIF are refused by `Media::attach` by name before this crate sees a byte.
+#
+# `tests/dependencies.rs` asserts this exact list, as it has asserted syntect's
+# since 0.3.0. Nothing here encodes: the base64 a graphics protocol needs is
+# already on `Media`, so no base64 crate enters this tree.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "tiff",
+    "ico",
+    "tga",
+    "pnm",
 ] }
 
 [dev-dependencies]
