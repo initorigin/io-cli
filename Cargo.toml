@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
@@ -33,7 +33,7 @@ path = "src/lib.rs"
 [dependencies]
 # The agent loop, the providers, the tools, the sandbox, the policy engine and the
 # session store — all of it. This crate adds none of them; see the F7 test.
-io-harness = "0.63"
+io-harness = "0.64"
 # ratatui stays at 0.29 and crossterm at 0.28 because `tui-textarea` 0.7 — the
 # composer — is built against exactly that pair. The 0.30 line has forks of the
 # textarea widget rather than a release of it, and taking one would mean depending

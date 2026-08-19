@@ -362,7 +362,16 @@ impl Wizard {
             .iter()
             .position(|row| row.label == default)
             .unwrap_or(0);
-        self.picker = Some(Picker::new("Which model?", rows).selecting(opening));
+        // The rows are swapped into the picker that is already on the screen
+        // rather than a new picker being built over it. This step opens on the
+        // provider's default while the catalogue request is still in flight, and
+        // a four-hundred-model list is a list nobody scrolls — so the first thing
+        // an operator does is type, and a wholesale replacement threw away
+        // everything they had typed while they waited, with no way to tell that it
+        // had been read at all.
+        self.picker
+            .get_or_insert_with(|| Picker::new("Which model?", Vec::new()))
+            .set_rows(rows, opening);
     }
 
     fn welcome(&mut self, key: KeyEvent) -> Progress {
@@ -524,7 +533,15 @@ impl Wizard {
         let outcome = picker.key(key);
         // Read after every keystroke, not only on choice: this is the live
         // preview, and it costs nothing because the renderer is already there.
-        if let Some(theme) = THEMES.get(picker.selected()) {
+        //
+        // **`selection`, never `selected`.** Running every keystroke is exactly
+        // what makes the difference load-bearing: `selected` answers 0 when the
+        // query admits nothing, and 0 is a real theme, so a `z` — a letter no
+        // theme name carries — previewed `dark` and reassigned `theme_name`, which
+        // is the string `settings::render` writes into `io.toml`. Nothing on
+        // screen said so and backspacing did not undo it. A query that matches no
+        // row leaves the previewed theme exactly where it was.
+        if let Some(theme) = picker.selection().and_then(|index| THEMES.get(index)) {
             self.theme_name = theme.name.to_string();
             // Resolved, never assigned. A picked theme is a preference exactly as
             // the configuration file's theme is, and `NO_COLOR` outranks both —

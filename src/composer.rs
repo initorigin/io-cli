@@ -17,6 +17,22 @@ use crate::theme::{Theme, Tone};
 /// text rather than under the marker.
 pub const PROMPT: &str = "> ";
 
+/// How many characters a paste may carry before it is collapsed to one line.
+///
+/// Two rows of an eighty-column terminal, less the two the prompt marker takes:
+/// `2 × 78`. The number is the composer's own size rather than a round one —
+/// `crate::app` gives the composer exactly two of the four viewport rows, so a
+/// paste of a hundred and fifty-six characters is the largest one the operator
+/// can still see all of. The first character past that is the first one that
+/// falls outside a box two rows tall, and from there the input stops being
+/// navigable in the only sense that matters to somebody about to send it: what
+/// is on screen is no longer what is in the prompt.
+///
+/// It is a character count and not a line count on purpose. A pasted block of
+/// three short lines is three rows and still perfectly readable, and collapsing
+/// it would take away the one thing a bracketed paste is for.
+pub const PASTE_THRESHOLD: usize = 156;
+
 /// What a keystroke did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
@@ -36,6 +52,15 @@ pub struct Composer {
     /// What was in the composer when the walk back started, so `Down` past the
     /// newest entry returns it rather than clearing it.
     draft: String,
+    /// Every block that was pasted in and shown as one line, as
+    /// `(placeholder, what it stands for)`, oldest first.
+    ///
+    /// The composer owns them, and [`Composer::text`] — not the submit path —
+    /// puts them back. That is the whole design decision: a placeholder that is
+    /// expanded only on `Enter` is one caller away from sending a description of
+    /// a file where the file should have been, and nothing on screen would say
+    /// so. Here the collapsed form exists only inside this type.
+    pastes: Vec<(String, String)>,
 }
 
 impl Default for Composer {
@@ -55,18 +80,85 @@ impl Composer {
             history: Vec::new(),
             recalled: None,
             draft: String::new(),
+            pastes: Vec::new(),
         }
     }
 
-    /// What is currently typed.
+    /// What is currently typed, with every collapsed paste put back whole.
+    ///
+    /// This is the prompt, not the picture of it: a paste over
+    /// [`PASTE_THRESHOLD`] is one line on screen and its full text here, byte
+    /// for byte. Callers get the text they would have got had the paste been
+    /// inserted as it always was.
     pub fn text(&self) -> String {
+        self.expand(&self.typed())
+    }
+
+    /// What is on screen, placeholders and all.
+    ///
+    /// Private, and the only thing in here that reads the widget's lines
+    /// directly for a whole-text answer. Everything outside this type asks
+    /// [`Composer::text`], which cannot forget the paste.
+    fn typed(&self) -> String {
         self.area.lines().join("\n")
     }
 
-    /// Whether there is nothing typed. `Ctrl+D` exits on an empty composer, so
-    /// this decides whether a keystroke ends the session.
+    /// `typed` with each placeholder replaced by the block it stands for.
+    ///
+    /// One left-to-right pass, never re-scanning what it has already written, so
+    /// a pasted block that happens to contain the literal text of a placeholder
+    /// is copied out rather than expanded a second time. A chain of
+    /// `str::replace` calls would have expanded it, and pasting a transcript of a
+    /// session that already collapsed a paste is all it would take.
+    ///
+    /// A placeholder is matched by its exact text. Edit a character of one and it
+    /// stops being a placeholder and is sent as the words it reads as: the
+    /// composer has no way to tell a person rewriting the line from a person
+    /// typing that sentence, and quietly attaching a file to a line somebody
+    /// edited is the worse of the two mistakes.
+    fn expand(&self, typed: &str) -> String {
+        if self.pastes.is_empty() {
+            return typed.to_string();
+        }
+        let mut out = String::with_capacity(typed.len());
+        let mut rest = typed;
+        'text: while !rest.is_empty() {
+            for (placeholder, text) in &self.pastes {
+                if let Some(tail) = rest.strip_prefix(placeholder.as_str()) {
+                    out.push_str(text);
+                    rest = tail;
+                    continue 'text;
+                }
+            }
+            let mut characters = rest.chars();
+            out.push(characters.next().expect("the remainder is not empty"));
+            rest = characters.as_str();
+        }
+        out
+    }
+
+    /// Whether there is nothing here worth sending or worth keeping. `Ctrl+D`
+    /// exits, `Esc` arms the rewind and `/` opens the palette on an empty
+    /// composer, so this decides what three keystrokes mean.
+    ///
+    /// Asked of [`Composer::text`] rather than of the widget's lines, because
+    /// those two disagree the moment a paste is not what it looks like. Paste a
+    /// blank region of a file — a run of indentation, a column of empty lines —
+    /// and it is over [`PASTE_THRESHOLD`], so it collapses to a placeholder that
+    /// is emphatically not whitespace, while the prompt it stands for is nothing
+    /// at all. Read the screen and the composer looks full; `Enter` reads the
+    /// expanded text and will not send it. The operator is then holding a prompt
+    /// that cannot be submitted, cannot be exited and cannot be cleared, and
+    /// nothing on the frame says why.
+    ///
+    /// So there is one question and `Enter` is where it is answered: what the
+    /// callers gate on is exactly what would be sent. The cost is expanding the
+    /// pastes for a keystroke that only wanted to know whether the prompt is
+    /// blank, which is bounded by what a terminal hands over in one paste event.
+    /// A cheaper second predicate that could drift from the first is precisely
+    /// what this was.
     pub fn is_empty(&self) -> bool {
-        self.area.lines().iter().all(|line| line.trim().is_empty())
+        self.text().trim().is_empty()
     }
 
     /// The prompts submitted so far, oldest first.
@@ -116,6 +208,11 @@ impl Composer {
                     return Reply::Idle;
                 }
                 let text = self.text();
+                // The same test [`Composer::is_empty`] makes, on the same
+                // expanded text — it is written out here only because the text
+                // is already in hand. Change one and change the other, or the
+                // composer goes back to refusing to send a prompt it also
+                // refuses to call empty.
                 if text.trim().is_empty() {
                     return Reply::Idle;
                 }
@@ -147,17 +244,69 @@ impl Composer {
     /// Inserted verbatim, newlines included, rather than replayed as keystrokes —
     /// which is what an unbracketed paste of a multi-line block does, and it
     /// submits the prompt on the first newline.
+    ///
+    /// A paste over [`PASTE_THRESHOLD`] leaves one line saying what it is and how
+    /// large, and the block itself is kept beside the text and put back by
+    /// [`Composer::text`]. Anything at or under the threshold is inserted exactly
+    /// as it always was.
     pub fn paste(&mut self, text: &str) {
         self.editing();
-        self.area.insert_str(text);
+        // `chars`, never `len`: a byte count is not the size the operator can
+        // check against what they copied, and it is off by a factor of three for
+        // a paste of prose in most of the world's scripts.
+        let size = text.chars().count();
+        if size <= PASTE_THRESHOLD {
+            self.area.insert_str(text);
+            return;
+        }
+        // Content before metadata: what this line is, then how large it is. No
+        // mark from `theme.glyphs` appears in it, deliberately — the line is
+        // composed here, where the composer has no theme in hand, and a glyph set
+        // stashed on this type would be a second one derived downstream of the
+        // one chosen at startup, which is the thing `crate::glyphs` says nothing
+        // may do. Every character below is in both sets, so the line reads the
+        // same under either.
+        //
+        // The ordinal is what keeps two placeholders apart: two pastes of the
+        // same size would otherwise spell the same line, and the second would be
+        // sent as the first. It counts every paste this prompt has taken, not the
+        // ones still in the text, so deleting one cannot free its number for
+        // reuse.
+        let placeholder = format!(
+            "[pasted text #{}, {size} characters]",
+            self.pastes.len() + 1
+        );
+        self.area.insert_str(&placeholder);
+        self.pastes.push((placeholder, text.to_string()));
+    }
+
+    /// Put `text` in the prompt, replacing whatever is there, cursor at the end.
+    ///
+    /// The slash palette's `Enter`, and its only caller. The command is *typed*
+    /// rather than run: the submit path stays the one path — `Enter`, then
+    /// `strip_prefix('/')`, then [`crate::commands::parse`] — so the palette adds
+    /// no second way for a command to be dispatched, and the operator sees and
+    /// can edit what they are about to send.
+    ///
+    /// It goes through the same replacement a walk back through history uses, so
+    /// there is one answer to "what happens to the pasted blocks" and not two.
+    /// The palette only opens on an empty prompt, so in practice there is nothing
+    /// to carry across.
+    pub fn set(&mut self, text: &str) {
+        self.replace(text);
     }
 
     /// Empty the composer, keeping the history.
+    ///
+    /// The pasted blocks go with the text. They belong to the prompt being
+    /// written — once it is submitted or abandoned, a placeholder that survived
+    /// would be standing in for something nobody can see any more.
     pub fn clear(&mut self) {
         self.area.select_all();
         self.area.cut();
         self.recalled = None;
         self.draft.clear();
+        self.pastes.clear();
     }
 
     /// Render into `area`, prompt marker included.
@@ -252,7 +401,12 @@ impl Composer {
         }
         let next = match self.recalled {
             None => {
-                self.draft = self.text();
+                // The collapsed form, not the expanded one. The draft is put
+                // back into the composer verbatim when the walk returns, and
+                // stashing the expanded text here would hand the operator the
+                // whole file back in two rows — the flood the placeholder exists
+                // to prevent, arriving by a different door.
+                self.draft = self.typed();
                 self.history.len() - 1
             }
             Some(0) => 0,
@@ -278,12 +432,23 @@ impl Composer {
         }
     }
 
+    /// Swap what is in the composer for `text`, keeping everything the walk
+    /// through history is holding.
+    ///
+    /// The pasted blocks are carried across the `clear` along with `recalled` and
+    /// `draft`, and for the same reason: the draft this walk will come back to
+    /// still has its placeholders in it, and a block dropped here would leave one
+    /// of them standing for nothing. A recalled *history* entry needs none of
+    /// them — history keeps prompts whole — so the stale entries simply never
+    /// match, and `clear` drops them when the prompt is done.
     fn replace(&mut self, text: &str) {
         let recalled = self.recalled;
         let draft = std::mem::take(&mut self.draft);
+        let pastes = std::mem::take(&mut self.pastes);
         self.clear();
         self.recalled = recalled;
         self.draft = draft;
+        self.pastes = pastes;
         self.area.insert_str(text);
         self.area.move_cursor(CursorMove::End);
     }

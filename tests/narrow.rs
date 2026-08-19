@@ -6,10 +6,74 @@
 
 mod support;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
 const WIDTH: u16 = 80;
 const HEIGHT: u16 = 24;
+
+/// Both glyph sets, as the themes the surfaces are actually drawn with.
+///
+/// The arithmetic differs between them — the ellipsis is one character in Unicode
+/// and three in ASCII — so a fitter that reserved the wrong number of cells clips
+/// every shortened row of every surface at once, and only in one set.
+fn themes() -> [io_cli::theme::Theme; 2] {
+    [
+        io_cli::theme::DARK.with_glyphs(io_cli::glyphs::UNICODE),
+        io_cli::theme::DARK.with_glyphs(io_cli::glyphs::ASCII),
+    ]
+}
+
+/// No row of `drawn` is wider than the terminal.
+///
+/// A bound and nothing more, which is the whole reason it is never the only
+/// assertion in a test below. `Screen::viewport_text` right-trims every row, so a
+/// row clipped at eighty and a row fitted to eighty are the same length here; this
+/// catches a wrap, and the `ends_with(ellipsis)` assertions beside it are what
+/// catch a clip.
+fn within_eighty(set: &str, drawn: &str) {
+    for line in drawn.lines() {
+        assert!(
+            line.chars().count() <= WIDTH as usize,
+            "a row overflowed eighty columns ({set}): {line:?}",
+        );
+    }
+}
+
+/// Type at a picker, one character at a time, exactly as an operator would.
+fn type_at(picker: &mut io_cli::picker::Picker, text: &str) {
+    for character in text.chars() {
+        picker.key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+}
+
+/// Draw a picker in the session's own four-row viewport and read the real render
+/// buffer back.
+///
+/// Four rows because that is the only size a picker is ever drawn at in a session:
+/// `paint_picker` hands it `frame.area()` of the inline viewport, whose height is
+/// fixed at attach and does not grow for an overlay. A test that gave it twelve
+/// rows would be auditing a screen this product does not have.
+fn drawn(picker: &mut io_cli::picker::Picker, theme: &io_cli::theme::Theme) -> String {
+    let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), theme))
+        .expect("frame");
+    screen.viewport_text().to_string()
+}
+
+/// Every built line as a reader would see it, spans concatenated.
+fn text_of(lines: &[Line<'static>]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
+}
 
 #[test]
 fn f9_a_commit_taller_than_the_screen_keeps_the_viewport() {
@@ -811,4 +875,581 @@ fn n5_the_armed_rewind_line_keeps_both_halves_at_eighty_columns() {
         written.contains("is lost"),
         "the consequence has to survive the wrap, not just the warning word: {written:?}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// F12 — the surfaces 0.7.0 added, at eighty columns, in both glyph sets.
+//
+// Two gates, and the first is why a length bound is never the only assertion
+// below. ratatui clips a viewport row in silence: this product has lost a
+// load-bearing half of a row three separate times, and each time the width test
+// was green *because* the content was gone. `Screen::viewport_text` right-trims,
+// so a clipped row and a fitted row are the same length — what tells them apart
+// is that a fitted row carries the whole ellipsis and a clipped one is a
+// character short of it. So every surface here is asserted for the fact that had
+// to survive, and for `ends_with` the mark of the set it was drawn in.
+//
+// The second gate is the cursor, and it lives in `tests/cursor.rs` for the
+// surfaces that are frames. The plan block and the `!` block are not: both are
+// committed into the terminal's own scrollback, where there is no frame for a
+// caret to be missing from.
+//
+// Nothing here uses a double-width character. Every width bound in this crate
+// counts `chars()` rather than display cells, which is recorded as a limitation
+// rather than asserted around.
+// ---------------------------------------------------------------------------
+
+/// A templates directory holding one template whose description io-harness
+/// clamps.
+///
+/// The clamp is `DESCRIPTION_CAP` in `io_harness::template`, two hundred and
+/// forty characters against an eighty-column terminal, so this is the longest
+/// detail the palette can ever be handed and the row where a fitter that is one
+/// cell out is visible.
+fn templates_directory() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(
+        dir.path().join("triage.md"),
+        format!(
+            "---\nname: triage\ndescription: {}\n---\nSift the failures.\n",
+            "sift the failures and say which one to look at first, ".repeat(8),
+        ),
+    )
+    .expect("a template is written");
+    dir
+}
+
+/// **F12 — the slash palette at eighty columns.**
+///
+/// The palette is a `Picker` over two inventories that behave differently at a
+/// width: a command's detail is a sentence this repository wrote and can keep
+/// short, and a template's is whatever an operator put in a file, arriving
+/// already clamped to two hundred and forty characters by io-harness. The second
+/// is the row under audit, and the `template: ` marker at the front of it is the
+/// fact that has to survive — it is the only thing on screen that says a row is a
+/// template rather than a command, and it rides at the front precisely because a
+/// detail is fitted from the right.
+#[test]
+fn f12_the_slash_palette_fits_eighty_columns_in_both_glyph_sets() {
+    use io_cli::commands::{self, TEMPLATE};
+    use io_cli::picker::Picker;
+
+    let dir = templates_directory();
+    let templates = io_harness::Templates::discover(dir.path()).expect("the directory walks");
+    let described = templates
+        .iter()
+        .next()
+        .expect("one template was written")
+        .description
+        .chars()
+        .count();
+    assert!(
+        described > 240,
+        "the fixture has to really reach io-harness's own clamp, or the row under \
+         audit is an ordinary one: {described} characters",
+    );
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mark = theme.glyphs.ellipsis;
+        let palette = |query: &str| {
+            let mut picker = Picker::new("Which command?", commands::palette(&templates));
+            type_at(&mut picker, query);
+            picker
+        };
+
+        // As the driver opens it: the whole inventory, nothing typed.
+        let opened = drawn(&mut palette(""), &theme);
+        within_eighty(set, &opened);
+        let mut rows = opened.lines();
+        assert_eq!(
+            rows.next().unwrap_or_default(),
+            "Which command?",
+            "the title is what a picker with an empty query draws ({set}): {opened:?}",
+        );
+        let first = rows.next().unwrap_or_default();
+        assert!(
+            first.starts_with(theme.glyphs.marker),
+            "the selection marker is the only thing that says which row Enter takes \
+             ({set}): {opened:?}",
+        );
+        assert!(
+            first.contains("help") && first.contains("this table"),
+            "a command row carries its name and what it does ({set}): {first:?}",
+        );
+
+        // The longest description this release ships, reached by typing its name.
+        // The head is the query rather than the title, which is where the query
+        // is drawn; the row under it is the match, and the assertion is on the
+        // whole of the description — a row that kept its first half would still
+        // contain the word the query found it by.
+        let expand = drawn(&mut palette("expand"), &theme);
+        within_eighty(set, &expand);
+        let mut rows = expand.lines();
+        assert_eq!(
+            rows.next().unwrap_or_default(),
+            "expand",
+            "the query is drawn in place of the title, not above it ({set}): {expand:?}",
+        );
+        let row = rows.next().unwrap_or_default();
+        assert!(
+            row.contains("commit the last step's full detail into the scrollback"),
+            "the longest command description in the inventory was cut ({set}): {row:?}",
+        );
+
+        // The template row, whose detail is three times the terminal.
+        let triage = drawn(&mut palette("triage"), &theme);
+        within_eighty(set, &triage);
+        let row = triage
+            .lines()
+            .find(|line| line.contains(TEMPLATE))
+            .unwrap_or_else(|| panic!("the template row is not on the screen ({set}): {triage:?}"));
+        assert!(
+            row.contains("triage"),
+            "a template row is labelled with the name `Templates::render` knows it \
+             by ({set}): {row:?}",
+        );
+        assert!(
+            row.contains(&format!("{TEMPLATE}sift the failures")),
+            "the marker rides at the front of the detail so a narrow terminal cannot \
+             be the thing that takes it off ({set}): {row:?}",
+        );
+        assert!(
+            row.ends_with(mark),
+            "the clamped description was clipped rather than fitted, so nothing on \
+             the row says it continues ({set}): {row:?}",
+        );
+    }
+}
+
+/// **F12 — the picker's query line, and the no-match line under it.**
+///
+/// The query is drawn *in place of* the title rather than on a line of its own,
+/// which is what keeps the row arithmetic the same whether or not anything has
+/// been typed — so a query wider than the terminal must fit rather than push or
+/// wrap, and the two lines must still be two lines.
+///
+/// The no-match line is new in 0.7.0 and had never been rendered at any width.
+/// It carries the query back inside quotes, so it is longer than the query it
+/// reports on and is the more easily clipped of the two.
+#[test]
+fn f12_the_pickers_query_line_and_its_no_match_line_fit_eighty_columns() {
+    use io_cli::picker::Picker;
+
+    // Wider than the terminal, and a subsequence of no label in the inventory, so
+    // one set of keystrokes exercises both lines at once.
+    const TYPED: &str = "why does the retry loop hammer the endpoint on every single \
+                         failure instead of backing off";
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mark = theme.glyphs.ellipsis;
+        let mut picker = Picker::new(
+            "Which command?",
+            io_cli::commands::palette(&io_harness::Templates::none()),
+        );
+        type_at(&mut picker, TYPED);
+        assert_eq!(
+            picker.matching(),
+            0,
+            "the fixture must really admit nothing, or the line under audit is \
+             never drawn ({set})",
+        );
+
+        let screen = drawn(&mut picker, &theme);
+        within_eighty(set, &screen);
+        let mut rows = screen.lines();
+
+        let head = rows.next().unwrap_or_default();
+        assert!(
+            head.starts_with("why does the retry loop"),
+            "the beginning of what was typed is what the operator is reading back \
+             ({set}): {head:?}",
+        );
+        assert!(
+            head.ends_with(mark),
+            "the query was clipped rather than fitted ({set}): {head:?}",
+        );
+
+        let note = rows.next().unwrap_or_default();
+        assert!(
+            note.starts_with("No row matches"),
+            "a query that admits nothing has to say so, or the screen is a query \
+             over blank rows and reads as a picker that has broken ({set}): {screen:?}",
+        );
+        assert!(
+            note.contains(theme.glyphs.quote_open),
+            "the query comes back quoted, so what was typed is distinguishable from \
+             the sentence around it ({set}): {note:?}",
+        );
+        assert!(
+            note.ends_with(mark),
+            "the no-match line was clipped rather than fitted ({set}): {note:?}",
+        );
+
+        assert_eq!(
+            screen.lines().filter(|line| !line.is_empty()).count(),
+            2,
+            "the query is drawn in place of the title and neither line wraps, so a \
+             picker with nothing to show is exactly two rows ({set}): {screen:?}",
+        );
+    }
+}
+
+/// A directory deep enough that its title is wider than the terminal.
+///
+/// Assembled a component at a time rather than joined from one slash-bearing
+/// literal, which is a path on unix and something else on Windows. The
+/// `/`-separated spelling below is the *listing* argument, which
+/// `complete::entries` documents as relative to the root and `/`-separated
+/// whatever the platform is.
+const DEEP: &str = "crates/some-rather-long-crate-name/src/subsystem/module/implementation";
+
+/// Longer than the seventy-eight columns a marker leaves a picker row.
+const LONG_FILE: &str =
+    "an-extremely-long-module-file-name-that-nobody-would-ever-type-by-hand-and-would-not-want-to.rs";
+
+fn deep_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let deep = dir
+        .path()
+        .join("crates")
+        .join("some-rather-long-crate-name")
+        .join("src")
+        .join("subsystem")
+        .join("module")
+        .join("implementation");
+    std::fs::create_dir_all(deep.join("generated")).expect("the directory tree");
+    std::fs::write(deep.join(LONG_FILE), "\n").expect("a file");
+    std::fs::write(deep.join("mod.rs"), "\n").expect("a file");
+    dir
+}
+
+/// The rows the driver builds for one directory: the listing, then the note that
+/// says the listing was cut.
+///
+/// The note is produced through `complete::cut_note` rather than by filling a
+/// directory with two hundred files. What is under audit here is the row at a
+/// width; that the bound is applied at all is `tests/complete.rs`'s claim, and
+/// two hundred files would make this test slow for a fact it does not assert.
+fn completion_rows(root: &std::path::Path) -> Vec<io_cli::picker::Row> {
+    let (found, _cut) = io_cli::complete::entries(root, &io_harness::Policy::permissive(), DEEP)
+        .expect("a listing");
+    let mut rows = io_cli::complete::rows(&found);
+    assert_eq!(
+        rows.len(),
+        3,
+        "the fixture is a directory of three: {rows:?}"
+    );
+    rows.push(io_cli::picker::Row::new(
+        io_cli::complete::cut_note(true, rows.len()).expect("a cut listing has a note"),
+    ));
+    rows
+}
+
+/// **F12 — the `@` completion picker at eighty columns.**
+///
+/// Its rows are last components rather than paths, so what is at risk is a file
+/// name longer than a row, the trailing separator that is the only thing saying a
+/// row is a directory, and the note that keeps a bounded listing from reading as
+/// a complete one. The note is the last row of a list taller than the viewport,
+/// so it is reached the way an operator reaches it.
+#[test]
+fn f12_the_completion_picker_fits_eighty_columns_in_both_glyph_sets() {
+    use io_cli::picker::Picker;
+
+    let workspace = deep_workspace();
+    let rows = completion_rows(workspace.path());
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mark = theme.glyphs.ellipsis;
+        let mut picker = Picker::new(io_cli::complete::title(DEEP, &theme.glyphs), rows.clone());
+
+        let opened = drawn(&mut picker, &theme);
+        within_eighty(set, &opened);
+
+        let head = opened.lines().next().unwrap_or_default();
+        assert!(
+            head.starts_with("Which path under "),
+            "the title says what is being listed ({set}): {opened:?}",
+        );
+        // The TAIL is what identifies a directory, and the rows are last
+        // components, so the title is the only thing on screen telling
+        // `app.rs` under `src` from `app.rs` under `tests`. A path too long
+        // for the row is shortened from the left, keeping the end.
+        assert!(
+            head.contains("implementation?"),
+            "the last component is what identifies the directory ({set}): {head:?}",
+        );
+        assert!(
+            head.contains(mark),
+            "the title was clipped rather than fitted ({set}): {head:?}",
+        );
+
+        let directory = opened
+            .lines()
+            .find(|line| line.contains("generated"))
+            .unwrap_or_else(|| panic!("the directory row is not drawn ({set}): {opened:?}"));
+        assert!(
+            directory.ends_with('/'),
+            "the trailing separator is the only thing on the row that says it is a \
+             directory, and it is at the end, which is the end that gets cut \
+             ({set}): {directory:?}",
+        );
+
+        let long = opened
+            .lines()
+            .find(|line| line.contains("an-extremely-long-module-file-name"))
+            .unwrap_or_else(|| panic!("the long file row is not drawn ({set}): {opened:?}"));
+        assert!(
+            long.ends_with(mark),
+            "the file name was clipped rather than fitted ({set}): {long:?}",
+        );
+
+        // The cut note sits past the viewport's three row slots, so `End` is what
+        // puts it on the screen — and a scrolled list is where a row is most
+        // easily drawn somewhere other than where it was measured.
+        picker.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        let scrolled = drawn(&mut picker, &theme);
+        within_eighty(set, &scrolled);
+        let note = scrolled
+            .lines()
+            .find(|line| line.contains("type to narrow it"))
+            .unwrap_or_else(|| panic!("the cut note is not on the screen ({set}): {scrolled:?}"));
+        assert!(
+            note.contains("of a larger directory"),
+            "the half of the note that says the listing was bounded is the half that \
+             stops it reading as `the file is not there` ({set}): {note:?}",
+        );
+    }
+}
+
+/// A finding from this release's audit, and the fix that answered it.
+///
+/// `complete::title` is documented as load-bearing rather than decorative: the
+/// rows are last components, so `app.rs` under `src` and `app.rs` under `tests`
+/// are the same three rows of characters and the title is the only thing on
+/// screen that tells them apart. `Picker::render` fits its head with
+/// `picker::fit`, which keeps the *beginning* — so at eighty columns a directory
+/// path longer than sixty-two characters loses exactly the last component that
+/// identifies it, and every deep directory's title reads
+/// `Which path under crates/some-rather-long-crate-name/src/subs…`.
+///
+/// The fix is in `complete::title`, which is the only caller that knows its head
+/// is a path: it shortens the path itself with `picker::fit_left` before wrapping
+/// it in the question, so what survives is the tail. `Picker` cannot do this — it
+/// is handed a string and cannot know a path is inside it.
+#[test]
+fn f12_the_completion_title_keeps_the_directory_it_names() {
+    use io_cli::picker::{Picker, Row};
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut picker = Picker::new(
+            io_cli::complete::title(DEEP, &theme.glyphs),
+            vec![Row::new("mod.rs".to_string())],
+        );
+        let head = drawn(&mut picker, &theme)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            head.contains("implementation"),
+            "the last component is what identifies the directory being listed, and \
+             it is what the fit took off ({set}): {head:?}",
+        );
+    }
+}
+
+/// **F12 — the plan committed to scrollback, at eighty columns.**
+///
+/// `TODO_TEXT_CAP` is two hundred characters and the terminal this product is
+/// audited at is eighty columns, so every item on a real plan is fitted. The
+/// state word is what must survive that: it is the load-bearing fact — where the
+/// agent says the item has got to — and the text is the part that may go. A row
+/// whose budget were one cell out would take the state instead, and a row that
+/// merely *contained* the word could have taken half of it, so the assertion is
+/// that the row **ends** with it.
+///
+/// No cursor claim: the plan is committed into the terminal's own scrollback and
+/// is never a frame, so there is nothing here for ratatui to hide a caret on.
+#[test]
+fn f12_a_committed_plan_fits_eighty_columns_and_keeps_its_state_word() {
+    use io_harness::{EventKind, RunEvent, TodoItem, TodoState};
+
+    // Longer than io-harness's own text cap, which the event is not subject to
+    // either — the cap is the store's, and this list is the model's.
+    let long = "port the error paths and then everything that reads them ".repeat(5);
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut events = io_cli::events::Events::new(theme);
+        let lines = events.event(
+            &RunEvent::new(
+                1,
+                1,
+                EventKind::TodoWrote {
+                    items: vec![
+                        TodoItem::new(long.clone(), TodoState::Done),
+                        TodoItem::new("change it", TodoState::Active),
+                        TodoItem::new(long.clone(), TodoState::Pending),
+                    ],
+                },
+            ),
+            std::time::Duration::ZERO,
+        );
+
+        let (mut screen, recorder) = support::screen(WIDTH, HEIGHT);
+        screen.commit(&lines).expect("commit the plan");
+
+        let rows = text_of(&lines);
+        for row in &rows {
+            assert!(
+                row.chars().count() <= WIDTH as usize,
+                "a plan row overran eighty columns ({set}): {row:?}",
+            );
+        }
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("1 of 3 done, by the agent's own account")),
+            "the header is what says the count is the agent's claim rather than a \
+             checked fact ({set}): {rows:?}",
+        );
+
+        for state in [TodoState::Done, TodoState::Active, TodoState::Pending] {
+            let word = state.as_str();
+            assert!(
+                rows.iter().any(|row| row.ends_with(word)),
+                "no row ends with {word:?}, so the fit took the state rather than \
+                 the text it was supposed to shorten ({set}): {rows:?}",
+            );
+            assert!(
+                recorder.contains(word),
+                "{word:?} never reached the terminal ({set})",
+            );
+        }
+
+        let fitted = rows
+            .iter()
+            .find(|row| row.contains("port the error paths"))
+            .unwrap_or_else(|| panic!("the long item never reached the plan ({set}): {rows:?}"));
+        assert!(
+            fitted.contains(theme.glyphs.ellipsis),
+            "a shortened item has to say it was shortened, or it reads as an item \
+             the agent wrote that way ({set}): {fitted:?}",
+        );
+    }
+}
+
+/// **F12 — the `!` shell block, at eighty columns.**
+///
+/// Committed rather than drawn, so a line wider than the terminal wraps and the
+/// question is not whether it fits but whether all of it arrived. The head and
+/// the tail of the wide line are asserted separately and are placed clear of the
+/// wrap columns on purpose: crossterm writes a cursor move where a row wraps, so
+/// a needle straddling one is not contiguous in the byte stream.
+///
+/// Both sets, and the block draws no glyph in either — the leading `!` is the
+/// character the operator pressed and the tone words are prose. That is the
+/// finding rather than an omission: there is nothing here for a glyph set to
+/// change, and this is what says so.
+#[test]
+fn f12_a_shell_block_reaches_the_terminal_whole_at_eighty_columns() {
+    use io_cli::shell::{self, Ran};
+
+    let wide = format!("HEAD{}TAIL", "x".repeat(180));
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let (mut screen, recorder) = support::screen(WIDTH, HEIGHT);
+        let lines = shell::lines(
+            "git log --oneline -20",
+            &Ran::Output {
+                stdout: format!("{wide}\n"),
+                stderr: "fatal: refname is ambiguous\n".to_string(),
+                status: Some(3),
+            },
+            &theme,
+        );
+        screen.commit(&lines).expect("commit the block");
+
+        let written = recorder.text();
+        assert!(
+            written.contains("! git log --oneline -20"),
+            "the echoed command is what says which line produced this block, and it \
+             never reached the terminal ({set})",
+        );
+        assert!(
+            written.contains("HEAD"),
+            "the beginning of a captured line never reached the terminal ({set})",
+        );
+        assert!(
+            written.contains("TAIL"),
+            "the end of a line wider than the terminal was truncated rather than \
+             wrapped ({set})",
+        );
+        assert!(
+            written.contains("fatal: refname is ambiguous"),
+            "stderr is committed after stdout and must not be the half that goes \
+             ({set})",
+        );
+        // The two halves separately, and that is not squeamishness: a notice is a
+        // styled word and an unstyled sentence, so crossterm writes an SGR change
+        // between them and the two are not contiguous in the byte stream.
+        assert!(
+            written.contains("warning:"),
+            "the exit status carries its tone as a word, so it reads the same under \
+             NO_COLOR and in a screen reader ({set})",
+        );
+        assert!(
+            written.contains("exited 3"),
+            "the exit status is the only thing on screen that says the command \
+             failed ({set})",
+        );
+    }
+}
+
+/// **F12 — the paste placeholder at eighty columns.**
+///
+/// The placeholder stands for a block nobody can see, so half of one stands for
+/// nothing: the ordinal keeps two pastes apart and the count is what the operator
+/// checks against what they copied. Both are on the end of the line, which is the
+/// end a narrow terminal takes.
+#[test]
+fn f12_the_paste_placeholder_is_whole_at_eighty_columns_in_both_glyph_sets() {
+    use io_cli::app::App;
+    use io_cli::composer::PASTE_THRESHOLD;
+
+    let pasted = "x".repeat(PASTE_THRESHOLD + 1);
+    let placeholder = format!("[pasted text #1, {} characters]", pasted.chars().count());
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut app = App::new(theme, "opus-5");
+        assert!(
+            app.paste(&pasted, false),
+            "nothing was open, so the paste had nowhere to go but the composer ({set})",
+        );
+
+        let (mut screen, _recorder) = support::screen(WIDTH, HEIGHT);
+        screen
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("frame");
+        let viewport = screen.viewport_text().to_string();
+        within_eighty(set, &viewport);
+
+        let row = viewport
+            .lines()
+            .find(|line| line.contains("pasted text"))
+            .unwrap_or_else(|| {
+                panic!("the placeholder is not on the screen ({set}): {viewport:?}")
+            });
+        assert!(
+            row.contains(&placeholder),
+            "the placeholder was cut, so the line no longer says which paste it is \
+             or how large ({set}): {row:?}",
+        );
+    }
 }

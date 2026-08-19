@@ -35,7 +35,7 @@ use io_cli::glyphs::{self, Glyphs, ASCII, UNICODE};
 use io_cli::picker::{fit, fit_left, Picker, Row};
 use io_cli::status::Status;
 use io_cli::theme::{Background, Theme, DARK, MONO};
-use io_harness::{Edit, EventKind, RunEvent};
+use io_harness::{Edit, EventKind, RunEvent, TodoItem, TodoState};
 use ratatui::text::Line;
 
 /// The theme every sweep below renders in: the ordinary dark palette, fully
@@ -447,6 +447,20 @@ fn every_event_this_release_renders_draws_in_ascii() {
             ok: Some(true),
             millis: Some(42),
         },
+        // The plan block, which 0.7.0 added and which this list did not have. Two
+        // items on purpose: one short enough to draw whole, and one longer than
+        // the eighty columns the block is fitted to, so the sweep covers the
+        // ellipsis the fitter appends as well as the three state words.
+        EventKind::TodoWrote {
+            items: vec![
+                TodoItem::new("read the current parser", TodoState::Done),
+                TodoItem::new(
+                    "port the tokenizer, the error paths, and everything that reads \
+                     either of them, one at a time",
+                    TodoState::Active,
+                ),
+            ],
+        },
         EventKind::Finished {
             outcome: "success".into(),
             steps: 4,
@@ -454,12 +468,75 @@ fn every_event_this_release_renders_draws_in_ascii() {
         },
     ];
 
+    // **The list above is checked against the renderer, not trusted.** It is
+    // hand-written, and a hand-written list cannot notice that `src/events.rs`
+    // grew an arm — which it did: `TodoWrote` landed in 0.7.0, was styled, was
+    // committed, and was swept by nothing until this line was written.
+    let mut covered: Vec<String> = kinds.iter().map(io_cli::events::kind_name).collect();
+    covered.push(io_cli::events::kind_name(&call.kind));
+    for kind in styled_kinds() {
+        assert!(
+            covered.contains(&kind),
+            "src/events.rs draws a line of its own for {kind:?} and nothing here \
+             renders it under the ASCII set, so a glyph in that arm reaches a \
+             terminal that cannot draw it",
+        );
+    }
+
     for kind in kinds {
         let name = io_cli::events::kind_name(&kind);
         let drawn = text(&events.event(&RunEvent::new(1, 1, kind), Duration::from_millis(120)));
         assert_ascii(&format!("the {name} event"), &drawn);
     }
     assert_ascii("the flushed tail", &text(&events.flush()));
+}
+
+/// Every event kind `src/events.rs` writes a line of its own for, read out of the
+/// renderer's own source.
+///
+/// The same shape [`support::harness_event_kinds`] uses on io-harness, and for
+/// the same reason: a list copied into a test cannot notice that the thing it is
+/// a list *of* has changed. The forty-one kinds that fall through to the
+/// catch-all are not here and do not need to be — the catch-all draws
+/// [`io_cli::events::kind_name`], which is ASCII by construction.
+///
+/// The match arms sit at exactly twelve spaces. Every other mention of the type
+/// in that file is a `use`, a doc line or an expression, and none of them is
+/// indented like this.
+fn styled_kinds() -> Vec<String> {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("events.rs"),
+    )
+    .expect("the renderer's source is in this repository")
+    .replace("\r\n", "\n");
+
+    let mut kinds: Vec<String> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix("            EventKind::"))
+        .map(|rest| {
+            let variant: String = rest
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            let mut snake = String::new();
+            for (index, character) in variant.char_indices() {
+                if character.is_ascii_uppercase() && index > 0 {
+                    snake.push('_');
+                }
+                snake.push(character.to_ascii_lowercase());
+            }
+            snake
+        })
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    assert!(
+        !kinds.is_empty(),
+        "no match arm was found; the renderer moved and this check is now blind",
+    );
+    kinds
 }
 
 #[test]

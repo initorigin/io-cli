@@ -91,6 +91,19 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// How much of the agent's plan the agent says is done, as done over total.
+    ///
+    /// `None` until the agent writes a list, and that is the whole of F12: a
+    /// session with no plan has not written a plan of nothing, so this renders as
+    /// nothing at all rather than as `0/0`. Set from a `TodoWrote`'s own items,
+    /// which carry the whole list on every write and are never a delta — there is
+    /// nothing to read back out of the store to complete it.
+    ///
+    /// It is drawn as a *claim*. io-harness's own documentation is explicit that
+    /// nothing verifies a plan item, so an item saying `Done` is what the agent
+    /// said about its own work; a field that stated it as a fact would be the one
+    /// place in this product where the plan stopped being the agent's account.
+    pub plan: Option<(usize, usize)>,
     /// Whether this session runs in plain mode.
     ///
     /// It lives on the status line rather than beside it because the status line
@@ -118,6 +131,7 @@ impl Status {
             tokens: None,
             context: None,
             containment: None,
+            plan: None,
             working: false,
             elapsed: Duration::ZERO,
             plain: false,
@@ -129,6 +143,35 @@ impl Status {
     /// else, so the animation cannot outlive the thing it is reporting on.
     pub fn advance(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+    }
+
+    /// Forget everything the *run* said, keeping what the *session* is.
+    ///
+    /// Called when the conversation under this line changes: `/resume` onto
+    /// another session, `/fork` away from this one, a rewind that undoes the turn
+    /// that set a field. Every field cleared here is a per-run fact — the tokens
+    /// that run spent, how full its context got, how its commands were contained,
+    /// how much of its plan the agent claimed — and none of them outlives the run
+    /// that reported it. A line that goes on asserting them is describing a
+    /// conversation that is no longer on the screen.
+    ///
+    /// The whole class rather than `plan` alone. `tokens`, `context` and
+    /// `containment` have had the same hole since they were added and would want
+    /// the same call at the same three sites, and four methods to make one moment
+    /// true is three more than the moment has.
+    ///
+    /// Nothing is read back to replace them, though the store holds the resumed
+    /// run's plan: F12 sets that field from `TodoWrote`'s own items with no store
+    /// read, and absent is the honest answer until the agent writes a list in the
+    /// run that is now on screen.
+    ///
+    /// The model, the posture, plain mode and the session's age are not run facts
+    /// and are left alone — the session is the same session either way.
+    pub fn forget_run(&mut self) {
+        self.tokens = None;
+        self.context = None;
+        self.containment = None;
+        self.plan = None;
     }
 
     /// The indicator, if there is anything to indicate and anywhere to show it.
@@ -184,6 +227,21 @@ impl Status {
         }
         if let Some(containment) = &self.containment {
             fields.push(Field::new(containment.clone(), Tone::Muted));
+        }
+        // Rightmost, and so the first field to go when the terminal narrows. It is
+        // the only field on this line that is not an observation — everything to
+        // its left is something the harness reported happening, and this is what
+        // the agent says about its own work — and the plan itself is in the
+        // transcript a row above for a reader who wants more than the count.
+        //
+        // `claimed` rather than `done` for that reason, in the same words the
+        // transcript's own plan header uses. The one-word form is what fits beside
+        // six other fields at eighty columns.
+        if let Some((done, total)) = self.plan {
+            fields.push(Field::new(
+                format!("plan {done}/{total} claimed"),
+                Tone::Muted,
+            ));
         }
         fields
     }
