@@ -178,6 +178,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/copy diff` | put the whole run's patch on the system clipboard |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/fleet` | show the children this turn has spawned |
+| `/attach` | put an image in front of the agent, for the next turn only |
 
 <!-- commands:end -->
 
@@ -234,6 +235,54 @@ starts. `Ctrl+C` still ends the turn, at the next point where no child is in
 flight, and the interface tells you that is what it is waiting for rather than
 appearing to have missed the key. `/contain off` gives the next turn back to
 steering; `/contain on` takes it back.
+
+## Pictures
+
+`/attach @docs/shot.png` puts an image in front of the agent for the **next turn
+and only the next turn**, and says so before the turn goes. Attach again for the
+question after it.
+
+The path is read through io-harness's own workspace, under the same policy as
+everything else — its documentation is explicit that this is the same gate a
+source read passes and not a second one — so an image outside what the session
+may read is refused exactly the way a file outside it already is. What may be
+sent is io-harness's decision too: bmp, tiff, ico, tga and pnm are converted to
+PNG on the way in, jpeg, png, gif and webp go as they are, and svg, heic and avif
+are refused **by name**, because a refusal that says which format it was is one
+you can act on. A provider that does not accept images at all is refused at the
+door rather than after you have typed the prompt.
+
+**The agent can look at images in the workspace from this release**, using
+io-harness's own `view_image` tool, which enabling its `media` feature switches
+on. It is bounded by the same policy as any other read. When it looks, the same
+picture goes into your scrollback at that point in the conversation, so you are
+reading what it read rather than a path you would have to open yourself.
+
+A picture is drawn from half blocks — `▀` splits a cell into two halves that are
+each about square — fitted to your terminal's width and bounded in height. On
+kitty, ghostty, WezTerm and Konsole a PNG is drawn as the **real image** instead.
+Inside tmux or screen it is always half blocks: passing a graphics protocol
+through a multiplexer needs configuration that is off by default, and an escape
+the terminal cannot read is unreadable bytes written permanently into your
+scrollback.
+
+Under `--plain`, under `NO_COLOR`, and with the ASCII glyph set there is no
+picture at all — one line naming the file, its format and its size. A half-block
+picture is colour carrying the entire meaning, which is the one thing this
+interface will not do.
+
+## Background jobs
+
+An agent can start something that outlives the step that started it — a dev
+server, a watcher, a long build. That is the point of it and it is also the
+problem: a run waiting on a background process looks exactly like a run that has
+hung.
+
+So the command is named when it starts, the status line grows a `bg 2` field
+counting what is still alive, and each job says how it ended: exited with a
+status, killed, or **left running** by a run that finished before it did. The
+field is absent when nothing is running rather than showing `0` — a session that
+has started no background work has not started zero jobs.
 
 ## Reading it without seeing it
 
@@ -422,10 +471,27 @@ it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.8.0 is the release where a decomposed task becomes visible while it runs: a
-session given containment caps fans out, and the children, the tiers, the
-refusals and the spend are on screen as they happen. Inline images and the live
-indicators for background handles are 0.9.0.
+0.9.0 is the release where the session gains sight: you can show the agent a
+picture, it can look at one itself, and both land in your scrollback. Background
+work that outlives a step is named and counted rather than looking like a hang.
+
+**iTerm2's own inline-image protocol is not here.** Its escape has no equivalent
+of the Kitty flag that says "place this without moving the cursor", so it
+advances the cursor and may scroll — and a scroll changes what every later cursor
+move in the same draw means. It very likely lines up against a region of exactly
+the right height, but "very likely" is not good enough when the failure is
+written permanently into your scrollback. iTerm2 gets half blocks, which are a
+picture. Sixel is absent because encoding it means palette quantisation and
+another dependency, for terminals that either speak Kitty too or draw half blocks
+correctly. And the real-image path covers PNG rather than all four wire formats,
+because Kitty's own transfer format is PNG and the only base64 this program has
+is the one io-harness already computed — a screenshot is a PNG everywhere that
+takes one.
+
+**An image the agent was *given* rather than asked for is not shown.** A picture
+returned by an MCP tool, and a browser screenshot, both become images inside
+io-harness — but through private plumbing and with no event of any kind, so
+nothing reaches this program to draw.
 
 **Harness skills are not in the palette, and prompt templates are.** The
 difference is not effort. A template is expanded by io-cli into prompt text, so

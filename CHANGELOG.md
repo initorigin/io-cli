@@ -6,6 +6,74 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-19
+
+The session gains sight, in both directions.
+
+You can show the agent a picture, and you can see the picture the agent looked
+at, in the terminal you are already in rather than by going and opening a file.
+
+### Added
+
+- **`/attach`, which puts an image in front of the agent for the next turn and
+  only the next turn.** The path is read through io-harness's `Workspace`, which
+  documents that as the same policy gate a source read passes rather than a
+  second one — so an image the session may not read is refused exactly the way a
+  file it may not read already is. The argument can be `@`-completed, because the
+  path picker opens on `@` after any whitespace and not only at an empty prompt.
+- **The picture the agent looked at, committed where it looked.** Enabling
+  io-harness's `media` feature puts its own `view_image` tool into the workspace
+  tool set, so **the agent gains the ability to look at images in this release**.
+  It is governed by the same policy as any other read, and when it does look, the
+  same picture goes into your scrollback at that point in the conversation.
+- **Half-block rendering, which works on every terminal.** `▀` splits a cell into
+  two halves that are each about square, so a picture is drawn from the cells the
+  terminal already has, fitted to its width and bounded in height.
+- **The real image where the terminal speaks the Kitty graphics protocol** —
+  kitty, ghostty, WezTerm and Konsole. Placed with `C=1`, which is what lets it
+  sit inside a renderer that draws the cells around it.
+- **Background shell handles are named, counted and accounted for.** A
+  `shell_start` outlives the step that launched it, which is the whole point of
+  it and the whole problem: a run waiting on a dev server looks exactly like a
+  run that has hung. The command is named when it starts, a `bg N` field counts
+  what is still alive, and each job says how it ended — exited with a status,
+  killed, or left running by a run that finished first.
+
+### Changed
+
+- `io-harness` is taken with `features = ["media"]`. The pin does not move; 0.9.0
+  is still built against 0.65.
+- `image` is the eleventh direct dependency, with `default-features = false` and
+  exactly the nine formats io-harness will accept from a file. Its defaults would
+  pull an AV1 encoder and rayon into a crate that only ever decodes a file the
+  harness has already accepted.
+
+### Not in this release
+
+- **iTerm2's own inline-image protocol.** Its escape has no equivalent of Kitty's
+  `C=1`: it advances the cursor and may scroll, and a scroll changes what every
+  later absolute cursor move in the same draw means. It probably lines up against
+  a region of exactly the right height — but "probably" is not good enough when
+  the failure lands in scrollback that no later redraw can clean. iTerm2 gets the
+  cell form, which is a picture. Deferred to 0.10.0.
+- **Sixel.** Encoding it means palette quantisation, which means another
+  dependency, for terminals that either also speak Kitty or render half blocks
+  correctly.
+- **The graphics path for jpeg, gif and webp.** Kitty's `f=100` is PNG, and the
+  only base64 in reach is the one io-harness already computed — this crate takes
+  no base64 dependency. `Media::attach` transcodes bmp, tiff, ico, tga and pnm to
+  PNG on the way in, so those reach the graphics path along with png itself,
+  while jpeg, gif and webp take the cell form.
+- **Anything the agent was *given* rather than asked for.** An image returned by
+  an MCP tool and a browser screenshot both become images inside io-harness, but
+  through private plumbing and with no event of any kind — there is no media
+  variant among its fifty-one — so nothing reaches this program to draw.
+- **Live indicators for MCP servers, language servers and the browser.** All
+  three are fields of a task contract supplied by the caller, and no io-harness
+  session entry point takes one, so those events cannot fire in a session at all.
+  They already work in `io exec`, whose contract carries them, and `--json`
+  already emits them. Moved to 0.10.0, which waits on the same change.
+
 ## [0.8.0] - 2026-08-19
 
 A decomposed task becomes visible while it runs.
