@@ -21,6 +21,23 @@ updates:
       # so a patch bump moves Cargo.lock and nothing anybody resolves against.
       patch-updates:
         update-types: ["patch"]
+    ignore:
+      # The composer is `tui-textarea` 0.7, and it is built against exactly
+      # ratatui 0.29 and crossterm 0.28. Upstream has published nothing newer
+      # since 2024-10, so bumping either crate puts two crossterm versions in the
+      # tree and the build stops: `Input: From<crossterm::event::KeyEvent>` and
+      # `&TextArea: Widget` both stop resolving. Dependabot raised exactly that
+      # pair and both PRs were closed rather than merged. These two entries are
+      # what keeps it from raising them again every week; delete them the day
+      # tui-textarea publishes a release against the 0.30 line. Both crates are
+      # pre-1.0, so the minor bump is the breaking one — patches still come
+      # through.
+      - dependency-name: ratatui
+        update-types:
+          ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: crossterm
+        update-types:
+          ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
