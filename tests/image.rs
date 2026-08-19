@@ -248,8 +248,8 @@ fn a_file_that_is_not_an_image_is_an_error_and_not_a_panic() {
 /// read it is unreadable bytes written permanently into scrollback that no later
 /// redraw can clean.
 mod graphics {
-    use io_cli::picture::{kitty, render, Drawn};
-    use io_cli::term::speaks_kitty_graphics;
+    use io_cli::picture::{iterm2, kitty, render, Drawn};
+    use io_cli::term::{graphics_protocol, speaks_kitty_graphics, Graphics};
 
     /// An environment lookup built from pairs, so no test mutates the process it
     /// runs in — and so every branch is reachable, including the ones this
@@ -365,13 +365,13 @@ mod graphics {
     fn a_png_reaches_the_graphics_path_and_a_terminal_without_it_gets_cells() {
         let png = super::support::png_bytes(8, 4);
 
-        let with = render(&png, "shot.png", "image/png", true, true, 80);
+        let with = render(&png, "shot.png", "image/png", true, Graphics::Kitty, 80);
         assert!(
-            matches!(with, Drawn::Kitty { .. }),
+            matches!(with, Drawn::Graphics { .. }),
             "a png on a terminal that speaks the protocol is the real image",
         );
 
-        let without = render(&png, "shot.png", "image/png", true, false, 80);
+        let without = render(&png, "shot.png", "image/png", true, Graphics::None, 80);
         let Drawn::Lines(lines) = without else {
             panic!("a terminal that does not speak the protocol must get cells")
         };
@@ -384,11 +384,191 @@ mod graphics {
         // wants no picture. A protocol the terminal happens to speak does not
         // override any of them.
         let png = super::support::png_bytes(8, 4);
-        let drawn = render(&png, "shot.png", "image/png", false, true, 80);
+        let drawn = render(&png, "shot.png", "image/png", false, Graphics::Kitty, 80);
 
         let Drawn::Lines(lines) = drawn else {
             panic!("plain mode must not emit a graphics escape")
         };
         assert_eq!(lines.len(), 1, "one line naming the file");
+    }
+
+    /// **F7.** iTerm2 is the second protocol, and the environment names it the
+    /// same way the first one is named: by what the terminal says it is, never by
+    /// a query, because a reply to a graphics query is an APC string crossterm's
+    /// parser does not model.
+    #[test]
+    fn each_terminal_is_given_the_protocol_it_speaks_and_no_other() {
+        for (pairs, expected) in [
+            (vec![("TERM", "xterm-kitty")], Graphics::Kitty),
+            (vec![("KITTY_WINDOW_ID", "1")], Graphics::Kitty),
+            (
+                vec![("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")],
+                Graphics::Iterm2,
+            ),
+            (
+                vec![("TERM", "xterm-256color"), ("LC_TERMINAL", "iTerm2")],
+                Graphics::Iterm2,
+            ),
+            (vec![("TERM_PROGRAM", "Apple_Terminal")], Graphics::None),
+            (vec![("TERM", "vt100")], Graphics::None),
+            (vec![], Graphics::None),
+        ] {
+            assert_eq!(
+                graphics_protocol(env(&pairs)),
+                expected,
+                "wrong protocol for: {pairs:?}",
+            );
+        }
+    }
+
+    /// A multiplexer sits between this process and whatever would draw the
+    /// picture, and it hides BOTH protocols — the refusal is the terminal's
+    /// answer, not one protocol's.
+    #[test]
+    fn a_multiplexer_hides_every_protocol() {
+        for pairs in [
+            vec![("TERM", "xterm-kitty"), ("TMUX", "/tmp/tmux-501/default")],
+            vec![("TERM_PROGRAM", "iTerm.app"), ("TMUX", "/tmp/x")],
+            vec![("TERM_PROGRAM", "iTerm.app"), ("STY", "1234.pts-0")],
+            vec![("TERM", "screen.xterm-256color")],
+            vec![("TERM", "tmux-256color"), ("TERM_PROGRAM", "iTerm.app")],
+        ] {
+            assert_eq!(
+                graphics_protocol(env(&pairs)),
+                Graphics::None,
+                "a multiplexer must hide the protocol: {pairs:?}",
+            );
+        }
+    }
+
+    /// **F7 — the escape states the cells it will occupy, and puts the cursor
+    /// back.** iTerm2 has no equivalent of Kitty's `C=1`, which is why 0.9.0
+    /// deferred it: the placement advances the cursor. `\x1b7`/`\x1b8` — save and
+    /// restore — is what makes it compose with a renderer that draws the cells
+    /// around it, and `width`/`height` in cells is what makes the rows it costs
+    /// known before it is written rather than discovered afterwards.
+    #[test]
+    fn the_iterm2_escape_states_its_cells_and_leaves_the_cursor_where_it_found_it() {
+        let escape = iterm2("QUJD", 10, 5);
+
+        assert!(
+            escape.starts_with("\x1b7\x1b]1337;File="),
+            "the cursor is saved before the placement: {escape:?}",
+        );
+        assert!(escape.ends_with("\x07\x1b8"), "and restored after it");
+        assert!(escape.contains("inline=1"), "inline, not a download");
+        assert!(escape.contains("width=10"), "the width is in cells");
+        assert!(escape.contains("height=5"), "so is the height");
+        assert!(
+            escape.contains("preserveAspectRatio=1"),
+            "the fit is the fitter's, not the terminal's",
+        );
+        assert!(escape.contains(":QUJD"), "the payload rides verbatim");
+        assert_eq!(
+            escape.matches('\x07').count(),
+            1,
+            "one BEL terminates one escape",
+        );
+    }
+
+    /// The formats differ from Kitty's and that is the point: Kitty's `f=100` is
+    /// PNG, so a jpeg takes cells there. iTerm2 decodes the file itself, so the
+    /// same jpeg is the real image.
+    #[test]
+    fn a_jpeg_is_the_real_image_on_iterm2_and_cells_on_kitty() {
+        let jpeg = super::support::jpeg_bytes(8, 4);
+
+        assert!(
+            matches!(
+                render(&jpeg, "shot.jpg", "image/jpeg", true, Graphics::Iterm2, 80),
+                Drawn::Graphics { .. }
+            ),
+            "iTerm2 takes the jpeg as it is",
+        );
+        assert!(
+            matches!(
+                render(&jpeg, "shot.jpg", "image/jpeg", true, Graphics::Kitty, 80),
+                Drawn::Lines(_)
+            ),
+            "Kitty's f=100 is PNG, so a jpeg is cells there",
+        );
+    }
+
+    /// Both protocols claim the rows the same fitter computed, so the two forms
+    /// never disagree about how much scrollback a picture costs — and the region
+    /// `commit_raw` reserves is the region the picture fills.
+    #[test]
+    fn the_two_protocols_claim_the_same_rows_for_the_same_picture() {
+        let png = super::support::png_bytes(8, 4);
+
+        let Drawn::Graphics {
+            rows: kitty_rows, ..
+        } = render(&png, "shot.png", "image/png", true, Graphics::Kitty, 80)
+        else {
+            panic!("a png on Kitty is the real image")
+        };
+        let Drawn::Graphics {
+            rows: iterm_rows, ..
+        } = render(&png, "shot.png", "image/png", true, Graphics::Iterm2, 80)
+        else {
+            panic!("a png on iTerm2 is the real image")
+        };
+
+        assert_eq!(kitty_rows, iterm_rows);
+        let Drawn::Lines(lines) = render(&png, "shot.png", "image/png", true, Graphics::None, 80)
+        else {
+            panic!("a terminal with no protocol gets cells")
+        };
+        assert_eq!(
+            u16::try_from(lines.len()).unwrap(),
+            kitty_rows,
+            "and the cells cost the same rows as the escape claims",
+        );
+    }
+
+    /// The plain form beats iTerm2 exactly as it beats Kitty: colour carrying the
+    /// whole meaning is what `--plain` and `NO_COLOR` exist to refuse.
+    #[test]
+    fn the_plain_form_beats_iterm2_too() {
+        let png = super::support::png_bytes(8, 4);
+        let Drawn::Lines(lines) =
+            render(&png, "shot.png", "image/png", false, Graphics::Iterm2, 80)
+        else {
+            panic!("plain mode must not emit a graphics escape")
+        };
+        assert_eq!(lines.len(), 1, "one line naming the file");
+    }
+
+    /// **F7 — the escape reaches the scrollback, and the rows it costs are the
+    /// rows that were reserved.** This is the half a byte-stream assertion on
+    /// `iterm2()` alone cannot make: the placement is written through
+    /// `Screen::commit_raw`, which opens a region of exactly `rows` rows and
+    /// empties every cell but the first — a row of spaces printed after the
+    /// placement would erase the picture it was just given.
+    ///
+    /// Sabotage: drop the `\x1b7`/`\x1b8` bracket from `iterm2()`, under which
+    /// only F7's cursor assertion fails — and it fails by leaving the cursor
+    /// wherever the image ended, which is what desynchronises every absolute
+    /// `MoveTo` the next frame writes.
+    #[test]
+    fn the_iterm2_placement_is_committed_into_the_rows_it_reserved() {
+        let (mut screen, recorder) = super::support::screen(80, 24);
+        let payload = iterm2("QUJD", 10, 3);
+
+        screen.commit_raw(&payload, 3).expect("commit");
+
+        let written = recorder.text();
+        assert!(
+            written.contains(&payload),
+            "the escape reaches the terminal verbatim",
+        );
+        let after = written
+            .split(&payload)
+            .nth(1)
+            .expect("the escape was written");
+        assert!(
+            !after.contains(' '),
+            "no cell after the placement may print a space over it: {after:?}",
+        );
     }
 }

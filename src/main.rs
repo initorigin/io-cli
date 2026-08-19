@@ -222,10 +222,18 @@ async fn drive(
         notices.push(complaint);
     }
     // The caps the fleet needs, read once and cloned out of the settings. A
-    // session with none cannot fan out: `turn_contained_observed` is the only
+    // session with none cannot fan out: `turn_contained_bounded_observed` is the only
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
+    let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
+    // The agent's own skills, walked once beside the templates and for the same
+    // reasons — the palette filters on every character typed, and a directory
+    // that would not walk has to say so or it reads as one nobody configured.
+    let (skills, complaint) = commands::skills(capabilities.skills.as_deref());
+    if let Some(complaint) = complaint {
+        notices.push(complaint);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -257,6 +265,8 @@ async fn drive(
             theme,
             plain,
             containment,
+            capabilities,
+            skills,
         },
     )
     .await?
@@ -285,6 +295,14 @@ struct Interactive<'a, 'b> {
     /// means the session cannot fan out at all, which is every session that
     /// configures nothing.
     containment: Option<io_harness::Containment>,
+    /// What `[app.io-cli]` asked a turn's contract to carry. Reaches a turn only
+    /// where the contract does, which is the contained turn — see
+    /// [`io_cli::contract`].
+    capabilities: io_cli::contract::Capabilities,
+    /// What io-harness discovered in the configured skills directory, walked once
+    /// at startup. Empty when nothing is configured and empty when the walk
+    /// failed — the notice above is what tells those two apart.
+    skills: io_harness::Skills,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -310,6 +328,8 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.theme,
             self.plain,
             self.containment,
+            self.capabilities,
+            self.skills,
             model,
         )
         .await
@@ -333,6 +353,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     theme: Theme,
     plain: bool,
     containment: Option<io_harness::Containment>,
+    capabilities: io_cli::contract::Capabilities,
+    skills: io_harness::Skills,
     model: String,
 ) -> Result<(), String> {
     // Built here rather than handed in, so there is one place a provider comes
@@ -542,7 +564,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `Pick::Resume` uses an `if let`: an index with nothing
                         // behind it puts nothing in the prompt rather than a
                         // guess.
-                        Pick::Palette => match commands::palette_pick(&templates, index) {
+                        Pick::Palette => match commands::palette_pick(&templates, &skills, index) {
                             Some(commands::Chosen::Command(command)) => app.composer.set(command),
                             // The rendered template, in the prompt and not on the
                             // wire. A template is a starting point for a goal
@@ -561,6 +583,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Ok(prompt) => app.composer.set(&prompt),
                                     Err(error) => app.say(Tone::Error, error),
                                 }
+                            }
+                            // A skill goes into the prompt by NAME and nothing
+                            // more. The body is the agent's to read — io-harness
+                            // hands it the catalogue and it opens the file under
+                            // the run's own policy — so a picker that pasted the
+                            // instructions in would be this crate holding a copy
+                            // of a skill, which is the one thing it must not do.
+                            Some(commands::Chosen::Skill(name)) => {
+                                app.composer.set(&commands::invoke_skill(&name));
                             }
                             None => {}
                         },
@@ -637,7 +668,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // rather than a test written here, because nothing can reach this file.
         if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
             picker = Some((
-                Picker::new("Which command?", commands::palette(&templates)),
+                Picker::new("Which command?", commands::palette(&templates, &skills)),
                 Pick::Palette,
             ));
             app.status.elapsed = started.elapsed();
@@ -929,6 +960,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // a label: with `None` here the turn built below is the
                     // steered turn, byte for byte.
                     contained.then_some(containment.as_ref()).flatten(),
+                    &capabilities,
                     text,
                     started,
                 )
@@ -964,7 +996,7 @@ fn commit_drawn(
             lines.extend(after);
             app.picture(lines);
         }
-        io_cli::picture::Drawn::Kitty { payload, rows } => {
+        io_cli::picture::Drawn::Graphics { payload, rows } => {
             // Anything already queued goes FIRST. A raw commit writes straight to
             // the terminal, so a picture emitted before the lines that precede it
             // would land above its own context — and scrollback cannot be
@@ -982,14 +1014,19 @@ fn commit_drawn(
     Ok(())
 }
 
-/// How this session may draw a picture: in cells, and whether as a real image.
-fn forms(app: &App) -> (bool, bool) {
+/// How this session may draw a picture: in cells, and under which graphics
+/// protocol — if any — it is the real image instead.
+fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
     let drawable = io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs);
     // A graphics escape is only ever sent where cells would also have been drawn:
     // `--plain`, `NO_COLOR` and the ASCII glyph set are each a reason a reader
     // wants no picture at all, and a protocol the terminal happens to speak does
     // not override any of them.
-    (drawable, drawable && io_cli::term::kitty_graphics())
+    if drawable {
+        (true, io_cli::term::graphics())
+    } else {
+        (false, io_cli::term::Graphics::None)
+    }
 }
 
 /// **The agent's own look, committed where it looked.**
@@ -1024,6 +1061,7 @@ async fn turn<P: Provider>(
     session: &mut Session,
     policy: &Policy,
     containment: Option<&io_harness::Containment>,
+    capabilities: &io_cli::contract::Capabilities,
     text: String,
     started: Instant,
 ) -> Result<(), String> {
@@ -1037,29 +1075,50 @@ async fn turn<P: Provider>(
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
     // declined everything it was named for.
     let (approver, mut asks) = approval::channel();
+    // The third seam, and the one that answers rather than authorizes. It reaches
+    // the run only through the contract, so on a flat turn the answerer is built
+    // and never spoken to — which is exactly what a session with no responder
+    // does today: the question pauses the run instead.
+    let (answerer, mut questions) = io_cli::intent::channel();
+    // The fourth, and the only one that can stop the work before it starts.
+    // Registering it is what turns io-harness's planning phase on, so it is put
+    // on the contract only where the contract itself reaches the run.
+    let (gate, mut plans) = io_cli::plan::channel();
     app.started();
     paint(screen, app)?;
 
     // **The two turns this product can take, and one loop over both.** They are
-    // genuinely different turns rather than one turn with a flag: only
-    // `turn_contained_observed` passes a containment into io-harness's driver, so
+    // genuinely different turns rather than one turn with a flag: only the
+    // contained entry point passes a containment into io-harness's driver, so
     // only it reaches the loop that owns the spawn tool — and it takes no
     // `SteerInbox`, because no session entry point takes a caller's containment
     // and a steer inbox together. Boxed to one type so the `select!` below is
     // written once; a second loop would be a second place `Ctrl+C`, the ticker
     // and the event drain could drift.
+    //
+    // 0.10.0 — the contained arm is `turn_contained_bounded_observed` and carries
+    // a contract io-cli built, which is what a responder, a plan gate, MCP, LSP,
+    // a browser and skills are fields of. The flat arm is untouched: it is still
+    // `turn_steered`, still `default_contract`, and still the only one that can
+    // be steered mid-turn.
     // Taken before the future borrows the session, because it is needed inside the
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
     app.contained = containment.is_some();
+    // Built before the future borrows it, and only for the arm that can take one:
+    // the flat turn is handed `text` itself, exactly as it always was.
+    let contract = containment.map(|_| {
+        io_cli::contract::session(text.clone(), root.clone(), capabilities)
+            .with_responder(std::sync::Arc::new(answerer))
+            .with_plan_gate(std::sync::Arc::new(gate))
+    });
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
-    > = match containment {
-        Some(caps) => Box::pin(
-            session
-                .turn_contained_observed(text, provider, store, policy, &approver, caps, &observer),
-        ),
-        None => Box::pin(
+    > = match (containment, &contract) {
+        (Some(caps), Some(contract)) => Box::pin(session.turn_contained_bounded_observed(
+            contract, provider, store, policy, &approver, caps, &observer,
+        )),
+        _ => Box::pin(
             session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox),
         ),
     };
@@ -1096,6 +1155,23 @@ async fn turn<P: Provider>(
                 // stays there until the overlay answers. The loop keeps turning,
                 // which is what leaves `Ctrl+C` reachable while a question is up.
                 app.open_approval(ask);
+                app.status.elapsed = started.elapsed();
+                paint(screen, app)?;
+            }
+            Some(proposed) = plans.recv() => {
+                // The run is stopped inside `PlanGate::review`, and while it is
+                // io-harness's own policy denies every write and every exec — so
+                // the workspace behind this overlay cannot change while it is up.
+                app.open_plan(proposed);
+                app.status.elapsed = started.elapsed();
+                paint(screen, app)?;
+            }
+            Some(asked) = questions.recv() => {
+                // The same shape one seam over: the run is stopped inside
+                // `Responder::answer` and the loop keeps turning. It can only
+                // arrive on a contained turn, because the responder reaches the
+                // run through the contract and only that arm carries one.
+                app.open_intent(asked);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }

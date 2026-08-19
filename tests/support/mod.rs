@@ -484,6 +484,18 @@ pub fn png_bytes(width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// The same picture as a jpeg, which is the format that separates the two
+/// graphics protocols: Kitty's `f=100` is PNG and iTerm2 decodes the file itself.
+pub fn jpeg_bytes(width: u32, height: u32) -> Vec<u8> {
+    let pixels = image::RgbaImage::from_pixel(width, height, image::Rgba([32, 64, 128, 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(pixels)
+        .to_rgb8()
+        .write_to(&mut out, image::ImageFormat::Jpeg)
+        .expect("the jpeg encoder this crate already declares");
+    out.into_inner()
+}
+
 /// A provider that answers immediately and remembers how many images each
 /// request carried.
 ///

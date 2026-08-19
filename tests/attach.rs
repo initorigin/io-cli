@@ -238,7 +238,7 @@ mod viewed {
     fn lines_of(drawn: io_cli::picture::Drawn) -> Vec<ratatui::text::Line<'static>> {
         match drawn {
             io_cli::picture::Drawn::Lines(lines) => lines,
-            io_cli::picture::Drawn::Kitty { .. } => {
+            io_cli::picture::Drawn::Graphics { .. } => {
                 panic!("asked for cells and got a graphics escape")
             }
         }
@@ -265,7 +265,7 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "shot.png"),
             true,
-            false,
+            io_cli::term::Graphics::None,
             WIDE,
         )
         .map(lines_of)
@@ -289,7 +289,7 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "docs/deep.png"),
             true,
-            false,
+            io_cli::term::Graphics::None,
             WIDE,
         )
         .map(lines_of)
@@ -310,7 +310,7 @@ mod viewed {
             &Policy::permissive(),
             &call("read_file", "shot.png"),
             true,
-            false,
+            io_cli::term::Graphics::None,
             WIDE,
         )
         .is_none());
@@ -324,7 +324,7 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "notes.md"),
             true,
-            false,
+            io_cli::term::Graphics::None,
             WIDE,
         )
         .is_none());
@@ -349,7 +349,7 @@ mod viewed {
             &policy,
             &call(VIEW_IMAGE_TOOL, "private/badge.png"),
             true,
-            false,
+            io_cli::term::Graphics::None,
             WIDE,
         )
         .map(lines_of)
@@ -371,7 +371,7 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "shot.png"),
             false,
-            false,
+            io_cli::term::Graphics::None,
             WIDE,
         )
         .map(lines_of)

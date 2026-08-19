@@ -154,6 +154,28 @@ pub struct Status {
     /// `NO_COLOR` and the ASCII set are both about what can be *drawn*, and this
     /// is about whether anything should *move*.
     pub plain: bool,
+    /// MCP servers that actually came up, and how many tools they offered.
+    ///
+    /// **From `EventKind::Mcp` and never from the configuration**, which is the
+    /// whole value of the field: a server that is configured and a server that
+    /// answered are different facts, and the one an operator is asking about is
+    /// the second. A configured server that failed to start leaves this at zero,
+    /// which is what it should look like.
+    ///
+    /// A count of servers and a count of tools, because "connected" is not the
+    /// question either — a server that came up offering nothing is a server that
+    /// will not help, and the tool count is the only thing that says so.
+    pub mcp: (usize, usize),
+    /// Language servers that came up for this workspace, by `LspStarted`.
+    pub lsp: usize,
+    /// The browser, and the last host it was asked about.
+    ///
+    /// `bool` is whether the navigation was **allowed**, and it is in the field
+    /// because a host that was refused and a host that was visited must not read
+    /// the same — an indicator that showed both as "browser: example.com" would
+    /// report a blocked request as a successful one. `None` for a browser that
+    /// started and has gone nowhere yet.
+    pub browser: Option<(String, Option<bool>)>,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
     /// the clock: an indicator that read the time would be a second timer.
     frame: usize,
@@ -170,6 +192,9 @@ impl Status {
             spend: None,
             plan: None,
             jobs: 0,
+            mcp: (0, 0),
+            lsp: 0,
+            browser: None,
             working: false,
             elapsed: Duration::ZERO,
             plain: false,
@@ -216,6 +241,13 @@ impl Status {
         // jobs are still alive — and there would be no event left that could ever
         // close them.
         self.jobs = 0;
+        // A connection belongs to the run that opened it. io-harness brings MCP
+        // servers, language servers and a browser up for the run and takes them
+        // down with it, so a line that kept them would claim a session is wired to
+        // something no process is holding open any more.
+        self.mcp = (0, 0);
+        self.lsp = 0;
+        self.browser = None;
     }
 
     /// The indicator, if there is anything to indicate and anywhere to show it.
@@ -269,6 +301,31 @@ impl Status {
         // background job is actually running.
         if self.jobs > 0 {
             fields.push(Field::new(format!("bg {}", self.jobs), Tone::Normal));
+        }
+        // The three connection fields, right of the background count and left of
+        // everything numeric. Each is absent until an event says otherwise — zero
+        // servers is not "0 servers", it is a session that has none — so on the
+        // overwhelming majority of lines all three cost nothing at all.
+        if self.mcp.0 > 0 {
+            fields.push(Field::new(
+                format!("mcp {}/{} tools", self.mcp.0, self.mcp.1),
+                Tone::Normal,
+            ));
+        }
+        if self.lsp > 0 {
+            fields.push(Field::new(format!("lsp {}", self.lsp), Tone::Normal));
+        }
+        if let Some((host, allowed)) = &self.browser {
+            // A refusal is drawn as a refusal. The whole point of carrying the
+            // host is that the operator can see which one, and the whole point of
+            // carrying the verdict is that a blocked host must not read like a
+            // visited one.
+            let (text, tone) = match allowed {
+                Some(true) => (format!("web {host}"), Tone::Normal),
+                Some(false) => (format!("web {host} refused"), Tone::Refused),
+                None => ("web ready".to_string(), Tone::Muted),
+            };
+            fields.push(Field::new(text, tone));
         }
         if let Some(tokens) = self.tokens {
             fields.push(Field::new(
