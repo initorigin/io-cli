@@ -260,11 +260,12 @@ reading what it read rather than a path you would have to open yourself.
 
 A picture is drawn from half blocks — `▀` splits a cell into two halves that are
 each about square — fitted to your terminal's width and bounded in height. On
-kitty, ghostty, WezTerm and Konsole a PNG is drawn as the **real image** instead.
-Inside tmux or screen it is always half blocks: passing a graphics protocol
-through a multiplexer needs configuration that is off by default, and an escape
-the terminal cannot read is unreadable bytes written permanently into your
-scrollback.
+kitty, ghostty, WezTerm and Konsole a PNG is drawn as the **real image** instead,
+and on iTerm2 so is a png, jpeg or gif — it decodes the file itself, so it is not
+limited to the one format Kitty's transfer takes. Inside tmux or screen it is
+always half blocks: passing a graphics protocol through a multiplexer needs
+configuration that is off by default, and an escape the terminal cannot read is
+unreadable bytes written permanently into your scrollback.
 
 Under `--plain`, under `NO_COLOR`, and with the ASCII glyph set there is no
 picture at all — one line naming the file, its format and its size. A half-block

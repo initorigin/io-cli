@@ -23,7 +23,11 @@ fn root() -> PathBuf {
 /// operator's turn without saying so.
 #[test]
 fn nothing_configured_is_the_contract_the_session_built_before() {
-    let built = session("bring the docs up to date", root(), &Capabilities::default());
+    let built = session(
+        "bring the docs up to date",
+        root(),
+        &Capabilities::default(),
+    );
     let default = TaskContract::workspace("bring the docs up to date", root());
 
     assert_eq!(format!("{built:?}"), format!("{default:?}"));
@@ -102,7 +106,9 @@ fn the_flat_turn_is_still_the_steered_one() {
         "the contained arm takes the caller's contract",
     );
     assert!(
-        text.contains("session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox)"),
+        text.contains(
+            "session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox)"
+        ),
         "the flat arm is still the steered turn, taking the text and the inbox",
     );
     assert!(

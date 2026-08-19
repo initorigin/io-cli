@@ -68,7 +68,10 @@ async fn enter_on_an_empty_prompt_approves_the_plan() {
     assert!(app.asking(), "the overlay owns the keyboard");
     app.key(key(KeyCode::Enter));
 
-    assert_eq!(reviewing.await.expect("the gate"), Some(PlanVerdict::Approve));
+    assert_eq!(
+        reviewing.await.expect("the gate"),
+        Some(PlanVerdict::Approve)
+    );
     assert!(said(&mut app).contains("approved"));
 }
 
@@ -106,7 +109,10 @@ async fn esc_cancels_and_nothing_runs() {
 
     app.key(key(KeyCode::Esc));
 
-    assert_eq!(reviewing.await.expect("the gate"), Some(PlanVerdict::Cancel));
+    assert_eq!(
+        reviewing.await.expect("the gate"),
+        Some(PlanVerdict::Cancel)
+    );
     let said = said(&mut app);
     assert!(said.contains("cancelled"), "{said}");
     assert!(said.contains("nothing ran"), "and it says so: {said}");
@@ -141,7 +147,10 @@ async fn the_steps_are_shown_as_steps_and_the_keys_are_named() {
     let drawn = screen.viewport_text().to_string();
 
     assert!(drawn.contains("1. read every caller"), "{drawn}");
-    assert!(drawn.contains("2. write the migration"), "in order: {drawn}");
+    assert!(
+        drawn.contains("2. write the migration"),
+        "in order: {drawn}"
+    );
     assert!(drawn.contains("Enter approves"), "{drawn}");
     assert!(drawn.contains("Esc cancels"), "{drawn}");
 

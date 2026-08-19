@@ -676,7 +676,10 @@ fn f6_a_session_with_no_connections_says_nothing_about_them() {
     let status = Status::new("openai/gpt-5.6-luna");
     let line = rendered(&status, 120);
 
-    assert!(!line.contains("mcp"), "zero servers is not `mcp 0`: {line:?}");
+    assert!(
+        !line.contains("mcp"),
+        "zero servers is not `mcp 0`: {line:?}"
+    );
     assert!(!line.contains("lsp"), "{line:?}");
     assert!(!line.contains("web"), "{line:?}");
 }

@@ -248,7 +248,10 @@ impl App {
             return;
         };
         match &answer {
-            Some(text) => self.say(Tone::Muted, format!("answered {} {text}", self.theme.glyphs.dash)),
+            Some(text) => self.say(
+                Tone::Muted,
+                format!("answered {} {text}", self.theme.glyphs.dash),
+            ),
             None => self.say(
                 Tone::Warning,
                 format!(
@@ -284,10 +287,9 @@ impl App {
             io_harness::PlanVerdict::Revise { correction } => {
                 (Tone::Warning, format!("sent back {dash} {correction}"))
             }
-            io_harness::PlanVerdict::Cancel => (
-                Tone::Refused,
-                format!("plan cancelled {dash} nothing ran"),
-            ),
+            io_harness::PlanVerdict::Cancel => {
+                (Tone::Refused, format!("plan cancelled {dash} nothing ran"))
+            }
         };
         self.say(tone, said);
         plan.resolve(Some(verdict));
@@ -681,10 +683,8 @@ impl App {
             // A browser that started and has gone nowhere is `None` for the host,
             // which draws as `web ready` — it is running, and there is nothing yet
             // to say about where it went.
-            io_harness::EventKind::BrowserStarted { .. } => {
-                if self.status.browser.is_none() {
-                    self.status.browser = Some((String::new(), None));
-                }
+            io_harness::EventKind::BrowserStarted { .. } if self.status.browser.is_none() => {
+                self.status.browser = Some((String::new(), None));
             }
             // Every navigation, including the ones nobody typed: a redirect, a
             // click, a script assigning `location`. The last one wins, and the

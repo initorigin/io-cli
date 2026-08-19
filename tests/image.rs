@@ -501,13 +501,15 @@ mod graphics {
     fn the_two_protocols_claim_the_same_rows_for_the_same_picture() {
         let png = super::support::png_bytes(8, 4);
 
-        let Drawn::Graphics { rows: kitty_rows, .. } =
-            render(&png, "shot.png", "image/png", true, Graphics::Kitty, 80)
+        let Drawn::Graphics {
+            rows: kitty_rows, ..
+        } = render(&png, "shot.png", "image/png", true, Graphics::Kitty, 80)
         else {
             panic!("a png on Kitty is the real image")
         };
-        let Drawn::Graphics { rows: iterm_rows, .. } =
-            render(&png, "shot.png", "image/png", true, Graphics::Iterm2, 80)
+        let Drawn::Graphics {
+            rows: iterm_rows, ..
+        } = render(&png, "shot.png", "image/png", true, Graphics::Iterm2, 80)
         else {
             panic!("a png on iTerm2 is the real image")
         };
@@ -529,7 +531,8 @@ mod graphics {
     #[test]
     fn the_plain_form_beats_iterm2_too() {
         let png = super::support::png_bytes(8, 4);
-        let Drawn::Lines(lines) = render(&png, "shot.png", "image/png", false, Graphics::Iterm2, 80)
+        let Drawn::Lines(lines) =
+            render(&png, "shot.png", "image/png", false, Graphics::Iterm2, 80)
         else {
             panic!("plain mode must not emit a graphics escape")
         };

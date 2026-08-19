@@ -47,7 +47,10 @@ fn palette() -> Picker {
 
 /// The palette as the driver opens it over a set of templates.
 fn palette_over(templates: &Templates) -> Picker {
-    Picker::new("Which command?", commands::palette(templates, &io_harness::Skills::none()))
+    Picker::new(
+        "Which command?",
+        commands::palette(templates, &io_harness::Skills::none()),
+    )
 }
 
 /// A templates directory with two templates in it: one that renders as it
@@ -234,7 +237,7 @@ fn f1_fk_selects_fork_though_no_command_begins_with_it() {
         panic!("Enter on the one matched row must choose it");
     };
     assert_eq!(
-        commands::palette_pick(&Templates::none(), &io_harness::Skills::none(),index),
+        commands::palette_pick(&Templates::none(), &io_harness::Skills::none(), index),
         Some(Chosen::Command("/fork")),
     );
 }
@@ -325,7 +328,9 @@ fn f1_enter_puts_the_chosen_command_in_the_composer_rather_than_running_it() {
     let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter must choose");
     };
-    let Some(Chosen::Command(command)) = commands::palette_pick(&Templates::none(), &io_harness::Skills::none(),index) else {
+    let Some(Chosen::Command(command)) =
+        commands::palette_pick(&Templates::none(), &io_harness::Skills::none(), index)
+    else {
         panic!("a chosen row in the command half is a command");
     };
     app.composer.set(command);
@@ -347,7 +352,7 @@ fn f1_a_palette_row_addresses_the_command_it_was_built_from() {
     let none = Templates::none();
     for (index, (name, _)) in COMMANDS.iter().enumerate() {
         assert_eq!(
-            commands::palette_pick(&none, &io_harness::Skills::none(),index),
+            commands::palette_pick(&none, &io_harness::Skills::none(), index),
             Some(Chosen::Command(name))
         );
         assert_eq!(
@@ -355,7 +360,10 @@ fn f1_a_palette_row_addresses_the_command_it_was_built_from() {
             name.strip_prefix('/').expect("a command"),
         );
     }
-    assert_eq!(commands::palette_pick(&none, &io_harness::Skills::none(),COMMANDS.len()), None);
+    assert_eq!(
+        commands::palette_pick(&none, &io_harness::Skills::none(), COMMANDS.len()),
+        None
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +493,9 @@ fn f2_choosing_a_template_puts_the_rendered_text_in_the_composer_rather_than_sen
     let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter must choose");
     };
-    let Some(Chosen::Template(name)) = commands::palette_pick(&found, &io_harness::Skills::none(),index) else {
+    let Some(Chosen::Template(name)) =
+        commands::palette_pick(&found, &io_harness::Skills::none(), index)
+    else {
         panic!("the row under the marker is a template");
     };
     assert_eq!(name, "review");
@@ -550,7 +560,7 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
 
     for (index, (name, _)) in COMMANDS.iter().enumerate() {
         assert_eq!(
-            commands::palette_pick(&found, &io_harness::Skills::none(),index),
+            commands::palette_pick(&found, &io_harness::Skills::none(), index),
             Some(Chosen::Command(name)),
         );
     }
@@ -558,11 +568,14 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
         let index = COMMANDS.len() + offset;
         assert_eq!(rows[index].label, template.name);
         assert_eq!(
-            commands::palette_pick(&found, &io_harness::Skills::none(),index),
+            commands::palette_pick(&found, &io_harness::Skills::none(), index),
             Some(Chosen::Template(template.name.clone())),
         );
     }
-    assert_eq!(commands::palette_pick(&found, &io_harness::Skills::none(),rows.len()), None);
+    assert_eq!(
+        commands::palette_pick(&found, &io_harness::Skills::none(), rows.len()),
+        None
+    );
 }
 
 /// **F5 — the palette lists what the workspace actually taught the agent.**

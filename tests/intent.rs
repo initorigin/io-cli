@@ -83,7 +83,10 @@ async fn the_operator_answers_and_the_run_gets_the_words() {
         "the run receives exactly what was typed",
     );
     assert!(!app.asking(), "and the overlay is gone");
-    assert!(said(&mut app).contains("keep it"), "the answer is in the scrollback");
+    assert!(
+        said(&mut app).contains("keep it"),
+        "the answer is in the scrollback"
+    );
 }
 
 /// **F3 — declining is a real answer.** `None` is what io-harness documents as
@@ -184,7 +187,10 @@ fn the_question_its_context_and_its_choices_are_all_drawn() {
     let screen = drawn(&app, 80, 12);
 
     assert!(screen.contains("drop the column or keep it?"), "{screen}");
-    assert!(screen.contains("40 rows and one caller"), "the context is shown");
+    assert!(
+        screen.contains("40 rows and one caller"),
+        "the context is shown"
+    );
     assert!(
         screen.contains("drop") && screen.contains("keep"),
         "so are the choices",

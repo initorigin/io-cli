@@ -953,7 +953,10 @@ fn f12_the_slash_palette_fits_eighty_columns_in_both_glyph_sets() {
         let set = theme.glyphs.name;
         let mark = theme.glyphs.ellipsis;
         let palette = |query: &str| {
-            let mut picker = Picker::new("Which command?", commands::palette(&templates, &io_harness::Skills::none()));
+            let mut picker = Picker::new(
+                "Which command?",
+                commands::palette(&templates, &io_harness::Skills::none()),
+            );
             type_at(&mut picker, query);
             picker
         };

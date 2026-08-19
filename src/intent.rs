@@ -121,10 +121,7 @@ impl Intent {
             lines.push(theme.notice(Tone::Muted, context.clone()));
         }
         for choice in &self.asked.question.choices {
-            lines.push(theme.notice(
-                Tone::Muted,
-                format!("{} {choice}", theme.glyphs.bullet),
-            ));
+            lines.push(theme.notice(Tone::Muted, format!("{} {choice}", theme.glyphs.bullet)));
         }
         lines.push(theme.notice(
             Tone::Muted,
@@ -134,7 +131,9 @@ impl Intent {
             ),
         ));
 
-        let head = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
+        let head = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .min(area.height);
         frame.render_widget(
             Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
             Rect {

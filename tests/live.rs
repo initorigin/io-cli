@@ -1171,7 +1171,14 @@ async fn f4_live_a_real_run_streams_events_that_round_trip() {
 /// the opportunistic half — whether a model asks about intent is the model's
 /// choice — so what happens either way is printed, and what is asserted is that
 /// if it did ask, the answer this crate sent is the answer the run recorded.
-#[tokio::test]
+/// **Multi-threaded, and that is the second finding this test paid for.** Every
+/// other test in this file runs on `#[tokio::test]`'s default current-thread
+/// runtime, which is fine for a flat turn. A *contained* turn is not: the agent
+/// had already made the edit — `notes.md` on disk said `new line` — and the turn
+/// never returned, with no socket open and the thread parked, which is a
+/// deadlock and not a slow model. A fan-out needs somewhere for its children to
+/// run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "live: needs OPENROUTER_API_KEY"]
 async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
     use io_cli::app::App;
@@ -1201,7 +1208,15 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
         &Capabilities::default(),
     )
     .with_responder(Arc::new(answerer))
-    .with_plan_gate(Arc::new(gate));
+    .with_plan_gate(Arc::new(gate))
+    // **Bounded, and that is a finding rather than tidiness.** The first run of
+    // this test used `DenyAll` — the approver the other live tests use, whose
+    // goals only read — and a goal that writes under it spends the whole run
+    // being refused and trying again; it was still going after ten minutes. A
+    // live verification of the contract seam must not be a live verification of
+    // what an agent does when it is refused forever, so the approver approves and
+    // the contract carries the step cap that only a contract can carry.
+    .with_max_steps(12);
 
     // The operator's side, driven through `App` so what answers is the type a
     // keystroke reaches rather than a second implementation written for a test.
@@ -1251,7 +1266,7 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
             &provider,
             &store,
             &policy,
-            &DenyAll,
+            &io_harness::ApproveAll,
             &Containment::new(4, 2, 1, 200_000),
             &observer,
         )
@@ -1264,7 +1279,13 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
     let events = collected.lock().expect("not poisoned").clone();
     let kinds: Vec<String> = events
         .iter()
-        .map(|event| format!("{:?}", event.kind).split_whitespace().next().unwrap().to_string())
+        .map(|event| {
+            format!("{:?}", event.kind)
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_string()
+        })
         .collect();
 
     println!("live 0.10.0: outcome {:?}", result.outcome);
@@ -1284,7 +1305,10 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
         .iter()
         .filter(|event| matches!(event.kind, EventKind::PlanDecided { .. }))
         .collect();
-    println!("live 0.10.0: {proposed} plans proposed, {} decided", decided_events.len());
+    println!(
+        "live 0.10.0: {proposed} plans proposed, {} decided",
+        decided_events.len()
+    );
     assert!(
         proposed > 0,
         "registering a plan gate must put the run in its planning phase: {kinds:?}",
@@ -1295,7 +1319,10 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
             EventKind::PlanDecided { verdict, by, .. } if verdict == "approve" && by == "gate"
         )),
         "the verdict this crate sent is the verdict the run recorded: {:?}",
-        decided_events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+        decided_events
+            .iter()
+            .map(|event| &event.kind)
+            .collect::<Vec<_>>(),
     );
 
     // **F3, and the opportunistic half.** Whether a model asks about intent is

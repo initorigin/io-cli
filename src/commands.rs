@@ -13,14 +13,19 @@
 //! configuration becomes a set, [`palette_pick`] is what a chosen row stands for,
 //! and [`expand`] is what a chosen template puts in the composer.
 //!
-//! **It does not reach harness skills, and that is a limit rather than an
-//! omission.** A skill is read by the model through a tool, and whether it may
-//! be is decided by a `TaskContract`; a steered session builds its own contract
-//! and no io-harness entry point takes one from the caller alongside a steer
-//! inbox, so io-cli can neither learn which directory holds them nor make the
-//! model able to read one. Templates are the opposite case, and are here
-//! precisely because they are: the caller expands one into prompt text and no
-//! contract is involved.
+//! **Since 0.10.0 it reaches harness skills too, and the two are not the same
+//! kind of row.** A template is expanded by this crate into prompt text, so
+//! nothing but io-cli is involved. A skill is read by the *model*, through a
+//! tool, and whether it may be is decided by a `TaskContract` — so it is listed
+//! by name and [`invoke_skill`] puts only that name in the composer. The list
+//! comes from [`skills`], which is io-harness's own discovery; nothing here
+//! parses a skill file.
+//!
+//! The rows are listed whatever the session is, and whether the agent can
+//! actually read one depends on the turn: only a contained turn carries a
+//! contract, so only there does the `skills` directory reach the run. Listing
+//! them regardless is deliberate — a palette that hid them on an unconfigured
+//! session would answer "what did I teach it?" with silence.
 //!
 //! **Everything that shows more of something commits upward.** The viewport is
 //! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
@@ -228,10 +233,7 @@ pub fn palette(templates: &Templates, skills: &io_harness::Skills) -> Vec<Row> {
             )
         }))
         .chain(skills.iter().map(|skill| {
-            Row::with_detail(
-                skill.name.clone(),
-                format!("{SKILL}{}", skill.description),
-            )
+            Row::with_detail(skill.name.clone(), format!("{SKILL}{}", skill.description))
         }))
         .collect()
 }

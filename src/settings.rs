@@ -63,11 +63,16 @@ pub struct CliSettings {
     /// The caps a fan-out runs under: `[app.io-cli.containment]`.
     ///
     /// **This key is what turns the fleet on, and it is not a preference.**
-    /// `Session::turn_contained_observed` is the only session entry point that
-    /// passes a containment into the driver, and therefore the only one that
+    /// `Session::turn_contained_bounded_observed` is the only session entry point
+    /// that passes a containment into the driver, and therefore the only one that
     /// reaches the loop owning the spawn tool — so a session with no caps
     /// configured cannot decompose anything, and one with them runs a materially
     /// different turn. Absent means every turn is the steered turn 0.7.0 shipped.
+    ///
+    /// **Since 0.10.0 it decides more than the fan-out.** That same entry point is
+    /// also the only one that takes a caller's `TaskContract`, so this key is what
+    /// lets the four settings below it reach a turn at all — see
+    /// [`crate::contract`], which is where that coupling is stated in full.
     ///
     /// io-harness's own type rather than four fields of io-cli's own, because it
     /// is `Serialize`/`Deserialize` for exactly this purpose and because a

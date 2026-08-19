@@ -222,7 +222,7 @@ async fn drive(
         notices.push(complaint);
     }
     // The caps the fleet needs, read once and cloned out of the settings. A
-    // session with none cannot fan out: `turn_contained_observed` is the only
+    // session with none cannot fan out: `turn_contained_bounded_observed` is the only
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
