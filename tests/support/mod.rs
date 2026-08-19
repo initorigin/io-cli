@@ -461,3 +461,25 @@ pub const FORBIDDEN: &[(&str, &str)] = &[
     ("mouse capture (1002)", "\x1b[?1002h"),
     ("mouse capture (1003)", "\x1b[?1003h"),
 ];
+
+/// A real PNG of a stated size, encoded by the same crate that decodes it.
+///
+/// Hand-rolling a PNG here would be a second, disagreeing answer to what a PNG
+/// is; asking the decoder's own encoder for one keeps the fixture honest and
+/// keeps the test about `picture`, not about byte layout.
+#[allow(dead_code)]
+pub fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    use image::ImageEncoder;
+
+    let pixels = image::RgbaImage::from_pixel(width, height, image::Rgba([32, 64, 128, 255]));
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(
+            pixels.as_raw(),
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("the png encoder this crate already declares");
+    out
+}
