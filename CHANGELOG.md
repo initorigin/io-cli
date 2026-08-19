@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-19
+
+A contained session answers.
+
+The two places a run stops and waits for a person are answered where they
+happened, the skills you gave the agent are in the palette, and the line says
+what the session is connected to.
+
+**All of it rides `[app.io-cli.containment]`, and that is worth reading before
+you configure any of it.** io-harness offers exactly one session entry point that
+takes a caller's `TaskContract` — the contained one — and a responder, a plan
+gate, MCP servers, language servers, a browser and a skills directory are all
+fields of that contract. So the capabilities and the fan-out are one switch. What
+it costs is nothing that turn ever had: a contained turn has never taken a steer
+inbox. A session without the table is the session 0.9.0 shipped, mid-turn
+`Ctrl+C` included.
+
+### Added
+
+- **The agent's question about intent, answered in the session it was asked in.**
+  Not an approval — an approval asks whether an act is permitted, this asks what
+  you meant, and its answer authorizes nothing. So it is prose you type rather
+  than one of three keys. `Esc` leaves it unanswered, which pauses the run with
+  the question kept rather than sending the agent back with nothing.
+- **A plan, decided before any of it runs.** Registering a gate turns
+  io-harness's planning phase on, and while it is on the run's own policy denies
+  every write and every exec — so cancelling is not an undo, there is nothing yet
+  to undo. `Enter` on an empty prompt approves, a correction and `Enter` sends it
+  back for another plan, `Esc` cancels and nothing runs.
+- **Harness skills in the `/` palette**, after the commands and the templates,
+  discovered by io-harness from the `skills` directory. Choosing one puts `use
+  the <name> skill: ` in your prompt; the file is the model's to read, under the
+  run's own policy. io-cli parses no skill file.
+- **The line says what the session is connected to** — an MCP server and how many
+  tools it offered, a language server that came up for this workspace, and the
+  browser with the last host it was allowed or **refused**, drawn differently
+  because a block that reads like a visit is worse than no field at all. Every
+  one comes off the event stream, so a server that was configured and never
+  answered leaves the line silent, which is the honest answer.
+- **`[[app.io-cli.mcp]]`, `[[app.io-cli.lsp]]`, `[app.io-cli.browser]` and
+  `skills`**, deserialized straight into io-harness's own types. io-cli defines
+  no schema for any of them.
+- **The real image on iTerm2.** Its escape has no equivalent of Kitty's `C=1`, so
+  the placement is bracketed by a cursor save and restore — which is what that
+  flag was doing — and states its width and height in cells, so the rows it
+  costs are known before it is written. Terminals that speak neither protocol
+  still get half blocks and no escape at all.
+
+### Changed
+
+- A contained turn is driven through `Session::turn_contained_bounded_observed`
+  and carries a contract this crate built. A session that configures nothing
+  builds a contract identical, field for field, to the one io-harness built for
+  it before.
+
 ## [0.9.0] - 2026-08-19
 
 The session gains sight, in both directions.

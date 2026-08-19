@@ -108,17 +108,25 @@ pub fn containment(stored: Option<&CliSettings>) -> Option<&io_harness::Containm
 
 /// What a contained turn gives up, in the words the session says it in.
 ///
-/// **Disclosure rather than decoration.** A contained turn is built from
-/// `Session`'s own `default_contract`, so three things an operator may have
-/// configured stop applying to it — the agent roster, `[run]`'s budgets and
-/// `[sandbox]` — and it takes no `SteerInbox`, so text typed mid-turn cannot
-/// redirect it. None of that is visible from the screen, and a mode that
-/// silently drops a step cap somebody set is the worst kind of quiet.
+/// **Disclosure rather than decoration.** A contained turn takes no `SteerInbox`,
+/// so text typed mid-turn cannot redirect it, and it is built from a contract
+/// io-cli writes rather than from io-harness's `[run]` and `[sandbox]` sections —
+/// so budgets and an agent roster set there still do not reach it. None of that
+/// is visible from the screen, and a mode that silently drops a step cap somebody
+/// set is the worst kind of quiet.
+///
+/// Since 0.10.0 the sentence also says what the mode *gains*, because that is now
+/// the more surprising half: this is the only turn that can be given a responder,
+/// a plan gate, MCP servers, language servers, a browser or skills, and an
+/// operator who turned containment on for the fan-out has just turned all of them
+/// on too.
 pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
     format!(
         "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \
-         tree. A contained turn cannot be steered mid-flight, and takes no agent roster, no \
-         [run] budget and no [sandbox]; Ctrl+C still ends it.",
+         tree. This is the turn that carries a contract: questions are answered here, a plan \
+         is decided here, and [app.io-cli] skills, mcp, lsp and browser apply here. It cannot \
+         be steered mid-flight, and takes no agent roster, no [run] budget and no [sandbox]; \
+         Ctrl+C still ends it.",
         caps.max_total_agents, caps.max_concurrent_agents, caps.max_depth, caps.max_total_tokens,
     )
 }

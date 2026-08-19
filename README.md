@@ -413,7 +413,7 @@ io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
 
-Four keys live there, and one table:
+Five keys live there, and four tables:
 
 | Key | Is |
 | --- | --- |
@@ -421,8 +421,12 @@ Four keys live there, and one table:
 | `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
+| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Contained turns only — see below. |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
 | `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
+| `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Contained turns only. |
+| `[[app.io-cli.lsp]]` | language servers for this workspace. Contained turns only. |
+| `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. Contained turns only. |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
 default rather than stopping a session from starting. A section io-harness cannot
@@ -445,18 +449,33 @@ where widening is your own decision.
 the provider, the permission policy and its own `[app.io-cli]` section. The
 policy's own defaults are what `Shift+Tab` cycles; a posture chosen with the key
 lasts for the session and is not written back, because a keystroke that rewrites
-a permission boundary on disk is the opposite of what that key is for. **An interactive session** does **not** yet apply `[sandbox]` limits, `[run]`
-budgets, `[[mcp]]`, `[[lsp]]`, `[[agent]]` or an `AGENTS.md` instruction file to
-a turn. The reason is specific rather than an oversight: io-harness's steerable
-turn builds its own task contract, and the entry point that takes a caller's
-contract does not take a steer inbox — so honouring those sections in a session
-would mean giving up `Ctrl+C`. The sandbox itself **is** on: a workspace turn
-runs commands inside it, with no resource ceilings.
+a permission boundary on disk is the opposite of what that key is for.
 
-A **contained** turn does not apply them either, and for a neighbouring reason:
-the entry point that fans out builds the session's own default contract, so
-`[run]`, `[sandbox]` and `[[agent]]` are as absent there as in a steered turn.
-What bounds a contained turn is the containment table's own token ceiling.
+**The capabilities and the fan-out are one switch, and it is worth knowing before
+you configure any of them.** A session turn can be given a task contract only
+where io-harness offers an entry point that takes one, and the only session entry
+point that does is the *contained* one. So the responder, the plan gate, MCP
+servers, language servers, the browser and the skills directory all arrive
+together, on a turn that has `[app.io-cli.containment]` configured — and on no
+other turn.
+
+What that costs is nothing the contained turn had. It has never taken a steer
+inbox, so text typed mid-turn could never redirect it and `Ctrl+C` has always
+gone through the observer, ending it at the next boundary where no child is in
+flight. What it does **not** cost is the ordinary session: with no containment
+table, your turn is exactly the turn 0.9.0 ran, `Ctrl+C` included, carrying none
+of the above.
+
+**An interactive session with no containment** therefore still does not apply
+`[sandbox]` limits, `[run]` budgets, `[[agent]]` or an `AGENTS.md` instruction
+file to a turn, and cannot be given a responder or a plan gate. The sandbox
+itself **is** on: a workspace turn runs commands inside it, with no resource
+ceilings.
+
+A **contained** turn does not apply `[run]`, `[sandbox]` or `[[agent]]` either —
+those live in io-harness's own sections and io-cli builds the contract from its
+own — but everything in `[app.io-cli]` above does reach it, and the containment
+table's token ceiling is what bounds it.
 
 **`io exec` does apply them**, and that is not a second implementation — it is
 the same boundary reached from the other side. A headless run has nobody to
@@ -471,19 +490,24 @@ it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.9.0 is the release where the session gains sight: you can show the agent a
-picture, it can look at one itself, and both land in your scrollback. Background
-work that outlives a step is named and counted rather than looking like a hang.
+0.10.0 is the release where a contained session answers: the agent's question
+about what you meant is answered where it was asked, a proposed plan is approved,
+sent back or cancelled before any of it runs, the skills you gave it are in the
+palette, and the line says what the session is connected to. iTerm2 draws the
+real image.
 
-**iTerm2's own inline-image protocol is not here.** Its escape has no equivalent
-of the Kitty flag that says "place this without moving the cursor", so it
-advances the cursor and may scroll — and a scroll changes what every later cursor
-move in the same draw means. It very likely lines up against a region of exactly
-the right height, but "very likely" is not good enough when the failure is
-written permanently into your scrollback. iTerm2 gets half blocks, which are a
-picture. Sixel is absent because encoding it means palette quantisation and
-another dependency, for terminals that either speak Kitty too or draw half blocks
-correctly. And the real-image path covers PNG rather than all four wire formats,
+**None of that reaches a session without `[app.io-cli.containment]`.** io-harness
+offers exactly one session entry point that takes a caller's task contract, and
+it is the contained one — so the responder, the plan gate, the skills and the
+connection indicators all ride the same switch as the fan-out. A session without
+it is unchanged and keeps mid-turn `Ctrl+C`. See
+[Configuration](#configuration) for what that costs, which is nothing the
+contained turn ever had.
+
+**Sixel is still absent**, because encoding it means palette quantisation and
+another dependency, for terminals that either speak one of the two protocols
+already here or draw half blocks correctly. The Kitty path covers PNG rather than
+all four wire formats,
 because Kitty's own transfer format is PNG and the only base64 this program has
 is the one io-harness already computed — a screenshot is a PNG everywhere that
 takes one.
@@ -512,15 +536,11 @@ returned by an MCP tool, and a browser screenshot, both become images inside
 io-harness — but through private plumbing and with no event of any kind, so
 nothing reaches this program to draw.
 
-**Harness skills are not in the palette, and prompt templates are.** The
-difference is not effort. A template is expanded by io-cli into prompt text, so
-nothing but this program is involved. A skill is read by the *model*, through a
-tool, and whether it may be is decided by a task contract — and io-harness has no
-session entry point that takes a contract from the caller alongside the steer
-inbox that carries `Ctrl+C`. So an interface can offer skills or it can offer
-interruption, and this one keeps interruption. The same boundary is why the agent
-asking what you meant still cannot be answered in the session, and why a proposed
-plan is not shown: all three wait on the same change to io-harness.
+**A skill is listed by name and never pasted.** A template is expanded by io-cli
+into prompt text, so nothing but this program is involved; a skill is read by the
+*model*, through a tool, under the run's own policy. Choosing one from the
+palette puts `use the <name> skill: ` in your prompt and stops there. io-cli
+parses no skill file and keeps no copy of one.
 
 **`io exec` runs one goal and stops, and a run that pauses stays paused.** An
 agent that asks a question about what you meant, or proposes a plan, ends the run
@@ -550,11 +570,8 @@ short that nobody could filter. One bound is left, on how many runs the walk wil
 look at, and the list still says so when it has cut rather than quietly showing
 you a subset.
 
-Three more things are absent for reasons worth stating rather than hiding. **Spend
-against the tree ceiling is not in the status line**: io-harness emits
-`SpendDraw` only from a contained turn, and its contained entry point takes no
-steer inbox, so rendering spend today would cost `Ctrl+C`. It arrives at 0.8.0
-with the fleet, which is contained anyway. **A diff cannot be expanded beyond
+Two more things are absent for reasons worth stating rather than hiding. **A diff
+cannot be expanded beyond
 the context the harness stored** — three lines either side, which is what
 `diff -u` has always carried; more than that is not in the trace, and reading it
 off disk would be reading a version of the file that no longer exists. And

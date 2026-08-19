@@ -1157,3 +1157,171 @@ async fn f4_live_a_real_run_streams_events_that_round_trip() {
 
     println!("live: {} events, outcome {:?}", lines.len(), result.outcome);
 }
+
+/// **The live verification for F1, F3 and F4 — 0.10.0.**
+///
+/// There is no human gate on this release, so this is the verification rather
+/// than a rehearsal for one. What it drives is the whole seam: io-cli's own
+/// `TaskContract`, carrying io-cli's own responder and plan gate, through the one
+/// session entry point that takes a contract, against a real model — and the
+/// operator's side answered through `App`, the same type a keystroke reaches.
+///
+/// The plan gate is the deterministic half: registering one turns io-harness's
+/// planning phase on, so the run must propose before it acts. The responder is
+/// the opportunistic half — whether a model asks about intent is the model's
+/// choice — so what happens either way is printed, and what is asserted is that
+/// if it did ask, the answer this crate sent is the answer the run recorded.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
+    use io_cli::app::App;
+    use io_cli::contract::Capabilities;
+    use io_harness::Containment;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let (gate, mut plans) = io_cli::plan::channel();
+    let contract = io_cli::contract::session(
+        "Replace the line `old line` in notes.md with `new line`. Nothing else.",
+        root.to_path_buf(),
+        &Capabilities::default(),
+    )
+    .with_responder(Arc::new(answerer))
+    .with_plan_gate(Arc::new(gate));
+
+    // The operator's side, driven through `App` so what answers is the type a
+    // keystroke reaches rather than a second implementation written for a test.
+    let decided = Arc::new(Mutex::new(Vec::<String>::new()));
+    let answered = Arc::clone(&decided);
+    let operator = tokio::spawn(async move {
+        let mut app = App::new(DARK, "live");
+        loop {
+            tokio::select! {
+                Some(proposed) = plans.recv() => {
+                    answered.lock().expect("not poisoned").push(format!(
+                        "plan: {} steps",
+                        proposed.plan.steps.len()
+                    ));
+                    app.open_plan(proposed);
+                    // Enter on an empty prompt: approve.
+                    app.key(crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Enter,
+                        crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
+                Some(asked) = questions.recv() => {
+                    answered
+                        .lock()
+                        .expect("not poisoned")
+                        .push(format!("question: {}", asked.question.question));
+                    app.open_intent(asked);
+                    for character in "the second one".chars() {
+                        app.key(crossterm::event::KeyEvent::new(
+                            crossterm::event::KeyCode::Char(character),
+                            crossterm::event::KeyModifiers::NONE,
+                        ));
+                    }
+                    app.key(crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Enter,
+                        crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
+                else => break,
+            }
+        }
+    });
+
+    let result = session
+        .turn_contained_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &Containment::new(4, 2, 1, 200_000),
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    drop(session);
+    let _ = operator.await;
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let kinds: Vec<String> = events
+        .iter()
+        .map(|event| format!("{:?}", event.kind).split_whitespace().next().unwrap().to_string())
+        .collect();
+
+    println!("live 0.10.0: outcome {:?}", result.outcome);
+    println!("live 0.10.0: {} events", events.len());
+    println!(
+        "live 0.10.0: operator answered {:?}",
+        decided.lock().expect("not poisoned")
+    );
+
+    // **F4, and the deterministic half.** A registered gate turns the planning
+    // phase on, so the run proposes before it acts and the decision is recorded.
+    let proposed = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::PlanProposed { .. }))
+        .count();
+    let decided_events: Vec<&RunEvent> = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::PlanDecided { .. }))
+        .collect();
+    println!("live 0.10.0: {proposed} plans proposed, {} decided", decided_events.len());
+    assert!(
+        proposed > 0,
+        "registering a plan gate must put the run in its planning phase: {kinds:?}",
+    );
+    assert!(
+        decided_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::PlanDecided { verdict, by, .. } if verdict == "approve" && by == "gate"
+        )),
+        "the verdict this crate sent is the verdict the run recorded: {:?}",
+        decided_events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+    );
+
+    // **F3, and the opportunistic half.** Whether a model asks about intent is
+    // its choice; what must hold is that an answer given here is the answer
+    // recorded there.
+    let asked = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::QuestionAsked { .. }))
+        .count();
+    println!("live 0.10.0: {asked} questions asked");
+    if asked > 0 {
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::QuestionAnswered { answer, by }
+                    if answer.contains("the second one") && by == "responder"
+            )),
+            "a question answered through the overlay must reach the run: {kinds:?}",
+        );
+    }
+
+    // **F1.** The contract reached the run at all, which is what every criterion
+    // above rests on: a `default_contract` turn has no planning phase to enter.
+    assert!(
+        io_cli::exec::code(&result.outcome) <= io_cli::exec::UNFINISHED,
+        "the outcome {:?} maps outside the published exit-code table",
+        result.outcome,
+    );
+}
