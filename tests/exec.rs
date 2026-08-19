@@ -957,7 +957,14 @@ fn the_outcome_table_names_every_outcome_the_locked_harness_declares() {
         "io-harness 0.65 declares AwaitingRecovery; found {declared:?}"
     );
 
-    let source = std::fs::read_to_string("src/exec.rs").expect("this crate's source is readable");
+    // Normalised, because this reads a checked-out file rather than a string in
+    // memory: git hands Windows a CRLF working copy, so the `\n}\n` that closes
+    // the table is `\r\n}\r\n` there and the split finds nothing. The helper
+    // this test's other half uses has done the same since it was written; this
+    // one had to be told by a Windows runner.
+    let source = std::fs::read_to_string("src/exec.rs")
+        .expect("this crate's source is readable")
+        .replace("\r\n", "\n");
     let table = source
         .split_once("pub fn code(outcome: &RunOutcome) -> u8 {")
         .expect("the exit-code table is here")
