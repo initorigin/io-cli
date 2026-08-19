@@ -461,3 +461,73 @@ pub const FORBIDDEN: &[(&str, &str)] = &[
     ("mouse capture (1002)", "\x1b[?1002h"),
     ("mouse capture (1003)", "\x1b[?1003h"),
 ];
+
+/// A real PNG of a stated size, encoded by the same crate that decodes it.
+///
+/// Hand-rolling a PNG here would be a second, disagreeing answer to what a PNG
+/// is; asking the decoder's own encoder for one keeps the fixture honest and
+/// keeps the test about `picture`, not about byte layout.
+#[allow(dead_code)]
+pub fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    use image::ImageEncoder;
+
+    let pixels = image::RgbaImage::from_pixel(width, height, image::Rgba([32, 64, 128, 255]));
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(
+            pixels.as_raw(),
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("the png encoder this crate already declares");
+    out
+}
+
+/// A provider that answers immediately and remembers how many images each
+/// request carried.
+///
+/// F7 is a claim about what reached the wire, so it has to be asserted on the
+/// request rather than on a field io-cli could have cleared while keeping a copy
+/// somewhere else. `Scripted` discards its request; this one reads it.
+pub struct Watching {
+    media: Mutex<Vec<usize>>,
+}
+
+impl Watching {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self {
+            media: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The media count of every completion since the last call, and reset.
+    ///
+    /// Taken rather than read so a test can speak about one turn at a time
+    /// without counting how many completions that turn happened to need.
+    #[allow(dead_code)]
+    pub fn take_media_counts(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.media.lock().expect("not poisoned"))
+    }
+}
+
+impl Provider for Watching {
+    async fn complete(&self, request: CompletionRequest) -> io_harness::Result<CompletionResponse> {
+        self.media
+            .lock()
+            .expect("not poisoned")
+            .push(request.media.len());
+        Ok(CompletionResponse {
+            text: Some("done".to_string()),
+            tool_calls: Vec::new(),
+            ..Default::default()
+        })
+    }
+
+    /// True, or every turn in these tests would be refused by
+    /// `ensure_media_accepted` before it began.
+    fn accepts_images(&self) -> bool {
+        true
+    }
+}

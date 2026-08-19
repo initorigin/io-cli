@@ -798,6 +798,45 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // At an idle prompt. Mid-turn the key is the way in, since the
                 // driver refuses a slash command while a run is in flight.
                 Action::Fleet => app.toggle_fleet(),
+                // The policy the NEXT turn would run under, built exactly the way
+                // the completion above and the turn below build it — so what may
+                // be attached and what the agent may read are the same set by
+                // construction rather than by two agreeing lists.
+                Action::Attach(path) => {
+                    let effective =
+                        approval::session_policy(&policy, app.posture(), app.remembered());
+                    match io_cli::attach::prepare(
+                        session.root(),
+                        &effective,
+                        // The provider's own answer, asked here rather than left
+                        // to `ensure_media_accepted` inside the turn — that one
+                        // fires after a prompt has been typed.
+                        provider.accepts_images(),
+                        &path,
+                    ) {
+                        Ok(staged) => {
+                            let (drawable, graphics) = forms(&app);
+                            let drawn = io_cli::picture::render(
+                                &staged.bytes,
+                                &staged.path,
+                                staged.media_type,
+                                drawable,
+                                graphics,
+                                screen.width(),
+                            );
+                            let note = app
+                                .theme
+                                .notice(Tone::Muted, io_cli::attach::staged_note(&staged));
+                            // Staged on the session, so io-harness's `drive` folds
+                            // it in and `mem::take`s it. Nothing is kept here: the
+                            // one-turn-only property is the harness's, and a copy
+                            // on this side would quietly undo it.
+                            session.attach([staged.media]);
+                            commit_drawn(screen, &mut app, drawn, Some(note))?;
+                        }
+                        Err(error) => app.say(Tone::Error, error),
+                    }
+                }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —
@@ -902,6 +941,78 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     }
 }
 
+/// What an attachment commits into the scrollback: the picture, then the sentence.
+///
+/// The picture first and the sentence under it, because the sentence is the part
+/// a reader can find again by scrolling and the picture is the part they are
+/// looking at now. Under `--plain`, `NO_COLOR` or the ASCII glyph set there is no
+/// picture and the file is named instead — see [`io_cli::picture::drawable`],
+/// which is the single expression all three suppressions go through.
+///
+/// A file that will not decode is NOT an error here. io-harness has already
+/// accepted it for the wire, so the agent will see it; what failed is this
+/// crate's ability to show the operator the same thing, and saying so beats
+/// refusing an attachment that is going to work.
+fn commit_drawn(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    drawn: io_cli::picture::Drawn,
+    after: Option<ratatui::text::Line<'static>>,
+) -> Result<(), String> {
+    match drawn {
+        io_cli::picture::Drawn::Lines(mut lines) => {
+            lines.extend(after);
+            app.picture(lines);
+        }
+        io_cli::picture::Drawn::Kitty { payload, rows } => {
+            // Anything already queued goes FIRST. A raw commit writes straight to
+            // the terminal, so a picture emitted before the lines that precede it
+            // would land above its own context — and scrollback cannot be
+            // reordered afterwards.
+            let pending = app.take_pending();
+            if !pending.is_empty() {
+                screen.commit(&pending).map_err(|error| error.to_string())?;
+            }
+            screen
+                .commit_raw(&payload, rows)
+                .map_err(|error| error.to_string())?;
+            app.picture(after.into_iter().collect());
+        }
+    }
+    Ok(())
+}
+
+/// How this session may draw a picture: in cells, and whether as a real image.
+fn forms(app: &App) -> (bool, bool) {
+    let drawable = io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs);
+    // A graphics escape is only ever sent where cells would also have been drawn:
+    // `--plain`, `NO_COLOR` and the ASCII glyph set are each a reason a reader
+    // wants no picture at all, and a protocol the terminal happens to speak does
+    // not override any of them.
+    (drawable, drawable && io_cli::term::kitty_graphics())
+}
+
+/// **The agent's own look, committed where it looked.**
+///
+/// A wrapper over [`io_cli::attach::viewed`], which is where every decision
+/// lives. Nothing is decided here, deliberately: `src/main.rs` is linked by no
+/// integration test, so a branch written here could not be sabotaged and would
+/// not be covered.
+fn commit_viewed(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    root: &std::path::Path,
+    policy: &Policy,
+    event: &io_harness::RunEvent,
+) -> Result<(), String> {
+    let (drawable, graphics) = forms(app);
+    let width = screen.width();
+    match io_cli::attach::viewed(root, policy, event, drawable, graphics, width) {
+        Some(drawn) => commit_drawn(screen, app, drawn, None),
+        None => Ok(()),
+    }
+}
+
 /// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
 #[allow(clippy::too_many_arguments)]
 async fn turn<P: Provider>(
@@ -937,6 +1048,9 @@ async fn turn<P: Provider>(
     // and a steer inbox together. Boxed to one type so the `select!` below is
     // written once; a second loop would be a second place `Ctrl+C`, the ticker
     // and the event drain could drift.
+    // Taken before the future borrows the session, because it is needed inside the
+    // loop and `running` holds `&mut session` for the whole of it.
+    let root = session.root().to_path_buf();
     app.contained = containment.is_some();
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
@@ -974,6 +1088,7 @@ async fn turn<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
+                commit_viewed(screen, app, &root, policy, &event)?;
                 paint(screen, app)?;
             }
             Some(ask) = asks.recv() => {
@@ -1070,6 +1185,10 @@ async fn turn<P: Provider>(
         // and the last step of a turn is exactly the one that loses that race,
         // so the edit a reader most wants to see is the one that vanishes.
         commit_edits(app, store, &event, width);
+        // And the picture, for the same reason and the same race: a `view_image`
+        // on the turn's last step is exactly the one the drain would otherwise
+        // lose.
+        commit_viewed(screen, app, &root, policy, &event)?;
     }
     app.finished();
 

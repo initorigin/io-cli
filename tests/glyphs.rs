@@ -488,6 +488,28 @@ fn every_event_this_release_renders_draws_in_ascii() {
             child_run_id: 11,
             after: Some(std::time::Duration::from_secs(30)),
         },
+        // 0.9.0 — a background handle's whole life. Four arms that draw and one
+        // that deliberately does not, and every one of them is swept: the four
+        // carry a job id and a word, and `HandlePolled` is here for the same
+        // reason `SpendDraw` is, because "it renders no row" is an answer this
+        // list has to have checked rather than assumed.
+        EventKind::HandleStarted {
+            handle: 4,
+            line: "npm run dev".into(),
+        },
+        EventKind::HandlePolled {
+            handle: 4,
+            bytes: 2_048,
+        },
+        EventKind::HandleExited {
+            handle: 4,
+            code: Some(1),
+        },
+        EventKind::HandleKilled { handle: 4 },
+        EventKind::HandleOrphaned {
+            handle: 4,
+            reason: "the run finished".into(),
+        },
         // An arm that commits nothing — the draw is a status field, not a row —
         // and it is swept anyway: the sweep's question is whether an arm can put
         // a glyph on a terminal that cannot draw it, and "it renders no row" is

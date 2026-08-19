@@ -37,6 +37,12 @@ const ALLOWED: &[&str] = &[
     // already depends on — so this name buys a correctness property (escaping is
     // not this crate's to get right) rather than a subsystem.
     "serde_json",
+    // Eleventh, added in 0.9.0. Decoding an image into pixels, so a picture can be
+    // drawn as half-block cells where the terminal speaks no graphics protocol.
+    // Already in the tree through io-harness's `media` feature, so declaring it
+    // directly adds a name rather than a subtree. Its FEATURE SET is asserted below
+    // — see `n3_image_is_taken_with_exactly_the_formats_io_harness_will_accept`.
+    "image",
 ];
 
 /// Crates that would mean a subsystem had been rebuilt here. Matched against
@@ -434,6 +440,70 @@ fn n2_syntect_is_taken_with_exactly_the_features_the_cross_compiles_survive() {
          and the rest of the interface one aesthetic and NO_COLOR working from \
          one place.",
     );
+}
+
+/// N3 — the same argument as N2, for the decoder 0.9.0 takes.
+///
+/// `image`'s DEFAULT features are `rayon` plus `default-formats`, and
+/// `default-formats` includes `avif` — which is `ravif`, an AV1 *encoder*, along
+/// with `exr`, `hdr`, `dds`, `qoi` and `ff`. None of them decodes anything this
+/// crate can be handed, because everything this crate renders has already been
+/// through `Media::attach`, which accepts nine formats and refuses the rest by
+/// name.
+///
+/// So the list is derived rather than chosen: the four that reach a provider
+/// unchanged, and the five io-harness transcodes to PNG on the way in. A merge
+/// that drops the list, or a later `default-features = true`, has to fail here.
+#[test]
+fn n3_image_is_taken_with_exactly_the_formats_io_harness_will_accept() {
+    let manifest = manifest();
+    let image = manifest
+        .get("dependencies")
+        .and_then(|table| table.get("image"))
+        .and_then(toml::Value::as_table)
+        .expect("image is a table, not a bare version string");
+
+    assert_eq!(
+        image.get("default-features").and_then(toml::Value::as_bool),
+        Some(false),
+        "image's default features pull an AV1 encoder and rayon into a crate that \
+         only ever decodes a file io-harness already accepted",
+    );
+
+    let features: Vec<&str> = image
+        .get("features")
+        .and_then(toml::Value::as_array)
+        .expect("a features array")
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(
+        features,
+        ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico", "tga", "pnm"],
+        "exactly what `Media::source_type_for` names and something can decode: the \
+         four wire formats first, then the five io-harness transcodes. `gif` and \
+         `webp` are here and are NOT in io-harness's own list, because the harness \
+         passes those two through without decoding them and a half-block cell needs \
+         their pixels.",
+    );
+}
+
+/// N4 — nothing in this crate encodes base64.
+///
+/// A graphics protocol wants base64, and the obvious move is to take a base64
+/// crate. It is not needed: `Media` carries the encoded string already, because
+/// io-harness encoded it to put the image on a wire. Taking a crate to recompute
+/// a string this process is already holding would be a twelfth name for nothing.
+#[test]
+fn n4_no_base64_is_computed_here() {
+    for (path, text) in sources() {
+        assert!(
+            !text.contains("base64::"),
+            "{} reaches for a base64 crate; `Media::base64` is already the encoded \
+             payload a graphics protocol needs",
+            path.display(),
+        );
+    }
 }
 
 /// N4 — the grammar table is never touched on the startup path.

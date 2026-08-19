@@ -328,6 +328,69 @@ impl Events {
             // reaches a surface, just not this one. `App::status_from` is that
             // surface, and `tests/status.rs` asserts it.
             EventKind::SpendDraw { .. } => Vec::new(),
+            // **Background work, said where it happens.** A `shell_start` is the
+            // one tool call whose effect outlives the step that made it, so the
+            // ordinary tool cell — opened here, committed by the `Step` that
+            // follows — describes a thing that has already finished when in fact
+            // it has only begun. These four say what the cell cannot.
+            EventKind::HandleStarted { handle, line } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(format!("job {handle} "), self.theme.style(Tone::Accent)),
+                    Span::styled(
+                        format!("started in the background: {line}"),
+                        self.theme.style(Tone::Normal),
+                    ),
+                ]));
+                lines
+            }
+            // **Nothing, and deliberately.** A poll carries a byte count and never
+            // the bytes, and a line per poll would bury the transcript under the
+            // progress of something the operator asked to run in the background
+            // precisely so they would not have to watch it. The count on the
+            // status line is where a poll's fact belongs, and it does not move it:
+            // a poll is not an ending.
+            EventKind::HandlePolled { .. } => Vec::new(),
+            EventKind::HandleExited { handle, code } => {
+                let mut lines = self.flush_text();
+                // The code says which of two things happened and the tone follows
+                // it. `None` is a process that ended without one — killed by a
+                // signal, most often — and saying "exited with no status" is the
+                // honest form of a number that does not exist.
+                let (text, tone) = match code {
+                    Some(0) => ("exited cleanly".to_string(), Tone::Success),
+                    Some(code) => (format!("exited with status {code}"), Tone::Warning),
+                    None => ("exited with no status".to_string(), Tone::Warning),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("job {handle} "), self.theme.style(Tone::Accent)),
+                    Span::styled(text, self.theme.style(tone)),
+                ]));
+                lines
+            }
+            EventKind::HandleKilled { handle } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(format!("job {handle} "), self.theme.style(Tone::Accent)),
+                    Span::styled("killed".to_string(), self.theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            // The run finished while this was still up. io-harness kills live
+            // handles on the way out and says why; a run that leaves something
+            // behind is exactly the case the operator needs told, because the
+            // session is about to look idle for a reason that is not idleness.
+            EventKind::HandleOrphaned { handle, reason } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(format!("job {handle} "), self.theme.style(Tone::Accent)),
+                    Span::styled(
+                        format!("was left running: {reason}"),
+                        self.theme.style(Tone::Warning),
+                    ),
+                ]));
+                lines
+            }
             // **The fleet, committed where it happens.** Four events, four lines,
             // and every one of them indented by the event's OWN depth: a spawn is
             // attributed to the PARENT's run id at the parent's depth, and the
