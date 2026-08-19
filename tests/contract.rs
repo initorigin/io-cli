@@ -110,13 +110,15 @@ fn the_flat_turn_is_still_the_steered_one() {
         "the contract-less contained entry point is gone; every contained turn takes one",
     );
 
+    // The decision, not its formatting: the contract exists only where a
+    // containment does, whatever shape the closure that builds it is written in.
     let built = text
         .split_once("let contract = containment")
         .expect("the contract is built from the containment and nothing else")
         .1;
+    let head = &built[..120.min(built.len())];
     assert!(
-        built.starts_with("\n        .map(|_| io_cli::contract::session("),
-        "a session with no containment builds no contract at all: {:?}",
-        &built[..80.min(built.len())],
+        head.contains(".map(") && head.contains("io_cli::contract::session("),
+        "a session with no containment builds no contract at all: {head:?}",
     );
 }
