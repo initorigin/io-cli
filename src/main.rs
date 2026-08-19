@@ -1052,6 +1052,11 @@ async fn turn<P: Provider>(
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
     // declined everything it was named for.
     let (approver, mut asks) = approval::channel();
+    // The third seam, and the one that answers rather than authorizes. It reaches
+    // the run only through the contract, so on a flat turn the answerer is built
+    // and never spoken to — which is exactly what a session with no responder
+    // does today: the question pauses the run instead.
+    let (answerer, mut questions) = io_cli::intent::channel();
     app.started();
     paint(screen, app)?;
 
@@ -1075,8 +1080,10 @@ async fn turn<P: Provider>(
     app.contained = containment.is_some();
     // Built before the future borrows it, and only for the arm that can take one:
     // the flat turn is handed `text` itself, exactly as it always was.
-    let contract = containment
-        .map(|_| io_cli::contract::session(text.clone(), root.clone(), capabilities));
+    let contract = containment.map(|_| {
+        io_cli::contract::session(text.clone(), root.clone(), capabilities)
+            .with_responder(std::sync::Arc::new(answerer))
+    });
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match (containment, &contract) {
@@ -1120,6 +1127,15 @@ async fn turn<P: Provider>(
                 // stays there until the overlay answers. The loop keeps turning,
                 // which is what leaves `Ctrl+C` reachable while a question is up.
                 app.open_approval(ask);
+                app.status.elapsed = started.elapsed();
+                paint(screen, app)?;
+            }
+            Some(asked) = questions.recv() => {
+                // The same shape one seam over: the run is stopped inside
+                // `Responder::answer` and the loop keeps turning. It can only
+                // arrive on a contained turn, because the responder reaches the
+                // run through the contract and only that arm carries one.
+                app.open_intent(asked);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }

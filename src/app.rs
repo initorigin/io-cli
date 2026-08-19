@@ -114,6 +114,13 @@ pub struct App {
     /// not a choice the operator went looking for: it arrives mid-turn, it takes
     /// the keyboard while it is up, and the run is stopped until it is gone.
     approval: Option<Approval>,
+    /// The agent's question about *intent*, if one is on screen.
+    ///
+    /// A second field rather than a second arm of `approval`, because the two are
+    /// answered with different things — an approval with one of three keys, a
+    /// question with prose — and because only one of them authorizes anything.
+    /// Both are modal, and [`App::modal`] is the one place that knows it.
+    intent: Option<crate::intent::Intent>,
     /// Rules the operator has allowed for the rest of this session.
     ///
     /// The harness's own `remember` is run-scoped and dies with the turn, so
@@ -170,6 +177,7 @@ impl App {
             keys: Keys::default(),
             pending: Vec::new(),
             approval: None,
+            intent: None,
             remembered: Vec::new(),
             root: std::path::PathBuf::new(),
             diff_style: crate::settings::DiffStyle::default(),
@@ -211,6 +219,47 @@ impl App {
     /// and the reason this surface is an overlay at all.
     pub fn open_approval(&mut self, ask: Ask) {
         self.approval = Some(Approval::new(ask, &self.root));
+    }
+
+    /// The agent asked what was meant. The overlay opens and takes the keyboard.
+    ///
+    /// Committed nowhere, for the same reason an approval is not: a question in
+    /// the scrollback can be scrolled away from a run that is blocked on it. The
+    /// transcript gets `QuestionAsked` from the event stream, which is the note
+    /// that the run stopped rather than the question itself.
+    pub fn open_intent(&mut self, asked: crate::intent::Asked) {
+        self.intent = Some(crate::intent::Intent::new(asked));
+    }
+
+    /// Answer the open question, or decline it with `None`.
+    ///
+    /// Declining is not a refusal: io-harness persists the question and pauses
+    /// the run, so the answer can arrive after this process has exited. What is
+    /// said in the scrollback says which of the two happened.
+    pub fn answer_intent(&mut self, answer: Option<String>) {
+        let Some(intent) = self.intent.take() else {
+            return;
+        };
+        match &answer {
+            Some(text) => self.say(Tone::Muted, format!("answered {} {text}", self.theme.glyphs.dash)),
+            None => self.say(
+                Tone::Warning,
+                format!(
+                    "left unanswered {} the run pauses and keeps the question",
+                    self.theme.glyphs.dash
+                ),
+            ),
+        }
+        intent.resolve(answer);
+    }
+
+    /// Whether a modal surface owns the keyboard.
+    ///
+    /// One answer for every caller. An approval and a question are both modal and
+    /// a guard that knew about only one of them is how a keystroke reaches a
+    /// composer nobody can see.
+    pub fn modal(&self) -> bool {
+        self.approval.is_some() || self.intent.is_some()
     }
 
     /// The posture in force.
@@ -274,7 +323,7 @@ impl App {
 
     /// Whether a question is on screen.
     pub fn asking(&self) -> bool {
-        self.approval.is_some()
+        self.modal()
     }
 
     /// Take a bracketed paste, from either of the driver's input loops.
@@ -295,7 +344,7 @@ impl App {
     /// land in a composer sitting behind the overlay — typed by nobody, seen by
     /// nobody, and sent with the next prompt.
     pub fn paste(&mut self, text: &str, picker_open: bool) -> bool {
-        if picker_open || self.approval.is_some() {
+        if picker_open || self.modal() {
             return false;
         }
         self.composer.paste(text);
@@ -372,6 +421,11 @@ impl App {
         // has moved on. Dropping it is the denial — see `Ask` — and the run it
         // belonged to has already ended, so there is nobody left to tell.
         self.approval = None;
+        // The same for a question about intent, with the same consequence stated
+        // differently: dropping the sender is `None`, which is the answer that
+        // pauses a run rather than the one that denies it — and this run has
+        // already stopped, so the pause costs nothing that was still moving.
+        self.intent = None;
         let tail = self.events.flush();
         self.pending.extend(tail);
         // After the tail, so the line saying the session is idle again is the last
@@ -624,6 +678,18 @@ impl App {
             }
             return Command::None;
         }
+        // A question about intent takes the keyboard on exactly the same terms,
+        // `Ctrl+C` included: the answer to "does Ctrl+C decline, or interrupt?" is
+        // that it interrupts, and the question goes unanswered as a consequence of
+        // the turn ending rather than as a second meaning for one key. Every other
+        // key is the operator typing prose, which is why this arm is below the
+        // approval's and above everything else.
+        if let Some(open) = self.intent.as_mut().filter(|_| !interrupting) {
+            if let Some(answer) = open.key(key) {
+                self.answer_intent(answer);
+            }
+            return Command::None;
+        }
         // Any key at all disarms a half-pressed sequence, and the arming is read
         // back here rather than left standing. Taking it before the match means
         // every arm below clears it without having to remember to — the
@@ -801,6 +867,12 @@ impl App {
         // type at — the run is stopped — and the alternative, squeezing it beside
         // a composer nobody can use, is how an approval ends up too small to read.
         if let Some(open) = &self.approval {
+            open.render(frame, area, &self.theme);
+            return;
+        }
+        // The same rule for the same reason: the run is stopped waiting on prose,
+        // so there is nothing behind this worth half a screen.
+        if let Some(open) = &self.intent {
             open.render(frame, area, &self.theme);
             return;
         }

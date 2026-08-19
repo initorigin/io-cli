@@ -32,6 +32,7 @@ pub mod exec;
 pub mod fleet;
 pub mod fuzzy;
 pub mod glyphs;
+pub mod intent;
 pub mod keys;
 pub mod picker;
 pub mod picture;
