@@ -377,7 +377,10 @@ fn f5_the_view_sets_a_cursor_on_the_marked_row() {
 fn f5_the_view_closes_when_the_turn_ends_and_the_model_survives() {
     let mut app = App::new(DARK, "a-model");
     app.started();
-    app.event(&spawned(1, 0, 7, "read every file under src/"), Duration::ZERO);
+    app.event(
+        &spawned(1, 0, 7, "read every file under src/"),
+        Duration::ZERO,
+    );
     app.toggle_fleet();
     assert!(app.fleet_open());
 
