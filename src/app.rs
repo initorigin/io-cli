@@ -540,6 +540,24 @@ impl App {
                 let drawn = self.status.spend.map(|(drawn, _)| drawn).unwrap_or(0) + tokens;
                 self.status.spend = Some((drawn, *remaining));
             }
+            // **A handle opens once and closes once, and `HandlePolled` is
+            // neither.** io-harness documents the invariant: a `HandleStarted`
+            // ends in exactly one of `HandleExited`, `HandleKilled` and
+            // `HandleOrphaned`, and a run that finishes with live handles kills
+            // them on the way out — so the count returns to zero on its own and
+            // the field disappears without anyone clearing it.
+            //
+            // `saturating_sub` rather than a bare decrement: a resumed run replays
+            // a backlog, and an ending whose start was never seen must not wrap
+            // the count to eighteen quintillion background jobs.
+            io_harness::EventKind::HandleStarted { .. } => {
+                self.status.jobs += 1;
+            }
+            io_harness::EventKind::HandleExited { .. }
+            | io_harness::EventKind::HandleKilled { .. }
+            | io_harness::EventKind::HandleOrphaned { .. } => {
+                self.status.jobs = self.status.jobs.saturating_sub(1);
+            }
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));
             }

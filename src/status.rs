@@ -110,6 +110,23 @@ pub struct Status {
     /// because the crate has no price telemetry, so a figure with a currency in
     /// front of it would be one this interface invented.
     pub spend: Option<(u64, Option<u64>)>,
+    /// How many background shells this run has started and not yet finished.
+    ///
+    /// A `shell_start` outlives the step that launched it, which is the whole
+    /// point of it and the whole problem: a run waiting on a dev server looks
+    /// exactly like a run that has hung. io-harness emits five events describing
+    /// a handle's life and until now nothing rendered any of them.
+    ///
+    /// Zero renders as **nothing at all**, not as `0`. A session that has started
+    /// no background work has not started zero jobs, which is the same
+    /// distinction `tokens` and `spend` are held to — and it is what keeps this
+    /// field free on the overwhelming majority of lines, where it never appears.
+    ///
+    /// Counted from the stream rather than read from the store: `HandleStarted`
+    /// opens exactly one handle and exactly one of `HandleExited`, `HandleKilled`
+    /// and `HandleOrphaned` closes it, which io-harness documents as an invariant.
+    /// `HandlePolled` is not an ending and must not move it.
+    pub jobs: usize,
     /// How much of the agent's plan the agent says is done, as done over total.
     ///
     /// `None` until the agent writes a list, and that is the whole of F12: a
@@ -152,6 +169,7 @@ impl Status {
             containment: None,
             spend: None,
             plan: None,
+            jobs: 0,
             working: false,
             elapsed: Duration::ZERO,
             plain: false,
@@ -193,6 +211,11 @@ impl Status {
         self.containment = None;
         self.spend = None;
         self.plan = None;
+        // A handle belongs to the run that started it. Leaving the count behind
+        // would have `/resume`, `/fork` and a rewind assert that another run's
+        // jobs are still alive — and there would be no event left that could ever
+        // close them.
+        self.jobs = 0;
     }
 
     /// The indicator, if there is anything to indicate and anywhere to show it.
@@ -237,6 +260,16 @@ impl Status {
         // reader checks to answer "is this alive". Everything this release adds
         // goes to the right of it, which is the order they drop in.
         fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
+        // **Immediately right of the clock, and above everything else this line
+        // carries.** 0.8.0 drafted the spend field to the right of the containment
+        // word and it was invisible on the first terminal it met; the lesson is
+        // that field order is a decision about what survives a narrow screen. This
+        // one answers the same question the clock does — is anything still
+        // happening — costs four cells, and appears on no line at all unless a
+        // background job is actually running.
+        if self.jobs > 0 {
+            fields.push(Field::new(format!("bg {}", self.jobs), Tone::Normal));
+        }
         if let Some(tokens) = self.tokens {
             fields.push(Field::new(
                 format!("{} tok", format_tokens(tokens)),
