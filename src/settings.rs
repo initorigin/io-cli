@@ -63,11 +63,16 @@ pub struct CliSettings {
     /// The caps a fan-out runs under: `[app.io-cli.containment]`.
     ///
     /// **This key is what turns the fleet on, and it is not a preference.**
-    /// `Session::turn_contained_observed` is the only session entry point that
-    /// passes a containment into the driver, and therefore the only one that
+    /// `Session::turn_contained_bounded_observed` is the only session entry point
+    /// that passes a containment into the driver, and therefore the only one that
     /// reaches the loop owning the spawn tool — so a session with no caps
     /// configured cannot decompose anything, and one with them runs a materially
     /// different turn. Absent means every turn is the steered turn 0.7.0 shipped.
+    ///
+    /// **Since 0.10.0 it decides more than the fan-out.** That same entry point is
+    /// also the only one that takes a caller's `TaskContract`, so this key is what
+    /// lets the four settings below it reach a turn at all — see
+    /// [`crate::contract`], which is where that coupling is stated in full.
     ///
     /// io-harness's own type rather than four fields of io-cli's own, because it
     /// is `Serialize`/`Deserialize` for exactly this purpose and because a
@@ -76,6 +81,25 @@ pub struct CliSettings {
     /// written against the pre-0.32.0 name still reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub containment: Option<io_harness::Containment>,
+    /// MCP servers for the turn: `[[app.io-cli.mcp]]`.
+    ///
+    /// io-harness's own `McpServer`, which is `Deserialize` for exactly this
+    /// purpose. **It reaches a turn only where a contract does**, which today is
+    /// the contained turn — see [`crate::contract`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<io_harness::McpServer>>,
+    /// Language servers for this workspace: `[[app.io-cli.lsp]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<Vec<io_harness::LspServer>>,
+    /// A browser the agent may drive: `[app.io-cli.browser]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<io_harness::BrowserConfig>,
+    /// The directory io-harness discovers skills in: `skills = "..."`.
+    ///
+    /// A path and not a list, because discovery is the harness's and io-cli
+    /// parses no skill file of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<std::path::PathBuf>,
 }
 
 /// The caps this session runs its turns under, if any.
@@ -89,17 +113,25 @@ pub fn containment(stored: Option<&CliSettings>) -> Option<&io_harness::Containm
 
 /// What a contained turn gives up, in the words the session says it in.
 ///
-/// **Disclosure rather than decoration.** A contained turn is built from
-/// `Session`'s own `default_contract`, so three things an operator may have
-/// configured stop applying to it — the agent roster, `[run]`'s budgets and
-/// `[sandbox]` — and it takes no `SteerInbox`, so text typed mid-turn cannot
-/// redirect it. None of that is visible from the screen, and a mode that
-/// silently drops a step cap somebody set is the worst kind of quiet.
+/// **Disclosure rather than decoration.** A contained turn takes no `SteerInbox`,
+/// so text typed mid-turn cannot redirect it, and it is built from a contract
+/// io-cli writes rather than from io-harness's `[run]` and `[sandbox]` sections —
+/// so budgets and an agent roster set there still do not reach it. None of that
+/// is visible from the screen, and a mode that silently drops a step cap somebody
+/// set is the worst kind of quiet.
+///
+/// Since 0.10.0 the sentence also says what the mode *gains*, because that is now
+/// the more surprising half: this is the only turn that can be given a responder,
+/// a plan gate, MCP servers, language servers, a browser or skills, and an
+/// operator who turned containment on for the fan-out has just turned all of them
+/// on too.
 pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
     format!(
         "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \
-         tree. A contained turn cannot be steered mid-flight, and takes no agent roster, no \
-         [run] budget and no [sandbox]; Ctrl+C still ends it.",
+         tree. This is the turn that carries a contract: questions are answered here, a plan \
+         is decided here, and [app.io-cli] skills, mcp, lsp and browser apply here. It cannot \
+         be steered mid-flight, and takes no agent roster, no [run] budget and no [sandbox]; \
+         Ctrl+C still ends it.",
         caps.max_total_agents, caps.max_concurrent_agents, caps.max_depth, caps.max_total_tokens,
     )
 }
@@ -343,6 +375,15 @@ pub fn render(
                 // fan-out, and a file that arrived with caps already in it would
                 // have turned steering off for somebody who never chose to.
                 containment: None,
+                // The four capability keys are left out for the same reason as
+                // the caps above and with the same force: each reaches a turn
+                // only through a contract, which only a contained turn takes, so
+                // writing any of them would turn fan-out on for somebody who
+                // never chose it. The wizard asks about none of them.
+                mcp: None,
+                lsp: None,
+                browser: None,
+                skills: None,
             },
         },
     };

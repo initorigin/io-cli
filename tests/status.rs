@@ -659,3 +659,135 @@ fn f6_the_spend_survives_a_width_the_containment_word_does_not() {
         "and the field it outranks is the one that goes: {line:?}",
     );
 }
+
+/// **F6 — the session says what it is connected to, and only what the events
+/// say.**
+///
+/// Every one of these fields is filled from the stream. A server named in the
+/// configuration that never came up leaves the line silent, which is correct and
+/// is the whole reason the field is worth having: an operator looking at it is
+/// asking whether the thing they configured is actually there.
+///
+/// Sabotage: render the configured values instead of the events', under which
+/// only these tests fail — and they fail by reporting a connection that was asked
+/// for and never made.
+#[test]
+fn f6_a_session_with_no_connections_says_nothing_about_them() {
+    let status = Status::new("openai/gpt-5.6-luna");
+    let line = rendered(&status, 120);
+
+    assert!(
+        !line.contains("mcp"),
+        "zero servers is not `mcp 0`: {line:?}"
+    );
+    assert!(!line.contains("lsp"), "{line:?}");
+    assert!(!line.contains("web"), "{line:?}");
+}
+
+#[test]
+fn f6_a_server_that_answered_is_named_with_the_tools_it_offered() {
+    let mut app = App::new(DARK, "openai/gpt-5.6-luna");
+    // The server reaching the run: no tool on the event.
+    app.event(
+        &event(EventKind::Mcp {
+            server: "docs".into(),
+            tool: None,
+            ok: None,
+            millis: None,
+        }),
+        Duration::ZERO,
+    );
+    // Then two of its tools being called. A call is not a second server.
+    for tool in ["search", "fetch"] {
+        app.event(
+            &event(EventKind::Mcp {
+                server: "docs".into(),
+                tool: Some(tool.into()),
+                ok: Some(true),
+                millis: Some(12),
+            }),
+            Duration::ZERO,
+        );
+    }
+
+    assert_eq!(app.status.mcp, (1, 2), "one server, two tools");
+    assert!(rendered(&app.status, 120).contains("mcp 1/2 tools"));
+}
+
+#[test]
+fn f6_a_language_server_that_came_up_is_counted() {
+    let mut app = App::new(DARK, "openai/gpt-5.6-luna");
+    app.event(
+        &event(EventKind::LspStarted {
+            server: "rust-analyzer".into(),
+            root: "/tmp/workspace".into(),
+            ready_ms: 900,
+        }),
+        Duration::ZERO,
+    );
+
+    assert_eq!(app.status.lsp, 1);
+    assert!(rendered(&app.status, 120).contains("lsp 1"));
+}
+
+/// A host that was blocked and a host that was visited must not read the same.
+/// This is the arm the criterion names, and the one a field carrying only the
+/// host would get wrong.
+#[test]
+fn f6_a_refused_host_does_not_read_like_a_visited_one() {
+    let mut app = App::new(DARK, "openai/gpt-5.6-luna");
+    app.event(
+        &event(EventKind::BrowserStarted {
+            binary: "/usr/bin/chromium".into(),
+            headless: true,
+            ready_ms: 400,
+        }),
+        Duration::ZERO,
+    );
+    assert!(
+        rendered(&app.status, 120).contains("web ready"),
+        "a browser that has gone nowhere says so rather than naming a host",
+    );
+
+    app.event(
+        &event(EventKind::BrowserNavigated {
+            host: "docs.rs:443".into(),
+            permitted: true,
+        }),
+        Duration::ZERO,
+    );
+    let visited = rendered(&app.status, 120);
+    assert!(visited.contains("web docs.rs:443"), "{visited}");
+    assert!(!visited.contains("refused"), "{visited}");
+
+    app.event(
+        &event(EventKind::BrowserNavigated {
+            host: "ads.example.com:443".into(),
+            permitted: false,
+        }),
+        Duration::ZERO,
+    );
+    let refused = rendered(&app.status, 120);
+    assert!(
+        refused.contains("web ads.example.com:443 refused"),
+        "the refusal is drawn as a refusal: {refused}",
+    );
+}
+
+/// All three are run facts and none outlives the run that reported them.
+/// `/resume`, `/fork` and a rewind all land here.
+#[test]
+fn f6_the_connections_are_forgotten_with_the_run() {
+    let mut status = Status::new("openai/gpt-5.6-luna");
+    status.mcp = (2, 9);
+    status.lsp = 1;
+    status.browser = Some(("docs.rs:443".into(), Some(true)));
+
+    status.forget_run();
+
+    assert_eq!(status.mcp, (0, 0));
+    assert_eq!(status.lsp, 0);
+    assert_eq!(status.browser, None);
+    let line = rendered(&status, 120);
+    assert!(!line.contains("mcp") && !line.contains("lsp") && !line.contains("web"));
+}

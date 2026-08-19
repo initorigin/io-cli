@@ -18,7 +18,7 @@ use io_harness::{Flow, Observer, RunEvent};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 /// The observer handed to `Session::turn_steered` and to
-/// `Session::turn_contained_observed`.
+/// `Session::turn_contained_bounded_observed`.
 pub struct Bridge {
     events: UnboundedSender<RunEvent>,
     /// Set to end a *contained* turn, and never set for a steered one.

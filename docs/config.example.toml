@@ -164,10 +164,16 @@ fleet = "ctrl+f"
 #
 # It is not a preference, and turning it on costs something. A contained turn
 # cannot be steered while it runs — the entry point that fans out takes no steer
-# inbox — and it is built from the session's own default contract, so an agent
-# roster, `[run]` budgets and `[sandbox]` do not apply to it. `Ctrl+C` still ends
-# it, at the next point where no child is in flight. The session says all of that
-# when it starts, and `/contain off` gives a turn back to steering.
+# inbox — and `[run]` budgets, `[sandbox]` and an agent roster do not apply to it.
+# `Ctrl+C` still ends it, at the next point where no child is in flight. The
+# session says all of that when it starts, and `/contain off` gives a turn back to
+# steering.
+#
+# Since 0.10.0 it also DECIDES EVERY KEY BELOW IT. This is the only session turn
+# io-harness lets a caller hand a task contract to, and a responder, a plan gate,
+# MCP servers, language servers, a browser and a skills directory are all fields
+# of that contract — so with this table absent, none of the four settings after it
+# reaches a turn, however carefully they are written.
 #
 # All four keys are required, because there is no safe default for somebody
 # else's token ceiling.
@@ -183,3 +189,49 @@ fleet = "ctrl+f"
 # max_concurrent_agents = 4
 # max_depth = 2
 # max_total_tokens = 200000
+
+# --- What a contained turn carries (0.10.0) ---------------------------------
+#
+# Every setting below reaches a turn only when the containment table above is
+# present. That is not a rule invented here: these are fields of io-harness's
+# `TaskContract`, and its contained session turn is the only one that takes a
+# contract from the caller.
+#
+# A directory of skills for the agent. They appear in the `/` palette by name,
+# and choosing one puts `use the <name> skill: ` in the prompt — the file itself
+# is read by the MODEL, through a tool, under this session's own policy. Both
+# layouts are discovered: `skills/migrations.md` and `skills/api-style/SKILL.md`.
+#
+# skills = "~/.config/io/skills"
+
+# MCP servers, in io-harness's own shape — io-cli defines no schema for one. The
+# transport is a tag beside the rest of the fields rather than a nested table.
+# The status line names each server that actually answered and how many tools it
+# offered, which is a different fact from the one written here.
+#
+# [[app.io-cli.mcp]]
+# id = "docs"
+# transport = "stdio"
+# command = "mcp-server-docs"
+# args = []
+#
+# [[app.io-cli.mcp]]
+# id = "issues"
+# transport = "http"
+# url = "https://mcp.example.com/v1"
+
+# Language servers for this workspace. `extensions` is what routes a file to one.
+#
+# [[app.io-cli.lsp]]
+# id = "rust-analyzer"
+# command = "rust-analyzer"
+# extensions = ["rs"]
+
+# A browser the agent may drive. It is one you already have — nothing is ever
+# downloaded — and every navigation it attempts, including redirects and clicks
+# nobody typed, is decided by this session's policy. The status line shows the
+# last host and whether it was allowed or refused.
+#
+# [app.io-cli.browser]
+# binary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# headless = true

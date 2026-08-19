@@ -560,7 +560,31 @@ pub const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
 /// advertised the protocol from seeing a stray pop.
 static KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
 
-/// Whether this terminal can be sent a Kitty *graphics* escape.
+/// Which inline-graphics protocol this terminal speaks, if any.
+///
+/// Two, and they are not interchangeable: Kitty takes PNG and can be told not to
+/// move the cursor, iTerm2 decodes the file itself and cannot. What they share is
+/// how they are found — by what the environment says the terminal is, never by
+/// asking it. A graphics query is answered with an APC string crossterm's parser
+/// does not model, so a reply would have to be read by a second raw-mode owner,
+/// which this product does not have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Graphics {
+    /// Cells, and no escape at all — which is also what an unknown terminal gets,
+    /// because an escape it cannot read is unreadable bytes in permanent
+    /// scrollback.
+    None,
+    /// The Kitty graphics protocol, whose `C=1` leaves the cursor alone.
+    Kitty,
+    /// iTerm2's inline-image escape, which moves the cursor and is therefore
+    /// bracketed by a save and a restore where it is written.
+    Iterm2,
+}
+
+/// The protocol `var`'s environment describes.
+///
+/// A multiplexer hides both: it sits between this process and whatever would draw
+/// the picture, and it is the terminal's answer rather than one protocol's.
 ///
 /// **Read from the environment rather than queried, and that is a safety
 /// decision.** The keyboard protocol is asked for with crossterm's own
@@ -583,7 +607,7 @@ static KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
 ///
 /// Taking the lookup as an argument is what makes every branch testable without a
 /// test mutating the process it runs in.
-pub fn speaks_kitty_graphics(var: impl Fn(&str) -> Option<String>) -> bool {
+pub fn graphics_protocol(var: impl Fn(&str) -> Option<String>) -> Graphics {
     let term = var("TERM").unwrap_or_default();
     // A multiplexer is between us and whatever would draw it.
     if var("TMUX").is_some()
@@ -591,18 +615,40 @@ pub fn speaks_kitty_graphics(var: impl Fn(&str) -> Option<String>) -> bool {
         || term.starts_with("screen")
         || term.starts_with("tmux")
     {
-        return false;
+        return Graphics::None;
     }
     let program = var("TERM_PROGRAM").unwrap_or_default();
-    term.contains("kitty")
+    if term.contains("kitty")
         || var("KITTY_WINDOW_ID").is_some()
         || var("GHOSTTY_RESOURCES_DIR").is_some()
         || var("KONSOLE_VERSION").is_some()
         || program.eq_ignore_ascii_case("ghostty")
         || program.eq_ignore_ascii_case("wezterm")
+    {
+        return Graphics::Kitty;
+    }
+    // `LC_TERMINAL` is what survives an ssh session, where `TERM_PROGRAM` is the
+    // remote shell's and says nothing about the terminal drawing it.
+    if program == "iTerm.app"
+        || var("LC_TERMINAL")
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("iterm2")
+    {
+        return Graphics::Iterm2;
+    }
+    Graphics::None
 }
 
-/// [`speaks_kitty_graphics`] against this process's own environment.
+/// Whether [`graphics_protocol`] answers Kitty.
+pub fn speaks_kitty_graphics(var: impl Fn(&str) -> Option<String>) -> bool {
+    graphics_protocol(var) == Graphics::Kitty
+}
+
+/// [`graphics_protocol`] against this process's own environment.
+pub fn graphics() -> Graphics {
+    graphics_protocol(|name| std::env::var(name).ok())
+}
+
 pub fn kitty_graphics() -> bool {
     speaks_kitty_graphics(|name| std::env::var(name).ok())
 }
