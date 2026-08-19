@@ -77,6 +77,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "put the whole conversation back into the scrollback",
     ),
     (
+        "Ctrl+F",
+        "show the fleet: the children this turn has spawned",
+    ),
+    (
         "y / a / n",
         "answer an approval: allow once, allow this session, deny",
     ),
@@ -110,6 +114,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/copy diff",
         "put the whole run's patch on the system clipboard",
     ),
+    (
+        "/contain",
+        "run turns contained, so the agent can fan out: on, off, or ask",
+    ),
+    ("/fleet", "show the children this turn has spawned"),
 ];
 
 /// Whether this keystroke opens the slash palette.
@@ -325,6 +334,14 @@ pub enum Action {
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
     Transcript,
+    /// Open the fleet view, or close it.
+    Fleet,
+    /// Run later turns contained, stop doing so, or say which it is now.
+    ///
+    /// `None` is a question and never a toggle: the two modes differ in what a
+    /// turn can do — fan out, or be steered — and a switch that guessed which
+    /// one the operator meant would be wrong half the time.
+    Contain(Option<bool>),
 }
 
 /// What `/copy` was asked for.
@@ -390,6 +407,15 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // whichever one that agent taught them.
         "resume" | "continue" => Action::Resume,
         "fork" | "branch" => Action::Fork,
+        // `on` / `off` / nothing. Nothing REPORTS rather than toggles, because
+        // this switch changes what a turn is — a blind toggle would be a coin
+        // flip between a turn that can be steered and one that can fan out.
+        "contain" | "containment" => match input.split_whitespace().nth(1) {
+            Some("on") | Some("yes") => Action::Contain(Some(true)),
+            Some("off") | Some("no") => Action::Contain(Some(false)),
+            _ => Action::Contain(None),
+        },
+        "fleet" | "agents" => Action::Fleet,
         "expand" => Action::Expand,
         "copy" => match input.split_whitespace().nth(1) {
             // `/copy diff` and `/copy patch` mean the same thing. A reader who

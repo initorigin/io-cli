@@ -466,6 +466,36 @@ fn every_event_this_release_renders_draws_in_ascii() {
             steps: 4,
             tokens: 8_912,
         },
+        // 0.8.0 — styled with the pin bump to io-harness 0.65, which is what
+        // made the pause exist. Its leader is a glyph like every other line's.
+        EventKind::RecoveryPaused {
+            attempt_id: 3,
+            tool: "deploy".into(),
+        },
+        // 0.8.0 — the fleet. Each carries a leader and a dash, and the spawn and
+        // the refusal carry an indent as well.
+        EventKind::Spawned {
+            child_run_id: 7,
+            goal: "read every file under src/".into(),
+        },
+        EventKind::SpawnRefused {
+            cap: "agents".into(),
+        },
+        EventKind::ChildCollected {
+            text: "found three call sites".into(),
+        },
+        EventKind::ChildDetached {
+            child_run_id: 11,
+            after: Some(std::time::Duration::from_secs(30)),
+        },
+        // An arm that commits nothing — the draw is a status field, not a row —
+        // and it is swept anyway: the sweep's question is whether an arm can put
+        // a glyph on a terminal that cannot draw it, and "it renders no row" is
+        // an answer this list has to have checked rather than assumed.
+        EventKind::SpendDraw {
+            tokens: 21,
+            remaining: Some(500),
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is

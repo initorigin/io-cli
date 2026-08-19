@@ -96,6 +96,7 @@ writes no key to disk at all.
 | `Ctrl+L` | clear the viewport, never the scrollback |
 | `Esc Esc` | at an empty prompt, undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
+| `Ctrl+F` | show the fleet: the children this turn has spawned |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | close a picker without choosing |
 | `/` | at an empty prompt, open the command palette |
@@ -130,6 +131,7 @@ rewind = "ctrl+r ctrl+r"
 | `clear` | `Ctrl+L` |
 | `transcript` | `Ctrl+T` |
 | `rewind` | `Esc Esc` |
+| `fleet` | `Ctrl+F` |
 
 A binding is a chord, or two chords separated by a space. Modifiers are `ctrl`,
 `alt` and `shift`, joined to the key with `+`, in any order and any case; a key is
@@ -174,6 +176,8 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
+| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
+| `/fleet` | show the children this turn has spawned |
 
 <!-- commands:end -->
 
@@ -193,6 +197,43 @@ refuse a large payload without saying so.
 
 `/theme` and `/model` change this session only and say so. Making a choice
 permanent is `io setup`.
+
+## The fleet
+
+An agent can break a task into sub-agents and run them over the same workspace.
+io-cli does not implement any of that — io-harness does — but it is the only
+terminal interface that can *show* it, because the facts it draws are ones only
+that core emits.
+
+It is off until you configure the caps it runs under:
+
+```toml
+[app.io-cli.containment]
+max_total_agents = 12
+max_concurrent_agents = 4
+max_depth = 2
+max_total_tokens = 200000
+```
+
+With that table present your turns run **contained**, and `Ctrl+F` or `/fleet`
+opens a live view over the prompt: one row per child with its own state and what
+it has drawn, a per-tier count of what is working, waiting and finished, and the
+tree's remaining budget on the status line beside everything else. A refused
+spawn says which cap refused it and that the agent carries on with what it has. A
+report collected from a child lands in the transcript where it arrives.
+
+**A waiting child is a number and not a row**, because until a concurrency slot
+frees it has no run of its own to name. A fleet that is queueing and a fleet that
+is stuck look identical without that count, which is why it is there.
+
+**Turning this on costs you steering.** io-harness has one session entry point
+that reaches its spawn loop, and it takes no steer inbox — so while a turn is
+contained you cannot type at it to redirect it, and the agent roster, `[run]`
+budgets and `[sandbox]` do not apply to it either. The session says so when it
+starts. `Ctrl+C` still ends the turn, at the next point where no child is in
+flight, and the interface tells you that is what it is waiting for rather than
+appearing to have missed the key. `/contain off` gives the next turn back to
+steering; `/contain on` takes it back.
 
 ## Reading it without seeing it
 
@@ -332,6 +373,7 @@ Four keys live there, and one table:
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
+| `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
 default rather than stopping a session from starting. A section io-harness cannot
@@ -362,6 +404,11 @@ contract does not take a steer inbox — so honouring those sections in a sessio
 would mean giving up `Ctrl+C`. The sandbox itself **is** on: a workspace turn
 runs commands inside it, with no resource ceilings.
 
+A **contained** turn does not apply them either, and for a neighbouring reason:
+the entry point that fans out builds the session's own default contract, so
+`[run]`, `[sandbox]` and `[[agent]]` are as absent there as in a steered turn.
+What bounds a contained turn is the containment table's own token ceiling.
+
 **`io exec` does apply them**, and that is not a second implementation — it is
 the same boundary reached from the other side. A headless run has nobody to
 steer it, so it can hand the harness a contract of its own, which is what
@@ -375,11 +422,10 @@ it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.7.0 is the release where the composer becomes the way the product is driven:
-a slash palette over every command and prompt template, `@` completion under the
-session's own permission boundary, `!` for your own shell, type-to-filter on
-every picker, and the agent's plan on screen. The fleet tree is 0.8.0; inline
-images are 0.9.0.
+0.8.0 is the release where a decomposed task becomes visible while it runs: a
+session given containment caps fans out, and the children, the tiers, the
+refusals and the spend are on screen as they happen. Inline images and the live
+indicators for background handles are 0.9.0.
 
 **Harness skills are not in the palette, and prompt templates are.** The
 difference is not effort. A template is expanded by io-cli into prompt text, so

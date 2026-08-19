@@ -75,7 +75,7 @@ impl Ask {
     /// The harness hands an approver the resulting file rather than a patch, so
     /// the old side has to come from somewhere else — 0.3.0 reads it off disk and
     /// hands both to `Edit::with_hunk`, which is the harness's own renderer. See
-    /// [`diff_of`].
+    /// this module's own `diff_of`, which is where that reading happens.
     pub fn content(&self) -> Option<&str> {
         self.request.content.as_deref()
     }
@@ -241,8 +241,8 @@ impl Approval {
     /// not `/tmp/x/notes.txt` — so an implementation that only read absolute
     /// paths never found the file and quietly fell back to showing the proposed
     /// content, which is a feature that ships looking like it works. Resolving
-    /// against this process's working directory instead would be worse: `io -C
-    /// <dir>` sets the workspace without changing it, so a relative name could
+    /// against this process's working directory instead would be worse:
+    /// `io -C <dir>` sets the workspace without changing it, so a relative name could
     /// match a different file that happens to exist here.
     pub fn new(ask: Ask, root: &std::path::Path) -> Self {
         let proposed = diff_of(&ask, root);

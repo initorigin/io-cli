@@ -262,8 +262,49 @@ pub fn harness_event_kinds() -> Vec<String> {
     kinds
 }
 
+/// Every variant `io_harness::RunOutcome` declares, in the source this crate is
+/// locked to, in declaration order and spelled as Rust spells them.
+///
+/// The gate that replaced a compile error. Before 0.65 `RunOutcome` was exhaustive,
+/// so a variant added by a later harness broke `exec::code`'s match and the table
+/// could not silently stop being total. 0.65 made the enum `#[non_exhaustive]`,
+/// which means the wildcard arm is now mandatory and the build no longer says
+/// anything — so the property moves here, where a new variant fails a test that
+/// names it instead of disappearing into a catch-all.
+pub fn harness_run_outcomes() -> Vec<String> {
+    let source = std::fs::read_to_string(harness_source_path("run.rs"))
+        .expect("io-harness's source is readable from the registry")
+        .replace("\r\n", "\n");
+    let body = source
+        .split_once("pub enum RunOutcome {")
+        .expect("io-harness declares RunOutcome in src/run.rs")
+        .1;
+    let body = body.split_once("\n}\n").expect("the enum is closed").0;
+
+    let mut variants = Vec::new();
+    for line in body.lines() {
+        let Some(rest) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+            continue;
+        }
+        variants.push(
+            rest.chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect::<String>(),
+        );
+    }
+    variants
+}
+
 /// Where the io-harness version this crate is locked to unpacked its source.
 fn harness_observe_path() -> std::path::PathBuf {
+    harness_source_path("observe.rs")
+}
+
+/// One file of that source, by its name under `src/`.
+fn harness_source_path(file: &str) -> std::path::PathBuf {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(manifest.join("Cargo.lock")).expect("the lockfile is here");
     let version = lock
@@ -289,7 +330,7 @@ fn harness_observe_path() -> std::path::PathBuf {
             .path()
             .join(format!("io-harness-{version}"))
             .join("src")
-            .join("observe.rs");
+            .join(file);
         if candidate.is_file() {
             return candidate;
         }

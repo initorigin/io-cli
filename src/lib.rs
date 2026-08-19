@@ -8,6 +8,12 @@
 //! The library half exists so the integration tests can reach the renderer, the
 //! composer and the picker. `io` itself is the binary in `src/main.rs`.
 //!
+//! Since 0.8.0 a session that configures `[app.io-cli.containment]` runs its
+//! turns through io-harness's contained entry point, which is the only one that
+//! reaches its spawn loop — see [`fleet`] for what that stream looks like and
+//! what the interface makes of it, and [`settings::contained_notice`] for what
+//! such a turn gives up.
+//!
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod app;
@@ -21,6 +27,7 @@ pub mod composer;
 pub mod diff;
 pub mod events;
 pub mod exec;
+pub mod fleet;
 pub mod fuzzy;
 pub mod glyphs;
 pub mod keys;
