@@ -469,6 +469,15 @@ impl App {
         }
     }
 
+    /// A picture, committed where it happened.
+    ///
+    /// Beside [`App::edits`] and for the same reason: the read that produced it
+    /// belongs to the driver, which is the only thing holding a workspace and a
+    /// policy, so what arrives here is already lines.
+    pub fn picture(&mut self, lines: Vec<Line<'static>>) {
+        self.pending.extend(lines);
+    }
+
     /// The status line's share of an event.
     ///
     /// Only the events that carry a fact set a field, and nothing sets one to a

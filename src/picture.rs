@@ -127,6 +127,34 @@ pub fn drawable(coloured: bool, plain: bool, glyphs: &crate::glyphs::Glyphs) -> 
 /// Make it a fraction of the height if anyone ever asks for a taller one.
 pub const MAX_ROWS: u16 = 20;
 
+/// Bytes on disk to lines in the scrollback — the whole of what both directions
+/// of this release share.
+///
+/// `drawable` is [`drawable`]'s answer, computed by the caller because the caller
+/// is what holds the theme. A file that will not decode is NOT an error: for an
+/// attachment io-harness has already accepted it for the wire, so the agent is
+/// going to see it, and for a `view_image` the agent has already seen it. What
+/// failed is this crate's ability to show the operator the same thing, and saying
+/// so beats pretending nothing happened.
+pub fn render(
+    bytes: &[u8],
+    path: &str,
+    media_type: &str,
+    drawable: bool,
+    width: u16,
+) -> Vec<Line<'static>> {
+    use ::image::GenericImageView;
+
+    match decode(bytes) {
+        Ok(picture) if drawable => cells(&picture, width, MAX_ROWS),
+        Ok(picture) => {
+            let (w, h) = picture.dimensions();
+            vec![describe(path, media_type, w, h)]
+        }
+        Err(_) => vec![Line::from(format!("{path} could not be drawn here"))],
+    }
+}
+
 /// The one line a picture becomes where cells are not allowed to carry it.
 ///
 /// Under `--plain`, under `NO_COLOR`, and under the ASCII glyph set, a half-block

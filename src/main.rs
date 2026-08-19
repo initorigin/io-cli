@@ -947,30 +947,37 @@ fn attached_lines(
     app: &App,
     width: u16,
 ) -> Vec<ratatui::text::Line<'static>> {
-    let note = io_cli::attach::staged_note(staged);
-    let decoded = io_cli::picture::decode(&staged.bytes);
-    let mut lines = match (
-        &decoded,
+    let mut lines = io_cli::picture::render(
+        &staged.bytes,
+        &staged.path,
+        staged.media_type,
         io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs),
-    ) {
-        (Ok(picture), true) => io_cli::picture::cells(picture, width, io_cli::picture::MAX_ROWS),
-        (Ok(picture), false) => {
-            use image::GenericImageView;
-            let (w, h) = picture.dimensions();
-            vec![io_cli::picture::describe(
-                &staged.path,
-                staged.media_type,
-                w,
-                h,
-            )]
-        }
-        (Err(_), _) => vec![ratatui::text::Line::from(format!(
-            "{} could not be drawn here, but it is on the next turn",
-            staged.path,
-        ))],
-    };
-    lines.push(app.theme.notice(Tone::Muted, note));
+        width,
+    );
+    lines.push(
+        app.theme
+            .notice(Tone::Muted, io_cli::attach::staged_note(staged)),
+    );
     lines
+}
+
+/// **The agent's own look, committed where it looked.**
+///
+/// A wrapper over [`io_cli::attach::viewed`], which is where every decision
+/// lives. Nothing is decided here, deliberately: `src/main.rs` is linked by no
+/// integration test, so a branch written here could not be sabotaged and would
+/// not be covered.
+fn commit_viewed(
+    app: &mut App,
+    root: &std::path::Path,
+    policy: &Policy,
+    event: &io_harness::RunEvent,
+    width: u16,
+) {
+    let drawable = io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs);
+    if let Some(lines) = io_cli::attach::viewed(root, policy, event, drawable, width) {
+        app.picture(lines);
+    }
 }
 
 /// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
@@ -1008,6 +1015,9 @@ async fn turn<P: Provider>(
     // and a steer inbox together. Boxed to one type so the `select!` below is
     // written once; a second loop would be a second place `Ctrl+C`, the ticker
     // and the event drain could drift.
+    // Taken before the future borrows the session, because it is needed inside the
+    // loop and `running` holds `&mut session` for the whole of it.
+    let root = session.root().to_path_buf();
     app.contained = containment.is_some();
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
@@ -1045,6 +1055,7 @@ async fn turn<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
+                commit_viewed(app, &root, policy, &event, screen.width());
                 paint(screen, app)?;
             }
             Some(ask) = asks.recv() => {
@@ -1141,6 +1152,10 @@ async fn turn<P: Provider>(
         // and the last step of a turn is exactly the one that loses that race,
         // so the edit a reader most wants to see is the one that vanishes.
         commit_edits(app, store, &event, width);
+        // And the picture, for the same reason and the same race: a `view_image`
+        // on the turn's last step is exactly the one the drain would otherwise
+        // lose.
+        commit_viewed(app, &root, policy, &event, width);
     }
     app.finished();
 

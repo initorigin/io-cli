@@ -207,3 +207,161 @@ async fn an_attachment_rides_one_turn_and_the_next_turn_carries_none() {
         "the next turn carries no image unless another is attached: {second:?}",
     );
 }
+
+/// F5 — when the agent looks, the operator sees the same picture.
+///
+/// The subject is `attach::viewed`, which is in the library rather than in
+/// `src/main.rs` for the reason 0.4.0 recorded: no integration test links a
+/// binary, so a decision in a match arm there is unsabotageable. Every branch
+/// below is one a sabotage can flip.
+mod viewed {
+    use super::*;
+    use io_cli::attach::viewed;
+    use io_harness::tools::VIEW_IMAGE_TOOL;
+    use io_harness::{EventKind, RunEvent};
+
+    const WIDE: u16 = 80;
+
+    fn call(name: &str, target: &str) -> RunEvent {
+        RunEvent::new(
+            1,
+            0,
+            EventKind::ToolCall {
+                name: name.to_string(),
+                target: target.to_string(),
+            },
+        )
+    }
+
+    fn text(lines: &[ratatui::text::Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_look_at_an_image_renders_it() {
+        let dir = workspace();
+        let lines = viewed(
+            dir.path(),
+            &Policy::permissive(),
+            &call(VIEW_IMAGE_TOOL, "shot.png"),
+            true,
+            WIDE,
+        )
+        .expect("a view_image call naming a png is a picture to show");
+
+        assert!(!lines.is_empty());
+        // 4x2 pixels is one row of four half-block cells, undisturbed by the
+        // fit because the terminal is wider than the picture.
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn the_target_is_resolved_against_the_session_root_and_not_the_process_cwd() {
+        // `io -C <dir>` sets a session root without changing the process working
+        // directory. A resolver that used the cwd agrees with this one right up
+        // until somebody uses that flag — the exact shape 0.3.0 shipped and paid
+        // for, in the same product, through a different door.
+        let dir = workspace();
+        let lines = viewed(
+            dir.path(),
+            &Policy::permissive(),
+            &call(VIEW_IMAGE_TOOL, "docs/deep.png"),
+            true,
+            WIDE,
+        )
+        .expect("a path under the session root resolves");
+
+        assert!(
+            !text(&lines).contains("cannot be shown"),
+            "the file under the root was found: {}",
+            text(&lines),
+        );
+    }
+
+    #[test]
+    fn another_tool_is_not_a_picture() {
+        let dir = workspace();
+        assert!(viewed(
+            dir.path(),
+            &Policy::permissive(),
+            &call("read_file", "shot.png"),
+            true,
+            WIDE,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_target_that_is_not_an_image_is_not_a_picture() {
+        let dir = workspace();
+        assert!(viewed(
+            dir.path(),
+            &Policy::permissive(),
+            &call(VIEW_IMAGE_TOOL, "notes.md"),
+            true,
+            WIDE,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_target_the_policy_denies_says_so_and_draws_nothing() {
+        // The agent may have been refused too. Drawing a file the session may not
+        // read would be this crate reaching around its own boundary in order to
+        // show a picture.
+        let dir = workspace();
+        fs::create_dir_all(dir.path().join("private")).expect("mkdir");
+        fs::write(
+            dir.path().join("private/badge.png"),
+            support::png_bytes(2, 2),
+        )
+        .expect("write");
+        let policy = Policy::permissive().layer("test").deny_read("private/**");
+
+        let lines = viewed(
+            dir.path(),
+            &policy,
+            &call(VIEW_IMAGE_TOOL, "private/badge.png"),
+            true,
+            WIDE,
+        )
+        .expect("a denied look is still something to say");
+
+        assert!(text(&lines).contains("cannot be shown"), "{}", text(&lines));
+        assert!(
+            text(&lines).contains("private/badge.png"),
+            "{}",
+            text(&lines)
+        );
+    }
+
+    #[test]
+    fn the_plain_form_names_the_file_instead_of_drawing_it() {
+        let dir = workspace();
+        let lines = viewed(
+            dir.path(),
+            &Policy::permissive(),
+            &call(VIEW_IMAGE_TOOL, "shot.png"),
+            false,
+            WIDE,
+        )
+        .expect("a picture to describe");
+
+        let rendered = text(&lines);
+        assert!(rendered.contains("shot.png"), "{rendered}");
+        assert!(rendered.contains("4x2"), "{rendered}");
+        assert!(
+            !rendered.contains('\u{2580}'),
+            "no half blocks under the plain form: {rendered}",
+        );
+    }
+}

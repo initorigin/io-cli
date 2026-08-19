@@ -30,8 +30,11 @@
 
 use std::path::Path;
 
-use io_harness::tools::Workspace;
+use io_harness::{EventKind, RunEvent};
+
+use io_harness::tools::{Workspace, VIEW_IMAGE_TOOL};
 use io_harness::{Media, Policy};
+use ratatui::text::Line;
 
 /// An image that is ready to go, and the bytes it was read from.
 ///
@@ -131,5 +134,52 @@ pub fn staged_note(staged: &Staged) -> String {
         staged.path,
         kind,
         staged.media.byte_len(),
+    )
+}
+
+/// The picture the agent just looked at, if this event is one looking.
+///
+/// **Here rather than in `src/main.rs`, and that placement is the point.** No
+/// integration test links a binary, so a decision in a match arm there cannot be
+/// sabotaged — 0.4.0 found that the hard way and the fix that worked was to move
+/// the decision into the library even as a one-line wrapper. Every branch below
+/// is a branch a test can flip.
+///
+/// `None` means "not a picture to show": a different event, a different tool, or
+/// a target whose name is not an image. `Some` always carries something to
+/// commit, including when the read or the decode failed — the agent has already
+/// seen the file, so silence would leave the operator with less than the agent
+/// has.
+///
+/// `target` is **the raw argument the model wrote**, which `EventKind::ToolCall`
+/// documents and which this product paid for in 0.3.0. It is resolved against the
+/// session root, never the process working directory: the two agree right up
+/// until `io -C` sets one, which is the case an operator actually runs.
+///
+/// The read goes through the same `Workspace` and the same policy as everything
+/// else. A target the policy denies renders nothing but the refusal — drawing a
+/// file the session may not read would be this crate reaching around its own
+/// boundary to show a picture.
+pub fn viewed(
+    root: &Path,
+    policy: &Policy,
+    event: &RunEvent,
+    drawable: bool,
+    width: u16,
+) -> Option<Vec<Line<'static>>> {
+    let EventKind::ToolCall { name, target } = &event.kind else {
+        return None;
+    };
+    if name != VIEW_IMAGE_TOOL {
+        return None;
+    }
+    let media_type = Media::source_type_for(target)?;
+    Some(
+        match Workspace::with_policy(root, policy.clone()).read_bytes(target) {
+            Ok(bytes) => crate::picture::render(&bytes, target, media_type, drawable, width),
+            Err(error) => vec![Line::from(format!(
+                "the agent looked at {target}, which cannot be shown here: {error}"
+            ))],
+        },
     )
 }
