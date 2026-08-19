@@ -1,8 +1,10 @@
 //! The first-run wizard.
 //!
-//! Eight screens, driven by the product's own [`Picker`](crate::picker::Picker)
+//! Eight screens, driven by the product's own [`Picker`]
 //! rather than by a prompt library — which would have been a second owner of raw
 //! mode and a second aesthetic in the one flow where a first impression is formed.
+//!
+//! [`Picker`]: crate::picker::Picker
 //!
 //! Two rules run through it:
 //!

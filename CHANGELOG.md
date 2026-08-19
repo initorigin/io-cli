@@ -10,15 +10,66 @@ All notable changes to this project are documented here. The format follows
 
 A decomposed task becomes visible while it runs.
 
+An agent can break work into sub-agents and run them over the same workspace.
+io-harness has been able to do that since 0.39.0 and nothing has ever shown it.
+This release does: the children, the tiers, the refusals and what the fan-out is
+costing are on screen while it happens, and every one of those is a fact only
+this core emits.
+
 ### Added
 
-- **Containment, and with it the fleet.** A `[app.io-cli.containment]` table
-  turns a session's turns into contained turns, which is the only shape that
-  reaches io-harness's spawn loop.
+- **`[app.io-cli.containment]`, and the contained turns it selects.** Four caps —
+  agents, agents at once per tier, depth, and a token ceiling the whole tree
+  draws down together — read as io-harness's own type, so there is one spelling
+  of them. With the table present a session's turns go through the one entry
+  point that reaches io-harness's spawn loop; with it absent, every turn is the
+  turn 0.7.0 shipped. `/contain on|off` switches, and `/contain` on its own
+  reports rather than guessing.
+- **A live fleet view**, over the prompt, opened by `Ctrl+F` or `/fleet`. One row
+  per admitted child with its state and its own draw, indented by its depth, and
+  a per-tier line counting what is working, waiting and done. A waiting child is
+  a count and never a row: until a concurrency slot frees it has no run of its
+  own to name, and a placeholder for one would put an agent on screen that does
+  not exist yet.
+- **Spawns, refusals, collected reports and detached children in the
+  transcript**, where they happen. A refusal says which cap refused it in words
+  and that the agent carries on with what it has, because a refusal is not an
+  error. A collected report names no child — the event carries none, and with
+  several in flight the order they arrive in is not identity.
+- **The spend field on the status line**, six releases after it was named. What
+  this turn has drawn and what the tree has left, in tokens; a tree reporting no
+  ceiling gets none stated rather than a zero. It was unreachable until now
+  because io-harness emits the draw only from its contained loop.
+- **A sixth rebindable action, `fleet`**, defaulting to `Ctrl+F`.
 
 ### Changed
 
-- **io-harness moves from 0.64 to 0.65.**
+- **io-harness moves from 0.64 to 0.65**, which makes `RunOutcome`
+  `#[non_exhaustive]` and adds `AwaitingRecovery`. `io exec` maps the pause to
+  its existing "paused" exit code and describes it; an outcome a later harness
+  adds now exits as unfinished rather than breaking the build, so the property
+  the old exhaustive match carried moved to a test that reads the variants out of
+  the locked source and fails naming the one the table missed.
+- `EventKind::RecoveryPaused` renders with the tool and the attempt id a recovery
+  decision has to name, rather than as the muted word.
+
+### Known limitations
+
+- **A contained turn cannot be steered.** io-harness has no session entry point
+  that takes a caller's containment and a steer inbox together, so a turn that
+  fans out cannot be redirected while it runs. `Ctrl+C` still ends it, through
+  the observer, at the next point where no child is in flight — the interface
+  says that is what it is waiting for rather than appearing to have missed the
+  key.
+- **A contained turn applies no agent roster, no `[run]` budget and no
+  `[sandbox]`.** It is built from the session's own default contract, the same
+  reason a steered turn does not apply them. The containment table's own token
+  ceiling is what bounds it.
+- **A collected report is attributed to the tree and not to a child**, because
+  `ChildCollected` carries no run id.
+- **The fleet view is four rows.** The viewport's height is fixed for the life of
+  the terminal, and rebuilding it while a run is committing into scrollback is
+  not a trade this release takes.
 
 ## [0.7.0] - 2026-08-18
 
