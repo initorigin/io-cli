@@ -167,7 +167,7 @@ pub fn viewed(
     policy: &Policy,
     event: &RunEvent,
     drawable: bool,
-    graphics: bool,
+    graphics: crate::term::Graphics,
     width: u16,
 ) -> Option<Drawn> {
     let EventKind::ToolCall { name, target } = &event.kind else {

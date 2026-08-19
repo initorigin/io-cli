@@ -143,11 +143,13 @@ const KITTY_CHUNK: usize = 4096;
 pub enum Drawn {
     /// Ordinary cells, committed the way every other line is.
     Lines(Vec<Line<'static>>),
-    /// A Kitty graphics escape, and the rows it must be given.
+    /// A graphics-protocol escape, and the rows it must be given.
     ///
     /// The payload is written into a region of exactly `rows` rows whose other
-    /// cells are empty — see `Screen::commit_raw`.
-    Kitty { payload: String, rows: u16 },
+    /// cells are empty — see `Screen::commit_raw`. Which protocol built it does
+    /// not survive into this type on purpose: by the time it is committed the
+    /// escape is bytes and a height, and the commit path treats both the same.
+    Graphics { payload: String, rows: u16 },
 }
 
 /// A Kitty graphics escape placing `base64` into `cols` by `rows` cells.
@@ -183,6 +185,28 @@ pub fn kitty(base64: &str, cols: u16, rows: u16) -> String {
     out
 }
 
+/// An iTerm2 inline-image escape placing `base64` into `cols` by `rows` cells.
+///
+/// **The save and restore are what Kitty's `C=1` is.** iTerm2 has no flag that
+/// leaves the cursor alone — the placement advances it, and an advance at the
+/// bottom of the screen scrolls, which changes what every later absolute `MoveTo`
+/// means. `\x1b7` and `\x1b8` (DECSC/DECRC) put the cursor back where the
+/// renderer left it, so the escape composes with the cells drawn around it. That
+/// is the whole of what `US-IO-CLI-0.9.0-I01` deferred.
+///
+/// `width` and `height` are in cells, from the same fitter the half-block form
+/// uses, so the rows the picture costs are known before it is written rather than
+/// discovered from where the cursor ended up. `preserveAspectRatio=1` keeps the
+/// fit the fitter computed instead of stretching to the box.
+///
+/// Unlike Kitty's `f=100`, no format is named: iTerm2 decodes the file itself, so
+/// a jpeg or a gif rides as itself.
+pub fn iterm2(base64: &str, cols: u16, rows: u16) -> String {
+    format!(
+        "\x1b7\x1b]1337;File=inline=1;width={cols};height={rows};preserveAspectRatio=1:{base64}\x07\x1b8"
+    )
+}
+
 /// Bytes on disk to lines in the scrollback — the whole of what both directions
 /// of this release share.
 ///
@@ -197,7 +221,7 @@ pub fn render(
     path: &str,
     media_type: &str,
     drawable: bool,
-    graphics: bool,
+    graphics: crate::term::Graphics,
     width: u16,
 ) -> Drawn {
     use ::image::GenericImageView;
@@ -222,14 +246,25 @@ pub fn render(
     // is a base64 encoder in this crate, which is a dependency or a hand-rolled
     // codec for a path that a screenshot — the case this release exists for, and
     // a PNG on every platform that takes one — does not need.
-    if graphics {
+    if graphics != crate::term::Graphics::None {
         if let Ok(media) = Media::attach(media_type, bytes) {
-            if media.media_type == "image/png" {
+            // Kitty's `f=100` is PNG and nothing else, so the four formats
+            // `Media::attach` passes through unchanged — jpeg, gif and webp among
+            // them — take the cell form there. iTerm2 decodes the file itself, so
+            // the same jpeg is the real image; webp is the one it will not take,
+            // and a format the terminal cannot decode must not be sent to it.
+            let carried = match graphics {
+                crate::term::Graphics::Kitty => media.media_type == "image/png",
+                crate::term::Graphics::Iterm2 => media.media_type != "image/webp",
+                crate::term::Graphics::None => false,
+            };
+            if carried {
                 let (cols, rows) = fitted_cells(w, h, width, MAX_ROWS);
-                return Drawn::Kitty {
-                    payload: kitty(&media.base64, cols, rows),
-                    rows,
+                let payload = match graphics {
+                    crate::term::Graphics::Iterm2 => iterm2(&media.base64, cols, rows),
+                    _ => kitty(&media.base64, cols, rows),
                 };
+                return Drawn::Graphics { payload, rows };
             }
         }
     }

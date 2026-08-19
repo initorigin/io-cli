@@ -964,7 +964,7 @@ fn commit_drawn(
             lines.extend(after);
             app.picture(lines);
         }
-        io_cli::picture::Drawn::Kitty { payload, rows } => {
+        io_cli::picture::Drawn::Graphics { payload, rows } => {
             // Anything already queued goes FIRST. A raw commit writes straight to
             // the terminal, so a picture emitted before the lines that precede it
             // would land above its own context — and scrollback cannot be
@@ -982,14 +982,19 @@ fn commit_drawn(
     Ok(())
 }
 
-/// How this session may draw a picture: in cells, and whether as a real image.
-fn forms(app: &App) -> (bool, bool) {
+/// How this session may draw a picture: in cells, and under which graphics
+/// protocol — if any — it is the real image instead.
+fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
     let drawable = io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs);
     // A graphics escape is only ever sent where cells would also have been drawn:
     // `--plain`, `NO_COLOR` and the ASCII glyph set are each a reason a reader
     // wants no picture at all, and a protocol the terminal happens to speak does
     // not override any of them.
-    (drawable, drawable && io_cli::term::kitty_graphics())
+    if drawable {
+        (true, io_cli::term::graphics())
+    } else {
+        (false, io_cli::term::Graphics::None)
+    }
 }
 
 /// **The agent's own look, committed where it looked.**
