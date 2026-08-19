@@ -60,6 +60,10 @@ inbox. A session without the table is the session 0.9.0 shipped, mid-turn
   and carries a contract this crate built. A session that configures nothing
   builds a contract identical, field for field, to the one io-harness built for
   it before.
+- **A contained turn now stops for a plan before it acts**, because registering
+  a plan gate is what turns io-harness's planning phase on and a contained turn
+  carries one. That is a round trip 0.9.0 did not have; `/contain off` gives back
+  a turn that starts working immediately.
 
 ## [0.9.0] - 2026-08-19
 

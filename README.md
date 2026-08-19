@@ -236,6 +236,14 @@ flight, and the interface tells you that is what it is waiting for rather than
 appearing to have missed the key. `/contain off` gives the next turn back to
 steering; `/contain on` takes it back.
 
+**And from 0.10.0 it also means a contained turn stops for a plan first.** That
+same entry point is the one that takes a task contract, so a contained turn
+carries io-cli's plan gate — and registering a gate is what turns io-harness's
+planning phase on. The agent proposes before it acts, the workspace cannot be
+written to while you are reading the proposal, and `Enter` on an empty prompt
+approves it. That is a round trip you did not have in 0.9.0, and it is the same
+switch: `/contain off` gives you back a turn that starts working immediately.
+
 ## Pictures
 
 `/attach @docs/shot.png` puts an image in front of the agent for the **next turn
