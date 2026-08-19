@@ -658,6 +658,41 @@ impl App {
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));
             }
+            // **The three connection fields, filled from what happened and never
+            // from what was configured.** A server named in the file and a server
+            // that answered are different facts, and the second is the one an
+            // operator is asking about when they look at this line.
+            //
+            // `Mcp` is the one event in the enum that means two things: with no
+            // `tool` it is the server itself reaching a run, and with one it is a
+            // call. The first is a server; the second is a tool the server
+            // offered. Counting a call as a server would multiply one server into
+            // as many as it was asked to do.
+            io_harness::EventKind::Mcp { tool, .. } => {
+                let (servers, tools) = self.status.mcp;
+                self.status.mcp = match tool {
+                    None => (servers + 1, tools),
+                    Some(_) => (servers.max(1), tools + 1),
+                };
+            }
+            io_harness::EventKind::LspStarted { .. } => {
+                self.status.lsp += 1;
+            }
+            // A browser that started and has gone nowhere is `None` for the host,
+            // which draws as `web ready` — it is running, and there is nothing yet
+            // to say about where it went.
+            io_harness::EventKind::BrowserStarted { .. } => {
+                if self.status.browser.is_none() {
+                    self.status.browser = Some((String::new(), None));
+                }
+            }
+            // Every navigation, including the ones nobody typed: a redirect, a
+            // click, a script assigning `location`. The last one wins, and the
+            // verdict rides with it, because "browser: example.com" over a
+            // navigation the policy refused would report a block as a visit.
+            io_harness::EventKind::BrowserNavigated { host, permitted } => {
+                self.status.browser = Some((host.clone(), Some(*permitted)));
+            }
             io_harness::EventKind::TodoWrote { items } => {
                 // io-harness's own arithmetic for a done count, off the event's own
                 // items. A write carries the whole list rather than a delta, so the
