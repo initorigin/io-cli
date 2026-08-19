@@ -1273,6 +1273,13 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
         .await
         .expect("the turn runs");
 
+    // **The contract goes first, and that is the third thing this test paid for.**
+    // The operator's loop ends when both of its receivers close, and they close
+    // when the responder and the gate inside the contract are dropped — so
+    // awaiting the task while the contract was still in scope hung the test
+    // AFTER the run had finished: the work was done, no socket was open, and the
+    // thread was parked on a task that could never end.
+    drop(contract);
     drop(session);
     let _ = operator.await;
 
