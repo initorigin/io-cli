@@ -226,6 +226,7 @@ async fn drive(
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
+    let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -257,6 +258,7 @@ async fn drive(
             theme,
             plain,
             containment,
+            capabilities,
         },
     )
     .await?
@@ -285,6 +287,10 @@ struct Interactive<'a, 'b> {
     /// means the session cannot fan out at all, which is every session that
     /// configures nothing.
     containment: Option<io_harness::Containment>,
+    /// What `[app.io-cli]` asked a turn's contract to carry. Reaches a turn only
+    /// where the contract does, which is the contained turn — see
+    /// [`io_cli::contract`].
+    capabilities: io_cli::contract::Capabilities,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -310,6 +316,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.theme,
             self.plain,
             self.containment,
+            self.capabilities,
             model,
         )
         .await
@@ -333,6 +340,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     theme: Theme,
     plain: bool,
     containment: Option<io_harness::Containment>,
+    capabilities: io_cli::contract::Capabilities,
     model: String,
 ) -> Result<(), String> {
     // Built here rather than handed in, so there is one place a provider comes
@@ -929,6 +937,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // a label: with `None` here the turn built below is the
                     // steered turn, byte for byte.
                     contained.then_some(containment.as_ref()).flatten(),
+                    &capabilities,
                     text,
                     started,
                 )
@@ -1029,6 +1038,7 @@ async fn turn<P: Provider>(
     session: &mut Session,
     policy: &Policy,
     containment: Option<&io_harness::Containment>,
+    capabilities: &io_cli::contract::Capabilities,
     text: String,
     started: Instant,
 ) -> Result<(), String> {
@@ -1046,25 +1056,34 @@ async fn turn<P: Provider>(
     paint(screen, app)?;
 
     // **The two turns this product can take, and one loop over both.** They are
-    // genuinely different turns rather than one turn with a flag: only
-    // `turn_contained_observed` passes a containment into io-harness's driver, so
+    // genuinely different turns rather than one turn with a flag: only the
+    // contained entry point passes a containment into io-harness's driver, so
     // only it reaches the loop that owns the spawn tool — and it takes no
     // `SteerInbox`, because no session entry point takes a caller's containment
     // and a steer inbox together. Boxed to one type so the `select!` below is
     // written once; a second loop would be a second place `Ctrl+C`, the ticker
     // and the event drain could drift.
+    //
+    // 0.10.0 — the contained arm is `turn_contained_bounded_observed` and carries
+    // a contract io-cli built, which is what a responder, a plan gate, MCP, LSP,
+    // a browser and skills are fields of. The flat arm is untouched: it is still
+    // `turn_steered`, still `default_contract`, and still the only one that can
+    // be steered mid-turn.
     // Taken before the future borrows the session, because it is needed inside the
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
     app.contained = containment.is_some();
+    // Built before the future borrows it, and only for the arm that can take one:
+    // the flat turn is handed `text` itself, exactly as it always was.
+    let contract = containment
+        .map(|_| io_cli::contract::session(text.clone(), root.clone(), capabilities));
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
-    > = match containment {
-        Some(caps) => Box::pin(
-            session
-                .turn_contained_observed(text, provider, store, policy, &approver, caps, &observer),
-        ),
-        None => Box::pin(
+    > = match (containment, &contract) {
+        (Some(caps), Some(contract)) => Box::pin(session.turn_contained_bounded_observed(
+            contract, provider, store, policy, &approver, caps, &observer,
+        )),
+        _ => Box::pin(
             session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox),
         ),
     };

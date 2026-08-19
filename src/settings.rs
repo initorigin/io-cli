@@ -76,6 +76,25 @@ pub struct CliSettings {
     /// written against the pre-0.32.0 name still reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub containment: Option<io_harness::Containment>,
+    /// MCP servers for the turn: `[[app.io-cli.mcp]]`.
+    ///
+    /// io-harness's own `McpServer`, which is `Deserialize` for exactly this
+    /// purpose. **It reaches a turn only where a contract does**, which today is
+    /// the contained turn — see [`crate::contract`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<io_harness::McpServer>>,
+    /// Language servers for this workspace: `[[app.io-cli.lsp]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<Vec<io_harness::LspServer>>,
+    /// A browser the agent may drive: `[app.io-cli.browser]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<io_harness::BrowserConfig>,
+    /// The directory io-harness discovers skills in: `skills = "..."`.
+    ///
+    /// A path and not a list, because discovery is the harness's and io-cli
+    /// parses no skill file of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<std::path::PathBuf>,
 }
 
 /// The caps this session runs its turns under, if any.
@@ -343,6 +362,15 @@ pub fn render(
                 // fan-out, and a file that arrived with caps already in it would
                 // have turned steering off for somebody who never chose to.
                 containment: None,
+                // The four capability keys are left out for the same reason as
+                // the caps above and with the same force: each reaches a turn
+                // only through a contract, which only a contained turn takes, so
+                // writing any of them would turn fan-out on for somebody who
+                // never chose it. The wizard asks about none of them.
+                mcp: None,
+                lsp: None,
+                browser: None,
+                skills: None,
             },
         },
     };
