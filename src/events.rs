@@ -319,6 +319,15 @@ impl Events {
                 });
                 Vec::new()
             }
+            // **Committed nowhere, and not dropped either.** A draw is emitted
+            // on every step of a contained turn, so a line each would double the
+            // transcript's length and say in prose what the status line says in
+            // one field — and the field is where the design puts it. This is the
+            // same shape as `ToolCall` above, whose fact is committed by the
+            // `Step` that follows it rather than by a line of its own: the event
+            // reaches a surface, just not this one. `App::status_from` is that
+            // surface, and `tests/status.rs` asserts it.
+            EventKind::SpendDraw { .. } => Vec::new(),
             // **The fleet, committed where it happens.** Four events, four lines,
             // and every one of them indented by the event's OWN depth: a spawn is
             // attributed to the PARENT's run id at the parent's depth, and the

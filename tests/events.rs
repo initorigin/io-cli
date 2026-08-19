@@ -42,6 +42,7 @@ const STYLED: &[&str] = &[
     "spawn_refused",
     "child_collected",
     "child_detached",
+    "spend_draw",
 ];
 
 /// Every other kind the locked io-harness emits. Each renders as a muted single line
@@ -50,7 +51,6 @@ const STYLED: &[&str] = &[
 /// has to decide what it should look like.
 const FALLS_THROUGH: &[&str] = &[
     "approval_decided",
-    "spend_draw",
     "retry",
     "fell_back_to",
     "replan",
@@ -299,15 +299,13 @@ fn f8_every_styled_kind_renders_its_own_facts() {
 #[test]
 fn f8_a_kind_this_release_does_not_style_still_renders_and_names_itself() {
     let mut events = Events::new(DARK);
-    let line = rendered(
-        &mut events,
-        EventKind::SpendDraw {
-            tokens: 21,
-            remaining: Some(500),
-        },
-    );
+    // `SpendDraw` stood here until 0.8.0, which gave it an arm — one that
+    // commits nothing, because its fact belongs to the status line. `Replan` is
+    // the example now: a kind this release has no design for, which must still
+    // reach the transcript naming itself.
+    let line = rendered(&mut events, EventKind::Replan { window: 3 });
     assert!(
-        line.contains("spend_draw"),
+        line.contains("replan"),
         "an unstyled kind must name itself rather than vanish: {line:?}",
     );
 }
@@ -1212,4 +1210,26 @@ fn f8_a_detached_child_is_named_and_still_running() {
         "a spawn that never waited is not one that waited zero seconds: {never:?}",
     );
     assert!(never.contains("still running"), "{never:?}");
+}
+
+/// 0.8.0 F6 — a draw commits no line, and that is not the same as being dropped.
+///
+/// One `SpendDraw` per step of a contained turn: a line each would double the
+/// transcript and say in prose what one status field says. The fact reaches
+/// `App::status_from` instead, which `tests/status.rs` asserts — the same shape
+/// as `ToolCall`, whose fact is committed by the `Step` that follows it.
+#[test]
+fn f6_a_spend_draw_commits_nothing_to_the_scrollback() {
+    let mut events = Events::new(DARK);
+    let committed = events.event(
+        &event(EventKind::SpendDraw {
+            tokens: 21,
+            remaining: Some(500),
+        }),
+        Duration::ZERO,
+    );
+    assert!(
+        committed.is_empty(),
+        "a per-step draw is a status field, not a transcript row: {committed:?}",
+    );
 }

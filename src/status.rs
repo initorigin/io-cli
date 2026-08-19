@@ -91,6 +91,25 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// What this turn has drawn against the tree's shared ceiling, and what is
+    /// left of it: `(drawn, remaining)`.
+    ///
+    /// **The field 0.2.0 named and could not fill.** `EventKind::SpendDraw` is
+    /// emitted only from io-harness's contained loop, and until 0.8.0 no session
+    /// turn reached that loop, so this line carried a name with no value behind
+    /// it for six releases. It is reachable now for a structural reason rather
+    /// than because somebody got round to it.
+    ///
+    /// `None` until a draw arrives — a turn that has drawn nothing is not a turn
+    /// that has drawn zero, the same distinction `tokens` is held to. The inner
+    /// `Option` is io-harness's own: a tree with no ceiling reports `remaining:
+    /// None`, and rendering that as `0` would report a full ceiling as an
+    /// exhausted one.
+    ///
+    /// Tokens, never money. `Containment::max_total_cost` is documented inert
+    /// because the crate has no price telemetry, so a figure with a currency in
+    /// front of it would be one this interface invented.
+    pub spend: Option<(u64, Option<u64>)>,
     /// How much of the agent's plan the agent says is done, as done over total.
     ///
     /// `None` until the agent writes a list, and that is the whole of F12: a
@@ -131,6 +150,7 @@ impl Status {
             tokens: None,
             context: None,
             containment: None,
+            spend: None,
             plan: None,
             working: false,
             elapsed: Duration::ZERO,
@@ -171,6 +191,7 @@ impl Status {
         self.tokens = None;
         self.context = None;
         self.containment = None;
+        self.spend = None;
         self.plan = None;
     }
 
@@ -227,6 +248,24 @@ impl Status {
         }
         if let Some(containment) = &self.containment {
             fields.push(Field::new(containment.clone(), Tone::Muted));
+        }
+        // The design's sixth field, in the design's own place: right of the token
+        // count and the containment word, left of the plan. It is a fact only a
+        // core that runs a contained tree can report, which is why it is here at
+        // all and why it is absent in every session that configures no caps.
+        if let Some((drawn, remaining)) = self.spend {
+            let text = match remaining {
+                Some(left) => format!(
+                    "spend {}/{}",
+                    format_tokens(drawn),
+                    format_tokens(drawn + left)
+                ),
+                // No ceiling was reported, so none is stated. A `0` here would be
+                // an exhausted tree; a total invented from the draw would be a
+                // ceiling nobody set.
+                None => format!("spend {}", format_tokens(drawn)),
+            };
+            fields.push(Field::new(text, Tone::Muted));
         }
         // Rightmost, and so the first field to go when the terminal narrows. It is
         // the only field on this line that is not an observation — everything to

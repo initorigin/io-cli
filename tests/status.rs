@@ -545,3 +545,88 @@ fn the_run_fields_do_not_outlive_the_run_that_set_them() {
     assert!(after.contains("opus-5"), "{after:?}");
     assert!(after.contains("policy:"), "{after:?}");
 }
+
+/// 0.8.0 F6 — the spend field is absent until a draw arrives, and never zero.
+#[test]
+fn f6_spend_is_absent_until_a_draw_reports_one() {
+    let status = Status::new("a-model");
+    assert_eq!(status.spend, None);
+    assert!(
+        !rendered(&status, 120).contains("spend"),
+        "a turn that has drawn nothing has not drawn zero",
+    );
+}
+
+/// 0.8.0 F6 — the draw climbs and the remainder is replaced.
+#[test]
+fn f6_the_draw_accumulates_and_the_remainder_is_the_ledgers_latest() {
+    let mut app = App::new(DARK, "a-model");
+    app.event(
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::SpendDraw {
+                tokens: 200,
+                remaining: Some(800),
+            },
+        ),
+        Duration::ZERO,
+    );
+    assert_eq!(app.status.spend, Some((200, Some(800))));
+    app.event(
+        &RunEvent::new(
+            1,
+            2,
+            EventKind::SpendDraw {
+                tokens: 300,
+                remaining: Some(500),
+            },
+        ),
+        Duration::ZERO,
+    );
+    assert_eq!(
+        app.status.spend,
+        Some((500, Some(500))),
+        "the draw climbs; the remainder is what the ledger says now",
+    );
+    let line = rendered(&app.status, 120);
+    assert!(line.contains("spend 500/1.0k"), "{line}");
+}
+
+/// 0.8.0 F6 — a tree with no ceiling reports no ceiling.
+///
+/// The sabotage arm renders `remaining: None` as `0`, which would report a tree
+/// that has all of its budget as one that has spent every token of it.
+#[test]
+fn f6_no_ceiling_is_not_an_exhausted_one() {
+    let mut app = App::new(DARK, "a-model");
+    app.event(
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::SpendDraw {
+                tokens: 200,
+                remaining: None,
+            },
+        ),
+        Duration::ZERO,
+    );
+    let line = rendered(&app.status, 120);
+    assert!(line.contains("spend 200"), "{line}");
+    assert!(
+        !line.contains("spend 200/0") && !line.contains("/0"),
+        "no ceiling was reported, so none is stated: {line}",
+    );
+}
+
+/// 0.8.0 F6 — the spend belongs to the run that reported it.
+#[test]
+fn f6_forgetting_a_run_forgets_its_spend() {
+    let mut status = Status::new("a-model");
+    status.spend = Some((500, Some(500)));
+    status.forget_run();
+    assert_eq!(
+        status.spend, None,
+        "/resume and /fork must not leave another run's spend on the line",
+    );
+}

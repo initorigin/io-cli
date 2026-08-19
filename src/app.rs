@@ -478,6 +478,16 @@ impl App {
                 let share = (*after_tokens as f64 / budget.max(1) as f64 * 100.0).round();
                 self.status.context = Some(share.clamp(0.0, 100.0) as u8);
             }
+            // The draw is per step and the ceiling is the tree's. `tokens`
+            // accumulates because a field that swings rather than climbs cannot
+            // be read at a glance — the same argument the session token count
+            // above rests on — while `remaining` is replaced, because it is what
+            // the ledger says NOW and an accumulated remainder would be
+            // arithmetic on somebody else's subtraction.
+            io_harness::EventKind::SpendDraw { tokens, remaining } => {
+                let drawn = self.status.spend.map(|(drawn, _)| drawn).unwrap_or(0) + tokens;
+                self.status.spend = Some((drawn, *remaining));
+            }
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));
             }
