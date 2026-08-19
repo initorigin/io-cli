@@ -200,3 +200,38 @@ fn the_question_its_context_and_its_choices_are_all_drawn() {
         "and the way out is named rather than folklore: {screen}",
     );
 }
+
+/// **Non-functional — the question is readable with no colour at all.** Under
+/// `NO_COLOR` a tone carries nothing, so the question, what the agent already
+/// knows, the options and the way out all have to be words. The answer path is
+/// exercised too, because an overlay that draws under `MONO` and cannot be
+/// answered there is half a surface.
+#[tokio::test]
+async fn the_question_is_readable_and_answerable_with_no_colour() {
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let responder: Arc<dyn Responder> = Arc::new(answerer);
+    let asking = tokio::spawn(async move {
+        responder
+            .answer(&Question {
+                question: "drop the column or keep it?".to_string(),
+                context: Some("it has 40 rows".to_string()),
+                choices: vec!["drop".to_string()],
+            })
+            .await
+    });
+
+    let mut app = App::new(io_cli::theme::MONO, "test-model");
+    app.open_intent(questions.recv().await.expect("asked"));
+    let screen = drawn(&app, 80, 12);
+
+    assert!(screen.contains("drop the column or keep it?"), "{screen}");
+    assert!(screen.contains("40 rows"), "{screen}");
+    assert!(screen.contains("Esc"), "{screen}");
+
+    typed(&mut app, "keep it");
+    app.key(key(KeyCode::Enter));
+    assert_eq!(
+        asking.await.expect("the responder future"),
+        Some("keep it".to_string()),
+    );
+}

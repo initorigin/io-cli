@@ -157,3 +157,36 @@ async fn the_steps_are_shown_as_steps_and_the_keys_are_named() {
     app.key(key(KeyCode::Esc));
     let _ = reviewing.await;
 }
+
+/// **Non-functional — no new state is signalled by colour alone.** Under
+/// `NO_COLOR` the tones carry nothing at all, so a plan overlay that distinguished
+/// approve from cancel by tone would be a decision surface a reader could not use.
+/// Every one of the three ways out is a word.
+#[tokio::test]
+async fn the_plan_is_readable_with_no_colour_at_all() {
+    let mut app = App::new(io_cli::theme::MONO, "test-model");
+    let (gate, mut plans) = io_cli::plan::channel();
+    let gate: Arc<dyn PlanGate> = Arc::new(gate);
+    let reviewing = tokio::spawn(async move { gate.review(&plan()).await });
+    app.open_plan(plans.recv().await.expect("the plan reaches the ui"));
+
+    let (mut screen, _recorder) = support::screen_of(80, 14, 14);
+    screen
+        .draw(|frame| app.render(frame, frame.area()))
+        .expect("a frame");
+    let drawn = screen.viewport_text().to_string();
+
+    assert!(drawn.contains("read every caller"), "{drawn}");
+    assert!(drawn.contains("Enter approves"), "{drawn}");
+    assert!(drawn.contains("Esc cancels"), "{drawn}");
+
+    app.key(key(KeyCode::Esc));
+    assert_eq!(
+        reviewing.await.expect("the gate"),
+        Some(PlanVerdict::Cancel)
+    );
+    assert!(
+        said(&mut app).contains("cancelled"),
+        "and the outcome is a word, not a colour",
+    );
+}
