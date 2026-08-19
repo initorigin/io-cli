@@ -472,6 +472,22 @@ fn every_event_this_release_renders_draws_in_ascii() {
             attempt_id: 3,
             tool: "deploy".into(),
         },
+        // 0.8.0 — the fleet. Each carries a leader and a dash, and the spawn and
+        // the refusal carry an indent as well.
+        EventKind::Spawned {
+            child_run_id: 7,
+            goal: "read every file under src/".into(),
+        },
+        EventKind::SpawnRefused {
+            cap: "agents".into(),
+        },
+        EventKind::ChildCollected {
+            text: "found three call sites".into(),
+        },
+        EventKind::ChildDetached {
+            child_run_id: 11,
+            after: Some(std::time::Duration::from_secs(30)),
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is

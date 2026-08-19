@@ -38,6 +38,10 @@ const STYLED: &[&str] = &[
     "mcp",
     "todo_wrote",
     "recovery_paused",
+    "spawned",
+    "spawn_refused",
+    "child_collected",
+    "child_detached",
 ];
 
 /// Every other kind the locked io-harness emits. Each renders as a muted single line
@@ -51,10 +55,6 @@ const FALLS_THROUGH: &[&str] = &[
     "fell_back_to",
     "replan",
     "stalled",
-    "spawned",
-    "spawn_refused",
-    "child_detached",
-    "child_collected",
     "fleet",
     "memory_wrote",
     "memory_forgot",
@@ -1030,4 +1030,186 @@ fn f11_a_plan_of_no_items_is_not_committed_as_a_plan() {
         1,
         "the event still arrives as the word naming itself: {committed:?}",
     );
+}
+
+/// 0.8.0 F2 — a spawn commits where it happens, indented by the event's own depth.
+///
+/// The event is attributed to the PARENT: `run_id` is the parent's and `depth` is
+/// the parent's, while `child_run_id` is on the event. Indenting by the child's
+/// level instead would be invisible at depth one and a level too far in past it,
+/// which is the sabotage arm this asserts against.
+#[test]
+fn f2_a_spawn_names_the_child_and_indents_by_the_parents_depth() {
+    let mut events = Events::new(DARK);
+    let root = flatten(events.event(
+        &RunEvent::at_depth(
+            1,
+            2,
+            0,
+            EventKind::Spawned {
+                child_run_id: 7,
+                goal: "read every file under src/".into(),
+            },
+        ),
+        Duration::ZERO,
+    ));
+    assert!(root.contains("run 7"), "the child is named: {root:?}");
+    assert!(
+        root.contains("read every file under src/"),
+        "and what it was asked to do: {root:?}",
+    );
+    // The leader itself begins with two spaces, so "not indented" means the row
+    // starts at the leader rather than a level in front of it.
+    let root_indent = root.len() - root.trim_start().len();
+
+    let deeper = events.event(
+        &RunEvent::at_depth(
+            7,
+            1,
+            1,
+            EventKind::Spawned {
+                child_run_id: 9,
+                goal: "and the tests".into(),
+            },
+        ),
+        Duration::ZERO,
+    );
+    let deeper = rows(deeper);
+    let row = deeper.first().expect("one row");
+    let deep_indent = row.len() - row.trim_start().len();
+    assert_eq!(
+        deep_indent,
+        root_indent + 2,
+        "a spawn by a depth-1 agent sits exactly one level in from the root's: \
+         {root:?} then {row:?}",
+    );
+}
+
+/// 0.8.0 F3 — a refused spawn names the cap in words, and says the run continues.
+#[test]
+fn f3_a_refused_spawn_names_which_cap_refused_it() {
+    for (cap, expected) in [
+        ("agents", "as many agents as it may"),
+        ("depth", "nest deeper"),
+        ("budget", "token ceiling"),
+    ] {
+        let mut events = Events::new(DARK);
+        let line = rendered(
+            &mut events,
+            EventKind::SpawnRefused {
+                cap: cap.to_string(),
+            },
+        );
+        assert!(
+            line.contains(expected),
+            "{cap:?} should render as {expected:?}: {line:?}",
+        );
+        assert!(
+            line.contains("goes on with what it has"),
+            "a refusal is not an error; the parent adapts: {line:?}",
+        );
+    }
+}
+
+/// 0.8.0 F3 — a cap this release has never heard of is printed as it came.
+///
+/// The sabotage arm folds an unknown cap into `agents`, which would put a
+/// sentence on screen asserting a cap that refused nothing. Concurrency is the
+/// live example: crossing `max_concurrent_agents` queues a child and reports
+/// `Fleet`, so it must never arrive here — and if io-harness ever did send a
+/// fourth word, saying it beats guessing.
+#[test]
+fn f3_an_unknown_cap_is_not_folded_into_a_known_one() {
+    let mut events = Events::new(DARK);
+    let line = rendered(
+        &mut events,
+        EventKind::SpawnRefused {
+            cap: "concurrency".to_string(),
+        },
+    );
+    assert!(
+        line.contains("concurrency"),
+        "an unknown cap is named as it came: {line:?}",
+    );
+    assert!(
+        !line.contains("as many agents as it may"),
+        "and never rendered as a cap that did not refuse it: {line:?}",
+    );
+}
+
+/// 0.8.0 F8 — a collected report belongs to the tree, not to a child.
+///
+/// `ChildCollected` carries `text` and no run id. With two children in flight
+/// their reports arrive in whatever order they finish, so any attribution here
+/// would be arrival order rendered in the words of a fact.
+#[test]
+fn f8_a_collected_report_names_no_child() {
+    let mut events = Events::new(DARK);
+    let line = rendered(
+        &mut events,
+        EventKind::Spawned {
+            child_run_id: 4,
+            goal: "one".into(),
+        },
+    );
+    assert!(line.contains("run 4"));
+    let line = rendered(
+        &mut events,
+        EventKind::Spawned {
+            child_run_id: 5,
+            goal: "two".into(),
+        },
+    );
+    assert!(line.contains("run 5"));
+
+    let collected = rendered(
+        &mut events,
+        EventKind::ChildCollected {
+            text: "found three call sites".into(),
+        },
+    );
+    assert!(
+        collected.contains("a child reported back"),
+        "the report is committed where it arrives: {collected:?}",
+    );
+    assert!(
+        collected.contains("found three call sites"),
+        "with what it said: {collected:?}",
+    );
+    assert!(
+        !collected.contains("run 4") && !collected.contains("run 5"),
+        "and with no child named, because the event names none: {collected:?}",
+    );
+}
+
+/// 0.8.0 F8 — a detached child is named, and said to be still running.
+#[test]
+fn f8_a_detached_child_is_named_and_still_running() {
+    let mut events = Events::new(DARK);
+    let waited = rendered(
+        &mut events,
+        EventKind::ChildDetached {
+            child_run_id: 11,
+            after: Some(Duration::from_secs(30)),
+        },
+    );
+    assert!(waited.contains("run 11"), "{waited:?}");
+    assert!(waited.contains("30 seconds"), "{waited:?}");
+    assert!(
+        waited.contains("still running"),
+        "detaching is not stopping: {waited:?}",
+    );
+
+    let never = rendered(
+        &mut events,
+        EventKind::ChildDetached {
+            child_run_id: 12,
+            after: None,
+        },
+    );
+    assert!(
+        never.contains("without waiting"),
+        "a spawn that never waited is not one that waited zero seconds: {never:?}",
+    );
+    assert!(never.contains("still running"), "{never:?}");
 }
