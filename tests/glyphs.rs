@@ -466,6 +466,12 @@ fn every_event_this_release_renders_draws_in_ascii() {
             steps: 4,
             tokens: 8_912,
         },
+        // 0.8.0 — styled with the pin bump to io-harness 0.65, which is what
+        // made the pause exist. Its leader is a glyph like every other line's.
+        EventKind::RecoveryPaused {
+            attempt_id: 3,
+            tool: "deploy".into(),
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is

@@ -126,6 +126,14 @@ pub struct App {
     /// relative to the workspace, and the process's working directory is not the
     /// same thing under `io -C <dir>`.
     root: std::path::PathBuf,
+    /// Whether the turn now running is a *contained* turn.
+    ///
+    /// Set by the driver as a turn starts and cleared as it ends. It exists for
+    /// one sentence: `Ctrl+C` stops a steered turn at the next step boundary and
+    /// a contained one at the next boundary where no child is in flight, and an
+    /// interface that promised the first while doing the second would look as
+    /// though it had swallowed the key.
+    pub contained: bool,
     /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
     /// unified, which is what every file written before 0.3.0 means.
     diff_style: crate::settings::DiffStyle,
@@ -148,6 +156,7 @@ impl App {
             mode: Mode::Idle,
             quits: 0,
             armed: None,
+            contained: false,
             keys: Keys::default(),
             pending: Vec::new(),
             approval: None,
@@ -337,6 +346,11 @@ impl App {
     pub fn finished(&mut self) {
         self.mode = Mode::Idle;
         self.status.working = false;
+        // A per-turn fact, cleared with the turn. Left standing, an idle session
+        // that had contained one turn would go on describing `Ctrl+C` in the
+        // words of a turn that is no longer running — and `/contain off` between
+        // turns would leave the sentence disagreeing with the mode.
+        self.contained = false;
         // A question outlives its run only as a stuck overlay over a session that
         // has moved on. Dropping it is the denial — see `Ask` — and the run it
         // belonged to has already ended, so there is nobody left to tell.
@@ -641,7 +655,17 @@ impl App {
             // The turn is what gets stopped, not the process. `Steer::interrupt`
             // ends it at a step boundary, whole, and leaves it resumable.
             self.quits = 0;
-            self.say(Tone::Warning, "interrupting at the next step boundary");
+            // The two paths end a turn at different moments, and the sentence
+            // says which one this is. A contained turn is cancelled through the
+            // observer, and io-harness honours that at the next boundary where
+            // no child is in flight — so a wide fan-out can take a while, and an
+            // operator told "the next step boundary" would think the key missed.
+            let where_it_stops = if self.contained {
+                "cancelling at the next point where no child is in flight"
+            } else {
+                "interrupting at the next step boundary"
+            };
+            self.say(Tone::Warning, where_it_stops);
             return Command::Interrupt;
         }
         if !self.composer.is_empty() {

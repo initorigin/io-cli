@@ -40,6 +40,7 @@ fn the_commands_are_the_commands() {
             "/expand",
             "/copy",
             "/copy diff",
+            "/contain",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",

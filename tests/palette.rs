@@ -262,16 +262,17 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // Both rows begin with `c`, so both score the same and the tie-break is the
-    // order they were handed in. The defect: an unstable sort swaps them on a
-    // keystroke that did not change the result, and `Enter` takes a row nobody
-    // chose.
+    // Three rows begin with `c` since 0.8.0 added `/contain`, and `co` is a
+    // prefix of all three — `contain` is c-o-n-t-a-i-n. They score the same and
+    // the tie-break is the order they were handed in. The defect: an unstable
+    // sort swaps them on a keystroke that did not change the result, and `Enter`
+    // takes a row nobody chose.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 2);
+    assert_eq!(picker.matching(), 3);
     assert_eq!(marked(&picker), "copy");
     type_at(&mut picker, "o");
-    assert_eq!(picker.matching(), 2);
+    assert_eq!(picker.matching(), 3);
     assert_eq!(
         marked(&picker),
         "copy",

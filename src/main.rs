@@ -221,6 +221,11 @@ async fn drive(
     if let Some(complaint) = complaint {
         notices.push(complaint);
     }
+    // The caps the fleet needs, read once and cloned out of the settings. A
+    // session with none cannot fan out: `turn_contained_observed` is the only
+    // entry point that reaches io-harness's spawn loop, and it is the caps that
+    // decide whether this session takes it.
+    let containment = settings::containment(stored.as_ref()).cloned();
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -251,6 +256,7 @@ async fn drive(
             templates,
             theme,
             plain,
+            containment,
         },
     )
     .await?
@@ -275,6 +281,10 @@ struct Interactive<'a, 'b> {
     templates: Templates,
     theme: Theme,
     plain: bool,
+    /// The caps a fan-out runs under, from `[app.io-cli.containment]`. `None`
+    /// means the session cannot fan out at all, which is every session that
+    /// configures nothing.
+    containment: Option<io_harness::Containment>,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -299,6 +309,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.templates,
             self.theme,
             self.plain,
+            self.containment,
             model,
         )
         .await
@@ -321,6 +332,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     templates: Templates,
     theme: Theme,
     plain: bool,
+    containment: Option<io_harness::Containment>,
     model: String,
 ) -> Result<(), String> {
     // Built here rather than handed in, so there is one place a provider comes
@@ -346,6 +358,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.
     app.set_posture(Posture::of(&policy.defaults));
+    // Said once, before the first prompt, and only where there is something to
+    // say. A contained turn is a different turn — it cannot be steered, and it
+    // takes no agent roster, no `[run]` budget and no `[sandbox]` — so a session
+    // that silently switched would be one whose step cap stopped applying with
+    // nothing said. `contained` starts true because configuring caps is the
+    // asking; `/contain off` is how a turn is taken back for steering.
+    let mut contained = containment.is_some();
+    if let Some(caps) = &containment {
+        let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
+        app.say(Tone::Muted, notice);
+    }
     let started = Instant::now();
     let mut picker: Option<(Picker, Pick)> = None;
 
@@ -769,6 +792,40 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         format!("this conversation could not be read: {error}"),
                     ),
                 },
+                Action::Contain(want) => match (&containment, want) {
+                    // Nothing to switch. Said as the configuration gap it is,
+                    // with the key that closes it, rather than as a refusal —
+                    // the caps are what the fan-out runs under and there is no
+                    // safe default for somebody else's token ceiling.
+                    (None, _) => app.say(
+                        Tone::Muted,
+                        "no [app.io-cli.containment] in the configuration, so a turn here \
+                         cannot fan out. Set max_total_agents, max_concurrent_agents, \
+                         max_depth and max_total_tokens to turn it on.",
+                    ),
+                    (Some(caps), None) => {
+                        let where_it_is = if contained {
+                            settings::contained_notice(caps, app.theme.glyphs.dash)
+                        } else {
+                            "steered — turns can be redirected while they run, and cannot fan out"
+                                .to_string()
+                        };
+                        app.say(Tone::Muted, where_it_is);
+                    }
+                    (Some(caps), Some(true)) => {
+                        contained = true;
+                        let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
+                        app.say(Tone::Muted, notice);
+                    }
+                    (Some(_), Some(false)) => {
+                        contained = false;
+                        app.say(
+                            Tone::Muted,
+                            "steered from the next turn — it can be redirected while it runs, \
+                             and it cannot fan out",
+                        );
+                    }
+                },
                 Action::Expand => {
                     let lines = expand(&session, &store, &app.theme);
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -822,6 +879,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     &store,
                     &mut session,
                     &effective,
+                    // The caps reach the turn only while the session is in
+                    // contained mode, so `/contain off` is a real switch and not
+                    // a label: with `None` here the turn built below is the
+                    // steered turn, byte for byte.
+                    contained.then(|| containment.as_ref()).flatten(),
                     text,
                     started,
                 )
@@ -844,11 +906,16 @@ async fn turn<P: Provider>(
     store: &Store,
     session: &mut Session,
     policy: &Policy,
+    containment: Option<&io_harness::Containment>,
     text: String,
     started: Instant,
 ) -> Result<(), String> {
     let (steer, inbox) = Steer::channel();
     let (observer, mut events) = bridge::channel();
+    // Held whether or not this turn is contained, because the driver's `Ctrl+C`
+    // arm is one arm: a steered turn leaves it untouched for its whole life, and
+    // `Bridge::event` reads it rather than assuming.
+    let canceller = observer.canceller();
     // The other seam, and the one that can stop the agent. `DenyAll` stood here
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
     // declined everything it was named for.
@@ -856,8 +923,25 @@ async fn turn<P: Provider>(
     app.started();
     paint(screen, app)?;
 
-    let mut running =
-        Box::pin(session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox));
+    // **The two turns this product can take, and one loop over both.** They are
+    // genuinely different turns rather than one turn with a flag: only
+    // `turn_contained_observed` passes a containment into io-harness's driver, so
+    // only it reaches the loop that owns the spawn tool — and it takes no
+    // `SteerInbox`, because no session entry point takes a caller's containment
+    // and a steer inbox together. Boxed to one type so the `select!` below is
+    // written once; a second loop would be a second place `Ctrl+C`, the ticker
+    // and the event drain could drift.
+    app.contained = containment.is_some();
+    let mut running: std::pin::Pin<
+        Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
+    > = match containment {
+        Some(caps) => Box::pin(session.turn_contained_observed(
+            text, provider, store, policy, &approver, caps, &observer,
+        )),
+        None => Box::pin(
+            session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox),
+        ),
+    };
 
     // Lives for the turn and no longer, which is half of why an idle session
     // never repaints; `App::tick` is the other half and the one a test can see.
@@ -902,9 +986,20 @@ async fn turn<P: Provider>(
                         let command = app.key(key);
                         match command {
                             Command::Interrupt => {
-                                // Best effort: the turn may already have ended, in
-                                // which case there is nobody left to tell.
-                                let _ = steer.interrupt();
+                                if containment.is_some() {
+                                    // A contained turn has no inbox to interrupt.
+                                    // The observer is the only thing io-harness
+                                    // reads from the interface while a tree runs,
+                                    // and it honours `Flow::Cancel` at the next
+                                    // boundary where no child is in flight — which
+                                    // is what `App::interrupt_or_quit` has just
+                                    // said on screen.
+                                    canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                } else {
+                                    // Best effort: the turn may already have ended,
+                                    // in which case there is nobody left to tell.
+                                    let _ = steer.interrupt();
+                                }
                             }
                             // Refused with a sentence rather than dropped in
                             // silence. `/resume`, `/fork` and the rewind each move

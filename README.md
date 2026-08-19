@@ -174,6 +174,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
+| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 
 <!-- commands:end -->
 
