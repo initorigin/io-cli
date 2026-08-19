@@ -64,6 +64,14 @@ at, in the terminal you are already in rather than by going and opening a file.
   no base64 dependency. `Media::attach` transcodes bmp, tiff, ico, tga and pnm to
   PNG on the way in, so those reach the graphics path along with png itself,
   while jpeg, gif and webp take the cell form.
+- **Any check that the chosen *model* accepts images, as opposed to the
+  provider.** `Provider::accepts_images` is asked before an attachment is
+  accepted, but with OpenRouter in front of four hundred models that answer is
+  yes while the model you picked may be text-only — and the failure then is the
+  provider's own `HTTP 404: No endpoints found that support image input`, after
+  the step and its tokens are spent. Found by running the built binary. It cannot
+  be closed from here anyway: enabling images gave the agent `view_image`, and a
+  tool in io-harness's workspace set is not io-cli's to remove.
 - **Anything the agent was *given* rather than asked for.** An image returned by
   an MCP tool and a browser screenshot both become images inside io-harness, but
   through private plumbing and with no event of any kind — there is no media

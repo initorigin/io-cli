@@ -488,6 +488,25 @@ because Kitty's own transfer format is PNG and the only base64 this program has
 is the one io-harness already computed — a screenshot is a PNG everywhere that
 takes one.
 
+**A text-only model plus an image is a failed run, and it fails at the wire.**
+Whether a provider takes image input is asked before an attachment is accepted,
+but that is a question about the *provider* — with OpenRouter in front of four
+hundred models, the answer is yes while the particular model you have chosen may
+still be text-only. What you get then is the provider's own refusal, mid-run:
+
+```
+error: provider error (Request, HTTP 404): {"error":{"message":"No endpoints
+found that support image input","code":404}}
+```
+
+The step and its tokens are already spent when it arrives. This also reaches you
+without attaching anything, because enabling images gave the agent `view_image`
+and the agent may decide to use it on a model that cannot see — and io-cli cannot
+take a tool out of io-harness's own workspace tool set. Checking the model rather
+than the provider would mean reading the live catalogue on every attach, and it
+would still not close the door the agent opens. **If you work with images, choose
+a model that accepts them.**
+
 **An image the agent was *given* rather than asked for is not shown.** A picture
 returned by an MCP tool, and a browser screenshot, both become images inside
 io-harness — but through private plumbing and with no event of any kind, so
