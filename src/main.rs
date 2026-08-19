@@ -1057,6 +1057,10 @@ async fn turn<P: Provider>(
     // and never spoken to — which is exactly what a session with no responder
     // does today: the question pauses the run instead.
     let (answerer, mut questions) = io_cli::intent::channel();
+    // The fourth, and the only one that can stop the work before it starts.
+    // Registering it is what turns io-harness's planning phase on, so it is put
+    // on the contract only where the contract itself reaches the run.
+    let (gate, mut plans) = io_cli::plan::channel();
     app.started();
     paint(screen, app)?;
 
@@ -1083,6 +1087,7 @@ async fn turn<P: Provider>(
     let contract = containment.map(|_| {
         io_cli::contract::session(text.clone(), root.clone(), capabilities)
             .with_responder(std::sync::Arc::new(answerer))
+            .with_plan_gate(std::sync::Arc::new(gate))
     });
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
@@ -1127,6 +1132,14 @@ async fn turn<P: Provider>(
                 // stays there until the overlay answers. The loop keeps turning,
                 // which is what leaves `Ctrl+C` reachable while a question is up.
                 app.open_approval(ask);
+                app.status.elapsed = started.elapsed();
+                paint(screen, app)?;
+            }
+            Some(proposed) = plans.recv() => {
+                // The run is stopped inside `PlanGate::review`, and while it is
+                // io-harness's own policy denies every write and every exec — so
+                // the workspace behind this overlay cannot change while it is up.
+                app.open_plan(proposed);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
             }

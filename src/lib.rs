@@ -36,6 +36,7 @@ pub mod intent;
 pub mod keys;
 pub mod picker;
 pub mod picture;
+pub mod plan;
 pub mod provider;
 pub mod rewind;
 pub mod sessions;

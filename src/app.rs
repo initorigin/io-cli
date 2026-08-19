@@ -121,6 +121,12 @@ pub struct App {
     /// question with prose — and because only one of them authorizes anything.
     /// Both are modal, and [`App::modal`] is the one place that knows it.
     intent: Option<crate::intent::Intent>,
+    /// The plan on screen, if one is waiting to be decided.
+    ///
+    /// While it is up io-harness's own policy denies every write and every exec
+    /// under a `plan-gate` layer, so this is the one overlay whose backdrop is
+    /// guaranteed to be a workspace nothing has touched.
+    plan: Option<crate::plan::Review>,
     /// Rules the operator has allowed for the rest of this session.
     ///
     /// The harness's own `remember` is run-scoped and dies with the turn, so
@@ -178,6 +184,7 @@ impl App {
             pending: Vec::new(),
             approval: None,
             intent: None,
+            plan: None,
             remembered: Vec::new(),
             root: std::path::PathBuf::new(),
             diff_style: crate::settings::DiffStyle::default(),
@@ -253,13 +260,46 @@ impl App {
         intent.resolve(answer);
     }
 
+    /// A plan was proposed and nothing has been done about it yet.
+    pub fn open_plan(&mut self, proposed: crate::plan::Proposed) {
+        self.plan = Some(crate::plan::Review::new(proposed));
+    }
+
+    /// Decide the open plan. The overlay closes and the run acts on the verdict.
+    ///
+    /// The line committed here is io-cli's own note of what it sent; the
+    /// harness's `PlanDecided` arrives separately on the event stream. They agree
+    /// because the verdict travelled one way, and if they ever disagree this is
+    /// where it shows.
+    pub fn decide_plan(&mut self, verdict: io_harness::PlanVerdict) {
+        let Some(plan) = self.plan.take() else {
+            return;
+        };
+        let dash = self.theme.glyphs.dash;
+        let (tone, said) = match &verdict {
+            io_harness::PlanVerdict::Approve => (
+                Tone::Muted,
+                format!("plan approved {dash} {} steps", plan.plan().steps.len()),
+            ),
+            io_harness::PlanVerdict::Revise { correction } => {
+                (Tone::Warning, format!("sent back {dash} {correction}"))
+            }
+            io_harness::PlanVerdict::Cancel => (
+                Tone::Refused,
+                format!("plan cancelled {dash} nothing ran"),
+            ),
+        };
+        self.say(tone, said);
+        plan.resolve(Some(verdict));
+    }
+
     /// Whether a modal surface owns the keyboard.
     ///
-    /// One answer for every caller. An approval and a question are both modal and
-    /// a guard that knew about only one of them is how a keystroke reaches a
-    /// composer nobody can see.
+    /// One answer for every caller. An approval, a question and a plan are all
+    /// modal, and a guard that knew about only one of them is how a keystroke
+    /// reaches a composer nobody can see.
     pub fn modal(&self) -> bool {
-        self.approval.is_some() || self.intent.is_some()
+        self.approval.is_some() || self.intent.is_some() || self.plan.is_some()
     }
 
     /// The posture in force.
@@ -426,6 +466,9 @@ impl App {
         // pauses a run rather than the one that denies it — and this run has
         // already stopped, so the pause costs nothing that was still moving.
         self.intent = None;
+        // And for a plan, where `None` is the safe direction twice over: the run
+        // is over, and a plan nobody decided is a plan nothing acted on.
+        self.plan = None;
         let tail = self.events.flush();
         self.pending.extend(tail);
         // After the tail, so the line saying the session is idle again is the last
@@ -690,6 +733,15 @@ impl App {
             }
             return Command::None;
         }
+        // And a plan, on the same terms again. `Ctrl+C` ends the turn; every
+        // other key is either the approval, the correction being written, or the
+        // cancel.
+        if let Some(open) = self.plan.as_mut().filter(|_| !interrupting) {
+            if let Some(verdict) = open.key(key) {
+                self.decide_plan(verdict);
+            }
+            return Command::None;
+        }
         // Any key at all disarms a half-pressed sequence, and the arming is read
         // back here rather than left standing. Taking it before the match means
         // every arm below clears it without having to remember to — the
@@ -873,6 +925,13 @@ impl App {
         // The same rule for the same reason: the run is stopped waiting on prose,
         // so there is nothing behind this worth half a screen.
         if let Some(open) = &self.intent {
+            open.render(frame, area, &self.theme);
+            return;
+        }
+        // A plan needs the rows most of the three: it is a list, and a list
+        // truncated to fit beside a composer is a plan somebody approved without
+        // having read the end of it.
+        if let Some(open) = &self.plan {
             open.render(frame, area, &self.theme);
             return;
         }
