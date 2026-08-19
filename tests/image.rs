@@ -239,3 +239,156 @@ fn a_file_that_is_not_an_image_is_an_error_and_not_a_panic() {
     // session down with it.
     assert!(decode(b"this is not an image").is_err());
 }
+
+/// F4 — where the terminal speaks the Kitty graphics protocol, the bytes are the
+/// image; and where it does not, there is no escape at all.
+///
+/// The negative half carries more of this criterion than the positive one. A
+/// wrong cell is a wrong frame; a graphics escape sent to a terminal that cannot
+/// read it is unreadable bytes written permanently into scrollback that no later
+/// redraw can clean.
+mod graphics {
+    use io_cli::picture::{kitty, render, Drawn};
+    use io_cli::term::speaks_kitty_graphics;
+
+    /// An environment lookup built from pairs, so no test mutates the process it
+    /// runs in — and so every branch is reachable, including the ones this
+    /// machine could never produce.
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn the_terminals_that_speak_it_are_recognised() {
+        for pairs in [
+            vec![("TERM", "xterm-kitty")],
+            vec![("KITTY_WINDOW_ID", "1")],
+            vec![("TERM", "xterm-256color"), ("TERM_PROGRAM", "ghostty")],
+            vec![("TERM", "xterm-256color"), ("TERM_PROGRAM", "WezTerm")],
+            vec![("KONSOLE_VERSION", "230800")],
+            vec![("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")],
+        ] {
+            assert!(
+                speaks_kitty_graphics(env(&pairs)),
+                "should be recognised: {pairs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_terminal_gets_no_escape() {
+        for pairs in [
+            vec![("TERM", "xterm-256color")],
+            vec![("TERM", "vt100")],
+            vec![("TERM_PROGRAM", "Apple_Terminal")],
+            // iTerm2 speaks its own protocol and not this one. 0.9.0 gives it
+            // cells; US-IO-CLI-0.9.0-I01 records why.
+            vec![("TERM_PROGRAM", "iTerm.app")],
+            vec![],
+        ] {
+            assert!(
+                !speaks_kitty_graphics(env(&pairs)),
+                "should NOT be sent an escape: {pairs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_multiplexer_is_refused_even_when_the_terminal_under_it_speaks_it() {
+        // This is the case that does the damage. Kitty graphics inside tmux need
+        // a passthrough that is off by default, and screen has no equivalent at
+        // all — so a real kitty underneath is exactly when the escape is most
+        // likely to be emitted and least likely to be drawn.
+        for pairs in [
+            vec![("TERM", "xterm-kitty"), ("TMUX", "/tmp/tmux-501/default")],
+            vec![("KITTY_WINDOW_ID", "1"), ("TMUX", "/tmp/x")],
+            vec![("TERM", "screen.xterm-kitty")],
+            vec![("TERM", "tmux-256color"), ("KITTY_WINDOW_ID", "1")],
+            vec![("TERM", "xterm-kitty"), ("STY", "1234.pts-0")],
+        ] {
+            assert!(
+                !speaks_kitty_graphics(env(&pairs)),
+                "a multiplexer is between us and the terminal: {pairs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_escape_carries_the_flag_that_makes_it_compose() {
+        // `C=1` is what tells Kitty not to move the cursor, and that is the whole
+        // reason this composes with a renderer that draws the cells around it.
+        // Without it the placement moves the cursor and may scroll, which changes
+        // what every later absolute MoveTo in the same draw means.
+        let escape = kitty("QUJD", 4, 2);
+
+        assert!(escape.starts_with("\x1b_G"), "{escape:?}");
+        assert!(escape.contains("a=T"), "{escape:?}");
+        assert!(escape.contains("f=100"), "{escape:?}");
+        assert!(escape.contains("C=1"), "{escape:?}");
+        assert!(escape.contains("c=4"), "{escape:?}");
+        assert!(escape.contains("r=2"), "{escape:?}");
+        assert!(
+            escape.contains("m=0"),
+            "one chunk is the last chunk: {escape:?}"
+        );
+        assert!(escape.ends_with("\x1b\\"), "{escape:?}");
+        assert!(
+            escape.contains("QUJD"),
+            "the payload is carried: {escape:?}"
+        );
+    }
+
+    #[test]
+    fn a_payload_longer_than_one_escape_is_chunked_with_the_control_keys_on_the_first() {
+        // The protocol's rule: control keys ride the first escape only, every
+        // chunk but the last says `m=1`, and the last says `m=0`.
+        let payload = "A".repeat(10_000);
+        let escape = kitty(&payload, 10, 5);
+
+        assert_eq!(escape.matches("a=T").count(), 1, "control keys ride once");
+        assert_eq!(
+            escape.matches("\x1b_G").count(),
+            3,
+            "10000 bytes is three chunks"
+        );
+        assert_eq!(escape.matches("m=1").count(), 2);
+        assert_eq!(escape.matches("m=0").count(), 1);
+        assert!(escape.ends_with("\x1b\\"));
+    }
+
+    #[test]
+    fn a_png_reaches_the_graphics_path_and_a_terminal_without_it_gets_cells() {
+        let png = super::support::png_bytes(8, 4);
+
+        let with = render(&png, "shot.png", "image/png", true, true, 80);
+        assert!(
+            matches!(with, Drawn::Kitty { .. }),
+            "a png on a terminal that speaks the protocol is the real image",
+        );
+
+        let without = render(&png, "shot.png", "image/png", true, false, 80);
+        let Drawn::Lines(lines) = without else {
+            panic!("a terminal that does not speak the protocol must get cells")
+        };
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn the_plain_form_beats_a_terminal_that_speaks_the_protocol() {
+        // `--plain`, `NO_COLOR` and the ASCII glyph set are each a reason a reader
+        // wants no picture. A protocol the terminal happens to speak does not
+        // override any of them.
+        let png = super::support::png_bytes(8, 4);
+        let drawn = render(&png, "shot.png", "image/png", false, true, 80);
+
+        let Drawn::Lines(lines) = drawn else {
+            panic!("plain mode must not emit a graphics escape")
+        };
+        assert_eq!(lines.len(), 1, "one line naming the file");
+    }
+}

@@ -237,6 +237,38 @@ impl<B: Backend + Write> Screen<B> {
             .insert_before(height, |buf| paragraph.render(buf.area, buf))
     }
 
+    /// Push a raw terminal payload into the scrollback, in a region of its own.
+    ///
+    /// For a graphics protocol, which is a byte sequence a `Paragraph` cannot
+    /// carry: [`Screen::commit`] measures display widths and wraps, and an escape
+    /// has no width at all.
+    ///
+    /// The mechanism is the one the spike settled. `insert_before` renders a
+    /// `Buffer` through the backend, and `CrosstermBackend::draw` prints
+    /// `cell.symbol()` verbatim — so the payload goes in the first cell. **Every
+    /// other cell is emptied**, because a cell's default symbol is a space and a
+    /// row of spaces printed after the placement would erase the picture it was
+    /// just given. An empty symbol prints nothing at all.
+    ///
+    /// The region is exactly as tall as the caller says the picture is, so the
+    /// scrollback keeps the rows the image occupies.
+    pub fn commit_raw(&mut self, payload: &str, rows: u16) -> io::Result<()> {
+        if rows == 0 || payload.is_empty() {
+            return Ok(());
+        }
+        // Same reason as `commit`: `insert_before` ends by clearing the viewport,
+        // so the next frame is a repaint of an erased region.
+        self.last = None;
+        self.terminal.insert_before(rows, |buf| {
+            for cell in &mut buf.content {
+                cell.set_symbol("");
+            }
+            if let Some(first) = buf.content.first_mut() {
+                first.set_symbol(payload);
+            }
+        })
+    }
+
     /// Draw one viewport frame, wrapped in synchronized output — or draw nothing
     /// at all, if the frame says exactly what the terminal is already showing.
     ///
@@ -527,6 +559,53 @@ pub const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
 /// until a push actually goes out, which is what keeps a terminal that never
 /// advertised the protocol from seeing a stray pop.
 static KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this terminal can be sent a Kitty *graphics* escape.
+///
+/// **Read from the environment rather than queried, and that is a safety
+/// decision.** The keyboard protocol is asked for with crossterm's own
+/// `supports_keyboard_enhancement`, which knows how to parse the reply it gets.
+/// A graphics query is an APC string that crossterm's event parser does not
+/// model, so asking would mean a second reader on the same channel at exactly the
+/// moment the first one is being set up — and a terminal that answered
+/// unexpectedly could leave bytes in the queue that later arrive as keystrokes.
+///
+/// The cost of reading the environment is that an unknown terminal which does
+/// speak the protocol gets half-block cells. That is the **safe** direction: a
+/// picture drawn from cells is a picture, while an escape sent to a terminal that
+/// cannot read it is unreadable bytes written permanently into a scrollback that
+/// no later redraw can clean.
+///
+/// A multiplexer is refused outright. Kitty graphics inside tmux need explicit
+/// passthrough that is off by default, and screen has no equivalent at all — so
+/// the terminal underneath speaking the protocol is exactly the case where the
+/// escape does the most damage.
+///
+/// Taking the lookup as an argument is what makes every branch testable without a
+/// test mutating the process it runs in.
+pub fn speaks_kitty_graphics(var: impl Fn(&str) -> Option<String>) -> bool {
+    let term = var("TERM").unwrap_or_default();
+    // A multiplexer is between us and whatever would draw it.
+    if var("TMUX").is_some()
+        || var("STY").is_some()
+        || term.starts_with("screen")
+        || term.starts_with("tmux")
+    {
+        return false;
+    }
+    let program = var("TERM_PROGRAM").unwrap_or_default();
+    term.contains("kitty")
+        || var("KITTY_WINDOW_ID").is_some()
+        || var("GHOSTTY_RESOURCES_DIR").is_some()
+        || var("KONSOLE_VERSION").is_some()
+        || program.eq_ignore_ascii_case("ghostty")
+        || program.eq_ignore_ascii_case("wezterm")
+}
+
+/// [`speaks_kitty_graphics`] against this process's own environment.
+pub fn kitty_graphics() -> bool {
+    speaks_kitty_graphics(|name| std::env::var(name).ok())
+}
 
 /// Whether the terminal advertises the Kitty keyboard protocol.
 ///

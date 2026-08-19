@@ -36,6 +36,8 @@ use io_harness::tools::{Workspace, VIEW_IMAGE_TOOL};
 use io_harness::{Media, Policy};
 use ratatui::text::Line;
 
+use crate::picture::Drawn;
+
 /// An image that is ready to go, and the bytes it was read from.
 ///
 /// The bytes are kept for the *screen*, not for the wire: `media` is what the
@@ -165,8 +167,9 @@ pub fn viewed(
     policy: &Policy,
     event: &RunEvent,
     drawable: bool,
+    graphics: bool,
     width: u16,
-) -> Option<Vec<Line<'static>>> {
+) -> Option<Drawn> {
     let EventKind::ToolCall { name, target } = &event.kind else {
         return None;
     };
@@ -176,10 +179,12 @@ pub fn viewed(
     let media_type = Media::source_type_for(target)?;
     Some(
         match Workspace::with_policy(root, policy.clone()).read_bytes(target) {
-            Ok(bytes) => crate::picture::render(&bytes, target, media_type, drawable, width),
-            Err(error) => vec![Line::from(format!(
+            Ok(bytes) => {
+                crate::picture::render(&bytes, target, media_type, drawable, graphics, width)
+            }
+            Err(error) => Drawn::Lines(vec![Line::from(format!(
                 "the agent looked at {target}, which cannot be shown here: {error}"
-            ))],
+            ))]),
         },
     )
 }

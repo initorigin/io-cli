@@ -815,13 +815,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         &path,
                     ) {
                         Ok(staged) => {
-                            let lines = attached_lines(&staged, &app, screen.width());
+                            let (drawable, graphics) = forms(&app);
+                            let drawn = io_cli::picture::render(
+                                &staged.bytes,
+                                &staged.path,
+                                staged.media_type,
+                                drawable,
+                                graphics,
+                                screen.width(),
+                            );
+                            let note = app
+                                .theme
+                                .notice(Tone::Muted, io_cli::attach::staged_note(&staged));
                             // Staged on the session, so io-harness's `drive` folds
                             // it in and `mem::take`s it. Nothing is kept here: the
                             // one-turn-only property is the harness's, and a copy
                             // on this side would quietly undo it.
                             session.attach([staged.media]);
-                            screen.commit(&lines).map_err(|error| error.to_string())?;
+                            commit_drawn(screen, &mut app, drawn, Some(note))?;
                         }
                         Err(error) => app.say(Tone::Error, error),
                     }
@@ -942,23 +953,43 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
 /// accepted it for the wire, so the agent will see it; what failed is this
 /// crate's ability to show the operator the same thing, and saying so beats
 /// refusing an attachment that is going to work.
-fn attached_lines(
-    staged: &io_cli::attach::Staged,
-    app: &App,
-    width: u16,
-) -> Vec<ratatui::text::Line<'static>> {
-    let mut lines = io_cli::picture::render(
-        &staged.bytes,
-        &staged.path,
-        staged.media_type,
-        io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs),
-        width,
-    );
-    lines.push(
-        app.theme
-            .notice(Tone::Muted, io_cli::attach::staged_note(staged)),
-    );
-    lines
+fn commit_drawn(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    drawn: io_cli::picture::Drawn,
+    after: Option<ratatui::text::Line<'static>>,
+) -> Result<(), String> {
+    match drawn {
+        io_cli::picture::Drawn::Lines(mut lines) => {
+            lines.extend(after);
+            app.picture(lines);
+        }
+        io_cli::picture::Drawn::Kitty { payload, rows } => {
+            // Anything already queued goes FIRST. A raw commit writes straight to
+            // the terminal, so a picture emitted before the lines that precede it
+            // would land above its own context — and scrollback cannot be
+            // reordered afterwards.
+            let pending = app.take_pending();
+            if !pending.is_empty() {
+                screen.commit(&pending).map_err(|error| error.to_string())?;
+            }
+            screen
+                .commit_raw(&payload, rows)
+                .map_err(|error| error.to_string())?;
+            app.picture(after.into_iter().collect());
+        }
+    }
+    Ok(())
+}
+
+/// How this session may draw a picture: in cells, and whether as a real image.
+fn forms(app: &App) -> (bool, bool) {
+    let drawable = io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs);
+    // A graphics escape is only ever sent where cells would also have been drawn:
+    // `--plain`, `NO_COLOR` and the ASCII glyph set are each a reason a reader
+    // wants no picture at all, and a protocol the terminal happens to speak does
+    // not override any of them.
+    (drawable, drawable && io_cli::term::kitty_graphics())
 }
 
 /// **The agent's own look, committed where it looked.**
@@ -968,15 +999,17 @@ fn attached_lines(
 /// integration test, so a branch written here could not be sabotaged and would
 /// not be covered.
 fn commit_viewed(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
     root: &std::path::Path,
     policy: &Policy,
     event: &io_harness::RunEvent,
-    width: u16,
-) {
-    let drawable = io_cli::picture::drawable(app.theme.coloured, app.plain(), &app.theme.glyphs);
-    if let Some(lines) = io_cli::attach::viewed(root, policy, event, drawable, width) {
-        app.picture(lines);
+) -> Result<(), String> {
+    let (drawable, graphics) = forms(app);
+    let width = screen.width();
+    match io_cli::attach::viewed(root, policy, event, drawable, graphics, width) {
+        Some(drawn) => commit_drawn(screen, app, drawn, None),
+        None => Ok(()),
     }
 }
 
@@ -1055,7 +1088,7 @@ async fn turn<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
-                commit_viewed(app, &root, policy, &event, screen.width());
+                commit_viewed(screen, app, &root, policy, &event)?;
                 paint(screen, app)?;
             }
             Some(ask) = asks.recv() => {
@@ -1155,7 +1188,7 @@ async fn turn<P: Provider>(
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
         // lose.
-        commit_viewed(app, &root, policy, &event, width);
+        commit_viewed(screen, app, &root, policy, &event)?;
     }
     app.finished();
 

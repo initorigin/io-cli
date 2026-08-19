@@ -233,6 +233,17 @@ mod viewed {
         )
     }
 
+    /// The cell form's text. A test that asked for cells and got an escape has
+    /// found a defect, so this asserts the form rather than accommodating both.
+    fn lines_of(drawn: io_cli::picture::Drawn) -> Vec<ratatui::text::Line<'static>> {
+        match drawn {
+            io_cli::picture::Drawn::Lines(lines) => lines,
+            io_cli::picture::Drawn::Kitty { .. } => {
+                panic!("asked for cells and got a graphics escape")
+            }
+        }
+    }
+
     fn text(lines: &[ratatui::text::Line<'_>]) -> String {
         lines
             .iter()
@@ -254,8 +265,10 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "shot.png"),
             true,
+            false,
             WIDE,
         )
+        .map(lines_of)
         .expect("a view_image call naming a png is a picture to show");
 
         assert!(!lines.is_empty());
@@ -276,8 +289,10 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "docs/deep.png"),
             true,
+            false,
             WIDE,
         )
+        .map(lines_of)
         .expect("a path under the session root resolves");
 
         assert!(
@@ -295,6 +310,7 @@ mod viewed {
             &Policy::permissive(),
             &call("read_file", "shot.png"),
             true,
+            false,
             WIDE,
         )
         .is_none());
@@ -308,6 +324,7 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "notes.md"),
             true,
+            false,
             WIDE,
         )
         .is_none());
@@ -332,8 +349,10 @@ mod viewed {
             &policy,
             &call(VIEW_IMAGE_TOOL, "private/badge.png"),
             true,
+            false,
             WIDE,
         )
+        .map(lines_of)
         .expect("a denied look is still something to say");
 
         assert!(text(&lines).contains("cannot be shown"), "{}", text(&lines));
@@ -352,8 +371,10 @@ mod viewed {
             &Policy::permissive(),
             &call(VIEW_IMAGE_TOOL, "shot.png"),
             false,
+            false,
             WIDE,
         )
+        .map(lines_of)
         .expect("a picture to describe");
 
         let rendered = text(&lines);

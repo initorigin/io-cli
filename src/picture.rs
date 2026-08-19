@@ -27,6 +27,7 @@
 //! oversized file by its bound. This module inherits those limits by running
 //! after them rather than by restating them.
 
+use io_harness::Media;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
@@ -127,6 +128,61 @@ pub fn drawable(coloured: bool, plain: bool, glyphs: &crate::glyphs::Glyphs) -> 
 /// Make it a fraction of the height if anyone ever asks for a taller one.
 pub const MAX_ROWS: u16 = 20;
 
+/// The largest base64 payload one Kitty escape may carry.
+///
+/// The protocol's own limit, not a taste: a transmission longer than this is
+/// split across escapes carrying `m=1` until the last, which carries `m=0`.
+const KITTY_CHUNK: usize = 4096;
+
+/// How a picture is going to reach the terminal.
+///
+/// One type so the choice is made in ONE place. Two call sites each deciding
+/// whether to draw cells or emit an escape is the shape `drawable` exists to
+/// avoid, and the failure mode is worse here: a site that got it wrong would put
+/// an unreadable escape into somebody's permanent scrollback.
+pub enum Drawn {
+    /// Ordinary cells, committed the way every other line is.
+    Lines(Vec<Line<'static>>),
+    /// A Kitty graphics escape, and the rows it must be given.
+    ///
+    /// The payload is written into a region of exactly `rows` rows whose other
+    /// cells are empty — see `Screen::commit_raw`.
+    Kitty { payload: String, rows: u16 },
+}
+
+/// A Kitty graphics escape placing `base64` into `cols` by `rows` cells.
+///
+/// `a=T` transmits and displays in one go. **`C=1` is the load-bearing flag**: it
+/// tells Kitty not to move the cursor, and that is what makes the escape compose
+/// with a renderer that draws the cells around it. `CrosstermBackend::draw`
+/// re-anchors with an absolute `MoveTo` at the start of every row, so a placement
+/// that moves nothing cannot desynchronise the draw — and one that did move the
+/// cursor might scroll, which would change what every later `MoveTo` means.
+///
+/// `f=100` is PNG, which is why the caller only reaches this for a PNG payload.
+///
+/// Control keys ride the first escape only; every later chunk carries `m=` and
+/// nothing else, which is what the protocol specifies.
+pub fn kitty(base64: &str, cols: u16, rows: u16) -> String {
+    let chunks: Vec<&str> = base64
+        .as_bytes()
+        .chunks(KITTY_CHUNK)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect();
+    let mut out = String::with_capacity(base64.len() + chunks.len() * 32);
+    for (i, chunk) in chunks.iter().enumerate() {
+        let more = u8::from(i + 1 < chunks.len());
+        if i == 0 {
+            out.push_str(&format!(
+                "\x1b_Ga=T,f=100,c={cols},r={rows},C=1,m={more};{chunk}\x1b\\"
+            ));
+        } else {
+            out.push_str(&format!("\x1b_Gm={more};{chunk}\x1b\\"));
+        }
+    }
+    out
+}
+
 /// Bytes on disk to lines in the scrollback — the whole of what both directions
 /// of this release share.
 ///
@@ -141,18 +197,67 @@ pub fn render(
     path: &str,
     media_type: &str,
     drawable: bool,
+    graphics: bool,
     width: u16,
-) -> Vec<Line<'static>> {
+) -> Drawn {
     use ::image::GenericImageView;
 
-    match decode(bytes) {
-        Ok(picture) if drawable => cells(&picture, width, MAX_ROWS),
-        Ok(picture) => {
-            let (w, h) = picture.dimensions();
-            vec![describe(path, media_type, w, h)]
-        }
-        Err(_) => vec![Line::from(format!("{path} could not be drawn here"))],
+    let Ok(picture) = decode(bytes) else {
+        return Drawn::Lines(vec![Line::from(format!("{path} could not be drawn here"))]);
+    };
+    let (w, h) = picture.dimensions();
+    if !drawable {
+        return Drawn::Lines(vec![describe(path, media_type, w, h)]);
     }
+
+    // The real image, where the terminal can take one AND the payload is already
+    // the shape the protocol wants. `Media::attach` is what produces the base64 —
+    // this crate encodes nothing and takes no base64 dependency — and it is also
+    // what decides the question: it PASSES THROUGH the four formats a provider
+    // accepts and TRANSCODES the other five to PNG. Kitty's `f=100` is PNG, so a
+    // png, a bmp, a tiff, an ico, a tga or a pnm arrives ready, while a jpeg, a
+    // gif or a webp comes back as itself and takes the cell form instead.
+    //
+    // That is a real limit and it is stated rather than hidden: the alternative
+    // is a base64 encoder in this crate, which is a dependency or a hand-rolled
+    // codec for a path that a screenshot — the case this release exists for, and
+    // a PNG on every platform that takes one — does not need.
+    if graphics {
+        if let Ok(media) = Media::attach(media_type, bytes) {
+            if media.media_type == "image/png" {
+                let (cols, rows) = fitted_cells(w, h, width, MAX_ROWS);
+                return Drawn::Kitty {
+                    payload: kitty(&media.base64, cols, rows),
+                    rows,
+                };
+            }
+        }
+    }
+
+    Drawn::Lines(cells(&picture, width, MAX_ROWS))
+}
+
+/// How many cells a picture of `w` by `h` occupies inside `cols` by `rows`.
+///
+/// The same box fit [`cells`] performs, so a Kitty placement and a half-block
+/// drawing of the same file claim the same area — which is what stops the two
+/// forms disagreeing about how much scrollback a picture costs.
+fn fitted_cells(w: u32, h: u32, cols: u16, rows: u16) -> (u16, u16) {
+    let (box_w, box_h) = (u32::from(cols.max(1)), u32::from(rows.max(1)) * 2);
+    let (w, h) = if w > box_w || h > box_h {
+        let scale = f64::from(box_w) / f64::from(w.max(1));
+        let scale = scale.min(f64::from(box_h) / f64::from(h.max(1)));
+        (
+            ((f64::from(w) * scale).round() as u32).max(1),
+            ((f64::from(h) * scale).round() as u32).max(1),
+        )
+    } else {
+        (w, h)
+    };
+    (
+        u16::try_from(w).unwrap_or(u16::MAX).max(1),
+        u16::try_from(h.div_ceil(2)).unwrap_or(u16::MAX).max(1),
+    )
 }
 
 /// The one line a picture becomes where cells are not allowed to carry it.
