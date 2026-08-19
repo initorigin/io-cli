@@ -469,6 +469,15 @@ impl App {
         }
     }
 
+    /// A picture, committed where it happened.
+    ///
+    /// Beside [`App::edits`] and for the same reason: the read that produced it
+    /// belongs to the driver, which is the only thing holding a workspace and a
+    /// policy, so what arrives here is already lines.
+    pub fn picture(&mut self, lines: Vec<Line<'static>>) {
+        self.pending.extend(lines);
+    }
+
     /// The status line's share of an event.
     ///
     /// Only the events that carry a fact set a field, and nothing sets one to a
@@ -530,6 +539,24 @@ impl App {
             io_harness::EventKind::SpendDraw { tokens, remaining } => {
                 let drawn = self.status.spend.map(|(drawn, _)| drawn).unwrap_or(0) + tokens;
                 self.status.spend = Some((drawn, *remaining));
+            }
+            // **A handle opens once and closes once, and `HandlePolled` is
+            // neither.** io-harness documents the invariant: a `HandleStarted`
+            // ends in exactly one of `HandleExited`, `HandleKilled` and
+            // `HandleOrphaned`, and a run that finishes with live handles kills
+            // them on the way out — so the count returns to zero on its own and
+            // the field disappears without anyone clearing it.
+            //
+            // `saturating_sub` rather than a bare decrement: a resumed run replays
+            // a backlog, and an ending whose start was never seen must not wrap
+            // the count to eighteen quintillion background jobs.
+            io_harness::EventKind::HandleStarted { .. } => {
+                self.status.jobs += 1;
+            }
+            io_harness::EventKind::HandleExited { .. }
+            | io_harness::EventKind::HandleKilled { .. }
+            | io_harness::EventKind::HandleOrphaned { .. } => {
+                self.status.jobs = self.status.jobs.saturating_sub(1);
             }
             io_harness::EventKind::Contained { mode, backend, .. } => {
                 self.status.containment = Some(crate::status::format_containment(mode, backend));

@@ -42,6 +42,7 @@ fn the_commands_are_the_commands() {
             "/copy diff",
             "/contain",
             "/fleet",
+            "/attach",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",
@@ -161,5 +162,31 @@ fn the_key_table_covers_every_key_this_release_binds() {
         15,
         "a key was added to the table without being added to this list, or the \
          other way round",
+    );
+}
+
+/// `/attach` takes the REST of the line, not its second word.
+///
+/// A path may contain spaces and the `@` completion that produced it does not
+/// quote, so taking one token would attach the wrong file — or nothing — for
+/// exactly the paths a reader is least able to retype. The `@` itself is left on:
+/// stripping it belongs to `attach::prepare`, beside the read it guards, rather
+/// than in two places.
+#[test]
+fn attach_takes_the_whole_rest_of_the_line() {
+    assert_eq!(
+        commands::parse("attach @my pictures/shot.png", &defaults(), &DARK),
+        Action::Attach("@my pictures/shot.png".to_string()),
+    );
+    assert_eq!(
+        commands::parse("attach", &defaults(), &DARK),
+        Action::Attach(String::new()),
+        "no argument is a request for the sentence, not an error",
+    );
+    // `/image` is the other word a reader might reach for, the way `/continue`
+    // stands beside `/resume`.
+    assert_eq!(
+        commands::parse("image shot.png", &defaults(), &DARK),
+        Action::Attach("shot.png".to_string()),
     );
 }

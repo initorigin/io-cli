@@ -18,6 +18,7 @@
 
 pub mod app;
 pub mod approval;
+pub mod attach;
 pub mod bridge;
 pub mod cli;
 pub mod clipboard;
@@ -32,6 +33,7 @@ pub mod fuzzy;
 pub mod glyphs;
 pub mod keys;
 pub mod picker;
+pub mod picture;
 pub mod provider;
 pub mod rewind;
 pub mod sessions;

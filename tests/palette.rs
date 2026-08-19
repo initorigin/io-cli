@@ -262,14 +262,20 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // Three rows begin with `c` since 0.8.0 added `/contain`, and `co` is a
-    // prefix of all three — `contain` is c-o-n-t-a-i-n. They score the same and
-    // the tie-break is the order they were handed in. The defect: an unstable
-    // sort swaps them on a keystroke that did not change the result, and `Enter`
-    // takes a row nobody chose.
+    // `c` matches FOUR rows since 0.9.0 added `/attach`, which contains one —
+    // three of them begin with it and `attach` merely holds it. `co` narrows to
+    // the three that begin with `c`, because `attach` has no `o` after its `c`.
+    // The three score the same and the tie-break is the order they were handed
+    // in. The defect: an unstable sort swaps them on a keystroke that did not
+    // change the result, and `Enter` takes a row nobody chose.
+    //
+    // The counts moved with the command table and the property did not. They are
+    // stated rather than derived from `COMMANDS.len()` on purpose: a count that
+    // recomputed itself would keep passing while the narrowing it describes
+    // quietly stopped happening.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 3);
+    assert_eq!(picker.matching(), 4);
     assert_eq!(marked(&picker), "copy");
     type_at(&mut picker, "o");
     assert_eq!(picker.matching(), 3);
