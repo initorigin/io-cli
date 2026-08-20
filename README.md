@@ -1,7 +1,16 @@
+<div align="center">
+
 # IO CLI
 
-A terminal agent that shows you what it is allowed to do, what it is spending,
-and what it refused — while it works.
+**A terminal agent that shows you what it is allowed to do, what it is spending,
+and what it refused — while it works.**
+
+[![CI](https://github.com/initorigin/io-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/initorigin/io-cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/initorigin/io-cli)](https://github.com/initorigin/io-cli/releases)
+[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+</div>
 
 `io` is an interface. The agent loop, the providers, the tools, the sandbox, the
 permission boundary and the session store are all
@@ -9,10 +18,31 @@ permission boundary and the session store are all
 reimplemented here. A test asserts that: `tests/dependencies.rs` fails the build
 if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 
+- [Install](#install) · [First run](#first-run) · [While it works](#while-it-works)
+- [Keys](#keys) · [Commands](#commands) · [Configuration](#configuration)
+- [The fleet](#the-fleet) · [Pictures](#pictures) · [Background jobs](#background-jobs)
+- [Reading it without seeing it](#reading-it-without-seeing-it) · [Headless](#headless)
+- [What this release is not](#what-this-release-is-not) · [Platform support](#platform-support) · [Stability](#stability)
+
 ![A session at rest: the IO CLI card in the terminal's own scrollback, carrying
 the version, the model, the permission posture and the workspace; a prompt below
 it; and a two-row footer under a rule, naming the state, the model and the clock
 on one row and the keys and the posture on the next.](docs/screenshot.png)
+
+## What you get
+
+| | What it gives you |
+| --- | --- |
+| **A session you can read** | Every finished line in the terminal's own scrollback, designed rather than defaulted: a tool call as a verb and a path, a thought as a thought, an answer that ends the turn |
+| **A working view** | Two sticky rows while a turn runs — a word for the turn with its clock and spend, and a line under it saying what is happening *now* |
+| **The boundary, visible** | The posture on the footer, a refusal that names the act, the target, the rule and the layer, and `Shift+Tab` to change it from the next turn |
+| **Approvals in place** | A write stops the run and shows the diff it proposes; `y`, `a` or `n`, answered where it was asked |
+| **A fan-out you can watch** | Contained turns spawn children under one shared ceiling; `Ctrl+F` shows the tree and what it is costing |
+| **Undo** | `Esc Esc` at an empty prompt rewinds the last turn — its files, its memory and the conversation head |
+| **Conversations that survive** | `/resume` reopens an earlier session, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
+| **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json` |
+| **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
+| **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
 
 ## It never takes your terminal
 
@@ -630,6 +660,40 @@ answers the question split view answers.
 One ceiling worth knowing about: a hunk is a fragment of a file, and each of its
 lines is highlighted from a clean parse. A block comment or a multi-line string
 that was opened *above* the hunk is not known here, so those lines read as code.
+
+## Platform support
+
+| Platform | Build | Containment |
+| --- | --- | --- |
+| macOS, Apple silicon | `aarch64-apple-darwin` | io-harness's own: `sandbox-exec` |
+| macOS, Intel | `x86_64-apple-darwin` | as above |
+| Linux | `x86_64-unknown-linux-musl`, statically linked | io-harness's chain: Landlock, `bwrap`, namespaces, floor |
+| Windows | `x86_64-pc-windows-msvc` | Job Object, with AppContainer opt-in |
+
+The four artifacts and their `SHA256SUMS` are attached to every GitHub Release,
+and the full test suite runs on Ubuntu, macOS and Windows in CI. **What confines
+a command is io-harness's, not this product's** — `io` shows you which backend
+actually answered on this host, in the footer, because the mode asked for and the
+backend that applied are not the same fact.
+
+Rust 1.95 or later to build from source. There is no crates.io publish: the
+distribution channel is the GitHub Release, and `publish = false` makes an
+accidental one impossible rather than merely discouraged.
+
+## Stability
+
+Pre-1.0 and staying there until the owner says otherwise. A minor release may
+change what a session looks like — 0.11.0 rewrote the transcript's vocabulary,
+and the release before it moved where a question is answered. What you can rely
+on is that every one of those is in [CHANGELOG.md](CHANGELOG.md), said plainly,
+and that a configuration file written for an older release keeps working: no key
+has been removed or reinterpreted since 0.1.0.
+
+## Security
+
+Report vulnerabilities per [SECURITY.md](SECURITY.md). Your provider key is never
+printed, never committed to the scrollback, and never written to disk by the
+wizard when the provider's own environment variable is already set.
 
 ## Contributing
 
