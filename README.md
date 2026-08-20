@@ -18,8 +18,9 @@ advances on its own while the first token is still on its way.](docs/screenshot.
 
 `io` does not enter the alternate screen and does not capture the mouse, in any
 mode, behind any flag. Every finished message, tool call and system line is
-committed into the terminal's own scrollback; a few lines at the bottom hold the
-composer and the status line, and only those repaint.
+committed into the terminal's own scrollback; five rows at the bottom hold the
+activity line, the live row, two rows of composer and the status line, and only
+those repaint.
 
 So when the session ends the whole conversation is still there. Your terminal's
 search finds it, tmux copy-mode scrolls it, and a mouse drag selects it — none of
@@ -80,6 +81,30 @@ Run it again at any time with `io setup`.
 Your key never appears on screen, in the scrollback, or in a log line. If the
 provider's environment variable is already set, the wizard offers to use it and
 writes no key to disk at all.
+
+## While it works
+
+Two rows sit above the composer for exactly as long as a turn is in flight, and
+neither is there before the first one or after the last one ends.
+
+The top row is the **activity line**: a word for the turn, chosen once per step
+so it moves when the work does rather than on a timer of its own, the elapsed
+clock, and the token count the run has been billed for. On a narrow terminal it
+drops the count and then the clock, which is the rule the status line under it
+already follows.
+
+Under it, the **live row** says what is happening right now, in this order: the
+run is waiting on you, or a tool call is open and this is the verb and the path,
+or the model is thinking, or it is the tail of the answer as it streams. Waiting
+on a person outranks everything, because every other thing that row can say is
+about work going on without you.
+
+What lands in the scrollback is designed rather than defaulted. A tool call reads
+as a verb and a workspace-relative path — `Read src/lib.rs`, not `read_file` and
+an absolute path — and a tool this release has never seen keeps the name
+io-harness sent, because a verb invented for it would mean nothing. A turn ends
+on its answer: the run's step and token counts are on the status line beside the
+provider, which is where every other number in this interface lives.
 
 ## Keys
 
@@ -191,6 +216,18 @@ long is the buffer where the terminal's search, selection and tmux copy-mode
 already work. `/expand` reads the step's full output back out of the run's
 durable trace, which is where it went in the first place — the screen is not the
 archive.
+
+`/expand` also holds the part of a long thought that did not fit. The model's
+reasoning is committed as a thought — the word, how long the step had been going,
+then the text — and a thought longer than ten rows is fitted with the rest kept
+for `/expand`. io-harness neither stores reasoning nor folds it into the next
+prompt, so that copy is the only one there is.
+
+`/clear` starts a new conversation: a new session id, no prior turn sent to the
+model, and the run-scoped status fields back to zero. It clears the screen and
+nothing else — the conversation it ends is still in the store and still listed by
+`/resume`, and your terminal's scrollback is still your terminal's. It is refused
+while a turn is running.
 
 `/copy` uses OSC 52, so it reaches the clipboard of the machine you are *sitting
 at* rather than the one you are ssh'd into. Nothing acknowledges an OSC 52 write:
