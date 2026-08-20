@@ -2,11 +2,14 @@
 //!
 //! Three rules shape this module.
 //!
-//! **Nothing is dropped.** `EventKind` is `#[non_exhaustive]` and has fifty-one
-//! variants today, so a wildcard arm is not a shortcut here, it is required by
-//! the type. What matters is that the wildcard *renders* — an event this release
-//! has no design for arrives as a muted single line naming its kind, rather than
-//! disappearing. An unrendered event is a bug this design should surface.
+//! **Every kind is triaged, and nothing falls through.** `EventKind` is
+//! `#[non_exhaustive]` and has fifty-one variants today, so a wildcard arm is not
+//! a shortcut here, it is required by the type. Until 0.11.0 that wildcard
+//! *rendered*, committing the variant's own snake-cased name in a muted line —
+//! which is why a transcript said `prompt_composed` and `answered` at whoever was
+//! reading it. Now [`crate::triage`] holds a disposition for every kind, the
+//! wildcard commits nothing, and a kind that is not in the table at all is
+//! counted by [`Events::unknown`] instead of being printed.
 //!
 //! **Streaming text is not committed a token at a time.** Tokens accumulate in a
 //! live buffer that the viewport draws, and the whole passage is committed to
@@ -25,6 +28,7 @@
 use std::time::Duration;
 
 use io_harness::{EventKind, RunEvent, TodoState, MCP_TOOL_PREFIX, NAMESPACE, TODO_MAX_ITEMS};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use crate::picker::fit;
@@ -43,12 +47,93 @@ use crate::theme::{Theme, Tone};
 /// not a list an operator reads, it is the transcript buried under one.
 const ROW: usize = 80;
 
+/// io-harness's tool names, and the verb an operator reads instead.
+///
+/// **A table, and nothing behind it.** A name that is not here is printed
+/// exactly as io-harness sent it — never title-cased, never split on its
+/// underscores, never guessed at. A verb io-cli invented for a tool it has never
+/// seen would be this release's own version of the defect it exists to remove:
+/// a word in front of an operator that nothing in the system actually means.
+///
+/// The rows are io-harness 0.66's own built-ins. An MCP tool arrives namespaced
+/// under [`MCP_TOOL_PREFIX`] and a custom tool arrives under whatever name the
+/// embedder gave it, and both fall through by design.
+pub const VERBS: &[(&str, &str)] = &[
+    ("read_file", "Read"),
+    ("write_file", "Write"),
+    ("edit_file", "Edit"),
+    ("patch_file", "Patch"),
+    ("list_dir", "List"),
+    ("find", "Find"),
+    ("grep", "Search"),
+    ("exec", "Run"),
+    ("shell", "Run"),
+    ("shell_start", "Start"),
+    ("shell_poll", "Poll"),
+    ("shell_kill", "Stop"),
+    ("check", "Check"),
+    ("git_add", "Stage"),
+    ("git_commit", "Commit"),
+    ("git_diff", "Diff"),
+    ("git_log", "Log"),
+    ("git_status", "Status"),
+    ("git_branch", "Branch"),
+    ("git_worktree", "Worktree"),
+    ("lsp_definition", "Definition"),
+    ("lsp_hover", "Hover"),
+    ("lsp_references", "References"),
+    ("lsp_rename", "Rename"),
+    ("lsp_symbols", "Symbols"),
+    ("read_skill", "Read skill"),
+    ("todo_write", "Todo"),
+    ("remember", "Remember"),
+    ("forget", "Forget"),
+    ("ask_question", "Ask"),
+    ("propose_plan", "Propose"),
+    ("spawn_agent", "Spawn"),
+    ("send_message", "Send"),
+    ("read_messages", "Read messages"),
+    ("view_image", "View"),
+    ("browser_navigate", "Navigate"),
+    ("browser_click", "Click"),
+    ("browser_type", "Type"),
+    ("browser_read", "Read page"),
+    ("browser_scroll", "Scroll"),
+    ("browser_screenshot", "Screenshot"),
+    ("pdf_read", "Read PDF"),
+    ("pdf_write", "Write PDF"),
+    ("pdf_fill_form", "Fill form"),
+    ("pdf_watermark", "Watermark"),
+    ("docx_read", "Read document"),
+    ("docx_write", "Write document"),
+    ("pptx_read", "Read slides"),
+    ("xlsx_read", "Read sheet"),
+    ("xlsx_write", "Write sheet"),
+    ("xlsx_sheets", "Sheets"),
+    ("xlsx_set_cell", "Set cell"),
+    ("barcode_decode", "Decode"),
+];
+
+/// The verb for a tool name, or the name exactly as it arrived.
+pub fn verb(name: &str) -> &str {
+    VERBS
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map_or(name, |(_, verb)| verb)
+}
+
 /// A tool call that has been announced and not yet closed.
 ///
 /// Held rather than committed because the two facts a reader actually wants —
 /// what came back and how long it took — are not on the announcing event at all.
 struct Pending {
     name: String,
+    /// io-harness's own name for the tool, before [`verb`] mapped it.
+    ///
+    /// Kept because the step's decision sentence is written in these words —
+    /// `read io.toml`, `list_dir  (4 entries)` — and a cell that printed both
+    /// the verb and the sentence said the same thing twice in two vocabularies.
+    raw: String,
     target: String,
     /// The session age at which the call was announced. An age handed in by the
     /// driver, never a clock read here: this module has no timer, and N1 is what
@@ -84,6 +169,88 @@ pub struct Events {
     /// step rather than closing a cell — and it is the only honest result word
     /// available when the step's own decisions cannot be paired to the calls.
     refused_this_step: bool,
+    /// Whether this session runs in plain mode.
+    ///
+    /// **The one thing that changes what a designed line contains rather than
+    /// how it is drawn, and 0.11.0 is what made it necessary.** This release
+    /// moved the provider and the run's step and token counts off the transcript
+    /// and onto the status line, which is the right place for them — for a
+    /// reader who can see the viewport. A plain session is defined by not having
+    /// one: its whole promise since 0.6.0 is that every state change reaches the
+    /// scrollback as text, and a fact that now lives only in a repainting row is
+    /// a fact taken away from exactly the reader who cannot follow it.
+    ///
+    /// So in plain mode, and only there, the two lines this release removed are
+    /// still committed — in the status line's vocabulary rather than the removed
+    /// rows' own, so there is one spelling of each fact in the product.
+    plain: bool,
+    /// Events whose kind [`crate::triage`] has never heard of.
+    ///
+    /// Counted rather than printed. A kind with no disposition is one io-harness
+    /// began emitting after this release: the operator reading the transcript is
+    /// not the person who can act on it, and a variant name in front of them is
+    /// what this release exists to remove — but a session that discarded it
+    /// without a trace would leave nobody able to find out either.
+    unknown: usize,
+    /// The session age at which the step now in flight opened.
+    ///
+    /// A thought's duration is the interval since then, which is the only
+    /// number about a thought this crate can honestly report: io-harness does
+    /// not say when the model started thinking, and the step boundary is the
+    /// last thing that happened before it did.
+    step_at: Duration,
+    /// The last thought that did not fit, whole.
+    ///
+    /// Held because this event is the only place reasoning is ever visible —
+    /// io-harness neither stores it nor folds it into the next prompt — so a
+    /// bound that dropped the remainder would not be fitting the text, it would
+    /// be destroying it. [`Events::thought`] is what `/expand` reads.
+    thought: Option<String>,
+    /// The act and target of an approval io-harness is blocked on, if it is.
+    ///
+    /// Set by `ApprovalRequested` and cleared by `ApprovalDecided`, so it is the
+    /// harness's own account of whether the run is waiting on a person rather
+    /// than io-cli's account of whether an overlay happens to be on screen. The
+    /// two are not the same: a contained turn's approval can be answered by a
+    /// responder with no overlay drawn here at all, and the run is still stopped.
+    awaiting: Option<String>,
+    /// Whether the last thing committed was a tool cell.
+    ///
+    /// The model's prose starts arriving a token at a time with nothing between
+    /// it and the cell above, so against a real run an answer began on the row
+    /// under `⋅ Search model · (1 hits) · ~0ms` and read as part of it. One blank
+    /// goes in when the prose starts, rather than after every cell: a step that
+    /// runs four calls should print four rows, not eight.
+    after_cell: bool,
+    /// Renders the model's markdown, and remembers an open code fence.
+    ///
+    /// Held here because a fence spans lines and the transcript commits a line
+    /// at a time: the state has to outlive the line that opened it.
+    markdown: crate::markdown::Markdown,
+    /// Whether the last row committed was blank.
+    ///
+    /// Starts true, so nothing at the very top of a session opens with a blank
+    /// row. It is what keeps the gap rule from doubling a blank a designed line
+    /// has already ended its own block with.
+    last_blank: bool,
+    /// Whether the last row committed was the model's own prose.
+    ///
+    /// Starts true, so a turn's first tokens do not open with a blank row: the
+    /// goal line above them already ends the block it belongs to.
+    last_prose: bool,
+    /// Whether the last thing that happened was the model thinking.
+    ///
+    /// Cleared by every event that says something else is now happening — a
+    /// token, a call, a step, a turn beginning or ending — so "most recent" means
+    /// what it says. A fact that reaches no surface, a spend draw for instance,
+    /// leaves it alone: it is not a different thing happening, it is a number.
+    thinking: bool,
+    /// The workspace this session is held over, for shortening a tool's target.
+    ///
+    /// Empty until the driver says otherwise, and an empty root shortens
+    /// nothing: a path is printed whole rather than trimmed against a guess at
+    /// where the session is. `App::set_root` is the one caller.
+    root: std::path::PathBuf,
 }
 
 impl Events {
@@ -93,11 +260,88 @@ impl Events {
             live: String::new(),
             open: Vec::new(),
             refused_this_step: false,
+            plain: false,
+            unknown: 0,
+            step_at: Duration::ZERO,
+            thought: None,
+            awaiting: None,
+            after_cell: false,
+            markdown: crate::markdown::Markdown::default(),
+            last_blank: true,
+            last_prose: true,
+            thinking: false,
+            root: std::path::PathBuf::new(),
         }
+    }
+
+    /// Forget everything this module holds about a conversation.
+    ///
+    /// What is dropped is what a new conversation must not inherit: the tail
+    /// nobody committed, the calls nothing will ever close, the thought
+    /// `/expand` would otherwise show from a conversation no longer on screen,
+    /// and the two live-row states. The theme, the mode and the workspace stay —
+    /// they are the session's, not the conversation's.
+    pub fn forget(&mut self) {
+        self.live.clear();
+        self.open.clear();
+        self.refused_this_step = false;
+        self.thought = None;
+        self.awaiting = None;
+        self.after_cell = false;
+        self.markdown.forget();
+        self.last_blank = true;
+        self.last_prose = true;
+        self.thinking = false;
+        self.step_at = Duration::ZERO;
+    }
+
+    /// Say which workspace this session is held over, so a target inside it can
+    /// be shown relative to it. Handed down by [`crate::app::App::set_root`].
+    pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {
+        self.root = root.into();
+    }
+
+    /// The last thought that was fitted, whole, or `None` when the last one was
+    /// committed in full.
+    ///
+    /// `/expand` is this product's one answer to "show me more", and this is
+    /// what it shows when the thing there is more of is a thought.
+    pub fn thought(&self) -> Option<&str> {
+        self.thought.as_deref()
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+    }
+
+    /// Say whether this session runs in plain mode. Decided once, by
+    /// [`crate::settings::plain`], and handed down through [`crate::app::App`].
+    pub fn set_plain(&mut self, plain: bool) {
+        self.plain = plain;
+    }
+
+    /// How many events arrived carrying a kind with no disposition.
+    ///
+    /// Zero on every run against the io-harness this release is locked to, by
+    /// construction: `tests/triage.rs` fails if the table and that version's enum
+    /// disagree. It stops being zero when a later harness is pinned and something
+    /// new reaches a session, which is exactly when somebody needs to know.
+    pub fn unknown(&self) -> usize {
+        self.unknown
+    }
+
+    /// What an event with no designed line commits, which is nothing.
+    ///
+    /// Public so that a test can hand it a kind name io-harness does not have
+    /// yet. Every kind this crate is locked to can be constructed and driven
+    /// through [`Events::event`], and exactly one branch here cannot be reached
+    /// that way — the one that matters, because a kind with no disposition is by
+    /// definition one this release has never seen.
+    pub fn undesigned(&mut self, name: &str) -> Vec<Line<'static>> {
+        if crate::triage::disposition(name).is_none() {
+            self.unknown += 1;
+        }
+        Vec::new()
     }
 
     /// The one live row the viewport draws: an open tool call if there is one,
@@ -112,10 +356,27 @@ impl Events {
     /// An open call is the more urgent thing to say, so it wins the row, and the
     /// tail stays live until something legitimately commits it.
     pub fn live(&self) -> String {
+        let glyphs = &self.theme.glyphs;
+        // **A person outranks a machine, and it is not close.** Everything else
+        // this row can say describes work that is going on without the operator;
+        // this one says the work has stopped and is waiting on them. Told in the
+        // other order, the row reports the agent as busy at the exact moment it
+        // is blocked on somebody who is reading this row to find out.
+        if let Some(waiting) = &self.awaiting {
+            return format!(
+                "{} waiting for you {} {waiting}",
+                glyphs.bullet, glyphs.dash
+            );
+        }
         let Some(call) = self.open.last() else {
+            // No call open and the last thing that happened was the model
+            // thinking. The thought itself commits when it arrives; this is the
+            // row for the interval before the next thing does.
+            if self.thinking {
+                return format!("{} thinking {}", glyphs.bullet, glyphs.ellipsis);
+            }
             return self.live.clone();
         };
-        let glyphs = &self.theme.glyphs;
         let mut row = format!("{} {}", glyphs.bullet, call.name);
         if !call.target.is_empty() {
             row.push(' ');
@@ -146,6 +407,14 @@ impl Events {
             lines.push(cell_line(theme, &call, "unfinished", None));
         }
         self.refused_this_step = false;
+        // The turn is over, so nothing is thinking and nobody is being waited
+        // on. An interrupt between the request and the decision is the case that
+        // needs this: the harness never sends the `ApprovalDecided` that would
+        // otherwise clear it, and the row would go on asking for an answer to a
+        // question that died with the run.
+        self.awaiting = None;
+        self.after_cell = false;
+        self.thinking = false;
         lines
     }
 
@@ -161,14 +430,10 @@ impl Events {
             return Vec::new();
         }
         let text = std::mem::take(&mut self.live);
+        let theme = self.theme;
         let mut lines: Vec<Line<'static>> = text
             .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    self.theme.style(Tone::Normal),
-                ))
-            })
+            .map(|line| self.markdown.line(line, &theme))
             .collect();
         lines.push(Line::from(""));
         lines
@@ -184,6 +449,50 @@ impl Events {
     /// may read a clock, so a test can state the interval between two events by
     /// hand and assert on it without anything being timed.
     pub fn event(&mut self, event: &RunEvent, at: Duration) -> Vec<Line<'static>> {
+        // **One blank row between a block of tool cells and whatever comes
+        // next.** Taken here rather than pushed by the arms that need it, so the
+        // rule holds for every one of them — the model's prose, a thought, a
+        // harness warning — and so a step that ran four calls still prints four
+        // rows rather than eight. The flag is set at the end of the `Step` arm,
+        // which is why it is read at the start of the next event and not inside
+        // the one that raised it.
+        let after_cell = std::mem::take(&mut self.after_cell);
+        // The model's own prose is one kind of row and everything this crate
+        // designs is another, and a change from one to the other is worth a
+        // blank: against a real run an answer began on the row directly under
+        // `warning: nothing has changed in 3 steps…` and read as part of it.
+        let prose = matches!(event.kind, EventKind::Token { .. });
+        // Never against a blank that is already there. The goal line ends its own
+        // block with one, so an answer arriving after it was given a second and
+        // the prompt sat two rows above what it asked for.
+        let gap = (after_cell || (prose && !self.last_prose)) && !self.last_blank;
+
+        let mut lines = self.commit(event, at);
+        if gap && !ends_blank(&lines[..1.min(lines.len())]) {
+            lines.insert(0, Line::from(""));
+        }
+        if !lines.is_empty() {
+            self.last_prose = prose;
+            self.last_blank = ends_blank(&lines);
+        }
+        lines
+    }
+
+    /// What this event commits, before the spacing rule above is applied.
+    fn commit(&mut self, event: &RunEvent, at: Duration) -> Vec<Line<'static>> {
+        // What the live row says is a fact about the *last* thing that happened,
+        // so it is decided here rather than in each arm: the arms below say what
+        // an event commits, and this says what it means for the row that is not
+        // committed at all. See `Events::live`.
+        match &event.kind {
+            EventKind::Reasoning { text, .. } if !text.trim().is_empty() => self.thinking = true,
+            EventKind::Token { .. }
+            | EventKind::ToolCall { .. }
+            | EventKind::Step { .. }
+            | EventKind::Started { .. }
+            | EventKind::Finished { .. } => self.thinking = false,
+            _ => {}
+        }
         let theme = self.theme;
         let separator = theme.glyphs.separator;
         let dash = theme.glyphs.dash;
@@ -197,22 +506,47 @@ impl Events {
                 let mut lines = Vec::new();
                 while let Some(newline) = self.live.find('\n') {
                     let finished: String = self.live.drain(..=newline).collect();
-                    lines.push(Line::from(Span::styled(
-                        finished.trim_end_matches('\n').to_string(),
-                        theme.style(Tone::Normal),
-                    )));
+                    lines.push(self.markdown.line(finished.trim_end_matches('\n'), &theme));
                 }
                 lines
             }
+            // The goal, and nothing else. Through 0.10.0 a second row said
+            // `via {provider}` under every prompt an operator ever typed — the
+            // same fact, repeated once per turn, about a setting that changes
+            // perhaps twice in a session. It is a status-line field now
+            // (`App::status_from`), which is where every other fact of that
+            // shape already lives.
+            //
+            // `provider` is still destructured rather than ignored, so that a
+            // release which stops setting the field cannot leave this arm
+            // silently reading a value nobody uses.
             EventKind::Started { goal, provider } => {
+                // A turn's first step opens here, and last turn's leftover
+                // thought stops being the thing `/expand` has more of.
+                self.step_at = at;
+                self.thought = None;
+                // **The operator's own words, weighted as such.** This row is the
+                // only one in a transcript that the reader wrote, and in a
+                // scrollback of tool cells and model prose it has to be findable
+                // by eye at a scroll. The mark is accent and bold, and the words
+                // are bold in the ordinary foreground — a colour would make them
+                // one more coloured thing among many.
                 let mut lines = vec![Line::from(vec![
-                    Span::styled(theme.glyphs.marker, theme.style(Tone::Accent)),
-                    Span::styled(goal.clone(), theme.style(Tone::Normal)),
+                    Span::styled(
+                        theme.glyphs.marker,
+                        theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        goal.clone(),
+                        theme.style(Tone::Normal).add_modifier(Modifier::BOLD),
+                    ),
                 ])];
-                lines.push(Line::from(Span::styled(
-                    format!("  via {provider}"),
-                    theme.style(Tone::Muted),
-                )));
+                if self.plain {
+                    lines.push(Line::from(Span::styled(
+                        format!("  provider:{provider}"),
+                        theme.style(Tone::Muted),
+                    )));
+                }
                 lines.push(Line::from(""));
                 lines
             }
@@ -222,6 +556,10 @@ impl Events {
                 tokens,
                 changed,
             } => {
+                // This step closing is the next one opening, and a thought
+                // belonging to the next step is measured from here.
+                self.step_at = at;
+
                 // Taken before anything else, so that the tail flush below
                 // cannot close these as unfinished a line before the step that
                 // finished them says otherwise.
@@ -267,13 +605,36 @@ impl Events {
                         verdict
                     };
                     lines.push(cell_line(theme, call, result, Some(at)));
+                    self.after_cell = true;
                 }
 
-                // What was decided, what it ran, what came back — then the
-                // metadata. 0.1.0 put the step number and the token count in the
-                // middle of that sentence, which made a transcript something to
-                // parse rather than to skim. Content before metadata is the rule
-                // the rest of the interface already follows.
+                // **The step line is committed only when it says something the
+                // cells above it did not.** Through 0.10.0 it always was, and
+                // against a real run that read as every fact printed twice in two
+                // orders: a cell saying `List · (4 entries) · ~0ms` and a line
+                // under it saying `list_dir  (4 entries) · List · no change ·
+                // 3383 tok · step 1`. The token count and the step number are on
+                // the status line since this release, so what is left that the
+                // cells cannot say is: files changed, or a decision that could
+                // not be paired to a call.
+                //
+                // A step with no call at all is the one that produced the answer.
+                // Its decision is worth a line when it is a sentence — the model
+                // saying what it did — and worth nothing when it is io-harness's
+                // placeholder for a step that called no tool, which against a
+                // real run committed `no tool call · no change · 3680 tok · step
+                // 4` under the answer it was describing.
+                let empty_handed = decision.trim().is_empty() || decision.trim() == "no tool call";
+                // **Not even for `changed files`.** A step whose calls each got
+                // their own cell has been fully described by them, and the change
+                // itself is committed as a diff by the driver a line later — so
+                // the step line under it read `wrote notes.md · Write · changed
+                // files · 3397 tok · step 1` over a cell that had just said the
+                // first two and a diff about to say the third.
+                let say_step = (!open.is_empty() && !paired) || (open.is_empty() && !empty_handed);
+                if !say_step {
+                    return lines;
+                }
                 let mut spans = vec![Span::styled(decision.clone(), theme.style(Tone::Normal))];
                 if !tool_call.is_empty() {
                     spans.push(Span::styled(separator, theme.style(Tone::Muted)));
@@ -311,9 +672,20 @@ impl Events {
                 // One cell per call either way. The full output goes to the run's
                 // durable trace rather than to the screen; uncollapsed tool output
                 // is what makes a transcript unreadable.
+                // Read into the operator's vocabulary here rather than at the
+                // cell, so the live row and the committed cell say the same
+                // word about the same call. The stutter guard in `cell_line`
+                // compares the two fields, so a target io-harness fell back to
+                // the tool's own name is mapped with it and stays equal to it.
+                let shown = verb(name);
                 self.open.push(Pending {
-                    name: name.clone(),
-                    target: target.clone(),
+                    name: shown.to_string(),
+                    raw: name.clone(),
+                    target: if target == name {
+                        shown.to_string()
+                    } else {
+                        relative(target, &self.root)
+                    },
                     opened_at: at,
                     measured: None,
                 });
@@ -560,11 +932,23 @@ impl Events {
                 // drawn from those. This is the transcript's note that the run
                 // stopped, not the question itself — the question must never be
                 // committed, which is what F1 asserts.
+                self.awaiting = Some(format!("{act} {target}"));
                 let mut lines = self.flush_text();
-                lines.push(theme.notice(
-                    Tone::Warning,
-                    format!("{act} {target} {dash} waiting for you"),
-                ));
+                // **The overlay is about to say this, larger and with the rule,
+                // the layer and the diff under it.** Committing a line here as
+                // well put `warning: write SUMMARY.md — waiting for you` directly
+                // above `warning: write SUMMARY.md`, which is the same sentence
+                // twice in two sizes.
+                //
+                // Not in plain mode, which draws no overlay at all: there the
+                // line is the only account of a run that stopped, and its whole
+                // promise is that every state change reaches the scrollback.
+                if self.plain {
+                    lines.push(theme.notice(
+                        Tone::Warning,
+                        format!("{act} {target} {dash} waiting for you"),
+                    ));
+                }
                 lines
             }
             EventKind::ApprovalDecided {
@@ -575,6 +959,12 @@ impl Events {
                 // The harness's own record of what it was told, which is not the
                 // same line as io-cli's. They agree because the answer travelled
                 // one way; if they ever disagree, this is where it shows.
+                //
+                // The run is moving again, so the live row stops saying it is
+                // waiting. Cleared here rather than by whatever closed the
+                // overlay, for the reason it was set here: this is the harness
+                // saying so, and the overlay is only one of the ways it is asked.
+                self.awaiting = None;
                 let mut lines = self.flush_text();
                 lines.push(theme.notice(
                     if decision == "deny" {
@@ -586,24 +976,282 @@ impl Events {
                 ));
                 lines
             }
+            // **A turn ends on its answer.** Through 0.10.0 it ended on
+            // `ok: finished · 0 steps · 4703 tok` — a row of arithmetic under the
+            // thing the operator actually asked for, and the one line in this
+            // module that put metadata in front of content rather than after it.
+            // The two numbers are status-line fields now, and what is left here
+            // is the half a reader cannot get anywhere else: an outcome that
+            // stopped short says so, in `outcome_help`'s own sentence.
+            //
+            // A plain finish commits the blank line and nothing more. The blank
+            // line is not decoration — it is what separates this turn's answer
+            // from the next prompt, and `Screen::commit` relies on it.
             EventKind::Finished {
                 outcome,
                 steps,
                 tokens,
             } => {
                 let mut lines = self.flush_text();
-                let tone = outcome_tone(outcome);
-                lines.push(theme.notice(
-                    tone,
-                    format!("{outcome}{separator}{steps} steps{separator}{tokens} tok"),
-                ));
+                // A plain session's scrollback is its whole interface, so the two
+                // numbers that moved to the status line are committed here — in
+                // the status line's own words, so a reader meets `3 steps` and
+                // `4703 tok` in one spelling wherever they meet them.
+                if self.plain {
+                    lines.push(theme.notice(
+                        outcome_tone(outcome),
+                        format!(
+                            "{outcome}{separator}{steps} step{}{separator}{} tok",
+                            if *steps == 1 { "" } else { "s" },
+                            // The status line's own spelling, which is the whole
+                            // point of committing this here: a plain session met
+                            // `25106 tok` in the scrollback and `25.1k tok` on
+                            // the line, which is one fact with two spellings.
+                            crate::status::format_tokens(*tokens),
+                        ),
+                    ));
+                }
+                // A plain finish is the ordinary case and says nothing: the
+                // answer above it is the outcome. Everything else stopped short
+                // of one, and the word is io-harness's own — `stalled`,
+                // `cancelled`, `budget_ceiling_reached` — because this interface
+                // reports what the harness decided and never relabels it.
+                //
+                // Not in plain mode, where the row above has already said it. One
+                // outcome, said once, whichever surface a reader is on.
+                if !self.plain && !matches!(outcome.as_str(), "finished" | "success") {
+                    lines.push(theme.notice(outcome_tone(outcome), outcome.clone()));
+                }
+                // The sentence, wherever the outcome was said. It exists only for
+                // the outcomes an operator cannot otherwise act on, so it is
+                // never printed under a plain finish.
                 if let Some(help) = outcome_help(outcome) {
                     lines.push(Line::from(Span::styled(
                         format!("  {help}"),
                         theme.style(Tone::Muted),
                     )));
                 }
-                lines.push(Line::from(""));
+                // One blank between turns, not two. `flush_text` already ends the
+                // answer with one, and a second here is a gap an operator reads
+                // as something having been left out — the ordinary turn, an
+                // answer and then a prompt, is the case that has to look right.
+                if !ends_blank(&lines) {
+                    lines.push(Line::from(""));
+                }
+                lines
+            }
+            // **A pause the operator is watching, said rather than left blank.**
+            // A retry is the one failure that looks exactly like a working
+            // session: nothing arrives, the clock runs, and the interface has
+            // nothing to say. `kind` is io-harness's own classification and is
+            // printed as it came.
+            EventKind::Retry {
+                kind,
+                attempt,
+                delay_ms,
+            } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!(
+                        "the provider failed ({kind}) and will be asked again{separator}attempt \
+                         {attempt}{separator}after {delay_ms} ms"
+                    ),
+                ));
+                lines
+            }
+            // Who answered is not who was asked, and the status line's provider
+            // field moves with it — see `App::status_from`. The line is here as
+            // well as there because a fallback is a fact about *this moment* in a
+            // conversation, and a field that quietly reads differently later
+            // cannot say when it changed.
+            EventKind::FellBackTo { provider } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!("the provider fell over{separator}{provider} answered instead"),
+                ));
+                lines
+            }
+            // The run continues, which is the half an operator would otherwise
+            // assume the opposite of. `Stalled` is the terminal one and it is
+            // silent here on purpose: it arrives as the run's own outcome.
+            EventKind::Replan { window } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!(
+                        "nothing has changed in {window} steps, so the agent was told once to try \
+                         something else"
+                    ),
+                ));
+                lines
+            }
+            // **Durable memory is a side effect outside the workspace**, and the
+            // only one this interface can show. A note written now is read by a
+            // run tomorrow, so a session that never mentioned it would leave the
+            // operator with no record of what the agent decided to keep.
+            EventKind::MemoryWrote { key } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(format!("remembered {key}"), theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            EventKind::MemoryForgot { key } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(format!("forgot {key}"), theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            // A question about intent, which io-harness deliberately distinguishes
+            // from an approval about permission: an answer to this authorizes
+            // nothing. The overlay 0.10.0 added is where it is answered when a
+            // responder is registered; this is the transcript's durable copy, and
+            // it is what an operator sees at all on a turn that has no responder.
+            EventKind::QuestionAsked { question, choices } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(Tone::Accent, format!("the agent asks: {question}")));
+                for choice in choices {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} {choice}", theme.glyphs.bullet),
+                        theme.style(Tone::Muted),
+                    )));
+                }
+                lines
+            }
+            // **`by` is the fact, not the decoration.** "the machine decided" and
+            // "a person decided" are different things to have happened to a run,
+            // and the answer alone cannot tell them apart.
+            EventKind::QuestionAnswered { answer, by } => {
+                // The words avoid `answered`, which is a kind name of its own and
+                // one of the six strings F2 asserts a transcript never shows.
+                let who = match by.as_str() {
+                    "responder" => "replied here".to_string(),
+                    "human" => "replied by a person".to_string(),
+                    other => format!("replied by {other}"),
+                };
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(answer.clone(), theme.style(Tone::Normal)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(who, theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            // The proposal itself is the overlay's, which is on screen at the
+            // moment it is made. What belongs in the scrollback is what was
+            // decided, because that is the part still true afterwards.
+            EventKind::PlanDecided { verdict, by, .. } => {
+                let (text, tone) = match verdict.as_str() {
+                    "approve" => ("the plan was approved".to_string(), Tone::Success),
+                    "revise" => (
+                        "the plan was sent back for revision".to_string(),
+                        Tone::Warning,
+                    ),
+                    "cancel" => ("the plan was cancelled".to_string(), Tone::Warning),
+                    // io-harness's own word, whatever it is. A verdict this
+                    // release has never seen is reported rather than folded into
+                    // the nearest one it knows.
+                    other => (format!("the plan was {other}"), Tone::Muted),
+                };
+                let who = if by == "gate" { "here" } else { "by a person" };
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(tone, format!("{text}{separator}decided {who}")));
+                lines
+            }
+            // **The one place a reader can see why.** io-harness does not fold
+            // thinking back into the next prompt and does not store it, so this
+            // event is the only place it is ever visible — an absent one means the
+            // model did not think, never that it thought nothing.
+            //
+            // The heading says `thought` rather than `reasoning`, which is the
+            // variant's own name and one of the six strings F2 asserts a
+            // transcript never shows.
+            EventKind::Reasoning { text, tokens } => {
+                // A thought with nothing in it is not a thought. The provider
+                // billed for it and returned no text, and a heading over an
+                // empty block would say the model thought nothing rather than
+                // that it did not say what it thought.
+                if text.trim().is_empty() {
+                    return self.flush_text();
+                }
+                // **One row: that it thought, how long for, what it cost.** The
+                // text itself is kept and not committed. A thought is the model
+                // talking to itself, it is usually longer than the answer it
+                // precedes, and a transcript that carried every one of them is a
+                // transcript with the work buried in the deliberation — which is
+                // what a real session showed and what the owner asked to stop.
+                //
+                // Kept rather than dropped, because this event is the only place
+                // reasoning is ever visible: io-harness neither stores it nor
+                // folds it into the next prompt. `/expand` is where it goes.
+                let elapsed = format_millis(at.saturating_sub(self.step_at));
+                self.thought = Some(text.clone());
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    // Italic, which is what a thought is: the model's own voice
+                    // rather than the interface's, and set apart from the tool
+                    // cells around it without spending a colour on it.
+                    Span::styled(
+                        "thought",
+                        theme.style(Tone::Muted).add_modifier(Modifier::ITALIC),
+                    ),
+                    Span::styled(
+                        format!("{separator}{elapsed}{separator}{tokens} tok"),
+                        theme.style(Tone::Muted),
+                    ),
+                ]));
+                lines
+            }
+            // **Nothing in this process dialled anything.** The provider ran its
+            // own search or fetch and reported it, so the line says which provider
+            // and which of its tools — and reports the failures, because a search
+            // that broke inside an otherwise good answer is why a reply is thin.
+            EventKind::ServerToolUsed { provider, tool, ok } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(
+                        format!("{provider} ran {tool} for the model"),
+                        theme.style(Tone::Normal),
+                    ),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(
+                        if *ok { "ok" } else { "failed" },
+                        theme.style(if *ok { Tone::Muted } else { Tone::Warning }),
+                    ),
+                ]));
+                lines
+            }
+            // The reasons are carried rather than summarised, for io-harness's own
+            // reason: a refusal a human cannot argue with is a gate nobody trusts
+            // twice.
+            EventKind::Reviewed { passed, reasons } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    if *passed {
+                        Tone::Success
+                    } else {
+                        Tone::Refused
+                    },
+                    if *passed {
+                        "the review passed"
+                    } else {
+                        "the review did not pass"
+                    },
+                ));
+                for reason in reasons {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} {reason}", theme.glyphs.bullet),
+                        theme.style(Tone::Muted),
+                    )));
+                }
                 lines
             }
             EventKind::Mcp {
@@ -632,14 +1280,14 @@ impl Events {
                         call.measured = Some(Duration::from_millis(*millis));
                     }
                 }
-                // Still rendered as itself. Harvesting a number off an event is not
-                // the same as having designed a line for it, and an event that
-                // vanished from the transcript because something read a field off
-                // it is exactly the silence this module refuses.
-                vec![Line::from(vec![
-                    Span::styled(leader(separator), theme.style(Tone::Muted)),
-                    Span::styled(kind_name(&event.kind), theme.style(Tone::Muted)),
-                ])]
+                // And nothing committed. 0.3.0 rendered the muted word `mcp` here
+                // and said in a comment that harvesting a number off an event is
+                // not the same as designing a line for it — which was right while
+                // there was nowhere else for the fact to go. There is now:
+                // `mcp N/M tools` on the status line, since 0.10.0, is where a
+                // server reaching a run and a tool it offered both land, and
+                // `triage::TRIAGE` records that route.
+                Vec::new()
             }
             // Guarded on the items rather than only on the tag, because io-harness
             // accepts a write of none: `parse_todo_items` validates each item it is
@@ -733,16 +1381,20 @@ impl Events {
                 lines.push(Line::from(""));
                 lines
             }
-            // The other thirty-seven kinds. Not styled in this release, and not
-            // discarded either: each arrives as one muted line naming itself, so a
-            // release that starts emitting something new is visible rather than
-            // silent.
-            other => {
-                vec![Line::from(vec![
-                    Span::styled(leader(separator), theme.style(Tone::Muted)),
-                    Span::styled(kind_name(other), theme.style(Tone::Muted)),
-                ])]
-            }
+            // Every kind that commits no line of its own, and the one case that
+            // is a defect rather than a decision.
+            //
+            // Three groups arrive here. A `Status` kind, whose fact is a field —
+            // `App::status_from` is that surface. A `Silent` kind, whose route is
+            // written down in `triage::TRIAGE` beside it. And a `Line` kind whose
+            // arm above declined *this* event: an empty plan is the one that
+            // exists today, and a disposition is about the kind rather than about
+            // every payload it can carry.
+            //
+            // The fourth case is a kind the table has never heard of, which is
+            // the only one that means something is wrong. It is counted rather
+            // than printed, because printing it is what this release removed.
+            other => self.undesigned(&kind_name(other)),
         }
     }
 }
@@ -777,6 +1429,73 @@ fn nest(depth: u32) -> String {
 ///
 /// `at` is the session age this cell is being closed at, or `None` when the cell
 /// is being closed without anything having reported on it.
+/// A step's decision with the words the cell has already said taken off the
+/// front.
+///
+/// Leading tokens are dropped while they are the tool's own name — in either
+/// vocabulary — or the target the cell is already showing. Only leading ones: a
+/// sentence that mentions the file again halfway through is the harness saying
+/// something, and this is not in the business of editing it.
+fn trim_result(result: &str, call: &Pending) -> String {
+    /// Quotes, brackets and case dropped, so `"model =` and `model =` are the
+    /// same word to this comparison and only the letters and digits decide.
+    fn plain(text: &str) -> String {
+        text.chars()
+            .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '/' | '_' | '-'))
+            .collect::<String>()
+            .to_lowercase()
+    }
+
+    let said = format!(
+        "{}{}{}",
+        plain(&call.raw),
+        plain(&call.name),
+        plain(&call.target)
+    );
+    let mut rest = result.trim_start();
+    while let Some((head, tail)) = rest.split_once(char::is_whitespace) {
+        let head = plain(head);
+        // A token of pure punctuation — the `=` of `model =` — is dropped only
+        // while everything before it has been, so it goes with the words it
+        // belongs to and never off the front of a real result.
+        if !head.is_empty() && !said.contains(&head) {
+            break;
+        }
+        rest = tail.trim_start();
+    }
+    // The whole of it was the tool and its target, so the cell has said it all.
+    let last = plain(rest);
+    if last.is_empty() || said.contains(&last) {
+        return String::new();
+    }
+    // And the whole target again at the END is the same repetition at the other
+    // end: `Write notes.md · wrote notes.md` says the file twice on one row.
+    //
+    // The WHOLE target, never its last word. Stripping one token turned
+    // `Run cargo test · ran cargo test` into `ran cargo`, which is a sentence
+    // this interface made up out of one the harness wrote.
+    if !call.target.is_empty() {
+        if let Some(head) = rest.strip_suffix(call.target.as_str()) {
+            let head = head.trim_end();
+            if !plain(head).is_empty() {
+                return head.to_string();
+            }
+        }
+    }
+    rest.to_string()
+}
+
+/// Whether the last line of `lines` is blank, or there are none.
+///
+/// `true` for an empty slice on purpose: nothing committed means nothing to
+/// separate from, and a blank row opening a turn's committed output would push
+/// the first thing it says down for no reason.
+fn ends_blank(lines: &[Line<'static>]) -> bool {
+    lines
+        .last()
+        .is_none_or(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+}
+
 fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -> Line<'static> {
     let separator = theme.glyphs.separator;
     let mut spans = vec![
@@ -784,7 +1503,12 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
             format!("  {} ", theme.glyphs.bullet),
             theme.style(Tone::Muted),
         ),
-        Span::styled(call.name.clone(), theme.style(Tone::Accent)),
+        // The verb carries the weight: it is the column a reader skims down, and
+        // in a run of eight cells it is the only part that differs at a glance.
+        Span::styled(
+            call.name.clone(),
+            theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+        ),
     ];
     // `!= call.name` because io-harness falls the target back to the tool's own
     // name when the call carries no path, pattern or key — so a `git_diff` with
@@ -796,8 +1520,17 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
             theme.style(Tone::Muted),
         ));
     }
-    spans.push(Span::styled(separator, theme.style(Tone::Muted)));
-    spans.push(Span::styled(result.to_string(), theme.style(Tone::Normal)));
+    // **What the result adds, and not what it repeats.** io-harness writes a
+    // step's decision in its own vocabulary — `read io.toml`, `list_dir  (4
+    // entries)` — and the cell has already said the tool and the target in the
+    // operator's. Printed whole, a cell read `Read io.toml · read io.toml`.
+    // Stripped, it reads `Read io.toml` and `List · (4 entries)`: the tool once,
+    // the target once, and whatever the harness added kept in full.
+    let result = trim_result(result, call);
+    if !result.is_empty() {
+        spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+        spans.push(Span::styled(result, theme.style(Tone::Normal)));
+    }
 
     // Two different kinds of number, told apart on the line itself. A measured
     // duration is io-harness's own and is printed plainly; anything else is the
@@ -895,6 +1628,37 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
             "the permission boundary stopped it. The line above names the rule and \
              the layer; press Shift+Tab to change the posture for the next turn.",
         ),
+        // **0.11.0 — the six an operator meets most and could act on, and could
+        // not act on before.** Every one of these ended a real run with nothing
+        // on screen but io-harness's own token: `error: step_cap_reached` over a
+        // prompt, and no way to know whether that was a crash, a refusal or a
+        // ceiling. The word stays the harness's — this interface never relabels
+        // an outcome — and the sentence under it says what it means here.
+        "step_cap_reached" => Some(
+            "the turn used every step it was allowed. Say what to do next and it \
+             carries on from where it stopped.",
+        ),
+        "stalled" => Some(
+            "the agent repeated itself without changing anything, and stopped \
+             rather than spending the rest of its steps. Try saying it differently.",
+        ),
+        "time_budget_exceeded" | "cost_budget_exceeded" | "budget_ceiling_reached" => Some(
+            "the turn reached a budget in the configuration file. `[run]` sets the \
+             step, token and time budgets.",
+        ),
+        "plan_rejected" => Some(
+            "the plan was turned down, so nothing was written. Nothing has changed \
+             in the workspace.",
+        ),
+        "cancelled" => Some("the turn was interrupted. Whatever it had finished is above."),
+        "awaiting_recovery" => Some(
+            "the run stopped in the middle of a call whose effect cannot be \
+             established from here. Check whether it landed before asking again.",
+        ),
+        "escalated" => Some(
+            "the provider kept failing and the run gave up. The retries are in the \
+             transcript above.",
+        ),
         _ => None,
     }
 }
@@ -914,9 +1678,27 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
 fn tool_names(tool_call: &str) -> String {
     tool_call
         .split(" | ")
-        .map(|call| call.split_once(':').map_or(call, |(name, _)| name))
+        .map(|call| verb(call.split_once(':').map_or(call, |(name, _)| name)))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A target inside the workspace, shown relative to it; anything else whole.
+///
+/// A path outside the workspace is not shortened at all — a `../../..` chain is
+/// less readable than the path it was computed from, and the fact worth seeing
+/// about a file outside the workspace is precisely that it is outside.
+fn relative(target: &str, root: &std::path::Path) -> String {
+    if root.as_os_str().is_empty() {
+        return target.to_string();
+    }
+    match std::path::Path::new(target).strip_prefix(root) {
+        // The workspace root itself. `.` is what a shell would call it, and an
+        // empty column would read as a call with no target at all.
+        Ok(rest) if rest.as_os_str().is_empty() => ".".to_string(),
+        Ok(rest) => rest.display().to_string(),
+        Err(_) => target.to_string(),
+    }
 }
 
 /// The snake-case name of a kind, taken from its `Debug` form.

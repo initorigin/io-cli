@@ -38,6 +38,13 @@ pub struct Capabilities {
     pub browser: Option<io_harness::BrowserConfig>,
     /// `[app.io-cli] skills` — the directory io-harness discovers skills in.
     pub skills: Option<PathBuf>,
+    /// `[app.io-cli] max_steps` — how many steps one turn may take.
+    ///
+    /// io-harness's `TaskContract::workspace` caps a turn at twelve, which a
+    /// turn that reads a repository and writes a file reaches with the work half
+    /// done. It is raisable here and nowhere else: the steered turn builds its
+    /// own contract and takes none from a caller.
+    pub max_steps: Option<u32>,
 }
 
 impl Capabilities {
@@ -51,6 +58,7 @@ impl Capabilities {
             lsp: settings.lsp.clone().unwrap_or_default(),
             browser: settings.browser.clone(),
             skills: settings.skills.clone(),
+            max_steps: settings.max_steps,
         }
     }
 
@@ -73,8 +81,23 @@ impl Capabilities {
 /// release — the field-for-field assertion is in `tests/contract.rs`. Every
 /// builder below is therefore conditional on the operator having asked, and none
 /// of them has a default this function supplies.
+/// How many steps a session turn may take when nothing says otherwise.
+///
+/// **io-harness's own default is twelve, and twelve is not a turn.** A turn that
+/// reads a repository, writes a file and checks its work spends that with the
+/// job half done, and what the operator sees is `error: step_cap_reached` under
+/// an unfinished answer — which is a ceiling reported as a failure.
+///
+/// A thousand is not a number anybody will reach on purpose. It is the number
+/// that stops the cap being the thing that ends a turn, and it is safe to set
+/// because it is not the only bound in the system: io-harness stops an agent
+/// that stalls, `[run]`'s budgets stop one that spends, and `Ctrl+C` stops one
+/// an operator has seen enough of. A step cap was never the right instrument for
+/// any of those, and it was standing in for all three.
+pub const MAX_STEPS: u32 = 1_000;
+
 pub fn session(text: impl Into<String>, root: PathBuf, caps: &Capabilities) -> TaskContract {
-    let mut contract = TaskContract::workspace(text, root);
+    let mut contract = TaskContract::workspace(text, root).with_max_steps(MAX_STEPS);
     if !caps.mcp.is_empty() {
         contract = contract.with_mcp(caps.mcp.clone());
     }
@@ -86,6 +109,9 @@ pub fn session(text: impl Into<String>, root: PathBuf, caps: &Capabilities) -> T
     }
     if let Some(skills) = &caps.skills {
         contract = contract.with_skills(skills.clone());
+    }
+    if let Some(max_steps) = caps.max_steps {
+        contract = contract.with_max_steps(max_steps);
     }
     contract
 }

@@ -202,14 +202,10 @@ fn paint(screen: &mut io_cli::term::Screen<support::Fixed>, app: &mut App, out: 
     screen
         .draw(|frame| app.render(frame, frame.area()))
         .expect("frame");
-    out.rows.push(
-        screen
-            .viewport_text()
-            .lines()
-            .next_back()
-            .unwrap_or_default()
-            .to_string(),
-    );
+    // The whole viewport, because the pair this file asserts on moved: the
+    // spinner is drawn in front of the ACTIVITY word now, one row from the top,
+    // and the footer's state word is only there when no turn is running.
+    out.rows.push(screen.viewport_text().to_string());
 }
 
 /// The status line's state field, as the line renders it.
@@ -291,9 +287,11 @@ async fn the_byte_stream_carries_frames_when_the_mode_is_off() {
     // nothing to do with plain mode. A control that cannot fail is decoration;
     // this one failed and moved the assertion it guards.
     assert!(
-        lively.rows.iter().any(|row| SPINNER
-            .iter()
-            .any(|frame| row.contains(&format!("{frame} working")))),
+        lively.rows.iter().any(|row| SPINNER.iter().any(|frame| {
+            io_cli::status::WORDS
+                .iter()
+                .any(|word| row.contains(&format!("{frame} {word}")))
+        })),
         "no frame was ever drawn in front of the state word, so the prefix \
          assertion in this file cannot see one either",
     );
@@ -527,5 +525,88 @@ async fn f1_the_file_key_produces_the_same_session_as_the_flag() {
     assert_eq!(
         flagged.rows, filed.rows,
         "the flag and the file drew different viewports",
+    );
+}
+
+/// 0.11.0 F5 — the activity line is a word in every mode, and a spinner in only
+/// one of them.
+///
+/// Three readers who cannot use an animation: a plain session, a terminal under
+/// `NO_COLOR`, and one that cannot draw braille. The first two get the word with
+/// nothing in front of it; the third gets the word behind a frame of the ASCII
+/// set. In none of them is the state carried by a tone or a glyph alone, which
+/// is the non-functional criterion this release's new surface has to meet.
+#[test]
+fn f5_the_activity_line_says_its_state_in_a_word_under_every_mode() {
+    use io_cli::status::Status;
+    use io_cli::theme::{Theme, DARK, MONO};
+
+    let text = |status: &Status, theme: &Theme| -> String {
+        status
+            .activity(80, theme)
+            .expect("a running turn draws an activity line")
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    };
+    let word = |row: &str| io_cli::status::WORDS.iter().any(|word| row.contains(word));
+
+    let unicode: Theme = DARK.with_glyphs(io_cli::glyphs::UNICODE);
+    let ascii: Theme = DARK.with_glyphs(io_cli::glyphs::ASCII);
+
+    let mut running = Status::new("m");
+    running.working = true;
+
+    // The default: a frame of the braille set in front of the word.
+    let lively = text(&running, &unicode);
+    assert!(word(&lively), "{lively:?}");
+    assert!(
+        io_cli::status::SPINNER
+            .iter()
+            .any(|frame| lively.contains(*frame)),
+        "the default interface still animates: {lively:?}",
+    );
+
+    // A terminal that cannot draw braille: a frame of the ASCII set instead, and
+    // never a braille one.
+    let plain_glyphs = text(&running, &ascii);
+    assert!(word(&plain_glyphs), "{plain_glyphs:?}");
+    assert!(
+        io_cli::glyphs::ASCII_SPINNER
+            .iter()
+            .any(|frame| plain_glyphs.contains(*frame)),
+        "the ASCII set draws no spinner at all: {plain_glyphs:?}",
+    );
+    assert!(
+        !io_cli::status::SPINNER
+            .iter()
+            .any(|frame| plain_glyphs.contains(*frame)),
+        "a braille frame reached a terminal that cannot draw one: {plain_glyphs:?}",
+    );
+
+    // `NO_COLOR`, which resolves to the uncoloured theme: the word alone.
+    let uncoloured = text(&running, &MONO.with_glyphs(io_cli::glyphs::UNICODE));
+    assert!(word(&uncoloured), "{uncoloured:?}");
+    assert!(
+        !io_cli::status::SPINNER
+            .iter()
+            .chain(io_cli::glyphs::ASCII_SPINNER.iter())
+            .any(|frame| uncoloured.contains(*frame)),
+        "an animation reached a reader who asked for none: {uncoloured:?}",
+    );
+
+    // Plain mode, which is the same answer reached through the one gate the mode
+    // passes through.
+    let mut quiet = Status::new("m");
+    quiet.working = true;
+    quiet.plain = true;
+    let plain = text(&quiet, &unicode);
+    assert!(word(&plain), "{plain:?}");
+    assert!(
+        !io_cli::status::SPINNER
+            .iter()
+            .any(|frame| plain.contains(*frame)),
+        "a plain session animated its activity line: {plain:?}",
     );
 }

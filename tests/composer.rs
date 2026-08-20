@@ -523,3 +523,91 @@ fn f7_a_paste_while_a_turn_is_running_is_not_dropped() {
     assert!(app.paste("typed while it worked", false));
     assert_eq!(app.composer.text(), "typed while it worked");
 }
+
+/// 0.11.0 — pasting the same block twice expands it in place.
+///
+/// The first paste collapses to a placeholder because a screenful of somebody
+/// else's text is not a prompt anyone can read. Pressing paste again on the same
+/// block is the operator saying they want it after all, so the placeholder is
+/// replaced by what it stands for rather than a second placeholder being added
+/// beside the first.
+#[test]
+fn a_second_paste_of_the_same_block_expands_it() {
+    let block = "x".repeat(PASTE_THRESHOLD + 1);
+    let mut composer = Composer::new();
+    composer.paste(&block);
+    assert!(
+        composer.typed().contains("pasted text #1"),
+        "{:?}",
+        composer.typed(),
+    );
+
+    composer.paste(&block);
+    assert_eq!(
+        composer.typed(),
+        block,
+        "the second paste of one block shows the block",
+    );
+    assert_eq!(composer.text(), block);
+
+    // A DIFFERENT block still collapses, and is numbered as the paste it is.
+    let other = "y".repeat(PASTE_THRESHOLD + 1);
+    composer.paste(&other);
+    assert!(composer.typed().starts_with(&block));
+    assert!(composer.typed().contains("pasted text #2"));
+    assert_eq!(composer.text(), format!("{block}{other}"));
+}
+
+/// 0.11.0 — backspace over a placeholder removes the whole thing.
+///
+/// Thirty-five presses to remove one thing the operator thinks of as one thing is
+/// bad enough. The first of them is worse: a placeholder is matched by its exact
+/// text, so an edited one silently stops standing for the block it named and the
+/// prompt sends the words `[pasted text #1, 157 characters]` to the model.
+#[test]
+fn backspace_removes_a_placeholder_whole() {
+    let block = "x".repeat(PASTE_THRESHOLD + 1);
+    let mut composer = Composer::new();
+    type_text(&mut composer, "look at ");
+    composer.paste(&block);
+
+    composer.key(key(KeyCode::Backspace));
+    assert_eq!(composer.typed(), "look at ");
+    assert_eq!(
+        composer.text(),
+        "look at ",
+        "the block went with the placeholder standing for it",
+    );
+
+    // And an ordinary character still deletes one character.
+    composer.key(key(KeyCode::Backspace));
+    assert_eq!(composer.typed(), "look at");
+}
+
+/// 0.11.0 — a pasted path is quoted and resolved.
+///
+/// Dragging a file into a terminal pastes its path, and a path with a space in it
+/// is two words to everything downstream unless something quotes it. Prose is
+/// never quoted at anybody: the check is that the path names a file that exists.
+#[test]
+fn a_pasted_path_is_quoted_and_prose_is_not() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let file = dir.path().join("a picture.png");
+    std::fs::write(&file, b"not really a picture").expect("the fixture file");
+
+    let mut composer = Composer::new();
+    composer.paste(&file.display().to_string());
+    let typed = composer.typed();
+    assert!(typed.starts_with('"') && typed.ends_with('"'), "{typed:?}");
+    assert!(typed.contains("a picture.png"), "{typed:?}");
+
+    // The shell-escaped form a drag produces resolves to the same thing.
+    let mut escaped = Composer::new();
+    escaped.paste(&file.display().to_string().replace(' ', "\\ "));
+    assert_eq!(escaped.typed(), typed);
+
+    // A sentence that is not a path is pasted exactly as it arrived.
+    let mut prose = Composer::new();
+    prose.paste("look at the picture in my documents");
+    assert_eq!(prose.typed(), "look at the picture in my documents");
+}

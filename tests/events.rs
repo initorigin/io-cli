@@ -1,92 +1,30 @@
 //! F8 — every event kind is accounted for.
 //!
 //! `io_harness::EventKind` is `#[non_exhaustive]`, so a wildcard arm is required
-//! by the type rather than chosen. The criterion is therefore asserted as the two
-//! things that actually matter: no kind renders to nothing, and no kind exists
-//! that this repository has never seen.
+//! by the type rather than chosen. Through 0.10.0 the criterion was asserted as
+//! the two things that mattered then: no kind rendered to nothing, and no kind
+//! existed that this repository had never seen.
+//!
+//! **0.11.0's F1 replaced the first half.** "No kind renders to nothing" was
+//! true because the wildcard printed the variant's own name, which is the defect
+//! this release removed — so what is asserted now is that every kind has a
+//! *disposition*, and `tests/triage.rs` owns that. What stays here is what each
+//! designed line actually says.
 
 mod support;
 
 use std::time::Duration;
 
 use io_cli::events::{kind_name, Events};
-use io_cli::theme::DARK;
+use io_cli::theme::{Tone, DARK};
 use io_harness::{EventKind, RunEvent, TodoItem, TodoState, TODO_MAX_ITEMS};
 
-/// The kinds this release handles, in the contract's own words: `started`,
-/// `token`, `step`, `tool_call` and `finished` rendered fully, `refused` and
-/// `approval_requested` as a plain one-line notice.
-///
-/// `mcp` is here from 0.3.0 for a reason that is not visible in its own line: it
-/// is the only event io-harness emits carrying how long a tool actually ran, and
-/// that number is harvested onto the open tool cell. Its own line is still the
-/// muted one naming the kind — an event is never consumed silently — but it is no
-/// longer a kind this release merely passes through.
-///
-/// `todo_wrote` joins them in 0.7.0, and being in this list is the smallest part
-/// of that: a name moved here with no arm behind it still renders through the
-/// wildcard and still passes this file. What makes the move true is the F11 tests
-/// at the end, which assert the items and their state words themselves.
-const STYLED: &[&str] = &[
-    "started",
-    "token",
-    "step",
-    "tool_call",
-    "finished",
-    "refused",
-    "approval_requested",
-    "mcp",
-    "todo_wrote",
-    "recovery_paused",
-    "spawned",
-    "spawn_refused",
-    "child_collected",
-    "child_detached",
-    "spend_draw",
-];
-
-/// Every other kind the locked io-harness emits. Each renders as a muted single line
-/// naming itself. This list is not decoration: the drift test below fails when
-/// io-harness grows a kind that is in neither list, which is the moment somebody
-/// has to decide what it should look like.
-const FALLS_THROUGH: &[&str] = &[
-    "approval_decided",
-    "retry",
-    "fell_back_to",
-    "replan",
-    "stalled",
-    "fleet",
-    "memory_wrote",
-    "memory_forgot",
-    "question_asked",
-    "question_answered",
-    "plan_proposed",
-    "plan_decided",
-    "reasoning",
-    "server_tool_used",
-    "sandbox",
-    "handle_started",
-    "handle_polled",
-    "handle_killed",
-    "handle_exited",
-    "handle_orphaned",
-    "reviewed",
-    "routed",
-    "plugin_loaded",
-    "plugin_dropped",
-    "lsp_started",
-    "browser_started",
-    "browser_navigated",
-    "speculated",
-    "dialed",
-    "rewound",
-    "reverted",
-    "answered",
-    "compacted",
-    "cache_marked",
-    "prompt_composed",
-    "contained",
-];
+// The `STYLED` and `FALLS_THROUGH` lists stood here until 0.11.0. They were a
+// pair because the second one was a real destination — a muted line naming the
+// kind — and a name could be moved between them without any arm changing, which
+// this file's own comment said out loud. `triage::TRIAGE` replaced both with one
+// list that says what each kind does and where its fact goes, and
+// `tests/triage.rs` is what holds it to the locked harness.
 
 fn event(kind: EventKind) -> RunEvent {
     RunEvent::new(1, 1, kind)
@@ -218,7 +156,15 @@ fn f8_every_styled_kind_renders_its_own_facts() {
         started.contains("make the failing test pass"),
         "{started:?}"
     );
-    assert!(started.contains("openrouter"), "{started:?}");
+    // **0.11.0 — the goal, and nothing else.** The provider was a second row
+    // under every prompt in a session; it is a status-line field now, and
+    // `tests/status.rs` is where it is asserted. A default session must not
+    // print it here at all: F2 asserts the removal against a real run, and this
+    // is the same claim at the unit level.
+    assert!(
+        !started.contains("openrouter"),
+        "the provider is a status-line field and not a row under the goal: {started:?}",
+    );
 
     // A tool call's facts are asserted where they are committed, which is the step
     // that finished it. The announcement itself commits nothing, because when it
@@ -240,9 +186,16 @@ fn f8_every_styled_kind_renders_its_own_facts() {
         },
         Duration::from_millis(900),
     );
-    assert!(tool.contains("exec"), "{tool:?}");
+    // `Run`, the verb F4 maps `exec` to, and not `exec` itself.
+    assert!(tool.contains("Run"), "{tool:?}");
+    assert!(!tool.contains("exec"), "{tool:?}");
     assert!(tool.contains("cargo test"), "{tool:?}");
-    assert!(tool.contains("ran cargo test"), "{tool:?}");
+    // The harness's sentence is `ran cargo test`; the cell has already said
+    // `Run` and `cargo test`, so what it adds is `ran` and that is what it
+    // carries. `f4_the_result_says_what_it_adds_and_not_what_the_cell_already_said`
+    // is where that rule is asserted in full.
+    assert!(tool.contains("ran"), "{tool:?}");
+    assert!(!tool.contains("ran cargo test"), "{tool:?}");
 
     let step = rendered(
         &mut events,
@@ -273,8 +226,21 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     assert!(refused.contains("fs.deny"), "{refused:?}");
     assert!(refused.contains("workspace"), "{refused:?}");
 
-    let approval = rendered(
+    // The request commits nothing in a session — the overlay is on screen
+    // saying it — and commits the line in plain mode, which has no overlay.
+    let quiet = rendered(
         &mut events,
+        EventKind::ApprovalRequested {
+            act: "exec".into(),
+            target: "rm -rf build".into(),
+        },
+    );
+    assert!(quiet.is_empty(), "the overlay says this one: {quiet:?}");
+
+    let mut plain = Events::new(DARK);
+    plain.set_plain(true);
+    let approval = rendered(
+        &mut plain,
         EventKind::ApprovalRequested {
             act: "exec".into(),
             target: "rm -rf build".into(),
@@ -283,6 +249,9 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     assert!(approval.contains("warning"), "{approval:?}");
     assert!(approval.contains("rm -rf build"), "{approval:?}");
 
+    // **0.11.0 — a turn ends on its answer.** The row of arithmetic under it is
+    // gone: the step count and the token total are status-line fields, and a
+    // plain finish has nothing left to say that the answer above it did not.
     let finished = rendered(
         &mut events,
         EventKind::Finished {
@@ -291,22 +260,29 @@ fn f8_every_styled_kind_renders_its_own_facts() {
             tokens: 9876,
         },
     );
-    assert!(finished.contains("ok"), "{finished:?}");
-    assert!(finished.contains("success"), "{finished:?}");
-    assert!(finished.contains('7'), "{finished:?}");
+    assert!(
+        finished.trim().is_empty(),
+        "a turn that finished should end on its answer, not on a row about itself: {finished:?}",
+    );
 }
 
+/// **F1.** The rule this test asserted is the one 0.11.0 reversed.
+///
+/// It required an unstyled kind to name itself, which is how `replan` — the
+/// example it used — reached an operator as a Rust variant. `Replan` now has a
+/// designed line, and the property worth keeping from the old test is that the
+/// line says what happened in words rather than in the enum's vocabulary.
 #[test]
-fn f8_a_kind_this_release_does_not_style_still_renders_and_names_itself() {
+fn f1_a_kind_with_a_designed_line_says_what_happened_and_never_its_own_name() {
     let mut events = Events::new(DARK);
-    // `SpendDraw` stood here until 0.8.0, which gave it an arm — one that
-    // commits nothing, because its fact belongs to the status line. `Replan` is
-    // the example now: a kind this release has no design for, which must still
-    // reach the transcript naming itself.
     let line = rendered(&mut events, EventKind::Replan { window: 3 });
     assert!(
-        line.contains("replan"),
-        "an unstyled kind must name itself rather than vanish: {line:?}",
+        line.contains("3 steps"),
+        "the window is the fact an operator can act on: {line:?}",
+    );
+    assert!(
+        !line.contains("replan"),
+        "the variant's own name must not reach the transcript: {line:?}",
     );
 }
 
@@ -338,16 +314,17 @@ fn f8_tokens_are_coalesced_rather_than_committed_one_at_a_time() {
     assert_eq!(events.live(), "", "the live buffer should be emptied");
 }
 
-/// **F8.** No event is dropped.
+/// **F8, as 0.11.0 leaves it.** Every kind with a designed line still commits
+/// one, and the two that defer still defer.
 ///
-/// The invariant is not "every event commits a line" — a token does not, and from
-/// 0.3.0 neither does a tool call. Both are *deferred* rather than discarded: the
-/// token into the live buffer, the call into an open cell that `live()` shows
-/// immediately and that the step commits complete. So each kind must leave a mark
-/// somewhere a reader can see it, and the two that defer are named here rather
-/// than exempted, so that a third one cannot be added silently.
+/// The old invariant — *no* kind renders to nothing — died with the wildcard that
+/// made it true, and `Stalled` is where that shows: it is silent here now,
+/// because the run's own outcome carries the word and a line beside it would say
+/// the same thing twice. What this test still owns is that a `Line` kind is not
+/// quietly emptied, and that a token and a tool call are deferred rather than
+/// discarded.
 #[test]
-fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
+fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
     let mut events = Events::new(DARK);
     let kinds = vec![
         EventKind::Started {
@@ -379,8 +356,15 @@ fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
             steps: 0,
             tokens: 0,
         },
-        EventKind::Stalled,
         EventKind::Replan { window: 8 },
+        EventKind::Retry {
+            kind: "timeout".into(),
+            attempt: 2,
+            delay_ms: 400,
+        },
+        EventKind::FellBackTo {
+            provider: "anthropic".into(),
+        },
     ];
 
     for kind in kinds {
@@ -395,9 +379,21 @@ fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
                 "a tool call committed a line before its result was known",
             );
             assert!(
-                events.live().contains("read_file"),
+                events.live().contains("Read"),
                 "a deferred tool call must be visible in the viewport: {:?}",
                 events.live(),
+            );
+            continue;
+        }
+        // **0.11.0 — the approval overlay says this one, larger.** A committed
+        // line as well put `warning: write SUMMARY.md — waiting for you` directly
+        // above the overlay's own `warning: write SUMMARY.md`, which is the same
+        // sentence twice in two sizes. In plain mode, which draws no overlay, the
+        // line is still committed — `tests/plain.rs` is where that is asserted.
+        if name == "approval_requested" {
+            assert!(
+                lines.is_empty(),
+                "the overlay says this one; a line here says it twice",
             );
             continue;
         }
@@ -410,7 +406,7 @@ fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
     // The turn ends, and the call that nothing ever reported on is still accounted
     // for rather than lost with the turn.
     let closed = flatten(events.flush());
-    assert!(closed.contains("read_file"), "{closed:?}");
+    assert!(closed.contains("Read"), "{closed:?}");
 }
 
 #[test]
@@ -474,8 +470,27 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
     assert!(outcome_help("denied").is_some());
     assert!(outcome_help("refused").is_some());
 
-    // An outcome that needs no explanation does not get one.
-    for outcome in ["finished", "success", "cancelled", "stalled"] {
+    // **0.11.0 — the outcomes an operator meets most now say what they mean.**
+    // A real run ended with `error: step_cap_reached` over a prompt and nothing
+    // else, which says whether the run stopped but not whether that was a crash,
+    // a refusal or a ceiling. The harness's own word still leads the line; the
+    // sentence under it is this crate's.
+    for outcome in [
+        "step_cap_reached",
+        "stalled",
+        "time_budget_exceeded",
+        "cost_budget_exceeded",
+        "budget_ceiling_reached",
+        "plan_rejected",
+        "cancelled",
+        "awaiting_recovery",
+        "escalated",
+    ] {
+        assert!(outcome_help(outcome).is_some(), "{outcome}");
+    }
+
+    // A turn that ended well needs no explanation and does not get one.
+    for outcome in ["finished", "success"] {
         assert_eq!(outcome_help(outcome), None, "{outcome}");
     }
 }
@@ -500,6 +515,13 @@ fn the_awaiting_help_reaches_the_transcript() {
     assert!(!line.contains("error"), "nothing went wrong: {line:?}");
 }
 
+/// **0.11.0.** A finished turn says nothing about itself in a session, and says
+/// everything in a plain one.
+///
+/// The two halves are one test because the property is the trade: the row was
+/// removed for a reader who can see the status line, and kept for the reader who
+/// cannot. Splitting them would let either half pass while the other silently
+/// did the opposite.
 #[test]
 fn a_finished_turn_reads_as_finished_end_to_end() {
     let mut events = Events::new(DARK);
@@ -511,7 +533,28 @@ fn a_finished_turn_reads_as_finished_end_to_end() {
             tokens: 32624,
         },
     );
+    assert!(
+        line.trim().is_empty(),
+        "a plain finish commits nothing but the blank line: {line:?}",
+    );
+
+    let mut plain = Events::new(DARK);
+    plain.set_plain(true);
+    let line = rendered(
+        &mut plain,
+        EventKind::Finished {
+            outcome: "finished".into(),
+            steps: 8,
+            tokens: 32624,
+        },
+    );
     assert!(line.contains("ok"), "{line:?}");
+    assert!(line.contains("8 steps"), "{line:?}");
+    // The status line's own spelling, which is the point of committing this row
+    // in plain mode at all: a plain session met `32624 tok` here and `32.6k tok`
+    // on the line, and that is one fact with two spellings.
+    assert!(line.contains("32.6k tok"), "{line:?}");
+    assert!(!line.contains("32624"), "{line:?}");
     assert!(!line.contains("warning"), "{line:?}");
 }
 
@@ -535,34 +578,17 @@ fn the_kind_name_is_the_serde_tag() {
 
 #[test]
 fn f8_this_release_has_seen_every_kind_io_harness_emits() {
+    // The drift check itself moved to `tests/triage.rs`, which compares the
+    // locked harness's declared kinds against the disposition table rather than
+    // against a pair of lists nothing behind them had to agree with. What is
+    // left here is the count, because this file's own fixtures are written
+    // against it.
     let declared = support::harness_event_kinds();
     assert_eq!(
         declared.len(),
         51,
         "the locked io-harness declares fifty-one event kinds; found {}",
         declared.len(),
-    );
-
-    let mut known: Vec<&str> = STYLED.to_vec();
-    known.extend_from_slice(FALLS_THROUGH);
-
-    let unseen: Vec<&String> = declared
-        .iter()
-        .filter(|name| !known.contains(&name.as_str()))
-        .collect();
-    assert!(
-        unseen.is_empty(),
-        "io-harness emits kinds this repository has never seen: {unseen:?}. \
-         Decide whether each is styled or falls through, and add it to the list.",
-    );
-
-    let gone: Vec<&&str> = known
-        .iter()
-        .filter(|name| !declared.contains(&(**name).to_string()))
-        .collect();
-    assert!(
-        gone.is_empty(),
-        "these names are no longer io-harness event kinds: {gone:?}",
     );
 }
 
@@ -648,7 +674,9 @@ fn f2_a_tool_call_commits_nothing_until_its_step_lands() {
         "a call committed a line before anything knew its result: {lines:?}",
     );
     let live = events.live();
-    assert!(live.contains("read_file"), "{live:?}");
+    // The verb, in the live row as in the committed cell: 0.11.0's F4 maps the
+    // name once, where the call is opened, so both say the same word.
+    assert!(live.contains("Read"), "{live:?}");
     assert!(live.contains("src/lib.rs"), "{live:?}");
 }
 
@@ -684,17 +712,24 @@ fn f2_a_tool_cell_commits_its_result_and_its_observed_duration() {
         line.find(needle)
             .unwrap_or_else(|| panic!("{needle:?} is missing from {line:?}"))
     };
+    // `Read`, not `read_file`: 0.11.0's F4 put the operator's verb in this
+    // column.
     assert!(
-        at("read_file") < at("src/lib.rs"),
+        at("Read") < at("src/lib.rs"),
         "the tool before its target: {line:?}",
     );
     assert!(
-        at("src/lib.rs") < at("read src/lib.rs"),
-        "the target before what came back: {line:?}",
-    );
-    assert!(
-        at("read src/lib.rs") < at("~250ms"),
+        at("src/lib.rs") < at("~250ms"),
         "content before metadata: {line:?}",
+    );
+    // **And the result column says what it ADDS.** io-harness's sentence here is
+    // `read src/lib.rs`, which is the tool and the target in the harness's own
+    // words — the two things this cell has already said in the operator's. A
+    // real run committed `⋅ Read io.toml · read io.toml · ~0ms`, and reading it
+    // back is what found this.
+    assert!(
+        !line.contains("read src/lib.rs"),
+        "the cell said the same thing twice in two vocabularies: {line:?}",
     );
 
     // The `~` is load-bearing. io-cli did not time the tool; it observed the
@@ -776,7 +811,7 @@ fn f2_an_unfinished_call_closes_without_inventing_a_duration() {
     );
 
     let line = flatten(events.flush());
-    assert!(line.contains("read_file"), "{line:?}");
+    assert!(line.contains("Read"), "{line:?}");
     assert!(line.contains("unfinished"), "{line:?}");
     assert!(
         !line.contains('~') && !line.contains("ms"),
@@ -1000,8 +1035,12 @@ fn f11_a_plan_longer_than_the_store_keeps_says_how_much_longer() {
 /// the agent's own account` with not one row under it — the placeholder F12's
 /// sabotage arm names, written into the transcript instead of the status line.
 ///
-/// The event is still committed, as the muted word naming itself: an empty write
-/// happened, and no kind in this module renders to nothing.
+/// Through 0.10.0 the event was still committed, as the muted word naming
+/// itself. **0.11.0's F1 is why that stops:** `todo_wrote` is triaged as a line,
+/// and a `Line` kind whose arm declines this particular payload commits nothing
+/// rather than falling through to its own variant name. The empty write is not
+/// counted as an unknown kind either — it is a kind with a disposition, and the
+/// arm made a judgement about the payload.
 #[test]
 fn f11_a_plan_of_no_items_is_not_committed_as_a_plan() {
     let mut events = Events::new(DARK);
@@ -1020,13 +1059,14 @@ fn f11_a_plan_of_no_items_is_not_committed_as_a_plan() {
             "a plan of nothing is not a plan of zero: {committed:?}",
         );
     }
+    assert!(
+        committed.is_empty(),
+        "an empty write has nothing to say and must commit nothing: {committed:?}",
+    );
     assert_eq!(
-        committed
-            .iter()
-            .filter(|row| row.contains(&kind_name(&EventKind::TodoWrote { items: Vec::new() })))
-            .count(),
-        1,
-        "the event still arrives as the word naming itself: {committed:?}",
+        events.unknown(),
+        0,
+        "`todo_wrote` has a disposition; declining a payload is not an unheard-of kind",
     );
 }
 
@@ -1243,5 +1283,485 @@ fn f6_a_spend_draw_commits_nothing_to_the_scrollback() {
     assert!(
         committed.is_empty(),
         "a per-step draw is a status field, not a transcript row: {committed:?}",
+    );
+}
+
+/// The events that open a step, so a thought has something to be measured from.
+///
+/// A thought's duration is the interval since the step it belongs to opened, and
+/// a step opens on `Started` for the first one and on the previous `Step` for
+/// every one after it. Stated ages, never measured ones — N1.
+fn started_at(events: &mut Events, at: Duration) {
+    events.event(
+        &event(EventKind::Started {
+            goal: "read the parser".into(),
+            provider: "openrouter".into(),
+        }),
+        at,
+    );
+}
+
+fn thought(text: &str, tokens: u64) -> EventKind {
+    EventKind::Reasoning {
+        text: text.into(),
+        tokens,
+    }
+}
+
+/// 0.11.0 F3 — one row: that it thought, how long for, what it cost.
+///
+/// The heading says `thought`, not `reasoning`: the variant's own name is one of
+/// the six strings F2 asserts never reaches a terminal again, and this row is the
+/// last place that name could survive.
+///
+/// **The text itself is not committed, and that is deliberate.** A thought is the
+/// model talking to itself and is routinely longer than the answer it precedes; a
+/// transcript carrying every one of them buries the work in the deliberation,
+/// which is what a real session showed. The text is kept for `/expand`, because
+/// this event is the only place it ever exists.
+#[test]
+fn f3_a_thought_is_one_row_and_the_text_is_kept_rather_than_committed() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::from_secs(1));
+    let committed = rows(events.event(
+        &event(thought("the parser is the only caller", 120)),
+        Duration::from_millis(3_500),
+    ));
+
+    assert_eq!(committed.len(), 1, "a thought is one row: {committed:?}");
+    let heading = &committed[0];
+    assert!(heading.contains("thought"), "{heading:?}");
+    assert!(
+        !heading.contains("reasoning"),
+        "the variant's own name is one of the strings F2 asserts absent: {heading:?}",
+    );
+    // 3.5s − 1s. The interval since the step opened, not the session's age.
+    assert!(heading.contains("2.5s"), "{heading:?}");
+    assert!(heading.contains("120 tok"), "{heading:?}");
+    assert!(
+        !heading.contains("the parser is the only caller"),
+        "the thought's text belongs to `/expand`, not to the transcript: {heading:?}",
+    );
+    assert_eq!(events.thought(), Some("the parser is the only caller"));
+}
+
+/// 0.11.0 F3 — the block is muted throughout, and carries nothing in colour.
+///
+/// Asserted against the styles rather than the strings, because "no colour
+/// carries meaning on its own" is a claim about the spans and is invisible to a
+/// test that only reads their text.
+#[test]
+fn f3_a_thought_is_muted_throughout_and_says_nothing_in_colour_alone() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let lines = events.event(
+        &event(thought("the parser is the only caller", 120)),
+        Duration::from_millis(400),
+    );
+    // The word itself is italic — a thought is the model's own voice, set apart
+    // from the tool cells around it without spending a colour on it — so the
+    // claim is about the *colour* being one tone throughout, not the weight.
+    let muted = DARK.style(Tone::Muted);
+    for line in &lines {
+        for span in &line.spans {
+            assert!(
+                span.style.fg == muted.fg || span.content.trim().is_empty(),
+                "a thought is one tone: {:?} carries {:?}",
+                span.content,
+                span.style,
+            );
+        }
+    }
+}
+
+/// 0.11.0 F3 — a long thought is fitted, and the whole of it is kept for
+/// `/expand`.
+///
+/// Every thought is kept whole, however short, because `/expand` is the only
+/// place it can be read and this event is the only place it ever exists.
+#[test]
+fn f3_every_thought_is_kept_whole_for_expand() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+
+    let long = "the parser is the only caller of this function and every other \
+                path reaches it through the same entry point "
+        .repeat(12);
+    events.event(&event(thought(&long, 900)), Duration::from_secs(2));
+    assert_eq!(events.thought(), Some(long.as_str()));
+
+    // A short one too. The row on screen is the same row either way, so there is
+    // no length at which the text stops being worth keeping.
+    events.event(&event(thought("one short thought", 12)), Duration::ZERO);
+    assert_eq!(events.thought(), Some("one short thought"));
+}
+
+/// 0.11.0 F3 — only a `Reasoning` event commits a thought.
+///
+/// The sabotage arm this criterion names is emitting the block on every event
+/// that carries text, which turns the agent's own answer into a thought. The
+/// answer streams as tokens and commits through the flush, so that is what this
+/// drives.
+///
+/// **The first version of this test was blind to its own sabotage.** It streamed
+/// a token ending in a newline, and the `Token` arm commits a complete line the
+/// moment it arrives and drains it — so `flush_text`, which is where an answer
+/// that has not ended in a newline is committed and where the sabotage lived,
+/// was never reached. Both paths are driven here: a finished line and an
+/// unterminated tail are two different commits of the same answer.
+#[test]
+fn f3_only_a_reasoning_event_commits_a_thought() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let mut committed = flatten(events.event(
+        &event(EventKind::Token {
+            text: "the file is read first.\nand the parser".into(),
+        }),
+        Duration::ZERO,
+    ));
+    committed.push_str(&flatten(events.flush()));
+
+    assert!(
+        committed.contains("the file is read first."),
+        "the answer still reaches the scrollback: {committed:?}",
+    );
+    assert!(
+        committed.contains("and the parser"),
+        "so does the tail that never ended in a newline: {committed:?}",
+    );
+    assert!(
+        !committed.contains("thought"),
+        "an answer is not a thought: {committed:?}",
+    );
+    assert_eq!(events.thought(), None);
+}
+
+/// 0.11.0 F3 — a run that produced no reasoning commits nothing.
+///
+/// An empty `Reasoning` is the shape that fails this quietly: the provider
+/// billed for a thought and returned no text, and a heading over an empty block
+/// tells a reader the model thought nothing rather than that it did not say.
+#[test]
+fn f3_an_empty_thought_commits_no_block() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let committed = events.event(&event(thought("   \n  ", 4)), Duration::from_secs(1));
+    assert!(committed.is_empty(), "{committed:?}");
+    assert_eq!(events.thought(), None);
+}
+
+/// 0.11.0 F6 — the live row names the act and the target of an open call.
+#[test]
+fn f6_an_open_call_names_that_act_and_its_target() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "write_file".into(),
+            target: "/work/io-cli/src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    let row = events.live();
+    assert!(
+        row.contains("Write") && row.contains("src/lib.rs"),
+        "{row:?}"
+    );
+}
+
+/// 0.11.0 F6 — with nothing open and a thought most recent, the row says so.
+#[test]
+fn f6_a_thought_most_recent_and_nothing_open_says_the_agent_is_thinking() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(thought("which caller reaches it", 20)),
+        Duration::ZERO,
+    );
+    assert!(events.live().contains("thinking"), "{:?}", events.live());
+
+    // And it stops being the most recent thing as soon as something else
+    // happens. The answer streaming is the ordinary case.
+    events.event(
+        &event(EventKind::Token {
+            text: "the parser".into(),
+        }),
+        Duration::ZERO,
+    );
+    let row = events.live();
+    assert!(!row.contains("thinking"), "{row:?}");
+    assert!(row.contains("the parser"), "{row:?}");
+}
+
+/// 0.11.0 F6 — a pending approval outranks both, and this is the sabotage arm.
+///
+/// Ordering thinking above waiting-on-a-person tells an operator the agent is
+/// busy at the exact moment it is blocked on them — so this test arranges for all
+/// three to be true at once and asserts which one the row says.
+///
+/// **The order the events arrive in is the whole test.** Written the other way
+/// round — the thought before the call — the call clears `thinking` and the
+/// sabotage has nothing to beat: the first version of this test passed with
+/// thinking ranked above waiting, because by the time it looked, nothing was
+/// thinking. The call is announced first here so that all three are true at the
+/// moment the row is read.
+#[test]
+fn f6_a_pending_approval_outranks_an_open_call_and_a_thought() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "write_file".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    events.event(
+        &event(thought("this write needs asking about", 20)),
+        Duration::ZERO,
+    );
+    events.event(
+        &event(EventKind::ApprovalRequested {
+            act: "write".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+
+    let row = events.live();
+    assert!(
+        row.contains("waiting for you"),
+        "the run is blocked on a person and the row said otherwise: {row:?}",
+    );
+
+    // Decided, and the run is moving again: the open call takes the row back.
+    events.event(
+        &event(EventKind::ApprovalDecided {
+            act: "write".into(),
+            target: "src/lib.rs".into(),
+            decision: "allow".into(),
+        }),
+        Duration::ZERO,
+    );
+    let row = events.live();
+    assert!(!row.contains("waiting for you"), "{row:?}");
+    assert!(row.contains("Write"), "{row:?}");
+}
+
+/// 0.11.0 F6 — a turn that ended while an approval was outstanding stops asking.
+///
+/// An interrupt between the request and the decision is the case: io-harness
+/// never sends the decision that would clear it, and a row still asking for an
+/// answer to a question that died with the run is a session that looks hung.
+#[test]
+fn f6_an_interrupted_turn_stops_waiting_on_a_person() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ApprovalRequested {
+            act: "write".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    events.flush();
+    assert!(
+        !events.live().contains("waiting for you"),
+        "{:?}",
+        events.live()
+    );
+}
+
+/// One call, announced and then closed by the step that ran it.
+fn cell(events: &mut Events, name: &str, target: &str) -> String {
+    events.event(
+        &event(EventKind::ToolCall {
+            name: name.into(),
+            target: target.into(),
+        }),
+        Duration::ZERO,
+    );
+    rendered_at(
+        events,
+        EventKind::Step {
+            decision: "done".into(),
+            tool_call: name.into(),
+            tokens: 5,
+            changed: false,
+        },
+        Duration::from_millis(250),
+    )
+}
+
+/// 0.11.0 F4 — a mapped tool reads as a verb, and its target as a path in the
+/// workspace.
+#[test]
+fn f4_a_mapped_tool_reads_as_a_verb_and_a_workspace_relative_path() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    let line = cell(&mut events, "read_file", "/work/io-cli/src/lib.rs");
+
+    assert!(line.contains("Read"), "{line:?}");
+    assert!(
+        !line.contains("read_file"),
+        "io-harness's wire name is what this criterion removes: {line:?}",
+    );
+    assert!(line.contains("src/lib.rs"), "{line:?}");
+    assert!(
+        !line.contains("/work/io-cli/src/lib.rs"),
+        "a target inside the workspace is shown relative to it: {line:?}",
+    );
+}
+
+/// 0.11.0 F4 — an unmapped tool is printed exactly as io-harness sent it.
+///
+/// This is the criterion's own sabotage arm: a title-cased fallback would invent
+/// a verb for a tool this release has never seen, which is a word in front of an
+/// operator that nothing in the system means. An MCP tool and an embedder's
+/// custom tool both arrive this way.
+#[test]
+fn f4_an_unmapped_tool_is_printed_exactly_as_it_arrived() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    let line = cell(&mut events, "customer_lookup", "/work/io-cli/rows.csv");
+
+    assert!(
+        line.contains("customer_lookup"),
+        "an unmapped name passes through whole: {line:?}",
+    );
+    for invented in ["Customer Lookup", "Customer_lookup", "Customer lookup"] {
+        assert!(
+            !line.contains(invented),
+            "no verb is invented for an unknown tool: {invented:?} in {line:?}",
+        );
+    }
+    // The target is still shortened. Which tool ran and where it ran are two
+    // separate facts, and not knowing the first says nothing about the second.
+    assert!(line.contains("rows.csv") && !line.contains("/work/io-cli/rows.csv"));
+}
+
+/// 0.11.0 F4 — the result column says what it adds, not what the cell said.
+///
+/// Every one of these came off a real run. io-harness writes the step's decision
+/// in its own words, and printed whole beside a cell that has already named the
+/// tool and the target it read `⋅ Read io.toml · read io.toml · ~0ms` and
+/// `⋅ Search model = · "model =" (1 hits)`. What the harness ADDS — how many
+/// entries, how many hits — is the part worth a column and is kept in full.
+#[test]
+fn f4_the_result_says_what_it_adds_and_not_what_the_cell_already_said() {
+    let cases = [
+        // (tool, target, io-harness's decision, what the cell should carry)
+        ("read_file", "io.toml", "read io.toml", None),
+        (
+            "list_dir",
+            "list_dir",
+            "list_dir  (4 entries)",
+            Some("(4 entries)"),
+        ),
+        (
+            "grep",
+            "model =",
+            "grep \"model =\" (1 hits)",
+            Some("(1 hits)"),
+        ),
+        (
+            "find",
+            "io.toml",
+            "find io.toml (1 paths)",
+            Some("(1 paths)"),
+        ),
+        // Nothing in common: kept exactly as it arrived.
+        (
+            "write_file",
+            "notes.txt",
+            "the file did not exist",
+            Some("the file did not exist"),
+        ),
+    ];
+
+    for (tool, target, decision, expected) in cases {
+        let mut events = Events::new(DARK);
+        events.event(
+            &event(EventKind::ToolCall {
+                name: tool.into(),
+                target: target.into(),
+            }),
+            Duration::ZERO,
+        );
+        let line = rendered_at(
+            &mut events,
+            EventKind::Step {
+                decision: decision.into(),
+                tool_call: tool.into(),
+                tokens: 5,
+                changed: false,
+            },
+            Duration::from_millis(10),
+        );
+
+        if let Some(kept) = expected {
+            assert!(
+                line.contains(kept),
+                "{tool}: {kept:?} missing from {line:?}"
+            );
+        }
+        // Printed whole only when the harness said something the cell did not.
+        // `expected == Some(decision)` is that case, and it is in the table on
+        // purpose: a trim that ate an unrelated sentence would be worse than the
+        // duplication it was written to remove.
+        if expected != Some(decision) {
+            assert!(
+                !line.contains(decision),
+                "{tool}: the harness's sentence was printed whole beside the cell \
+                 that already said it: {line:?}",
+            );
+        }
+    }
+}
+
+/// 0.11.0 F4 — a target outside the workspace is shown whole.
+///
+/// The fact worth seeing about a file outside the workspace is precisely that it
+/// is outside one, and a `../../..` chain is less readable than the path it was
+/// computed from.
+#[test]
+fn f4_a_target_outside_the_workspace_is_shown_whole() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    let line = cell(&mut events, "read_file", "/etc/hosts");
+    assert!(line.contains("/etc/hosts"), "{line:?}");
+}
+
+/// 0.11.0 F4 — the result and the duration columns are untouched, `~` included.
+///
+/// The verb changed the first column and nothing else. The `~` is the load-
+/// bearing part: io-cli observed an interval between two events, it did not time
+/// the tool, and a bare `250ms` would be a claim it cannot make.
+#[test]
+fn f4_the_result_and_the_duration_columns_are_unchanged() {
+    let mut events = Events::new(DARK);
+    let line = cell(&mut events, "shell", "cargo test");
+    assert!(line.contains("Run"), "{line:?}");
+    assert!(
+        line.contains("done"),
+        "the result column is still there: {line:?}"
+    );
+    assert!(line.contains("~250ms"), "{line:?}");
+    assert!(
+        !line.contains(" 250ms"),
+        "an observed interval must not read as a measured one: {line:?}",
+    );
+}
+
+/// 0.11.0 F4 — the table is a table: no name twice, and no empty side.
+#[test]
+fn f4_no_tool_is_mapped_twice_and_no_row_is_empty() {
+    let mut seen = std::collections::BTreeSet::new();
+    for (tool, word) in io_cli::events::VERBS {
+        assert!(!tool.is_empty() && !word.is_empty(), "{tool:?} {word:?}");
+        assert!(seen.insert(*tool), "{tool:?} is mapped twice");
+        assert_eq!(io_cli::events::verb(tool), *word);
+    }
+    assert_eq!(
+        io_cli::events::verb("customer_lookup"),
+        "customer_lookup",
+        "a name that is not in the table is not in the table",
     );
 }

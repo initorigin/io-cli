@@ -167,8 +167,18 @@ fn f9_it_renders_on_one_row_at_eighty_columns() {
     status.elapsed = Duration::from_secs(3725);
     let (mut screen, _recorder) = support::screen(80, 24);
 
+    // **One row, drawn through the one-row form.** 0.11.0 gave the footer a rule
+    // and a second line, and `Status::render` draws that wherever it has three
+    // rows to draw it in — so what this asserts is the form a terminal with no
+    // room left gets, which is the one that has to fit in a single row.
     screen
-        .draw(|frame| status.render(frame, frame.area(), &DARK))
+        .draw(|frame| {
+            let area = ratatui::layout::Rect {
+                height: 1,
+                ..frame.area()
+            };
+            status.render(frame, area, &DARK)
+        })
         .expect("frame");
 
     let viewport = screen.viewport_text();
@@ -430,8 +440,16 @@ fn f12_the_plan_field_reads_at_eighty_columns_in_both_glyph_sets() {
 
     for theme in [DARK, DARK.with_glyphs(io_cli::glyphs::ASCII)] {
         let (mut screen, _recorder) = support::screen(80, 24);
+        // The one-row form, which is what a terminal with no room for the
+        // footer's three rows is given and the form this criterion is about.
         screen
-            .draw(|frame| app.status.render(frame, frame.area(), &theme))
+            .draw(|frame| {
+                let area = ratatui::layout::Rect {
+                    height: 1,
+                    ..frame.area()
+                };
+                app.status.render(frame, area, &theme)
+            })
             .expect("frame");
 
         let viewport = screen.viewport_text();
@@ -772,6 +790,199 @@ fn f6_a_refused_host_does_not_read_like_a_visited_one() {
         refused.contains("web ads.example.com:443 refused"),
         "the refusal is drawn as a refusal: {refused}",
     );
+}
+
+/// **F10.** The provider is on this line, and it got here from the event that
+/// carries it.
+///
+/// Until 0.11.0 the only place the provider was ever named was a `via {provider}`
+/// row committed under every prompt. That row is gone, so if this field were not
+/// filled the fact would have been deleted rather than moved —
+/// `US-IO-CLI-0.11.0-I01`.
+#[test]
+fn f10_the_provider_reaches_the_status_line_from_the_started_event() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(
+        &event(EventKind::Started {
+            goal: "make the failing test pass".into(),
+            provider: "openrouter".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(
+        line.contains("provider:openrouter"),
+        "the provider is named nowhere else in the product now: {line:?}",
+    );
+    // Never the word the removed row used. F2 asserts `via ` never reaches a
+    // terminal again, and a status line is a terminal.
+    assert!(!line.contains("via "), "{line:?}");
+}
+
+/// **F10.** A fallback is a different provider answering the same turn, so the
+/// field says who is serving rather than who was asked.
+#[test]
+fn f10_a_fallback_moves_the_provider_field() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(
+        &event(EventKind::Started {
+            goal: "g".into(),
+            provider: "openrouter".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::FellBackTo {
+            provider: "anthropic".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(line.contains("provider:anthropic"), "{line:?}");
+    assert!(!line.contains("openrouter"), "{line:?}");
+}
+
+/// **F10.** The step count, which the removed `Finished` row was the only place
+/// to read.
+///
+/// It climbs from the envelope's own step number rather than from a counter kept
+/// here, because a resumed run replays its backlog — and it is replaced by the
+/// run's own total at the end, which is authoritative over the steps this
+/// process happened to see.
+#[test]
+fn f10_the_step_count_climbs_and_is_replaced_by_the_runs_own_total() {
+    let mut app = App::new(DARK, "opus-5");
+    assert!(
+        !app.status.line(120, &DARK).to_string().contains("step"),
+        "a session that has taken no steps says nothing about steps",
+    );
+
+    app.event(&step(1, 10), std::time::Duration::ZERO);
+    assert!(app.status.line(120, &DARK).to_string().contains("1 step"));
+
+    app.event(&step(2, 10), std::time::Duration::ZERO);
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(line.contains("2 steps"), "{line:?}");
+
+    app.event(
+        &event(EventKind::Finished {
+            outcome: "finished".into(),
+            steps: 9,
+            tokens: 0,
+        }),
+        std::time::Duration::ZERO,
+    );
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(
+        line.contains("9 steps"),
+        "the run's own total outranks the steps we saw: {line:?}",
+    );
+}
+
+/// **F10, and its sabotage arm.** Both new fields are run facts: they are
+/// cleared when the conversation under the line changes, and never when a run
+/// begins.
+///
+/// The arm the criterion names is clearing them on `Started` instead, which
+/// blanks the provider at the exact moment it becomes true.
+#[test]
+fn f10_the_provider_and_the_step_count_are_forgotten_with_the_run() {
+    let mut app = App::new(DARK, "opus-5");
+    app.event(
+        &event(EventKind::Started {
+            goal: "g".into(),
+            provider: "openrouter".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+    app.event(&step(3, 40), std::time::Duration::ZERO);
+
+    // Still there while the run is the run — this is the half the sabotage arm
+    // breaks.
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(line.contains("provider:openrouter"), "{line:?}");
+    assert!(line.contains("3 steps"), "{line:?}");
+
+    app.status.forget_run();
+    assert_eq!(app.status.provider, None);
+    assert_eq!(app.status.steps, None);
+    let line = app.status.line(120, &DARK).to_string();
+    assert!(!line.contains("provider:"), "{line:?}");
+    assert!(!line.contains("step"), "{line:?}");
+}
+
+/// **F10.** Both drop from the right before the model, the posture and the state
+/// word, which is the rule every field on this line already follows.
+#[test]
+fn f10_the_new_fields_drop_before_the_model_the_posture_and_the_state() {
+    let mut app = App::new(DARK, "openai/gpt-5.6-luna");
+    app.status.policy = Some("workspace".into());
+    app.event(
+        &event(EventKind::Started {
+            goal: "g".into(),
+            provider: "openrouter".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+    app.event(&step(4, 900), std::time::Duration::ZERO);
+
+    let narrow = app.status.line(46, &DARK).to_string();
+    assert!(narrow.contains("openai/gpt-5.6-luna"), "{narrow:?}");
+    assert!(narrow.contains("policy:workspace"), "{narrow:?}");
+    assert!(narrow.contains("ready"), "{narrow:?}");
+    assert!(
+        !narrow.contains("provider:") && !narrow.contains("step"),
+        "the two new fields must be the ones that go, not the three that must not: {narrow:?}",
+    );
+    assert!(
+        narrow.chars().count() <= 46,
+        "the line wrapped instead of dropping fields: {narrow:?}",
+    );
+}
+
+/// **F1's counter, reachable.** A kind with no disposition is counted and the
+/// count is on the status line — absent at zero, which is every line this
+/// release will ever draw against the harness it is locked to.
+#[test]
+fn f1_an_untriaged_kind_is_reachable_on_the_status_line() {
+    let mut status = Status::new("opus-5");
+    assert!(!rendered(&status, 120).contains("unknown"));
+    status.unknown = 2;
+    assert!(rendered(&status, 120).contains("unknown 2"));
+}
+
+/// **F10, and the model field.** A routing rule that changes the model mid-run
+/// changes what this line says, because the field is the change itself — that is
+/// `routed`'s whole disposition in `triage::TRIAGE`.
+#[test]
+fn a_routed_model_moves_the_model_field() {
+    let mut app = App::new(DARK, "openai/gpt-5.6-luna");
+    app.event(
+        &event(EventKind::Routed {
+            from: "openai/gpt-5.6-luna".into(),
+            to: "anthropic/claude-opus-5".into(),
+            why: "the task got harder".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+    assert!(app
+        .status
+        .line(120, &DARK)
+        .to_string()
+        .contains("anthropic/claude-opus-5"));
+
+    // An empty `to` is the provider's own default, not a session with no model.
+    app.event(
+        &event(EventKind::Routed {
+            from: "anthropic/claude-opus-5".into(),
+            to: String::new(),
+            why: "back to the default".into(),
+        }),
+        std::time::Duration::ZERO,
+    );
+    assert_eq!(app.status.model, "anthropic/claude-opus-5");
 }
 
 /// All three are run facts and none outlives the run that reported them.

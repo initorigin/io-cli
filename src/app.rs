@@ -31,6 +31,17 @@ use crate::theme::{Theme, Tone};
 /// [`App::tick`], which is what decides whether a frame is drawn.
 pub const TICK: Duration = Duration::from_millis(100);
 
+/// Rows the composer has at rest, and has had since 0.1.0.
+pub const COMPOSER_ROWS: u16 = 2;
+
+/// The most rows a prompt may take, however long it is.
+///
+/// The viewport is subtracted from the terminal, so a composer allowed to grow
+/// without a bound would push the transcript it is being written against off the
+/// screen. Past this the prompt scrolls inside its own rows, which is what it did
+/// at every length before 0.11.0.
+pub const COMPOSER_MAX: u16 = 10;
+
 /// Whether a turn is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -57,8 +68,15 @@ pub enum Command {
     /// [`crate::shell`] for what happens to it and why the terminal is never
     /// handed over.
     Shell(String),
-    /// Call `Steer::interrupt` on the running turn.
+    /// Ask the running turn to stop at its next step boundary.
     Interrupt,
+    /// Stop the running turn now, without waiting for a boundary.
+    ///
+    /// The second press of the interrupt key. What the driver does with it is
+    /// drop the turn's future, which is the only thing that ends a turn that is
+    /// inside a slow tool call — and the reason it is a second press rather than
+    /// the first is that a run dropped mid-flight closes no record of itself.
+    Abandon,
     /// Leave.
     Exit,
     /// Repaint the viewport from scratch, never the scrollback.
@@ -139,6 +157,11 @@ pub struct App {
     /// relative to the workspace, and the process's working directory is not the
     /// same thing under `io -C <dir>`.
     root: std::path::PathBuf,
+    /// Whether the operator has already asked this turn to stop.
+    ///
+    /// Reset by `started`, so every turn gets its own first press. It is what
+    /// makes the second press mean something different from the first.
+    stopping: bool,
     /// Whether the turn now running is a *contained* turn.
     ///
     /// Set by the driver as a turn starts and cleared as it ends. It exists for
@@ -178,6 +201,7 @@ impl App {
             quits: 0,
             armed: None,
             contained: false,
+            stopping: false,
             fleet: crate::fleet::Fleet::new(),
             fleet_open: false,
             keys: Keys::default(),
@@ -193,8 +217,11 @@ impl App {
     }
 
     /// Say which workspace this session is held over.
+    ///
+    /// Handed to `Events` as well, which shortens a tool's target against it.
     pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {
         self.root = root.into();
+        self.events.set_root(self.root.clone());
     }
 
     /// Say how much of a change a diff should show. Read from the harness's own
@@ -212,6 +239,10 @@ impl App {
     /// indicator consults.
     pub fn set_plain(&mut self, plain: bool) {
         self.status.plain = plain;
+        // The renderer needs it too from 0.11.0: the provider and the run's two
+        // numbers are status-line fields now, and a plain session has no status
+        // line a reader can follow. See `Events::set_plain`.
+        self.events.set_plain(plain);
     }
 
     /// Whether this session runs in plain mode.
@@ -350,16 +381,12 @@ impl App {
             // first one rather than on nothing.
             None => Posture::Workspace,
         };
+        // **Silently.** The posture is on the footer, which repaints on the same
+        // keystroke, so the line this used to commit said in the scrollback what
+        // the screen was already showing — and cycling through three postures to
+        // reach the one you wanted left three of them behind, permanently, in the
+        // transcript of a session that ran under one.
         self.set_posture(Some(next));
-        self.say(
-            Tone::Muted,
-            format!(
-                "policy:{} {} {}",
-                next.short(),
-                self.theme.glyphs.dash,
-                next.detail()
-            ),
-        );
         Command::None
     }
 
@@ -435,6 +462,11 @@ impl App {
     pub fn started(&mut self) {
         self.mode = Mode::Running;
         self.status.working = true;
+        self.stopping = false;
+        // The clock and the turn's own token count start here. What a reader
+        // wants of the row above the prompt is how long THIS turn has been going
+        // and what it is costing — not how long the terminal has been open.
+        self.status.start_run();
         self.quits = 0;
         self.announce();
     }
@@ -552,6 +584,10 @@ impl App {
         self.status_from(event);
         self.fleet.event(event);
         let lines = self.events.event(event, at);
+        // The renderer counts what it could not place; the status line is where
+        // that count is reachable. Read back rather than incremented here, so
+        // there is one counter and not two that can disagree.
+        self.status.unknown = self.events.unknown();
         self.pending.extend(lines);
     }
 
@@ -563,6 +599,10 @@ impl App {
     /// a database to hold one.
     pub fn edits(&mut self, edits: &[io_harness::Edit], width: u16) {
         for edit in edits {
+            // A blank above as well as the one the cell ends with. A diff is a
+            // block and reads as one; committed straight under the tool cell
+            // that produced it, its header looked like another row of that cell.
+            self.pending.push(Line::from(""));
             self.pending
                 .extend(crate::diff::cell(edit, &self.theme, width));
         }
@@ -577,11 +617,6 @@ impl App {
         self.pending.extend(lines);
     }
 
-    /// The status line's share of an event.
-    ///
-    /// Only the events that carry a fact set a field, and nothing sets one to a
-    /// default. A field this has never heard about stays `None`, which is what the
-    /// line renders as nothing at all rather than as a zero.
     /// Whether the fleet view is up.
     pub fn fleet_open(&self) -> bool {
         self.fleet_open
@@ -598,6 +633,60 @@ impl App {
         self.fleet_open = false;
     }
 
+    /// The viewport height this session wants right now.
+    ///
+    /// [`VIEWPORT_HEIGHT`] until the prompt outgrows its two rows, and then as
+    /// many as the prompt needs, up to [`COMPOSER_MAX`]. The driver compares this
+    /// with the viewport it has and re-places when they differ — which is the
+    /// one operation in this product that re-queries the cursor, so it is done at
+    /// an idle prompt and nowhere else.
+    ///
+    /// The cap is not a matter of taste. The viewport is subtracted from the
+    /// terminal, and a composer allowed to take all of it would push the
+    /// transcript it is being written against off the screen.
+    pub fn viewport_wanted(&self, width: u16, rows: u16) -> u16 {
+        if self.mode == Mode::Running || self.modal() {
+            return VIEWPORT_HEIGHT;
+        }
+        let wanted = self.composer.rows_wanted(width).min(COMPOSER_MAX);
+        VIEWPORT_HEIGHT
+            .saturating_add(wanted.saturating_sub(COMPOSER_ROWS))
+            .min(rows.saturating_sub(2).max(VIEWPORT_HEIGHT))
+    }
+
+    /// Start a new conversation, or refuse because a turn is in flight.
+    ///
+    /// **Everything `/clear` does that is not the driver's is here**, so that the
+    /// refusal has somewhere a test can stand. The driver's half — a new session
+    /// id from the harness's store, and the screen — cannot be reached by a test
+    /// at all, and a guard written there would be a guard nothing could check.
+    ///
+    /// The refusal is not the only one: a turn in flight keeps the driver inside
+    /// its own loop, where a slash command is already answered with the same
+    /// sentence. This is the lock that can be proved, and the two agree.
+    ///
+    /// Returns whether the caller should go on and replace the session. Nothing
+    /// is destroyed either way: the conversation this ends is in io-harness's
+    /// store and is still reachable with `/resume`, which is what makes clearing
+    /// the screen a display decision.
+    pub fn clear_conversation(&mut self) -> bool {
+        if self.mode == Mode::Running {
+            let dash = self.theme.glyphs.dash;
+            self.say(
+                Tone::Muted,
+                format!("not while a turn is running {dash} Ctrl+C interrupts it first"),
+            );
+            return false;
+        }
+        // The same three the conversation-changing commands already reset,
+        // beside each other for the same reason: every fact in them belongs to
+        // the conversation that is ending.
+        self.status.forget_run();
+        self.forget_fleet();
+        self.events.forget();
+        true
+    }
+
     /// Open the view, or close it.
     ///
     /// Opening a view of nothing is not refused: a session in contained mode
@@ -607,19 +696,61 @@ impl App {
         self.fleet_open = !self.fleet_open;
     }
 
+    /// The status line's share of an event.
+    ///
+    /// Only the events that carry a fact set a field, and nothing sets one to a
+    /// default. A field this has never heard about stays `None`, which is what
+    /// the line renders as nothing at all rather than as a zero.
     fn status_from(&mut self, event: &RunEvent) {
         match &event.kind {
+            // **The provider, which until 0.11.0 was named by a line under every
+            // prompt and nowhere else.** The line is gone and the fact is here;
+            // see `US-IO-CLI-0.11.0-I01` for why that is a relocation rather than
+            // a removal.
+            io_harness::EventKind::Started { provider, .. } => {
+                self.status.provider = Some(provider.clone());
+            }
+            // A different provider answering the same turn. io-harness emits this
+            // once, at the transition, so the field says who is serving now
+            // rather than who was asked.
+            io_harness::EventKind::FellBackTo { provider } => {
+                self.status.provider = Some(provider.clone());
+            }
+            // The model the run is asking, changed mid-run by a routing rule.
+            // `to` is empty for the provider's own default, and a field blanked
+            // to nothing would read as a session with no model at all.
+            io_harness::EventKind::Routed { to, .. } if !to.is_empty() => {
+                self.status.model = to.clone();
+            }
             io_harness::EventKind::Step { tokens, .. } => {
                 // The session's total, not the step's own. A field that swings
                 // rather than climbs cannot be read at a glance.
                 self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
+                self.status.run_tokens = Some(self.status.run_tokens.unwrap_or(0) + tokens);
+                // The envelope's own number rather than a count kept here: a
+                // resumed run replays its backlog, and a counter incremented per
+                // event would climb past the step the run is actually on.
+                self.status.steps = Some(event.step);
             }
-            // The run's own total, which is authoritative over the sum of the steps
-            // we happened to see. Guarded on the tag rather than inside the arm:
-            // a run that reported no usage at all reports `0`, and overwriting a
-            // real total with it would turn a known number into a wrong one.
-            io_harness::EventKind::Finished { tokens, .. } if *tokens > 0 => {
-                self.status.tokens = Some(*tokens);
+            io_harness::EventKind::Finished { tokens, steps, .. } => {
+                // The run's own totals, which are authoritative over the sum of
+                // the steps we happened to see. The token guard is on the value
+                // rather than on the tag: a run that reported no usage at all
+                // reports `0`, and overwriting a real total with it would turn a
+                // known number into a wrong one. The step count has no such
+                // ambiguity — a run that ended having taken no steps really did
+                // take none, and a conversational turn is exactly that.
+                if *tokens > 0 {
+                    // The run's own total is authoritative for the run. The
+                    // session's is the sum of its runs, so the difference
+                    // between what the steps reported and what the run says is
+                    // what gets added to it rather than replacing it.
+                    let counted = self.status.run_tokens.unwrap_or(0);
+                    let session = self.status.tokens.unwrap_or(0);
+                    self.status.tokens = Some(session + tokens.saturating_sub(counted));
+                    self.status.run_tokens = Some(*tokens);
+                }
+                self.status.steps = Some(*steps);
             }
             io_harness::EventKind::Compacted { after_tokens, .. } => {
                 // The denominator is io-harness's own declared budget, asked of the
@@ -824,15 +955,13 @@ impl App {
             // rewrite of it.
             Some(hit) if hit.action() == Action::Rewind && self.composer.is_empty() => {
                 if self.mode == Mode::Running {
-                    self.say(
-                        Tone::Muted,
-                        format!(
-                            "not while a turn is running {} a rewind moves the head this \
-                             turn is writing to",
-                            self.theme.glyphs.dash
-                        ),
-                    );
-                    return Command::None;
+                    // **`Esc` stops the turn.** It is the key every other agent
+                    // in this field stops with, and while a turn runs there is
+                    // nothing else for it to mean: the rewind it is otherwise
+                    // bound to is refused during a turn anyway, because it moves
+                    // the head the turn is writing to. So rather than saying no,
+                    // it does the thing the operator pressed it for.
+                    return self.interrupt_or_quit();
                 }
                 match hit {
                     Hit::Fire(_) => Command::Rewind,
@@ -913,20 +1042,31 @@ impl App {
 
     fn interrupt_or_quit(&mut self) -> Command {
         if self.mode == Mode::Running {
-            // The turn is what gets stopped, not the process. `Steer::interrupt`
-            // ends it at a step boundary, whole, and leaves it resumable.
+            // **Once asks, twice takes.** The first press cancels through the
+            // observer, which io-harness honours at the next step boundary — the
+            // run closes itself, the store records how it ended, and the work so
+            // far is kept. That is the right stop and it is not always a fast
+            // one: a step in the middle of a slow tool call, or a wide fan-out
+            // waiting on children, can take seconds to reach a boundary.
+            //
+            // So the second press does not wait. The driver drops the turn
+            // future, which ends it where it stands.
             self.quits = 0;
-            // The two paths end a turn at different moments, and the sentence
-            // says which one this is. A contained turn is cancelled through the
-            // observer, and io-harness honours that at the next boundary where
-            // no child is in flight — so a wide fan-out can take a while, and an
-            // operator told "the next step boundary" would think the key missed.
+            if self.stopping {
+                self.say(Tone::Warning, "stopping now");
+                return Command::Abandon;
+            }
+            self.stopping = true;
+            let dash = self.theme.glyphs.dash;
             let where_it_stops = if self.contained {
-                "cancelling at the next point where no child is in flight"
+                "stopping at the next point where no child is in flight"
             } else {
-                "interrupting at the next step boundary"
+                "stopping at the next step boundary"
             };
-            self.say(Tone::Warning, where_it_stops);
+            self.say(
+                Tone::Warning,
+                format!("{where_it_stops} {dash} press again to stop now"),
+            );
             return Command::Interrupt;
         }
         if !self.composer.is_empty() {
@@ -970,15 +1110,63 @@ impl App {
             open.render(frame, area, &self.theme);
             return;
         }
-        // One row for the streaming tail, one for the status line, the rest for
-        // the composer. Content before metadata, top to bottom, so a reader
-        // reaches the model's words before the token count.
+        // The activity line while a turn is in flight, one row for the streaming
+        // tail, one for the status line, the rest for the composer. Content
+        // before metadata, top to bottom, so a reader reaches the model's words
+        // before the token count.
+        //
+        // The rows are claimed in the order they can be given up: the composer
+        // last, then the status line, then the live row, and the activity line
+        // first — it is the newest row and the one a session can be read
+        // without. At an idle prompt it costs nothing at all, because there is
+        // no turn for it to be about and the composer takes the row back.
+        // **Three rows, not one: a rule and two lines of footer.** They go last
+        // and come back first, in that order — the identity row is what a
+        // terminal too short for the rest keeps, because a footer that can only
+        // say one thing should say what this session is and whether it is
+        // working.
+        let status_rows = match area.height {
+            0..=1 => 0,
+            2..=6 => 1,
+            _ => 3,
+        };
         let live_rows = u16::from(area.height >= 3);
-        let status_rows = u16::from(area.height >= 2);
-        let composer_rows = area.height - live_rows - status_rows;
+        // **The row is reserved whether or not there is a turn to put in it.**
+        // Drawn only while one is in flight — that is F5 — but *claimed* always,
+        // because a composer that is three rows at an idle prompt and two while a
+        // turn runs moves the prompt up a row the moment you press Enter and back
+        // down when it finishes. The row costs nothing when it is empty and the
+        // layout is worth more than the row.
+        // On a terminal too short for this release's viewport the rows that go
+        // are these two, and the composer keeps the two it has had since 0.1.0.
+        // A one-row composer is a prompt you cannot read a pasted line in.
+        let activity_rows = u16::from(area.height >= 7);
+        // The blank above the activity line. It is the last row claimed and the
+        // first given up, because it carries nothing — but what it buys is the
+        // sticky row reading as a header over the work rather than as the last
+        // line of it.
+        let air_rows = u16::from(area.height >= 8);
+        let activity = if activity_rows == 1 {
+            self.status.activity(area.width, &self.theme)
+        } else {
+            None
+        };
+        let composer_rows = area.height - air_rows - activity_rows - live_rows - status_rows;
+
+        if let Some(activity) = activity {
+            frame.render_widget(
+                Paragraph::new(activity),
+                Rect {
+                    y: area.y + air_rows,
+                    height: 1,
+                    ..area
+                },
+            );
+        }
 
         if live_rows > 0 {
             let live = Rect {
+                y: area.y + air_rows + activity_rows,
                 height: live_rows,
                 ..area
             };
@@ -990,7 +1178,7 @@ impl App {
         }
 
         let composer = Rect {
-            y: area.y + live_rows,
+            y: area.y + air_rows + activity_rows + live_rows,
             height: composer_rows,
             ..area
         };
@@ -1003,10 +1191,10 @@ impl App {
             self.composer.render(frame, composer, &self.theme);
         }
 
-        if status_rows == 1 {
+        if status_rows > 0 {
             let status = Rect {
-                y: area.y + live_rows + composer_rows,
-                height: 1,
+                y: area.y + air_rows + activity_rows + live_rows + composer_rows,
+                height: status_rows,
                 ..area
             };
             self.status.render(frame, status, &self.theme);

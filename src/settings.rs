@@ -100,6 +100,20 @@ pub struct CliSettings {
     /// parses no skill file of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<std::path::PathBuf>,
+    /// How many steps one turn may take: `max_steps = 40`.
+    ///
+    /// **io-harness caps a session turn at twelve and io-cli cannot raise it on
+    /// the steered path**, because that path builds its own contract and takes
+    /// none from the caller. A real turn that reads a repository and writes a
+    /// file spends twelve steps easily, and what an operator sees is
+    /// `error: step_cap_reached` with the work half done.
+    ///
+    /// So this is honoured on the one path that carries a contract — a contained
+    /// session, `[app.io-cli.containment]` — and the outcome's own sentence says
+    /// so where it is refused. `[run] max_steps` is a different knob for a
+    /// different entry point: it reaches `io exec` and never an interactive turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
 }
 
 /// The caps this session runs its turns under, if any.
@@ -375,15 +389,18 @@ pub fn render(
                 // fan-out, and a file that arrived with caps already in it would
                 // have turned steering off for somebody who never chose to.
                 containment: None,
-                // The four capability keys are left out for the same reason as
-                // the caps above and with the same force: each reaches a turn
-                // only through a contract, which only a contained turn takes, so
-                // writing any of them would turn fan-out on for somebody who
-                // never chose it. The wizard asks about none of them.
+                // The capability keys are left out because the wizard asks about
+                // none of them and a file that arrived with an MCP server, a
+                // language server or a browser in it would have configured
+                // something nobody chose.
                 mcp: None,
                 lsp: None,
                 browser: None,
                 skills: None,
+                // And the step cap for the same reason as the diff style: its
+                // absence is `contract::MAX_STEPS`, and a key written with its
+                // own default is a key a reader has to wonder about.
+                max_steps: None,
             },
         },
     };

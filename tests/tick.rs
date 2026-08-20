@@ -28,13 +28,16 @@ fn pump(app: &mut App, screen: &mut io_cli::term::Screen<support::Fixed>, age: D
     true
 }
 
-/// The status line is the last row the viewport drew.
+/// The footer's identity row: the state word, the model, and the clock.
+///
+/// Second from the bottom since 0.11.0 — the last row is the counts, and the row
+/// above the identity one is the rule. This is the row the clock is on, which is
+/// what every test in this file is about.
 fn status_row(screen: &io_cli::term::Screen<support::Fixed>) -> String {
-    screen
-        .viewport_text()
-        .lines()
-        .next_back()
-        .unwrap_or_default()
+    let viewport = screen.viewport_text().to_string();
+    let rows: Vec<&str> = viewport.lines().collect();
+    rows.get(rows.len().saturating_sub(2))
+        .unwrap_or(&"")
         .to_string()
 }
 
@@ -108,6 +111,106 @@ fn f2_the_tick_stops_again_when_the_turn_ends() {
         !pump(&mut app, &mut screen, Duration::from_secs(2)),
         "the tick outlived the turn that justified it",
     );
+}
+
+/// The activity line: the second row the viewport draws.
+///
+/// The first is deliberately blank — the air between the sticky row and the
+/// transcript scrolling underneath it, without which the activity line reads as
+/// the last line of the work rather than the line describing it.
+fn activity_row(screen: &io_cli::term::Screen<support::Fixed>) -> String {
+    screen
+        .viewport_text()
+        .lines()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Whether any word from the activity line's own list is on the row.
+fn is_activity(row: &str) -> bool {
+    io_cli::status::WORDS.iter().any(|word| row.contains(word))
+}
+
+/// 0.11.0 F5 — the activity line is up for exactly the turn.
+///
+/// Before the first turn there is no turn for it to be about; after the last one
+/// ends there is none either, and a clock still moving over an idle session is
+/// the criterion's own sabotage arm. `App::finished` is the single exit — a turn
+/// that ended by interrupt, by refusal or by error leaves through it too — so
+/// asserting on it is asserting on all four endings.
+#[test]
+fn f5_the_activity_line_is_present_for_exactly_the_turn() {
+    let (mut screen, _recorder) = support::screen(80, 24);
+    let mut app = App::new(DARK, "anthropic/claude-sonnet-4");
+
+    screen
+        .draw(|frame| app.render(frame, frame.area()))
+        .expect("frame");
+    assert!(
+        !is_activity(&activity_row(&screen)),
+        "an idle session drew an activity line: {:?}",
+        activity_row(&screen),
+    );
+
+    app.started();
+    pump(&mut app, &mut screen, Duration::from_secs(1));
+    let running = activity_row(&screen);
+    assert!(is_activity(&running), "{running:?}");
+    assert!(
+        running.contains("1s"),
+        "the clock is on the activity line: {running:?}",
+    );
+
+    app.finished();
+    screen
+        .draw(|frame| app.render(frame, frame.area()))
+        .expect("frame");
+    assert!(
+        !is_activity(&activity_row(&screen)),
+        "the activity line outlived the turn: {:?}",
+        activity_row(&screen),
+    );
+}
+
+/// 0.11.0 F5 — the clock advances on the tick, not on an event arriving.
+///
+/// No event is delivered in this test at all. The only thing that happens is the
+/// age the driver hands in, which is the same argument the status line's own
+/// clock is drawn from — and the token count is read off the same `Status`, so
+/// the two lines cannot disagree about a number they share.
+#[test]
+fn f5_the_activity_clock_advances_on_the_tick_and_shares_the_status_lines_numbers() {
+    let (mut screen, _recorder) = support::screen(80, 24);
+    let mut app = App::new(DARK, "m");
+    app.started();
+    app.status.tokens = Some(9_000);
+    app.status.run_tokens = Some(1_500);
+
+    pump(&mut app, &mut screen, Duration::from_secs(1));
+    let first = activity_row(&screen);
+    pump(&mut app, &mut screen, Duration::from_secs(62));
+    let second = activity_row(&screen);
+
+    assert_ne!(
+        first, second,
+        "the activity line's clock did not move between two ticks",
+    );
+    assert!(second.contains("1m02s"), "{second:?}");
+
+    // The same token count, in the same spelling, on both rows. The footer's
+    // counts are its last row — the identity row above them carries the state,
+    // the model and the clock, and the numbers live under it.
+    let counts = screen
+        .viewport_text()
+        .lines()
+        .next_back()
+        .unwrap_or_default()
+        .to_string();
+    // The activity line carries THIS turn's spend; the footer carries the
+    // session's. Two counters because the two rows answer different questions.
+    assert!(second.contains("1.5k tok"), "{second:?}");
+    assert!(counts.contains("9.0k tok"), "{counts:?}");
 }
 
 #[test]

@@ -169,6 +169,54 @@ fn a_commit_makes_the_next_identical_frame_a_real_repaint() {
     );
 }
 
+/// 0.11.0 F5 — the activity line brings no repaint of its own.
+///
+/// The row is drawn by the tick that already advances the spinner and the clock,
+/// and the frame is still diffed against the last one — so a running turn whose
+/// age has not moved and whose events have not arrived writes nothing, exactly
+/// as an idle session does. A row that carried a clock of its own, or a spinner
+/// on its own schedule, would fail here by writing a second frame for a screen
+/// that did not change.
+#[test]
+fn f5_an_activity_line_over_an_unchanged_turn_is_not_drawn_twice() {
+    use std::time::Duration;
+
+    let (mut screen, recorder) = support::screen(80, 24);
+    let mut app = io_cli::app::App::new(io_cli::theme::DARK, "m");
+    app.started();
+
+    let mut draw = |app: &mut io_cli::app::App| {
+        screen
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("frame");
+        recorder.bytes().len()
+    };
+
+    app.tick(Duration::from_secs(1));
+    let one_frame = draw(&mut app);
+    assert!(
+        one_frame > 0,
+        "the first frame of a running turn wrote nothing"
+    );
+
+    // Drawn again with no tick in between. The row is a function of `Status`,
+    // and `Status` has not moved — so an activity line with a clock or a spinner
+    // of its own would show up here as a second frame for an unchanged screen.
+    assert_eq!(
+        draw(&mut app),
+        one_frame,
+        "the activity line changed without the tick that draws it",
+    );
+
+    // The tick moves, and now there is something to say. This is the repaint
+    // that already existed — the spinner and the clock — and not a new one.
+    app.tick(Duration::from_secs(2));
+    assert!(
+        draw(&mut app) > one_frame,
+        "the tick advanced and the viewport did not",
+    );
+}
+
 #[test]
 fn a_resize_makes_the_next_identical_frame_a_real_repaint() {
     // Same reason, different cause: recomputing an inline viewport clears it.

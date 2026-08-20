@@ -97,7 +97,7 @@ fn n6_a_scripted_session_runs_with_no_color_and_writes_no_colour() {
 
     let (mut screen, recorder) = support::screen(100, 30);
     screen
-        .commit(&splash::lines(&theme, true, 100))
+        .commit(&splash::lines(&theme, true, 100, &splash::About::default()))
         .expect("splash");
     for tone in MEANINGFUL {
         screen
@@ -240,7 +240,12 @@ fn f3_no_color_survives_the_first_run() {
     );
     let (mut session, bytes) = support::screen(100, 30);
     session
-        .commit(&splash::lines(&session_theme, true, 100))
+        .commit(&splash::lines(
+            &session_theme,
+            true,
+            100,
+            &splash::About::default(),
+        ))
         .expect("splash");
     for tone in MEANINGFUL {
         session
@@ -271,7 +276,7 @@ fn the_splash_is_suppressed_without_colour_a_tty_or_the_width_for_it() {
 
     // Suppressed does not mean silent: the version line is still committed, so a
     // session always says what it is.
-    let lines = splash::lines(&MONO, false, 40);
+    let lines = splash::lines(&MONO, false, 40, &splash::About::default());
     let rendered: String = lines
         .iter()
         .flat_map(|line| line.spans.iter())

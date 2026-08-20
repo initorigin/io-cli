@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
@@ -113,7 +113,12 @@ async fn run() -> Result<u8, String> {
         let (keys, mut inputs) = Keyboard::start(&screen);
         let width = screen.width();
         screen
-            .commit(&splash::lines(&theme, true, width))
+            .commit(&splash::lines(
+                &theme,
+                true,
+                width,
+                &splash::About::default(),
+            ))
             .map_err(|error| error.to_string())?;
 
         let chosen = wizard(&mut screen, &mut inputs, theme).await;
@@ -145,8 +150,21 @@ async fn run() -> Result<u8, String> {
     let (keys, mut inputs) = Keyboard::start(&screen);
     if !setup && config.provider_spec().is_some() {
         let width = screen.width();
+        // What an operator has to know at the first prompt and cannot read off
+        // an abbreviation they have not learned yet: where the turn is going,
+        // what it may do when it gets there, and which directory it is about.
+        let about = splash::About {
+            model: cli.model.clone().or_else(|| {
+                config
+                    .provider_spec()
+                    .map(|spec| io_cli::provider::model_of(spec).to_string())
+            }),
+            policy: settings::Posture::of(&config.policy().unwrap_or_default().defaults)
+                .map(|posture| posture.short().to_string()),
+            workspace: Some(root.display().to_string()),
+        };
         screen
-            .commit(&splash::lines(&theme, true, width))
+            .commit(&splash::lines(&theme, true, width, &about))
             .map_err(|error| error.to_string())?;
     }
 
@@ -391,7 +409,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
     }
-    let started = Instant::now();
+    // **The session no longer keeps a clock, because nothing shows one.** The
+    // clock on screen belongs to the turn — it starts at zero when one starts and
+    // stops where it stopped — so the reading a session-long `Instant` gave was
+    // `22m12s` beside a turn six seconds old. Each turn is handed its own.
     let mut picker: Option<(Picker, Pick)> = None;
 
     paint(screen, &mut app)?;
@@ -402,6 +423,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         };
         let Event::Key(key) = event else {
             if let Event::Resize(width, height) = event {
+                // A terminal that resized under an open palette closes it and
+                // takes the rows back. The alternative is re-placing a tall
+                // viewport against a screen that may no longer have room for it,
+                // in the middle of an event this loop did not ask for — and the
+                // palette is one keystroke away from being reopened at the size
+                // the terminal now is.
+                if matches!(picker, Some((_, Pick::Palette))) {
+                    picker = None;
+                    replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+                }
                 screen
                     .resize(width, height)
                     .map_err(|error| error.to_string())?;
@@ -409,7 +440,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             if let Event::Paste(text) = event {
                 app.paste(&text, picker.is_some());
             }
-            app.status.elapsed = started.elapsed();
             paint(screen, &mut app)?;
             continue;
         };
@@ -420,6 +450,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
+            // Read before the match, because the match is what closes it.
+            let was_palette = matches!(kind, Pick::Palette);
             match open.key(key) {
                 Outcome::Chosen(index) => {
                     let label = open.rows()[index].label.clone();
@@ -655,7 +687,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Outcome::Cancelled => picker = None,
                 Outcome::Idle => {}
             }
-            app.status.elapsed = started.elapsed();
+            // The rows go back the moment the palette is no longer the thing on
+            // screen — by a choice, by `Esc`, or by a choice that descended into
+            // a completion picker, which is a different picker and does not get
+            // the palette's height. A viewport left tall would be rows the
+            // operator never agreed to give up.
+            if was_palette && !matches!(picker, Some((_, Pick::Palette))) {
+                replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+            }
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -667,11 +706,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // `/theme` needs it to be. The condition is `commands::opens_palette`
         // rather than a test written here, because nothing can reach this file.
         if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
-            picker = Some((
-                Picker::new("Which command?", commands::palette(&templates, &skills)),
-                Pick::Palette,
-            ));
-            app.status.elapsed = started.elapsed();
+            let rows = commands::palette(&templates, &skills);
+            // The whole list, subject only to the terminal's own height, which
+            // `Screen::attach_with` clamps to. A picker draws `height - 1` rows,
+            // so the row it is given back is the title's.
+            //
+            // Safe here and nowhere else: `opens_palette` is true only at an
+            // empty prompt with nothing armed, and a turn in flight never reaches
+            // this loop at all — so there is nothing streaming to be disturbed by
+            // a viewport landing somewhere new.
+            let tall = commands::palette_height(rows.len());
+            picker = Some((Picker::new("Which command?", rows), Pick::Palette));
+            if let Err(error) = replace_viewport(screen, tall) {
+                // The session's viewport is back — `Screen::replace` puts it
+                // there before returning — so the palette is still usable at the
+                // height it has always had. Said rather than swallowed, because
+                // the operator asked for the whole list and is not getting it.
+                app.say(Tone::Muted, format!("the list stays short: {error}"));
+            }
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -695,7 +747,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Ok(None) => app.say(Tone::Muted, "nothing in this workspace to complete"),
                 Err(error) => app.say(Tone::Error, error),
             }
-            app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -703,7 +754,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         match app.key(key) {
             Command::None => {}
             Command::Exit => return Ok(()),
-            Command::Interrupt => {}
+            // Nothing is running at an idle prompt, so there is nothing to stop.
+            Command::Interrupt | Command::Abandon => {}
             Command::ClearViewport => {
                 // The viewport, and nothing above it.
                 paint(screen, &mut app)?;
@@ -903,7 +955,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 },
                 Action::Expand => {
-                    let lines = expand(&session, &store, &app.theme);
+                    let lines = expand(&session, &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 Action::Copy(what) => {
@@ -922,6 +974,59 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
+                // **Start over, and only when it is safe.** The refusal is
+                // `App::clear_conversation`'s, which is where a test can reach
+                // it; the second lock is structural and one loop down, where a
+                // slash command typed during a turn is already refused with the
+                // same sentence.
+                Action::Clear => {
+                    if app.clear_conversation() {
+                        let root = session.root().to_path_buf();
+                        match Session::open(&store, &root) {
+                            Ok(fresh) => {
+                                session = fresh;
+                                // The screen only. The terminal's scrollback is
+                                // the terminal's, and the conversation this ends
+                                // is in the store and still listed by `/resume`
+                                // — so nothing here destroys anything, which is
+                                // what makes clearing the screen a display
+                                // decision rather than a deletion.
+                                screen
+                                    .escape("\x1b[H\x1b[2J")
+                                    .map_err(|error| error.to_string())?;
+                                // Placed again against the screen it now has:
+                                // the old viewport's origin was a row on a
+                                // screen that no longer exists.
+                                replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+                                // **The session opens again, banner and all.**
+                                // A cleared screen with one grey sentence on it
+                                // is not a fresh start, it is an empty room; the
+                                // card is what a first prompt has above it, and
+                                // a new conversation is a first prompt.
+                                let width = screen.width();
+                                let about = splash::About {
+                                    model: Some(app.status.model.clone()),
+                                    policy: app.posture().map(|p| p.short().to_string()),
+                                    workspace: Some(root.display().to_string()),
+                                };
+                                screen
+                                    .commit(&splash::lines(&app.theme, true, width, &about))
+                                    .map_err(|error| error.to_string())?;
+                                let dash = app.theme.glyphs.dash;
+                                app.say(
+                                    Tone::Muted,
+                                    format!(
+                                        "new conversation {dash} the last one is still in /resume"
+                                    ),
+                                );
+                            }
+                            Err(error) => app.say(
+                                Tone::Error,
+                                format!("a new conversation could not be started: {error}"),
+                            ),
+                        }
+                    }
+                }
             },
             // The operator's own line, in the operator's own shell. It reaches
             // this arm and no other: `App::compose` is the only thing that builds
@@ -962,13 +1067,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     contained.then_some(containment.as_ref()).flatten(),
                     &capabilities,
                     text,
-                    started,
+                    // **This turn's own clock, not the session's.** What a reader
+                    // wants of the row above the prompt is how long the thing in
+                    // front of them has been going; a clock that had been counting
+                    // since the terminal opened said `22m12s` about a turn six
+                    // seconds old. Every event age inside the turn is measured
+                    // from here too, which is what a tool cell's duration is a
+                    // difference of.
+                    Instant::now(),
                 )
                 .await?;
             }
         }
 
-        app.status.elapsed = started.elapsed();
         paint_picker(screen, &mut app, picker.as_mut())?;
     }
 }
@@ -1065,11 +1176,10 @@ async fn turn<P: Provider>(
     text: String,
     started: Instant,
 ) -> Result<(), String> {
-    let (steer, inbox) = Steer::channel();
     let (observer, mut events) = bridge::channel();
-    // Held whether or not this turn is contained, because the driver's `Ctrl+C`
-    // arm is one arm: a steered turn leaves it untouched for its whole life, and
-    // `Bridge::event` reads it rather than assuming.
+    // The one way a turn is stopped from the interface, contained or not. Both
+    // arms take a contract now and neither takes a steer inbox, so `Flow::Cancel`
+    // out of `Bridge::event` is what `Ctrl+C` and `Esc` set.
     let canceller = observer.canceller();
     // The other seam, and the one that can stop the agent. `DenyAll` stood here
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
@@ -1107,19 +1217,38 @@ async fn turn<P: Provider>(
     app.contained = containment.is_some();
     // Built before the future borrows it, and only for the arm that can take one:
     // the flat turn is handed `text` itself, exactly as it always was.
-    let contract = containment.map(|_| {
-        io_cli::contract::session(text.clone(), root.clone(), capabilities)
+    // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
+    // arm was `turn_steered`, which builds `TaskContract::workspace` inside
+    // io-harness and takes none from the caller — so its step cap was twelve,
+    // fixed, and a turn that read a repository and wrote a file ended on
+    // `error: step_cap_reached` with the work half done.
+    //
+    // `turn_bounded_observed` takes a contract, streams the model's text, and is
+    // not contained. What it does not take is a steer inbox, and that costs
+    // nothing this interface offered: the only thing io-cli ever sent through
+    // one was an interrupt, and the observer's `Flow::Cancel` — the path a
+    // contained turn has always been stopped by — ends a turn at the same step
+    // boundary.
+    let mut contract = io_cli::contract::session(text.clone(), root.clone(), capabilities);
+    // **The responder and the plan gate ride containment, and only containment.**
+    // Registering a plan gate turns io-harness's planning phase ON for the turn
+    // that carries it: the agent proposes a plan and the run stops until somebody
+    // decides. That is what `[app.io-cli.containment]` asks for, and it is not
+    // what an ordinary prompt asks for — attaching them to every turn made every
+    // turn stop for a plan, which a real run showed within a minute.
+    if containment.is_some() {
+        contract = contract
             .with_responder(std::sync::Arc::new(answerer))
-            .with_plan_gate(std::sync::Arc::new(gate))
-    });
+            .with_plan_gate(std::sync::Arc::new(gate));
+    }
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
-    > = match (containment, &contract) {
-        (Some(caps), Some(contract)) => Box::pin(session.turn_contained_bounded_observed(
-            contract, provider, store, policy, &approver, caps, &observer,
+    > = match containment {
+        Some(caps) => Box::pin(session.turn_contained_bounded_observed(
+            &contract, provider, store, policy, &approver, caps, &observer,
         )),
-        _ => Box::pin(
-            session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox),
+        None => Box::pin(
+            session.turn_bounded_observed(&contract, provider, store, policy, &approver, &observer),
         ),
     };
 
@@ -1131,9 +1260,11 @@ async fn turn<P: Provider>(
     let mut ticker = tokio::time::interval(io_cli::app::TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // `None` is the turn the operator abandoned. Every other arm breaks with what
+    // io-harness returned, error included.
     let outcome = loop {
         tokio::select! {
-            result = &mut running => break result,
+            result = &mut running => break Some(result),
             _ = ticker.tick() => {
                 if app.tick(started.elapsed()) {
                     paint(screen, app)?;
@@ -1184,20 +1315,36 @@ async fn turn<P: Provider>(
                         let command = app.key(key);
                         match command {
                             Command::Interrupt => {
-                                if containment.is_some() {
-                                    // A contained turn has no inbox to interrupt.
-                                    // The observer is the only thing io-harness
-                                    // reads from the interface while a tree runs,
-                                    // and it honours `Flow::Cancel` at the next
-                                    // boundary where no child is in flight — which
-                                    // is what `App::interrupt_or_quit` has just
-                                    // said on screen.
-                                    canceller.store(true, std::sync::atomic::Ordering::Relaxed);
-                                } else {
-                                    // Best effort: the turn may already have ended,
-                                    // in which case there is nobody left to tell.
-                                    let _ = steer.interrupt();
-                                }
+                                // **One path for both kinds of turn.** Neither
+                                // takes a steer inbox any more — a contained turn
+                                // never did, and the flat one gave its up for a
+                                // contract — so the observer is what io-harness
+                                // reads from the interface while a run goes, and
+                                // it honours `Flow::Cancel` at the next step
+                                // boundary. That is the sentence
+                                // `App::interrupt_or_quit` has just put on screen.
+                                canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            // **The second press, and it does not wait.** A
+                            // cancel is honoured at a step boundary, and a step
+                            // inside a slow tool call or a wide fan-out can be
+                            // seconds away — which is a key that reads as
+                            // ignored. Breaking here drops the turn's future,
+                            // which ends it where it stands.
+                            //
+                            // What that costs is the run's own record: io-harness
+                            // closes a run it cancelled and closes nothing for a
+                            // run that was dropped. So it is the second press and
+                            // never the first, and `App::finished` below still
+                            // commits whatever streamed before it.
+                            Command::Abandon => {
+                                canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                // Nothing is constructed to stand in for a result
+                                // io-harness never returned. `TurnResult` is
+                                // `#[non_exhaustive]` and could not be anyway,
+                                // and a fabricated outcome would be this
+                                // interface reporting a run it did not observe.
+                                break None;
                             }
                             // Refused with a sentence rather than dropped in
                             // silence. `/resume`, `/fork` and the rewind each move
@@ -1268,8 +1415,13 @@ async fn turn<P: Provider>(
     }
     app.finished();
 
-    if let Err(error) = outcome {
-        app.say(Tone::Error, error.to_string());
+    match outcome {
+        Some(Err(error)) => app.say(Tone::Error, error.to_string()),
+        // Abandoned. The run's own record is whatever io-harness had written by
+        // the time the future was dropped, and saying so is the honest line: the
+        // work above is real and the turn did not finish.
+        None => app.say(Tone::Warning, "stopped"),
+        Some(Ok(_)) => {}
     }
     app.status.elapsed = started.elapsed();
     paint(screen, app)
@@ -1339,13 +1491,40 @@ fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTu
         .rfind(|turn| turn.on_path)
 }
 
+/// What `/expand` commits: the thought that did not fit, then the step detail.
+///
+/// Two sources, because they are two different kinds of "more". The step's
+/// output is in the durable trace and is read back from it; the model's thinking
+/// is in neither the trace nor the next prompt — io-harness does not store it —
+/// so the only copy of a fitted thought is the one [`Events`] kept, and this is
+/// where it is spent.
+fn expand(
+    session: &Session,
+    store: &Store,
+    theme: &Theme,
+    thought: Option<&str>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(thought) = thought {
+        lines.push(theme.notice(Tone::Muted, "the thought, in full"));
+        lines.extend(
+            thought.lines().map(|line| {
+                Line::from(Span::styled(format!("  {line}"), theme.style(Tone::Muted)))
+            }),
+        );
+        lines.push(Line::from(""));
+    }
+    lines.extend(step_detail(session, store, theme));
+    lines
+}
+
 /// The last step's full detail, from the run's durable trace.
 ///
 /// This is the other half of collapsing a tool cell: the screen is not the
 /// archive, so the output goes to the store when it happens and comes back here
 /// when somebody asks for it. Committed upward like everything else that shows
 /// more of something.
-fn expand(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
+fn step_detail(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
     let Some(turn) = last_run(session, store) else {
         return vec![theme.notice(Tone::Muted, "nothing has run in this session yet")];
     };
@@ -1549,6 +1728,20 @@ fn paint_picker(
     if !pending.is_empty() {
         screen.commit(&pending).map_err(|error| error.to_string())?;
     }
+    // **The prompt takes the rows it needs, and gives them back.** Only with no
+    // picker open and only at an idle prompt — `App::viewport_wanted` returns the
+    // fixed height in every other case — because re-placing the viewport
+    // re-queries the cursor, and doing that under a streaming turn would land the
+    // viewport somewhere the output underneath it has already moved past.
+    if picker.is_none() {
+        let wanted = app.viewport_wanted(screen.width(), screen.terminal_rows());
+        if wanted != screen.rows() {
+            // A failure here leaves the session's own height in place — see
+            // `Screen::replace` — so a terminal that will not answer keeps a
+            // usable prompt rather than losing one over a row.
+            let _ = replace_viewport(screen, wanted);
+        }
+    }
     let theme = app.theme;
     screen
         .draw(|frame| match picker {
@@ -1574,6 +1767,36 @@ struct Keyboard {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Who is allowed to read stdin right now.
+///
+/// A process has one terminal and this binary starts one reader over it, so the
+/// lock is a `static` rather than a handle threaded through five signatures that
+/// have nothing else to do with it. The reader holds it around each poll; a
+/// viewport being placed holds it for the placement, and thereby waits out an
+/// in-flight read rather than racing the cursor reply out of stdin.
+static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the stdin lock, ignoring a previous holder's panic.
+///
+/// A poisoned lock here means the reader thread died mid-poll. That is worth
+/// nothing to the session — there is no state behind this mutex to be left
+/// inconsistent, only the terminal — so the guard is taken anyway rather than
+/// turning a dead reader into a dead session.
+fn reading() -> std::sync::MutexGuard<'static, ()> {
+    READING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Re-place the viewport at `height`, with nothing reading stdin while it lands.
+fn replace_viewport(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    height: u16,
+) -> Result<(), String> {
+    let _parked = reading();
+    screen.replace(height).map_err(|error| error.to_string())
+}
+
 impl Keyboard {
     /// Start reading.
     ///
@@ -1590,6 +1813,15 @@ impl Keyboard {
         let flag = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
+                // Parked while a viewport is being placed. Placing one asks the
+                // terminal where its cursor is and reads the answer off stdin,
+                // and this thread would take it first — which is the same defect
+                // the `Keyboard::start` signature exists to prevent at the two
+                // boundaries where the reader can simply be stopped. Here it
+                // cannot: the palette re-places the viewport in the middle of a
+                // session, and the channel this reader owns is what the session
+                // is waiting on.
+                let held = reading();
                 // A short poll rather than a blocking read, so the flag is seen.
                 match crossterm::event::poll(Duration::from_millis(40)) {
                     Ok(true) => match crossterm::event::read() {
@@ -1603,6 +1835,10 @@ impl Keyboard {
                     Ok(false) => {}
                     Err(_) => break,
                 }
+                // Dropped at the top of every iteration rather than held across
+                // the loop, so a caller waiting to place a viewport waits one
+                // poll interval and never longer.
+                drop(held);
             }
         });
         (
