@@ -49,6 +49,81 @@ const ROW: usize = 80;
 /// How far a committed block's body is indented under its own heading.
 const INDENT: usize = 4;
 
+/// io-harness's tool names, and the verb an operator reads instead.
+///
+/// **A table, and nothing behind it.** A name that is not here is printed
+/// exactly as io-harness sent it — never title-cased, never split on its
+/// underscores, never guessed at. A verb io-cli invented for a tool it has never
+/// seen would be this release's own version of the defect it exists to remove:
+/// a word in front of an operator that nothing in the system actually means.
+///
+/// The rows are io-harness 0.66's own built-ins. An MCP tool arrives namespaced
+/// under [`MCP_TOOL_PREFIX`] and a custom tool arrives under whatever name the
+/// embedder gave it, and both fall through by design.
+pub const VERBS: &[(&str, &str)] = &[
+    ("read_file", "Read"),
+    ("write_file", "Write"),
+    ("edit_file", "Edit"),
+    ("patch_file", "Patch"),
+    ("list_dir", "List"),
+    ("find", "Find"),
+    ("grep", "Search"),
+    ("exec", "Run"),
+    ("shell", "Run"),
+    ("shell_start", "Start"),
+    ("shell_poll", "Poll"),
+    ("shell_kill", "Stop"),
+    ("check", "Check"),
+    ("git_add", "Stage"),
+    ("git_commit", "Commit"),
+    ("git_diff", "Diff"),
+    ("git_log", "Log"),
+    ("git_status", "Status"),
+    ("git_branch", "Branch"),
+    ("git_worktree", "Worktree"),
+    ("lsp_definition", "Definition"),
+    ("lsp_hover", "Hover"),
+    ("lsp_references", "References"),
+    ("lsp_rename", "Rename"),
+    ("lsp_symbols", "Symbols"),
+    ("read_skill", "Read skill"),
+    ("todo_write", "Todo"),
+    ("remember", "Remember"),
+    ("forget", "Forget"),
+    ("ask_question", "Ask"),
+    ("propose_plan", "Propose"),
+    ("spawn_agent", "Spawn"),
+    ("send_message", "Send"),
+    ("read_messages", "Read messages"),
+    ("view_image", "View"),
+    ("browser_navigate", "Navigate"),
+    ("browser_click", "Click"),
+    ("browser_type", "Type"),
+    ("browser_read", "Read page"),
+    ("browser_scroll", "Scroll"),
+    ("browser_screenshot", "Screenshot"),
+    ("pdf_read", "Read PDF"),
+    ("pdf_write", "Write PDF"),
+    ("pdf_fill_form", "Fill form"),
+    ("pdf_watermark", "Watermark"),
+    ("docx_read", "Read document"),
+    ("docx_write", "Write document"),
+    ("pptx_read", "Read slides"),
+    ("xlsx_read", "Read sheet"),
+    ("xlsx_write", "Write sheet"),
+    ("xlsx_sheets", "Sheets"),
+    ("xlsx_set_cell", "Set cell"),
+    ("barcode_decode", "Decode"),
+];
+
+/// The verb for a tool name, or the name exactly as it arrived.
+pub fn verb(name: &str) -> &str {
+    VERBS
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map_or(name, |(_, verb)| verb)
+}
+
 /// How many rows of a thought are committed before the rest goes to `/expand`.
 ///
 /// The contract left this open on purpose — "a bound that is too small makes
@@ -137,6 +212,12 @@ pub struct Events {
     /// bound that dropped the remainder would not be fitting the text, it would
     /// be destroying it. [`Events::thought`] is what `/expand` reads.
     thought: Option<String>,
+    /// The workspace this session is held over, for shortening a tool's target.
+    ///
+    /// Empty until the driver says otherwise, and an empty root shortens
+    /// nothing: a path is printed whole rather than trimmed against a guess at
+    /// where the session is. `App::set_root` is the one caller.
+    root: std::path::PathBuf,
 }
 
 impl Events {
@@ -150,7 +231,14 @@ impl Events {
             unknown: 0,
             step_at: Duration::ZERO,
             thought: None,
+            root: std::path::PathBuf::new(),
         }
+    }
+
+    /// Say which workspace this session is held over, so a target inside it can
+    /// be shown relative to it. Handed down by [`crate::app::App::set_root`].
+    pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {
+        self.root = root.into();
     }
 
     /// The last thought that was fitted, whole, or `None` when the last one was
@@ -427,9 +515,19 @@ impl Events {
                 // One cell per call either way. The full output goes to the run's
                 // durable trace rather than to the screen; uncollapsed tool output
                 // is what makes a transcript unreadable.
+                // Read into the operator's vocabulary here rather than at the
+                // cell, so the live row and the committed cell say the same
+                // word about the same call. The stutter guard in `cell_line`
+                // compares the two fields, so a target io-harness fell back to
+                // the tool's own name is mapped with it and stays equal to it.
+                let shown = verb(name);
                 self.open.push(Pending {
-                    name: name.clone(),
-                    target: target.clone(),
+                    name: shown.to_string(),
+                    target: if target == name {
+                        shown.to_string()
+                    } else {
+                        relative(target, &self.root)
+                    },
                     opened_at: at,
                     measured: None,
                 });
@@ -1336,9 +1434,27 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
 fn tool_names(tool_call: &str) -> String {
     tool_call
         .split(" | ")
-        .map(|call| call.split_once(':').map_or(call, |(name, _)| name))
+        .map(|call| verb(call.split_once(':').map_or(call, |(name, _)| name)))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A target inside the workspace, shown relative to it; anything else whole.
+///
+/// A path outside the workspace is not shortened at all — a `../../..` chain is
+/// less readable than the path it was computed from, and the fact worth seeing
+/// about a file outside the workspace is precisely that it is outside.
+fn relative(target: &str, root: &std::path::Path) -> String {
+    if root.as_os_str().is_empty() {
+        return target.to_string();
+    }
+    match std::path::Path::new(target).strip_prefix(root) {
+        // The workspace root itself. `.` is what a shell would call it, and an
+        // empty column would read as a call with no target at all.
+        Ok(rest) if rest.as_os_str().is_empty() => ".".to_string(),
+        Ok(rest) => rest.display().to_string(),
+        Err(_) => target.to_string(),
+    }
 }
 
 /// The snake-case name of a kind, taken from its `Debug` form.

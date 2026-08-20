@@ -186,7 +186,9 @@ fn f8_every_styled_kind_renders_its_own_facts() {
         },
         Duration::from_millis(900),
     );
-    assert!(tool.contains("exec"), "{tool:?}");
+    // `Run`, the verb F4 maps `exec` to, and not `exec` itself.
+    assert!(tool.contains("Run"), "{tool:?}");
+    assert!(!tool.contains("exec"), "{tool:?}");
     assert!(tool.contains("cargo test"), "{tool:?}");
     assert!(tool.contains("ran cargo test"), "{tool:?}");
 
@@ -359,7 +361,7 @@ fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
                 "a tool call committed a line before its result was known",
             );
             assert!(
-                events.live().contains("read_file"),
+                events.live().contains("Read"),
                 "a deferred tool call must be visible in the viewport: {:?}",
                 events.live(),
             );
@@ -374,7 +376,7 @@ fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
     // The turn ends, and the call that nothing ever reported on is still accounted
     // for rather than lost with the turn.
     let closed = flatten(events.flush());
-    assert!(closed.contains("read_file"), "{closed:?}");
+    assert!(closed.contains("Read"), "{closed:?}");
 }
 
 #[test]
@@ -619,7 +621,9 @@ fn f2_a_tool_call_commits_nothing_until_its_step_lands() {
         "a call committed a line before anything knew its result: {lines:?}",
     );
     let live = events.live();
-    assert!(live.contains("read_file"), "{live:?}");
+    // The verb, in the live row as in the committed cell: 0.11.0's F4 maps the
+    // name once, where the call is opened, so both say the same word.
+    assert!(live.contains("Read"), "{live:?}");
     assert!(live.contains("src/lib.rs"), "{live:?}");
 }
 
@@ -655,8 +659,11 @@ fn f2_a_tool_cell_commits_its_result_and_its_observed_duration() {
         line.find(needle)
             .unwrap_or_else(|| panic!("{needle:?} is missing from {line:?}"))
     };
+    // `Read`, not `read_file`: 0.11.0's F4 put the operator's verb in this
+    // column. The decision beside it is io-harness's own lower-cased sentence,
+    // so the capital is what tells the two apart.
     assert!(
-        at("read_file") < at("src/lib.rs"),
+        at("Read") < at("src/lib.rs"),
         "the tool before its target: {line:?}",
     );
     assert!(
@@ -747,7 +754,7 @@ fn f2_an_unfinished_call_closes_without_inventing_a_duration() {
     );
 
     let line = flatten(events.flush());
-    assert!(line.contains("read_file"), "{line:?}");
+    assert!(line.contains("Read"), "{line:?}");
     assert!(line.contains("unfinished"), "{line:?}");
     assert!(
         !line.contains('~') && !line.contains("ms"),
@@ -1400,4 +1407,122 @@ fn f3_an_empty_thought_commits_no_block() {
     let committed = events.event(&event(thought("   \n  ", 4)), Duration::from_secs(1));
     assert!(committed.is_empty(), "{committed:?}");
     assert_eq!(events.thought(), None);
+}
+
+/// One call, announced and then closed by the step that ran it.
+fn cell(events: &mut Events, name: &str, target: &str) -> String {
+    events.event(
+        &event(EventKind::ToolCall {
+            name: name.into(),
+            target: target.into(),
+        }),
+        Duration::ZERO,
+    );
+    rendered_at(
+        events,
+        EventKind::Step {
+            decision: "done".into(),
+            tool_call: name.into(),
+            tokens: 5,
+            changed: false,
+        },
+        Duration::from_millis(250),
+    )
+}
+
+/// 0.11.0 F4 — a mapped tool reads as a verb, and its target as a path in the
+/// workspace.
+#[test]
+fn f4_a_mapped_tool_reads_as_a_verb_and_a_workspace_relative_path() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    let line = cell(&mut events, "read_file", "/work/io-cli/src/lib.rs");
+
+    assert!(line.contains("Read"), "{line:?}");
+    assert!(
+        !line.contains("read_file"),
+        "io-harness's wire name is what this criterion removes: {line:?}",
+    );
+    assert!(line.contains("src/lib.rs"), "{line:?}");
+    assert!(
+        !line.contains("/work/io-cli/src/lib.rs"),
+        "a target inside the workspace is shown relative to it: {line:?}",
+    );
+}
+
+/// 0.11.0 F4 — an unmapped tool is printed exactly as io-harness sent it.
+///
+/// This is the criterion's own sabotage arm: a title-cased fallback would invent
+/// a verb for a tool this release has never seen, which is a word in front of an
+/// operator that nothing in the system means. An MCP tool and an embedder's
+/// custom tool both arrive this way.
+#[test]
+fn f4_an_unmapped_tool_is_printed_exactly_as_it_arrived() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    let line = cell(&mut events, "customer_lookup", "/work/io-cli/rows.csv");
+
+    assert!(
+        line.contains("customer_lookup"),
+        "an unmapped name passes through whole: {line:?}",
+    );
+    for invented in ["Customer Lookup", "Customer_lookup", "Customer lookup"] {
+        assert!(
+            !line.contains(invented),
+            "no verb is invented for an unknown tool: {invented:?} in {line:?}",
+        );
+    }
+    // The target is still shortened. Which tool ran and where it ran are two
+    // separate facts, and not knowing the first says nothing about the second.
+    assert!(line.contains("rows.csv") && !line.contains("/work/io-cli/rows.csv"));
+}
+
+/// 0.11.0 F4 — a target outside the workspace is shown whole.
+///
+/// The fact worth seeing about a file outside the workspace is precisely that it
+/// is outside one, and a `../../..` chain is less readable than the path it was
+/// computed from.
+#[test]
+fn f4_a_target_outside_the_workspace_is_shown_whole() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    let line = cell(&mut events, "read_file", "/etc/hosts");
+    assert!(line.contains("/etc/hosts"), "{line:?}");
+}
+
+/// 0.11.0 F4 — the result and the duration columns are untouched, `~` included.
+///
+/// The verb changed the first column and nothing else. The `~` is the load-
+/// bearing part: io-cli observed an interval between two events, it did not time
+/// the tool, and a bare `250ms` would be a claim it cannot make.
+#[test]
+fn f4_the_result_and_the_duration_columns_are_unchanged() {
+    let mut events = Events::new(DARK);
+    let line = cell(&mut events, "shell", "cargo test");
+    assert!(line.contains("Run"), "{line:?}");
+    assert!(
+        line.contains("done"),
+        "the result column is still there: {line:?}"
+    );
+    assert!(line.contains("~250ms"), "{line:?}");
+    assert!(
+        !line.contains(" 250ms"),
+        "an observed interval must not read as a measured one: {line:?}",
+    );
+}
+
+/// 0.11.0 F4 — the table is a table: no name twice, and no empty side.
+#[test]
+fn f4_no_tool_is_mapped_twice_and_no_row_is_empty() {
+    let mut seen = std::collections::BTreeSet::new();
+    for (tool, word) in io_cli::events::VERBS {
+        assert!(!tool.is_empty() && !word.is_empty(), "{tool:?} {word:?}");
+        assert!(seen.insert(*tool), "{tool:?} is mapped twice");
+        assert_eq!(io_cli::events::verb(tool), *word);
+    }
+    assert_eq!(
+        io_cli::events::verb("customer_lookup"),
+        "customer_lookup",
+        "a name that is not in the table is not in the table",
+    );
 }

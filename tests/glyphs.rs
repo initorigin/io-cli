@@ -407,7 +407,7 @@ fn every_event_this_release_renders_draws_in_ascii() {
     );
     assert_ascii("the live row", &events.live());
     assert!(
-        events.live().contains("read_file"),
+        events.live().contains("Read"),
         "the live row still names the tool: {}",
         events.live(),
     );

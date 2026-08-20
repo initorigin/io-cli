@@ -193,8 +193,11 @@ impl App {
     }
 
     /// Say which workspace this session is held over.
+    ///
+    /// Handed to `Events` as well, which shortens a tool's target against it.
     pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {
         self.root = root.into();
+        self.events.set_root(self.root.clone());
     }
 
     /// Say how much of a change a diff should show. Read from the harness's own
