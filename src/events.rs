@@ -140,6 +140,12 @@ const THOUGHT_ROWS: usize = 10;
 /// what came back and how long it took — are not on the announcing event at all.
 struct Pending {
     name: String,
+    /// io-harness's own name for the tool, before [`verb`] mapped it.
+    ///
+    /// Kept because the step's decision sentence is written in these words —
+    /// `read io.toml`, `list_dir  (4 entries)` — and a cell that printed both
+    /// the verb and the sentence said the same thing twice in two vocabularies.
+    raw: String,
     target: String,
     /// The session age at which the call was announced. An age handed in by the
     /// driver, never a clock read here: this module has no timer, and N1 is what
@@ -220,6 +226,19 @@ pub struct Events {
     /// two are not the same: a contained turn's approval can be answered by a
     /// responder with no overlay drawn here at all, and the run is still stopped.
     awaiting: Option<String>,
+    /// Whether the last thing committed was a tool cell.
+    ///
+    /// The model's prose starts arriving a token at a time with nothing between
+    /// it and the cell above, so against a real run an answer began on the row
+    /// under `⋅ Search model · (1 hits) · ~0ms` and read as part of it. One blank
+    /// goes in when the prose starts, rather than after every cell: a step that
+    /// runs four calls should print four rows, not eight.
+    after_cell: bool,
+    /// Whether the last row committed was the model's own prose.
+    ///
+    /// Starts true, so a turn's first tokens do not open with a blank row: the
+    /// goal line above them already ends the block it belongs to.
+    last_prose: bool,
     /// Whether the last thing that happened was the model thinking.
     ///
     /// Cleared by every event that says something else is now happening — a
@@ -247,6 +266,8 @@ impl Events {
             step_at: Duration::ZERO,
             thought: None,
             awaiting: None,
+            after_cell: false,
+            last_prose: true,
             thinking: false,
             root: std::path::PathBuf::new(),
         }
@@ -265,6 +286,8 @@ impl Events {
         self.refused_this_step = false;
         self.thought = None;
         self.awaiting = None;
+        self.after_cell = false;
+        self.last_prose = true;
         self.thinking = false;
         self.step_at = Duration::ZERO;
     }
@@ -387,6 +410,7 @@ impl Events {
         // otherwise clear it, and the row would go on asking for an answer to a
         // question that died with the run.
         self.awaiting = None;
+        self.after_cell = false;
         self.thinking = false;
         lines
     }
@@ -426,6 +450,33 @@ impl Events {
     /// may read a clock, so a test can state the interval between two events by
     /// hand and assert on it without anything being timed.
     pub fn event(&mut self, event: &RunEvent, at: Duration) -> Vec<Line<'static>> {
+        // **One blank row between a block of tool cells and whatever comes
+        // next.** Taken here rather than pushed by the arms that need it, so the
+        // rule holds for every one of them — the model's prose, a thought, a
+        // harness warning — and so a step that ran four calls still prints four
+        // rows rather than eight. The flag is set at the end of the `Step` arm,
+        // which is why it is read at the start of the next event and not inside
+        // the one that raised it.
+        let after_cell = std::mem::take(&mut self.after_cell);
+        // The model's own prose is one kind of row and everything this crate
+        // designs is another, and a change from one to the other is worth a
+        // blank: against a real run an answer began on the row directly under
+        // `warning: nothing has changed in 3 steps…` and read as part of it.
+        let prose = matches!(event.kind, EventKind::Token { .. });
+        let gap = after_cell || (prose && !self.last_prose);
+
+        let mut lines = self.commit(event, at);
+        if gap && !ends_blank(&lines[..1.min(lines.len())]) {
+            lines.insert(0, Line::from(""));
+        }
+        if !lines.is_empty() {
+            self.last_prose = prose;
+        }
+        lines
+    }
+
+    /// What this event commits, before the spacing rule above is applied.
+    fn commit(&mut self, event: &RunEvent, at: Duration) -> Vec<Line<'static>> {
         // What the live row says is a fact about the *last* thing that happened,
         // so it is decided here rather than in each arm: the arms below say what
         // an event commits, and this says what it means for the row that is not
@@ -542,13 +593,31 @@ impl Events {
                         verdict
                     };
                     lines.push(cell_line(theme, call, result, Some(at)));
+                    self.after_cell = true;
                 }
 
-                // What was decided, what it ran, what came back — then the
-                // metadata. 0.1.0 put the step number and the token count in the
-                // middle of that sentence, which made a transcript something to
-                // parse rather than to skim. Content before metadata is the rule
-                // the rest of the interface already follows.
+                // **The step line is committed only when it says something the
+                // cells above it did not.** Through 0.10.0 it always was, and
+                // against a real run that read as every fact printed twice in two
+                // orders: a cell saying `List · (4 entries) · ~0ms` and a line
+                // under it saying `list_dir  (4 entries) · List · no change ·
+                // 3383 tok · step 1`. The token count and the step number are on
+                // the status line since this release, so what is left that the
+                // cells cannot say is: files changed, or a decision that could
+                // not be paired to a call.
+                //
+                // A step with no call at all is the one that produced the answer.
+                // Its decision is worth a line when it is a sentence — the model
+                // saying what it did — and worth nothing when it is io-harness's
+                // placeholder for a step that called no tool, which against a
+                // real run committed `no tool call · no change · 3680 tok · step
+                // 4` under the answer it was describing.
+                let empty_handed = decision.trim().is_empty() || decision.trim() == "no tool call";
+                let say_step =
+                    *changed || (!open.is_empty() && !paired) || (open.is_empty() && !empty_handed);
+                if !say_step {
+                    return lines;
+                }
                 let mut spans = vec![Span::styled(decision.clone(), theme.style(Tone::Normal))];
                 if !tool_call.is_empty() {
                     spans.push(Span::styled(separator, theme.style(Tone::Muted)));
@@ -594,6 +663,7 @@ impl Events {
                 let shown = verb(name);
                 self.open.push(Pending {
                     name: shown.to_string(),
+                    raw: name.clone(),
                     target: if target == name {
                         shown.to_string()
                     } else {
@@ -928,7 +998,13 @@ impl Events {
                         theme.style(Tone::Muted),
                     )));
                 }
-                lines.push(Line::from(""));
+                // One blank between turns, not two. `flush_text` already ends the
+                // answer with one, and a second here is a gap an operator reads
+                // as something having been left out — the ordinary turn, an
+                // answer and then a prompt, is the case that has to look right.
+                if !ends_blank(&lines) {
+                    lines.push(Line::from(""));
+                }
                 lines
             }
             // **A pause the operator is watching, said rather than left blank.**
@@ -1089,6 +1165,15 @@ impl Events {
                 let wrapped = wrap(text, ROW.saturating_sub(INDENT));
                 let shown = wrapped.len().min(THOUGHT_ROWS);
                 for row in &wrapped[..shown] {
+                    // **A blank row is committed blank, not as an indent.** Four
+                    // spaces are a whitespace-only line, and `Screen::commit`
+                    // wraps what it is given — ratatui's wrapper turns one into
+                    // TWO rows, which is why a real run showed a paragraph break
+                    // twice the height of a paragraph break.
+                    if row.is_empty() {
+                        lines.push(Line::from(""));
+                        continue;
+                    }
                     lines.push(Line::from(Span::styled(
                         format!("{:INDENT$}{row}", ""),
                         theme.style(Tone::Muted),
@@ -1331,6 +1416,59 @@ fn nest(depth: u32) -> String {
 ///
 /// `at` is the session age this cell is being closed at, or `None` when the cell
 /// is being closed without anything having reported on it.
+/// A step's decision with the words the cell has already said taken off the
+/// front.
+///
+/// Leading tokens are dropped while they are the tool's own name — in either
+/// vocabulary — or the target the cell is already showing. Only leading ones: a
+/// sentence that mentions the file again halfway through is the harness saying
+/// something, and this is not in the business of editing it.
+fn trim_result(result: &str, call: &Pending) -> String {
+    /// Quotes, brackets and case dropped, so `"model =` and `model =` are the
+    /// same word to this comparison and only the letters and digits decide.
+    fn plain(text: &str) -> String {
+        text.chars()
+            .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '/' | '_' | '-'))
+            .collect::<String>()
+            .to_lowercase()
+    }
+
+    let said = format!(
+        "{}{}{}",
+        plain(&call.raw),
+        plain(&call.name),
+        plain(&call.target)
+    );
+    let mut rest = result.trim_start();
+    while let Some((head, tail)) = rest.split_once(char::is_whitespace) {
+        let head = plain(head);
+        // A token of pure punctuation — the `=` of `model =` — is dropped only
+        // while everything before it has been, so it goes with the words it
+        // belongs to and never off the front of a real result.
+        if !head.is_empty() && !said.contains(&head) {
+            break;
+        }
+        rest = tail.trim_start();
+    }
+    // The whole of it was the tool and its target, so the cell has said it all.
+    let last = plain(rest);
+    if last.is_empty() || said.contains(&last) {
+        return String::new();
+    }
+    rest.to_string()
+}
+
+/// Whether the last line of `lines` is blank, or there are none.
+///
+/// `true` for an empty slice on purpose: nothing committed means nothing to
+/// separate from, and a blank row opening a turn's committed output would push
+/// the first thing it says down for no reason.
+fn ends_blank(lines: &[Line<'static>]) -> bool {
+    lines
+        .last()
+        .is_none_or(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+}
+
 /// Break text into rows no wider than `width`, on whitespace where it can.
 ///
 /// A fold over `split_whitespace` and nothing more — no dependency is worth
@@ -1368,9 +1506,25 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
                 rows.push(std::mem::replace(&mut row, word.to_string()));
             }
         }
-        if !row.is_empty() || paragraph.trim().is_empty() {
-            rows.push(row);
+        // A blank row is kept, because a paragraph break is the model's own
+        // punctuation — but only one. Providers emit two and three in a row, and
+        // in a block that is already bounded to ten rows a run of blanks spends
+        // the reader's rows on nothing.
+        if row.is_empty() && !paragraph.trim().is_empty() {
+            continue;
         }
+        if row.is_empty() && rows.last().is_some_and(String::is_empty) {
+            continue;
+        }
+        rows.push(row);
+    }
+    // And never a blank at either end: the heading is above and the block's own
+    // closing blank is below.
+    while rows.first().is_some_and(String::is_empty) {
+        rows.remove(0);
+    }
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
     }
     rows
 }
@@ -1394,8 +1548,17 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
             theme.style(Tone::Muted),
         ));
     }
-    spans.push(Span::styled(separator, theme.style(Tone::Muted)));
-    spans.push(Span::styled(result.to_string(), theme.style(Tone::Normal)));
+    // **What the result adds, and not what it repeats.** io-harness writes a
+    // step's decision in its own vocabulary — `read io.toml`, `list_dir  (4
+    // entries)` — and the cell has already said the tool and the target in the
+    // operator's. Printed whole, a cell read `Read io.toml · read io.toml`.
+    // Stripped, it reads `Read io.toml` and `List · (4 entries)`: the tool once,
+    // the target once, and whatever the harness added kept in full.
+    let result = trim_result(result, call);
+    if !result.is_empty() {
+        spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+        spans.push(Span::styled(result, theme.style(Tone::Normal)));
+    }
 
     // Two different kinds of number, told apart on the line itself. A measured
     // duration is io-harness's own and is printed plainly; anything else is the
@@ -1492,6 +1655,37 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
         "denied" | "refused" => Some(
             "the permission boundary stopped it. The line above names the rule and \
              the layer; press Shift+Tab to change the posture for the next turn.",
+        ),
+        // **0.11.0 — the six an operator meets most and could act on, and could
+        // not act on before.** Every one of these ended a real run with nothing
+        // on screen but io-harness's own token: `error: step_cap_reached` over a
+        // prompt, and no way to know whether that was a crash, a refusal or a
+        // ceiling. The word stays the harness's — this interface never relabels
+        // an outcome — and the sentence under it says what it means here.
+        "step_cap_reached" => Some(
+            "the turn used every step it was allowed. Say what to do next and it \
+             carries on from where it stopped.",
+        ),
+        "stalled" => Some(
+            "the agent repeated itself without changing anything, and stopped \
+             rather than spending the rest of its steps. Try saying it differently.",
+        ),
+        "time_budget_exceeded" | "cost_budget_exceeded" | "budget_ceiling_reached" => Some(
+            "the turn reached a budget in the configuration file. `[run]` sets the \
+             step, token and time budgets.",
+        ),
+        "plan_rejected" => Some(
+            "the plan was turned down, so nothing was written. Nothing has changed \
+             in the workspace.",
+        ),
+        "cancelled" => Some("the turn was interrupted. Whatever it had finished is above."),
+        "awaiting_recovery" => Some(
+            "the run stopped in the middle of a call whose effect cannot be \
+             established from here. Check whether it landed before asking again.",
+        ),
+        "escalated" => Some(
+            "the provider kept failing and the run gave up. The retries are in the \
+             transcript above.",
         ),
         _ => None,
     }

@@ -440,8 +440,27 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
     assert!(outcome_help("denied").is_some());
     assert!(outcome_help("refused").is_some());
 
-    // An outcome that needs no explanation does not get one.
-    for outcome in ["finished", "success", "cancelled", "stalled"] {
+    // **0.11.0 — the outcomes an operator meets most now say what they mean.**
+    // A real run ended with `error: step_cap_reached` over a prompt and nothing
+    // else, which says whether the run stopped but not whether that was a crash,
+    // a refusal or a ceiling. The harness's own word still leads the line; the
+    // sentence under it is this crate's.
+    for outcome in [
+        "step_cap_reached",
+        "stalled",
+        "time_budget_exceeded",
+        "cost_budget_exceeded",
+        "budget_ceiling_reached",
+        "plan_rejected",
+        "cancelled",
+        "awaiting_recovery",
+        "escalated",
+    ] {
+        assert!(outcome_help(outcome).is_some(), "{outcome}");
+    }
+
+    // A turn that ended well needs no explanation and does not get one.
+    for outcome in ["finished", "success"] {
         assert_eq!(outcome_help(outcome), None, "{outcome}");
     }
 }
@@ -660,19 +679,23 @@ fn f2_a_tool_cell_commits_its_result_and_its_observed_duration() {
             .unwrap_or_else(|| panic!("{needle:?} is missing from {line:?}"))
     };
     // `Read`, not `read_file`: 0.11.0's F4 put the operator's verb in this
-    // column. The decision beside it is io-harness's own lower-cased sentence,
-    // so the capital is what tells the two apart.
+    // column.
     assert!(
         at("Read") < at("src/lib.rs"),
         "the tool before its target: {line:?}",
     );
     assert!(
-        at("src/lib.rs") < at("read src/lib.rs"),
-        "the target before what came back: {line:?}",
-    );
-    assert!(
-        at("read src/lib.rs") < at("~250ms"),
+        at("src/lib.rs") < at("~250ms"),
         "content before metadata: {line:?}",
+    );
+    // **And the result column says what it ADDS.** io-harness's sentence here is
+    // `read src/lib.rs`, which is the tool and the target in the harness's own
+    // words — the two things this cell has already said in the operator's. A
+    // real run committed `⋅ Read io.toml · read io.toml · ~0ms`, and reading it
+    // back is what found this.
+    assert!(
+        !line.contains("read src/lib.rs"),
+        "the cell said the same thing twice in two vocabularies: {line:?}",
     );
 
     // The `~` is load-bearing. io-cli did not time the tool; it observed the
@@ -1342,6 +1365,42 @@ fn f3_a_long_thought_is_fitted_and_the_remainder_is_reachable() {
     );
 }
 
+/// 0.11.0 F3 — a thought spends no row on a blank the model happened to send.
+///
+/// Providers put two and three newlines between a heading and its body, and a
+/// block bounded to ten rows cannot afford them. Found by reading a real run: the
+/// thought had a blank row and then an indented blank row under its own title.
+#[test]
+fn f3_a_thought_never_commits_two_blank_rows_in_a_row() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let committed = rows(events.event(
+        &event(thought(
+            "**Planning tool response**\n\n\nI need to respond to the user.\n\n\n\nAnd then stop.\n",
+            54,
+        )),
+        Duration::from_secs(1),
+    ));
+
+    let blanks: Vec<usize> = committed
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.trim().is_empty())
+        .map(|(at, _)| at)
+        .collect();
+    for pair in blanks.windows(2) {
+        assert_ne!(
+            pair[1],
+            pair[0] + 1,
+            "two blank rows in a row inside a thought: {committed:?}",
+        );
+    }
+    // And the block still says everything the model did.
+    let text = committed.join("\n");
+    assert!(text.contains("Planning tool response"), "{text:?}");
+    assert!(text.contains("And then stop."), "{text:?}");
+}
+
 /// 0.11.0 F3 — a thought that fits leaves nothing behind.
 ///
 /// `/expand` has its own job — the last step's detail from the durable trace —
@@ -1594,6 +1653,85 @@ fn f4_an_unmapped_tool_is_printed_exactly_as_it_arrived() {
     // The target is still shortened. Which tool ran and where it ran are two
     // separate facts, and not knowing the first says nothing about the second.
     assert!(line.contains("rows.csv") && !line.contains("/work/io-cli/rows.csv"));
+}
+
+/// 0.11.0 F4 — the result column says what it adds, not what the cell said.
+///
+/// Every one of these came off a real run. io-harness writes the step's decision
+/// in its own words, and printed whole beside a cell that has already named the
+/// tool and the target it read `⋅ Read io.toml · read io.toml · ~0ms` and
+/// `⋅ Search model = · "model =" (1 hits)`. What the harness ADDS — how many
+/// entries, how many hits — is the part worth a column and is kept in full.
+#[test]
+fn f4_the_result_says_what_it_adds_and_not_what_the_cell_already_said() {
+    let cases = [
+        // (tool, target, io-harness's decision, what the cell should carry)
+        ("read_file", "io.toml", "read io.toml", None),
+        (
+            "list_dir",
+            "list_dir",
+            "list_dir  (4 entries)",
+            Some("(4 entries)"),
+        ),
+        (
+            "grep",
+            "model =",
+            "grep \"model =\" (1 hits)",
+            Some("(1 hits)"),
+        ),
+        (
+            "find",
+            "io.toml",
+            "find io.toml (1 paths)",
+            Some("(1 paths)"),
+        ),
+        // Nothing in common: kept exactly as it arrived.
+        (
+            "write_file",
+            "notes.txt",
+            "the file did not exist",
+            Some("the file did not exist"),
+        ),
+    ];
+
+    for (tool, target, decision, expected) in cases {
+        let mut events = Events::new(DARK);
+        events.event(
+            &event(EventKind::ToolCall {
+                name: tool.into(),
+                target: target.into(),
+            }),
+            Duration::ZERO,
+        );
+        let line = rendered_at(
+            &mut events,
+            EventKind::Step {
+                decision: decision.into(),
+                tool_call: tool.into(),
+                tokens: 5,
+                changed: false,
+            },
+            Duration::from_millis(10),
+        );
+
+        if let Some(kept) = expected {
+            assert!(
+                line.contains(kept),
+                "{tool}: {kept:?} missing from {line:?}"
+            );
+        }
+        // Printed whole only when the harness said something the cell did not.
+        // `expected == Some(decision)` is that case, and it is in the table on
+        // purpose: a trim that ate an unrelated sentence would be worse than the
+        // duplication it was written to remove.
+        if expected != Some(decision) {
+            assert!(
+                !line.contains(decision),
+                "{tool}: the harness's sentence was printed whole beside the cell \
+                 that already said it: {line:?}",
+            );
+        }
+    }
 }
 
 /// 0.11.0 F4 — a target outside the workspace is shown whole.

@@ -1055,12 +1055,22 @@ impl App {
         // no turn for it to be about and the composer takes the row back.
         let status_rows = u16::from(area.height >= 2);
         let live_rows = u16::from(area.height >= 3);
-        let activity = if area.height >= 4 {
+        // **The row is reserved whether or not there is a turn to put in it.**
+        // Drawn only while one is in flight — that is F5 — but *claimed* always,
+        // because a composer that is three rows at an idle prompt and two while a
+        // turn runs moves the prompt up a row the moment you press Enter and back
+        // down when it finishes. The row costs nothing when it is empty and the
+        // layout is worth more than the row.
+        // Five, not four: on a terminal too short for this release's viewport the
+        // row that goes is this one, and the composer keeps the two rows it has
+        // had since 0.1.0. A one-row composer is a prompt you cannot read a
+        // pasted line in.
+        let activity_rows = u16::from(area.height >= 5);
+        let activity = if activity_rows == 1 {
             self.status.activity(area.width, &self.theme)
         } else {
             None
         };
-        let activity_rows = u16::from(activity.is_some());
         let composer_rows = area.height - activity_rows - live_rows - status_rows;
 
         if let Some(activity) = activity {

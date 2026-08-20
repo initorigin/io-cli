@@ -164,6 +164,20 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     /// and the error returned: an operator who asked for a taller list and cannot
     /// have one keeps their session, rather than losing the viewport with it.
     pub fn replace(&mut self, height: u16) -> io::Result<()> {
+        // **Erase what this viewport drew before letting go of it.** Its rows are
+        // the terminal's screen, not its scrollback: nothing scrolls them away
+        // and nothing repaints them once this `Screen` is gone. Without this the
+        // next viewport is placed at the cursor and draws OVER the old rows,
+        // which leaves half a palette standing behind a composer — a status line
+        // spliced into the middle of a command's description, which is exactly
+        // what a capture of the first version showed.
+        //
+        // `ESC[0J` from the viewport's own top row, so the committed transcript
+        // above it is untouched and everything below is cleared. The cursor is
+        // left there, which is also where `compute_inline_size` will place the
+        // next viewport — so the new one starts exactly where the old one did.
+        let top = self.terminal.get_frame().area().y;
+        self.escape(&format!("\x1b[{};1H\x1b[0J", top.saturating_add(1)))?;
         self.restore();
         match Self::attach_with(height) {
             Ok(fresh) => {
@@ -701,7 +715,20 @@ pub fn kitty_graphics() -> bool {
 /// a terminal that will not say whether it speaks the protocol is not one to push
 /// a protocol at.
 pub fn keyboard_advertised() -> bool {
-    crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+    /// Asked once per process, because the answer cannot change and asking is
+    /// not free.
+    ///
+    /// **crossterm writes a query and waits up to two seconds for the reply.**
+    /// A terminal that speaks the protocol answers at once; one that does not —
+    /// Apple's Terminal, most `script` sessions — answers never, and the wait is
+    /// paid in full. That was a one-off cost while an attach happened once per
+    /// process, and 0.11.0 made it not one: the palette re-places the viewport
+    /// when it opens and again when it closes, so an uncached probe would put
+    /// two seconds on each `/` and two more on each `Esc`, on exactly the
+    /// terminals that already have the worst of everything else.
+    static ADVERTISED: OnceLock<bool> = OnceLock::new();
+    *ADVERTISED
+        .get_or_init(|| crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false))
 }
 
 /// Negotiate the protocol up, if `advertised`; otherwise write nothing at all.
