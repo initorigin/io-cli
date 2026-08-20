@@ -190,7 +190,12 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     assert!(tool.contains("Run"), "{tool:?}");
     assert!(!tool.contains("exec"), "{tool:?}");
     assert!(tool.contains("cargo test"), "{tool:?}");
-    assert!(tool.contains("ran cargo test"), "{tool:?}");
+    // The harness's sentence is `ran cargo test`; the cell has already said
+    // `Run` and `cargo test`, so what it adds is `ran` and that is what it
+    // carries. `f4_the_result_says_what_it_adds_and_not_what_the_cell_already_said`
+    // is where that rule is asserted in full.
+    assert!(tool.contains("ran"), "{tool:?}");
+    assert!(!tool.contains("ran cargo test"), "{tool:?}");
 
     let step = rendered(
         &mut events,
@@ -221,8 +226,21 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     assert!(refused.contains("fs.deny"), "{refused:?}");
     assert!(refused.contains("workspace"), "{refused:?}");
 
-    let approval = rendered(
+    // The request commits nothing in a session — the overlay is on screen
+    // saying it — and commits the line in plain mode, which has no overlay.
+    let quiet = rendered(
         &mut events,
+        EventKind::ApprovalRequested {
+            act: "exec".into(),
+            target: "rm -rf build".into(),
+        },
+    );
+    assert!(quiet.is_empty(), "the overlay says this one: {quiet:?}");
+
+    let mut plain = Events::new(DARK);
+    plain.set_plain(true);
+    let approval = rendered(
+        &mut plain,
         EventKind::ApprovalRequested {
             act: "exec".into(),
             target: "rm -rf build".into(),
@@ -364,6 +382,18 @@ fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
                 events.live().contains("Read"),
                 "a deferred tool call must be visible in the viewport: {:?}",
                 events.live(),
+            );
+            continue;
+        }
+        // **0.11.0 — the approval overlay says this one, larger.** A committed
+        // line as well put `warning: write SUMMARY.md — waiting for you` directly
+        // above the overlay's own `warning: write SUMMARY.md`, which is the same
+        // sentence twice in two sizes. In plain mode, which draws no overlay, the
+        // line is still committed — `tests/plain.rs` is where that is asserted.
+        if name == "approval_requested" {
+            assert!(
+                lines.is_empty(),
+                "the overlay says this one; a line here says it twice",
             );
             continue;
         }

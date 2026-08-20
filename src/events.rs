@@ -625,8 +625,13 @@ impl Events {
                 // real run committed `no tool call · no change · 3680 tok · step
                 // 4` under the answer it was describing.
                 let empty_handed = decision.trim().is_empty() || decision.trim() == "no tool call";
-                let say_step =
-                    *changed || (!open.is_empty() && !paired) || (open.is_empty() && !empty_handed);
+                // **Not even for `changed files`.** A step whose calls each got
+                // their own cell has been fully described by them, and the change
+                // itself is committed as a diff by the driver a line later — so
+                // the step line under it read `wrote notes.md · Write · changed
+                // files · 3397 tok · step 1` over a cell that had just said the
+                // first two and a diff about to say the third.
+                let say_step = (!open.is_empty() && !paired) || (open.is_empty() && !empty_handed);
                 if !say_step {
                     return lines;
                 }
@@ -929,10 +934,21 @@ impl Events {
                 // committed, which is what F1 asserts.
                 self.awaiting = Some(format!("{act} {target}"));
                 let mut lines = self.flush_text();
-                lines.push(theme.notice(
-                    Tone::Warning,
-                    format!("{act} {target} {dash} waiting for you"),
-                ));
+                // **The overlay is about to say this, larger and with the rule,
+                // the layer and the diff under it.** Committing a line here as
+                // well put `warning: write SUMMARY.md — waiting for you` directly
+                // above `warning: write SUMMARY.md`, which is the same sentence
+                // twice in two sizes.
+                //
+                // Not in plain mode, which draws no overlay at all: there the
+                // line is the only account of a run that stopped, and its whole
+                // promise is that every state change reaches the scrollback.
+                if self.plain {
+                    lines.push(theme.notice(
+                        Tone::Warning,
+                        format!("{act} {target} {dash} waiting for you"),
+                    ));
+                }
                 lines
             }
             EventKind::ApprovalDecided {
@@ -1451,6 +1467,20 @@ fn trim_result(result: &str, call: &Pending) -> String {
     let last = plain(rest);
     if last.is_empty() || said.contains(&last) {
         return String::new();
+    }
+    // And the whole target again at the END is the same repetition at the other
+    // end: `Write notes.md · wrote notes.md` says the file twice on one row.
+    //
+    // The WHOLE target, never its last word. Stripping one token turned
+    // `Run cargo test · ran cargo test` into `ran cargo`, which is a sentence
+    // this interface made up out of one the harness wrote.
+    if !call.target.is_empty() {
+        if let Some(head) = rest.strip_suffix(call.target.as_str()) {
+            let head = head.trim_end();
+            if !plain(head).is_empty() {
+                return head.to_string();
+            }
+        }
     }
     rest.to_string()
 }

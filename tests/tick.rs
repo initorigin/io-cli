@@ -184,7 +184,8 @@ fn f5_the_activity_clock_advances_on_the_tick_and_shares_the_status_lines_number
     let (mut screen, _recorder) = support::screen(80, 24);
     let mut app = App::new(DARK, "m");
     app.started();
-    app.status.tokens = Some(1_500);
+    app.status.tokens = Some(9_000);
+    app.status.run_tokens = Some(1_500);
 
     pump(&mut app, &mut screen, Duration::from_secs(1));
     let first = activity_row(&screen);
@@ -206,8 +207,10 @@ fn f5_the_activity_clock_advances_on_the_tick_and_shares_the_status_lines_number
         .next_back()
         .unwrap_or_default()
         .to_string();
+    // The activity line carries THIS turn's spend; the footer carries the
+    // session's. Two counters because the two rows answer different questions.
     assert!(second.contains("1.5k tok"), "{second:?}");
-    assert!(counts.contains("1.5k tok"), "{counts:?}");
+    assert!(counts.contains("9.0k tok"), "{counts:?}");
 }
 
 #[test]

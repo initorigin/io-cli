@@ -325,6 +325,9 @@ mod diff {
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect::<String>()
+                    // Past the line-number gutter every body row carries.
+                    .trim_start()
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
                     .trim_start()
                     .starts_with('-')
             })
@@ -1546,7 +1549,8 @@ fn f5_the_activity_line_drops_the_token_count_then_the_clock() {
         let mut status = Status::new("anthropic/claude-sonnet-4");
         status.working = true;
         status.elapsed = std::time::Duration::from_secs(62);
-        status.tokens = Some(1_500);
+        status.tokens = Some(9_000);
+        status.run_tokens = Some(1_500);
 
         let text = |width: u16| -> String {
             status

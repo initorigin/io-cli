@@ -308,6 +308,12 @@ fn body(
     let raw: Vec<&str> = hunk.lines().collect();
     let mut out = Vec::new();
     let mut at = 0;
+    // **Where in the file this is.** A diff without line numbers is a change a
+    // reader cannot go to: they can see what altered and not where, and the
+    // `@@` header alone means counting rows by hand. Each side is numbered in
+    // its own file — a removal by the old line, an addition and a context line
+    // by the new — which is what both a reviewer and an editor need.
+    let (mut old_no, mut new_no) = (0u32, 0u32);
 
     while at < raw.len() {
         // A `\ No newline at end of file` marker is emitted on its own line
@@ -338,9 +344,26 @@ fn body(
             // `minimal` keeps the `@@` header — a change with no line numbers is a
             // change that does not say where it is — and drops the context, which
             // is the only thing it drops.
-            let keep = style == DiffStyle::Unified || raw[at].starts_with("@@");
+            let line = raw[at];
+            if let Some((old, new)) = hunk_bounds(line) {
+                old_no = old;
+                new_no = new;
+            }
+            let keep = style == DiffStyle::Unified || line.starts_with("@@");
             if keep {
-                out.push(unchanged(raw[at], syntax, theme));
+                // The header names the range rather than sitting in it, and the
+                // no-newline marker is about the bytes of the line above.
+                let numbered = !line.starts_with("@@") && !line.starts_with('\\');
+                let gutter = if numbered {
+                    number(new_no)
+                } else {
+                    blank_gutter()
+                };
+                out.push(unchanged(&gutter, line, syntax, theme));
+            }
+            if !line.starts_with("@@") && !line.starts_with('\\') {
+                old_no += 1;
+                new_no += 1;
             }
             at += 1;
             continue;
@@ -354,46 +377,85 @@ fn body(
         let added: Vec<&&str> = additions.iter().filter(|l| !marker(l)).collect();
         let paired = emphasis && !removed.is_empty() && removed.len() == added.len();
 
-        let mut emit = |lines: &[&str], partners: &[&&str], tone| {
+        let mut emit = |lines: &[&str], partners: &[&&str], tone, counter: &mut u32| {
             let mut nth = 0;
             for line in lines {
                 if marker(line) {
-                    out.push(unchanged(line, syntax, theme));
+                    out.push(unchanged(&blank_gutter(), line, syntax, theme));
                     continue;
                 }
                 let other = paired.then(|| *partners[nth]);
-                out.push(changed(line, other, tone, syntax, theme));
+                out.push(changed(&number(*counter), line, other, tone, syntax, theme));
+                *counter += 1;
                 nth += 1;
             }
         };
-        emit(removals, &added, Tone::Removed);
-        emit(additions, &removed, Tone::Added);
+        emit(removals, &added, Tone::Removed, &mut old_no);
+        emit(additions, &removed, Tone::Added, &mut new_no);
     }
 
     out
 }
 
+/// Columns the line-number gutter occupies, the space after it included.
+///
+/// Four digits and a space: enough for a ten-thousand-line file, which is past
+/// where anybody is reading a diff row by row anyway, and narrow enough that the
+/// change itself still has the terminal.
+const GUTTER: usize = 5;
+
+/// One line's number, right-aligned in the gutter.
+fn number(line: u32) -> String {
+    format!("{line:>width$} ", width = GUTTER - 1)
+}
+
+/// The gutter with no number in it, for the rows that are not a line of the
+/// file: the `@@` header and the no-final-newline marker.
+fn blank_gutter() -> String {
+    " ".repeat(GUTTER)
+}
+
+/// The `-old` and `+new` starting lines of an `@@ -a,b +c,d @@` header.
+///
+/// io-harness hands the hunk through as git wrote it, so this is the one place
+/// the numbering comes from. A header that does not parse leaves the counters
+/// where they were rather than guessing: numbers that are wrong are worse than
+/// numbers that stopped.
+fn hunk_bounds(line: &str) -> Option<(u32, u32)> {
+    let inner = line.strip_prefix("@@ ")?.split(" @@").next()?;
+    let mut sides = inner.split_whitespace();
+    let old = sides.next()?.strip_prefix('-')?;
+    let new = sides.next()?.strip_prefix('+')?;
+    let first = |side: &str| side.split(',').next()?.parse::<u32>().ok();
+    Some((first(old)?, first(new)?))
+}
+
 /// A line that is not an addition or a removal: context, a `@@` header, or the
 /// no-final-newline marker.
-fn unchanged(line: &str, syntax: Option<&SyntaxReference>, theme: &Theme) -> Line<'static> {
+fn unchanged(
+    gutter: &str,
+    line: &str,
+    syntax: Option<&SyntaxReference>,
+    theme: &Theme,
+) -> Line<'static> {
     match line.as_bytes().first() {
         // `@@ … @@` — where in the file this is. The one part of a hunk a reader
         // navigates by, so it takes the product's own colour and no highlighting:
         // it is not code.
         Some(b'@') => Line::from(Span::styled(
-            format!("{INDENT}{line}"),
+            format!("{gutter}{line}"),
             theme.style(Tone::Accent),
         )),
         // `\ No newline at end of file`. Real information about the bytes, and
         // not a change, so it reads as neither.
         Some(b'\\') => Line::from(Span::styled(
-            format!("{INDENT}{line}"),
+            format!("{gutter}{line}"),
             theme.style(Tone::Muted),
         )),
         // A context line. Its leading space is part of the diff and stays.
         _ => {
             let (marker, text) = line.split_at(usize::from(!line.is_empty()));
-            spans(marker, text, Tone::Normal, None, syntax, theme)
+            spans(gutter, marker, text, Tone::Normal, None, syntax, theme)
         }
     }
 }
@@ -405,6 +467,7 @@ fn unchanged(line: &str, syntax: Option<&SyntaxReference>, theme: &Theme) -> Lin
 /// head nor a tail, in which case "what changed" is the whole line — the body
 /// takes the diff's colour throughout.
 fn changed(
+    gutter: &str,
     mine: &str,
     other: Option<&str>,
     tone: Tone,
@@ -431,18 +494,19 @@ fn changed(
         // No partner, so nothing to emphasise *against* — the whole body takes
         // the diff's colour and no emphasis. Bolding a whole line says "look
         // here" about every word on it, which is the same as saying nothing.
-        return Line::from(Span::styled(
-            format!("{INDENT}{marker}{text}"),
-            theme.style(tone),
-        ));
+        return Line::from(vec![
+            Span::styled(gutter.to_string(), theme.style(Tone::Muted)),
+            Span::styled(format!("{marker}{text}"), theme.style(tone)),
+        ]);
     };
 
-    spans(marker, text, tone, Some(range), syntax, theme)
+    spans(gutter, marker, text, tone, Some(range), syntax, theme)
 }
 
 /// Build a body line: the marker in `tone`, the text syntax coloured, and
 /// `changed` — where there is one — in `tone` and emphasised.
 fn spans(
+    gutter: &str,
     marker: &str,
     text: &str,
     tone: Tone,
@@ -450,7 +514,10 @@ fn spans(
     syntax: Option<&SyntaxReference>,
     theme: &Theme,
 ) -> Line<'static> {
-    let mut out = vec![Span::styled(format!("{INDENT}{marker}"), theme.style(tone))];
+    let mut out = vec![
+        Span::styled(gutter.to_string(), theme.style(Tone::Muted)),
+        Span::styled(marker.to_string(), theme.style(tone)),
+    ];
 
     let runs = match syntax {
         Some(syntax) => Highlighter::get().runs(text, syntax),

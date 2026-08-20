@@ -139,6 +139,18 @@ pub struct Status {
     /// them. `None` until one does — a session that has spent nothing yet is not
     /// a session that has spent zero, and the difference is the whole of F9.
     pub tokens: Option<u64>,
+    /// Tokens the turn now running has spent.
+    ///
+    /// **A second counter, because the two rows answer different questions.**
+    /// The footer says what the *session* has cost, which is what a spend is
+    /// judged on and which must not fall back to zero every time a turn starts.
+    /// The activity line says what *this turn* is costing while you watch it,
+    /// beside a clock that starts at zero for the same reason — a number that
+    /// only ever climbs across a long session tells you nothing about the turn
+    /// in front of you.
+    ///
+    /// Cleared by `Status::start_run`, which is the one place a run begins.
+    pub run_tokens: Option<u64>,
     /// How full the assembled context was the last time io-harness said so, as a
     /// share of the budget io-harness itself declares.
     ///
@@ -256,6 +268,7 @@ impl Status {
             unknown: 0,
             policy: None,
             tokens: None,
+            run_tokens: None,
             context: None,
             containment: None,
             spend: None,
@@ -325,6 +338,18 @@ impl Status {
         self.mcp = (0, 0);
         self.lsp = 0;
         self.browser = None;
+    }
+
+    /// A run is starting: the clock and the run's own counter go back to zero.
+    ///
+    /// **The session's total does not.** The footer says what this session has
+    /// cost and a spend that fell back to zero on every turn would be a spend
+    /// nobody could read; the activity line says what the turn in front of you
+    /// is costing, and a number that only climbs across an hour says nothing
+    /// about it.
+    pub fn start_run(&mut self) {
+        self.elapsed = Duration::ZERO;
+        self.run_tokens = None;
     }
 
     /// The indicator, if there is anything to indicate and anywhere to show it.
@@ -547,25 +572,27 @@ impl Status {
         // The state, and its dot. A shape as well as a colour, because a colour
         // that is the only difference between `ready` and `working` is a
         // difference a monochrome terminal does not have.
-        let (dot, word, tone) = match self.working {
-            true => (
-                self.indicator(theme).unwrap_or('•'),
-                "working",
-                Tone::Accent,
-            ),
-            false => ('•', "ready", Tone::Muted),
-        };
-        let mut left = vec![
-            Span::styled(format!("{dot} "), theme.style(tone)),
-            Span::styled(word, theme.style(tone)),
-            Span::styled(separator, muted),
-            Span::styled(
-                self.model.clone(),
-                theme
-                    .style(Tone::Normal)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-        ];
+        // **The state word is here only when no activity line is saying it
+        // louder.** While a turn runs the row above carries a spinner, a word
+        // for the turn, the clock and the tokens; repeating `working` and a
+        // second spinner under it put two things on screen turning at the same
+        // rate to say one fact. Idle there is no row above, and `ready` is what
+        // says the session is alive and waiting.
+        //
+        // The dot is a shape as well as a tone, because a colour that is the
+        // only difference between two states is a difference a monochrome
+        // terminal does not have.
+        let mut left = Vec::new();
+        if !self.working {
+            left.push(Span::styled("• ready", muted));
+            left.push(Span::styled(separator, muted));
+        }
+        left.push(Span::styled(
+            self.model.clone(),
+            theme
+                .style(Tone::Normal)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
         if let Some(provider) = &self.provider {
             left.push(Span::styled(separator, muted));
             left.push(Span::styled(provider.clone(), muted));
@@ -668,7 +695,9 @@ impl Status {
             Tone::Normal,
         )];
         fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
-        if let Some(tokens) = self.tokens {
+        // This turn's own spend, not the session's. The footer carries the
+        // session total; a row about the turn in front of you carries the turn.
+        if let Some(tokens) = self.run_tokens {
             fields.push(Field::new(
                 format!("{} tok", format_tokens(tokens)),
                 Tone::Muted,

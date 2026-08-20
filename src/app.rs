@@ -381,16 +381,12 @@ impl App {
             // first one rather than on nothing.
             None => Posture::Workspace,
         };
+        // **Silently.** The posture is on the footer, which repaints on the same
+        // keystroke, so the line this used to commit said in the scrollback what
+        // the screen was already showing — and cycling through three postures to
+        // reach the one you wanted left three of them behind, permanently, in the
+        // transcript of a session that ran under one.
         self.set_posture(Some(next));
-        self.say(
-            Tone::Muted,
-            format!(
-                "policy:{} {} {}",
-                next.short(),
-                self.theme.glyphs.dash,
-                next.detail()
-            ),
-        );
         Command::None
     }
 
@@ -467,6 +463,10 @@ impl App {
         self.mode = Mode::Running;
         self.status.working = true;
         self.stopping = false;
+        // The clock and the turn's own token count start here. What a reader
+        // wants of the row above the prompt is how long THIS turn has been going
+        // and what it is costing — not how long the terminal has been open.
+        self.status.start_run();
         self.quits = 0;
         self.announce();
     }
@@ -599,6 +599,10 @@ impl App {
     /// a database to hold one.
     pub fn edits(&mut self, edits: &[io_harness::Edit], width: u16) {
         for edit in edits {
+            // A blank above as well as the one the cell ends with. A diff is a
+            // block and reads as one; committed straight under the tool cell
+            // that produced it, its header looked like another row of that cell.
+            self.pending.push(Line::from(""));
             self.pending
                 .extend(crate::diff::cell(edit, &self.theme, width));
         }
@@ -722,6 +726,7 @@ impl App {
                 // The session's total, not the step's own. A field that swings
                 // rather than climbs cannot be read at a glance.
                 self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
+                self.status.run_tokens = Some(self.status.run_tokens.unwrap_or(0) + tokens);
                 // The envelope's own number rather than a count kept here: a
                 // resumed run replays its backlog, and a counter incremented per
                 // event would climb past the step the run is actually on.
@@ -736,7 +741,14 @@ impl App {
                 // ambiguity — a run that ended having taken no steps really did
                 // take none, and a conversational turn is exactly that.
                 if *tokens > 0 {
-                    self.status.tokens = Some(*tokens);
+                    // The run's own total is authoritative for the run. The
+                    // session's is the sum of its runs, so the difference
+                    // between what the steps reported and what the run says is
+                    // what gets added to it rather than replacing it.
+                    let counted = self.status.run_tokens.unwrap_or(0);
+                    let session = self.status.tokens.unwrap_or(0);
+                    self.status.tokens = Some(session + tokens.saturating_sub(counted));
+                    self.status.run_tokens = Some(*tokens);
                 }
                 self.status.steps = Some(*steps);
             }

@@ -66,8 +66,9 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     ("refused", Disposition::Line, "the refusal line"),
     (
         "approval_requested",
-        Disposition::Line,
-        "the request line, beside the approval overlay",
+        Disposition::Silent,
+        "the approval overlay, which is on screen at the moment it is asked — and a committed \
+         line in plain mode, which draws no overlay",
     ),
     ("approval_decided", Disposition::Line, "the decision line"),
     (

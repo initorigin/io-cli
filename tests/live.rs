@@ -1536,7 +1536,7 @@ async fn live_f2_the_strings_the_owner_named_are_gone_from_a_real_run() {
         "live-transcript.raw",
         config.path(),
         dir.path(),
-        "0\twait:policy:\n0.3\tRead greeting.txt and tell me in one sentence what it says.\n\
+        "0\twait:for commands\n0.3\tRead greeting.txt and tell me in one sentence what it says.\n\
          0\twait:working\n0\twait:ready\n0.5\traw:\\x04\n",
     );
 
@@ -1586,7 +1586,7 @@ async fn live_f5_f6_the_activity_line_and_the_live_row_are_in_a_real_run() {
         "live-working-view.raw",
         config.path(),
         dir.path(),
-        "0\twait:policy:\n\
+        "0\twait:for commands\n\
          0.3\tRead notes.txt, then write a file called out.txt containing its second line.\n\
          0\twait:working\n0\twait:ready\n0.5\traw:\\x04\n",
     );
@@ -1633,7 +1633,7 @@ async fn live_f7_the_palette_shows_every_command_and_gives_the_rows_back() {
         "live-palette.raw",
         config.path(),
         dir.path(),
-        "0\twait:policy:\n0.3\traw:/\n0\twait:Which command?\n\
+        "0\twait:for commands\n0.3\traw:/\n0\twait:Which command?\n\
          0.3\traw:exi\n0.3\traw:\\r\n0\twait:/exit\n0.5\traw:\\r\n",
     );
 

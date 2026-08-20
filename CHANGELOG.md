@@ -130,6 +130,25 @@ io-harness for nothing.
 - **The banner is a card with room in it**: the mark, the version, and the model,
   policy and workspace, one blank row inside each edge and two columns inside
   each side.
+- **`Shift+Tab` cycles the posture silently.** The footer repaints on the same
+  keystroke, so the line it used to commit said in the scrollback what the screen
+  was already showing — and cycling through three postures to reach one left
+  three of them behind, permanently, in the transcript of a session that ran
+  under one.
+- **The clock and the activity line's token count belong to the turn.** Both
+  start at zero when a turn starts: a clock counting since the terminal opened
+  said `22m12s` about a turn six seconds old. The footer keeps the session's
+  token total, because that is what a spend is judged on.
+- **A diff carries line numbers**, in each side's own file, with a blank row
+  above it. A change you can see but cannot go to is half a diff.
+- **An approval is said once.** The overlay carries the request, so the
+  transcript no longer commits the same sentence directly above it. In plain
+  mode, which draws no overlay, the line is still committed.
+- **The footer says `working` only when nothing above it does.** The activity
+  line already carries a spinner and a word; a second spinner under it turning at
+  the same rate said one thing twice.
+- **A step commits no line when its cells already said it**, `changed files`
+  included — the diff underneath is what says a file changed.
 - **The keyboard-protocol probe is asked once per process.** It costs two seconds
   on a terminal that never answers, and the palette re-places the viewport twice
   per open and close.

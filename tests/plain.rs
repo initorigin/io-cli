@@ -202,16 +202,10 @@ fn paint(screen: &mut io_cli::term::Screen<support::Fixed>, app: &mut App, out: 
     screen
         .draw(|frame| app.render(frame, frame.area()))
         .expect("frame");
-    // The footer's identity row, which is where the state word is. Second from
-    // the bottom since 0.11.0: the last row carries the counts, and the rule
-    // sits above the identity row.
-    let viewport = screen.viewport_text().to_string();
-    let rows: Vec<&str> = viewport.lines().collect();
-    out.rows.push(
-        rows.get(rows.len().saturating_sub(2))
-            .unwrap_or(&"")
-            .to_string(),
-    );
+    // The whole viewport, because the pair this file asserts on moved: the
+    // spinner is drawn in front of the ACTIVITY word now, one row from the top,
+    // and the footer's state word is only there when no turn is running.
+    out.rows.push(screen.viewport_text().to_string());
 }
 
 /// The status line's state field, as the line renders it.
@@ -293,9 +287,11 @@ async fn the_byte_stream_carries_frames_when_the_mode_is_off() {
     // nothing to do with plain mode. A control that cannot fail is decoration;
     // this one failed and moved the assertion it guards.
     assert!(
-        lively.rows.iter().any(|row| SPINNER
-            .iter()
-            .any(|frame| row.contains(&format!("{frame} working")))),
+        lively.rows.iter().any(|row| SPINNER.iter().any(|frame| {
+            io_cli::status::WORDS
+                .iter()
+                .any(|word| row.contains(&format!("{frame} {word}")))
+        })),
         "no frame was ever drawn in front of the state word, so the prefix \
          assertion in this file cannot see one either",
     );

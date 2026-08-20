@@ -409,7 +409,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
     }
-    let started = Instant::now();
+    // **The session no longer keeps a clock, because nothing shows one.** The
+    // clock on screen belongs to the turn — it starts at zero when one starts and
+    // stops where it stopped — so the reading a session-long `Instant` gave was
+    // `22m12s` beside a turn six seconds old. Each turn is handed its own.
     let mut picker: Option<(Picker, Pick)> = None;
 
     paint(screen, &mut app)?;
@@ -437,7 +440,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             if let Event::Paste(text) = event {
                 app.paste(&text, picker.is_some());
             }
-            app.status.elapsed = started.elapsed();
             paint(screen, &mut app)?;
             continue;
         };
@@ -693,7 +695,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             if was_palette && !matches!(picker, Some((_, Pick::Palette))) {
                 replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
             }
-            app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -723,7 +724,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // the operator asked for the whole list and is not getting it.
                 app.say(Tone::Muted, format!("the list stays short: {error}"));
             }
-            app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -747,7 +747,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Ok(None) => app.say(Tone::Muted, "nothing in this workspace to complete"),
                 Err(error) => app.say(Tone::Error, error),
             }
-            app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -1068,13 +1067,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     contained.then_some(containment.as_ref()).flatten(),
                     &capabilities,
                     text,
-                    started,
+                    // **This turn's own clock, not the session's.** What a reader
+                    // wants of the row above the prompt is how long the thing in
+                    // front of them has been going; a clock that had been counting
+                    // since the terminal opened said `22m12s` about a turn six
+                    // seconds old. Every event age inside the turn is measured
+                    // from here too, which is what a tool cell's duration is a
+                    // difference of.
+                    Instant::now(),
                 )
                 .await?;
             }
         }
 
-        app.status.elapsed = started.elapsed();
         paint_picker(screen, &mut app, picker.as_mut())?;
     }
 }
@@ -1224,9 +1229,18 @@ async fn turn<P: Provider>(
     // one was an interrupt, and the observer's `Flow::Cancel` — the path a
     // contained turn has always been stopped by — ends a turn at the same step
     // boundary.
-    let contract = io_cli::contract::session(text.clone(), root.clone(), capabilities)
-        .with_responder(std::sync::Arc::new(answerer))
-        .with_plan_gate(std::sync::Arc::new(gate));
+    let mut contract = io_cli::contract::session(text.clone(), root.clone(), capabilities);
+    // **The responder and the plan gate ride containment, and only containment.**
+    // Registering a plan gate turns io-harness's planning phase ON for the turn
+    // that carries it: the agent proposes a plan and the run stops until somebody
+    // decides. That is what `[app.io-cli.containment]` asks for, and it is not
+    // what an ordinary prompt asks for — attaching them to every turn made every
+    // turn stop for a plan, which a real run showed within a minute.
+    if containment.is_some() {
+        contract = contract
+            .with_responder(std::sync::Arc::new(answerer))
+            .with_plan_gate(std::sync::Arc::new(gate));
+    }
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {

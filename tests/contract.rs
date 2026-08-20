@@ -138,13 +138,27 @@ fn the_flat_turn_is_still_the_steered_one() {
     // and both arms are handed it. A contract built only where a containment
     // was is what left the ordinary turn at io-harness's twelve steps.
     let built = text
-        .split_once("let contract = io_cli::contract::session(")
+        .split_once("let mut contract = io_cli::contract::session(")
         .expect("one contract is built for every turn")
         .1;
-    let head = &built[..160.min(built.len())];
+    // **And the plan gate is attached only where a containment is.** Registering
+    // one turns io-harness's planning phase ON for the turn that carries it: the
+    // agent proposes a plan and the run stops until somebody decides. That is
+    // what `[app.io-cli.containment]` asks for and not what an ordinary prompt
+    // asks for — attached unconditionally, every turn stopped for a plan, which
+    // a real run showed within a minute.
+    let head = &built[..700.min(built.len())];
     assert!(
-        head.contains("with_responder") && head.contains("with_plan_gate"),
-        "the responder and the plan gate ride the same contract: {head:?}",
+        head.contains("if containment.is_some() {"),
+        "the responder and the plan gate ride containment: {head:?}",
+    );
+    let gated = head
+        .split_once("if containment.is_some() {")
+        .expect("the guard")
+        .1;
+    assert!(
+        gated.contains("with_responder") && gated.contains("with_plan_gate"),
+        "both are inside the guard: {gated:?}",
     );
 }
 
