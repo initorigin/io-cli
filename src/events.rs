@@ -212,6 +212,21 @@ pub struct Events {
     /// bound that dropped the remainder would not be fitting the text, it would
     /// be destroying it. [`Events::thought`] is what `/expand` reads.
     thought: Option<String>,
+    /// The act and target of an approval io-harness is blocked on, if it is.
+    ///
+    /// Set by `ApprovalRequested` and cleared by `ApprovalDecided`, so it is the
+    /// harness's own account of whether the run is waiting on a person rather
+    /// than io-cli's account of whether an overlay happens to be on screen. The
+    /// two are not the same: a contained turn's approval can be answered by a
+    /// responder with no overlay drawn here at all, and the run is still stopped.
+    awaiting: Option<String>,
+    /// Whether the last thing that happened was the model thinking.
+    ///
+    /// Cleared by every event that says something else is now happening — a
+    /// token, a call, a step, a turn beginning or ending — so "most recent" means
+    /// what it says. A fact that reaches no surface, a spend draw for instance,
+    /// leaves it alone: it is not a different thing happening, it is a number.
+    thinking: bool,
     /// The workspace this session is held over, for shortening a tool's target.
     ///
     /// Empty until the driver says otherwise, and an empty root shortens
@@ -231,6 +246,8 @@ impl Events {
             unknown: 0,
             step_at: Duration::ZERO,
             thought: None,
+            awaiting: None,
+            thinking: false,
             root: std::path::PathBuf::new(),
         }
     }
@@ -296,10 +313,27 @@ impl Events {
     /// An open call is the more urgent thing to say, so it wins the row, and the
     /// tail stays live until something legitimately commits it.
     pub fn live(&self) -> String {
+        let glyphs = &self.theme.glyphs;
+        // **A person outranks a machine, and it is not close.** Everything else
+        // this row can say describes work that is going on without the operator;
+        // this one says the work has stopped and is waiting on them. Told in the
+        // other order, the row reports the agent as busy at the exact moment it
+        // is blocked on somebody who is reading this row to find out.
+        if let Some(waiting) = &self.awaiting {
+            return format!(
+                "{} waiting for you {} {waiting}",
+                glyphs.bullet, glyphs.dash
+            );
+        }
         let Some(call) = self.open.last() else {
+            // No call open and the last thing that happened was the model
+            // thinking. The thought itself commits when it arrives; this is the
+            // row for the interval before the next thing does.
+            if self.thinking {
+                return format!("{} thinking {}", glyphs.bullet, glyphs.ellipsis);
+            }
             return self.live.clone();
         };
-        let glyphs = &self.theme.glyphs;
         let mut row = format!("{} {}", glyphs.bullet, call.name);
         if !call.target.is_empty() {
             row.push(' ');
@@ -330,6 +364,13 @@ impl Events {
             lines.push(cell_line(theme, &call, "unfinished", None));
         }
         self.refused_this_step = false;
+        // The turn is over, so nothing is thinking and nobody is being waited
+        // on. An interrupt between the request and the decision is the case that
+        // needs this: the harness never sends the `ApprovalDecided` that would
+        // otherwise clear it, and the row would go on asking for an answer to a
+        // question that died with the run.
+        self.awaiting = None;
+        self.thinking = false;
         lines
     }
 
@@ -368,6 +409,19 @@ impl Events {
     /// may read a clock, so a test can state the interval between two events by
     /// hand and assert on it without anything being timed.
     pub fn event(&mut self, event: &RunEvent, at: Duration) -> Vec<Line<'static>> {
+        // What the live row says is a fact about the *last* thing that happened,
+        // so it is decided here rather than in each arm: the arms below say what
+        // an event commits, and this says what it means for the row that is not
+        // committed at all. See `Events::live`.
+        match &event.kind {
+            EventKind::Reasoning { text, .. } if !text.trim().is_empty() => self.thinking = true,
+            EventKind::Token { .. }
+            | EventKind::ToolCall { .. }
+            | EventKind::Step { .. }
+            | EventKind::Started { .. }
+            | EventKind::Finished { .. } => self.thinking = false,
+            _ => {}
+        }
         let theme = self.theme;
         let separator = theme.glyphs.separator;
         let dash = theme.glyphs.dash;
@@ -774,6 +828,7 @@ impl Events {
                 // drawn from those. This is the transcript's note that the run
                 // stopped, not the question itself — the question must never be
                 // committed, which is what F1 asserts.
+                self.awaiting = Some(format!("{act} {target}"));
                 let mut lines = self.flush_text();
                 lines.push(theme.notice(
                     Tone::Warning,
@@ -789,6 +844,12 @@ impl Events {
                 // The harness's own record of what it was told, which is not the
                 // same line as io-cli's. They agree because the answer travelled
                 // one way; if they ever disagree, this is where it shows.
+                //
+                // The run is moving again, so the live row stops saying it is
+                // waiting. Cleared here rather than by whatever closed the
+                // overlay, for the reason it was set here: this is the harness
+                // saying so, and the overlay is only one of the ways it is asked.
+                self.awaiting = None;
                 let mut lines = self.flush_text();
                 lines.push(theme.notice(
                     if decision == "deny" {

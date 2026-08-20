@@ -1409,6 +1409,125 @@ fn f3_an_empty_thought_commits_no_block() {
     assert_eq!(events.thought(), None);
 }
 
+/// 0.11.0 F6 — the live row names the act and the target of an open call.
+#[test]
+fn f6_an_open_call_names_that_act_and_its_target() {
+    let mut events = Events::new(DARK);
+    events.set_root("/work/io-cli");
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "write_file".into(),
+            target: "/work/io-cli/src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    let row = events.live();
+    assert!(
+        row.contains("Write") && row.contains("src/lib.rs"),
+        "{row:?}"
+    );
+}
+
+/// 0.11.0 F6 — with nothing open and a thought most recent, the row says so.
+#[test]
+fn f6_a_thought_most_recent_and_nothing_open_says_the_agent_is_thinking() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(thought("which caller reaches it", 20)),
+        Duration::ZERO,
+    );
+    assert!(events.live().contains("thinking"), "{:?}", events.live());
+
+    // And it stops being the most recent thing as soon as something else
+    // happens. The answer streaming is the ordinary case.
+    events.event(
+        &event(EventKind::Token {
+            text: "the parser".into(),
+        }),
+        Duration::ZERO,
+    );
+    let row = events.live();
+    assert!(!row.contains("thinking"), "{row:?}");
+    assert!(row.contains("the parser"), "{row:?}");
+}
+
+/// 0.11.0 F6 — a pending approval outranks both, and this is the sabotage arm.
+///
+/// Ordering thinking above waiting-on-a-person tells an operator the agent is
+/// busy at the exact moment it is blocked on them — so this test arranges for all
+/// three to be true at once and asserts which one the row says.
+///
+/// **The order the events arrive in is the whole test.** Written the other way
+/// round — the thought before the call — the call clears `thinking` and the
+/// sabotage has nothing to beat: the first version of this test passed with
+/// thinking ranked above waiting, because by the time it looked, nothing was
+/// thinking. The call is announced first here so that all three are true at the
+/// moment the row is read.
+#[test]
+fn f6_a_pending_approval_outranks_an_open_call_and_a_thought() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "write_file".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    events.event(
+        &event(thought("this write needs asking about", 20)),
+        Duration::ZERO,
+    );
+    events.event(
+        &event(EventKind::ApprovalRequested {
+            act: "write".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+
+    let row = events.live();
+    assert!(
+        row.contains("waiting for you"),
+        "the run is blocked on a person and the row said otherwise: {row:?}",
+    );
+
+    // Decided, and the run is moving again: the open call takes the row back.
+    events.event(
+        &event(EventKind::ApprovalDecided {
+            act: "write".into(),
+            target: "src/lib.rs".into(),
+            decision: "allow".into(),
+        }),
+        Duration::ZERO,
+    );
+    let row = events.live();
+    assert!(!row.contains("waiting for you"), "{row:?}");
+    assert!(row.contains("Write"), "{row:?}");
+}
+
+/// 0.11.0 F6 — a turn that ended while an approval was outstanding stops asking.
+///
+/// An interrupt between the request and the decision is the case: io-harness
+/// never sends the decision that would clear it, and a row still asking for an
+/// answer to a question that died with the run is a session that looks hung.
+#[test]
+fn f6_an_interrupted_turn_stops_waiting_on_a_person() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ApprovalRequested {
+            act: "write".into(),
+            target: "src/lib.rs".into(),
+        }),
+        Duration::ZERO,
+    );
+    events.flush();
+    assert!(
+        !events.live().contains("waiting for you"),
+        "{:?}",
+        events.live()
+    );
+}
+
 /// One call, announced and then closed by the step that ran it.
 fn cell(events: &mut Events, name: &str, target: &str) -> String {
     events.event(
