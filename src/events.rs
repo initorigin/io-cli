@@ -2,11 +2,14 @@
 //!
 //! Three rules shape this module.
 //!
-//! **Nothing is dropped.** `EventKind` is `#[non_exhaustive]` and has fifty-one
-//! variants today, so a wildcard arm is not a shortcut here, it is required by
-//! the type. What matters is that the wildcard *renders* — an event this release
-//! has no design for arrives as a muted single line naming its kind, rather than
-//! disappearing. An unrendered event is a bug this design should surface.
+//! **Every kind is triaged, and nothing falls through.** `EventKind` is
+//! `#[non_exhaustive]` and has fifty-one variants today, so a wildcard arm is not
+//! a shortcut here, it is required by the type. Until 0.11.0 that wildcard
+//! *rendered*, committing the variant's own snake-cased name in a muted line —
+//! which is why a transcript said `prompt_composed` and `answered` at whoever was
+//! reading it. Now [`crate::triage`] holds a disposition for every kind, the
+//! wildcard commits nothing, and a kind that is not in the table at all is
+//! counted by [`Events::unknown`] instead of being printed.
 //!
 //! **Streaming text is not committed a token at a time.** Tokens accumulate in a
 //! live buffer that the viewport draws, and the whole passage is committed to
@@ -84,6 +87,14 @@ pub struct Events {
     /// step rather than closing a cell — and it is the only honest result word
     /// available when the step's own decisions cannot be paired to the calls.
     refused_this_step: bool,
+    /// Events whose kind [`crate::triage`] has never heard of.
+    ///
+    /// Counted rather than printed. A kind with no disposition is one io-harness
+    /// began emitting after this release: the operator reading the transcript is
+    /// not the person who can act on it, and a variant name in front of them is
+    /// what this release exists to remove — but a session that discarded it
+    /// without a trace would leave nobody able to find out either.
+    unknown: usize,
 }
 
 impl Events {
@@ -93,11 +104,36 @@ impl Events {
             live: String::new(),
             open: Vec::new(),
             refused_this_step: false,
+            unknown: 0,
         }
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+    }
+
+    /// How many events arrived carrying a kind with no disposition.
+    ///
+    /// Zero on every run against the io-harness this release is locked to, by
+    /// construction: `tests/triage.rs` fails if the table and that version's enum
+    /// disagree. It stops being zero when a later harness is pinned and something
+    /// new reaches a session, which is exactly when somebody needs to know.
+    pub fn unknown(&self) -> usize {
+        self.unknown
+    }
+
+    /// What an event with no designed line commits, which is nothing.
+    ///
+    /// Public so that a test can hand it a kind name io-harness does not have
+    /// yet. Every kind this crate is locked to can be constructed and driven
+    /// through [`Events::event`], and exactly one branch here cannot be reached
+    /// that way — the one that matters, because a kind with no disposition is by
+    /// definition one this release has never seen.
+    pub fn undesigned(&mut self, name: &str) -> Vec<Line<'static>> {
+        if crate::triage::disposition(name).is_none() {
+            self.unknown += 1;
+        }
+        Vec::new()
     }
 
     /// The one live row the viewport draws: an open tool call if there is one,
@@ -606,6 +642,199 @@ impl Events {
                 lines.push(Line::from(""));
                 lines
             }
+            // **A pause the operator is watching, said rather than left blank.**
+            // A retry is the one failure that looks exactly like a working
+            // session: nothing arrives, the clock runs, and the interface has
+            // nothing to say. `kind` is io-harness's own classification and is
+            // printed as it came.
+            EventKind::Retry {
+                kind,
+                attempt,
+                delay_ms,
+            } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!(
+                        "the provider failed ({kind}) and will be asked again{separator}attempt \
+                         {attempt}{separator}after {delay_ms} ms"
+                    ),
+                ));
+                lines
+            }
+            // Who answered is not who was asked, and the status line's provider
+            // field moves with it — see `App::status_from`. The line is here as
+            // well as there because a fallback is a fact about *this moment* in a
+            // conversation, and a field that quietly reads differently later
+            // cannot say when it changed.
+            EventKind::FellBackTo { provider } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!("the provider fell over{separator}{provider} answered instead"),
+                ));
+                lines
+            }
+            // The run continues, which is the half an operator would otherwise
+            // assume the opposite of. `Stalled` is the terminal one and it is
+            // silent here on purpose: it arrives as the run's own outcome.
+            EventKind::Replan { window } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!(
+                        "nothing has changed in {window} steps, so the agent was told once to try \
+                         something else"
+                    ),
+                ));
+                lines
+            }
+            // **Durable memory is a side effect outside the workspace**, and the
+            // only one this interface can show. A note written now is read by a
+            // run tomorrow, so a session that never mentioned it would leave the
+            // operator with no record of what the agent decided to keep.
+            EventKind::MemoryWrote { key } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(format!("remembered {key}"), theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            EventKind::MemoryForgot { key } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(format!("forgot {key}"), theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            // A question about intent, which io-harness deliberately distinguishes
+            // from an approval about permission: an answer to this authorizes
+            // nothing. The overlay 0.10.0 added is where it is answered when a
+            // responder is registered; this is the transcript's durable copy, and
+            // it is what an operator sees at all on a turn that has no responder.
+            EventKind::QuestionAsked { question, choices } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(Tone::Accent, format!("the agent asks: {question}")));
+                for choice in choices {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} {choice}", theme.glyphs.bullet),
+                        theme.style(Tone::Muted),
+                    )));
+                }
+                lines
+            }
+            // **`by` is the fact, not the decoration.** "the machine decided" and
+            // "a person decided" are different things to have happened to a run,
+            // and the answer alone cannot tell them apart.
+            EventKind::QuestionAnswered { answer, by } => {
+                // The words avoid `answered`, which is a kind name of its own and
+                // one of the six strings F2 asserts a transcript never shows.
+                let who = match by.as_str() {
+                    "responder" => "replied here".to_string(),
+                    "human" => "replied by a person".to_string(),
+                    other => format!("replied by {other}"),
+                };
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(answer.clone(), theme.style(Tone::Normal)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(who, theme.style(Tone::Muted)),
+                ]));
+                lines
+            }
+            // The proposal itself is the overlay's, which is on screen at the
+            // moment it is made. What belongs in the scrollback is what was
+            // decided, because that is the part still true afterwards.
+            EventKind::PlanDecided { verdict, by, .. } => {
+                let (text, tone) = match verdict.as_str() {
+                    "approve" => ("the plan was approved".to_string(), Tone::Success),
+                    "revise" => (
+                        "the plan was sent back for revision".to_string(),
+                        Tone::Warning,
+                    ),
+                    "cancel" => ("the plan was cancelled".to_string(), Tone::Warning),
+                    // io-harness's own word, whatever it is. A verdict this
+                    // release has never seen is reported rather than folded into
+                    // the nearest one it knows.
+                    other => (format!("the plan was {other}"), Tone::Muted),
+                };
+                let who = if by == "gate" { "here" } else { "by a person" };
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(tone, format!("{text}{separator}decided {who}")));
+                lines
+            }
+            // **The one place a reader can see why.** io-harness does not fold
+            // thinking back into the next prompt and does not store it, so this
+            // event is the only place it is ever visible — an absent one means the
+            // model did not think, never that it thought nothing.
+            //
+            // The heading says `thought` rather than `reasoning`, which is the
+            // variant's own name and one of the six strings F2 asserts a
+            // transcript never shows.
+            EventKind::Reasoning { text, tokens } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled("thought", theme.style(Tone::Muted)),
+                    Span::styled(format!("{separator}{tokens} tok"), theme.style(Tone::Muted)),
+                ]));
+                for line in text.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {line}"),
+                        theme.style(Tone::Muted),
+                    )));
+                }
+                lines.push(Line::from(""));
+                lines
+            }
+            // **Nothing in this process dialled anything.** The provider ran its
+            // own search or fetch and reported it, so the line says which provider
+            // and which of its tools — and reports the failures, because a search
+            // that broke inside an otherwise good answer is why a reply is thin.
+            EventKind::ServerToolUsed { provider, tool, ok } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled(
+                        format!("{provider} ran {tool} for the model"),
+                        theme.style(Tone::Normal),
+                    ),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(
+                        if *ok { "ok" } else { "failed" },
+                        theme.style(if *ok { Tone::Muted } else { Tone::Warning }),
+                    ),
+                ]));
+                lines
+            }
+            // The reasons are carried rather than summarised, for io-harness's own
+            // reason: a refusal a human cannot argue with is a gate nobody trusts
+            // twice.
+            EventKind::Reviewed { passed, reasons } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    if *passed {
+                        Tone::Success
+                    } else {
+                        Tone::Refused
+                    },
+                    if *passed {
+                        "the review passed"
+                    } else {
+                        "the review did not pass"
+                    },
+                ));
+                for reason in reasons {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} {reason}", theme.glyphs.bullet),
+                        theme.style(Tone::Muted),
+                    )));
+                }
+                lines
+            }
             EventKind::Mcp {
                 server,
                 tool,
@@ -632,14 +861,14 @@ impl Events {
                         call.measured = Some(Duration::from_millis(*millis));
                     }
                 }
-                // Still rendered as itself. Harvesting a number off an event is not
-                // the same as having designed a line for it, and an event that
-                // vanished from the transcript because something read a field off
-                // it is exactly the silence this module refuses.
-                vec![Line::from(vec![
-                    Span::styled(leader(separator), theme.style(Tone::Muted)),
-                    Span::styled(kind_name(&event.kind), theme.style(Tone::Muted)),
-                ])]
+                // And nothing committed. 0.3.0 rendered the muted word `mcp` here
+                // and said in a comment that harvesting a number off an event is
+                // not the same as designing a line for it — which was right while
+                // there was nowhere else for the fact to go. There is now:
+                // `mcp N/M tools` on the status line, since 0.10.0, is where a
+                // server reaching a run and a tool it offered both land, and
+                // `triage::TRIAGE` records that route.
+                Vec::new()
             }
             // Guarded on the items rather than only on the tag, because io-harness
             // accepts a write of none: `parse_todo_items` validates each item it is
@@ -733,16 +962,20 @@ impl Events {
                 lines.push(Line::from(""));
                 lines
             }
-            // The other thirty-seven kinds. Not styled in this release, and not
-            // discarded either: each arrives as one muted line naming itself, so a
-            // release that starts emitting something new is visible rather than
-            // silent.
-            other => {
-                vec![Line::from(vec![
-                    Span::styled(leader(separator), theme.style(Tone::Muted)),
-                    Span::styled(kind_name(other), theme.style(Tone::Muted)),
-                ])]
-            }
+            // Every kind that commits no line of its own, and the one case that
+            // is a defect rather than a decision.
+            //
+            // Three groups arrive here. A `Status` kind, whose fact is a field —
+            // `App::status_from` is that surface. A `Silent` kind, whose route is
+            // written down in `triage::TRIAGE` beside it. And a `Line` kind whose
+            // arm above declined *this* event: an empty plan is the one that
+            // exists today, and a disposition is about the kind rather than about
+            // every payload it can carry.
+            //
+            // The fourth case is a kind the table has never heard of, which is
+            // the only one that means something is wrong. It is counted rather
+            // than printed, because printing it is what this release removed.
+            other => self.undesigned(&kind_name(other)),
         }
     }
 }

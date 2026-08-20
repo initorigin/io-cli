@@ -1,9 +1,15 @@
 //! F8 — every event kind is accounted for.
 //!
 //! `io_harness::EventKind` is `#[non_exhaustive]`, so a wildcard arm is required
-//! by the type rather than chosen. The criterion is therefore asserted as the two
-//! things that actually matter: no kind renders to nothing, and no kind exists
-//! that this repository has never seen.
+//! by the type rather than chosen. Through 0.10.0 the criterion was asserted as
+//! the two things that mattered then: no kind rendered to nothing, and no kind
+//! existed that this repository had never seen.
+//!
+//! **0.11.0's F1 replaced the first half.** "No kind renders to nothing" was
+//! true because the wildcard printed the variant's own name, which is the defect
+//! this release removed — so what is asserted now is that every kind has a
+//! *disposition*, and `tests/triage.rs` owns that. What stays here is what each
+//! designed line actually says.
 
 mod support;
 
@@ -13,80 +19,12 @@ use io_cli::events::{kind_name, Events};
 use io_cli::theme::DARK;
 use io_harness::{EventKind, RunEvent, TodoItem, TodoState, TODO_MAX_ITEMS};
 
-/// The kinds this release handles, in the contract's own words: `started`,
-/// `token`, `step`, `tool_call` and `finished` rendered fully, `refused` and
-/// `approval_requested` as a plain one-line notice.
-///
-/// `mcp` is here from 0.3.0 for a reason that is not visible in its own line: it
-/// is the only event io-harness emits carrying how long a tool actually ran, and
-/// that number is harvested onto the open tool cell. Its own line is still the
-/// muted one naming the kind — an event is never consumed silently — but it is no
-/// longer a kind this release merely passes through.
-///
-/// `todo_wrote` joins them in 0.7.0, and being in this list is the smallest part
-/// of that: a name moved here with no arm behind it still renders through the
-/// wildcard and still passes this file. What makes the move true is the F11 tests
-/// at the end, which assert the items and their state words themselves.
-const STYLED: &[&str] = &[
-    "started",
-    "token",
-    "step",
-    "tool_call",
-    "finished",
-    "refused",
-    "approval_requested",
-    "mcp",
-    "todo_wrote",
-    "recovery_paused",
-    "spawned",
-    "spawn_refused",
-    "child_collected",
-    "child_detached",
-    "spend_draw",
-];
-
-/// Every other kind the locked io-harness emits. Each renders as a muted single line
-/// naming itself. This list is not decoration: the drift test below fails when
-/// io-harness grows a kind that is in neither list, which is the moment somebody
-/// has to decide what it should look like.
-const FALLS_THROUGH: &[&str] = &[
-    "approval_decided",
-    "retry",
-    "fell_back_to",
-    "replan",
-    "stalled",
-    "fleet",
-    "memory_wrote",
-    "memory_forgot",
-    "question_asked",
-    "question_answered",
-    "plan_proposed",
-    "plan_decided",
-    "reasoning",
-    "server_tool_used",
-    "sandbox",
-    "handle_started",
-    "handle_polled",
-    "handle_killed",
-    "handle_exited",
-    "handle_orphaned",
-    "reviewed",
-    "routed",
-    "plugin_loaded",
-    "plugin_dropped",
-    "lsp_started",
-    "browser_started",
-    "browser_navigated",
-    "speculated",
-    "dialed",
-    "rewound",
-    "reverted",
-    "answered",
-    "compacted",
-    "cache_marked",
-    "prompt_composed",
-    "contained",
-];
+// The `STYLED` and `FALLS_THROUGH` lists stood here until 0.11.0. They were a
+// pair because the second one was a real destination — a muted line naming the
+// kind — and a name could be moved between them without any arm changing, which
+// this file's own comment said out loud. `triage::TRIAGE` replaced both with one
+// list that says what each kind does and where its fact goes, and
+// `tests/triage.rs` is what holds it to the locked harness.
 
 fn event(kind: EventKind) -> RunEvent {
     RunEvent::new(1, 1, kind)
@@ -296,17 +234,23 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     assert!(finished.contains('7'), "{finished:?}");
 }
 
+/// **F1.** The rule this test asserted is the one 0.11.0 reversed.
+///
+/// It required an unstyled kind to name itself, which is how `replan` — the
+/// example it used — reached an operator as a Rust variant. `Replan` now has a
+/// designed line, and the property worth keeping from the old test is that the
+/// line says what happened in words rather than in the enum's vocabulary.
 #[test]
-fn f8_a_kind_this_release_does_not_style_still_renders_and_names_itself() {
+fn f1_a_kind_with_a_designed_line_says_what_happened_and_never_its_own_name() {
     let mut events = Events::new(DARK);
-    // `SpendDraw` stood here until 0.8.0, which gave it an arm — one that
-    // commits nothing, because its fact belongs to the status line. `Replan` is
-    // the example now: a kind this release has no design for, which must still
-    // reach the transcript naming itself.
     let line = rendered(&mut events, EventKind::Replan { window: 3 });
     assert!(
-        line.contains("replan"),
-        "an unstyled kind must name itself rather than vanish: {line:?}",
+        line.contains("3 steps"),
+        "the window is the fact an operator can act on: {line:?}",
+    );
+    assert!(
+        !line.contains("replan"),
+        "the variant's own name must not reach the transcript: {line:?}",
     );
 }
 
@@ -338,16 +282,17 @@ fn f8_tokens_are_coalesced_rather_than_committed_one_at_a_time() {
     assert_eq!(events.live(), "", "the live buffer should be emptied");
 }
 
-/// **F8.** No event is dropped.
+/// **F8, as 0.11.0 leaves it.** Every kind with a designed line still commits
+/// one, and the two that defer still defer.
 ///
-/// The invariant is not "every event commits a line" — a token does not, and from
-/// 0.3.0 neither does a tool call. Both are *deferred* rather than discarded: the
-/// token into the live buffer, the call into an open cell that `live()` shows
-/// immediately and that the step commits complete. So each kind must leave a mark
-/// somewhere a reader can see it, and the two that defer are named here rather
-/// than exempted, so that a third one cannot be added silently.
+/// The old invariant — *no* kind renders to nothing — died with the wildcard that
+/// made it true, and `Stalled` is where that shows: it is silent here now,
+/// because the run's own outcome carries the word and a line beside it would say
+/// the same thing twice. What this test still owns is that a `Line` kind is not
+/// quietly emptied, and that a token and a tool call are deferred rather than
+/// discarded.
 #[test]
-fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
+fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
     let mut events = Events::new(DARK);
     let kinds = vec![
         EventKind::Started {
@@ -379,8 +324,15 @@ fn f8_no_event_is_dropped_though_a_token_and_a_tool_call_are_deferred() {
             steps: 0,
             tokens: 0,
         },
-        EventKind::Stalled,
         EventKind::Replan { window: 8 },
+        EventKind::Retry {
+            kind: "timeout".into(),
+            attempt: 2,
+            delay_ms: 400,
+        },
+        EventKind::FellBackTo {
+            provider: "anthropic".into(),
+        },
     ];
 
     for kind in kinds {
@@ -535,34 +487,17 @@ fn the_kind_name_is_the_serde_tag() {
 
 #[test]
 fn f8_this_release_has_seen_every_kind_io_harness_emits() {
+    // The drift check itself moved to `tests/triage.rs`, which compares the
+    // locked harness's declared kinds against the disposition table rather than
+    // against a pair of lists nothing behind them had to agree with. What is
+    // left here is the count, because this file's own fixtures are written
+    // against it.
     let declared = support::harness_event_kinds();
     assert_eq!(
         declared.len(),
         51,
         "the locked io-harness declares fifty-one event kinds; found {}",
         declared.len(),
-    );
-
-    let mut known: Vec<&str> = STYLED.to_vec();
-    known.extend_from_slice(FALLS_THROUGH);
-
-    let unseen: Vec<&String> = declared
-        .iter()
-        .filter(|name| !known.contains(&name.as_str()))
-        .collect();
-    assert!(
-        unseen.is_empty(),
-        "io-harness emits kinds this repository has never seen: {unseen:?}. \
-         Decide whether each is styled or falls through, and add it to the list.",
-    );
-
-    let gone: Vec<&&str> = known
-        .iter()
-        .filter(|name| !declared.contains(&(**name).to_string()))
-        .collect();
-    assert!(
-        gone.is_empty(),
-        "these names are no longer io-harness event kinds: {gone:?}",
     );
 }
 
@@ -1000,8 +935,12 @@ fn f11_a_plan_longer_than_the_store_keeps_says_how_much_longer() {
 /// the agent's own account` with not one row under it — the placeholder F12's
 /// sabotage arm names, written into the transcript instead of the status line.
 ///
-/// The event is still committed, as the muted word naming itself: an empty write
-/// happened, and no kind in this module renders to nothing.
+/// Through 0.10.0 the event was still committed, as the muted word naming
+/// itself. **0.11.0's F1 is why that stops:** `todo_wrote` is triaged as a line,
+/// and a `Line` kind whose arm declines this particular payload commits nothing
+/// rather than falling through to its own variant name. The empty write is not
+/// counted as an unknown kind either — it is a kind with a disposition, and the
+/// arm made a judgement about the payload.
 #[test]
 fn f11_a_plan_of_no_items_is_not_committed_as_a_plan() {
     let mut events = Events::new(DARK);
@@ -1020,13 +959,14 @@ fn f11_a_plan_of_no_items_is_not_committed_as_a_plan() {
             "a plan of nothing is not a plan of zero: {committed:?}",
         );
     }
+    assert!(
+        committed.is_empty(),
+        "an empty write has nothing to say and must commit nothing: {committed:?}",
+    );
     assert_eq!(
-        committed
-            .iter()
-            .filter(|row| row.contains(&kind_name(&EventKind::TodoWrote { items: Vec::new() })))
-            .count(),
-        1,
-        "the event still arrives as the word naming itself: {committed:?}",
+        events.unknown(),
+        0,
+        "`todo_wrote` has a disposition; declining a payload is not an unheard-of kind",
     );
 }
 

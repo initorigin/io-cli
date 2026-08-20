@@ -47,5 +47,6 @@ pub mod status;
 pub mod term;
 pub mod theme;
 pub mod transcript;
+pub mod triage;
 pub mod verify;
 pub mod wizard;

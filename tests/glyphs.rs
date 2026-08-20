@@ -518,6 +518,51 @@ fn every_event_this_release_renders_draws_in_ascii() {
             tokens: 21,
             remaining: Some(500),
         },
+        // 0.11.0 — the arms the triage added. Each was a muted variant name
+        // until this release, so each is new to this sweep as well as to the
+        // transcript, and every one of them carries a leader, a separator or a
+        // bullet that has an ASCII form.
+        EventKind::Retry {
+            kind: "timeout".into(),
+            attempt: 2,
+            delay_ms: 400,
+        },
+        EventKind::FellBackTo {
+            provider: "anthropic".into(),
+        },
+        EventKind::Replan { window: 6 },
+        EventKind::MemoryWrote {
+            key: "build-command".into(),
+        },
+        EventKind::MemoryForgot {
+            key: "build-command".into(),
+        },
+        EventKind::QuestionAsked {
+            question: "which of the two parsers did you mean?".into(),
+            choices: vec!["the tokenizer".into(), "the expression parser".into()],
+        },
+        EventKind::QuestionAnswered {
+            answer: "the tokenizer".into(),
+            by: "responder".into(),
+        },
+        EventKind::PlanDecided {
+            plan_id: 3,
+            verdict: "approve".into(),
+            by: "gate".into(),
+        },
+        EventKind::Reasoning {
+            text: "the parser is the smaller of the two, so it goes first".into(),
+            tokens: 96,
+        },
+        EventKind::ServerToolUsed {
+            provider: "openrouter".into(),
+            tool: "web_search".into(),
+            ok: true,
+        },
+        EventKind::Reviewed {
+            passed: false,
+            reasons: vec!["the tests do not cover the error path".into()],
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is
