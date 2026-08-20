@@ -87,6 +87,21 @@ pub struct Events {
     /// step rather than closing a cell — and it is the only honest result word
     /// available when the step's own decisions cannot be paired to the calls.
     refused_this_step: bool,
+    /// Whether this session runs in plain mode.
+    ///
+    /// **The one thing that changes what a designed line contains rather than
+    /// how it is drawn, and 0.11.0 is what made it necessary.** This release
+    /// moved the provider and the run's step and token counts off the transcript
+    /// and onto the status line, which is the right place for them — for a
+    /// reader who can see the viewport. A plain session is defined by not having
+    /// one: its whole promise since 0.6.0 is that every state change reaches the
+    /// scrollback as text, and a fact that now lives only in a repainting row is
+    /// a fact taken away from exactly the reader who cannot follow it.
+    ///
+    /// So in plain mode, and only there, the two lines this release removed are
+    /// still committed — in the status line's vocabulary rather than the removed
+    /// rows' own, so there is one spelling of each fact in the product.
+    plain: bool,
     /// Events whose kind [`crate::triage`] has never heard of.
     ///
     /// Counted rather than printed. A kind with no disposition is one io-harness
@@ -104,12 +119,19 @@ impl Events {
             live: String::new(),
             open: Vec::new(),
             refused_this_step: false,
+            plain: false,
             unknown: 0,
         }
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+    }
+
+    /// Say whether this session runs in plain mode. Decided once, by
+    /// [`crate::settings::plain`], and handed down through [`crate::app::App`].
+    pub fn set_plain(&mut self, plain: bool) {
+        self.plain = plain;
     }
 
     /// How many events arrived carrying a kind with no disposition.
@@ -240,15 +262,27 @@ impl Events {
                 }
                 lines
             }
+            // The goal, and nothing else. Through 0.10.0 a second row said
+            // `via {provider}` under every prompt an operator ever typed — the
+            // same fact, repeated once per turn, about a setting that changes
+            // perhaps twice in a session. It is a status-line field now
+            // (`App::status_from`), which is where every other fact of that
+            // shape already lives.
+            //
+            // `provider` is still destructured rather than ignored, so that a
+            // release which stops setting the field cannot leave this arm
+            // silently reading a value nobody uses.
             EventKind::Started { goal, provider } => {
                 let mut lines = vec![Line::from(vec![
                     Span::styled(theme.glyphs.marker, theme.style(Tone::Accent)),
                     Span::styled(goal.clone(), theme.style(Tone::Normal)),
                 ])];
-                lines.push(Line::from(Span::styled(
-                    format!("  via {provider}"),
-                    theme.style(Tone::Muted),
-                )));
+                if self.plain {
+                    lines.push(Line::from(Span::styled(
+                        format!("  provider:{provider}"),
+                        theme.style(Tone::Muted),
+                    )));
+                }
                 lines.push(Line::from(""));
                 lines
             }
@@ -622,17 +656,50 @@ impl Events {
                 ));
                 lines
             }
+            // **A turn ends on its answer.** Through 0.10.0 it ended on
+            // `ok: finished · 0 steps · 4703 tok` — a row of arithmetic under the
+            // thing the operator actually asked for, and the one line in this
+            // module that put metadata in front of content rather than after it.
+            // The two numbers are status-line fields now, and what is left here
+            // is the half a reader cannot get anywhere else: an outcome that
+            // stopped short says so, in `outcome_help`'s own sentence.
+            //
+            // A plain finish commits the blank line and nothing more. The blank
+            // line is not decoration — it is what separates this turn's answer
+            // from the next prompt, and `Screen::commit` relies on it.
             EventKind::Finished {
                 outcome,
                 steps,
                 tokens,
             } => {
                 let mut lines = self.flush_text();
-                let tone = outcome_tone(outcome);
-                lines.push(theme.notice(
-                    tone,
-                    format!("{outcome}{separator}{steps} steps{separator}{tokens} tok"),
-                ));
+                // A plain session's scrollback is its whole interface, so the two
+                // numbers that moved to the status line are committed here — in
+                // the status line's own words, so a reader meets `3 steps` and
+                // `4703 tok` in one spelling wherever they meet them.
+                if self.plain {
+                    lines.push(theme.notice(
+                        outcome_tone(outcome),
+                        format!(
+                            "{outcome}{separator}{steps} step{}{separator}{tokens} tok",
+                            if *steps == 1 { "" } else { "s" },
+                        ),
+                    ));
+                }
+                // A plain finish is the ordinary case and says nothing: the
+                // answer above it is the outcome. Everything else stopped short
+                // of one, and the word is io-harness's own — `stalled`,
+                // `cancelled`, `budget_ceiling_reached` — because this interface
+                // reports what the harness decided and never relabels it.
+                //
+                // Not in plain mode, where the row above has already said it. One
+                // outcome, said once, whichever surface a reader is on.
+                if !self.plain && !matches!(outcome.as_str(), "finished" | "success") {
+                    lines.push(theme.notice(outcome_tone(outcome), outcome.clone()));
+                }
+                // The sentence, wherever the outcome was said. It exists only for
+                // the outcomes an operator cannot otherwise act on, so it is
+                // never printed under a plain finish.
                 if let Some(help) = outcome_help(outcome) {
                     lines.push(Line::from(Span::styled(
                         format!("  {help}"),

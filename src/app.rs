@@ -212,6 +212,10 @@ impl App {
     /// indicator consults.
     pub fn set_plain(&mut self, plain: bool) {
         self.status.plain = plain;
+        // The renderer needs it too from 0.11.0: the provider and the run's two
+        // numbers are status-line fields now, and a plain session has no status
+        // line a reader can follow. See `Events::set_plain`.
+        self.events.set_plain(plain);
     }
 
     /// Whether this session runs in plain mode.
@@ -552,6 +556,10 @@ impl App {
         self.status_from(event);
         self.fleet.event(event);
         let lines = self.events.event(event, at);
+        // The renderer counts what it could not place; the status line is where
+        // that count is reachable. Read back rather than incremented here, so
+        // there is one counter and not two that can disagree.
+        self.status.unknown = self.events.unknown();
         self.pending.extend(lines);
     }
 
@@ -577,11 +585,6 @@ impl App {
         self.pending.extend(lines);
     }
 
-    /// The status line's share of an event.
-    ///
-    /// Only the events that carry a fact set a field, and nothing sets one to a
-    /// default. A field this has never heard about stays `None`, which is what the
-    /// line renders as nothing at all rather than as a zero.
     /// Whether the fleet view is up.
     pub fn fleet_open(&self) -> bool {
         self.fleet_open
@@ -607,19 +610,53 @@ impl App {
         self.fleet_open = !self.fleet_open;
     }
 
+    /// The status line's share of an event.
+    ///
+    /// Only the events that carry a fact set a field, and nothing sets one to a
+    /// default. A field this has never heard about stays `None`, which is what
+    /// the line renders as nothing at all rather than as a zero.
     fn status_from(&mut self, event: &RunEvent) {
         match &event.kind {
+            // **The provider, which until 0.11.0 was named by a line under every
+            // prompt and nowhere else.** The line is gone and the fact is here;
+            // see `US-IO-CLI-0.11.0-I01` for why that is a relocation rather than
+            // a removal.
+            io_harness::EventKind::Started { provider, .. } => {
+                self.status.provider = Some(provider.clone());
+            }
+            // A different provider answering the same turn. io-harness emits this
+            // once, at the transition, so the field says who is serving now
+            // rather than who was asked.
+            io_harness::EventKind::FellBackTo { provider } => {
+                self.status.provider = Some(provider.clone());
+            }
+            // The model the run is asking, changed mid-run by a routing rule.
+            // `to` is empty for the provider's own default, and a field blanked
+            // to nothing would read as a session with no model at all.
+            io_harness::EventKind::Routed { to, .. } if !to.is_empty() => {
+                self.status.model = to.clone();
+            }
             io_harness::EventKind::Step { tokens, .. } => {
                 // The session's total, not the step's own. A field that swings
                 // rather than climbs cannot be read at a glance.
                 self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
+                // The envelope's own number rather than a count kept here: a
+                // resumed run replays its backlog, and a counter incremented per
+                // event would climb past the step the run is actually on.
+                self.status.steps = Some(event.step);
             }
-            // The run's own total, which is authoritative over the sum of the steps
-            // we happened to see. Guarded on the tag rather than inside the arm:
-            // a run that reported no usage at all reports `0`, and overwriting a
-            // real total with it would turn a known number into a wrong one.
-            io_harness::EventKind::Finished { tokens, .. } if *tokens > 0 => {
-                self.status.tokens = Some(*tokens);
+            io_harness::EventKind::Finished { tokens, steps, .. } => {
+                // The run's own totals, which are authoritative over the sum of
+                // the steps we happened to see. The token guard is on the value
+                // rather than on the tag: a run that reported no usage at all
+                // reports `0`, and overwriting a real total with it would turn a
+                // known number into a wrong one. The step count has no such
+                // ambiguity — a run that ended having taken no steps really did
+                // take none, and a conversational turn is exactly that.
+                if *tokens > 0 {
+                    self.status.tokens = Some(*tokens);
+                }
+                self.status.steps = Some(*steps);
             }
             io_harness::EventKind::Compacted { after_tokens, .. } => {
                 // The denominator is io-harness's own declared budget, asked of the

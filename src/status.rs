@@ -57,6 +57,33 @@ impl Field {
 pub struct Status {
     /// The model answering. First, because it is the field a reader looks for.
     pub model: String,
+    /// The provider serving the run, by io-harness's own name for it.
+    ///
+    /// **New in 0.11.0, and the reason it exists is a removal.** Through 0.10.0
+    /// the provider was named by a `via {provider}` line committed under every
+    /// prompt — the owner's complaint, and the one place in the whole product
+    /// that ever said it. Taking that line away without putting the fact here
+    /// would have deleted it rather than moved it, which is what
+    /// `US-IO-CLI-0.11.0-I01` records.
+    ///
+    /// Set from `EventKind::Started`, and moved by `EventKind::FellBackTo`, which
+    /// is a different provider answering the same turn.
+    pub provider: Option<String>,
+    /// Steps the run has taken.
+    ///
+    /// The other half of that removal: the count lived only in the `Finished`
+    /// row's arithmetic. It climbs from `RunEvent::step` as the steps commit and
+    /// is replaced by the run's own total when the run ends, for the reason
+    /// `tokens` is.
+    pub steps: Option<u32>,
+    /// Events whose kind `crate::triage` has no disposition for.
+    ///
+    /// Zero on every run against the locked io-harness, so the field is absent
+    /// from every line this release will ever draw against it. It stops being
+    /// zero when a later harness is pinned and starts emitting something new,
+    /// which is the moment somebody needs to know that the transcript is quiet
+    /// *because* nobody has triaged it yet.
+    pub unknown: usize,
     /// Whether a turn is running.
     pub working: bool,
     /// The permission posture in force, by its short name — or `None` before one
@@ -185,6 +212,9 @@ impl Status {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            provider: None,
+            steps: None,
+            unknown: 0,
             policy: None,
             tokens: None,
             context: None,
@@ -232,6 +262,14 @@ impl Status {
     /// and are left alone — the session is the same session either way.
     pub fn forget_run(&mut self) {
         self.tokens = None;
+        // Both new in 0.11.0, and both run facts. The provider is the one that
+        // reads as a session fact and is not: a resumed conversation may have
+        // been served by another provider entirely, and `Started` sets it again
+        // on the next turn. Clearing it here rather than on `Started` is F10's
+        // sabotage arm — blanking it as a run begins is exactly when it is about
+        // to become true.
+        self.provider = None;
+        self.steps = None;
         self.context = None;
         self.containment = None;
         self.spend = None;
@@ -292,6 +330,15 @@ impl Status {
         // reader checks to answer "is this alive". Everything this release adds
         // goes to the right of it, which is the order they drop in.
         fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
+        // **Fifth, and spelled the way the posture is.** `provider:openrouter`
+        // rather than a bare name, because two bare names side by side — the
+        // model and the provider — cannot be told apart by a reader who does not
+        // already know which vendor sells which model. It is deliberately not
+        // the word `via`: that is the string the removed line used, and F2
+        // asserts it never reaches a terminal again.
+        if let Some(provider) = &self.provider {
+            fields.push(Field::new(format!("provider:{provider}"), Tone::Muted));
+        }
         // **Immediately right of the clock, and above everything else this line
         // carries.** 0.8.0 drafted the spend field to the right of the containment
         // word and it was invisible on the first terminal it met; the lesson is
@@ -326,6 +373,15 @@ impl Status {
                 None => ("web ready".to_string(), Tone::Muted),
             };
             fields.push(Field::new(text, tone));
+        }
+        // Beside the token count rather than anywhere else, because the two are
+        // the same kind of fact — what this run has spent — and they used to sit
+        // together in the `Finished` row this release removed.
+        if let Some(steps) = self.steps {
+            fields.push(Field::new(
+                format!("{steps} step{}", if steps == 1 { "" } else { "s" }),
+                Tone::Muted,
+            ));
         }
         if let Some(tokens) = self.tokens {
             fields.push(Field::new(
@@ -377,6 +433,16 @@ impl Status {
             fields.push(Field::new(
                 format!("plan {done}/{total} claimed"),
                 Tone::Muted,
+            ));
+        }
+        // Past the rightmost field, and on no line at all until a harness this
+        // release has never met emits something nobody has triaged. It is a
+        // diagnostic rather than an observation about the work, which is why it
+        // is the first thing a narrow terminal drops.
+        if self.unknown > 0 {
+            fields.push(Field::new(
+                format!("unknown {}", self.unknown),
+                Tone::Warning,
             ));
         }
         fields

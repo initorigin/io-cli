@@ -156,7 +156,15 @@ fn f8_every_styled_kind_renders_its_own_facts() {
         started.contains("make the failing test pass"),
         "{started:?}"
     );
-    assert!(started.contains("openrouter"), "{started:?}");
+    // **0.11.0 — the goal, and nothing else.** The provider was a second row
+    // under every prompt in a session; it is a status-line field now, and
+    // `tests/status.rs` is where it is asserted. A default session must not
+    // print it here at all: F2 asserts the removal against a real run, and this
+    // is the same claim at the unit level.
+    assert!(
+        !started.contains("openrouter"),
+        "the provider is a status-line field and not a row under the goal: {started:?}",
+    );
 
     // A tool call's facts are asserted where they are committed, which is the step
     // that finished it. The announcement itself commits nothing, because when it
@@ -221,6 +229,9 @@ fn f8_every_styled_kind_renders_its_own_facts() {
     assert!(approval.contains("warning"), "{approval:?}");
     assert!(approval.contains("rm -rf build"), "{approval:?}");
 
+    // **0.11.0 — a turn ends on its answer.** The row of arithmetic under it is
+    // gone: the step count and the token total are status-line fields, and a
+    // plain finish has nothing left to say that the answer above it did not.
     let finished = rendered(
         &mut events,
         EventKind::Finished {
@@ -229,9 +240,10 @@ fn f8_every_styled_kind_renders_its_own_facts() {
             tokens: 9876,
         },
     );
-    assert!(finished.contains("ok"), "{finished:?}");
-    assert!(finished.contains("success"), "{finished:?}");
-    assert!(finished.contains('7'), "{finished:?}");
+    assert!(
+        finished.trim().is_empty(),
+        "a turn that finished should end on its answer, not on a row about itself: {finished:?}",
+    );
 }
 
 /// **F1.** The rule this test asserted is the one 0.11.0 reversed.
@@ -452,6 +464,13 @@ fn the_awaiting_help_reaches_the_transcript() {
     assert!(!line.contains("error"), "nothing went wrong: {line:?}");
 }
 
+/// **0.11.0.** A finished turn says nothing about itself in a session, and says
+/// everything in a plain one.
+///
+/// The two halves are one test because the property is the trade: the row was
+/// removed for a reader who can see the status line, and kept for the reader who
+/// cannot. Splitting them would let either half pass while the other silently
+/// did the opposite.
 #[test]
 fn a_finished_turn_reads_as_finished_end_to_end() {
     let mut events = Events::new(DARK);
@@ -463,7 +482,24 @@ fn a_finished_turn_reads_as_finished_end_to_end() {
             tokens: 32624,
         },
     );
+    assert!(
+        line.trim().is_empty(),
+        "a plain finish commits nothing but the blank line: {line:?}",
+    );
+
+    let mut plain = Events::new(DARK);
+    plain.set_plain(true);
+    let line = rendered(
+        &mut plain,
+        EventKind::Finished {
+            outcome: "finished".into(),
+            steps: 8,
+            tokens: 32624,
+        },
+    );
     assert!(line.contains("ok"), "{line:?}");
+    assert!(line.contains("8 steps"), "{line:?}");
+    assert!(line.contains("32624 tok"), "{line:?}");
     assert!(!line.contains("warning"), "{line:?}");
 }
 
