@@ -113,7 +113,12 @@ async fn run() -> Result<u8, String> {
         let (keys, mut inputs) = Keyboard::start(&screen);
         let width = screen.width();
         screen
-            .commit(&splash::lines(&theme, true, width))
+            .commit(&splash::lines(
+                &theme,
+                true,
+                width,
+                &splash::About::default(),
+            ))
             .map_err(|error| error.to_string())?;
 
         let chosen = wizard(&mut screen, &mut inputs, theme).await;
@@ -145,8 +150,21 @@ async fn run() -> Result<u8, String> {
     let (keys, mut inputs) = Keyboard::start(&screen);
     if !setup && config.provider_spec().is_some() {
         let width = screen.width();
+        // What an operator has to know at the first prompt and cannot read off
+        // an abbreviation they have not learned yet: where the turn is going,
+        // what it may do when it gets there, and which directory it is about.
+        let about = splash::About {
+            model: cli.model.clone().or_else(|| {
+                config
+                    .provider_spec()
+                    .map(|spec| io_cli::provider::model_of(spec).to_string())
+            }),
+            policy: settings::Posture::of(&config.policy().unwrap_or_default().defaults)
+                .map(|posture| posture.short().to_string()),
+            workspace: Some(root.display().to_string()),
+        };
         screen
-            .commit(&splash::lines(&theme, true, width))
+            .commit(&splash::lines(&theme, true, width, &about))
             .map_err(|error| error.to_string())?;
     }
 
@@ -1648,6 +1666,20 @@ fn paint_picker(
     let pending = app.take_pending();
     if !pending.is_empty() {
         screen.commit(&pending).map_err(|error| error.to_string())?;
+    }
+    // **The prompt takes the rows it needs, and gives them back.** Only with no
+    // picker open and only at an idle prompt — `App::viewport_wanted` returns the
+    // fixed height in every other case — because re-placing the viewport
+    // re-queries the cursor, and doing that under a streaming turn would land the
+    // viewport somewhere the output underneath it has already moved past.
+    if picker.is_none() {
+        let wanted = app.viewport_wanted(screen.width(), screen.terminal_rows());
+        if wanted != screen.rows() {
+            // A failure here leaves the session's own height in place — see
+            // `Screen::replace` — so a terminal that will not answer keeps a
+            // usable prompt rather than losing one over a row.
+            let _ = replace_viewport(screen, wanted);
+        }
     }
     let theme = app.theme;
     screen

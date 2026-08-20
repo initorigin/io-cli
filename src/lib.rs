@@ -34,6 +34,7 @@ pub mod fuzzy;
 pub mod glyphs;
 pub mod intent;
 pub mod keys;
+pub mod markdown;
 pub mod picker;
 pub mod picture;
 pub mod plan;

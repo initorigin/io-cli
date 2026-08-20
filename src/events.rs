@@ -28,6 +28,7 @@
 use std::time::Duration;
 
 use io_harness::{EventKind, RunEvent, TodoState, MCP_TOOL_PREFIX, NAMESPACE, TODO_MAX_ITEMS};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use crate::picker::fit;
@@ -45,9 +46,6 @@ use crate::theme::{Theme, Tone};
 /// two hundred characters, and sixty-four of those wrapping three rows each is
 /// not a list an operator reads, it is the transcript buried under one.
 const ROW: usize = 80;
-
-/// How far a committed block's body is indented under its own heading.
-const INDENT: usize = 4;
 
 /// io-harness's tool names, and the verb an operator reads instead.
 ///
@@ -123,16 +121,6 @@ pub fn verb(name: &str) -> &str {
         .find(|(tool, _)| *tool == name)
         .map_or(name, |(_, verb)| verb)
 }
-
-/// How many rows of a thought are committed before the rest goes to `/expand`.
-///
-/// The contract left this open on purpose — "a bound that is too small makes
-/// reasoning useless and one that is too large buries the answer" — to be
-/// settled against a real run rather than guessed. Ten rows is two-thirds of a
-/// 24-row terminal's scrollback per turn: enough that a short thought is never
-/// cut and a long one still says something, and short enough that the answer
-/// under it is still on screen.
-const THOUGHT_ROWS: usize = 10;
 
 /// A tool call that has been announced and not yet closed.
 ///
@@ -234,6 +222,17 @@ pub struct Events {
     /// goes in when the prose starts, rather than after every cell: a step that
     /// runs four calls should print four rows, not eight.
     after_cell: bool,
+    /// Renders the model's markdown, and remembers an open code fence.
+    ///
+    /// Held here because a fence spans lines and the transcript commits a line
+    /// at a time: the state has to outlive the line that opened it.
+    markdown: crate::markdown::Markdown,
+    /// Whether the last row committed was blank.
+    ///
+    /// Starts true, so nothing at the very top of a session opens with a blank
+    /// row. It is what keeps the gap rule from doubling a blank a designed line
+    /// has already ended its own block with.
+    last_blank: bool,
     /// Whether the last row committed was the model's own prose.
     ///
     /// Starts true, so a turn's first tokens do not open with a blank row: the
@@ -267,6 +266,8 @@ impl Events {
             thought: None,
             awaiting: None,
             after_cell: false,
+            markdown: crate::markdown::Markdown::default(),
+            last_blank: true,
             last_prose: true,
             thinking: false,
             root: std::path::PathBuf::new(),
@@ -287,6 +288,8 @@ impl Events {
         self.thought = None;
         self.awaiting = None;
         self.after_cell = false;
+        self.markdown.forget();
+        self.last_blank = true;
         self.last_prose = true;
         self.thinking = false;
         self.step_at = Duration::ZERO;
@@ -427,14 +430,10 @@ impl Events {
             return Vec::new();
         }
         let text = std::mem::take(&mut self.live);
+        let theme = self.theme;
         let mut lines: Vec<Line<'static>> = text
             .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    self.theme.style(Tone::Normal),
-                ))
-            })
+            .map(|line| self.markdown.line(line, &theme))
             .collect();
         lines.push(Line::from(""));
         lines
@@ -463,7 +462,10 @@ impl Events {
         // blank: against a real run an answer began on the row directly under
         // `warning: nothing has changed in 3 steps…` and read as part of it.
         let prose = matches!(event.kind, EventKind::Token { .. });
-        let gap = after_cell || (prose && !self.last_prose);
+        // Never against a blank that is already there. The goal line ends its own
+        // block with one, so an answer arriving after it was given a second and
+        // the prompt sat two rows above what it asked for.
+        let gap = (after_cell || (prose && !self.last_prose)) && !self.last_blank;
 
         let mut lines = self.commit(event, at);
         if gap && !ends_blank(&lines[..1.min(lines.len())]) {
@@ -471,6 +473,7 @@ impl Events {
         }
         if !lines.is_empty() {
             self.last_prose = prose;
+            self.last_blank = ends_blank(&lines);
         }
         lines
     }
@@ -503,10 +506,7 @@ impl Events {
                 let mut lines = Vec::new();
                 while let Some(newline) = self.live.find('\n') {
                     let finished: String = self.live.drain(..=newline).collect();
-                    lines.push(Line::from(Span::styled(
-                        finished.trim_end_matches('\n').to_string(),
-                        theme.style(Tone::Normal),
-                    )));
+                    lines.push(self.markdown.line(finished.trim_end_matches('\n'), &theme));
                 }
                 lines
             }
@@ -525,9 +525,21 @@ impl Events {
                 // thought stops being the thing `/expand` has more of.
                 self.step_at = at;
                 self.thought = None;
+                // **The operator's own words, weighted as such.** This row is the
+                // only one in a transcript that the reader wrote, and in a
+                // scrollback of tool cells and model prose it has to be findable
+                // by eye at a scroll. The mark is accent and bold, and the words
+                // are bold in the ordinary foreground — a colour would make them
+                // one more coloured thing among many.
                 let mut lines = vec![Line::from(vec![
-                    Span::styled(theme.glyphs.marker, theme.style(Tone::Accent)),
-                    Span::styled(goal.clone(), theme.style(Tone::Normal)),
+                    Span::styled(
+                        theme.glyphs.marker,
+                        theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        goal.clone(),
+                        theme.style(Tone::Normal).add_modifier(Modifier::BOLD),
+                    ),
                 ])];
                 if self.plain {
                     lines.push(Line::from(Span::styled(
@@ -1152,53 +1164,33 @@ impl Events {
                 if text.trim().is_empty() {
                     return self.flush_text();
                 }
+                // **One row: that it thought, how long for, what it cost.** The
+                // text itself is kept and not committed. A thought is the model
+                // talking to itself, it is usually longer than the answer it
+                // precedes, and a transcript that carried every one of them is a
+                // transcript with the work buried in the deliberation — which is
+                // what a real session showed and what the owner asked to stop.
+                //
+                // Kept rather than dropped, because this event is the only place
+                // reasoning is ever visible: io-harness neither stores it nor
+                // folds it into the next prompt. `/expand` is where it goes.
                 let elapsed = format_millis(at.saturating_sub(self.step_at));
+                self.thought = Some(text.clone());
                 let mut lines = self.flush_text();
                 lines.push(Line::from(vec![
                     Span::styled(leader(separator), theme.style(Tone::Muted)),
-                    Span::styled("thought", theme.style(Tone::Muted)),
+                    // Italic, which is what a thought is: the model's own voice
+                    // rather than the interface's, and set apart from the tool
+                    // cells around it without spending a colour on it.
+                    Span::styled(
+                        "thought",
+                        theme.style(Tone::Muted).add_modifier(Modifier::ITALIC),
+                    ),
                     Span::styled(
                         format!("{separator}{elapsed}{separator}{tokens} tok"),
                         theme.style(Tone::Muted),
                     ),
                 ]));
-
-                // Wrapped here rather than left to the terminal, because the
-                // block is indented: a row the terminal wraps for us comes back
-                // flush against the left margin and the indent stops meaning
-                // "this is inside the thought".
-                let wrapped = wrap(text, ROW.saturating_sub(INDENT));
-                let shown = wrapped.len().min(THOUGHT_ROWS);
-                for row in &wrapped[..shown] {
-                    // **A blank row is committed blank, not as an indent.** Four
-                    // spaces are a whitespace-only line, and `Screen::commit`
-                    // wraps what it is given — ratatui's wrapper turns one into
-                    // TWO rows, which is why a real run showed a paragraph break
-                    // twice the height of a paragraph break.
-                    if row.is_empty() {
-                        lines.push(Line::from(""));
-                        continue;
-                    }
-                    lines.push(Line::from(Span::styled(
-                        format!("{:INDENT$}{row}", ""),
-                        theme.style(Tone::Muted),
-                    )));
-                }
-                if wrapped.len() > shown {
-                    self.thought = Some(text.clone());
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "{:INDENT$}{} {} more rows{separator}/expand",
-                            "",
-                            theme.glyphs.ellipsis,
-                            wrapped.len() - shown,
-                        ),
-                        theme.style(Tone::Muted),
-                    )));
-                } else {
-                    self.thought = None;
-                }
-                lines.push(Line::from(""));
                 lines
             }
             // **Nothing in this process dialled anything.** The provider ran its
@@ -1474,66 +1466,6 @@ fn ends_blank(lines: &[Line<'static>]) -> bool {
         .is_none_or(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
 }
 
-/// Break text into rows no wider than `width`, on whitespace where it can.
-///
-/// A fold over `split_whitespace` and nothing more — no dependency is worth
-/// carrying for this, and `tests/dependencies.rs` would fail the build if one
-/// arrived. Blank lines are kept, because a thought's own paragraph breaks are
-/// the model's and not this crate's to remove.
-///
-/// A word wider than the row is broken rather than left to overrun: a thought
-/// carries paths and identifiers, and one of them must not push the block past
-/// the terminal it was fitted for.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut rows: Vec<String> = Vec::new();
-    for paragraph in text.lines() {
-        let mut row = String::new();
-        for word in paragraph.split_whitespace() {
-            let mut word = word;
-            while word.chars().count() > width {
-                if !row.is_empty() {
-                    rows.push(std::mem::take(&mut row));
-                }
-                let head: String = word.chars().take(width).collect();
-                word = &word[head.len()..];
-                rows.push(head);
-            }
-            if word.is_empty() {
-                continue;
-            }
-            if row.is_empty() {
-                row.push_str(word);
-            } else if row.chars().count() + 1 + word.chars().count() <= width {
-                row.push(' ');
-                row.push_str(word);
-            } else {
-                rows.push(std::mem::replace(&mut row, word.to_string()));
-            }
-        }
-        // A blank row is kept, because a paragraph break is the model's own
-        // punctuation — but only one. Providers emit two and three in a row, and
-        // in a block that is already bounded to ten rows a run of blanks spends
-        // the reader's rows on nothing.
-        if row.is_empty() && !paragraph.trim().is_empty() {
-            continue;
-        }
-        if row.is_empty() && rows.last().is_some_and(String::is_empty) {
-            continue;
-        }
-        rows.push(row);
-    }
-    // And never a blank at either end: the heading is above and the block's own
-    // closing blank is below.
-    while rows.first().is_some_and(String::is_empty) {
-        rows.remove(0);
-    }
-    while rows.last().is_some_and(String::is_empty) {
-        rows.pop();
-    }
-    rows
-}
-
 fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -> Line<'static> {
     let separator = theme.glyphs.separator;
     let mut spans = vec![
@@ -1541,7 +1473,12 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
             format!("  {} ", theme.glyphs.bullet),
             theme.style(Tone::Muted),
         ),
-        Span::styled(call.name.clone(), theme.style(Tone::Accent)),
+        // The verb carries the weight: it is the column a reader skims down, and
+        // in a run of eight cells it is the only part that differs at a glance.
+        Span::styled(
+            call.name.clone(),
+            theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+        ),
     ];
     // `!= call.name` because io-harness falls the target back to the tool's own
     // name when the call carries no path, pattern or key — so a `git_diff` with

@@ -1278,13 +1278,19 @@ fn thought(text: &str, tokens: u64) -> EventKind {
     }
 }
 
-/// 0.11.0 F3 — the word, the duration, then the model's own text.
+/// 0.11.0 F3 — one row: that it thought, how long for, what it cost.
 ///
 /// The heading says `thought`, not `reasoning`: the variant's own name is one of
-/// the six strings F2 asserts never reaches a terminal again, and the block that
-/// carries the model's thinking is the last place that name could survive.
+/// the six strings F2 asserts never reaches a terminal again, and this row is the
+/// last place that name could survive.
+///
+/// **The text itself is not committed, and that is deliberate.** A thought is the
+/// model talking to itself and is routinely longer than the answer it precedes; a
+/// transcript carrying every one of them buries the work in the deliberation,
+/// which is what a real session showed. The text is kept for `/expand`, because
+/// this event is the only place it ever exists.
 #[test]
-fn f3_a_thought_commits_the_word_the_duration_and_the_model_s_own_text() {
+fn f3_a_thought_is_one_row_and_the_text_is_kept_rather_than_committed() {
     let mut events = Events::new(DARK);
     started_at(&mut events, Duration::from_secs(1));
     let committed = rows(events.event(
@@ -1292,7 +1298,8 @@ fn f3_a_thought_commits_the_word_the_duration_and_the_model_s_own_text() {
         Duration::from_millis(3_500),
     ));
 
-    let heading = committed.first().expect("a thought commits a heading");
+    assert_eq!(committed.len(), 1, "a thought is one row: {committed:?}");
+    let heading = &committed[0];
     assert!(heading.contains("thought"), "{heading:?}");
     assert!(
         !heading.contains("reasoning"),
@@ -1302,11 +1309,10 @@ fn f3_a_thought_commits_the_word_the_duration_and_the_model_s_own_text() {
     assert!(heading.contains("2.5s"), "{heading:?}");
     assert!(heading.contains("120 tok"), "{heading:?}");
     assert!(
-        committed
-            .iter()
-            .any(|row| row.contains("the parser is the only caller")),
-        "the model's own text is the point of the block: {committed:?}",
+        !heading.contains("the parser is the only caller"),
+        "the thought's text belongs to `/expand`, not to the transcript: {heading:?}",
     );
+    assert_eq!(events.thought(), Some("the parser is the only caller"));
 }
 
 /// 0.11.0 F3 — the block is muted throughout, and carries nothing in colour.
@@ -1322,11 +1328,14 @@ fn f3_a_thought_is_muted_throughout_and_says_nothing_in_colour_alone() {
         &event(thought("the parser is the only caller", 120)),
         Duration::from_millis(400),
     );
+    // The word itself is italic — a thought is the model's own voice, set apart
+    // from the tool cells around it without spending a colour on it — so the
+    // claim is about the *colour* being one tone throughout, not the weight.
     let muted = DARK.style(Tone::Muted);
     for line in &lines {
         for span in &line.spans {
             assert!(
-                span.style == muted || span.content.trim().is_empty(),
+                span.style.fg == muted.fg || span.content.trim().is_empty(),
                 "a thought is one tone: {:?} carries {:?}",
                 span.content,
                 span.style,
@@ -1338,84 +1347,23 @@ fn f3_a_thought_is_muted_throughout_and_says_nothing_in_colour_alone() {
 /// 0.11.0 F3 — a long thought is fitted, and the whole of it is kept for
 /// `/expand`.
 ///
-/// The bound exists so that a thought does not bury the answer under it. What
-/// makes the bound safe rather than lossy is that the remainder is still
-/// somewhere: io-harness neither stores reasoning nor folds it into the next
-/// prompt, so if this crate drops the text it is gone for good.
+/// Every thought is kept whole, however short, because `/expand` is the only
+/// place it can be read and this event is the only place it ever exists.
 #[test]
-fn f3_a_long_thought_is_fitted_and_the_remainder_is_reachable() {
+fn f3_every_thought_is_kept_whole_for_expand() {
     let mut events = Events::new(DARK);
     started_at(&mut events, Duration::ZERO);
+
     let long = "the parser is the only caller of this function and every other \
                 path reaches it through the same entry point "
         .repeat(12);
-    let committed = rows(events.event(&event(thought(&long, 900)), Duration::from_secs(2)));
+    events.event(&event(thought(&long, 900)), Duration::from_secs(2));
+    assert_eq!(events.thought(), Some(long.as_str()));
 
-    // Heading, the fitted rows, the row that says where the rest is, and the
-    // blank that closes the block.
-    assert!(
-        committed.len() < 20,
-        "a fitted thought does not bury the answer under it: {} rows",
-        committed.len(),
-    );
-    assert!(
-        committed.iter().any(|row| row.contains("/expand")),
-        "the reader is told where the rest went: {committed:?}",
-    );
-    assert_eq!(
-        events.thought(),
-        Some(long.as_str()),
-        "the whole thought is held, not the part that was shown",
-    );
-}
-
-/// 0.11.0 F3 — a thought spends no row on a blank the model happened to send.
-///
-/// Providers put two and three newlines between a heading and its body, and a
-/// block bounded to ten rows cannot afford them. Found by reading a real run: the
-/// thought had a blank row and then an indented blank row under its own title.
-#[test]
-fn f3_a_thought_never_commits_two_blank_rows_in_a_row() {
-    let mut events = Events::new(DARK);
-    started_at(&mut events, Duration::ZERO);
-    let committed = rows(events.event(
-        &event(thought(
-            "**Planning tool response**\n\n\nI need to respond to the user.\n\n\n\nAnd then stop.\n",
-            54,
-        )),
-        Duration::from_secs(1),
-    ));
-
-    let blanks: Vec<usize> = committed
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| row.trim().is_empty())
-        .map(|(at, _)| at)
-        .collect();
-    for pair in blanks.windows(2) {
-        assert_ne!(
-            pair[1],
-            pair[0] + 1,
-            "two blank rows in a row inside a thought: {committed:?}",
-        );
-    }
-    // And the block still says everything the model did.
-    let text = committed.join("\n");
-    assert!(text.contains("Planning tool response"), "{text:?}");
-    assert!(text.contains("And then stop."), "{text:?}");
-}
-
-/// 0.11.0 F3 — a thought that fits leaves nothing behind.
-///
-/// `/expand` has its own job — the last step's detail from the durable trace —
-/// and a thought that was shown whole must not put a second copy of itself in
-/// front of it.
-#[test]
-fn f3_a_thought_that_fits_leaves_nothing_for_expand() {
-    let mut events = Events::new(DARK);
-    started_at(&mut events, Duration::ZERO);
+    // A short one too. The row on screen is the same row either way, so there is
+    // no length at which the text stops being worth keeping.
     events.event(&event(thought("one short thought", 12)), Duration::ZERO);
-    assert_eq!(events.thought(), None);
+    assert_eq!(events.thought(), Some("one short thought"));
 }
 
 /// 0.11.0 F3 — only a `Reasoning` event commits a thought.

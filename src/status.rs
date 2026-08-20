@@ -65,6 +65,13 @@ pub const WORDS: [&str; 10] = [
 pub struct Field {
     pub text: String,
     pub tone: Tone,
+    /// Whether this field is drawn in weight as well as in tone.
+    ///
+    /// One field on the line uses it — the model — because a status line where
+    /// everything is emphasised is a status line where nothing is. It is a flag
+    /// rather than a `Style` so that the tone tokens stay the only place a colour
+    /// is decided.
+    pub bold: bool,
 }
 
 impl Field {
@@ -72,6 +79,14 @@ impl Field {
         Self {
             text: text.into(),
             tone,
+            bold: false,
+        }
+    }
+
+    fn bold(text: impl Into<String>, tone: Tone) -> Self {
+        Self {
+            bold: true,
+            ..Self::new(text, tone)
         }
     }
 }
@@ -338,12 +353,21 @@ impl Status {
         // carries a meaning solely for a reader who can see it move, and this
         // line has to work in a screen reader, under `NO_COLOR` and in a log — so
         // the indicator is a prefix on the field, never the field itself.
+        //
+        // **The state is the one field that changes meaning rather than value**,
+        // so it is the one that changes colour: a session doing work reads as
+        // `working` in the accent this interface uses for anything live, and an
+        // idle one reads as `ready` in the muted tone everything at rest wears.
+        // The word is still the state — the colour agrees with it and never
+        // carries it alone.
         let state = match (self.working, self.indicator(theme)) {
-            (true, Some(frame)) => Field::new(format!("{frame} working"), Tone::Normal),
-            (true, None) => Field::new("working", Tone::Normal),
+            (true, Some(frame)) => Field::new(format!("{frame} working"), Tone::Accent),
+            (true, None) => Field::new("working", Tone::Accent),
             (false, _) => Field::new("ready", Tone::Muted),
         };
-        let mut fields = vec![Field::new(self.model.clone(), Tone::Accent)];
+        // The model is what this session IS, and it is the field that survives
+        // every narrowing, so it is the one thing on the line drawn in weight.
+        let mut fields = vec![Field::bold(self.model.clone(), Tone::Accent)];
         // Second, and the last field to be dropped after the model. What the agent
         // is allowed to do outranks how long it has been doing it.
         if let Some(policy) = &self.policy {
@@ -577,7 +601,15 @@ fn spans(fields: &[Field], theme: &Theme) -> Line<'static> {
                 theme.style(Tone::Muted),
             ));
         }
-        spans.push(Span::styled(field.text.clone(), theme.style(field.tone)));
+        let style = theme.style(field.tone);
+        spans.push(Span::styled(
+            field.text.clone(),
+            if field.bold {
+                style.add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                style
+            },
+        ));
     }
     Line::from(spans)
 }

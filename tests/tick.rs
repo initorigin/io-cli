@@ -110,12 +110,16 @@ fn f2_the_tick_stops_again_when_the_turn_ends() {
     );
 }
 
-/// The activity line is the first row the viewport draws.
+/// The activity line: the second row the viewport draws.
+///
+/// The first is deliberately blank — the air between the sticky row and the
+/// transcript scrolling underneath it, without which the activity line reads as
+/// the last line of the work rather than the line describing it.
 fn activity_row(screen: &io_cli::term::Screen<support::Fixed>) -> String {
     screen
         .viewport_text()
         .lines()
-        .next()
+        .nth(1)
         .unwrap_or_default()
         .to_string()
 }

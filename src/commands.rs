@@ -101,7 +101,7 @@ pub const KEYS: &[(&str, &str)] = &[
 /// Every slash command, likewise.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this table"),
-    ("/quit", "leave"),
+    ("/exit", "leave"),
     ("/setup", "run the first-run wizard again"),
     ("/theme", "change the theme for this session"),
     ("/model", "change the model the next turn is sent to"),
@@ -132,11 +132,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/clear",
         "start a new conversation; this one stays in /resume",
     ),
-    // Listed since 0.11.0 and accepted since 0.1.0. An alias the parser knew
-    // about and nothing ever advertised is the same defect as not having one:
-    // `/quit` is discoverable and `/exit` is what half the terminals in the
-    // world would have you type.
-    ("/exit", "leave"),
 ];
 
 /// Whether this keystroke opens the slash palette.
@@ -510,7 +505,11 @@ pub fn rows(keys: &Keys) -> Vec<(String, String)> {
 pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
     match input.split_whitespace().next().unwrap_or("help") {
         "help" | "?" => Action::Print(help(keys, theme)),
-        "quit" | "exit" | "q" => Action::Quit,
+        // **`/exit` and nothing else.** `/quit` was the listed spelling through
+        // 0.10.0 and `/exit` the unlisted alias, which is two commands doing one
+        // thing and a palette with a row for each. One name, and `q` for the
+        // hands that have typed it in every other tool.
+        "exit" | "q" => Action::Quit,
         "setup" => Action::Setup,
         "theme" => Action::Theme,
         "model" => Action::Model,

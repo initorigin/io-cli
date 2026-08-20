@@ -192,7 +192,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | Command | Does |
 | --- | --- |
 | `/help` | this table |
-| `/quit` | leave |
+| `/exit` | leave |
 | `/setup` | run the first-run wizard again |
 | `/theme` | change the theme for this session |
 | `/model` | change the model the next turn is sent to |
@@ -205,7 +205,6 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/fleet` | show the children this turn has spawned |
 | `/attach` | put an image in front of the agent, for the next turn only |
 | `/clear` | start a new conversation; this one stays in /resume |
-| `/exit` | leave |
 
 <!-- commands:end -->
 

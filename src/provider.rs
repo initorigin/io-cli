@@ -46,6 +46,24 @@ pub trait WithProvider {
 /// `model_override` is `-m/--model`: it replaces the model the configuration
 /// names without touching anything else about the endpoint, which is why it is
 /// applied to the extracted model rather than by rewriting the spec.
+/// The model a spec names, whichever provider it names it through.
+///
+/// Read rather than reconstructed: `ProviderSpec` is io-harness's own type and
+/// every arm of it carries a `model`, so a caller that wants the name should ask
+/// for it in one place instead of matching four arms at each site.
+pub fn model_of(spec: &ProviderSpec) -> &str {
+    match spec {
+        ProviderSpec::OpenRouter { model, .. }
+        | ProviderSpec::Anthropic { model, .. }
+        | ProviderSpec::OpenAi { model, .. }
+        | ProviderSpec::Compatible { model, .. } => model,
+        // `ProviderSpec` is `#[non_exhaustive]`, so an arm this crate has never
+        // seen is a real possibility and an empty name is the honest answer:
+        // the splash simply leaves the row out.
+        _ => "",
+    }
+}
+
 pub async fn build<W: WithProvider>(
     spec: ProviderSpec,
     model_override: Option<String>,

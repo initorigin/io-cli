@@ -31,7 +31,7 @@ fn the_commands_are_the_commands() {
         names,
         [
             "/help",
-            "/quit",
+            "/exit",
             "/setup",
             "/theme",
             "/model",
@@ -44,7 +44,6 @@ fn the_commands_are_the_commands() {
             "/fleet",
             "/attach",
             "/clear",
-            "/exit",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",
@@ -61,7 +60,7 @@ fn each_command_resolves() {
         commands::parse("help", &defaults(), &DARK),
         Action::Print(_)
     ));
-    assert_eq!(commands::parse("quit", &defaults(), &DARK), Action::Quit);
+    assert_eq!(commands::parse("exit", &defaults(), &DARK), Action::Quit);
     assert_eq!(commands::parse("setup", &defaults(), &DARK), Action::Setup);
     assert_eq!(commands::parse("theme", &defaults(), &DARK), Action::Theme);
     assert_eq!(commands::parse("model", &defaults(), &DARK), Action::Model);

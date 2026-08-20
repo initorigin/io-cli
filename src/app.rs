@@ -31,6 +31,17 @@ use crate::theme::{Theme, Tone};
 /// [`App::tick`], which is what decides whether a frame is drawn.
 pub const TICK: Duration = Duration::from_millis(100);
 
+/// Rows the composer has at rest, and has had since 0.1.0.
+pub const COMPOSER_ROWS: u16 = 2;
+
+/// The most rows a prompt may take, however long it is.
+///
+/// The viewport is subtracted from the terminal, so a composer allowed to grow
+/// without a bound would push the transcript it is being written against off the
+/// screen. Past this the prompt scrolls inside its own rows, which is what it did
+/// at every length before 0.11.0.
+pub const COMPOSER_MAX: u16 = 10;
+
 /// Whether a turn is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -604,6 +615,27 @@ impl App {
         self.fleet_open = false;
     }
 
+    /// The viewport height this session wants right now.
+    ///
+    /// [`VIEWPORT_HEIGHT`] until the prompt outgrows its two rows, and then as
+    /// many as the prompt needs, up to [`COMPOSER_MAX`]. The driver compares this
+    /// with the viewport it has and re-places when they differ — which is the
+    /// one operation in this product that re-queries the cursor, so it is done at
+    /// an idle prompt and nowhere else.
+    ///
+    /// The cap is not a matter of taste. The viewport is subtracted from the
+    /// terminal, and a composer allowed to take all of it would push the
+    /// transcript it is being written against off the screen.
+    pub fn viewport_wanted(&self, width: u16, rows: u16) -> u16 {
+        if self.mode == Mode::Running || self.modal() {
+            return VIEWPORT_HEIGHT;
+        }
+        let wanted = self.composer.rows_wanted(width).min(COMPOSER_MAX);
+        VIEWPORT_HEIGHT
+            .saturating_add(wanted.saturating_sub(COMPOSER_ROWS))
+            .min(rows.saturating_sub(2).max(VIEWPORT_HEIGHT))
+    }
+
     /// Start a new conversation, or refuse because a turn is in flight.
     ///
     /// **Everything `/clear` does that is not the driver's is here**, so that the
@@ -1061,25 +1093,36 @@ impl App {
         // turn runs moves the prompt up a row the moment you press Enter and back
         // down when it finishes. The row costs nothing when it is empty and the
         // layout is worth more than the row.
-        // Five, not four: on a terminal too short for this release's viewport the
-        // row that goes is this one, and the composer keeps the two rows it has
-        // had since 0.1.0. A one-row composer is a prompt you cannot read a
-        // pasted line in.
+        // On a terminal too short for this release's viewport the rows that go
+        // are these two, and the composer keeps the two it has had since 0.1.0.
+        // A one-row composer is a prompt you cannot read a pasted line in.
         let activity_rows = u16::from(area.height >= 5);
+        // The blank above the activity line. It is the last row claimed and the
+        // first given up, because it carries nothing — but what it buys is the
+        // sticky row reading as a header over the work rather than as the last
+        // line of it.
+        let air_rows = u16::from(area.height >= 6);
         let activity = if activity_rows == 1 {
             self.status.activity(area.width, &self.theme)
         } else {
             None
         };
-        let composer_rows = area.height - activity_rows - live_rows - status_rows;
+        let composer_rows = area.height - air_rows - activity_rows - live_rows - status_rows;
 
         if let Some(activity) = activity {
-            frame.render_widget(Paragraph::new(activity), Rect { height: 1, ..area });
+            frame.render_widget(
+                Paragraph::new(activity),
+                Rect {
+                    y: area.y + air_rows,
+                    height: 1,
+                    ..area
+                },
+            );
         }
 
         if live_rows > 0 {
             let live = Rect {
-                y: area.y + activity_rows,
+                y: area.y + air_rows + activity_rows,
                 height: live_rows,
                 ..area
             };
@@ -1091,7 +1134,7 @@ impl App {
         }
 
         let composer = Rect {
-            y: area.y + activity_rows + live_rows,
+            y: area.y + air_rows + activity_rows + live_rows,
             height: composer_rows,
             ..area
         };
@@ -1106,7 +1149,7 @@ impl App {
 
         if status_rows == 1 {
             let status = Rect {
-                y: area.y + activity_rows + live_rows + composer_rows,
+                y: area.y + air_rows + activity_rows + live_rows + composer_rows,
                 height: 1,
                 ..area
             };

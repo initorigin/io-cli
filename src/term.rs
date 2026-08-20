@@ -48,14 +48,22 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
-/// Lines the live viewport occupies: the activity line, the unfinished tail of a
-/// streaming answer, two rows of composer, and the status line.
+/// Lines the live viewport occupies: a blank row, the activity line, the
+/// unfinished tail of a streaming answer, two rows of composer, and the status
+/// line.
 ///
-/// **Five since 0.11.0, and the fifth row is the activity line.** It is taken
-/// permanently from every operator's terminal, which is why it buys the one
-/// thing the other four could not say: that a turn is alive and how long it has
-/// been. The row is drawn only while a turn is in flight; the composer takes it
-/// back at an idle prompt rather than the viewport leaving a blank row up.
+/// **Six since 0.11.0, and two of them are new.** The activity line buys the one
+/// thing the other four could not say — that a turn is alive and how long it has
+/// been — and the blank row above it buys the thing a sticky row cannot have
+/// otherwise: air between it and the transcript scrolling underneath. Committed
+/// content ends exactly where the viewport begins, so without a row of its own
+/// the activity line reads as the last line of the work rather than as the line
+/// describing it.
+///
+/// Both rows are *claimed* whether or not a turn is running and *drawn* only
+/// while one is, so the composer is two rows at every moment of a session. A
+/// composer that changed height between turns moved the prompt under the
+/// operator's hands on every Enter.
 ///
 /// Fixed, and deliberately small. ratatui sets an inline viewport's height when
 /// the terminal is constructed and there is no way to change it afterwards short
@@ -71,7 +79,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// same four rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
-pub const VIEWPORT_HEIGHT: u16 = 5;
+pub const VIEWPORT_HEIGHT: u16 = 6;
 
 /// Rows the wizard's viewport occupies.
 ///
@@ -429,6 +437,23 @@ impl<B: Backend + Write> Screen<B> {
     /// The width the renderer is currently laying out against, in cells.
     pub fn width(&mut self) -> u16 {
         self.terminal.current_buffer_mut().area.width
+    }
+
+    /// Rows the viewport currently occupies.
+    ///
+    /// What a caller compares against the height it wants, so that re-placing
+    /// happens when the two differ and never otherwise. Read off the buffer
+    /// rather than remembered, because `attach_with` clamps to the terminal and
+    /// the height asked for is not always the height given.
+    pub fn rows(&mut self) -> u16 {
+        self.terminal.current_buffer_mut().area.height
+    }
+
+    /// Rows the whole terminal has, viewport and scrollback together.
+    pub fn terminal_rows(&self) -> u16 {
+        crossterm::terminal::size()
+            .map(|(_, rows)| rows)
+            .unwrap_or(24)
     }
 
     /// What the last frame put in the viewport, one row per line with trailing

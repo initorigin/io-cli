@@ -42,6 +42,36 @@ pub enum Reply {
     Submitted(String),
 }
 
+/// The path a paste names, if it names one that exists.
+///
+/// Dragging a file into a terminal pastes its path, and a file manager's copy
+/// does the same. What arrives may be shell-escaped — `My\ Documents` — or
+/// already quoted, and it is one line either way. Quoting it is what makes a
+/// path with a space in it survive as one word; resolving it to an absolute path
+/// is what makes it survive the agent's working directory being somewhere else.
+///
+/// **It has to exist.** The whole safety of this is that prose is never quoted
+/// at somebody: a sentence is not a path, and a path this process cannot see is
+/// not one either, so both are pasted exactly as they arrived.
+fn pasted_path(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return None;
+    }
+    let unescaped = trimmed.trim_matches(['"', '\'']).replace("\\ ", " ");
+    let candidate = std::path::Path::new(&unescaped);
+    if !candidate.exists() {
+        return None;
+    }
+    Some(
+        candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.to_path_buf())
+            .display()
+            .to_string(),
+    )
+}
+
 pub struct Composer {
     area: TextArea<'static>,
     /// Prompts already submitted, oldest first.
@@ -96,10 +126,12 @@ impl Composer {
 
     /// What is on screen, placeholders and all.
     ///
-    /// Private, and the only thing in here that reads the widget's lines
-    /// directly for a whole-text answer. Everything outside this type asks
-    /// [`Composer::text`], which cannot forget the paste.
-    fn typed(&self) -> String {
+    /// **What is on screen, and never what will be sent.** Everything that acts
+    /// on the prompt asks [`Composer::text`], which cannot forget a paste; this
+    /// is for the surfaces and the tests that need to know what the operator is
+    /// actually looking at — a placeholder standing for a block, rather than the
+    /// block.
+    pub fn typed(&self) -> String {
         self.area.lines().join("\n")
     }
 
@@ -220,6 +252,28 @@ impl Composer {
                 self.remember(&text);
                 Reply::Submitted(text)
             }
+            // **A placeholder deletes as one thing, because it is one thing.**
+            // Thirty-five presses to remove `[pasted text #4, 366 characters]`
+            // is bad enough; the first of them is worse, because a placeholder
+            // is matched by its exact text and an edited one silently stops
+            // standing for the block it named.
+            (KeyCode::Backspace, m) if !m.contains(KeyModifiers::ALT) => {
+                self.editing();
+                match self.placeholder_before_cursor() {
+                    Some(placeholder) => {
+                        for _ in 0..placeholder.chars().count() {
+                            self.area.delete_char();
+                        }
+                        // The block goes with it. A prompt that still carried it
+                        // would send text nothing on screen stands for.
+                        self.pastes.retain(|(held, _)| held != &placeholder);
+                    }
+                    None => {
+                        self.area.delete_char();
+                    }
+                }
+                Reply::Idle
+            }
             // History, but only from the edge of the text: inside a multiline
             // prompt the arrows have to move the cursor, or a long prompt cannot
             // be edited at all.
@@ -251,6 +305,34 @@ impl Composer {
     /// as it always was.
     pub fn paste(&mut self, text: &str) {
         self.editing();
+
+        // **A path pasted is a path, and it is quoted.** Dragging a file into a
+        // terminal, or copying one out of a file manager, pastes its path — and a
+        // path with a space in it is two words to everything downstream unless
+        // something quotes it. The check is that it names a file that exists, so
+        // ordinary prose is never quoted at somebody.
+        if let Some(path) = pasted_path(text) {
+            self.area.insert_str(format!("{path:?}"));
+            return;
+        }
+
+        // **The same block pasted twice is a request to see it.** The first
+        // paste collapses to a placeholder because a screenful of someone
+        // else's text is not a prompt you can read; pressing paste again on the
+        // same block is the operator saying they want it after all, so the
+        // placeholder standing for it is replaced by what it stands for.
+        if let Some((placeholder, held)) = self
+            .pastes
+            .iter()
+            .find(|(_, held)| held == text)
+            .cloned()
+            .filter(|(placeholder, _)| self.typed().contains(placeholder.as_str()))
+        {
+            let expanded = self.typed().replace(&placeholder, &held);
+            self.replace(&expanded);
+            return;
+        }
+
         // `chars`, never `len`: a byte count is not the size the operator can
         // check against what they copied, and it is off by a factor of three for
         // a paste of prose in most of the world's scripts.
@@ -338,7 +420,14 @@ impl Composer {
             ..area
         };
         frame.render_widget(
-            ratatui::widgets::Paragraph::new(Line::styled(PROMPT, theme.style(Tone::Accent))),
+            // Bold, because this row is where the operator's attention starts
+            // and the mark is the only thing on screen that says "type here".
+            ratatui::widgets::Paragraph::new(Line::styled(
+                PROMPT,
+                theme
+                    .style(Tone::Accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )),
             marker,
         );
         frame.render_widget(&self.area, text);
@@ -366,6 +455,23 @@ impl Composer {
             text.x + column % width,
             (text.y + row as u16 + column / width).min(text.bottom().saturating_sub(1)),
         )
+    }
+
+    /// How many rows this prompt wants, at `width`.
+    ///
+    /// What the driver grows the viewport to. Counted rather than guessed: a
+    /// line wider than the composer wraps, and a prompt of three wrapped lines
+    /// needs the rows those wraps take or the operator is typing into a window
+    /// they cannot see the top of.
+    pub fn rows_wanted(&self, width: u16) -> u16 {
+        let room = usize::from(width.saturating_sub(PROMPT.len() as u16)).max(1);
+        let rows: usize = self
+            .area
+            .lines()
+            .iter()
+            .map(|line| line.chars().count().div_ceil(room).max(1))
+            .sum();
+        u16::try_from(rows).unwrap_or(u16::MAX).max(1)
     }
 
     fn current_line(&self) -> &str {
@@ -441,6 +547,26 @@ impl Composer {
     /// of them standing for nothing. A recalled *history* entry needs none of
     /// them — history keeps prompts whole — so the stale entries simply never
     /// match, and `clear` drops them when the prompt is done.
+    /// The placeholder immediately before the cursor, if the cursor is at the
+    /// end of one.
+    ///
+    /// Backspacing through `[pasted text #4, 366 characters]` one character at a
+    /// time is thirty-five presses to remove one thing the operator thinks of as
+    /// one thing — and the first press already breaks it, because a placeholder
+    /// is matched by its exact text and an edited one stops standing for
+    /// anything.
+    fn placeholder_before_cursor(&self) -> Option<String> {
+        let (row, column) = self.area.cursor();
+        let line = self.area.lines().get(row)?;
+        let before: String = line.chars().take(column).collect();
+        self.pastes
+            .iter()
+            .map(|(placeholder, _)| placeholder)
+            .filter(|placeholder| before.ends_with(placeholder.as_str()))
+            .max_by_key(|placeholder| placeholder.chars().count())
+            .cloned()
+    }
+
     fn replace(&mut self, text: &str) {
         let recalled = self.recalled;
         let draft = std::mem::take(&mut self.draft);
