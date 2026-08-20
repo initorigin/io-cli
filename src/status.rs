@@ -35,6 +35,30 @@ use crate::theme::{Theme, Tone};
 /// rule, for the same reason.
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// What the activity line calls a turn, one word per step.
+///
+/// **A word and never only a tone.** The list is carried here rather than
+/// generated, indexed by the step count rather than by a clock or a random
+/// number, so the word is chosen once per step, is stable for as long as that
+/// step is, and can be stated by a test. Every entry is plain ASCII, so the
+/// line reads the same under the ASCII glyph set as it does under braille.
+///
+/// The literal name for what is happening right now belongs to the row under
+/// this one, which is [`crate::events::Events::live`]'s. Two rows because the
+/// question was asked as an either-or and both answers were right.
+pub const WORDS: [&str; 10] = [
+    "Pondering",
+    "Noodling",
+    "Mulling",
+    "Chewing",
+    "Puzzling",
+    "Wrangling",
+    "Untangling",
+    "Percolating",
+    "Rummaging",
+    "Simmering",
+];
+
 /// A field of the status line, in priority order: the first is the last to be
 /// dropped when the terminal is narrow.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,44 +475,61 @@ impl Status {
     /// The line, fitted to `width` by dropping whole fields from the right.
     pub fn line(&self, width: u16, theme: &Theme) -> Line<'static> {
         let fields = self.fields(theme);
-        let width = width as usize;
-        // Measured off the chosen set rather than off a constant. Both sets spell
-        // the separator in three cells, so the arithmetic below lands on the same
-        // answer either way — but a set that did not would have shifted every
-        // drop decision on this line, and this is the input that says so.
-        let separator = theme.glyphs.separator;
-        let separator_width = separator.chars().count();
-
-        let mut kept: Vec<&Field> = Vec::new();
-        let mut used = 0usize;
-        for field in &fields {
-            // Counted in characters, not bytes: the separator's middle dot is two
-            // bytes and one cell, and `len()` here would reserve room that is not
-            // needed and drop a field one column early.
-            let extra =
-                field.text.chars().count() + if kept.is_empty() { 0 } else { separator_width };
-            if used + extra > width {
-                break;
-            }
-            used += extra;
-            kept.push(field);
-        }
+        let kept = fits(&fields, width as usize, theme);
 
         // Even at a width that fits nothing whole, the model is what gets shown,
         // shortened. A blank status line is worse than a truncated one.
-        if kept.is_empty() {
-            let model: String = self.model.chars().take(width).collect();
+        if kept == 0 {
+            let model: String = self.model.chars().take(width as usize).collect();
             return Line::from(Span::styled(model, theme.style(Tone::Accent)));
         }
+        spans(&fields[..kept], theme)
+    }
 
-        let mut spans = Vec::new();
-        for (index, field) in kept.iter().enumerate() {
-            if index > 0 {
-                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
-            }
-            spans.push(Span::styled(field.text.clone(), theme.style(field.tone)));
+    /// The activity line, or `None` when no turn is in flight.
+    ///
+    /// **Present for exactly the turn, and it is `working` that says so** — the
+    /// same flag `App::started` sets and `App::finished` clears, whether the turn
+    /// ended on an answer, an interrupt, a refusal or an error. A second source
+    /// of truth here is how a line ends up spinning a clock over an idle
+    /// session.
+    ///
+    /// Visibly the status line's sibling: the same fields, the same separator,
+    /// the same drop-from-the-right rule. What it drops first is the token count
+    /// and then the clock, because the word is the fact and the numbers beside it
+    /// are already on the status line under it.
+    pub fn activity(&self, width: u16, theme: &Theme) -> Option<Line<'static>> {
+        if !self.working {
+            return None;
         }
-        Line::from(spans)
+        // The word is chosen by the step, so it is stable for as long as the step
+        // is and moves when the work does — no timer of its own, no randomness,
+        // and a test can state which word it expects.
+        let word = WORDS[self.steps.unwrap_or(0) as usize % WORDS.len()];
+        // The indicator is a prefix on the word and never the word itself, for
+        // the reason the status line's state field says out loud: a spinner means
+        // something only to a reader who can see it move.
+        let mut fields = vec![Field::new(
+            match self.indicator(theme) {
+                Some(frame) => format!("{frame} {word}"),
+                None => word.to_string(),
+            },
+            Tone::Normal,
+        )];
+        fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
+        if let Some(tokens) = self.tokens {
+            fields.push(Field::new(
+                format!("{} tok", format_tokens(tokens)),
+                Tone::Muted,
+            ));
+        }
+
+        let kept = fits(&fields, width as usize, theme);
+        if kept == 0 {
+            let word: String = word.chars().take(width as usize).collect();
+            return Some(Line::from(Span::styled(word, theme.style(Tone::Normal))));
+        }
+        Some(spans(&fields[..kept], theme))
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -497,6 +538,48 @@ impl Status {
         }
         frame.render_widget(Paragraph::new(self.line(area.width, theme)), area);
     }
+}
+
+/// How many of `fields`, left to right, fit in `width`.
+///
+/// The drop-from-the-right rule, in one place because two lines follow it. A
+/// field is kept whole or not at all: half a word is not a shorter fact, it is a
+/// different one.
+fn fits(fields: &[Field], width: usize, theme: &Theme) -> usize {
+    // Measured off the chosen set rather than off a constant. Both sets spell
+    // the separator in three cells, so the arithmetic lands on the same answer
+    // either way — but a set that did not would have shifted every drop
+    // decision, and this is the input that says so.
+    let separator_width = theme.glyphs.separator.chars().count();
+    let mut used = 0usize;
+    let mut kept = 0usize;
+    for field in fields {
+        // Counted in characters, not bytes: the separator's middle dot is two
+        // bytes and one cell, and `len()` here would reserve room that is not
+        // needed and drop a field one column early.
+        let extra = field.text.chars().count() + if kept == 0 { 0 } else { separator_width };
+        if used + extra > width {
+            break;
+        }
+        used += extra;
+        kept += 1;
+    }
+    kept
+}
+
+/// The fields as one line, separated by the theme's own separator.
+fn spans(fields: &[Field], theme: &Theme) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(
+                theme.glyphs.separator,
+                theme.style(Tone::Muted),
+            ));
+        }
+        spans.push(Span::styled(field.text.clone(), theme.style(field.tone)));
+    }
+    Line::from(spans)
 }
 
 /// `12s`, `1m12s`, `1h02m`. Never a bare number of seconds past a minute, which

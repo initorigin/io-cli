@@ -48,8 +48,14 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
-/// Lines the live viewport occupies: the unfinished tail of a streaming answer,
-/// two rows of composer, and the status line.
+/// Lines the live viewport occupies: the activity line, the unfinished tail of a
+/// streaming answer, two rows of composer, and the status line.
+///
+/// **Five since 0.11.0, and the fifth row is the activity line.** It is taken
+/// permanently from every operator's terminal, which is why it buys the one
+/// thing the other four could not say: that a turn is alive and how long it has
+/// been. The row is drawn only while a turn is in flight; the composer takes it
+/// back at an idle prompt rather than the viewport leaving a blank row up.
 ///
 /// Fixed, and deliberately small. ratatui sets an inline viewport's height when
 /// the terminal is constructed and there is no way to change it afterwards short
@@ -65,7 +71,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// same four rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
-pub const VIEWPORT_HEIGHT: u16 = 4;
+pub const VIEWPORT_HEIGHT: u16 = 5;
 
 /// Rows the wizard's viewport occupies.
 ///

@@ -1010,15 +1010,33 @@ impl App {
             open.render(frame, area, &self.theme);
             return;
         }
-        // One row for the streaming tail, one for the status line, the rest for
-        // the composer. Content before metadata, top to bottom, so a reader
-        // reaches the model's words before the token count.
-        let live_rows = u16::from(area.height >= 3);
+        // The activity line while a turn is in flight, one row for the streaming
+        // tail, one for the status line, the rest for the composer. Content
+        // before metadata, top to bottom, so a reader reaches the model's words
+        // before the token count.
+        //
+        // The rows are claimed in the order they can be given up: the composer
+        // last, then the status line, then the live row, and the activity line
+        // first — it is the newest row and the one a session can be read
+        // without. At an idle prompt it costs nothing at all, because there is
+        // no turn for it to be about and the composer takes the row back.
         let status_rows = u16::from(area.height >= 2);
-        let composer_rows = area.height - live_rows - status_rows;
+        let live_rows = u16::from(area.height >= 3);
+        let activity = if area.height >= 4 {
+            self.status.activity(area.width, &self.theme)
+        } else {
+            None
+        };
+        let activity_rows = u16::from(activity.is_some());
+        let composer_rows = area.height - activity_rows - live_rows - status_rows;
+
+        if let Some(activity) = activity {
+            frame.render_widget(Paragraph::new(activity), Rect { height: 1, ..area });
+        }
 
         if live_rows > 0 {
             let live = Rect {
+                y: area.y + activity_rows,
                 height: live_rows,
                 ..area
             };
@@ -1030,7 +1048,7 @@ impl App {
         }
 
         let composer = Rect {
-            y: area.y + live_rows,
+            y: area.y + activity_rows + live_rows,
             height: composer_rows,
             ..area
         };
@@ -1045,7 +1063,7 @@ impl App {
 
         if status_rows == 1 {
             let status = Rect {
-                y: area.y + live_rows + composer_rows,
+                y: area.y + activity_rows + live_rows + composer_rows,
                 height: 1,
                 ..area
             };

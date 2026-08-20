@@ -1530,3 +1530,65 @@ fn f5_the_fleet_view_fits_eighty_columns_in_both_glyph_sets() {
         );
     }
 }
+
+/// 0.11.0 F5 — the activity line drops fields from the right, and never wraps.
+///
+/// The same rule the status line under it follows, and the same order the
+/// contract states: the token count goes first, then the clock, and the word is
+/// the last thing standing because it is the only field on the row that is not
+/// already said on the status line.
+#[test]
+fn f5_the_activity_line_drops_the_token_count_then_the_clock() {
+    use io_cli::status::Status;
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut status = Status::new("anthropic/claude-sonnet-4");
+        status.working = true;
+        status.elapsed = std::time::Duration::from_secs(62);
+        status.tokens = Some(1_500);
+
+        let text = |width: u16| -> String {
+            status
+                .activity(width, &theme)
+                .unwrap_or_else(|| panic!("{set}: a running turn drew no activity line"))
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        };
+
+        let whole = text(WIDTH);
+        assert!(
+            whole.contains("1.5k tok") && whole.contains("1m02s"),
+            "{whole:?}"
+        );
+
+        // Room for the word and the clock and not the tokens.
+        let cut = text(20);
+        assert!(
+            cut.contains("1m02s"),
+            "{set}: the clock outlives the count: {cut:?}"
+        );
+        assert!(
+            !cut.contains("tok"),
+            "{set}: the token count is the first field to go: {cut:?}",
+        );
+
+        // Room for the word alone.
+        let word = text(12);
+        assert!(
+            !word.contains("1m02s") && !word.contains("tok"),
+            "{set}: the word is the last field standing: {word:?}",
+        );
+
+        // And at every width, the row fits rather than wrapping.
+        for width in [12u16, 20, 40, WIDTH] {
+            let row = text(width);
+            assert!(
+                row.chars().count() <= width as usize,
+                "{set}: {row:?} is wider than the {width} columns it was fitted to",
+            );
+        }
+    }
+}
