@@ -1359,3 +1359,342 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
         result.outcome,
     );
 }
+
+// ---------------------------------------------------------------------------
+// 0.11.0 — the real binary, on a pty, against the real provider.
+//
+// **Everything above this line asserts on what the library returned.** That is a
+// different question from what reached a terminal, and F2 exists because the two
+// have disagreed before: 0.9.0 shipped a control that was blind to the bound it
+// was meant to check, and four consecutive releases have had the running binary
+// find something 500-odd tests could not.
+//
+// So these drive `target/…/io` itself through a pty that answers `ESC[6n`, and
+// assert on the bytes it wrote. The driver is `evidence/0.11.0/drive.py`, kept
+// with the captures it produced.
+// ---------------------------------------------------------------------------
+
+/// The pty driver, from this release's evidence directory.
+fn driver() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".ultraship/products/io-cli/evidence/0.11.0/drive.py")
+}
+
+/// A workspace, and a configuration that starts a session without the wizard.
+///
+/// The key is not written to the file. `api_key` absent means the provider's own
+/// environment variable, which is the arrangement this product documents and
+/// prefers, and a key on disk in a temporary directory is a key on disk.
+///
+/// **The configuration lives outside the workspace, and it has to.** A file
+/// inside the root is project-scoped, and a project-scoped file may narrow the
+/// permission boundary and never widen it — a repository you cloned must not be
+/// able to grant itself permission. io-cli says exactly that and refuses to
+/// start, which is how this was found.
+fn configured_workspace() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config = tempfile::tempdir().expect("a config directory");
+    let workspace = tempfile::tempdir().expect("a workspace");
+    std::fs::write(
+        config.path().join("io.toml"),
+        format!(
+            // The sandboxed-workspace posture, so a turn that writes a file
+            // finishes rather than stopping on an overlay nothing in a script
+            // reliably answers. The approval surface is asserted in
+            // `tests/approval.rs`; what these captures are about is the
+            // transcript and the two rows above the composer.
+            "[[provider]]\nkind = \"openrouter\"\nmodel = {:?}\n\n\
+             [policy.defaults]\nread = \"allow\"\nwrite = \"allow\"\n\
+             exec = \"allow\"\nnet = \"deny\"\n",
+            model()
+        ),
+    )
+    .expect("the configuration is written");
+    (config, workspace)
+}
+
+/// The capture with its escape sequences removed, leaving what was displayed.
+///
+/// Enough for the assertions here and no more: CSI and OSC, which is what a
+/// viewport draw is made of. A row is written as text, cursor moves and colour
+/// changes interleaved, so a claim about what a reader saw has to be made
+/// against the text with the machinery taken out of it.
+fn strip_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters, then one final byte in `@`..`~`.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: runs to a BEL or a string terminator.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // Anything else is a two-byte escape and is already consumed.
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Run the real binary under the pty driver and return everything it wrote.
+///
+/// `script` is the driver's own format: `<delay>\t<text>`, where a line starting
+/// `raw:` is sent without the `\r` the driver otherwise appends — which is what a
+/// key that OPENS something needs, `/` above all.
+///
+/// **A script does not end with `/quit`.** Typed as a line it opens the palette
+/// on its `/`, filters to one row, and `Enter` on a palette row puts the command
+/// in the composer rather than running it — which is deliberate and documented,
+/// and which cost two inconclusive captures here. `raw:\x04` is `Ctrl+D`, which
+/// leaves from an empty prompt.
+///
+/// **And a script does not key off a clock.** Three runs of the same fixed-delay
+/// script produced three different captures — the palette not opening, the
+/// palette not opening *or* closing, and the whole thing working — because a
+/// keystroke sent at a fixed second lands wherever the machine's load puts it.
+/// `wait:<text>` holds until the program has written that text, and with the
+/// waits in place three runs are byte-identical.
+fn captured(
+    name: &str,
+    config: &std::path::Path,
+    workspace: &std::path::Path,
+    script: &str,
+) -> String {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".ultraship/products/io-cli/evidence/0.11.0")
+        .join(name);
+    let mut child = Command::new("python3")
+        .arg(driver())
+        .arg(&out)
+        .arg(env!("CARGO_BIN_EXE_io"))
+        .arg("-C")
+        .arg(workspace)
+        .env("IO_CONFIG", config.join("io.toml"))
+        .env("OPENROUTER_API_KEY", key())
+        .env("IO_DRIVE_DEADLINE", "180")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("python3 runs the driver");
+    child
+        .stdin
+        .as_mut()
+        .expect("the driver takes a script")
+        .write_all(script.as_bytes())
+        .expect("the script is sent");
+    assert!(child.wait().expect("the driver exits").success());
+
+    let bytes = std::fs::read(&out).expect("the capture was written");
+    assert!(
+        bytes.len() > 1_000,
+        "{name} captured {} bytes, which is a run that never started rather than \
+         a run that said nothing",
+        bytes.len(),
+    );
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// **0.11.0 F2.** The six strings the owner named are gone from a real run.
+///
+/// Asserted against the pty capture and never against the `Vec<Line>` the
+/// renderer returns, which is the criterion's own sabotage arm: the renderer can
+/// be right while the binary prints all six, and that is exactly the class of
+/// control this product has already shipped once.
+///
+/// The presences are half the test. "Quiet" must not be reached by committing
+/// nothing at all, so the same capture has to carry the agent's answer and a tool
+/// cell — and, for F10, the two facts the removed rows used to hold.
+#[tokio::test]
+#[ignore]
+async fn live_f2_the_strings_the_owner_named_are_gone_from_a_real_run() {
+    let (config, dir) = configured_workspace();
+    std::fs::write(dir.path().join("greeting.txt"), "hello\n").expect("the fixture file");
+
+    let text = captured(
+        "live-transcript.raw",
+        config.path(),
+        dir.path(),
+        "0\twait:for commands\n0.3\tRead greeting.txt and tell me in one sentence what it says.\n\
+         0\twait:working\n0\twait:ready\n0.5\traw:\\x04\n",
+    );
+
+    for absent in [
+        "via ",
+        "prompt_composed",
+        "contained",
+        "reasoning",
+        "answered",
+        "finished · ",
+    ] {
+        assert!(
+            !text.contains(absent),
+            "{absent:?} reached the terminal in a real run",
+        );
+    }
+
+    // Committing nothing is not the same as being quiet.
+    assert!(
+        text.contains("greeting.txt"),
+        "the turn's own subject is not in the capture at all",
+    );
+    // **F10.** The facts the two removed rows carried, where they moved to. The
+    // footer drops the `provider:` label — the value names itself, and a label
+    // on every field is what made that row one grey run — so what is asserted is
+    // the provider's own name.
+    assert!(
+        text.contains("openrouter"),
+        "the provider is on the status line"
+    );
+    assert!(
+        text.contains(" step") || text.contains("steps"),
+        "the step count is on the status line",
+    );
+}
+
+/// **0.11.0 F5 and F6.** The two rows above the composer, in a real run.
+///
+/// One capture for both, because they are one arrangement: the word and the clock
+/// on the top row, and the literal act under it. What the second row says depends
+/// on where the turn is when a frame lands, so it is asserted as "one of the
+/// things F6 allows" rather than as a single string.
+#[tokio::test]
+#[ignore]
+async fn live_f5_f6_the_activity_line_and_the_live_row_are_in_a_real_run() {
+    let (config, dir) = configured_workspace();
+    std::fs::write(dir.path().join("notes.txt"), "one\ntwo\n").expect("the fixture file");
+
+    let text = captured(
+        "live-working-view.raw",
+        config.path(),
+        dir.path(),
+        "0\twait:for commands\n\
+         0.3\tRead notes.txt, then write a file called out.txt containing its second line.\n\
+         0\twait:working\n0\twait:ready\n0.5\traw:\\x04\n",
+    );
+
+    let word = io_cli::status::WORDS
+        .iter()
+        .find(|word| text.contains(**word))
+        .unwrap_or_else(|| panic!("no activity word reached the terminal"));
+    println!("live 0.11.0: the activity line said {word}");
+
+    assert!(
+        ["Read", "Write", "thinking", "waiting for you"]
+            .iter()
+            .any(|said| text.contains(said)),
+        "the live row said none of the things F6 allows it to say",
+    );
+}
+
+/// **0.11.0 F7.** The palette shows the whole list, and gives the rows back.
+///
+/// The half no unit test can reach: the re-place itself is in `src/main.rs`,
+/// which nothing links, and it needs a terminal that answers `ESC[6n`. `raw:/`
+/// opens the palette on the keypress, `raw:\x1b` closes it, and the session has
+/// to still be usable afterwards — what follows the palette's last row in the
+/// byte stream is what proves the viewport came back rather than the terminal
+/// being left somewhere strange.
+///
+/// No provider is asked for anything here: the palette opens at an empty prompt.
+#[tokio::test]
+#[ignore]
+async fn live_f7_the_palette_shows_every_command_and_gives_the_rows_back() {
+    let (config, dir) = configured_workspace();
+    // Closed by **choosing**, which the criterion allows and which a pty can
+    // send unambiguously. A bare `Esc` cannot be driven reliably from here: sent
+    // alone it sits in crossterm's parser until another byte arrives, and the
+    // next keystroke then reads as `Alt+<that key>` — so the palette stayed open
+    // in one run out of two. `Esc` is asserted where it can be, in
+    // `tests/palette.rs`, against the picker itself.
+    //
+    // The row chosen is `/exit`, so this also proves F9 in the running binary:
+    // the palette puts the command in the composer and the `Enter` after it
+    // leaves.
+    let text = captured(
+        "live-palette.raw",
+        config.path(),
+        dir.path(),
+        "0\twait:for commands\n0.3\traw:/\n0\twait:Which command?\n\
+         0.3\traw:exi\n0.3\traw:\\r\n0\twait:/exit\n0.5\traw:\\r\n",
+    );
+
+    // Escapes stripped and whitespace dropped before comparing. A row is drawn
+    // with cursor moves inside it — `copy`, a jump, then `diff` — so a literal
+    // `contains("copy diff")` asks the terminal for a space it had no reason to
+    // write, and even the squashed form has an escape sequence in the middle.
+    let squashed: String = strip_escapes(&text)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for (name, _) in io_cli::commands::COMMANDS {
+        let label: String = name
+            .strip_prefix('/')
+            .expect("a command")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            squashed.contains(&label),
+            "the palette opened and {label} was not drawn",
+        );
+    }
+
+    // The rows came back. Anchored on the palette's own title rather than on its
+    // last row: the row chosen here is `/exit`, and the composer it lands in
+    // says `exit` too — so `rfind("exit")` pointed *past* the close and the
+    // assertions below looked at nothing at all. A picker draws no status line,
+    // so everything after this anchor belongs to the close and what followed it.
+    let after = text
+        .rfind("Which command?")
+        .map(|at| &text[at..])
+        .expect("the palette drew its title");
+    assert!(
+        after.contains("\x1b[6n"),
+        "the viewport was never re-placed after the palette closed",
+    );
+    // The footer's own key hint, which only the session draws: a picker draws no
+    // footer at all, so its presence after the palette is the session back.
+    assert!(
+        after.contains("for commands"),
+        "the session's status line did not come back: {after:?}",
+    );
+    // **And the rows it drew were erased before it let go of them.** They are
+    // the terminal's screen, not its scrollback: nothing scrolls them away and
+    // nothing repaints them once that viewport is gone. Without the erase the
+    // next viewport draws OVER them and the operator is left looking at a status
+    // line spliced into the middle of a command's description — which is what a
+    // capture of the first version of this showed, and what put this assertion
+    // here.
+    assert!(
+        after.contains("\x1b[0J"),
+        "the palette's rows were left painted behind the session: {after:?}",
+    );
+    // And the binary left on its own, rather than being killed holding the
+    // terminal: the `Enter` on the `/exit` the palette put in the composer.
+    assert!(
+        after.contains("\x1b[?2004l"),
+        "the terminal was never handed back: {after:?}",
+    );
+}

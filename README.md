@@ -1,7 +1,16 @@
+<div align="center">
+
 # IO CLI
 
-A terminal agent that shows you what it is allowed to do, what it is spending,
-and what it refused — while it works.
+**A terminal agent that shows you what it is allowed to do, what it is spending,
+and what it refused — while it works.**
+
+[![CI](https://github.com/initorigin/io-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/initorigin/io-cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/initorigin/io-cli)](https://github.com/initorigin/io-cli/releases)
+[![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+</div>
 
 `io` is an interface. The agent loop, the providers, the tools, the sandbox, the
 permission boundary and the session store are all
@@ -9,17 +18,39 @@ permission boundary and the session store are all
 reimplemented here. A test asserts that: `tests/dependencies.rs` fails the build
 if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 
-![A session in flight: the IO CLI mark and the finished transcript sitting in the
-terminal's own scrollback, a prompt, and one status line naming the model, a
-moving indicator beside the word `working`, and the elapsed clock — which
-advances on its own while the first token is still on its way.](docs/screenshot.png)
+- [Install](#install) · [First run](#first-run) · [While it works](#while-it-works)
+- [Keys](#keys) · [Commands](#commands) · [Configuration](#configuration)
+- [The fleet](#the-fleet) · [Pictures](#pictures) · [Background jobs](#background-jobs)
+- [Reading it without seeing it](#reading-it-without-seeing-it) · [Headless](#headless)
+- [What this release is not](#what-this-release-is-not) · [Platform support](#platform-support) · [Stability](#stability)
+
+![A session at rest: the IO CLI card in the terminal's own scrollback, carrying
+the version, the model, the permission posture and the workspace; a prompt below
+it; and a two-row footer under a rule, naming the state, the model and the clock
+on one row and the keys and the posture on the next.](docs/screenshot.png)
+
+## What you get
+
+| | What it gives you |
+| --- | --- |
+| **A session you can read** | Every finished line in the terminal's own scrollback, designed rather than defaulted: a tool call as a verb and a path, a thought as a thought, an answer that ends the turn |
+| **A working view** | Two sticky rows while a turn runs — a word for the turn with its clock and spend, and a line under it saying what is happening *now* |
+| **The boundary, visible** | The posture on the footer, a refusal that names the act, the target, the rule and the layer, and `Shift+Tab` to change it from the next turn |
+| **Approvals in place** | A write stops the run and shows the diff it proposes; `y`, `a` or `n`, answered where it was asked |
+| **A fan-out you can watch** | Contained turns spawn children under one shared ceiling; `Ctrl+F` shows the tree and what it is costing |
+| **Undo** | `Esc Esc` at an empty prompt rewinds the last turn — its files, its memory and the conversation head |
+| **Conversations that survive** | `/resume` reopens an earlier session, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
+| **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json` |
+| **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
+| **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
 
 ## It never takes your terminal
 
 `io` does not enter the alternate screen and does not capture the mouse, in any
 mode, behind any flag. Every finished message, tool call and system line is
-committed into the terminal's own scrollback; a few lines at the bottom hold the
-composer and the status line, and only those repaint.
+committed into the terminal's own scrollback; eight rows at the bottom hold the
+activity line, the live row, two rows of composer and a three-row footer, and
+only those repaint.
 
 So when the session ends the whole conversation is still there. Your terminal's
 search finds it, tmux copy-mode scrolls it, and a mouse drag selects it — none of
@@ -81,6 +112,30 @@ Your key never appears on screen, in the scrollback, or in a log line. If the
 provider's environment variable is already set, the wizard offers to use it and
 writes no key to disk at all.
 
+## While it works
+
+Two rows sit above the composer for exactly as long as a turn is in flight, and
+neither is there before the first one or after the last one ends.
+
+The top row is the **activity line**: a word for the turn, chosen once per step
+so it moves when the work does rather than on a timer of its own, the elapsed
+clock, and the token count the run has been billed for. On a narrow terminal it
+drops the count and then the clock, which is the rule the status line under it
+already follows.
+
+Under it, the **live row** says what is happening right now, in this order: the
+run is waiting on you, or a tool call is open and this is the verb and the path,
+or the model is thinking, or it is the tail of the answer as it streams. Waiting
+on a person outranks everything, because every other thing that row can say is
+about work going on without you.
+
+What lands in the scrollback is designed rather than defaulted. A tool call reads
+as a verb and a workspace-relative path — `Read src/lib.rs`, not `read_file` and
+an absolute path — and a tool this release has never seen keeps the name
+io-harness sent, because a verb invented for it would mean nothing. A turn ends
+on its answer: the run's step and token counts are on the status line beside the
+provider, which is where every other number in this interface lives.
+
 ## Keys
 
 <!-- keys:start -->
@@ -88,9 +143,9 @@ writes no key to disk at all.
 | Key | Does |
 | --- | --- |
 | `Enter` | send the prompt |
-| `Shift+Enter` | new line (or end the line with \ and press Enter) |
+| `Shift+Enter` | new line — or `Alt+Enter`, `Ctrl+J`, or end the line with \ |
 | `Up / Down` | walk prompt history |
-| `Ctrl+C` | interrupt the turn; twice at an empty prompt, exit |
+| `Ctrl+C` | stop the turn; again to stop it now; twice at an empty prompt, exit |
 | `Ctrl+D` | exit, on an empty prompt |
 | `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
@@ -98,7 +153,7 @@ writes no key to disk at all.
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `Ctrl+F` | show the fleet: the children this turn has spawned |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
-| `Esc` | close a picker without choosing |
+| `Esc` | stop the running turn, or close a picker without choosing |
 | `/` | at an empty prompt, open the command palette |
 | `@` | after a space, complete a path from the workspace |
 | `!` | run the rest of the line in your shell; the agent never sees it |
@@ -167,7 +222,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | Command | Does |
 | --- | --- |
 | `/help` | this table |
-| `/quit` | leave |
+| `/exit` | leave |
 | `/setup` | run the first-run wizard again |
 | `/theme` | change the theme for this session |
 | `/model` | change the model the next turn is sent to |
@@ -179,6 +234,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/fleet` | show the children this turn has spawned |
 | `/attach` | put an image in front of the agent, for the next turn only |
+| `/clear` | start a new conversation; this one stays in /resume |
 
 <!-- commands:end -->
 
@@ -189,6 +245,18 @@ long is the buffer where the terminal's search, selection and tmux copy-mode
 already work. `/expand` reads the step's full output back out of the run's
 durable trace, which is where it went in the first place — the screen is not the
 archive.
+
+`/expand` also holds the part of a long thought that did not fit. The model's
+reasoning is committed as a thought — the word, how long the step had been going,
+then the text — and a thought longer than ten rows is fitted with the rest kept
+for `/expand`. io-harness neither stores reasoning nor folds it into the next
+prompt, so that copy is the only one there is.
+
+`/clear` starts a new conversation: a new session id, no prior turn sent to the
+model, and the run-scoped status fields back to zero. It clears the screen and
+nothing else — the conversation it ends is still in the store and still listed by
+`/resume`, and your terminal's scrollback is still your terminal's. It is refused
+while a turn is running.
 
 `/copy` uses OSC 52, so it reaches the clipboard of the machine you are *sitting
 at* rather than the one you are ssh'd into. Nothing acknowledges an OSC 52 write:
@@ -592,6 +660,40 @@ answers the question split view answers.
 One ceiling worth knowing about: a hunk is a fragment of a file, and each of its
 lines is highlighted from a clean parse. A block comment or a multi-line string
 that was opened *above* the hunk is not known here, so those lines read as code.
+
+## Platform support
+
+| Platform | Build | Containment |
+| --- | --- | --- |
+| macOS, Apple silicon | `aarch64-apple-darwin` | io-harness's own: `sandbox-exec` |
+| macOS, Intel | `x86_64-apple-darwin` | as above |
+| Linux | `x86_64-unknown-linux-musl`, statically linked | io-harness's chain: Landlock, `bwrap`, namespaces, floor |
+| Windows | `x86_64-pc-windows-msvc` | Job Object, with AppContainer opt-in |
+
+The four artifacts and their `SHA256SUMS` are attached to every GitHub Release,
+and the full test suite runs on Ubuntu, macOS and Windows in CI. **What confines
+a command is io-harness's, not this product's** — `io` shows you which backend
+actually answered on this host, in the footer, because the mode asked for and the
+backend that applied are not the same fact.
+
+Rust 1.95 or later to build from source. There is no crates.io publish: the
+distribution channel is the GitHub Release, and `publish = false` makes an
+accidental one impossible rather than merely discouraged.
+
+## Stability
+
+Pre-1.0 and staying there until the owner says otherwise. A minor release may
+change what a session looks like — 0.11.0 rewrote the transcript's vocabulary,
+and the release before it moved where a question is answered. What you can rely
+on is that every one of those is in [CHANGELOG.md](CHANGELOG.md), said plainly,
+and that a configuration file written for an older release keeps working: no key
+has been removed or reinterpreted since 0.1.0.
+
+## Security
+
+Report vulnerabilities per [SECURITY.md](SECURITY.md). Your provider key is never
+printed, never committed to the scrollback, and never written to disk by the
+wizard when the provider's own environment variable is already set.
 
 ## Contributing
 

@@ -6,6 +6,153 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-20
+
+The transcript's vocabulary changed.
+
+**Four tags stopped appearing: `prompt_composed`, `contained`, `reasoning` and
+`answered`.** They were never designed lines. io-harness declares fifty-one event
+kinds and thirty-seven of them fell through to a placeholder that committed the
+variant's own snake-cased name, which is what put Rust identifiers in front of
+whoever was reading a session. Every kind now has a disposition chosen by hand —
+a line, a status-line field, or nothing — and a kind io-cli has never seen
+commits nothing at all and is counted instead.
+
+Nothing about the permission boundary, the approval overlay, the containment
+seam, the scrollback contract or the io-harness pin changes. This release asked
+io-harness for nothing.
+
+### Added
+
+- **The activity line**, a new top row of the viewport present for exactly as
+  long as a turn is in flight: a word for the turn, the elapsed clock and the
+  live token count. The word is chosen once per step from a fixed list, so it
+  moves when the work does and not on a timer of its own. On a narrow terminal it
+  drops the token count and then the clock, which is the rule the status line
+  already follows.
+- **A live row that says what is happening**, in one order: waiting on you, then
+  an open tool call and its target, then the model thinking, then the streaming
+  tail. Waiting on a person outranks everything else, because every other thing
+  that row can say is about work going on without you.
+- **The model's reasoning, committed as a thought** — one row: the word, how long
+  the step had been going, and what it cost. The text is kept for `/expand` and
+  not committed: a thought is usually longer than the answer it precedes, and a
+  transcript carrying every one buries the work in the deliberation. `/expand` is
+  the only place it can be read, because io-harness neither stores reasoning nor
+  folds it into the next prompt.
+- **Two status-line fields: the provider and the step count.** Both are set from
+  the events that carry them and both are cleared when a run is forgotten. They
+  are where the two removed rows' facts went.
+- **`/clear`** — a new conversation without leaving the binary: a new session id,
+  no prior turn sent to the model, and the run-scoped status fields back to zero.
+  It clears the screen and nothing else; the conversation it ends is in
+  io-harness's store and is still listed by `/resume`. Refused while a turn is
+  running.
+- **`/exit` is listed**, and `/quit` is gone. The parser has accepted `exit`
+  since 0.1.0 and nothing ever advertised it; two commands doing one thing, with
+  a row each in the palette, was the other half of that defect.
+- **The model's markdown is rendered rather than printed.** Headings, bullets,
+  quotes, rules, fenced code and inline bold, italic and code — a line at a time,
+  because that is how the transcript commits. Anything unrecognised is left
+  exactly as the model wrote it: a renderer that guessed would eat characters out
+  of an answer.
+- **The composer.** Pasting the same block twice expands the placeholder into the
+  block; backspace over a placeholder removes the whole placeholder and the block
+  it stands for; a pasted path that names a file is quoted and resolved, so a
+  path with a space survives as one word.
+
+### Changed
+
+- **A tool cell reads as a verb and a path**: `Read src/lib.rs` rather than
+  `read_file` and an absolute one. The mapping is a table of io-harness's own
+  built-in tool names; a tool that is not in it keeps the name io-harness sent,
+  because a verb invented for a tool this release has never seen would mean
+  nothing. A target inside the workspace is shown relative to it and one outside
+  is shown whole.
+- **A turn ends on its answer.** The `finished · N steps · N tok` row is gone. An
+  outcome that stopped short still commits its own line, because a run that
+  stalled or hit a ceiling has to say so; a plain finish commits a blank line.
+- **`via {provider}` is gone from under every prompt.** The provider is a
+  status-line field now, spelled the way the posture is.
+- **The viewport is eight rows**, not four: a blank, the activity line, the live
+  row, two rows of composer, and a three-row footer. It is still clamped to the
+  terminal, so 80x24 is a supported size — the rows go in the order they can be
+  given up, and the composer keeps its two at every size.
+- **The command palette shows the whole list.** Opening `/` re-places a taller
+  viewport for as long as the palette is open and gives the rows back on close —
+  by a choice, by `Esc`, or by the terminal resizing under it. It is done only at
+  an empty prompt, where nothing is streaming.
+- **`--plain` still commits the provider and the run's numbers.** The two rows
+  this release removed moved to a line a plain session does not have, and a fact
+  that lives only in a repainting row is a fact taken from exactly the reader who
+  cannot follow one. It is committed in the status line's own spelling, so a
+  number has one form wherever you meet it.
+- **A step commits a line only when it says something its tool cells did not.**
+  Through 0.10.0 every call was printed twice — once as a cell and once in the
+  step line under it, in a different order and a different vocabulary. What is
+  left for that line is what the cells cannot carry: files changed, or a decision
+  that could not be paired to a call.
+- **A cell's result column carries what io-harness added, not what the cell has
+  already said.** `Read io.toml · read io.toml` is now `Read io.toml`, and
+  `List · list_dir  (4 entries)` is `List · (4 entries)`.
+- **An outcome that stopped short says what it means.** `step_cap_reached`,
+  `stalled`, the three budgets, `plan_rejected`, `cancelled`,
+  `awaiting_recovery` and `escalated` each get a sentence under io-harness's own
+  word. A run used to end on `error: step_cap_reached` and nothing else.
+- **Spacing.** One blank row between a block of tool cells and whatever follows,
+  one between a designed line and the model's prose, one between turns rather
+  than two, and a paragraph break inside a thought is one row rather than two.
+- **A viewport erases its own rows before handing them back**, so the palette
+  leaves nothing painted behind the session it returns to.
+- **A turn is no longer capped at twelve steps.** Every turn now carries a
+  contract io-cli built — the ordinary one through `turn_bounded_observed`, the
+  contained one as before — so the step cap is this product's rather than
+  io-harness's default. It is a thousand, which is not a number anybody reaches
+  on purpose: what ends a turn should be the work finishing, a stall, a budget or
+  you, never an arithmetic ceiling reported as `error: step_cap_reached` under a
+  half-written file. `[app.io-cli] max_steps` sets your own.
+- **`Esc` stops a running turn**, which is what it is for in every other agent,
+  and a second press of `Esc` or `Ctrl+C` stops it *now* rather than at the next
+  step boundary. The first press is still the clean stop: the run closes itself
+  and the store records how it ended.
+- **`Shift+Enter` has two fallbacks that always work.** It needs the Kitty
+  keyboard protocol, and a terminal without it sends the same byte for `Enter`.
+  `Alt+Enter` and `Ctrl+J` insert a newline everywhere, alongside the trailing
+  backslash.
+- **The footer is three rows: a rule, then two lines.** One long dot-separated
+  run of eight fields is a sentence with the punctuation removed. Now the state
+  and the model sit on one row with the clock at the right edge, the counts and
+  the posture on the row under it, and exactly one thing is bold and one is
+  coloured — which is what makes either mean anything.
+- **The prompt takes the rows it needs**, up to ten, and gives them back.
+- **`/clear` opens the session again**, banner and all, rather than leaving a
+  cleared screen with one grey line on it.
+- **The banner is a card with room in it**: the mark, the version, and the model,
+  policy and workspace, one blank row inside each edge and two columns inside
+  each side.
+- **`Shift+Tab` cycles the posture silently.** The footer repaints on the same
+  keystroke, so the line it used to commit said in the scrollback what the screen
+  was already showing — and cycling through three postures to reach one left
+  three of them behind, permanently, in the transcript of a session that ran
+  under one.
+- **The clock and the activity line's token count belong to the turn.** Both
+  start at zero when a turn starts: a clock counting since the terminal opened
+  said `22m12s` about a turn six seconds old. The footer keeps the session's
+  token total, because that is what a spend is judged on.
+- **A diff carries line numbers**, in each side's own file, with a blank row
+  above it. A change you can see but cannot go to is half a diff.
+- **An approval is said once.** The overlay carries the request, so the
+  transcript no longer commits the same sentence directly above it. In plain
+  mode, which draws no overlay, the line is still committed.
+- **The footer says `working` only when nothing above it does.** The activity
+  line already carries a spinner and a word; a second spinner under it turning at
+  the same rate said one thing twice.
+- **A step commits no line when its cells already said it**, `changed files`
+  included — the diff underneath is what says a file changed.
+- **The keyboard-protocol probe is asked once per process.** It costs two seconds
+  on a terminal that never answers, and the palette re-places the viewport twice
+  per open and close.
+
 ## [0.10.0] - 2026-08-19
 
 A contained session answers.

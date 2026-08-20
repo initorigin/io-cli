@@ -48,8 +48,22 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
-/// Lines the live viewport occupies: the unfinished tail of a streaming answer,
-/// two rows of composer, and the status line.
+/// Lines the live viewport occupies: a blank row, the activity line, the
+/// unfinished tail of a streaming answer, two rows of composer, and the status
+/// line.
+///
+/// **Six since 0.11.0, and two of them are new.** The activity line buys the one
+/// thing the other four could not say — that a turn is alive and how long it has
+/// been — and the blank row above it buys the thing a sticky row cannot have
+/// otherwise: air between it and the transcript scrolling underneath. Committed
+/// content ends exactly where the viewport begins, so without a row of its own
+/// the activity line reads as the last line of the work rather than as the line
+/// describing it.
+///
+/// Both rows are *claimed* whether or not a turn is running and *drawn* only
+/// while one is, so the composer is two rows at every moment of a session. A
+/// composer that changed height between turns moved the prompt under the
+/// operator's hands on every Enter.
 ///
 /// Fixed, and deliberately small. ratatui sets an inline viewport's height when
 /// the terminal is constructed and there is no way to change it afterwards short
@@ -65,7 +79,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// same four rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
-pub const VIEWPORT_HEIGHT: u16 = 4;
+pub const VIEWPORT_HEIGHT: u16 = 8;
 
 /// Rows the wizard's viewport occupies.
 ///
@@ -139,6 +153,50 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         // with the user's shell still in raw mode — no echo, no line editing, and
         // an error message that did not say what had happened.
         Self::attach_raw(height).inspect_err(|_| restore_terminal())
+    }
+
+    /// Give this viewport back and take one of `height` rows in its place.
+    ///
+    /// **The one operation in this product that re-queries the cursor while a
+    /// session is running**, and the reason it is allowed at all is that its only
+    /// caller does it at an empty prompt with nothing streaming. The scrollback
+    /// above is the terminal's and survives; what is replaced is the viewport and
+    /// the buffers behind it.
+    ///
+    /// A caller must park whatever is reading stdin first. Placing an inline
+    /// viewport asks the terminal where its cursor is and reads the answer off
+    /// stdin, so a reader still running would take the answer and this would hang
+    /// on a terminal that had in fact replied.
+    ///
+    /// If the new height cannot be placed, the session's own is placed instead
+    /// and the error returned: an operator who asked for a taller list and cannot
+    /// have one keeps their session, rather than losing the viewport with it.
+    pub fn replace(&mut self, height: u16) -> io::Result<()> {
+        // **Erase what this viewport drew before letting go of it.** Its rows are
+        // the terminal's screen, not its scrollback: nothing scrolls them away
+        // and nothing repaints them once this `Screen` is gone. Without this the
+        // next viewport is placed at the cursor and draws OVER the old rows,
+        // which leaves half a palette standing behind a composer — a status line
+        // spliced into the middle of a command's description, which is exactly
+        // what a capture of the first version showed.
+        //
+        // `ESC[0J` from the viewport's own top row, so the committed transcript
+        // above it is untouched and everything below is cleared. The cursor is
+        // left there, which is also where `compute_inline_size` will place the
+        // next viewport — so the new one starts exactly where the old one did.
+        let top = self.terminal.get_frame().area().y;
+        self.escape(&format!("\x1b[{};1H\x1b[0J", top.saturating_add(1)))?;
+        self.restore();
+        match Self::attach_with(height) {
+            Ok(fresh) => {
+                *self = fresh;
+                Ok(())
+            }
+            Err(error) => {
+                *self = Self::attach_with(VIEWPORT_HEIGHT)?;
+                Err(error)
+            }
+        }
     }
 
     fn attach_raw(height: u16) -> io::Result<Self> {
@@ -379,6 +437,23 @@ impl<B: Backend + Write> Screen<B> {
     /// The width the renderer is currently laying out against, in cells.
     pub fn width(&mut self) -> u16 {
         self.terminal.current_buffer_mut().area.width
+    }
+
+    /// Rows the viewport currently occupies.
+    ///
+    /// What a caller compares against the height it wants, so that re-placing
+    /// happens when the two differ and never otherwise. Read off the buffer
+    /// rather than remembered, because `attach_with` clamps to the terminal and
+    /// the height asked for is not always the height given.
+    pub fn rows(&mut self) -> u16 {
+        self.terminal.current_buffer_mut().area.height
+    }
+
+    /// Rows the whole terminal has, viewport and scrollback together.
+    pub fn terminal_rows(&self) -> u16 {
+        crossterm::terminal::size()
+            .map(|(_, rows)| rows)
+            .unwrap_or(24)
     }
 
     /// What the last frame put in the viewport, one row per line with trailing
@@ -665,7 +740,20 @@ pub fn kitty_graphics() -> bool {
 /// a terminal that will not say whether it speaks the protocol is not one to push
 /// a protocol at.
 pub fn keyboard_advertised() -> bool {
-    crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+    /// Asked once per process, because the answer cannot change and asking is
+    /// not free.
+    ///
+    /// **crossterm writes a query and waits up to two seconds for the reply.**
+    /// A terminal that speaks the protocol answers at once; one that does not —
+    /// Apple's Terminal, most `script` sessions — answers never, and the wait is
+    /// paid in full. That was a one-off cost while an attach happened once per
+    /// process, and 0.11.0 made it not one: the palette re-places the viewport
+    /// when it opens and again when it closes, so an uncached probe would put
+    /// two seconds on each `/` and two more on each `Esc`, on exactly the
+    /// terminals that already have the worst of everything else.
+    static ADVERTISED: OnceLock<bool> = OnceLock::new();
+    *ADVERTISED
+        .get_or_init(|| crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false))
 }
 
 /// Negotiate the protocol up, if `advertised`; otherwise write nothing at all.

@@ -168,9 +168,14 @@ fn f1_the_palette_opens_showing_every_command() {
     }
 
     // What the operator can see, through the terminal the product actually
-    // writes to. Fourteen rows so the twelve commands and the title all fit.
+    // writes to, at the height the driver asks for — which is the whole point of
+    // 0.11.0's F7 and the reason this number is no longer written out here. A
+    // hard-coded fourteen is exactly the defect that release exists to remove,
+    // one file over: it was right when there were twelve commands and it hid the
+    // thirteenth.
     let mut picker = palette();
-    let (mut screen, recorder) = support::screen_of(80, 24, 14);
+    let height = commands::palette_height(picker.rows().len());
+    let (mut screen, recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
@@ -265,9 +270,10 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // `c` matches FOUR rows since 0.9.0 added `/attach`, which contains one —
-    // three of them begin with it and `attach` merely holds it. `co` narrows to
-    // the three that begin with `c`, because `attach` has no `o` after its `c`.
+    // `c` matches FIVE rows since 0.11.0 added `/clear`: four begin with it —
+    // `copy`, `copy diff`, `contain`, `clear` — and `attach` merely holds one.
+    // `co` narrows to the three that begin with `co`, because neither `attach`
+    // nor `clear` has an `o` after its `c`.
     // The three score the same and the tie-break is the order they were handed
     // in. The defect: an unstable sort swaps them on a keystroke that did not
     // change the result, and `Enter` takes a row nobody chose.
@@ -278,7 +284,7 @@ fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
     // quietly stopped happening.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 4);
+    assert_eq!(picker.matching(), 5);
     assert_eq!(marked(&picker), "copy");
     type_at(&mut picker, "o");
     assert_eq!(picker.matching(), 3);
@@ -415,10 +421,10 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
         assert_eq!(row.detail.as_deref(), Some(detail.as_str()));
     }
 
-    // What the operator can actually see, through the terminal the product writes
-    // to. Sixteen rows so the twelve commands, the two templates and the title fit.
+    // What the operator can actually see, at the height the driver asks for.
     let mut picker = palette_over(&found);
-    let (mut screen, recorder) = support::screen_of(80, 24, 16);
+    let height = commands::palette_height(picker.rows().len());
+    let (mut screen, recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
@@ -668,4 +674,53 @@ fn f5_a_skills_directory_that_will_not_walk_says_so() {
         complaint.contains("io-cli-no-such-skills-dir"),
         "the harness's own message names the path: {complaint}",
     );
+}
+
+/// 0.11.0 F7 — the height the palette asks for shows every row it has.
+///
+/// The arithmetic and the drawing in one test, because either alone passes while
+/// the other is wrong: a height computed correctly and spent on a picker that
+/// keeps a row for something else still hides the last command, and this is the
+/// defect the criterion exists for — a fourteen-row list shown three rows at a
+/// time.
+///
+/// The re-place itself belongs to `src/main.rs` and to a real terminal, and it is
+/// asserted where it can be: the pty capture in `tests/live.rs`.
+#[test]
+fn f7_the_height_the_palette_asks_for_draws_every_row() {
+    let dir = written();
+    let (templates, _) = commands::templates(&configured(dir.path()));
+    let rows = commands::palette(&templates, &io_harness::Skills::none());
+    assert!(
+        rows.len() > COMMANDS.len(),
+        "the templates are what make this list longer than the command inventory",
+    );
+
+    let height = commands::palette_height(rows.len());
+    let mut picker = Picker::new("Which command?", rows.clone());
+    // A terminal with room to spare, so what is being asserted is the height the
+    // palette asked for and not the terminal's own clamp.
+    let (mut screen, _recorder) = support::screen_of(80, height + 4, height);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+
+    let viewport = screen.viewport_text();
+    for row in &rows {
+        assert!(
+            viewport.contains(row.label.as_str()),
+            "the palette asked for {height} rows and {:?} is still not on screen: {viewport:?}",
+            row.label,
+        );
+    }
+}
+
+/// 0.11.0 F7 — the height is the rows plus the picker's own title row.
+#[test]
+fn f7_the_height_is_one_more_than_the_rows() {
+    assert_eq!(commands::palette_height(0), 1);
+    assert_eq!(commands::palette_height(13), 14);
+    // A list longer than a `u16` is not a list, and saturating is the only
+    // answer that is not a panic in front of an operator.
+    assert_eq!(commands::palette_height(usize::MAX), u16::MAX);
 }

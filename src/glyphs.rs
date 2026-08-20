@@ -118,6 +118,17 @@ pub struct Glyphs {
     pub mask: char,
     /// The frames of the working indicator, every one of them one cell wide.
     pub spinner: &'static [char],
+    /// The box the splash card is drawn with: top-left, top-right, bottom-left,
+    /// bottom-right, horizontal, vertical.
+    ///
+    /// One field rather than six, because they are one decision — a set of
+    /// corners that half agreed with each other would be a box with a seam in
+    /// it — and because every one of them is a single cell in both sets, which
+    /// is what lets the card's width arithmetic be the same either way.
+    ///
+    /// It is used in exactly one place. A frame around anything that repaints
+    /// would be this product drawing a window, and it does not own the screen.
+    pub frame: [&'static str; 6],
 }
 
 /// What a terminal that can draw anything gets. The default.
@@ -137,6 +148,7 @@ pub const UNICODE: Glyphs = Glyphs {
     // they are braille. Referenced rather than copied: two spellings of one
     // spinner is two things to keep in agreement.
     spinner: &crate::status::SPINNER,
+    frame: ["╭", "╮", "╰", "╯", "─", "│"],
 };
 
 /// What a terminal that does not claim UTF-8 gets, and what `--plain` forces.
@@ -153,6 +165,7 @@ pub const ASCII: Glyphs = Glyphs {
     quote_close: "\"",
     mask: '*',
     spinner: &ASCII_SPINNER,
+    frame: ["+", "+", "+", "+", "-", "|"],
 };
 
 /// The sets a configuration file can name.

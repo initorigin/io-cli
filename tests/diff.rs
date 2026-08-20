@@ -254,6 +254,11 @@ fn spans_of(edit: &Edit, marker: char) -> Vec<(String, bool)> {
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect::<String>()
+                // Past the line-number gutter, which every body row carries
+                // since 0.11.0: a diff a reader cannot go to is a change they
+                // can see and not find.
+                .trim_start()
+                .trim_start_matches(|c: char| c.is_ascii_digit())
                 .trim_start()
                 .starts_with(marker)
         })
@@ -354,8 +359,8 @@ fn f3_an_unpaired_line_is_emphasised_at_the_line_and_not_within_it() {
     }
     assert_eq!(
         spans_of(&edit, '-').len(),
-        1,
-        "an unpaired line is one span",
+        2,
+        "an unpaired line is the gutter and one span of text",
     );
 }
 

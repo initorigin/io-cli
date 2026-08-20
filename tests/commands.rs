@@ -31,7 +31,7 @@ fn the_commands_are_the_commands() {
         names,
         [
             "/help",
-            "/quit",
+            "/exit",
             "/setup",
             "/theme",
             "/model",
@@ -43,6 +43,7 @@ fn the_commands_are_the_commands() {
             "/contain",
             "/fleet",
             "/attach",
+            "/clear",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",
@@ -59,7 +60,7 @@ fn each_command_resolves() {
         commands::parse("help", &defaults(), &DARK),
         Action::Print(_)
     ));
-    assert_eq!(commands::parse("quit", &defaults(), &DARK), Action::Quit);
+    assert_eq!(commands::parse("exit", &defaults(), &DARK), Action::Quit);
     assert_eq!(commands::parse("setup", &defaults(), &DARK), Action::Setup);
     assert_eq!(commands::parse("theme", &defaults(), &DARK), Action::Theme);
     assert_eq!(commands::parse("model", &defaults(), &DARK), Action::Model);
@@ -82,6 +83,12 @@ fn each_command_resolves() {
         commands::parse("copy patch", &defaults(), &DARK),
         Action::Copy(io_cli::commands::Copied::Diff),
     );
+
+    // 0.11.0 — `/clear` and its alias, and `/exit`, which has resolved to the
+    // same action as `/quit` since 0.1.0 and was listed nowhere until now.
+    assert_eq!(commands::parse("clear", &defaults(), &DARK), Action::Clear);
+    assert_eq!(commands::parse("new", &defaults(), &DARK), Action::Clear);
+    assert_eq!(commands::parse("exit", &defaults(), &DARK), Action::Quit);
 
     // Arguments are tolerated; the first word decides.
     assert_eq!(
@@ -189,4 +196,97 @@ fn attach_takes_the_whole_rest_of_the_line() {
         commands::parse("image shot.png", &defaults(), &DARK),
         Action::Attach("shot.png".to_string()),
     );
+}
+
+/// 0.11.0 F8 — `/clear` starts over from an idle prompt.
+///
+/// The half of it that is not the driver's: every run-scoped field back to what
+/// it was before anything ran, and nothing left in `Events` that belonged to the
+/// conversation being ended — a tail nobody committed, a call nothing will close,
+/// or the thought `/expand` would otherwise show from a conversation no longer on
+/// screen.
+#[test]
+fn f8_clear_at_an_idle_prompt_resets_every_run_scoped_field() {
+    use io_cli::app::App;
+
+    let mut app = App::new(DARK, "anthropic/claude-sonnet-4");
+    app.status.provider = Some("openrouter".into());
+    app.status.tokens = Some(4_703);
+    app.status.steps = Some(3);
+    app.event(
+        &io_harness::RunEvent::new(
+            1,
+            1,
+            io_harness::EventKind::Reasoning {
+                text: "x ".repeat(400),
+                tokens: 90,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    assert!(app.events.thought().is_some(), "the thought was held");
+
+    assert!(app.clear_conversation(), "an idle prompt is not refused");
+    assert_eq!(app.status.provider, None);
+    assert_eq!(app.status.tokens, None);
+    assert_eq!(app.status.steps, None);
+    assert_eq!(app.events.thought(), None);
+    assert!(app.events.live().is_empty());
+}
+
+/// 0.11.0 F8 — and refuses while a turn is in flight, changing nothing.
+///
+/// The criterion's own sabotage arm is clearing while a turn is running, which
+/// orphans a live run behind a cleared screen. The driver refuses a slash command
+/// during a turn too — this is the lock a test can stand on, and the two agree.
+#[test]
+fn f8_clear_refuses_while_a_turn_is_in_flight_and_changes_nothing() {
+    use io_cli::app::App;
+
+    let mut app = App::new(DARK, "m");
+    app.status.tokens = Some(4_703);
+    app.status.steps = Some(3);
+    app.started();
+
+    assert!(
+        !app.clear_conversation(),
+        "a live run was cleared out from under"
+    );
+    assert_eq!(
+        app.status.tokens,
+        Some(4_703),
+        "the run's own facts survived"
+    );
+    assert_eq!(app.status.steps, Some(3));
+
+    let said = text(&app.take_pending());
+    assert!(
+        said.contains("not while a turn is running"),
+        "a refusal that says nothing is a key that appears to do nothing: {said:?}",
+    );
+}
+
+/// 0.11.0 F9 — `/exit` is listed, and the palette row it is listed as leaves.
+///
+/// The sabotage arm is listing it without wiring the row, which is the one way a
+/// listed command must not fail: advertised and inert. `palette_pick` is what the
+/// driver resolves a chosen row through, so asking it is asking the driver.
+#[test]
+fn f9_exit_is_listed_and_its_palette_row_leaves() {
+    use io_cli::commands::{palette, palette_pick, Chosen, COMMANDS};
+    use io_harness::Templates;
+
+    let index = COMMANDS
+        .iter()
+        .position(|(name, _)| *name == "/exit")
+        .expect("`/exit` is in the inventory");
+
+    let rows = palette(&Templates::none(), &io_harness::Skills::none());
+    assert_eq!(rows[index].label, "exit");
+    assert_eq!(
+        palette_pick(&Templates::none(), &io_harness::Skills::none(), index),
+        Some(Chosen::Command("/exit")),
+        "the row is advertised and inert",
+    );
+    assert_eq!(commands::parse("exit", &defaults(), &DARK), Action::Quit);
 }

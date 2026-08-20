@@ -60,12 +60,12 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Enter", "send the prompt"),
     (
         "Shift+Enter",
-        "new line (or end the line with \\ and press Enter)",
+        "new line \u{2014} or `Alt+Enter`, `Ctrl+J`, or end the line with \\",
     ),
     ("Up / Down", "walk prompt history"),
     (
         "Ctrl+C",
-        "interrupt the turn; twice at an empty prompt, exit",
+        "stop the turn; again to stop it now; twice at an empty prompt, exit",
     ),
     ("Ctrl+D", "exit, on an empty prompt"),
     (
@@ -89,7 +89,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "y / a / n",
         "answer an approval: allow once, allow this session, deny",
     ),
-    ("Esc", "close a picker without choosing"),
+    (
+        "Esc",
+        "stop the running turn, or close a picker without choosing",
+    ),
     ("/", "at an empty prompt, open the command palette"),
     ("@", "after a space, complete a path from the workspace"),
     (
@@ -101,7 +104,7 @@ pub const KEYS: &[(&str, &str)] = &[
 /// Every slash command, likewise.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this table"),
-    ("/quit", "leave"),
+    ("/exit", "leave"),
     ("/setup", "run the first-run wizard again"),
     ("/theme", "change the theme for this session"),
     ("/model", "change the model the next turn is sent to"),
@@ -127,6 +130,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "/attach",
         "put an image in front of the agent, for the next turn only",
+    ),
+    (
+        "/clear",
+        "start a new conversation; this one stays in /resume",
     ),
 ];
 
@@ -236,6 +243,21 @@ pub fn palette(templates: &Templates, skills: &io_harness::Skills) -> Vec<Row> {
             Row::with_detail(skill.name.clone(), format!("{SKILL}{}", skill.description))
         }))
         .collect()
+}
+
+/// The viewport height that shows every one of `rows` at once.
+///
+/// One more than the rows, because a picker draws `height - 1` of them and
+/// spends the row it keeps on its own title. The terminal's own height is not
+/// consulted here and must not be: [`crate::term::Screen::attach_with`] clamps
+/// to it, and a second clamp written against a size read somewhere else is two
+/// answers to one question.
+///
+/// A pure function in the library rather than arithmetic in `src/main.rs`, for
+/// the reason every decision in this module is one: a driver's arithmetic is
+/// arithmetic nothing can test.
+pub fn palette_height(rows: usize) -> u16 {
+    u16::try_from(rows.saturating_add(1)).unwrap_or(u16::MAX)
 }
 
 /// What the palette's row at `index` stands for.
@@ -408,6 +430,13 @@ pub enum Action {
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
     Transcript,
+    /// Clear the screen and start a new conversation.
+    ///
+    /// A new session id, no prior turn sent to the model, and the run-scoped
+    /// status fields back to what they were before anything ran. The
+    /// conversation it ends is not destroyed — it is in io-harness's store and
+    /// still listed by `/resume`.
+    Clear,
     /// Open the fleet view, or close it.
     Fleet,
     /// Attach an image to the next turn, from a path under the session root.
@@ -479,7 +508,11 @@ pub fn rows(keys: &Keys) -> Vec<(String, String)> {
 pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
     match input.split_whitespace().next().unwrap_or("help") {
         "help" | "?" => Action::Print(help(keys, theme)),
-        "quit" | "exit" | "q" => Action::Quit,
+        // **`/exit` and nothing else.** `/quit` was the listed spelling through
+        // 0.10.0 and `/exit` the unlisted alias, which is two commands doing one
+        // thing and a palette with a row for each. One name, and `q` for the
+        // hands that have typed it in every other tool.
+        "exit" | "q" => Action::Quit,
         "setup" => Action::Setup,
         "theme" => Action::Theme,
         "model" => Action::Model,
@@ -510,6 +543,10 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
                 .to_string(),
         ),
         "expand" => Action::Expand,
+        // `/clear` and `/new` mean the same thing, for the reason `/resume` and
+        // `/continue` do: both words are in the field's vocabulary and a reader
+        // arrives having been taught one of them by another agent.
+        "clear" | "new" => Action::Clear,
         "copy" => match input.split_whitespace().nth(1) {
             // `/copy diff` and `/copy patch` mean the same thing. A reader who
             // has just been shown a diff will type the word they were shown.
