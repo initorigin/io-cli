@@ -252,6 +252,23 @@ impl Events {
         }
     }
 
+    /// Forget everything this module holds about a conversation.
+    ///
+    /// What is dropped is what a new conversation must not inherit: the tail
+    /// nobody committed, the calls nothing will ever close, the thought
+    /// `/expand` would otherwise show from a conversation no longer on screen,
+    /// and the two live-row states. The theme, the mode and the workspace stay —
+    /// they are the session's, not the conversation's.
+    pub fn forget(&mut self) {
+        self.live.clear();
+        self.open.clear();
+        self.refused_this_step = false;
+        self.thought = None;
+        self.awaiting = None;
+        self.thinking = false;
+        self.step_at = Duration::ZERO;
+    }
+
     /// Say which workspace this session is held over, so a target inside it can
     /// be shown relative to it. Handed down by [`crate::app::App::set_root`].
     pub fn set_root(&mut self, root: impl Into<std::path::PathBuf>) {

@@ -168,9 +168,14 @@ fn f1_the_palette_opens_showing_every_command() {
     }
 
     // What the operator can see, through the terminal the product actually
-    // writes to. Fourteen rows so the twelve commands and the title all fit.
+    // writes to, at the height the driver asks for — which is the whole point of
+    // 0.11.0's F7 and the reason this number is no longer written out here. A
+    // hard-coded fourteen is exactly the defect that release exists to remove,
+    // one file over: it was right when there were twelve commands and it hid the
+    // thirteenth.
     let mut picker = palette();
-    let (mut screen, recorder) = support::screen_of(80, 24, 14);
+    let height = commands::palette_height(picker.rows().len());
+    let (mut screen, recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
@@ -265,9 +270,10 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // `c` matches FOUR rows since 0.9.0 added `/attach`, which contains one —
-    // three of them begin with it and `attach` merely holds it. `co` narrows to
-    // the three that begin with `c`, because `attach` has no `o` after its `c`.
+    // `c` matches FIVE rows since 0.11.0 added `/clear`: four begin with it —
+    // `copy`, `copy diff`, `contain`, `clear` — and `attach` merely holds one.
+    // `co` narrows to the three that begin with `co`, because neither `attach`
+    // nor `clear` has an `o` after its `c`.
     // The three score the same and the tie-break is the order they were handed
     // in. The defect: an unstable sort swaps them on a keystroke that did not
     // change the result, and `Enter` takes a row nobody chose.
@@ -278,7 +284,7 @@ fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
     // quietly stopped happening.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 4);
+    assert_eq!(picker.matching(), 5);
     assert_eq!(marked(&picker), "copy");
     type_at(&mut picker, "o");
     assert_eq!(picker.matching(), 3);
@@ -415,10 +421,10 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
         assert_eq!(row.detail.as_deref(), Some(detail.as_str()));
     }
 
-    // What the operator can actually see, through the terminal the product writes
-    // to. Sixteen rows so the twelve commands, the two templates and the title fit.
+    // What the operator can actually see, at the height the driver asks for.
     let mut picker = palette_over(&found);
-    let (mut screen, recorder) = support::screen_of(80, 24, 16);
+    let height = commands::palette_height(picker.rows().len());
+    let (mut screen, recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");

@@ -604,6 +604,39 @@ impl App {
         self.fleet_open = false;
     }
 
+    /// Start a new conversation, or refuse because a turn is in flight.
+    ///
+    /// **Everything `/clear` does that is not the driver's is here**, so that the
+    /// refusal has somewhere a test can stand. The driver's half — a new session
+    /// id from the harness's store, and the screen — cannot be reached by a test
+    /// at all, and a guard written there would be a guard nothing could check.
+    ///
+    /// The refusal is not the only one: a turn in flight keeps the driver inside
+    /// its own loop, where a slash command is already answered with the same
+    /// sentence. This is the lock that can be proved, and the two agree.
+    ///
+    /// Returns whether the caller should go on and replace the session. Nothing
+    /// is destroyed either way: the conversation this ends is in io-harness's
+    /// store and is still reachable with `/resume`, which is what makes clearing
+    /// the screen a display decision.
+    pub fn clear_conversation(&mut self) -> bool {
+        if self.mode == Mode::Running {
+            let dash = self.theme.glyphs.dash;
+            self.say(
+                Tone::Muted,
+                format!("not while a turn is running {dash} Ctrl+C interrupts it first"),
+            );
+            return false;
+        }
+        // The same three the conversation-changing commands already reset,
+        // beside each other for the same reason: every fact in them belongs to
+        // the conversation that is ending.
+        self.status.forget_run();
+        self.forget_fleet();
+        self.events.forget();
+        true
+    }
+
     /// Open the view, or close it.
     ///
     /// Opening a view of nothing is not refused: a session in contained mode

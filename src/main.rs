@@ -956,6 +956,45 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
+                // **Start over, and only when it is safe.** The refusal is
+                // `App::clear_conversation`'s, which is where a test can reach
+                // it; the second lock is structural and one loop down, where a
+                // slash command typed during a turn is already refused with the
+                // same sentence.
+                Action::Clear => {
+                    if app.clear_conversation() {
+                        let root = session.root().to_path_buf();
+                        match Session::open(&store, &root) {
+                            Ok(fresh) => {
+                                session = fresh;
+                                // The screen only. The terminal's scrollback is
+                                // the terminal's, and the conversation this ends
+                                // is in the store and still listed by `/resume`
+                                // — so nothing here destroys anything, which is
+                                // what makes clearing the screen a display
+                                // decision rather than a deletion.
+                                screen
+                                    .escape("\x1b[H\x1b[2J")
+                                    .map_err(|error| error.to_string())?;
+                                // Placed again against the screen it now has:
+                                // the old viewport's origin was a row on a
+                                // screen that no longer exists.
+                                replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+                                let dash = app.theme.glyphs.dash;
+                                app.say(
+                                    Tone::Muted,
+                                    format!(
+                                        "new conversation {dash} the last one is still in /resume"
+                                    ),
+                                );
+                            }
+                            Err(error) => app.say(
+                                Tone::Error,
+                                format!("a new conversation could not be started: {error}"),
+                            ),
+                        }
+                    }
+                }
             },
             // The operator's own line, in the operator's own shell. It reaches
             // this arm and no other: `App::compose` is the only thing that builds

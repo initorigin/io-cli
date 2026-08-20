@@ -128,6 +128,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/attach",
         "put an image in front of the agent, for the next turn only",
     ),
+    (
+        "/clear",
+        "start a new conversation; this one stays in /resume",
+    ),
+    // Listed since 0.11.0 and accepted since 0.1.0. An alias the parser knew
+    // about and nothing ever advertised is the same defect as not having one:
+    // `/quit` is discoverable and `/exit` is what half the terminals in the
+    // world would have you type.
+    ("/exit", "leave"),
 ];
 
 /// Whether this keystroke opens the slash palette.
@@ -423,6 +432,13 @@ pub enum Action {
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
     Transcript,
+    /// Clear the screen and start a new conversation.
+    ///
+    /// A new session id, no prior turn sent to the model, and the run-scoped
+    /// status fields back to what they were before anything ran. The
+    /// conversation it ends is not destroyed — it is in io-harness's store and
+    /// still listed by `/resume`.
+    Clear,
     /// Open the fleet view, or close it.
     Fleet,
     /// Attach an image to the next turn, from a path under the session root.
@@ -525,6 +541,10 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
                 .to_string(),
         ),
         "expand" => Action::Expand,
+        // `/clear` and `/new` mean the same thing, for the reason `/resume` and
+        // `/continue` do: both words are in the field's vocabulary and a reader
+        // arrives having been taught one of them by another agent.
+        "clear" | "new" => Action::Clear,
         "copy" => match input.split_whitespace().nth(1) {
             // `/copy diff` and `/copy patch` mean the same thing. A reader who
             // has just been shown a diff will type the word they were shown.
