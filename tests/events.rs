@@ -520,7 +520,11 @@ fn a_finished_turn_reads_as_finished_end_to_end() {
     );
     assert!(line.contains("ok"), "{line:?}");
     assert!(line.contains("8 steps"), "{line:?}");
-    assert!(line.contains("32624 tok"), "{line:?}");
+    // The status line's own spelling, which is the point of committing this row
+    // in plain mode at all: a plain session met `32624 tok` here and `32.6k tok`
+    // on the line, and that is one fact with two spellings.
+    assert!(line.contains("32.6k tok"), "{line:?}");
+    assert!(!line.contains("32624"), "{line:?}");
     assert!(!line.contains("warning"), "{line:?}");
 }
 

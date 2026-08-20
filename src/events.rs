@@ -973,8 +973,13 @@ impl Events {
                     lines.push(theme.notice(
                         outcome_tone(outcome),
                         format!(
-                            "{outcome}{separator}{steps} step{}{separator}{tokens} tok",
+                            "{outcome}{separator}{steps} step{}{separator}{} tok",
                             if *steps == 1 { "" } else { "s" },
+                            // The status line's own spelling, which is the whole
+                            // point of committing this here: a plain session met
+                            // `25106 tok` in the scrollback and `25.1k tok` on
+                            // the line, which is one fact with two spellings.
+                            crate::status::format_tokens(*tokens),
                         ),
                     ));
                 }

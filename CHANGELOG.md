@@ -73,7 +73,28 @@ io-harness for nothing.
 - **`--plain` still commits the provider and the run's numbers.** The two rows
   this release removed moved to a line a plain session does not have, and a fact
   that lives only in a repainting row is a fact taken from exactly the reader who
-  cannot follow one.
+  cannot follow one. It is committed in the status line's own spelling, so a
+  number has one form wherever you meet it.
+- **A step commits a line only when it says something its tool cells did not.**
+  Through 0.10.0 every call was printed twice — once as a cell and once in the
+  step line under it, in a different order and a different vocabulary. What is
+  left for that line is what the cells cannot carry: files changed, or a decision
+  that could not be paired to a call.
+- **A cell's result column carries what io-harness added, not what the cell has
+  already said.** `Read io.toml · read io.toml` is now `Read io.toml`, and
+  `List · list_dir  (4 entries)` is `List · (4 entries)`.
+- **An outcome that stopped short says what it means.** `step_cap_reached`,
+  `stalled`, the three budgets, `plan_rejected`, `cancelled`,
+  `awaiting_recovery` and `escalated` each get a sentence under io-harness's own
+  word. A run used to end on `error: step_cap_reached` and nothing else.
+- **Spacing.** One blank row between a block of tool cells and whatever follows,
+  one between a designed line and the model's prose, one between turns rather
+  than two, and a paragraph break inside a thought is one row rather than two.
+- **A viewport erases its own rows before handing them back**, so the palette
+  leaves nothing painted behind the session it returns to.
+- **The keyboard-protocol probe is asked once per process.** It costs two seconds
+  on a terminal that never answers, and the palette re-places the viewport twice
+  per open and close.
 
 ## [0.10.0] - 2026-08-19
 
