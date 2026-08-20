@@ -402,6 +402,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         };
         let Event::Key(key) = event else {
             if let Event::Resize(width, height) = event {
+                // A terminal that resized under an open palette closes it and
+                // takes the rows back. The alternative is re-placing a tall
+                // viewport against a screen that may no longer have room for it,
+                // in the middle of an event this loop did not ask for — and the
+                // palette is one keystroke away from being reopened at the size
+                // the terminal now is.
+                if matches!(picker, Some((_, Pick::Palette))) {
+                    picker = None;
+                    replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+                }
                 screen
                     .resize(width, height)
                     .map_err(|error| error.to_string())?;
@@ -420,6 +430,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
+            // Read before the match, because the match is what closes it.
+            let was_palette = matches!(kind, Pick::Palette);
             match open.key(key) {
                 Outcome::Chosen(index) => {
                     let label = open.rows()[index].label.clone();
@@ -655,6 +667,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Outcome::Cancelled => picker = None,
                 Outcome::Idle => {}
             }
+            // The rows go back the moment the palette is no longer the thing on
+            // screen — by a choice, by `Esc`, or by a choice that descended into
+            // a completion picker, which is a different picker and does not get
+            // the palette's height. A viewport left tall would be rows the
+            // operator never agreed to give up.
+            if was_palette && !matches!(picker, Some((_, Pick::Palette))) {
+                replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+            }
             app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
@@ -667,10 +687,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // `/theme` needs it to be. The condition is `commands::opens_palette`
         // rather than a test written here, because nothing can reach this file.
         if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
-            picker = Some((
-                Picker::new("Which command?", commands::palette(&templates, &skills)),
-                Pick::Palette,
-            ));
+            let rows = commands::palette(&templates, &skills);
+            // The whole list, subject only to the terminal's own height, which
+            // `Screen::attach_with` clamps to. A picker draws `height - 1` rows,
+            // so the row it is given back is the title's.
+            //
+            // Safe here and nowhere else: `opens_palette` is true only at an
+            // empty prompt with nothing armed, and a turn in flight never reaches
+            // this loop at all — so there is nothing streaming to be disturbed by
+            // a viewport landing somewhere new.
+            let tall = commands::palette_height(rows.len());
+            picker = Some((Picker::new("Which command?", rows), Pick::Palette));
+            if let Err(error) = replace_viewport(screen, tall) {
+                // The session's viewport is back — `Screen::replace` puts it
+                // there before returning — so the palette is still usable at the
+                // height it has always had. Said rather than swallowed, because
+                // the operator asked for the whole list and is not getting it.
+                app.say(Tone::Muted, format!("the list stays short: {error}"));
+            }
             app.status.elapsed = started.elapsed();
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
@@ -1601,6 +1635,36 @@ struct Keyboard {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Who is allowed to read stdin right now.
+///
+/// A process has one terminal and this binary starts one reader over it, so the
+/// lock is a `static` rather than a handle threaded through five signatures that
+/// have nothing else to do with it. The reader holds it around each poll; a
+/// viewport being placed holds it for the placement, and thereby waits out an
+/// in-flight read rather than racing the cursor reply out of stdin.
+static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the stdin lock, ignoring a previous holder's panic.
+///
+/// A poisoned lock here means the reader thread died mid-poll. That is worth
+/// nothing to the session — there is no state behind this mutex to be left
+/// inconsistent, only the terminal — so the guard is taken anyway rather than
+/// turning a dead reader into a dead session.
+fn reading() -> std::sync::MutexGuard<'static, ()> {
+    READING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Re-place the viewport at `height`, with nothing reading stdin while it lands.
+fn replace_viewport(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    height: u16,
+) -> Result<(), String> {
+    let _parked = reading();
+    screen.replace(height).map_err(|error| error.to_string())
+}
+
 impl Keyboard {
     /// Start reading.
     ///
@@ -1617,6 +1681,15 @@ impl Keyboard {
         let flag = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
+                // Parked while a viewport is being placed. Placing one asks the
+                // terminal where its cursor is and reads the answer off stdin,
+                // and this thread would take it first — which is the same defect
+                // the `Keyboard::start` signature exists to prevent at the two
+                // boundaries where the reader can simply be stopped. Here it
+                // cannot: the palette re-places the viewport in the middle of a
+                // session, and the channel this reader owns is what the session
+                // is waiting on.
+                let held = reading();
                 // A short poll rather than a blocking read, so the flag is seen.
                 match crossterm::event::poll(Duration::from_millis(40)) {
                     Ok(true) => match crossterm::event::read() {
@@ -1630,6 +1703,10 @@ impl Keyboard {
                     Ok(false) => {}
                     Err(_) => break,
                 }
+                // Dropped at the top of every iteration rather than held across
+                // the loop, so a caller waiting to place a viewport waits one
+                // poll interval and never longer.
+                drop(held);
             }
         });
         (

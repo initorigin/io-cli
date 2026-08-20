@@ -238,6 +238,21 @@ pub fn palette(templates: &Templates, skills: &io_harness::Skills) -> Vec<Row> {
         .collect()
 }
 
+/// The viewport height that shows every one of `rows` at once.
+///
+/// One more than the rows, because a picker draws `height - 1` of them and
+/// spends the row it keeps on its own title. The terminal's own height is not
+/// consulted here and must not be: [`crate::term::Screen::attach_with`] clamps
+/// to it, and a second clamp written against a size read somewhere else is two
+/// answers to one question.
+///
+/// A pure function in the library rather than arithmetic in `src/main.rs`, for
+/// the reason every decision in this module is one: a driver's arithmetic is
+/// arithmetic nothing can test.
+pub fn palette_height(rows: usize) -> u16 {
+    u16::try_from(rows.saturating_add(1)).unwrap_or(u16::MAX)
+}
+
 /// What the palette's row at `index` stands for.
 ///
 /// The index is the one [`crate::picker::Outcome::Chosen`] carries, which

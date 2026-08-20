@@ -147,6 +147,36 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         Self::attach_raw(height).inspect_err(|_| restore_terminal())
     }
 
+    /// Give this viewport back and take one of `height` rows in its place.
+    ///
+    /// **The one operation in this product that re-queries the cursor while a
+    /// session is running**, and the reason it is allowed at all is that its only
+    /// caller does it at an empty prompt with nothing streaming. The scrollback
+    /// above is the terminal's and survives; what is replaced is the viewport and
+    /// the buffers behind it.
+    ///
+    /// A caller must park whatever is reading stdin first. Placing an inline
+    /// viewport asks the terminal where its cursor is and reads the answer off
+    /// stdin, so a reader still running would take the answer and this would hang
+    /// on a terminal that had in fact replied.
+    ///
+    /// If the new height cannot be placed, the session's own is placed instead
+    /// and the error returned: an operator who asked for a taller list and cannot
+    /// have one keeps their session, rather than losing the viewport with it.
+    pub fn replace(&mut self, height: u16) -> io::Result<()> {
+        self.restore();
+        match Self::attach_with(height) {
+            Ok(fresh) => {
+                *self = fresh;
+                Ok(())
+            }
+            Err(error) => {
+                *self = Self::attach_with(VIEWPORT_HEIGHT)?;
+                Err(error)
+            }
+        }
+    }
+
     fn attach_raw(height: u16) -> io::Result<Self> {
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;

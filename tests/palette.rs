@@ -669,3 +669,52 @@ fn f5_a_skills_directory_that_will_not_walk_says_so() {
         "the harness's own message names the path: {complaint}",
     );
 }
+
+/// 0.11.0 F7 — the height the palette asks for shows every row it has.
+///
+/// The arithmetic and the drawing in one test, because either alone passes while
+/// the other is wrong: a height computed correctly and spent on a picker that
+/// keeps a row for something else still hides the last command, and this is the
+/// defect the criterion exists for — a fourteen-row list shown three rows at a
+/// time.
+///
+/// The re-place itself belongs to `src/main.rs` and to a real terminal, and it is
+/// asserted where it can be: the pty capture in `tests/live.rs`.
+#[test]
+fn f7_the_height_the_palette_asks_for_draws_every_row() {
+    let dir = written();
+    let (templates, _) = commands::templates(&configured(dir.path()));
+    let rows = commands::palette(&templates, &io_harness::Skills::none());
+    assert!(
+        rows.len() > COMMANDS.len(),
+        "the templates are what make this list longer than the command inventory",
+    );
+
+    let height = commands::palette_height(rows.len());
+    let mut picker = Picker::new("Which command?", rows.clone());
+    // A terminal with room to spare, so what is being asserted is the height the
+    // palette asked for and not the terminal's own clamp.
+    let (mut screen, _recorder) = support::screen_of(80, height + 4, height);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+
+    let viewport = screen.viewport_text();
+    for row in &rows {
+        assert!(
+            viewport.contains(row.label.as_str()),
+            "the palette asked for {height} rows and {:?} is still not on screen: {viewport:?}",
+            row.label,
+        );
+    }
+}
+
+/// 0.11.0 F7 — the height is the rows plus the picker's own title row.
+#[test]
+fn f7_the_height_is_one_more_than_the_rows() {
+    assert_eq!(commands::palette_height(0), 1);
+    assert_eq!(commands::palette_height(13), 14);
+    // A list longer than a `u16` is not a list, and saturating is the only
+    // answer that is not a panic in front of an operator.
+    assert_eq!(commands::palette_height(usize::MAX), u16::MAX);
+}
