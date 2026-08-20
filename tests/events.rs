@@ -16,7 +16,7 @@ mod support;
 use std::time::Duration;
 
 use io_cli::events::{kind_name, Events};
-use io_cli::theme::DARK;
+use io_cli::theme::{Tone, DARK};
 use io_harness::{EventKind, RunEvent, TodoItem, TodoState, TODO_MAX_ITEMS};
 
 // The `STYLED` and `FALLS_THROUGH` lists stood here until 0.11.0. They were a
@@ -1220,4 +1220,184 @@ fn f6_a_spend_draw_commits_nothing_to_the_scrollback() {
         committed.is_empty(),
         "a per-step draw is a status field, not a transcript row: {committed:?}",
     );
+}
+
+/// The events that open a step, so a thought has something to be measured from.
+///
+/// A thought's duration is the interval since the step it belongs to opened, and
+/// a step opens on `Started` for the first one and on the previous `Step` for
+/// every one after it. Stated ages, never measured ones — N1.
+fn started_at(events: &mut Events, at: Duration) {
+    events.event(
+        &event(EventKind::Started {
+            goal: "read the parser".into(),
+            provider: "openrouter".into(),
+        }),
+        at,
+    );
+}
+
+fn thought(text: &str, tokens: u64) -> EventKind {
+    EventKind::Reasoning {
+        text: text.into(),
+        tokens,
+    }
+}
+
+/// 0.11.0 F3 — the word, the duration, then the model's own text.
+///
+/// The heading says `thought`, not `reasoning`: the variant's own name is one of
+/// the six strings F2 asserts never reaches a terminal again, and the block that
+/// carries the model's thinking is the last place that name could survive.
+#[test]
+fn f3_a_thought_commits_the_word_the_duration_and_the_model_s_own_text() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::from_secs(1));
+    let committed = rows(events.event(
+        &event(thought("the parser is the only caller", 120)),
+        Duration::from_millis(3_500),
+    ));
+
+    let heading = committed.first().expect("a thought commits a heading");
+    assert!(heading.contains("thought"), "{heading:?}");
+    assert!(
+        !heading.contains("reasoning"),
+        "the variant's own name is one of the strings F2 asserts absent: {heading:?}",
+    );
+    // 3.5s − 1s. The interval since the step opened, not the session's age.
+    assert!(heading.contains("2.5s"), "{heading:?}");
+    assert!(heading.contains("120 tok"), "{heading:?}");
+    assert!(
+        committed
+            .iter()
+            .any(|row| row.contains("the parser is the only caller")),
+        "the model's own text is the point of the block: {committed:?}",
+    );
+}
+
+/// 0.11.0 F3 — the block is muted throughout, and carries nothing in colour.
+///
+/// Asserted against the styles rather than the strings, because "no colour
+/// carries meaning on its own" is a claim about the spans and is invisible to a
+/// test that only reads their text.
+#[test]
+fn f3_a_thought_is_muted_throughout_and_says_nothing_in_colour_alone() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let lines = events.event(
+        &event(thought("the parser is the only caller", 120)),
+        Duration::from_millis(400),
+    );
+    let muted = DARK.style(Tone::Muted);
+    for line in &lines {
+        for span in &line.spans {
+            assert!(
+                span.style == muted || span.content.trim().is_empty(),
+                "a thought is one tone: {:?} carries {:?}",
+                span.content,
+                span.style,
+            );
+        }
+    }
+}
+
+/// 0.11.0 F3 — a long thought is fitted, and the whole of it is kept for
+/// `/expand`.
+///
+/// The bound exists so that a thought does not bury the answer under it. What
+/// makes the bound safe rather than lossy is that the remainder is still
+/// somewhere: io-harness neither stores reasoning nor folds it into the next
+/// prompt, so if this crate drops the text it is gone for good.
+#[test]
+fn f3_a_long_thought_is_fitted_and_the_remainder_is_reachable() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let long = "the parser is the only caller of this function and every other \
+                path reaches it through the same entry point "
+        .repeat(12);
+    let committed = rows(events.event(&event(thought(&long, 900)), Duration::from_secs(2)));
+
+    // Heading, the fitted rows, the row that says where the rest is, and the
+    // blank that closes the block.
+    assert!(
+        committed.len() < 20,
+        "a fitted thought does not bury the answer under it: {} rows",
+        committed.len(),
+    );
+    assert!(
+        committed.iter().any(|row| row.contains("/expand")),
+        "the reader is told where the rest went: {committed:?}",
+    );
+    assert_eq!(
+        events.thought(),
+        Some(long.as_str()),
+        "the whole thought is held, not the part that was shown",
+    );
+}
+
+/// 0.11.0 F3 — a thought that fits leaves nothing behind.
+///
+/// `/expand` has its own job — the last step's detail from the durable trace —
+/// and a thought that was shown whole must not put a second copy of itself in
+/// front of it.
+#[test]
+fn f3_a_thought_that_fits_leaves_nothing_for_expand() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    events.event(&event(thought("one short thought", 12)), Duration::ZERO);
+    assert_eq!(events.thought(), None);
+}
+
+/// 0.11.0 F3 — only a `Reasoning` event commits a thought.
+///
+/// The sabotage arm this criterion names is emitting the block on every event
+/// that carries text, which turns the agent's own answer into a thought. The
+/// answer streams as tokens and commits through the flush, so that is what this
+/// drives.
+///
+/// **The first version of this test was blind to its own sabotage.** It streamed
+/// a token ending in a newline, and the `Token` arm commits a complete line the
+/// moment it arrives and drains it — so `flush_text`, which is where an answer
+/// that has not ended in a newline is committed and where the sabotage lived,
+/// was never reached. Both paths are driven here: a finished line and an
+/// unterminated tail are two different commits of the same answer.
+#[test]
+fn f3_only_a_reasoning_event_commits_a_thought() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let mut committed = flatten(events.event(
+        &event(EventKind::Token {
+            text: "the file is read first.\nand the parser".into(),
+        }),
+        Duration::ZERO,
+    ));
+    committed.push_str(&flatten(events.flush()));
+
+    assert!(
+        committed.contains("the file is read first."),
+        "the answer still reaches the scrollback: {committed:?}",
+    );
+    assert!(
+        committed.contains("and the parser"),
+        "so does the tail that never ended in a newline: {committed:?}",
+    );
+    assert!(
+        !committed.contains("thought"),
+        "an answer is not a thought: {committed:?}",
+    );
+    assert_eq!(events.thought(), None);
+}
+
+/// 0.11.0 F3 — a run that produced no reasoning commits nothing.
+///
+/// An empty `Reasoning` is the shape that fails this quietly: the provider
+/// billed for a thought and returned no text, and a heading over an empty block
+/// tells a reader the model thought nothing rather than that it did not say.
+#[test]
+fn f3_an_empty_thought_commits_no_block() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    let committed = events.event(&event(thought("   \n  ", 4)), Duration::from_secs(1));
+    assert!(committed.is_empty(), "{committed:?}");
+    assert_eq!(events.thought(), None);
 }

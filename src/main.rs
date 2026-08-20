@@ -903,7 +903,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 },
                 Action::Expand => {
-                    let lines = expand(&session, &store, &app.theme);
+                    let lines = expand(&session, &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 Action::Copy(what) => {
@@ -1339,13 +1339,40 @@ fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTu
         .rfind(|turn| turn.on_path)
 }
 
+/// What `/expand` commits: the thought that did not fit, then the step detail.
+///
+/// Two sources, because they are two different kinds of "more". The step's
+/// output is in the durable trace and is read back from it; the model's thinking
+/// is in neither the trace nor the next prompt — io-harness does not store it —
+/// so the only copy of a fitted thought is the one [`Events`] kept, and this is
+/// where it is spent.
+fn expand(
+    session: &Session,
+    store: &Store,
+    theme: &Theme,
+    thought: Option<&str>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(thought) = thought {
+        lines.push(theme.notice(Tone::Muted, "the thought, in full"));
+        lines.extend(
+            thought.lines().map(|line| {
+                Line::from(Span::styled(format!("  {line}"), theme.style(Tone::Muted)))
+            }),
+        );
+        lines.push(Line::from(""));
+    }
+    lines.extend(step_detail(session, store, theme));
+    lines
+}
+
 /// The last step's full detail, from the run's durable trace.
 ///
 /// This is the other half of collapsing a tool cell: the screen is not the
 /// archive, so the output goes to the store when it happens and comes back here
 /// when somebody asks for it. Committed upward like everything else that shows
 /// more of something.
-fn expand(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
+fn step_detail(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
     let Some(turn) = last_run(session, store) else {
         return vec![theme.notice(Tone::Muted, "nothing has run in this session yet")];
     };

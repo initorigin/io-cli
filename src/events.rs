@@ -46,6 +46,19 @@ use crate::theme::{Theme, Tone};
 /// not a list an operator reads, it is the transcript buried under one.
 const ROW: usize = 80;
 
+/// How far a committed block's body is indented under its own heading.
+const INDENT: usize = 4;
+
+/// How many rows of a thought are committed before the rest goes to `/expand`.
+///
+/// The contract left this open on purpose — "a bound that is too small makes
+/// reasoning useless and one that is too large buries the answer" — to be
+/// settled against a real run rather than guessed. Ten rows is two-thirds of a
+/// 24-row terminal's scrollback per turn: enough that a short thought is never
+/// cut and a long one still says something, and short enough that the answer
+/// under it is still on screen.
+const THOUGHT_ROWS: usize = 10;
+
 /// A tool call that has been announced and not yet closed.
 ///
 /// Held rather than committed because the two facts a reader actually wants —
@@ -110,6 +123,20 @@ pub struct Events {
     /// what this release exists to remove — but a session that discarded it
     /// without a trace would leave nobody able to find out either.
     unknown: usize,
+    /// The session age at which the step now in flight opened.
+    ///
+    /// A thought's duration is the interval since then, which is the only
+    /// number about a thought this crate can honestly report: io-harness does
+    /// not say when the model started thinking, and the step boundary is the
+    /// last thing that happened before it did.
+    step_at: Duration,
+    /// The last thought that did not fit, whole.
+    ///
+    /// Held because this event is the only place reasoning is ever visible —
+    /// io-harness neither stores it nor folds it into the next prompt — so a
+    /// bound that dropped the remainder would not be fitting the text, it would
+    /// be destroying it. [`Events::thought`] is what `/expand` reads.
+    thought: Option<String>,
 }
 
 impl Events {
@@ -121,7 +148,18 @@ impl Events {
             refused_this_step: false,
             plain: false,
             unknown: 0,
+            step_at: Duration::ZERO,
+            thought: None,
         }
+    }
+
+    /// The last thought that was fitted, whole, or `None` when the last one was
+    /// committed in full.
+    ///
+    /// `/expand` is this product's one answer to "show me more", and this is
+    /// what it shows when the thing there is more of is a thought.
+    pub fn thought(&self) -> Option<&str> {
+        self.thought.as_deref()
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
@@ -273,6 +311,10 @@ impl Events {
             // release which stops setting the field cannot leave this arm
             // silently reading a value nobody uses.
             EventKind::Started { goal, provider } => {
+                // A turn's first step opens here, and last turn's leftover
+                // thought stops being the thing `/expand` has more of.
+                self.step_at = at;
+                self.thought = None;
                 let mut lines = vec![Line::from(vec![
                     Span::styled(theme.glyphs.marker, theme.style(Tone::Accent)),
                     Span::styled(goal.clone(), theme.style(Tone::Normal)),
@@ -292,6 +334,10 @@ impl Events {
                 tokens,
                 changed,
             } => {
+                // This step closing is the next one opening, and a thought
+                // belonging to the next step is measured from here.
+                self.step_at = at;
+
                 // Taken before anything else, so that the tail flush below
                 // cannot close these as unfinished a line before the step that
                 // finished them says otherwise.
@@ -842,17 +888,49 @@ impl Events {
             // variant's own name and one of the six strings F2 asserts a
             // transcript never shows.
             EventKind::Reasoning { text, tokens } => {
+                // A thought with nothing in it is not a thought. The provider
+                // billed for it and returned no text, and a heading over an
+                // empty block would say the model thought nothing rather than
+                // that it did not say what it thought.
+                if text.trim().is_empty() {
+                    return self.flush_text();
+                }
+                let elapsed = format_millis(at.saturating_sub(self.step_at));
                 let mut lines = self.flush_text();
                 lines.push(Line::from(vec![
                     Span::styled(leader(separator), theme.style(Tone::Muted)),
                     Span::styled("thought", theme.style(Tone::Muted)),
-                    Span::styled(format!("{separator}{tokens} tok"), theme.style(Tone::Muted)),
+                    Span::styled(
+                        format!("{separator}{elapsed}{separator}{tokens} tok"),
+                        theme.style(Tone::Muted),
+                    ),
                 ]));
-                for line in text.lines() {
+
+                // Wrapped here rather than left to the terminal, because the
+                // block is indented: a row the terminal wraps for us comes back
+                // flush against the left margin and the indent stops meaning
+                // "this is inside the thought".
+                let wrapped = wrap(text, ROW.saturating_sub(INDENT));
+                let shown = wrapped.len().min(THOUGHT_ROWS);
+                for row in &wrapped[..shown] {
                     lines.push(Line::from(Span::styled(
-                        format!("    {line}"),
+                        format!("{:INDENT$}{row}", ""),
                         theme.style(Tone::Muted),
                     )));
+                }
+                if wrapped.len() > shown {
+                    self.thought = Some(text.clone());
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "{:INDENT$}{} {} more rows{separator}/expand",
+                            "",
+                            theme.glyphs.ellipsis,
+                            wrapped.len() - shown,
+                        ),
+                        theme.style(Tone::Muted),
+                    )));
+                } else {
+                    self.thought = None;
                 }
                 lines.push(Line::from(""));
                 lines
@@ -1077,6 +1155,50 @@ fn nest(depth: u32) -> String {
 ///
 /// `at` is the session age this cell is being closed at, or `None` when the cell
 /// is being closed without anything having reported on it.
+/// Break text into rows no wider than `width`, on whitespace where it can.
+///
+/// A fold over `split_whitespace` and nothing more — no dependency is worth
+/// carrying for this, and `tests/dependencies.rs` would fail the build if one
+/// arrived. Blank lines are kept, because a thought's own paragraph breaks are
+/// the model's and not this crate's to remove.
+///
+/// A word wider than the row is broken rather than left to overrun: a thought
+/// carries paths and identifiers, and one of them must not push the block past
+/// the terminal it was fitted for.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows: Vec<String> = Vec::new();
+    for paragraph in text.lines() {
+        let mut row = String::new();
+        for word in paragraph.split_whitespace() {
+            let mut word = word;
+            while word.chars().count() > width {
+                if !row.is_empty() {
+                    rows.push(std::mem::take(&mut row));
+                }
+                let head: String = word.chars().take(width).collect();
+                word = &word[head.len()..];
+                rows.push(head);
+            }
+            if word.is_empty() {
+                continue;
+            }
+            if row.is_empty() {
+                row.push_str(word);
+            } else if row.chars().count() + 1 + word.chars().count() <= width {
+                row.push(' ');
+                row.push_str(word);
+            } else {
+                rows.push(std::mem::replace(&mut row, word.to_string()));
+            }
+        }
+        if !row.is_empty() || paragraph.trim().is_empty() {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
 fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -> Line<'static> {
     let separator = theme.glyphs.separator;
     let mut spans = vec![
