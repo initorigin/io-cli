@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
@@ -755,7 +755,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         match app.key(key) {
             Command::None => {}
             Command::Exit => return Ok(()),
-            Command::Interrupt => {}
+            // Nothing is running at an idle prompt, so there is nothing to stop.
+            Command::Interrupt | Command::Abandon => {}
             Command::ClearViewport => {
                 // The viewport, and nothing above it.
                 paint(screen, &mut app)?;
@@ -998,6 +999,20 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // the old viewport's origin was a row on a
                                 // screen that no longer exists.
                                 replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
+                                // **The session opens again, banner and all.**
+                                // A cleared screen with one grey sentence on it
+                                // is not a fresh start, it is an empty room; the
+                                // card is what a first prompt has above it, and
+                                // a new conversation is a first prompt.
+                                let width = screen.width();
+                                let about = splash::About {
+                                    model: Some(app.status.model.clone()),
+                                    policy: app.posture().map(|p| p.short().to_string()),
+                                    workspace: Some(root.display().to_string()),
+                                };
+                                screen
+                                    .commit(&splash::lines(&app.theme, true, width, &about))
+                                    .map_err(|error| error.to_string())?;
                                 let dash = app.theme.glyphs.dash;
                                 app.say(
                                     Tone::Muted,
@@ -1156,11 +1171,10 @@ async fn turn<P: Provider>(
     text: String,
     started: Instant,
 ) -> Result<(), String> {
-    let (steer, inbox) = Steer::channel();
     let (observer, mut events) = bridge::channel();
-    // Held whether or not this turn is contained, because the driver's `Ctrl+C`
-    // arm is one arm: a steered turn leaves it untouched for its whole life, and
-    // `Bridge::event` reads it rather than assuming.
+    // The one way a turn is stopped from the interface, contained or not. Both
+    // arms take a contract now and neither takes a steer inbox, so `Flow::Cancel`
+    // out of `Bridge::event` is what `Ctrl+C` and `Esc` set.
     let canceller = observer.canceller();
     // The other seam, and the one that can stop the agent. `DenyAll` stood here
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
@@ -1198,19 +1212,29 @@ async fn turn<P: Provider>(
     app.contained = containment.is_some();
     // Built before the future borrows it, and only for the arm that can take one:
     // the flat turn is handed `text` itself, exactly as it always was.
-    let contract = containment.map(|_| {
-        io_cli::contract::session(text.clone(), root.clone(), capabilities)
-            .with_responder(std::sync::Arc::new(answerer))
-            .with_plan_gate(std::sync::Arc::new(gate))
-    });
+    // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
+    // arm was `turn_steered`, which builds `TaskContract::workspace` inside
+    // io-harness and takes none from the caller — so its step cap was twelve,
+    // fixed, and a turn that read a repository and wrote a file ended on
+    // `error: step_cap_reached` with the work half done.
+    //
+    // `turn_bounded_observed` takes a contract, streams the model's text, and is
+    // not contained. What it does not take is a steer inbox, and that costs
+    // nothing this interface offered: the only thing io-cli ever sent through
+    // one was an interrupt, and the observer's `Flow::Cancel` — the path a
+    // contained turn has always been stopped by — ends a turn at the same step
+    // boundary.
+    let contract = io_cli::contract::session(text.clone(), root.clone(), capabilities)
+        .with_responder(std::sync::Arc::new(answerer))
+        .with_plan_gate(std::sync::Arc::new(gate));
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
-    > = match (containment, &contract) {
-        (Some(caps), Some(contract)) => Box::pin(session.turn_contained_bounded_observed(
-            contract, provider, store, policy, &approver, caps, &observer,
+    > = match containment {
+        Some(caps) => Box::pin(session.turn_contained_bounded_observed(
+            &contract, provider, store, policy, &approver, caps, &observer,
         )),
-        _ => Box::pin(
-            session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox),
+        None => Box::pin(
+            session.turn_bounded_observed(&contract, provider, store, policy, &approver, &observer),
         ),
     };
 
@@ -1222,9 +1246,11 @@ async fn turn<P: Provider>(
     let mut ticker = tokio::time::interval(io_cli::app::TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // `None` is the turn the operator abandoned. Every other arm breaks with what
+    // io-harness returned, error included.
     let outcome = loop {
         tokio::select! {
-            result = &mut running => break result,
+            result = &mut running => break Some(result),
             _ = ticker.tick() => {
                 if app.tick(started.elapsed()) {
                     paint(screen, app)?;
@@ -1275,20 +1301,36 @@ async fn turn<P: Provider>(
                         let command = app.key(key);
                         match command {
                             Command::Interrupt => {
-                                if containment.is_some() {
-                                    // A contained turn has no inbox to interrupt.
-                                    // The observer is the only thing io-harness
-                                    // reads from the interface while a tree runs,
-                                    // and it honours `Flow::Cancel` at the next
-                                    // boundary where no child is in flight — which
-                                    // is what `App::interrupt_or_quit` has just
-                                    // said on screen.
-                                    canceller.store(true, std::sync::atomic::Ordering::Relaxed);
-                                } else {
-                                    // Best effort: the turn may already have ended,
-                                    // in which case there is nobody left to tell.
-                                    let _ = steer.interrupt();
-                                }
+                                // **One path for both kinds of turn.** Neither
+                                // takes a steer inbox any more — a contained turn
+                                // never did, and the flat one gave its up for a
+                                // contract — so the observer is what io-harness
+                                // reads from the interface while a run goes, and
+                                // it honours `Flow::Cancel` at the next step
+                                // boundary. That is the sentence
+                                // `App::interrupt_or_quit` has just put on screen.
+                                canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            // **The second press, and it does not wait.** A
+                            // cancel is honoured at a step boundary, and a step
+                            // inside a slow tool call or a wide fan-out can be
+                            // seconds away — which is a key that reads as
+                            // ignored. Breaking here drops the turn's future,
+                            // which ends it where it stands.
+                            //
+                            // What that costs is the run's own record: io-harness
+                            // closes a run it cancelled and closes nothing for a
+                            // run that was dropped. So it is the second press and
+                            // never the first, and `App::finished` below still
+                            // commits whatever streamed before it.
+                            Command::Abandon => {
+                                canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                // Nothing is constructed to stand in for a result
+                                // io-harness never returned. `TurnResult` is
+                                // `#[non_exhaustive]` and could not be anyway,
+                                // and a fabricated outcome would be this
+                                // interface reporting a run it did not observe.
+                                break None;
                             }
                             // Refused with a sentence rather than dropped in
                             // silence. `/resume`, `/fork` and the rewind each move
@@ -1359,8 +1401,13 @@ async fn turn<P: Provider>(
     }
     app.finished();
 
-    if let Err(error) = outcome {
-        app.say(Tone::Error, error.to_string());
+    match outcome {
+        Some(Err(error)) => app.say(Tone::Error, error.to_string()),
+        // Abandoned. The run's own record is whatever io-harness had written by
+        // the time the future was dropped, and saying so is the honest line: the
+        // work above is real and the turn did not finish.
+        None => app.say(Tone::Warning, "stopped"),
+        Some(Ok(_)) => {}
     }
     app.status.elapsed = started.elapsed();
     paint(screen, app)

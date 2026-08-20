@@ -34,11 +34,12 @@ io-harness for nothing.
   an open tool call and its target, then the model thinking, then the streaming
   tail. Waiting on a person outranks everything else, because every other thing
   that row can say is about work going on without you.
-- **The model's reasoning, committed as a thought** — the word, how long the step
-  had been going, then the text, wrapped and muted. A thought longer than ten
-  rows is fitted and the rest goes to `/expand`; io-harness neither stores
-  reasoning nor folds it into the next prompt, so that copy is the only one there
-  is.
+- **The model's reasoning, committed as a thought** — one row: the word, how long
+  the step had been going, and what it cost. The text is kept for `/expand` and
+  not committed: a thought is usually longer than the answer it precedes, and a
+  transcript carrying every one buries the work in the deliberation. `/expand` is
+  the only place it can be read, because io-harness neither stores reasoning nor
+  folds it into the next prompt.
 - **Two status-line fields: the provider and the step count.** Both are set from
   the events that carry them and both are cleared when a run is forgotten. They
   are where the two removed rows' facts went.
@@ -47,8 +48,18 @@ io-harness for nothing.
   It clears the screen and nothing else; the conversation it ends is in
   io-harness's store and is still listed by `/resume`. Refused while a turn is
   running.
-- **`/exit` is listed.** The parser has accepted it since 0.1.0 and nothing ever
-  advertised it, which is the same defect as not having it.
+- **`/exit` is listed**, and `/quit` is gone. The parser has accepted `exit`
+  since 0.1.0 and nothing ever advertised it; two commands doing one thing, with
+  a row each in the palette, was the other half of that defect.
+- **The model's markdown is rendered rather than printed.** Headings, bullets,
+  quotes, rules, fenced code and inline bold, italic and code — a line at a time,
+  because that is how the transcript commits. Anything unrecognised is left
+  exactly as the model wrote it: a renderer that guessed would eat characters out
+  of an answer.
+- **The composer.** Pasting the same block twice expands the placeholder into the
+  block; backspace over a placeholder removes the whole placeholder and the block
+  it stands for; a pasted path that names a file is quoted and resolved, so a
+  path with a space survives as one word.
 
 ### Changed
 
@@ -63,9 +74,10 @@ io-harness for nothing.
   stalled or hit a ceiling has to say so; a plain finish commits a blank line.
 - **`via {provider}` is gone from under every prompt.** The provider is a
   status-line field now, spelled the way the posture is.
-- **The viewport is five rows**, not four: the activity line, the live row, two
-  rows of composer and the status line. It is still clamped to the terminal, so
-  80x24 is a supported size.
+- **The viewport is eight rows**, not four: a blank, the activity line, the live
+  row, two rows of composer, and a three-row footer. It is still clamped to the
+  terminal, so 80x24 is a supported size — the rows go in the order they can be
+  given up, and the composer keeps its two at every size.
 - **The command palette shows the whole list.** Opening `/` re-places a taller
   viewport for as long as the palette is open and gives the rows back on close —
   by a choice, by `Esc`, or by the terminal resizing under it. It is done only at
@@ -92,6 +104,32 @@ io-harness for nothing.
   than two, and a paragraph break inside a thought is one row rather than two.
 - **A viewport erases its own rows before handing them back**, so the palette
   leaves nothing painted behind the session it returns to.
+- **A turn is no longer capped at twelve steps.** Every turn now carries a
+  contract io-cli built — the ordinary one through `turn_bounded_observed`, the
+  contained one as before — so the step cap is this product's rather than
+  io-harness's default. It is a thousand, which is not a number anybody reaches
+  on purpose: what ends a turn should be the work finishing, a stall, a budget or
+  you, never an arithmetic ceiling reported as `error: step_cap_reached` under a
+  half-written file. `[app.io-cli] max_steps` sets your own.
+- **`Esc` stops a running turn**, which is what it is for in every other agent,
+  and a second press of `Esc` or `Ctrl+C` stops it *now* rather than at the next
+  step boundary. The first press is still the clean stop: the run closes itself
+  and the store records how it ended.
+- **`Shift+Enter` has two fallbacks that always work.** It needs the Kitty
+  keyboard protocol, and a terminal without it sends the same byte for `Enter`.
+  `Alt+Enter` and `Ctrl+J` insert a newline everywhere, alongside the trailing
+  backslash.
+- **The footer is three rows: a rule, then two lines.** One long dot-separated
+  run of eight fields is a sentence with the punctuation removed. Now the state
+  and the model sit on one row with the clock at the right edge, the counts and
+  the posture on the row under it, and exactly one thing is bold and one is
+  coloured — which is what makes either mean anything.
+- **The prompt takes the rows it needs**, up to ten, and gives them back.
+- **`/clear` opens the session again**, banner and all, rather than leaving a
+  cleared screen with one grey line on it.
+- **The banner is a card with room in it**: the mark, the version, and the model,
+  policy and workspace, one blank row inside each edge and two columns inside
+  each side.
 - **The keyboard-protocol probe is asked once per process.** It costs two seconds
   on a terminal that never answers, and the palette re-places the viewport twice
   per open and close.

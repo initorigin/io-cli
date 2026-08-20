@@ -47,13 +47,21 @@ pub struct About {
     pub workspace: Option<String>,
 }
 
+/// Blank columns between the frame and anything inside it.
+///
+/// Two, which is the convention every well-drawn terminal card uses — lipgloss
+/// writes it as `Padding(1, 2)` and it is what keeps text from appearing glued
+/// to the border. The row padding is the blank line drawn under the top edge and
+/// above the bottom one.
+const PAD: usize = 2;
+
 /// The width the card's inside is drawn to.
 ///
-/// The mark is forty-one columns and the card holds it with a cell of padding on
-/// each side. Fixed rather than the terminal's, because a card that grew to a
-/// hundred and twenty columns would be a banner with a field lost in the middle
-/// of it, and because a fixed width is the only one both glyph sets can agree on.
-const CARD: usize = MARK_WIDTH as usize + 4;
+/// The mark plus the padding on each side. Fixed rather than the terminal's,
+/// because a card that grew to a hundred and twenty columns would be a banner
+/// with a field lost in the middle of it, and because a fixed width is the only
+/// one both glyph sets can agree on.
+const CARD: usize = MARK_WIDTH as usize + PAD * 2;
 
 /// The lines to commit, mark included.
 ///
@@ -81,6 +89,7 @@ pub fn lines(theme: &Theme, tty: bool, width: u16, about: &About) -> Vec<Line<'s
     let [top_left, top_right, bottom_left, bottom_right, across, down] = theme.glyphs.frame;
     let edge = across.repeat(CARD);
     lines.push(rule(format!("{top_left}{edge}{top_right}"), theme));
+    lines.push(row_of(theme, down, Vec::new(), 0));
 
     for row in MARK {
         lines.push(row_of(
@@ -132,7 +141,7 @@ pub fn lines(theme: &Theme, tty: bool, width: u16, about: &About) -> Vec<Line<'s
         // own, which is the whole reason to draw them as a table rather than as
         // a sentence.
         let label = format!("{label:<10}");
-        let room = CARD.saturating_sub(2 + label.chars().count());
+        let room = CARD.saturating_sub(PAD * 2 + label.chars().count());
         let value = fit_left(value, room, &theme.glyphs);
         let width = label.chars().count() + value.chars().count();
         lines.push(row_of(
@@ -146,6 +155,7 @@ pub fn lines(theme: &Theme, tty: bool, width: u16, about: &About) -> Vec<Line<'s
         ));
     }
 
+    lines.push(row_of(theme, down, Vec::new(), 0));
     lines.push(rule(format!("{bottom_left}{edge}{bottom_right}"), theme));
     lines.push(Line::from(""));
     lines
@@ -164,13 +174,13 @@ fn rule(text: String, theme: &Theme) -> Line<'static> {
 /// knows how wide the text inside them is once a glyph set has been chosen.
 fn row_of(theme: &Theme, down: &str, content: Vec<Span<'static>>, width: usize) -> Line<'static> {
     let muted = theme.style(Tone::Muted);
-    let mut spans = vec![Span::styled(format!("{down} "), muted)];
+    let mut spans = vec![Span::styled(format!("{down}{:PAD$}", "",), muted)];
     spans.extend(content);
-    // The inside is `CARD` cells: one of padding, then the content, then the rest
-    // as padding. Counting the left bar into `used` put the right one a column
+    // The inside is `CARD` cells: the padding, the content, then whatever is left
+    // as padding. Counting the left bar into the total put the right one a column
     // early on every row of the card.
     spans.push(Span::styled(
-        format!("{:pad$}{down}", "", pad = CARD.saturating_sub(width + 1)),
+        format!("{:pad$}{down}", "", pad = CARD.saturating_sub(width + PAD)),
         muted,
     ));
     Line::from(spans)

@@ -217,7 +217,22 @@ impl Composer {
             // `DISAMBIGUATE_ESCAPE_CODES` on the terminals that advertise it:
             // without that flag no terminal reports a modifier on `Enter` at all,
             // and this arm is a binding nobody can reach.
-            (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => {
+            // **Three ways to the same newline, because one of them is not
+            // deliverable.** `Shift+Enter` needs the Kitty keyboard protocol:
+            // without it a terminal sends the identical byte for `Enter` and
+            // `Shift+Enter`, so the binding is unreachable and the key reads as
+            // broken. `Alt+Enter` is reported by terminals that report no
+            // modifier on `Enter` at all, and `Ctrl+J` is a byte — `0x0a` — that
+            // every terminal on earth sends. The trailing backslash below is the
+            // fourth, for the ones that manage none of these.
+            (KeyCode::Enter, m)
+                if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
+            {
+                self.editing();
+                self.area.insert_newline();
+                Reply::Idle
+            }
+            (KeyCode::Char('j'), m) if m == KeyModifiers::CONTROL => {
                 self.editing();
                 self.area.insert_newline();
                 Reply::Idle

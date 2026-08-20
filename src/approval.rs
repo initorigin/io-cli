@@ -532,11 +532,21 @@ impl Approval {
         // Said, not silently dropped. A reader who thinks they have seen a whole
         // change and has seen its first row is worse off than one who was told.
         if cut > 0 {
-            if let Some(last) = lines.last_mut() {
-                last.spans.push(Span::styled(
-                    format!("  {} {cut} more lines", theme.glyphs.elision),
-                    theme.style(Tone::Muted),
-                ));
+            if let Some(last) = lines.pop() {
+                // **Room is made for it, rather than it being appended to a row
+                // that is already full.** Every line above was fitted to the
+                // whole width, so a suffix pushed onto the last one overflows
+                // and the terminal clips exactly the words that say something
+                // was hidden — which is the one thing on this overlay that must
+                // not be lost, and which a taller viewport made visible by
+                // changing which line ends up last.
+                let suffix = format!("  {} {cut} more lines", theme.glyphs.elision);
+                let room = width.saturating_sub(suffix.chars().count());
+                let mut fitted = fit_line(last, room, theme);
+                fitted
+                    .spans
+                    .push(Span::styled(suffix, theme.style(Tone::Muted)));
+                lines.push(fitted);
             }
         }
         lines

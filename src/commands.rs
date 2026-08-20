@@ -60,12 +60,12 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Enter", "send the prompt"),
     (
         "Shift+Enter",
-        "new line (or end the line with \\ and press Enter)",
+        "new line \u{2014} or `Alt+Enter`, `Ctrl+J`, or end the line with \\",
     ),
     ("Up / Down", "walk prompt history"),
     (
         "Ctrl+C",
-        "interrupt the turn; twice at an empty prompt, exit",
+        "stop the turn; again to stop it now; twice at an empty prompt, exit",
     ),
     ("Ctrl+D", "exit, on an empty prompt"),
     (
@@ -89,7 +89,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "y / a / n",
         "answer an approval: allow once, allow this session, deny",
     ),
-    ("Esc", "close a picker without choosing"),
+    (
+        "Esc",
+        "stop the running turn, or close a picker without choosing",
+    ),
     ("/", "at an empty prompt, open the command palette"),
     ("@", "after a space, complete a path from the workspace"),
     (

@@ -21,6 +21,13 @@ fn root() -> PathBuf {
 /// Sabotage: set any one field unconditionally in `contract::session`, under
 /// which only this test fails — and it fails by changing every existing
 /// operator's turn without saying so.
+///
+/// **One field is deliberately not io-harness's own**, and it is the step cap.
+/// `TaskContract::workspace` caps a turn at twelve, which a turn that reads a
+/// repository and writes a file reaches with the work half done — an operator
+/// saw `error: step_cap_reached` under an unfinished answer, which is a ceiling
+/// reported as a failure. Everything else still has to match, and this test is
+/// what says so.
 #[test]
 fn nothing_configured_is_the_contract_the_session_built_before() {
     let built = session(
@@ -28,9 +35,13 @@ fn nothing_configured_is_the_contract_the_session_built_before() {
         root(),
         &Capabilities::default(),
     );
-    let default = TaskContract::workspace("bring the docs up to date", root());
+    let default = TaskContract::workspace("bring the docs up to date", root())
+        .with_max_steps(io_cli::contract::MAX_STEPS);
 
     assert_eq!(format!("{built:?}"), format!("{default:?}"));
+    // The number is a judgement and may move; what may not is that a turn stops
+    // for a reason other than the cap. `a_turn_is_not_capped_at_twelve_steps`
+    // reads it off the built contract, which is where it can actually be wrong.
 }
 
 /// Absent configuration is an absent capability, not an empty one that reads as
@@ -105,26 +116,61 @@ fn the_flat_turn_is_still_the_steered_one() {
         text.contains("turn_contained_bounded_observed("),
         "the contained arm takes the caller's contract",
     );
+    // **Both arms take a contract since 0.11.0.** The flat one was
+    // `turn_steered`, which builds `TaskContract::workspace` inside io-harness
+    // and takes none from the caller — so its step cap was twelve and nothing
+    // configured here could reach it. `turn_bounded_observed` takes a contract,
+    // streams, and is not contained; what it gives up is the steer inbox, and
+    // the only thing io-cli ever sent through one was an interrupt, which the
+    // observer's own cancel does at the same step boundary.
     assert!(
         text.contains(
-            "session.turn_steered(text, provider, store, policy, &approver, &observer, &inbox)"
+            "session.turn_bounded_observed(&contract, provider, store, policy, &approver, &observer)"
         ),
-        "the flat arm is still the steered turn, taking the text and the inbox",
+        "the flat arm carries a contract too, through the bounded turn",
     );
     assert!(
         !text.contains("turn_contained_observed("),
         "the contract-less contained entry point is gone; every contained turn takes one",
     );
 
-    // The decision, not its formatting: the contract exists only where a
-    // containment does, whatever shape the closure that builds it is written in.
+    // The decision, not its formatting: one contract is built, unconditionally,
+    // and both arms are handed it. A contract built only where a containment
+    // was is what left the ordinary turn at io-harness's twelve steps.
     let built = text
-        .split_once("let contract = containment")
-        .expect("the contract is built from the containment and nothing else")
+        .split_once("let contract = io_cli::contract::session(")
+        .expect("one contract is built for every turn")
         .1;
-    let head = &built[..120.min(built.len())];
+    let head = &built[..160.min(built.len())];
     assert!(
-        head.contains(".map(") && head.contains("io_cli::contract::session("),
-        "a session with no containment builds no contract at all: {head:?}",
+        head.contains("with_responder") && head.contains("with_plan_gate"),
+        "the responder and the plan gate ride the same contract: {head:?}",
     );
+}
+
+/// The step cap an ordinary turn runs under is io-cli's, and it is not twelve.
+///
+/// The number itself is a judgement and is allowed to move; what this pins is
+/// that the cap stopped being the thing that ends a turn. A real session ended
+/// on `error: step_cap_reached` with a file half written, which is a ceiling
+/// reported to an operator as a failure.
+#[test]
+fn a_turn_is_not_capped_at_twelve_steps() {
+    let built = session(
+        "bring the docs up to date",
+        root(),
+        &Capabilities::default(),
+    );
+    assert!(built.max_steps >= 1_000, "{}", built.max_steps);
+
+    // And the operator can still say otherwise, in either direction.
+    let asked = session(
+        "bring the docs up to date",
+        root(),
+        &Capabilities {
+            max_steps: Some(25),
+            ..Capabilities::default()
+        },
+    );
+    assert_eq!(asked.max_steps, 25);
 }

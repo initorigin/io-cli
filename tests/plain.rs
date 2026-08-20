@@ -202,12 +202,14 @@ fn paint(screen: &mut io_cli::term::Screen<support::Fixed>, app: &mut App, out: 
     screen
         .draw(|frame| app.render(frame, frame.area()))
         .expect("frame");
+    // The footer's identity row, which is where the state word is. Second from
+    // the bottom since 0.11.0: the last row carries the counts, and the rule
+    // sits above the identity row.
+    let viewport = screen.viewport_text().to_string();
+    let rows: Vec<&str> = viewport.lines().collect();
     out.rows.push(
-        screen
-            .viewport_text()
-            .lines()
-            .next_back()
-            .unwrap_or_default()
+        rows.get(rows.len().saturating_sub(2))
+            .unwrap_or(&"")
             .to_string(),
     );
 }

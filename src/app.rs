@@ -68,8 +68,15 @@ pub enum Command {
     /// [`crate::shell`] for what happens to it and why the terminal is never
     /// handed over.
     Shell(String),
-    /// Call `Steer::interrupt` on the running turn.
+    /// Ask the running turn to stop at its next step boundary.
     Interrupt,
+    /// Stop the running turn now, without waiting for a boundary.
+    ///
+    /// The second press of the interrupt key. What the driver does with it is
+    /// drop the turn's future, which is the only thing that ends a turn that is
+    /// inside a slow tool call — and the reason it is a second press rather than
+    /// the first is that a run dropped mid-flight closes no record of itself.
+    Abandon,
     /// Leave.
     Exit,
     /// Repaint the viewport from scratch, never the scrollback.
@@ -150,6 +157,11 @@ pub struct App {
     /// relative to the workspace, and the process's working directory is not the
     /// same thing under `io -C <dir>`.
     root: std::path::PathBuf,
+    /// Whether the operator has already asked this turn to stop.
+    ///
+    /// Reset by `started`, so every turn gets its own first press. It is what
+    /// makes the second press mean something different from the first.
+    stopping: bool,
     /// Whether the turn now running is a *contained* turn.
     ///
     /// Set by the driver as a turn starts and cleared as it ends. It exists for
@@ -189,6 +201,7 @@ impl App {
             quits: 0,
             armed: None,
             contained: false,
+            stopping: false,
             fleet: crate::fleet::Fleet::new(),
             fleet_open: false,
             keys: Keys::default(),
@@ -453,6 +466,7 @@ impl App {
     pub fn started(&mut self) {
         self.mode = Mode::Running;
         self.status.working = true;
+        self.stopping = false;
         self.quits = 0;
         self.announce();
     }
@@ -929,15 +943,13 @@ impl App {
             // rewrite of it.
             Some(hit) if hit.action() == Action::Rewind && self.composer.is_empty() => {
                 if self.mode == Mode::Running {
-                    self.say(
-                        Tone::Muted,
-                        format!(
-                            "not while a turn is running {} a rewind moves the head this \
-                             turn is writing to",
-                            self.theme.glyphs.dash
-                        ),
-                    );
-                    return Command::None;
+                    // **`Esc` stops the turn.** It is the key every other agent
+                    // in this field stops with, and while a turn runs there is
+                    // nothing else for it to mean: the rewind it is otherwise
+                    // bound to is refused during a turn anyway, because it moves
+                    // the head the turn is writing to. So rather than saying no,
+                    // it does the thing the operator pressed it for.
+                    return self.interrupt_or_quit();
                 }
                 match hit {
                     Hit::Fire(_) => Command::Rewind,
@@ -1018,20 +1030,31 @@ impl App {
 
     fn interrupt_or_quit(&mut self) -> Command {
         if self.mode == Mode::Running {
-            // The turn is what gets stopped, not the process. `Steer::interrupt`
-            // ends it at a step boundary, whole, and leaves it resumable.
+            // **Once asks, twice takes.** The first press cancels through the
+            // observer, which io-harness honours at the next step boundary — the
+            // run closes itself, the store records how it ended, and the work so
+            // far is kept. That is the right stop and it is not always a fast
+            // one: a step in the middle of a slow tool call, or a wide fan-out
+            // waiting on children, can take seconds to reach a boundary.
+            //
+            // So the second press does not wait. The driver drops the turn
+            // future, which ends it where it stands.
             self.quits = 0;
-            // The two paths end a turn at different moments, and the sentence
-            // says which one this is. A contained turn is cancelled through the
-            // observer, and io-harness honours that at the next boundary where
-            // no child is in flight — so a wide fan-out can take a while, and an
-            // operator told "the next step boundary" would think the key missed.
+            if self.stopping {
+                self.say(Tone::Warning, "stopping now");
+                return Command::Abandon;
+            }
+            self.stopping = true;
+            let dash = self.theme.glyphs.dash;
             let where_it_stops = if self.contained {
-                "cancelling at the next point where no child is in flight"
+                "stopping at the next point where no child is in flight"
             } else {
-                "interrupting at the next step boundary"
+                "stopping at the next step boundary"
             };
-            self.say(Tone::Warning, where_it_stops);
+            self.say(
+                Tone::Warning,
+                format!("{where_it_stops} {dash} press again to stop now"),
+            );
             return Command::Interrupt;
         }
         if !self.composer.is_empty() {
@@ -1085,7 +1108,16 @@ impl App {
         // first — it is the newest row and the one a session can be read
         // without. At an idle prompt it costs nothing at all, because there is
         // no turn for it to be about and the composer takes the row back.
-        let status_rows = u16::from(area.height >= 2);
+        // **Three rows, not one: a rule and two lines of footer.** They go last
+        // and come back first, in that order — the identity row is what a
+        // terminal too short for the rest keeps, because a footer that can only
+        // say one thing should say what this session is and whether it is
+        // working.
+        let status_rows = match area.height {
+            0..=1 => 0,
+            2..=6 => 1,
+            _ => 3,
+        };
         let live_rows = u16::from(area.height >= 3);
         // **The row is reserved whether or not there is a turn to put in it.**
         // Drawn only while one is in flight — that is F5 — but *claimed* always,
@@ -1096,12 +1128,12 @@ impl App {
         // On a terminal too short for this release's viewport the rows that go
         // are these two, and the composer keeps the two it has had since 0.1.0.
         // A one-row composer is a prompt you cannot read a pasted line in.
-        let activity_rows = u16::from(area.height >= 5);
+        let activity_rows = u16::from(area.height >= 7);
         // The blank above the activity line. It is the last row claimed and the
         // first given up, because it carries nothing — but what it buys is the
         // sticky row reading as a header over the work rather than as the last
         // line of it.
-        let air_rows = u16::from(area.height >= 6);
+        let air_rows = u16::from(area.height >= 8);
         let activity = if activity_rows == 1 {
             self.status.activity(area.width, &self.theme)
         } else {
@@ -1147,10 +1179,10 @@ impl App {
             self.composer.render(frame, composer, &self.theme);
         }
 
-        if status_rows == 1 {
+        if status_rows > 0 {
             let status = Rect {
                 y: area.y + air_rows + activity_rows + live_rows + composer_rows,
-                height: 1,
+                height: status_rows,
                 ..area
             };
             self.status.render(frame, status, &self.theme);

@@ -169,12 +169,32 @@ fn inline(text: &str, theme: &Theme, base: Tone) -> Vec<Span<'static>> {
         if !plain.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut plain), style));
         }
-        let inner = body[..end].to_string();
-        spans.push(match mark {
-            "**" => Span::styled(inner, style.add_modifier(Modifier::BOLD)),
-            "`" => Span::styled(inner, theme.style(Tone::Literal)),
-            _ => Span::styled(inner, style.add_modifier(Modifier::ITALIC)),
-        });
+        match mark {
+            // Code is literal all the way down: backticks are the one marker
+            // whose contents are not notation, so nothing inside is looked at.
+            "`" => spans.push(Span::styled(inner.to_string(), theme.style(Tone::Literal))),
+            // **Emphasis nests, and a real answer nests it.** A model writes
+            // ``**`src/main.rs`**`` — bold around code — and a pass that took the
+            // inner text verbatim drew the backticks it was meant to remove. The
+            // recursion terminates because the inner slice is strictly shorter
+            // than the one that found it.
+            _ => {
+                let modifier = if mark == "**" {
+                    Modifier::BOLD
+                } else {
+                    Modifier::ITALIC
+                };
+                spans.extend(
+                    inline(inner, theme, base)
+                        .into_iter()
+                        .map(|span| {
+                            let style = span.style.add_modifier(modifier);
+                            span.style(style)
+                        })
+                        .filter(|span| !span.content.is_empty()),
+                );
+            }
+        }
         rest = &body[end + mark.len()..];
     }
 

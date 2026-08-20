@@ -510,6 +510,133 @@ impl Status {
         spans(&fields[..kept], theme)
     }
 
+    /// The footer: a rule, then two rows.
+    ///
+    /// **One long dot-separated run is not a status line, it is a sentence with
+    /// the punctuation removed.** Eight fields in one grey stream at a hundred
+    /// and ten columns has no anchor, nothing to skim to, and no way to tell what
+    /// changed since the last time you looked.
+    ///
+    /// So it is laid out the way every well-drawn terminal footer is — helix's
+    /// left/right zones, tmux's multi-row status, lipgloss's dim-label/normal-
+    /// value pairs:
+    ///
+    /// - a rule across the terminal, which is the boundary the transcript needs
+    ///   above it and the one thing that says the rows below are not output;
+    /// - **row one is identity and state**: the state word with its dot, then the
+    ///   model — the only bold token on either row — and the clock pushed to the
+    ///   right edge;
+    /// - **row two is everything countable**, dim, with the posture and the
+    ///   sandbox on the right where a reader looks for what they are allowed to
+    ///   do, and the keys that matter right now at the end of it.
+    ///
+    /// Exactly one thing is coloured and exactly one is bold. Everything else is
+    /// the ordinary foreground or the muted tone, which is what makes those two
+    /// mean something — the failure this replaces is a line where every field was
+    /// the same grey and none of them stood out because none of them could.
+    pub fn footer(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+        let room = width as usize;
+        let muted = theme.style(Tone::Muted);
+        let separator = theme.glyphs.separator;
+
+        let rule = Line::from(Span::styled(
+            theme.glyphs.rule.to_string().repeat(room),
+            muted,
+        ));
+
+        // The state, and its dot. A shape as well as a colour, because a colour
+        // that is the only difference between `ready` and `working` is a
+        // difference a monochrome terminal does not have.
+        let (dot, word, tone) = match self.working {
+            true => (
+                self.indicator(theme).unwrap_or('•'),
+                "working",
+                Tone::Accent,
+            ),
+            false => ('•', "ready", Tone::Muted),
+        };
+        let mut left = vec![
+            Span::styled(format!("{dot} "), theme.style(tone)),
+            Span::styled(word, theme.style(tone)),
+            Span::styled(separator, muted),
+            Span::styled(
+                self.model.clone(),
+                theme
+                    .style(Tone::Normal)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+        ];
+        if let Some(provider) = &self.provider {
+            left.push(Span::styled(separator, muted));
+            left.push(Span::styled(provider.clone(), muted));
+        }
+        let identity = row(
+            left,
+            vec![Span::styled(format_elapsed(self.elapsed), muted)],
+            room,
+        );
+
+        // Everything countable, and nothing that is not. Each is absent until
+        // there is something to count, so a session that has run nothing carries
+        // an almost empty row rather than a row of zeroes.
+        let mut counts: Vec<String> = Vec::new();
+        if let Some(steps) = self.steps {
+            counts.push(format!("{steps} step{}", if steps == 1 { "" } else { "s" }));
+        }
+        if let Some(tokens) = self.tokens {
+            counts.push(format!("{} tok", format_tokens(tokens)));
+        }
+        if let Some(context) = self.context {
+            counts.push(format!("ctx {context}%"));
+        }
+        if let Some((done, total)) = self.plan {
+            counts.push(format!("plan {done}/{total}"));
+        }
+        if self.jobs > 0 {
+            counts.push(format!("bg {}", self.jobs));
+        }
+        if self.mcp.0 > 0 {
+            counts.push(format!("mcp {}/{} tools", self.mcp.0, self.mcp.1));
+        }
+        if self.lsp > 0 {
+            counts.push(format!("lsp {}", self.lsp));
+        }
+        if self.unknown > 0 {
+            counts.push(format!("unknown {}", self.unknown));
+        }
+        // The keys that mean something at this exact moment, and only those. A
+        // footer that listed every binding would be a help screen; `/help` is
+        // the help screen.
+        counts.push(
+            if self.working {
+                "esc stops"
+            } else {
+                "/ for commands"
+            }
+            .to_string(),
+        );
+
+        // What the agent is allowed to do, on the right, because that is the
+        // question a reader asks of a footer when they ask anything of it.
+        let mut allowed = Vec::new();
+        if let Some(policy) = &self.policy {
+            allowed.push(Span::styled(policy.clone(), muted));
+        }
+        if let Some(containment) = &self.containment {
+            if !allowed.is_empty() {
+                allowed.push(Span::styled(separator, muted));
+            }
+            allowed.push(Span::styled(containment.clone(), muted));
+        }
+        let counted = row(
+            vec![Span::styled(counts.join(separator), muted)],
+            allowed,
+            room,
+        );
+
+        vec![rule, identity, counted]
+    }
+
     /// The activity line, or `None` when no turn is in flight.
     ///
     /// **Present for exactly the turn, and it is `working` that says so** — the
@@ -560,7 +687,15 @@ impl Status {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        frame.render_widget(Paragraph::new(self.line(area.width, theme)), area);
+        // Three rows draws the footer; anything less draws the one line this
+        // product has always had, which still says everything in one run and is
+        // what a terminal with no room left can be given.
+        let lines = if area.height >= 3 {
+            self.footer(area.width, theme)
+        } else {
+            vec![self.line(area.width, theme)]
+        };
+        frame.render_widget(Paragraph::new(lines), area);
     }
 }
 
@@ -589,6 +724,31 @@ fn fits(fields: &[Field], width: usize, theme: &Theme) -> usize {
         kept += 1;
     }
     kept
+}
+
+/// One footer row: a left group, a right group, and the gap between them.
+///
+/// The right group is pushed to the edge by padding rather than by a fill
+/// character — starship's `fill` draws a rule between the two, and a rule inside
+/// a row that already sits under one is a second boundary saying the same thing.
+///
+/// When the two groups cannot both fit, the right one goes. It is the group a
+/// reader can find elsewhere: the posture is on the wizard's own screen and in
+/// the configuration, and the clock is beside the word `working` on the row that
+/// says a turn is running at all.
+fn row(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let measure = |spans: &[Span<'static>]| -> usize {
+        spans.iter().map(|span| span.content.chars().count()).sum()
+    };
+    let mut spans = left;
+    let used = measure(&spans);
+    let wanted = measure(&right);
+    // One column of breathing room between the groups, at least.
+    if !right.is_empty() && used + wanted < width {
+        spans.push(Span::raw(" ".repeat(width - used - wanted)));
+        spans.extend(right);
+    }
+    Line::from(spans)
 }
 
 /// The fields as one line, separated by the theme's own separator.

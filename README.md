@@ -18,9 +18,9 @@ advances on its own while the first token is still on its way.](docs/screenshot.
 
 `io` does not enter the alternate screen and does not capture the mouse, in any
 mode, behind any flag. Every finished message, tool call and system line is
-committed into the terminal's own scrollback; five rows at the bottom hold the
-activity line, the live row, two rows of composer and the status line, and only
-those repaint.
+committed into the terminal's own scrollback; eight rows at the bottom hold the
+activity line, the live row, two rows of composer and a three-row footer, and
+only those repaint.
 
 So when the session ends the whole conversation is still there. Your terminal's
 search finds it, tmux copy-mode scrolls it, and a mouse drag selects it — none of
@@ -113,9 +113,9 @@ provider, which is where every other number in this interface lives.
 | Key | Does |
 | --- | --- |
 | `Enter` | send the prompt |
-| `Shift+Enter` | new line (or end the line with \ and press Enter) |
+| `Shift+Enter` | new line — or `Alt+Enter`, `Ctrl+J`, or end the line with \ |
 | `Up / Down` | walk prompt history |
-| `Ctrl+C` | interrupt the turn; twice at an empty prompt, exit |
+| `Ctrl+C` | stop the turn; again to stop it now; twice at an empty prompt, exit |
 | `Ctrl+D` | exit, on an empty prompt |
 | `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
@@ -123,7 +123,7 @@ provider, which is where every other number in this interface lives.
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `Ctrl+F` | show the fleet: the children this turn has spawned |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
-| `Esc` | close a picker without choosing |
+| `Esc` | stop the running turn, or close a picker without choosing |
 | `/` | at an empty prompt, open the command palette |
 | `@` | after a space, complete a path from the workspace |
 | `!` | run the rest of the line in your shell; the agent never sees it |

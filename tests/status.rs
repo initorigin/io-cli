@@ -167,8 +167,18 @@ fn f9_it_renders_on_one_row_at_eighty_columns() {
     status.elapsed = Duration::from_secs(3725);
     let (mut screen, _recorder) = support::screen(80, 24);
 
+    // **One row, drawn through the one-row form.** 0.11.0 gave the footer a rule
+    // and a second line, and `Status::render` draws that wherever it has three
+    // rows to draw it in — so what this asserts is the form a terminal with no
+    // room left gets, which is the one that has to fit in a single row.
     screen
-        .draw(|frame| status.render(frame, frame.area(), &DARK))
+        .draw(|frame| {
+            let area = ratatui::layout::Rect {
+                height: 1,
+                ..frame.area()
+            };
+            status.render(frame, area, &DARK)
+        })
         .expect("frame");
 
     let viewport = screen.viewport_text();
@@ -430,8 +440,16 @@ fn f12_the_plan_field_reads_at_eighty_columns_in_both_glyph_sets() {
 
     for theme in [DARK, DARK.with_glyphs(io_cli::glyphs::ASCII)] {
         let (mut screen, _recorder) = support::screen(80, 24);
+        // The one-row form, which is what a terminal with no room for the
+        // footer's three rows is given and the form this criterion is about.
         screen
-            .draw(|frame| app.status.render(frame, frame.area(), &theme))
+            .draw(|frame| {
+                let area = ratatui::layout::Rect {
+                    height: 1,
+                    ..frame.area()
+                };
+                app.status.render(frame, area, &theme)
+            })
             .expect("frame");
 
         let viewport = screen.viewport_text();

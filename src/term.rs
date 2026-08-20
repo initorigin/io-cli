@@ -79,7 +79,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// same four rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
-pub const VIEWPORT_HEIGHT: u16 = 6;
+pub const VIEWPORT_HEIGHT: u16 = 8;
 
 /// Rows the wizard's viewport occupies.
 ///

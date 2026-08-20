@@ -28,13 +28,16 @@ fn pump(app: &mut App, screen: &mut io_cli::term::Screen<support::Fixed>, age: D
     true
 }
 
-/// The status line is the last row the viewport drew.
+/// The footer's identity row: the state word, the model, and the clock.
+///
+/// Second from the bottom since 0.11.0 — the last row is the counts, and the row
+/// above the identity one is the rule. This is the row the clock is on, which is
+/// what every test in this file is about.
 fn status_row(screen: &io_cli::term::Screen<support::Fixed>) -> String {
-    screen
-        .viewport_text()
-        .lines()
-        .next_back()
-        .unwrap_or_default()
+    let viewport = screen.viewport_text().to_string();
+    let rows: Vec<&str> = viewport.lines().collect();
+    rows.get(rows.len().saturating_sub(2))
+        .unwrap_or(&"")
         .to_string()
 }
 
@@ -194,10 +197,17 @@ fn f5_the_activity_clock_advances_on_the_tick_and_shares_the_status_lines_number
     );
     assert!(second.contains("1m02s"), "{second:?}");
 
-    // The same token count, in the same spelling, on both rows.
-    let status = status_row(&screen);
+    // The same token count, in the same spelling, on both rows. The footer's
+    // counts are its last row — the identity row above them carries the state,
+    // the model and the clock, and the numbers live under it.
+    let counts = screen
+        .viewport_text()
+        .lines()
+        .next_back()
+        .unwrap_or_default()
+        .to_string();
     assert!(second.contains("1.5k tok"), "{second:?}");
-    assert!(status.contains("1.5k tok"), "{status:?}");
+    assert!(counts.contains("1.5k tok"), "{counts:?}");
 }
 
 #[test]

@@ -729,11 +729,15 @@ fn f11_nothing_arms_while_a_turn_is_running() {
     let mut app = app();
     app.started();
 
-    assert_eq!(press(&mut app, KeyCode::Esc), Command::None);
+    // **`Esc` stops the turn now**, which is what every other agent in this
+    // field does with it and what an operator presses it for. What F11 is about
+    // is unchanged and is the assertion under it: nothing is ARMED, so the
+    // second press cannot rewind a conversation head the turn is writing to.
+    assert_eq!(press(&mut app, KeyCode::Esc), Command::Interrupt);
     assert!(!app.armed(), "a turn in flight must leave nothing armed");
     assert_eq!(
         press(&mut app, KeyCode::Esc),
-        Command::None,
-        "and pressing it twice mid-turn must not perform a rewind either",
+        Command::Abandon,
+        "and pressing it twice mid-turn stops the turn now, never rewinds",
     );
 }

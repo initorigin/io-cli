@@ -87,6 +87,29 @@ fn a_double_asterisk_is_not_read_as_two_single_ones() {
     );
 }
 
+/// Emphasis nests, and a real answer nests it.
+///
+/// A model writes bold around a path — ``**`src/main.rs`**`` — constantly, and a
+/// pass that took the inner text verbatim drew the backticks it was there to
+/// remove. Found by reading a real answer, not by a test.
+#[test]
+fn bold_around_code_renders_as_both_and_not_as_backticks() {
+    let line = &render("`io.toml` names the model: **`gpt-5.6-luna`**.")[0];
+    assert_eq!(text(line), "io.toml names the model: gpt-5.6-luna.");
+    assert_eq!(
+        carrying(line, Modifier::BOLD),
+        vec!["gpt-5.6-luna".to_string()],
+    );
+    // And it is still code, so it keeps the tone as well as the weight.
+    let literal = DARK.style(io_cli::theme::Tone::Literal);
+    assert!(
+        line.spans
+            .iter()
+            .any(|span| span.content == "gpt-5.6-luna" && span.style.fg == literal.fg),
+        "{line:?}",
+    );
+}
+
 /// Notation that never closes is not notation.
 ///
 /// This is what keeps the renderer safe on a streaming line: a bold run that has
