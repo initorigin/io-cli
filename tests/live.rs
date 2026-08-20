@@ -1559,9 +1559,12 @@ async fn live_f2_the_strings_the_owner_named_are_gone_from_a_real_run() {
         text.contains("greeting.txt"),
         "the turn's own subject is not in the capture at all",
     );
-    // **F10.** The facts the two removed rows carried, where they moved to.
+    // **F10.** The facts the two removed rows carried, where they moved to. The
+    // footer drops the `provider:` label — the value names itself, and a label
+    // on every field is what made that row one grey run — so what is asserted is
+    // the provider's own name.
     assert!(
-        text.contains("provider:"),
+        text.contains("openrouter"),
         "the provider is on the status line"
     );
     assert!(
@@ -1671,8 +1674,10 @@ async fn live_f7_the_palette_shows_every_command_and_gives_the_rows_back() {
         after.contains("\x1b[6n"),
         "the viewport was never re-placed after the palette closed",
     );
+    // The footer's own key hint, which only the session draws: a picker draws no
+    // footer at all, so its presence after the palette is the session back.
     assert!(
-        after.contains("policy:"),
+        after.contains("for commands"),
         "the session's status line did not come back: {after:?}",
     );
     // **And the rows it drew were erased before it let go of them.** They are
