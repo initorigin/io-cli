@@ -126,6 +126,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
+    (
+        "/plan",
+        "make turns propose a plan before they work: on, off, or ask",
+    ),
     ("/fleet", "show the children this turn has spawned"),
     (
         "/attach",
@@ -452,6 +456,14 @@ pub enum Action {
     /// turn can do — fan out, or be steered — and a switch that guessed which
     /// one the operator meant would be wrong half the time.
     Contain(Option<bool>),
+    /// Make later turns propose a plan before they work, stop doing so, or say
+    /// which it is now.
+    ///
+    /// `None` is a question for the same reason [`Action::Contain`]'s is, and a
+    /// sharper one: while the planning phase is on io-harness denies every write
+    /// and every exec until a proposal is approved, so a blind toggle is a coin
+    /// flip between an agent that works and one that waits.
+    Plan(Option<bool>),
 }
 
 /// What `/copy` was asked for.
@@ -528,6 +540,14 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             Some("on") | Some("yes") => Action::Contain(Some(true)),
             Some("off") | Some("no") => Action::Contain(Some(false)),
             _ => Action::Contain(None),
+        },
+        // The same three answers, and nothing REPORTS here too. Turning the
+        // planning phase on stops every turn until a proposal is approved, which
+        // is a bigger thing to do by accident than containment is.
+        "plan" | "planning" => match input.split_whitespace().nth(1) {
+            Some("on") | Some("yes") => Action::Plan(Some(true)),
+            Some("off") | Some("no") => Action::Plan(Some(false)),
+            _ => Action::Plan(None),
         },
         "fleet" | "agents" => Action::Fleet,
         // The REST of the line, not its second word: `@` completion inserts a
