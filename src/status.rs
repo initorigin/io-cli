@@ -678,6 +678,24 @@ impl Status {
             }
             allowed.push(Span::styled(containment.clone(), muted));
         }
+        // **Here and not in `counts`, and a live run is what settled it.** The
+        // phase is not countable, so `counts` was the wrong group — but this
+        // group is the right one for a sharper reason than tidiness: while the
+        // phase is on, io-harness denies every write and every exec until a plan
+        // is approved. That is precisely "what the agent is allowed to do", which
+        // is what this half of the row is for.
+        //
+        // The first cut of 0.12.0 put the field on `Status::line` alone and a
+        // unit test asserting `Status::line` passed. The binary drew the footer,
+        // the word was nowhere on screen, and the operator had a mode they could
+        // not see — the exact failure F4 exists to prevent, in the release that
+        // added F4.
+        if self.planning {
+            if !allowed.is_empty() {
+                allowed.push(Span::styled(separator, muted));
+            }
+            allowed.push(Span::styled("planning", muted));
+        }
         let counted = row(
             vec![Span::styled(counts.join(separator), muted)],
             allowed,

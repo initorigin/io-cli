@@ -48,29 +48,59 @@ fn rendered(status: &Status, width: u16) -> String {
 /// Sabotage: clear it in `Status::forget_run` beside the run-scoped fields —
 /// under which only this test fails, and it fails at exactly the moment the
 /// operator most needs the answer, the turn after the last one ended.
+///
+/// **Both surfaces, and the first cut of this test only checked one.** `Status`
+/// renders two ways: `line` is the one-row form, and `footer` is the three-row
+/// form the binary actually draws at an idle prompt. The field was added to
+/// `line` alone, this test asserted `line` alone, and it passed — while a live
+/// capture of the running binary had the word nowhere on screen. A test that
+/// reads one of two renderers is a test that can pass while the operator has an
+/// invisible mode, which is the whole of what F4 is against.
 #[test]
 fn f4_the_planning_phase_is_named_and_survives_the_run() {
+    // Every surface a reader could be looking at, so neither can be the one that
+    // quietly lacks it.
+    fn shown(status: &Status) -> String {
+        let mut text = rendered(status, 200);
+        for line in status.footer(200, &DARK) {
+            for span in &line.spans {
+                text.push_str(span.content.as_ref());
+            }
+        }
+        text
+    }
+
     let mut status = Status::new("anthropic/claude-sonnet-4.5");
 
     assert!(
-        !rendered(&status, 200).contains("planning"),
+        !shown(&status).contains("planning"),
         "a session that never asked for it says nothing",
     );
 
     status.planning = true;
     let on = rendered(&status, 200);
-    assert!(on.contains("planning"), "the word is on the line: {on}");
+    assert!(on.contains("planning"), "the one-row form says it: {on}");
+    let footer: String = status
+        .footer(200, &DARK)
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(
+        footer.contains("planning"),
+        "and so does the footer, which is what the binary draws: {footer}",
+    );
 
     // The run ends, the mode does not.
     status.forget_run();
-    let after = rendered(&status, 200);
     assert!(
-        after.contains("planning"),
-        "the phase outlives the run that ran under it: {after}",
+        shown(&status).contains("planning"),
+        "the phase outlives the run that ran under it: {}",
+        shown(&status),
     );
 
     status.planning = false;
-    assert!(!rendered(&status, 200).contains("planning"));
+    assert!(!shown(&status).contains("planning"));
 }
 
 /// **F4 — it is a word, not only a tone.**

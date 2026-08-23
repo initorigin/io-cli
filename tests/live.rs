@@ -1360,6 +1360,342 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
     );
 }
 
+/// **F1 (0.12.0) — a question is answered on a turn that cannot fan out.**
+///
+/// The uncontained arm, which is the whole point: through 0.11.0 the responder
+/// rode `[app.io-cli.containment]`, so a session without caps that reached the
+/// ask tool paused with the question persisted and nobody offered it. The goal is
+/// written to make asking the sensible move — it names a file with two candidate
+/// lines and refuses to say which — but whether a model asks is still the model's
+/// choice, so what is asserted is conditional in the same shape 0.10.0's arm uses:
+/// if it asked, the answer this crate sent is the answer the run recorded.
+///
+/// What is asserted unconditionally is the thing that was actually broken: the
+/// contract on this arm carries a responder at all.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f1_a_question_is_answered_on_an_uncontained_turn() {
+    use io_cli::app::App;
+    use io_cli::contract::Capabilities;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(
+        root.join("notes.md"),
+        "# notes\n\nold line\n\n## archive\n\nold line\n",
+    )
+    .expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let (answerer, mut questions) = io_cli::intent::channel();
+    // `None`: no plan gate, which is 0.12.0's default and F2's precondition.
+    let contract = io_cli::contract::session(
+        "notes.md contains the line `old line` twice. Replace exactly one of them with `new \
+         line`. If it is not clear which one is meant, ask before editing.",
+        root.to_path_buf(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(12);
+
+    assert!(
+        contract.responder.is_some(),
+        "the uncontained arm's contract carries a responder — the defect this release fixes",
+    );
+    assert!(contract.plan_gate.is_none(), "and no gate nobody asked for");
+
+    let answers = Arc::new(Mutex::new(Vec::<String>::new()));
+    let answered = Arc::clone(&answers);
+    let operator = tokio::spawn(async move {
+        let mut app = App::new(DARK, "live");
+        while let Some(asked) = questions.recv().await {
+            answered
+                .lock()
+                .expect("not poisoned")
+                .push(asked.question.question.clone());
+            app.open_intent(asked);
+            for character in "the one under archive".chars() {
+                app.key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ));
+            }
+            app.key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+    });
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    // The contract first, for the reason 0.10.0's arm records: the operator's
+    // loop ends when the responder inside the contract is dropped, so awaiting it
+    // while the contract is still in scope hangs after the run has finished.
+    drop(contract);
+    drop(session);
+    let _ = operator.await;
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let asked = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::QuestionAsked { .. }))
+        .count();
+    println!("live 0.12.0 F1: outcome {:?}", result.outcome);
+    println!(
+        "live 0.12.0 F1: {asked} questions asked, operator answered {:?}",
+        answers.lock().expect("not poisoned")
+    );
+
+    if asked > 0 {
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::QuestionAnswered { answer, by }
+                    if answer.contains("under archive") && by == "responder"
+            )),
+            "a question asked on an uncontained turn must be answered by the overlay, not \
+             persisted with the run paused: {:?}",
+            events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// **F2 (0.12.0) — a contained turn proposes no plan unless the operator asked.**
+///
+/// The absence this release exists for, asserted on the events rather than on an
+/// overlay that never opened — an overlay that never opened is also what a broken
+/// channel looks like, and 0.9.0 already shipped one control blind to the bound it
+/// was checking.
+///
+/// Contained, deliberately: an uncontained turn never planned, so a flat arm here
+/// would pass without touching the thing that changed. Multi-threaded for the
+/// reason 0.10.0's arm records — a contained turn deadlocks on a current-thread
+/// runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f2_a_contained_turn_does_not_plan_unless_asked() {
+    use io_cli::contract::Capabilities;
+    use io_harness::Containment;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::session(
+        "Replace the line `old line` in notes.md with `new line`. Nothing else.",
+        root.to_path_buf(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(12);
+
+    let result = session
+        .turn_contained_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &Containment::new(4, 2, 1, 200_000),
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    drop(contract);
+    drop(session);
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let proposed = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::PlanProposed { .. }))
+        .count();
+    let decided = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::PlanDecided { .. }))
+        .count();
+    println!("live 0.12.0 F2: outcome {:?}", result.outcome);
+    println!(
+        "live 0.12.0 F2: {} events, {proposed} plans proposed, {decided} decided",
+        events.len()
+    );
+    // Printed rather than asserted. Whether a model finishes this goal inside the
+    // step cap is the model's business and would make the criterion flaky; whether
+    // it was *allowed* to do the work is this release's business, and the file on
+    // disk is the cheapest way to see it.
+    println!(
+        "live 0.12.0 F2: notes.md is {:?}",
+        std::fs::read_to_string(root.join("notes.md")).expect("the fixture survives"),
+    );
+
+    assert_eq!(
+        proposed,
+        0,
+        "a contained turn with no gate must not enter the planning phase: {:?}",
+        events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+    );
+    assert_eq!(decided, 0, "and nothing decides a plan that was never made");
+
+    // **And the run was not silently denied instead.** The planning phase denies
+    // every write under a `plan-gate` layer, so a turn that both proposed nothing
+    // AND wrote nothing would satisfy the assertion above while being exactly the
+    // failure it is meant to exclude.
+    let denied_by_the_gate = events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            EventKind::Refused { layer, .. } if layer.as_deref() == Some("plan-gate")
+        )
+    });
+    assert!(
+        !denied_by_the_gate,
+        "nothing may be refused by a layer no gate turned on: {:?}",
+        events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+    );
+    assert!(
+        events.len() > 1,
+        "the run has to have actually happened for its absences to mean anything",
+    );
+}
+
+/// **F2 (0.12.0) — the gate the operator asked for reaches a turn that cannot
+/// fan out.**
+///
+/// The positive half of F2, and the shape that was impossible before this
+/// release: through 0.11.0 a plan gate could only be attached where a containment
+/// was, so an uncontained turn had no planning phase to enter however much the
+/// operator wanted one. Here the caps are absent, the gate is present because
+/// `/plan on` would have put it there, and the run must propose.
+///
+/// Asserted on the events rather than on a capture, because a capture of this is
+/// flaky — see the comment in `live_f3_f4_plan_switches_and_the_status_line_says_so`.
+/// Deterministic here because the planning phase is entered from
+/// `plan_gate.is_some()` in io-harness, not from anything the model decides.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f2_a_gate_the_operator_asked_for_reaches_the_run() {
+    use io_cli::app::App;
+    use io_cli::contract::Capabilities;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let (gate, mut plans) = io_cli::plan::channel();
+    let contract = io_cli::contract::session(
+        "Replace the line `old line` in notes.md with `new line`. Nothing else.",
+        root.to_path_buf(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        Some(Arc::new(gate)),
+    )
+    .with_max_steps(12);
+
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let proposals = Arc::clone(&seen);
+    let operator = tokio::spawn(async move {
+        let mut app = App::new(DARK, "live");
+        while let Some(proposed) = plans.recv().await {
+            proposals
+                .lock()
+                .expect("not poisoned")
+                .push(format!("{} steps", proposed.plan.steps.len()));
+            app.open_plan(proposed);
+            // Enter on an empty prompt: approve.
+            app.key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+    });
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    drop(contract);
+    drop(session);
+    let _ = operator.await;
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let proposed = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::PlanProposed { .. }))
+        .count();
+    println!("live 0.12.0 F2+: outcome {:?}", result.outcome);
+    println!(
+        "live 0.12.0 F2+: {proposed} plans proposed on an UNCONTAINED turn, overlay saw {:?}",
+        seen.lock().expect("not poisoned")
+    );
+
+    assert!(
+        proposed > 0,
+        "a gate on an uncontained turn must put the run in its planning phase: {:?}",
+        events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::PlanDecided { verdict, by, .. } if verdict == "approve" && by == "gate"
+        )),
+        "and the verdict the overlay sent is the verdict the run recorded",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 0.11.0 — the real binary, on a pty, against the real provider.
 //
@@ -1481,9 +1817,16 @@ fn captured(
     use std::io::Write;
     use std::process::{Command, Stdio};
 
+    // This release's directory, not the driver's. `drive.py` is kept where it was
+    // written and is shared; a capture belongs to the release whose claims it is
+    // evidence for.
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".ultraship/products/io-cli/evidence/0.11.0")
+        .join(".ultraship/products/io-cli/evidence")
+        .join(env!("CARGO_PKG_VERSION"))
         .join(name);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).expect("the evidence directory");
+    }
     let mut child = Command::new("python3")
         .arg(driver())
         .arg(&out)
@@ -1514,6 +1857,87 @@ fn captured(
         bytes.len(),
     );
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// **0.12.0 F3 and F4.** `/plan` reports, switches, and says so on the status line.
+///
+/// The half no unit test can reach. `Status::planning` is asserted as a value in
+/// `tests/status.rs`, and the parse is asserted in `tests/plan.rs`, but whether
+/// the word actually reaches a terminal — and whether it is still there after a
+/// turn has ended — is a question about the binary, and this product has shipped
+/// a control blind to exactly that gap before.
+///
+/// The script asks three times: bare `/plan` before anything, `/plan on`, then a
+/// real turn, then bare `/plan` again. What must hold is that the first answer is
+/// the working one, the word appears after the switch, and it is still there
+/// after the turn — `Status::forget_run` clears every neighbouring field and must
+/// not clear this one.
+#[tokio::test]
+#[ignore]
+async fn live_f3_f4_plan_switches_and_the_status_line_says_so() {
+    let (config, dir) = configured_workspace();
+    std::fs::write(dir.path().join("notes.txt"), "one\ntwo\n").expect("the fixture file");
+
+    // **An argument is typed after the palette, not into it, and two captures
+    // paid for that sentence.** `/` at an empty prompt opens the palette and the
+    // keystroke never reaches the composer, so a command is chosen from a row —
+    // which puts `/plan` in the composer rather than running it — and only then
+    // does `raw: on` make it `/plan on` and `raw:\r` submit it. Typing the whole
+    // `/plan on` as one line filters the palette by `plan on`, which matches no
+    // row: the first capture ended with `> /plan` unsubmitted and the second on
+    // `No row matches “plan ”`. Both are the palette working as designed, and the
+    // same is true of `/contain on` since 0.8.0.
+    let text = captured(
+        "live-planning.raw",
+        config.path(),
+        dir.path(),
+        "0\twait:for commands\n\
+         0.3\t/plan\n\
+         0.3\traw:\\r\n\
+         0\twait:working — a turn starts on the job\n\
+         0.3\t/plan\n\
+         0.3\traw: on\n\
+         0.3\traw:\\r\n\
+         0\twait:planning from the next turn\n\
+         0.3\tRead notes.txt and say what its second line is. Do not write anything.\n\
+         0\twait:Enter approves\n\
+         0.5\traw:\\r\n\
+         0\twait:ready\n0.5\traw:\\x04\n",
+    );
+
+    // **Whether the turn actually proposed is not asserted here, and that is a
+    // finding rather than a gap.** Two captures of this exact script disagreed:
+    // one showed the proposal and the `Enter approves` footer, the next ran the
+    // same goal to completion in four steps without proposing. Whether a model
+    // reaches for the plan tool is the model's business, and an assertion on it
+    // would be a flake with a criterion's name on it. The deterministic version
+    // of that claim is `live_f2_a_gate_the_operator_asked_for_reaches_the_run`,
+    // which asserts on the events. What is asserted here is what the interface
+    // does, which is deterministic: it switched, and it says so.
+
+    // Bare `/plan` first, before anything was switched: it reports the default
+    // and it reports it as a phase rather than as a toggle having happened.
+    assert!(
+        text.contains("working — a turn starts on the job"),
+        "bare /plan reports the phase it is in",
+    );
+    assert!(
+        text.contains("planning from the next turn"),
+        "/plan on says what it did, and when it takes effect",
+    );
+
+    // **F4, and the part that only a capture can show.** The word is on the
+    // status line after the turn has finished — the run is over, `forget_run` has
+    // been through every field beside it, and the phase is still on.
+    let after_the_turn = text
+        .rsplit_once("ready")
+        .map(|(_, tail)| tail.to_string())
+        .unwrap_or_default();
+    assert!(
+        after_the_turn.contains("planning"),
+        "the phase outlives the run it was set on; the tail of the capture said: \
+         {after_the_turn:?}",
+    );
 }
 
 /// **0.11.0 F2.** The six strings the owner named are gone from a real run.
