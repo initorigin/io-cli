@@ -140,58 +140,72 @@ fn what_the_file_asks_for_is_what_the_contract_carries() {
     );
 }
 
-/// **F1 — the contract reaches the contained arm and the flat arm is untouched.**
+/// **F6 — the two arms cannot drift apart again.**
 ///
-/// A source gate rather than a behavioural one, and deliberately: `src/main.rs`
-/// is a binary and nothing under `tests/` can link it, so the routing decision is
-/// asserted where it is written. It is the same shape `tests/dependencies.rs`
-/// uses for every other structural claim about this crate.
+/// The coupling 0.12.0 removes survived a whole release unnoticed because nothing
+/// asserted the two turns were given the same thing. Three claims, and together
+/// they make a difference between the arms unrepresentable rather than merely
+/// absent:
 ///
-/// Sabotage: route the unconfigured session through the contained entry point
-/// too, under which only this test fails — and it fails by taking `Ctrl+C` away
-/// from every operator who never asked for a fan-out.
+/// 1. `contract::session` takes no containment and cannot branch on one, so the
+///    value it returns is the same whichever arm asks for it. That is a fact
+///    about the signature, and the test below reads it off two built contracts.
+/// 2. `src/main.rs` calls it exactly once per turn.
+/// 3. Both arms are handed `&contract` — the same binding, not two of them.
+///
+/// Sabotage: attach any capability inside one arm's match branch — under which
+/// only this test fails, and it fails by recreating the coupling whose five stale
+/// doc surfaces are the other half of this release.
 #[test]
-fn the_flat_turn_is_still_the_steered_one() {
+fn f6_both_arms_are_handed_one_contract() {
+    // (1) Same inputs, same contract — there is no containment to differ on.
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+    let one = session(
+        "a goal",
+        root(),
+        &Capabilities::default(),
+        responder.clone(),
+        None,
+    );
+    let two = session("a goal", root(), &Capabilities::default(), responder, None);
+    assert_eq!(format!("{one:?}"), format!("{two:?}"));
+
     let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
     let text = std::fs::read_to_string(driver).expect("the driver");
 
-    assert!(
-        text.contains("turn_contained_bounded_observed("),
-        "the contained arm takes the caller's contract",
+    // (2) One call, so there is no second contract to get wrong — and nothing
+    // bolted onto it afterwards. `with_responder` and `with_plan_gate` used to be
+    // called here, inside `if containment.is_some()`, which is exactly how an
+    // uncontained turn ended up unable to answer a question. Both are
+    // `contract::session`'s arguments now, where the test above reads them off a
+    // value instead of off this file.
+    assert_eq!(
+        text.matches("io_cli::contract::session(").count(),
+        1,
+        "one contract is built per turn, not one per arm",
     );
-    // **Both arms take a contract since 0.11.0.** The flat one was
-    // `turn_steered`, which builds `TaskContract::workspace` inside io-harness
-    // and takes none from the caller — so its step cap was twelve and nothing
-    // configured here could reach it. `turn_bounded_observed` takes a contract,
-    // streams, and is not contained; what it gives up is the steer inbox, and
-    // the only thing io-cli ever sent through one was an interrupt, which the
-    // observer's own cancel does at the same step boundary.
-    assert!(
-        text.contains(
-            "session.turn_bounded_observed(&contract, provider, store, policy, &approver, &observer)"
-        ),
-        "the flat arm carries a contract too, through the bounded turn",
-    );
-    assert!(
-        !text.contains("turn_contained_observed("),
-        "the contract-less contained entry point is gone; every contained turn takes one",
-    );
-
-    // The decision, not its formatting: one contract is built, unconditionally,
-    // and both arms are handed it. A contract built only where a containment
-    // was is what left the ordinary turn at io-harness's twelve steps.
-    assert!(
-        text.contains("let contract = io_cli::contract::session("),
-        "one contract is built for every turn",
-    );
-    // **And nothing is bolted onto it afterwards.** `with_responder` and
-    // `with_plan_gate` used to be called here, inside `if containment.is_some()`,
-    // which is how an uncontained turn ended up unable to answer a question.
-    // Both are `contract::session`'s arguments now, where a test can read them
-    // off a value instead of off this file.
     assert!(
         !text.contains("with_responder") && !text.contains("with_plan_gate"),
         "the capabilities are the contract builder's arguments, not a second step here",
+    );
+    assert!(
+        !text.contains("turn_contained_observed(") && !text.contains("turn_steered("),
+        "the two entry points that build their own contract are gone from this product",
+    );
+
+    // (3) And both arms take that binding. Matched with the whitespace removed,
+    // because rustfmt decides where these argument lists break and an assertion
+    // that a newline sits in a particular place is an assertion about formatting
+    // — it would go quietly blind the first time one of them grew an argument.
+    let squashed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        squashed.contains("session.turn_contained_bounded_observed(&contract,"),
+        "the contained arm is handed the contract",
+    );
+    assert!(
+        squashed.contains("session.turn_bounded_observed(&contract,"),
+        "and so is the flat one",
     );
 }
 
