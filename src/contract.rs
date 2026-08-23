@@ -5,15 +5,24 @@
 //! `default_contract`, which is `TaskContract::workspace(text, root)` and nothing
 //! else — so a responder, a plan gate, an MCP server, a language server, a
 //! browser and a skills directory are all unreachable from those turns however
-//! they are configured. `Session::turn_contained_bounded_observed` (io-harness
-//! 0.66.0) takes the caller's contract beside the caps, and it is the only
-//! session entry point that takes one at all.
+//! they are configured. io-cli uses neither: both of its arms take a contract
+//! built here.
 //!
-//! The consequence is a coupling worth stating rather than hiding: **the
-//! capabilities below and the fan-out are one switch.** A session with no
-//! `[app.io-cli.containment]` runs the steered turn it has always run, keeps
-//! `Ctrl+C` mid-turn, and carries none of this. That is io-harness's shape, not a
-//! preference expressed here.
+//! **The coupling this module used to describe is gone, and was gone before it
+//! stopped saying so.** Through 0.10.0,
+//! `Session::turn_contained_bounded_observed` was the only session entry point
+//! that took a caller's contract, so everything below arrived with the fan-out or
+//! not at all. 0.11.0 needed a contract on the flat turn for the step cap and
+//! moved it to `Session::turn_bounded_observed`, which takes one too — and with
+//! that, one contract is built per turn and both arms are handed it. What a turn
+//! carries no longer depends on whether it can fan out;
+//! `tests/contract.rs`'s F6 is what keeps that true.
+//!
+//! The two seams that are not capabilities of the operator's configuration are
+//! arguments instead: the responder is unconditional, because io-harness resolves
+//! it inside the tool dispatch on any run, and the plan gate is present only when
+//! the operator asked with `/plan on`, because registering one is the entire
+//! condition for io-harness's planning phase.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,8 +52,8 @@ pub struct Capabilities {
     ///
     /// io-harness's `TaskContract::workspace` caps a turn at twelve, which a
     /// turn that reads a repository and writes a file reaches with the work half
-    /// done. It is raisable here and nowhere else: the steered turn builds its
-    /// own contract and takes none from a caller.
+    /// done. Raising it is why 0.11.0 gave the flat turn a contract at all, and
+    /// is therefore the accidental cause of the whole coupling coming apart.
     pub max_steps: Option<u32>,
 }
 
@@ -75,7 +84,7 @@ impl Capabilities {
     }
 }
 
-/// The contract one contained session turn carries.
+/// The contract a session turn carries — every turn, contained or not.
 ///
 /// **Nothing configured must reproduce `default_contract` exactly**, because a
 /// session that asked for none of this must run the turn it ran before this

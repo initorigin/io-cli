@@ -21,11 +21,12 @@
 //! comes from [`skills`], which is io-harness's own discovery; nothing here
 //! parses a skill file.
 //!
-//! The rows are listed whatever the session is, and whether the agent can
-//! actually read one depends on the turn: only a contained turn carries a
-//! contract, so only there does the `skills` directory reach the run. Listing
-//! them regardless is deliberate — a palette that hid them on an unconfigured
-//! session would answer "what did I teach it?" with silence.
+//! The rows are listed whatever the session is, and since 0.11.0 the agent can
+//! read one on any of them: both turn arms carry a contract, so the `skills`
+//! directory reaches the run whether or not the session can fan out. Listing them
+//! regardless was already deliberate — a palette that hid them on an unconfigured
+//! session would answer "what did I teach it?" with silence — and it is no longer
+//! a promise the turn might not keep.
 //!
 //! **Everything that shows more of something commits upward.** The viewport is
 //! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they

@@ -67,12 +67,14 @@ pub struct CliSettings {
     /// that passes a containment into the driver, and therefore the only one that
     /// reaches the loop owning the spawn tool — so a session with no caps
     /// configured cannot decompose anything, and one with them runs a materially
-    /// different turn. Absent means every turn is the steered turn 0.7.0 shipped.
+    /// different turn.
     ///
-    /// **Since 0.10.0 it decides more than the fan-out.** That same entry point is
-    /// also the only one that takes a caller's `TaskContract`, so this key is what
-    /// lets the four settings below it reach a turn at all — see
-    /// [`crate::contract`], which is where that coupling is stated in full.
+    /// **And since 0.12.0 the fan-out is all it decides.** 0.10.0 made this key
+    /// carry the four settings below it too, because the contained entry point was
+    /// then the only one taking a caller's `TaskContract`. 0.11.0 gave the flat
+    /// turn a contract as well, so those four reach every turn now; 0.12.0 moved
+    /// the responder to every turn and the plan gate to `/plan`. Configuring caps
+    /// buys a fan-out and nothing else. See [`crate::contract`].
     ///
     /// io-harness's own type rather than four fields of io-cli's own, because it
     /// is `Serialize`/`Deserialize` for exactly this purpose and because a

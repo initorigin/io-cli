@@ -399,11 +399,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // configuration can express and this session must not relabel.
     app.set_posture(Posture::of(&policy.defaults));
     // Said once, before the first prompt, and only where there is something to
-    // say. A contained turn is a different turn — it cannot be steered, and it
-    // takes no agent roster, no `[run]` budget and no `[sandbox]` — so a session
-    // that silently switched would be one whose step cap stopped applying with
-    // nothing said. `contained` starts true because configuring caps is the
-    // asking; `/contain off` is how a turn is taken back for steering.
+    // say. A contained turn is a different turn — it is the only one that reaches
+    // io-harness's spawn loop — and a session that silently switched into it
+    // would be one whose agents started costing tokens with nothing said.
+    // `contained` starts true because configuring caps is the asking; `/contain
+    // off` is how a turn is taken back.
     let mut contained = containment.is_some();
     // **Off, and off is not a missing feature.** Registering a plan gate is the
     // whole condition for io-harness's planning phase, and while it is on every
@@ -1546,7 +1546,7 @@ fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTu
 /// Two sources, because they are two different kinds of "more". The step's
 /// output is in the durable trace and is read back from it; the model's thinking
 /// is in neither the trace nor the next prompt — io-harness does not store it —
-/// so the only copy of a fitted thought is the one [`Events`] kept, and this is
+/// so the only copy of a fitted thought is the one [`Events`](io_cli::events::Events) kept, and this is
 /// where it is spent.
 fn expand(
     session: &Session,
