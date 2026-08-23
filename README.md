@@ -232,6 +232,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
+| `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/fleet` | show the children this turn has spawned |
 | `/attach` | put an image in front of the agent, for the next turn only |
 | `/clear` | start a new conversation; this one stays in /resume |
@@ -295,22 +296,33 @@ report collected from a child lands in the transcript where it arrives.
 frees it has no run of its own to name. A fleet that is queueing and a fleet that
 is stuck look identical without that count, which is why it is there.
 
-**Turning this on costs you steering.** io-harness has one session entry point
-that reaches its spawn loop, and it takes no steer inbox — so while a turn is
-contained you cannot type at it to redirect it, and the agent roster, `[run]`
-budgets and `[sandbox]` do not apply to it either. The session says so when it
-starts. `Ctrl+C` still ends the turn, at the next point where no child is in
-flight, and the interface tells you that is what it is waiting for rather than
-appearing to have missed the key. `/contain off` gives the next turn back to
-steering; `/contain on` takes it back.
+**And from 0.12.0 that is all it costs you.** `Ctrl+C` still ends the turn, at the
+next point where no child is in flight, and the interface tells you that is what
+it is waiting for rather than appearing to have missed the key. `/contain off`
+gives the next turn back; `/contain on` takes it again.
 
-**And from 0.10.0 it also means a contained turn stops for a plan first.** That
-same entry point is the one that takes a task contract, so a contained turn
-carries io-cli's plan gate — and registering a gate is what turns io-harness's
-planning phase on. The agent proposes before it acts, the workspace cannot be
-written to while you are reading the proposal, and `Enter` on an empty prompt
-approves it. That is a round trip you did not have in 0.9.0, and it is the same
-switch: `/contain off` gives you back a turn that starts working immediately.
+Through 0.11.0 this switch carried more than the fan-out. io-harness's contained
+entry point was then the only session entry point that took a task contract, so
+turning containment on was also how you got skills, MCP servers, language servers,
+a browser, an answer to the agent's questions and a plan gate — and turning it off
+took all of them away. 0.11.0 gave the ordinary turn a contract too. Every one of
+those capabilities is on every turn now, and containment means what its name says.
+
+## Planning
+
+`/plan on` makes the next turn propose a plan before it does anything. While the
+planning phase is on, io-harness denies every write and every command until you
+approve, so reading a proposal costs nothing and cancelling is not an undo —
+there is nothing to undo yet. `Enter` on an empty prompt approves, typing a
+correction sends it back, `Esc` cancels. The status line says `planning` for as
+long as the phase is on, because it outlives the turn you set it on.
+
+`/plan off` gives you back a turn that starts working immediately, and that is the
+default. Bare `/plan` says which one you are in and changes nothing.
+
+**This moved in 0.12.0.** Through 0.11.0 the plan gate rode
+`[app.io-cli.containment]`, so configuring a fan-out silently made every turn stop
+and propose first. If that is what you wanted, `/plan on` is where it lives now.
 
 ## Pictures
 

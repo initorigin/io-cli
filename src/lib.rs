@@ -12,7 +12,15 @@
 //! turns through io-harness's contained entry point, which is the only one that
 //! reaches its spawn loop — see [`fleet`] for what that stream looks like and
 //! what the interface makes of it, and [`settings::contained_notice`] for what
-//! such a turn gives up.
+//! such a turn decides.
+//!
+//! **That is now the only thing it decides.** Through 0.11.0 the contained entry
+//! point was also the only one that took a caller's [`contract`], so a responder,
+//! a plan gate, MCP servers, language servers, a browser and skills all arrived
+//! with the fan-out or not at all. 0.11.0 moved the flat turn onto
+//! `Session::turn_bounded_observed`, which takes a contract too, and 0.12.0
+//! finished the separation: every turn can answer a question, and a plan is
+//! proposed only where the operator typed `/plan on`.
 //!
 //! [io-harness]: https://docs.rs/io-harness
 

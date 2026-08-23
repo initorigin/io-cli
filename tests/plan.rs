@@ -21,6 +21,91 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+/// **F3 — `/plan` says which it is and never guesses.**
+///
+/// The same shape `/contain` has, and for the same reason: turning the planning
+/// phase on stops every turn until somebody approves a proposal, so a bare
+/// `/plan` that toggled would be a coin flip between an agent that works and one
+/// that waits.
+///
+/// Sabotage: make the bare form `Action::Plan(Some(true))` — under which only
+/// this test fails, and it fails by switching a mode the operator was asking
+/// about.
+#[test]
+fn f3_plan_parses_as_a_question_or_an_answer() {
+    use io_cli::commands::{self, Action};
+
+    let keys = io_cli::keys::Keys::default();
+    assert_eq!(commands::parse("plan", &keys, &DARK), Action::Plan(None));
+    assert_eq!(
+        commands::parse("plan on", &keys, &DARK),
+        Action::Plan(Some(true))
+    );
+    assert_eq!(
+        commands::parse("plan off", &keys, &DARK),
+        Action::Plan(Some(false))
+    );
+    // The words `/contain` already accepts, because an operator who learned them
+    // one command over should not have to learn them twice.
+    assert_eq!(
+        commands::parse("plan yes", &keys, &DARK),
+        Action::Plan(Some(true))
+    );
+    assert_eq!(
+        commands::parse("plan no", &keys, &DARK),
+        Action::Plan(Some(false))
+    );
+}
+
+/// **F3 — the command is listed where an operator looks for it.**
+///
+/// A command that works and is not in `COMMANDS` is not reachable from the
+/// palette, which is 0.9.0's lesson about `/exit`: advertised and inert is the
+/// one failure a listed command must not have, and unlisted and working is the
+/// same failure from the other side.
+#[test]
+fn f3_plan_is_listed() {
+    let listed = io_cli::commands::COMMANDS
+        .iter()
+        .find(|(name, _)| *name == "/plan");
+    let (_, blurb) = listed.expect("`/plan` is in the command table");
+    assert!(
+        blurb.contains("on") && blurb.contains("off"),
+        "the blurb says the switch has both directions: {blurb}",
+    );
+}
+
+/// **F2 — containment no longer decides whether a turn plans.**
+///
+/// A source gate, for the reason `tests/contract.rs` names: `src/main.rs` is a
+/// binary and nothing under `tests/` can link it. The value half of F2 is in
+/// `tests/contract.rs`, which reads `plan_gate` off a built contract, and the
+/// live half is `tests/live.rs`, which asserts on the events of a real run.
+///
+/// Sabotage: pass the gate on `containment.is_some()` again — under which only
+/// this test fails, and it fails by restoring the coupling that made every
+/// contained turn stop for a plan.
+#[test]
+fn f2_the_gate_follows_the_operator_and_not_the_caps() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver).expect("the driver");
+
+    let call = text
+        .split_once("let contract = io_cli::contract::session(")
+        .expect("one contract is built for every turn")
+        .1;
+    let args = &call[..call.find(");").expect("the call closes")];
+
+    assert!(
+        args.contains("planning"),
+        "the gate argument is the operator's switch: {args:?}",
+    );
+    assert!(
+        !args.contains("containment"),
+        "and it is not the caps: {args:?}",
+    );
+}
+
 fn typed(app: &mut App, text: &str) {
     for ch in text.chars() {
         app.key(key(KeyCode::Char(ch)));
