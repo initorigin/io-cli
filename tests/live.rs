@@ -1206,9 +1206,9 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &Capabilities::default(),
+        Arc::new(answerer),
+        Some(Arc::new(gate)),
     )
-    .with_responder(Arc::new(answerer))
-    .with_plan_gate(Arc::new(gate))
     // **Bounded, and that is a finding rather than tidiness.** The first run of
     // this test used `DenyAll` — the approver the other live tests use, whose
     // goals only read — and a goal that writes under it spends the whole run

@@ -1229,18 +1229,22 @@ async fn turn<P: Provider>(
     // one was an interrupt, and the observer's `Flow::Cancel` — the path a
     // contained turn has always been stopped by — ends a turn at the same step
     // boundary.
-    let mut contract = io_cli::contract::session(text.clone(), root.clone(), capabilities);
-    // **The responder and the plan gate ride containment, and only containment.**
-    // Registering a plan gate turns io-harness's planning phase ON for the turn
-    // that carries it: the agent proposes a plan and the run stops until somebody
-    // decides. That is what `[app.io-cli.containment]` asks for, and it is not
-    // what an ordinary prompt asks for — attaching them to every turn made every
-    // turn stop for a plan, which a real run showed within a minute.
-    if containment.is_some() {
-        contract = contract
-            .with_responder(std::sync::Arc::new(answerer))
-            .with_plan_gate(std::sync::Arc::new(gate));
-    }
+    // **Neither of the two seams rides containment any more.** The responder is
+    // unconditional: io-harness resolves it inside the tool dispatch on any run,
+    // so a question asked on an ordinary turn reaches the person watching instead
+    // of pausing the run with nobody offered it. The plan gate is the operator's
+    // switch, because registering one is what turns io-harness's planning phase
+    // ON — attached to every turn, every turn stopped for a plan, which a real
+    // run showed within a minute of 0.10.0 doing it.
+    let contract = io_cli::contract::session(
+        text.clone(),
+        root.clone(),
+        capabilities,
+        std::sync::Arc::new(answerer),
+        containment
+            .is_some()
+            .then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
+    );
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {

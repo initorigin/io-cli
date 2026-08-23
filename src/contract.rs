@@ -16,6 +16,7 @@
 //! preference expressed here.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use io_harness::TaskContract;
 
@@ -96,8 +97,27 @@ impl Capabilities {
 /// any of those, and it was standing in for all three.
 pub const MAX_STEPS: u32 = 1_000;
 
-pub fn session(text: impl Into<String>, root: PathBuf, caps: &Capabilities) -> TaskContract {
-    let mut contract = TaskContract::workspace(text, root).with_max_steps(MAX_STEPS);
+pub fn session(
+    text: impl Into<String>,
+    root: PathBuf,
+    caps: &Capabilities,
+    responder: Arc<dyn io_harness::Responder>,
+    plan_gate: Option<Arc<dyn io_harness::PlanGate>>,
+) -> TaskContract {
+    // **Unconditional, and the gate below deliberately is not.** io-harness
+    // resolves the responder inside the tool dispatch on any run, so there has
+    // never been a reason for a question to reach a person on one kind of turn
+    // and pause the run on the other.
+    let mut contract = TaskContract::workspace(text, root)
+        .with_max_steps(MAX_STEPS)
+        .with_responder(responder);
+    // **Registering a gate is how the planning phase is turned on**, so this is
+    // where the operator's `/plan` becomes a fact about the turn. `None` is not a
+    // missing feature: it is a turn that works instead of proposing first, which
+    // is what an ordinary prompt asks for.
+    if let Some(gate) = plan_gate {
+        contract = contract.with_plan_gate(gate);
+    }
     if !caps.mcp.is_empty() {
         contract = contract.with_mcp(caps.mcp.clone());
     }
