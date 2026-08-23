@@ -298,6 +298,49 @@ pub fn harness_run_outcomes() -> Vec<String> {
     variants
 }
 
+/// Every tool name io-harness declares, in the source this crate is locked to.
+///
+/// The third reader of the dependency's own source, and it exists for the same
+/// reason the first two do: a list of tool names copied into this repository
+/// cannot notice the harness growing one. What it guards is the system prompt —
+/// what the agent may reach is composed around that text by the harness, from the
+/// contract, so a prompt that named a tool would be lying on every turn whose
+/// contract omits it.
+///
+/// The names are `pub const …_TOOL: &str = "…"` in two files, which is a shape a
+/// line-by-line read can take exactly: no parser is needed and none is written.
+pub fn harness_tool_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for file in [&["tools", "mod.rs"][..], &["run.rs"][..]] {
+        let source = std::fs::read_to_string(harness_source_file(file))
+            .expect("io-harness's source is readable from the registry")
+            .replace("\r\n", "\n");
+        for line in source.lines() {
+            let Some(rest) = line.strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((name, rest)) = rest.split_once(": &str = \"") else {
+                continue;
+            };
+            if !name.contains("TOOL") {
+                continue;
+            }
+            let Some((value, _)) = rest.split_once('"') else {
+                continue;
+            };
+            // A prefix is not a tool: `MCP_TOOL_PREFIX` is `mcp__`, which no
+            // prompt would contain and which would match nothing useful anyway.
+            if value.is_empty() || value.ends_with("__") {
+                continue;
+            }
+            names.push(value.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Where the io-harness version this crate is locked to unpacked its source.
 fn harness_observe_path() -> std::path::PathBuf {
     harness_source_path("observe.rs")
@@ -305,6 +348,16 @@ fn harness_observe_path() -> std::path::PathBuf {
 
 /// One file of that source, by its name under `src/`.
 fn harness_source_path(file: &str) -> std::path::PathBuf {
+    harness_source_file(&[file])
+}
+
+/// One file of that source, by its path components under `src/`.
+///
+/// Components rather than a `"tools/mod.rs"` literal: a slash-bearing string
+/// joined onto a `PathBuf` is a single file name on Windows, where CI runs, and
+/// the failure it produces is "io-harness is not unpacked" rather than anything
+/// naming the real mistake.
+fn harness_source_file(components: &[&str]) -> std::path::PathBuf {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(manifest.join("Cargo.lock")).expect("the lockfile is here");
     let version = lock
@@ -326,11 +379,13 @@ fn harness_source_path(file: &str) -> std::path::PathBuf {
     let entries = std::fs::read_dir(&registries)
         .unwrap_or_else(|error| panic!("{} is readable: {error}", registries.display()));
     for entry in entries.flatten() {
-        let candidate = entry
+        let mut candidate = entry
             .path()
             .join(format!("io-harness-{version}"))
-            .join("src")
-            .join(file);
+            .join("src");
+        for component in components {
+            candidate = candidate.join(component);
+        }
         if candidate.is_file() {
             return candidate;
         }
@@ -387,6 +442,59 @@ impl Provider for Scripted {
             // one reason to stop and it is the ordinary one.
             text: calls.is_empty().then(|| "done".to_string()),
             tool_calls: calls,
+            ..Default::default()
+        })
+    }
+}
+
+/// A provider that answers in one completion and keeps the system prompt it was
+/// asked with.
+///
+/// **The only way to read a composed system prompt from outside io-harness.**
+/// `run::prompts::compose` is `pub(super)`, and `EventKind::PromptComposed`
+/// carries the prompt's *size* rather than its text — deliberately, since it can
+/// hold a whole `AGENTS.md`. What does carry the text is the request that reaches
+/// the provider, so a test about composition has to be a turn that really ran.
+pub struct Capturing {
+    systems: Mutex<Vec<String>>,
+}
+
+impl Capturing {
+    pub fn new() -> Self {
+        Self {
+            systems: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every system prompt this provider was asked with, in order.
+    pub fn systems(&self) -> Vec<String> {
+        self.systems
+            .lock()
+            .expect("the capture is not poisoned")
+            .clone()
+    }
+}
+
+impl Provider for Capturing {
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> io_harness::Result<CompletionResponse> {
+        let mut systems = self.systems.lock().expect("the capture is not poisoned");
+        systems.push(request.system.clone());
+        // **The first completion and every later one are composed from different
+        // descriptions**, and a capture of one of them is a capture of half the
+        // question: a turn that has not been decided to be work opens on the
+        // crate's conversational description, and a turn that has is given its
+        // workspace one. So this writes a file on the first completion — which is
+        // what decides the turn is work — and answers in prose on the second.
+        let first = systems.len() == 1;
+        Ok(CompletionResponse {
+            text: (!first).then(|| "done".to_string()),
+            tool_calls: match first {
+                true => vec![write_call("notes.txt", "written by the capture\n")],
+                false => Vec::new(),
+            },
             ..Default::default()
         })
     }
