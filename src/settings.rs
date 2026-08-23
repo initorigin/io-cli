@@ -125,27 +125,26 @@ pub fn containment(stored: Option<&CliSettings>) -> Option<&io_harness::Containm
     stored.and_then(|settings| settings.containment.as_ref())
 }
 
-/// What a contained turn gives up, in the words the session says it in.
+/// What a contained turn decides, in the words the session says it in.
 ///
-/// **Disclosure rather than decoration.** A contained turn takes no `SteerInbox`,
-/// so text typed mid-turn cannot redirect it, and it is built from a contract
-/// io-cli writes rather than from io-harness's `[run]` and `[sandbox]` sections —
-/// so budgets and an agent roster set there still do not reach it. None of that
-/// is visible from the screen, and a mode that silently drops a step cap somebody
-/// set is the worst kind of quiet.
+/// **Disclosure rather than decoration**, and through 0.11.0 the disclosure was
+/// wrong. It offered a responder, a plan gate, MCP servers, language servers, a
+/// browser and skills as things this mode grants, and named a lost mid-turn steer
+/// as the price. Both stopped being true: 0.11.0 gave the flat turn a contract
+/// too, so every one of those capabilities is on both turns, and neither turn
+/// takes a `SteerInbox` any more — `Ctrl+C` is the observer's cancel on both.
 ///
-/// Since 0.10.0 the sentence also says what the mode *gains*, because that is now
-/// the more surprising half: this is the only turn that can be given a responder,
-/// a plan gate, MCP servers, language servers, a browser or skills, and an
-/// operator who turned containment on for the fan-out has just turned all of them
-/// on too.
+/// What is left is one difference, and it is the one the caps are for:
+/// `turn_contained_bounded_observed` is the only session entry point that reaches
+/// io-harness's spawn loop, so this is the only turn that can fan out. A notice
+/// that sold the mode on anything else was talking an operator into a fan-out to
+/// get capabilities their session already had.
 pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
     format!(
         "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \
-         tree. This is the turn that carries a contract: questions are answered here, a plan \
-         is decided here, and [app.io-cli] skills, mcp, lsp and browser apply here. It cannot \
-         be steered mid-flight, and takes no agent roster, no [run] budget and no [sandbox]; \
-         Ctrl+C still ends it.",
+         tree. That is the whole of what this mode changes: it is the only turn that can fan \
+         out. Skills, mcp, lsp, browser and answering a question are the same on every turn, \
+         and Ctrl+C ends either one.",
         caps.max_total_agents, caps.max_concurrent_agents, caps.max_depth, caps.max_total_tokens,
     )
 }

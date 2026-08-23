@@ -102,9 +102,21 @@ max_total_tokens = 200000
     assert!(settings::containment(stored.as_ref()).is_none());
 }
 
-/// F1 — the disclosure names the caps and everything a contained turn gives up.
+/// **F5 — the notice says what containment actually decides, and nothing else.**
+///
+/// The positive half is the caps, which are the operator's own numbers and the
+/// reason the mode has a configuration key at all. The negative half is the two
+/// claims 0.11.0 falsified and this notice went on making for a release: that the
+/// mode is what grants skills, MCP, language servers and a browser, and that it
+/// costs a mid-turn steer. Both turns carry a contract now and neither can be
+/// steered, so the first was selling capabilities the session already had and the
+/// second was charging for something nobody still has.
+///
+/// Sabotage: restore the 0.11.0 wording — under which only this test fails, and
+/// it fails on the absences rather than the caps, which is the half that decides
+/// whether an operator turns on a fan-out they did not want.
 #[test]
-fn f1_entering_contained_mode_says_what_it_costs() {
+fn f5_entering_contained_mode_says_what_it_decides() {
     let caps = Containment::new(12, 4, 2, 200_000);
     let notice = settings::contained_notice(&caps, "-");
     for expected in [
@@ -112,14 +124,26 @@ fn f1_entering_contained_mode_says_what_it_costs() {
         "4 at once",
         "2 deep",
         "200000 tokens",
-        "cannot be steered",
-        "[run] budget",
-        "[sandbox]",
-        "Ctrl+C still ends it",
+        "only turn that can fan out",
+        "Ctrl+C ends either one",
     ] {
         assert!(
             notice.contains(expected),
             "the disclosure should name {expected:?}: {notice}"
+        );
+    }
+    for gone in [
+        "cannot be steered",
+        "[run] budget",
+        "[sandbox]",
+        "the turn that carries a contract",
+        "a plan is decided here",
+        "questions are answered here",
+    ] {
+        assert!(
+            !notice.contains(gone),
+            "0.11.0 gave every turn a contract, so {gone:?} is no longer something this mode \
+             decides: {notice}"
         );
     }
 }

@@ -942,7 +942,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         let where_it_is = if contained {
                             settings::contained_notice(caps, app.theme.glyphs.dash)
                         } else {
-                            "steered — turns can be redirected while they run, and cannot fan out"
+                            // **Not "steered".** Neither turn takes a `SteerInbox`
+                            // since 0.11.0 — the flat arm gave its up for a
+                            // contract and the contained arm never had one — so a
+                            // word promising mid-turn redirection describes
+                            // nothing this product does.
+                            "not contained — this turn does the work itself and cannot fan out"
                                 .to_string()
                         };
                         app.say(Tone::Muted, where_it_is);
@@ -956,8 +961,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         contained = false;
                         app.say(
                             Tone::Muted,
-                            "steered from the next turn — it can be redirected while it runs, \
-                             and it cannot fan out",
+                            "not contained from the next turn — it does the work itself and \
+                             cannot fan out",
                         );
                     }
                 },
