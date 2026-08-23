@@ -154,7 +154,7 @@ fn f1_a_slash_at_an_empty_prompt_opens_the_palette_and_nowhere_else() {
 }
 
 #[test]
-fn f1_the_palette_opens_showing_every_command() {
+fn f1_the_palette_opens_on_the_rows_the_viewport_has() {
     let rows = commands::palette(&Templates::none(), &io_harness::Skills::none());
     assert_eq!(rows.len(), COMMANDS.len());
     for (row, (name, what)) in rows.iter().zip(COMMANDS) {
@@ -168,24 +168,22 @@ fn f1_the_palette_opens_showing_every_command() {
     }
 
     // What the operator can see, through the terminal the product actually
-    // writes to, at the height the driver asks for — which is the whole point of
-    // 0.11.0's F7 and the reason this number is no longer written out here. A
-    // hard-coded fourteen is exactly the defect that release exists to remove,
-    // one file over: it was right when there were twelve commands and it hid the
-    // thirteenth.
+    // writes to, **in the viewport the session already has** — 0.13.0 stopped
+    // growing it, so the height here is the session's own and the rows past it
+    // are `f7_every_row_below_the_fold_is_still_reachable`'s business.
     let mut picker = palette();
-    let height = commands::palette_height(picker.rows().len());
+    let height = io_cli::term::VIEWPORT_HEIGHT;
     let (mut screen, recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
     assert!(recorder.contains("Which command?"));
     let viewport = screen.viewport_text();
-    for (name, _) in COMMANDS {
+    for (name, _) in COMMANDS.iter().take(usize::from(height) - 1) {
         let label = name.strip_prefix('/').expect("a command");
         assert!(
             viewport.contains(label),
-            "the palette opens on every command, and {label} is missing: {viewport:?}",
+            "the palette opens on the rows the viewport has, and {label} is missing: {viewport:?}",
         );
     }
 }
@@ -421,26 +419,35 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
         assert_eq!(row.detail.as_deref(), Some(detail.as_str()));
     }
 
-    // What the operator can actually see, at the height the driver asks for.
+    // What the operator can actually see. The templates sit after every command,
+    // so in the session's own viewport they are below the fold — typed for, the
+    // way `f7_every_row_below_the_fold_is_still_reachable` says they are reached.
     let mut picker = palette_over(&found);
-    let height = commands::palette_height(picker.rows().len());
+    let height = io_cli::term::VIEWPORT_HEIGHT;
+    for template in found.iter() {
+        let mut typed = palette_over(&found);
+        type_at(&mut typed, &template.name);
+        let (mut screen, _recorder) = support::screen_of(80, height + 4, height);
+        screen
+            .draw(|frame| typed.render(frame, frame.area(), &DARK))
+            .expect("frame");
+        let viewport = screen.viewport_text();
+        assert!(
+            viewport.contains(&template.name),
+            "{} cannot be reached in the palette: {viewport:?}",
+            template.name,
+        );
+        assert!(
+            viewport.contains(TEMPLATE.trim_end()),
+            "nothing on screen says which rows are templates: {viewport:?}",
+        );
+    }
+
     let (mut screen, recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
     assert!(recorder.contains("Which command?"));
-    let viewport = screen.viewport_text();
-    for template in found.iter() {
-        assert!(
-            viewport.contains(&template.name),
-            "{} is missing from the palette: {viewport:?}",
-            template.name,
-        );
-    }
-    assert!(
-        viewport.contains(TEMPLATE.trim_end()),
-        "nothing on screen says which rows are templates: {viewport:?}",
-    );
 }
 
 /// **The sabotage test.** Treat `Templates::discover`'s `Err` as an empty set —
@@ -676,51 +683,134 @@ fn f5_a_skills_directory_that_will_not_walk_says_so() {
     );
 }
 
-/// 0.11.0 F7 — the height the palette asks for shows every row it has.
+/// **0.13.0 F6 — opening the palette re-places no viewport.**
 ///
-/// The arithmetic and the drawing in one test, because either alone passes while
-/// the other is wrong: a height computed correctly and spent on a picker that
-/// keeps a row for something else still hides the last command, and this is the
-/// defect the criterion exists for — a fourteen-row list shown three rows at a
-/// time.
+/// The decision is in `src/main.rs`, which nothing links, and `Screen::replace`
+/// re-attaches to the real terminal — so this is read off the driver's own text
+/// and the wire half is `live_f6_the_palette_opens_without_asking_the_terminal_anything`.
+/// Weak on its own and said so; together they are the criterion.
 ///
-/// The re-place itself belongs to `src/main.rs` and to a real terminal, and it is
-/// asserted where it can be: the pty capture in `tests/live.rs`.
+/// Sabotage: restore the `replace_viewport(screen, tall)` call — under which this
+/// fails, and it fails by putting a terminal round trip back on a keystroke.
 #[test]
-fn f7_the_height_the_palette_asks_for_draws_every_row() {
+fn f6_the_palette_path_in_the_driver_replaces_no_viewport() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    // From the condition that opens the palette to the paint that follows it —
+    // the whole of the open path, however rustfmt breaks it.
+    let opens = text
+        .find("opens_palette(")
+        .expect("the driver opens the palette somewhere");
+    let block = &text[opens..];
+    let block = &block[..block
+        .find("paint_picker(")
+        .expect("the open path ends in a paint")];
+    assert!(
+        !block.contains("replace_viewport"),
+        "opening the palette re-places the viewport: {block}",
+    );
+
+    // And the close path: the palette is no longer a height, so nothing anywhere
+    // in the driver may ask for one.
+    assert!(
+        !text.contains("palette_height"),
+        "the palette still decides a terminal size",
+    );
+    assert!(
+        text.matches("replace_viewport(").count() <= 3,
+        "replace_viewport has grown a call site; the palette's two were removed in 0.13.0",
+    );
+}
+
+/// **0.13.0 F7 — the whole command list is still reachable at eight rows.**
+///
+/// 0.11.0's F7 asked the opposite question: it grew the viewport until every row
+/// was on screen at once, and paid for that with a terminal round trip on `/` and
+/// another on `Esc`. 0.13.0 gives that up, so the property that replaces it is
+/// the one `/model` has always had against four hundred models — a row below the
+/// fold is reached by typing its name, and by arrowing to it.
+///
+/// Both halves are here because either alone passes while the other is broken: a
+/// picker that filters but will not scroll leaves a row unreachable to an
+/// operator who does not know its name, and one that scrolls but will not filter
+/// makes a fourteen-row list eight keystrokes deep.
+///
+/// Sabotage: clamp the picker's rows to what fits and drop the rest — under which
+/// only this fails, and it fails by making a command that exists unreachable,
+/// which is worse than the round trip this release removed.
+#[test]
+fn f7_every_row_below_the_fold_is_still_reachable() {
     let dir = written();
     let (templates, _) = commands::templates(&configured(dir.path()));
     let rows = commands::palette(&templates, &io_harness::Skills::none());
+    let height = io_cli::term::VIEWPORT_HEIGHT;
     assert!(
-        rows.len() > COMMANDS.len(),
-        "the templates are what make this list longer than the command inventory",
+        rows.len() > usize::from(height),
+        "this test is about a list longer than the viewport, and {} rows is not one",
+        rows.len(),
     );
 
-    let height = commands::palette_height(rows.len());
+    // The fold, drawn: the picker keeps its top row for the title, so what a
+    // session's viewport shows is `height - 1` rows and no more.
     let mut picker = Picker::new("Which command?", rows.clone());
-    // A terminal with room to spare, so what is being asserted is the height the
-    // palette asked for and not the terminal's own clamp.
     let (mut screen, _recorder) = support::screen_of(80, height + 4, height);
     screen
         .draw(|frame| picker.render(frame, frame.area(), &DARK))
         .expect("frame");
+    let opening = screen.viewport_text();
+    let last = rows.last().expect("a row").label.clone();
+    assert!(
+        !opening.contains(last.as_str()),
+        "this list is supposed to be longer than the fold, and {last:?} is already on screen",
+    );
 
-    let viewport = screen.viewport_text();
-    for row in &rows {
-        assert!(
-            viewport.contains(row.label.as_str()),
-            "the palette asked for {height} rows and {:?} is still not on screen: {viewport:?}",
-            row.label,
-        );
+    // Reachable by typing its name — the whole of it, one character at a time,
+    // which is what an operator actually does.
+    let mut typed = Picker::new("Which command?", rows.clone());
+    type_at(&mut typed, &last);
+    assert!(
+        typed.matching() >= 1,
+        "the query {last:?} admits no row at all",
+    );
+    let (mut screen, _recorder) = support::screen_of(80, height + 4, height);
+    screen
+        .draw(|frame| typed.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let filtered = screen.viewport_text();
+    assert!(
+        filtered.contains(last.as_str()),
+        "typing {last:?} did not bring it on screen: {filtered:?}",
+    );
+    // And the query costs no row: it is drawn in place of the title, which is the
+    // rule 0.7.0 set and the reason this fits in the viewport at all.
+    assert!(
+        !filtered.contains("Which command?"),
+        "the query is drawn in place of the title, not above it: {filtered:?}",
+    );
+
+    // And reachable by arrowing to it, for an operator who does not know the
+    // name: the list scrolls to the selection rather than stopping at the fold.
+    let mut arrowed = Picker::new("Which command?", rows.clone());
+    for _ in 0..rows.len() {
+        arrowed.key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Down,
+        ));
     }
-}
-
-/// 0.11.0 F7 — the height is the rows plus the picker's own title row.
-#[test]
-fn f7_the_height_is_one_more_than_the_rows() {
-    assert_eq!(commands::palette_height(0), 1);
-    assert_eq!(commands::palette_height(13), 14);
-    // A list longer than a `u16` is not a list, and saturating is the only
-    // answer that is not a panic in front of an operator.
-    assert_eq!(commands::palette_height(usize::MAX), u16::MAX);
+    assert_eq!(
+        arrowed.selection(),
+        Some(rows.len() - 1),
+        "arrowing past the fold did not reach the last row",
+    );
+    let (mut screen, _recorder) = support::screen_of(80, height + 4, height);
+    screen
+        .draw(|frame| arrowed.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let scrolled = screen.viewport_text();
+    assert!(
+        scrolled.contains(last.as_str()),
+        "the list did not scroll to the selection: {scrolled:?}",
+    );
 }

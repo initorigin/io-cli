@@ -2032,19 +2032,24 @@ async fn live_f5_f6_the_activity_line_and_the_live_row_are_in_a_real_run() {
     );
 }
 
-/// **0.11.0 F7.** The palette shows the whole list, and gives the rows back.
+/// **0.13.0 F6 — `/` writes no cursor query.**
 ///
-/// The half no unit test can reach: the re-place itself is in `src/main.rs`,
-/// which nothing links, and it needs a terminal that answers `ESC[6n`. `raw:/`
-/// opens the palette on the keypress, `raw:\x1b` closes it, and the session has
-/// to still be usable afterwards — what follows the palette's last row in the
-/// byte stream is what proves the viewport came back rather than the terminal
-/// being left somewhere strange.
+/// The half no unit test can reach: `Screen::replace` re-attaches to the real
+/// terminal, so a `Fixed` backend cannot see it at all, and the decision itself
+/// is in `src/main.rs`, which nothing links. What this asserts is the property
+/// stated as a fact about the wire — **the session asks the terminal where its
+/// cursor is when it attaches and never again** — paired with a positive in the
+/// same slice, because an absence assertion passes just as happily against a
+/// capture where nothing happened.
+///
+/// Up to 0.12.0 this test asserted the opposite: `ESC[6n` after the palette
+/// closed was how it proved the viewport had been re-placed. That round trip is
+/// what 0.13.0 removes, on the fastest thing an operator does.
 ///
 /// No provider is asked for anything here: the palette opens at an empty prompt.
 #[tokio::test]
 #[ignore]
-async fn live_f7_the_palette_shows_every_command_and_gives_the_rows_back() {
+async fn live_f6_the_palette_opens_without_asking_the_terminal_anything() {
     let (config, dir) = configured_workspace();
     // Closed by **choosing**, which the criterion allows and which a pty can
     // send unambiguously. A bare `Esc` cannot be driven reliably from here: sent
@@ -2064,61 +2069,68 @@ async fn live_f7_the_palette_shows_every_command_and_gives_the_rows_back() {
          0.3\traw:exi\n0.3\traw:\\r\n0\twait:/exit\n0.5\traw:\\r\n",
     );
 
+    // Everything the session wrote after its first painted frame: the palette
+    // opening, the query typed into it, the choice, the close, and the exit. The
+    // attach that happens before this anchor is the one query io is allowed.
+    let after = text
+        .find("for commands")
+        .map(|at| &text[at..])
+        .expect("the session drew its status line");
+
+    // **The positive first**, because what follows is an absence and an absence
+    // holds trivially against a capture where nothing was drawn.
+    assert!(
+        after.contains("Which command?"),
+        "the palette never painted, so the assertion below is about nothing: {after:?}",
+    );
     // Escapes stripped and whitespace dropped before comparing. A row is drawn
     // with cursor moves inside it — `copy`, a jump, then `diff` — so a literal
     // `contains("copy diff")` asks the terminal for a space it had no reason to
     // write, and even the squashed form has an escape sequence in the middle.
-    let squashed: String = strip_escapes(&text)
+    let squashed: String = strip_escapes(after)
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    for (name, _) in io_cli::commands::COMMANDS {
-        let label: String = name
-            .strip_prefix('/')
-            .expect("a command")
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(
-            squashed.contains(&label),
-            "the palette opened and {label} was not drawn",
-        );
-    }
-
-    // The rows came back. Anchored on the palette's own title rather than on its
-    // last row: the row chosen here is `/exit`, and the composer it lands in
-    // says `exit` too — so `rfind("exit")` pointed *past* the close and the
-    // assertions below looked at nothing at all. A picker draws no status line,
-    // so everything after this anchor belongs to the close and what followed it.
-    let after = text
-        .rfind("Which command?")
-        .map(|at| &text[at..])
-        .expect("the palette drew its title");
+    // The rows the viewport has — not every command any more. What is below the
+    // fold is reached by typing, which this capture then does.
+    let drawn = io_cli::commands::COMMANDS
+        .iter()
+        .filter(|(name, _)| {
+            let label: String = name
+                .strip_prefix('/')
+                .expect("a command")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            squashed.contains(&label)
+        })
+        .count();
     assert!(
-        after.contains("\x1b[6n"),
-        "the viewport was never re-placed after the palette closed",
+        drawn >= 3,
+        "the palette drew {drawn} of its command rows, which is not an open palette",
+    );
+
+    // **And it asked the terminal nothing to do it.** One query per process, at
+    // the attach before this slice began; a `/` that re-placed the viewport would
+    // put another one here, and another on the way out.
+    assert!(
+        !after.contains("\x1b[6n"),
+        "`/` asked the terminal where its cursor is, which is the round trip 0.13.0 removes",
     );
     // The footer's own key hint, which only the session draws: a picker draws no
     // footer at all, so its presence after the palette is the session back.
+    let closed = after
+        .rfind("Which command?")
+        .map(|at| &after[at..])
+        .expect("the palette drew its title");
     assert!(
-        after.contains("for commands"),
-        "the session's status line did not come back: {after:?}",
-    );
-    // **And the rows it drew were erased before it let go of them.** They are
-    // the terminal's screen, not its scrollback: nothing scrolls them away and
-    // nothing repaints them once that viewport is gone. Without the erase the
-    // next viewport draws OVER them and the operator is left looking at a status
-    // line spliced into the middle of a command's description — which is what a
-    // capture of the first version of this showed, and what put this assertion
-    // here.
-    assert!(
-        after.contains("\x1b[0J"),
-        "the palette's rows were left painted behind the session: {after:?}",
+        closed.contains("for commands"),
+        "the session's status line did not come back: {closed:?}",
     );
     // And the binary left on its own, rather than being killed holding the
     // terminal: the `Enter` on the `/exit` the palette put in the composer.
     assert!(
-        after.contains("\x1b[?2004l"),
-        "the terminal was never handed back: {after:?}",
+        closed.contains("\x1b[?2004l"),
+        "the terminal was never handed back: {closed:?}",
     );
 }
