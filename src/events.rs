@@ -462,10 +462,27 @@ impl Events {
         // blank: against a real run an answer began on the row directly under
         // `warning: nothing has changed in 3 steps…` and read as part of it.
         let prose = matches!(event.kind, EventKind::Token { .. });
+        // **And the operator's next words are not the tail of the last block.**
+        // The `›` line is the one row in a transcript its reader wrote, and it
+        // opens the block below it — so it must not arrive welded to the block
+        // above. `after_cell` covered only the case where that block ended in a
+        // tool cell; a turn that ended on a thought footer or a harness warning
+        // put the next goal on the row directly under it, and the two read as one
+        // thing said by one voice.
+        //
+        // Taken here, beside the other two, and never pushed by the `Started` arm
+        // itself (`Events::commit`, src/events.rs:540): that arm cannot see
+        // `last_blank`, so a blank pushed there is pushed unconditionally and
+        // doubles at the very top of a session — which is the one case
+        // `last_blank` was introduced for, and is what starts it `true`
+        // (src/events.rs:270).
+        let goal = matches!(event.kind, EventKind::Started { .. });
         // Never against a blank that is already there. The goal line ends its own
         // block with one, so an answer arriving after it was given a second and
-        // the prompt sat two rows above what it asked for.
-        let gap = (after_cell || (prose && !self.last_prose)) && !self.last_blank;
+        // the prompt sat two rows above what it asked for. The same blank is what
+        // keeps a goal following an ordinary finished turn to one row of air:
+        // `Finished` ends its own block with one (src/events.rs:1055).
+        let gap = (after_cell || goal || (prose && !self.last_prose)) && !self.last_blank;
 
         let mut lines = self.commit(event, at);
         if gap && !ends_blank(&lines[..1.min(lines.len())]) {
