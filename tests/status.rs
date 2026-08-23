@@ -37,6 +37,91 @@ fn rendered(status: &Status, width: u16) -> String {
         .collect()
 }
 
+/// **F4 — the planning phase is visible while it is on, and outlives the run.**
+///
+/// It is not a run-scoped field, and that is the whole of it: `/plan on` holds
+/// until `/plan off`, and while it holds io-harness denies every write and every
+/// exec until a proposal is approved. A field cleared with the run would leave an
+/// operator watching an agent that will not write, with nothing on screen saying
+/// why.
+///
+/// Sabotage: clear it in `Status::forget_run` beside the run-scoped fields —
+/// under which only this test fails, and it fails at exactly the moment the
+/// operator most needs the answer, the turn after the last one ended.
+///
+/// **Both surfaces, and the first cut of this test only checked one.** `Status`
+/// renders two ways: `line` is the one-row form, and `footer` is the three-row
+/// form the binary actually draws at an idle prompt. The field was added to
+/// `line` alone, this test asserted `line` alone, and it passed — while a live
+/// capture of the running binary had the word nowhere on screen. A test that
+/// reads one of two renderers is a test that can pass while the operator has an
+/// invisible mode, which is the whole of what F4 is against.
+#[test]
+fn f4_the_planning_phase_is_named_and_survives_the_run() {
+    // Every surface a reader could be looking at, so neither can be the one that
+    // quietly lacks it.
+    fn shown(status: &Status) -> String {
+        let mut text = rendered(status, 200);
+        for line in status.footer(200, &DARK) {
+            for span in &line.spans {
+                text.push_str(span.content.as_ref());
+            }
+        }
+        text
+    }
+
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+
+    assert!(
+        !shown(&status).contains("planning"),
+        "a session that never asked for it says nothing",
+    );
+
+    status.planning = true;
+    let on = rendered(&status, 200);
+    assert!(on.contains("planning"), "the one-row form says it: {on}");
+    let footer: String = status
+        .footer(200, &DARK)
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(
+        footer.contains("planning"),
+        "and so does the footer, which is what the binary draws: {footer}",
+    );
+
+    // The run ends, the mode does not.
+    status.forget_run();
+    assert!(
+        shown(&status).contains("planning"),
+        "the phase outlives the run that ran under it: {}",
+        shown(&status),
+    );
+
+    status.planning = false;
+    assert!(!shown(&status).contains("planning"));
+}
+
+/// **F4 — it is a word, not only a tone.**
+///
+/// The rule the whole product is held to, and the one a mode field cannot be
+/// exempt from: a screen reader and a monochrome terminal have to reach the same
+/// fact a colour does.
+#[test]
+fn f4_the_planning_phase_reads_without_colour() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.planning = true;
+
+    let mono: String = status
+        .line(200, &MONO)
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(mono.contains("planning"), "{mono}");
+}
+
 #[test]
 fn it_says_the_model_the_state_and_the_elapsed_time() {
     let mut status = Status::new("anthropic/claude-sonnet-4");

@@ -399,12 +399,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // configuration can express and this session must not relabel.
     app.set_posture(Posture::of(&policy.defaults));
     // Said once, before the first prompt, and only where there is something to
-    // say. A contained turn is a different turn — it cannot be steered, and it
-    // takes no agent roster, no `[run]` budget and no `[sandbox]` — so a session
-    // that silently switched would be one whose step cap stopped applying with
-    // nothing said. `contained` starts true because configuring caps is the
-    // asking; `/contain off` is how a turn is taken back for steering.
+    // say. A contained turn is a different turn — it is the only one that reaches
+    // io-harness's spawn loop — and a session that silently switched into it
+    // would be one whose agents started costing tokens with nothing said.
+    // `contained` starts true because configuring caps is the asking; `/contain
+    // off` is how a turn is taken back.
     let mut contained = containment.is_some();
+    // **Off, and off is not a missing feature.** Registering a plan gate is the
+    // whole condition for io-harness's planning phase, and while it is on every
+    // write and every exec is denied until somebody approves a proposal. Through
+    // 0.10.0 and 0.11.0 this rode `[app.io-cli.containment]`, so configuring a
+    // fan-out silently made every turn stop and plan first. It is the operator's
+    // switch now, and nothing turns it on but `/plan on`.
+    let mut planning = false;
     if let Some(caps) = &containment {
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
@@ -935,7 +942,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         let where_it_is = if contained {
                             settings::contained_notice(caps, app.theme.glyphs.dash)
                         } else {
-                            "steered — turns can be redirected while they run, and cannot fan out"
+                            // **Not "steered".** Neither turn takes a `SteerInbox`
+                            // since 0.11.0 — the flat arm gave its up for a
+                            // contract and the contained arm never had one — so a
+                            // word promising mid-turn redirection describes
+                            // nothing this product does.
+                            "not contained — this turn does the work itself and cannot fan out"
                                 .to_string()
                         };
                         app.say(Tone::Muted, where_it_is);
@@ -949,11 +961,42 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         contained = false;
                         app.say(
                             Tone::Muted,
-                            "steered from the next turn — it can be redirected while it runs, \
-                             and it cannot fan out",
+                            "not contained from the next turn — it does the work itself and \
+                             cannot fan out",
                         );
                     }
                 },
+                // The same three answers `/contain` gives, and the same rule:
+                // nothing reports, and only an explicit word switches. Both take
+                // effect from the NEXT turn, because the contract a running turn
+                // is under was built when it started.
+                Action::Plan(asked) => {
+                    let said = match asked {
+                        None if planning => {
+                            "planning — a turn proposes a plan and waits for you before it \
+                             writes anything. `/plan off` to let it work straight away"
+                        }
+                        None => {
+                            "working — a turn starts on the job. `/plan on` to have it propose \
+                             a plan first and wait for you"
+                        }
+                        Some(true) => {
+                            planning = true;
+                            "planning from the next turn — it proposes a plan and every write \
+                             and every command is denied until you approve it"
+                        }
+                        Some(false) => {
+                            planning = false;
+                            "working from the next turn — no plan is proposed and nothing waits \
+                             on you before it starts"
+                        }
+                    };
+                    // The line says it once; the status line keeps saying it. A
+                    // mode that outlives the turn it was set on has to be
+                    // readable from the screen rather than from memory.
+                    app.status.planning = planning;
+                    app.say(Tone::Muted, said);
+                }
                 Action::Expand => {
                     let lines = expand(&session, &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -1066,6 +1109,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // steered turn, byte for byte.
                     contained.then_some(containment.as_ref()).flatten(),
                     &capabilities,
+                    planning,
                     text,
                     // **This turn's own clock, not the session's.** What a reader
                     // wants of the row above the prompt is how long the thing in
@@ -1173,6 +1217,10 @@ async fn turn<P: Provider>(
     policy: &Policy,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
+    // Whether this turn proposes a plan before it works. The operator's `/plan`,
+    // and nothing else — a caps configuration decided it through 0.11.0, which
+    // is how every contained turn ended up stopping for one.
+    planning: bool,
     text: String,
     started: Instant,
 ) -> Result<(), String> {
@@ -1229,18 +1277,20 @@ async fn turn<P: Provider>(
     // one was an interrupt, and the observer's `Flow::Cancel` — the path a
     // contained turn has always been stopped by — ends a turn at the same step
     // boundary.
-    let mut contract = io_cli::contract::session(text.clone(), root.clone(), capabilities);
-    // **The responder and the plan gate ride containment, and only containment.**
-    // Registering a plan gate turns io-harness's planning phase ON for the turn
-    // that carries it: the agent proposes a plan and the run stops until somebody
-    // decides. That is what `[app.io-cli.containment]` asks for, and it is not
-    // what an ordinary prompt asks for — attaching them to every turn made every
-    // turn stop for a plan, which a real run showed within a minute.
-    if containment.is_some() {
-        contract = contract
-            .with_responder(std::sync::Arc::new(answerer))
-            .with_plan_gate(std::sync::Arc::new(gate));
-    }
+    // **Neither of the two seams rides containment any more.** The responder is
+    // unconditional: io-harness resolves it inside the tool dispatch on any run,
+    // so a question asked on an ordinary turn reaches the person watching instead
+    // of pausing the run with nobody offered it. The plan gate is the operator's
+    // switch, because registering one is what turns io-harness's planning phase
+    // ON — attached to every turn, every turn stopped for a plan, which a real
+    // run showed within a minute of 0.10.0 doing it.
+    let contract = io_cli::contract::session(
+        text.clone(),
+        root.clone(),
+        capabilities,
+        std::sync::Arc::new(answerer),
+        planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
+    );
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {
@@ -1496,7 +1546,7 @@ fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTu
 /// Two sources, because they are two different kinds of "more". The step's
 /// output is in the durable trace and is read back from it; the model's thinking
 /// is in neither the trace nor the next prompt — io-harness does not store it —
-/// so the only copy of a fitted thought is the one [`Events`] kept, and this is
+/// so the only copy of a fitted thought is the one [`Events`](io_cli::events::Events) kept, and this is
 /// where it is spent.
 fn expand(
     session: &Session,

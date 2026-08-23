@@ -6,6 +6,41 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-23
+
+The capabilities stopped being a mode.
+
+**A contained turn no longer proposes a plan unless you asked for one.** This is
+the one thing in this release that takes something away, so it is the first thing
+said: through 0.10.0 and 0.11.0, configuring `[app.io-cli.containment]` also
+registered io-cli's plan gate, and registering a gate is the entire condition for
+io-harness's planning phase — so every turn of a fan-out session stopped and
+proposed before it did anything. If that is the behaviour you were relying on,
+`/plan on` is where it lives now, and nothing else changed about it.
+
+**`/plan on | off`, off by default.** It takes effect from the next turn, and bare
+`/plan` reports which phase you are in without switching it, the same rule
+`/contain` follows. While the phase is on the status line says `planning` — it is
+not cleared when a run ends, because the phase outlives the turn it was set on and
+an operator watching an agent that will not write needs the reason on screen.
+
+**A question is answered on any turn.** The responder was on the contained turn
+only, so on an ordinary turn the agent asking what you meant paused the run with
+nobody offered the question. io-harness resolves a contract's responder inside the
+tool dispatch on any run, so there was never a reason for that; there is now an
+overlay wherever the question is asked.
+
+**The contained-mode notice stopped overstating what the mode gives.** It offered
+skills, MCP servers, language servers and a browser as things containment grants,
+and named a lost mid-turn steer as its price. Neither has been true since 0.11.0
+gave the ordinary turn a contract: all four are on every turn, and no turn takes a
+steer inbox. The notice now names the caps and one difference — this is the only
+turn that can fan out — and `/contain off` says "not contained" rather than
+promising a steering this product no longer has.
+
+Nothing is asked of io-harness; the pin stays at 0.66. A 0.11.0 configuration file
+is a valid 0.12.0 configuration file.
+
 ## [0.11.0] - 2026-08-20
 
 The transcript's vocabulary changed.
