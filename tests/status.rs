@@ -37,6 +37,61 @@ fn rendered(status: &Status, width: u16) -> String {
         .collect()
 }
 
+/// **F4 — the planning phase is visible while it is on, and outlives the run.**
+///
+/// It is not a run-scoped field, and that is the whole of it: `/plan on` holds
+/// until `/plan off`, and while it holds io-harness denies every write and every
+/// exec until a proposal is approved. A field cleared with the run would leave an
+/// operator watching an agent that will not write, with nothing on screen saying
+/// why.
+///
+/// Sabotage: clear it in `Status::forget_run` beside the run-scoped fields —
+/// under which only this test fails, and it fails at exactly the moment the
+/// operator most needs the answer, the turn after the last one ended.
+#[test]
+fn f4_the_planning_phase_is_named_and_survives_the_run() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+
+    assert!(
+        !rendered(&status, 200).contains("planning"),
+        "a session that never asked for it says nothing",
+    );
+
+    status.planning = true;
+    let on = rendered(&status, 200);
+    assert!(on.contains("planning"), "the word is on the line: {on}");
+
+    // The run ends, the mode does not.
+    status.forget_run();
+    let after = rendered(&status, 200);
+    assert!(
+        after.contains("planning"),
+        "the phase outlives the run that ran under it: {after}",
+    );
+
+    status.planning = false;
+    assert!(!rendered(&status, 200).contains("planning"));
+}
+
+/// **F4 — it is a word, not only a tone.**
+///
+/// The rule the whole product is held to, and the one a mode field cannot be
+/// exempt from: a screen reader and a monochrome terminal have to reach the same
+/// fact a colour does.
+#[test]
+fn f4_the_planning_phase_reads_without_colour() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.planning = true;
+
+    let mono: String = status
+        .line(200, &MONO)
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(mono.contains("planning"), "{mono}");
+}
+
 #[test]
 fn it_says_the_model_the_state_and_the_elapsed_time() {
     let mut status = Status::new("anthropic/claude-sonnet-4");

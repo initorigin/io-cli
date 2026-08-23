@@ -986,6 +986,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                              on you before it starts"
                         }
                     };
+                    // The line says it once; the status line keeps saying it. A
+                    // mode that outlives the turn it was set on has to be
+                    // readable from the screen rather than from memory.
+                    app.status.planning = planning;
                     app.say(Tone::Muted, said);
                 }
                 Action::Expand => {

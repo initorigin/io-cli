@@ -169,6 +169,19 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// Whether later turns propose a plan before they work.
+    ///
+    /// **Not run-scoped, and the only field on this line that is a standing
+    /// choice rather than an observation.** `/plan on` holds until `/plan off`,
+    /// and while it holds io-harness denies every write and every exec under a
+    /// `plan-gate` layer until a proposal is approved — so it must survive
+    /// [`Status::forget_run`], which every neighbouring field is cleared by. An
+    /// operator watching an agent that will not write needs the reason on screen,
+    /// and the turn it was set on is over by then.
+    ///
+    /// `false` renders as nothing at all, on the rule this line already holds:
+    /// a session that has not asked to plan is not a session planning zero times.
+    pub planning: bool,
     /// What this turn has drawn against the tree's shared ceiling, and what is
     /// left of it: `(drawn, remaining)`.
     ///
@@ -273,6 +286,7 @@ impl Status {
             containment: None,
             spend: None,
             plan: None,
+            planning: false,
             jobs: 0,
             mcp: (0, 0),
             lsp: 0,
@@ -476,6 +490,15 @@ impl Status {
         // What it outranks is the honest ordering too: the containment word says
         // how commands are sandboxed and does not change during a turn; this says
         // what the fan-out is spending, and changes every step.
+        // **Left of the numbers, because it is not one.** A standing mode that
+        // stops the agent writing outranks what the last turn spent: if a narrow
+        // terminal can hold one of them, it should hold the one that explains why
+        // nothing is happening. `Normal` rather than `Muted` for the same reason
+        // the background-job count is — it is a fact about what the agent may do,
+        // not a footnote about what it did.
+        if self.planning {
+            fields.push(Field::new("planning".to_string(), Tone::Normal));
+        }
         if let Some((drawn, remaining)) = self.spend {
             let text = match remaining {
                 Some(left) => format!(
