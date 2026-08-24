@@ -1153,20 +1153,18 @@ impl App {
         };
         let composer_rows = area.height - air_rows - activity_rows - live_rows - status_rows;
 
-        if let Some(activity) = activity {
-            frame.render_widget(
-                Paragraph::new(activity),
-                Rect {
-                    y: area.y + air_rows,
-                    height: 1,
-                    ..area
-                },
-            );
-        }
-
+        // **The work first, then the line that says it is working.** Up to
+        // 0.13.0 the streaming row was drawn under the activity line, so the
+        // newest words the agent had written read as a footnote to a spinner
+        // rather than as the transcript continuing — and the transcript is
+        // directly above them. The order is now: what was said, a row of air, and
+        // then the state of the turn, sitting immediately over the composer where
+        // the operator's attention already is. The blank is still the first row
+        // given up on a short terminal, and giving it up does not reorder
+        // anything.
         if live_rows > 0 {
             let live = Rect {
-                y: area.y + air_rows + activity_rows,
+                y: area.y,
                 height: live_rows,
                 ..area
             };
@@ -1177,8 +1175,19 @@ impl App {
             );
         }
 
+        if let Some(activity) = activity {
+            frame.render_widget(
+                Paragraph::new(activity),
+                Rect {
+                    y: area.y + live_rows + air_rows,
+                    height: 1,
+                    ..area
+                },
+            );
+        }
+
         let composer = Rect {
-            y: area.y + air_rows + activity_rows + live_rows,
+            y: area.y + live_rows + air_rows + activity_rows,
             height: composer_rows,
             ..area
         };
@@ -1193,7 +1202,7 @@ impl App {
 
         if status_rows > 0 {
             let status = Rect {
-                y: area.y + air_rows + activity_rows + live_rows + composer_rows,
+                y: area.y + live_rows + air_rows + activity_rows + composer_rows,
                 height: status_rows,
                 ..area
             };
