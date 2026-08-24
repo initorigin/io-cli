@@ -53,6 +53,31 @@ next paste of the same clipboard appended a fresh one — `[pasted text #2]`, th
 one word at a time, and a placeholder is matched by its exact text — so the first
 press had already stopped it standing for the block it named.
 
+**An attachment is `[Image #1]`.** A picture is no longer drawn when you attach
+it or when you send the turn: the marker is what the prompt carries, what the
+agent is told and what the transcript keeps, and it deletes as one thing exactly
+as a pasted block does. `/image 1` draws it when you want to see it — a fresh
+copy at the bottom, because a committed row belongs to the terminal's scrollback
+and nothing here can reach back into it. `/image` is no longer a second spelling
+of `/attach`.
+
+**Notices moved to the footer.** Stopping one turn used to leave three
+warning-coloured rows in your scrollback — `stopping at the next step boundary`,
+`stopping now`, `stopped` — sitting between two answers forever. None of them is
+part of the conversation. A notice now takes the footer's last row, replaces the
+one before it, and is gone at your next keystroke. What still reaches the
+transcript is what belongs to the record: what was authorised, what was answered,
+and why a turn failed.
+
+**A turn stopped before it did anything is taken back whole.** No step, nothing
+streamed, nothing on screen but the echo of your prompt: `esc` abandons it at
+once, the rows come off the screen, and the prompt goes back in the composer
+ready to edit or send again. Nothing is said, because nothing happened.
+
+**A rule over the composer**, matching the one under it. The prompt had a
+boundary on one side only, so it read as the tail of whatever the turn had last
+written rather than as the field it is.
+
 **A picture no longer lands on top of what was there.** The rows a committed
 image occupies were the viewport a moment ago, and nothing erased them, so an
 image that did not fill its box was drawn into a stale prompt and status line.
