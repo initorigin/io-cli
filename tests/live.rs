@@ -1713,7 +1713,7 @@ async fn live_f2_a_gate_the_operator_asked_for_reaches_the_run() {
 /// The pty driver, from this release's evidence directory.
 fn driver() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".ultraship/products/io-cli/evidence/0.11.0/drive.py")
+        .join(".ultraship/products/io-cli/evidence/0.13.0/drive.py")
 }
 
 /// A workspace, and a configuration that starts a session without the wizard.
@@ -1814,6 +1814,20 @@ fn captured(
     workspace: &std::path::Path,
     script: &str,
 ) -> String {
+    // Every capture before 0.13.0 ran against a terminal that speaks the Kitty
+    // keyboard protocol, because until F9 nothing here depended on the
+    // difference. That stays the default.
+    captured_on(name, config, workspace, script, true)
+}
+
+/// [`captured`], on a terminal that does or does not advertise the protocol.
+fn captured_on(
+    name: &str,
+    config: &std::path::Path,
+    workspace: &std::path::Path,
+    script: &str,
+    kitty: bool,
+) -> String {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -1836,6 +1850,11 @@ fn captured(
         .env("IO_CONFIG", config.join("io.toml"))
         .env("OPENROUTER_API_KEY", key())
         .env("IO_DRIVE_DEADLINE", "180")
+        // Whether the pty answers the Kitty keyboard-enhancement query, which is
+        // the whole of the difference F9 is about. Read by the driver itself, not
+        // by the child, so it goes on this command rather than into
+        // `IO_DRIVE_ENV`.
+        .env("IO_DRIVE_KITTY", if kitty { "1" } else { "0" })
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1997,6 +2016,139 @@ async fn live_f2_the_strings_the_owner_named_are_gone_from_a_real_run() {
     );
 }
 
+/// **0.13.0 F9.** The key reference names the newline key this terminal can
+/// report — in the same binary, twice, against two terminals.
+///
+/// The unit tests drive the decision both ways by handing it a boolean. What no
+/// unit test can reach is whether the boolean the binary uses is the one the
+/// terminal actually answered with, and that is the whole defect: a session that
+/// negotiated the protocol up and then printed `Alt+Enter`, or the reverse, would
+/// pass every test in `tests/keyboard.rs`.
+///
+/// `IO_DRIVE_KITTY=0` is the second terminal — the pty answers the enhancement
+/// query never, the way Apple's Terminal does, and crossterm's wait times out
+/// into a "no".
+#[tokio::test]
+#[ignore]
+async fn live_f9_the_key_reference_names_the_key_this_terminal_can_report() {
+    let (config, dir) = configured_workspace();
+
+    // `/help` is chosen from the palette rather than typed, for the reason 0.12.0
+    // wrote down: `/` opens the palette and the keystroke never reaches the
+    // composer, so the name is a filter and `Enter` puts the command in the
+    // composer, which a second `Enter` submits.
+    let script = "0\twait:for commands\n0.3\traw:/\n0\twait:Which command?\n\
+                  0.3\traw:help\n0.3\traw:\\r\n0\twait:/help\n0.3\traw:\\r\n\
+                  0\twait:Enter\n0.5\traw:\\x04\n";
+
+    let advertised = captured_on(
+        "live-keys-kitty.raw",
+        config.path(),
+        dir.path(),
+        script,
+        true,
+    );
+    let plain = captured_on(
+        "live-keys-plain.raw",
+        config.path(),
+        dir.path(),
+        script,
+        false,
+    );
+
+    // Whitespace dropped: a table row is drawn with cursor moves inside it, so a
+    // literal match asks the terminal for spaces it had no reason to write.
+    let squash = |text: &str| -> String {
+        strip_escapes(text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let advertised = squash(&advertised);
+    let plain = squash(&plain);
+
+    assert!(
+        advertised.contains("Shift+Enter"),
+        "a terminal that speaks the protocol was not told about `Shift+Enter`",
+    );
+    assert!(
+        plain.contains("Alt+Enter"),
+        "a terminal that cannot report `Shift+Enter` was not given a key that works",
+    );
+    assert!(
+        plain.contains("cannotreport"),
+        "the terminal that cannot report `Shift+Enter` was not told why it is missing",
+    );
+    // The two captures are the same binary, the same script and the same session,
+    // and they differ. That difference is the criterion.
+    assert_ne!(
+        advertised, plain,
+        "both terminals were told the same thing, so the answer was never read",
+    );
+}
+
+/// **0.13.0 F8.** The operator's second prompt has air above it, in a real run.
+///
+/// `tests/events.rs` asserts the rule against the renderer; this asserts it
+/// against the scrollback a terminal actually received, which is the one place
+/// the two could differ — the renderer's blank line is a `Line` and the
+/// terminal's is a row that something else may have written over.
+///
+/// The turn between the two prompts is a real one, so what precedes the second
+/// `›` is whatever that turn ended with: an answer, a tool cell, or a thought
+/// footer. Every one of those is a committed designed block, which is what the
+/// criterion is about.
+#[tokio::test]
+#[ignore]
+async fn live_f8_a_second_prompt_is_not_welded_to_the_block_above_it() {
+    let (config, dir) = configured_workspace();
+    std::fs::write(dir.path().join("greeting.txt"), "hello\n").expect("the fixture file");
+
+    let text = captured(
+        "live-gap.raw",
+        config.path(),
+        dir.path(),
+        "0\twait:for commands\n0.3\tRead greeting.txt and tell me in one sentence what it says.\n\
+         0\twait:ready\n0.5\tAnd what is the file called?\n0\twait:ready\n0.5\traw:\\x04\n",
+    );
+
+    // The transcript as a person would read it: escapes stripped, rows as rows.
+    let rows: Vec<String> = strip_escapes(&text)
+        .lines()
+        .map(|row| row.trim_end().to_string())
+        .collect();
+    let marks: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.trim_start().starts_with('›'))
+        .map(|(at, _)| at)
+        .collect();
+    assert!(
+        marks.len() >= 2,
+        "the capture holds {} goal lines and this test needs the second: {rows:#?}",
+        marks.len(),
+    );
+
+    // **Only "at least one", and the reason is what this capture is.** A pty
+    // capture is a byte stream, not a screen: a committed blank row and the
+    // boundary between two viewport frames look identical in it, and the frames
+    // are interleaved with the transcript on the same stream rows. So the half
+    // this can honestly answer is that the goal line is not welded to the block
+    // above it. "Never two blank rows" is a claim about rows as rows, and it is
+    // asserted where rows are rows — `f8_a_prompt_after_an_answer_is_one_blank_row_and_not_two`
+    // in `tests/events.rs`, against the `Vec<Line>` the renderer returns.
+    for at in marks.iter().skip(1) {
+        let above = rows
+            .get(at.saturating_sub(1))
+            .map(String::as_str)
+            .unwrap_or("");
+        assert!(
+            above.trim().is_empty(),
+            "the goal line at row {at} is welded to {above:?}",
+        );
+    }
+}
+
 /// **0.11.0 F5 and F6.** The two rows above the composer, in a real run.
 ///
 /// One capture for both, because they are one arrangement: the word and the clock
@@ -2133,4 +2285,167 @@ async fn live_f6_the_palette_opens_without_asking_the_terminal_anything() {
         closed.contains("\x1b[?2004l"),
         "the terminal was never handed back: {closed:?}",
     );
+}
+
+/// What the system prompt costs, measured on the wire rather than estimated.
+///
+/// Wraps the real provider, forwards the request untouched, and keeps the size of
+/// the system prompt it carried beside the `prompt_tokens` the vendor billed for
+/// it. Two runs of one question — one contract with io-cli's prompt, one built
+/// the way 0.12.0 built it — is the difference the release record carries.
+struct Measured<'a, P> {
+    inner: &'a P,
+    seen: Arc<Mutex<Vec<(usize, u64)>>>,
+}
+
+impl<P: io_harness::Provider + Sync> io_harness::Provider for Measured<'_, P> {
+    async fn complete(
+        &self,
+        request: io_harness::provider::CompletionRequest,
+    ) -> io_harness::Result<io_harness::provider::CompletionResponse> {
+        let bytes = request.system.len();
+        let response = self.inner.complete(request).await?;
+        let prompt_tokens = response
+            .usage
+            .as_ref()
+            .map_or(0, |usage| usage.prompt_tokens);
+        self.seen
+            .lock()
+            .expect("not poisoned")
+            .push((bytes, prompt_tokens));
+        Ok(response)
+    }
+}
+
+/// **The number the release record quotes.** Not an assertion about a size — a
+/// measurement, printed, of one question asked twice against one model.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_what_the_system_prompt_costs_on_one_model() {
+    let key = key();
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    for (label, prompt) in [("0.12.0 (builtin)", false), ("0.13.0 (appended)", true)] {
+        let dir = tempfile::tempdir().expect("a workspace");
+        let root = dir.path();
+        let store = Store::open(root.join("runs.db")).expect("a store");
+        let mut session = Session::open(&store, root).expect("a session");
+
+        let (answerer, _questions) = io_cli::intent::channel();
+        let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+        let contract = match prompt {
+            true => io_cli::contract::session(
+                "How are you?",
+                root.to_path_buf(),
+                &io_cli::contract::Capabilities::default(),
+                responder,
+                None,
+            ),
+            // 0.12.0's contract, field for field: the step cap and the responder,
+            // and no prompt.
+            false => io_harness::TaskContract::workspace("How are you?", root)
+                .with_max_steps(io_cli::contract::MAX_STEPS)
+                .with_responder(responder),
+        };
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let measured = Measured {
+            inner: &provider,
+            seen: Arc::clone(&seen),
+        };
+        session
+            .turn_bounded_observed(
+                &contract,
+                &measured,
+                &store,
+                &policy,
+                &DenyAll,
+                &io_harness::observe::Ignore,
+            )
+            .await
+            .expect("the turn runs");
+
+        for (bytes, tokens) in seen.lock().expect("not poisoned").iter() {
+            println!("{label}: system prompt {bytes} bytes, {tokens} prompt tokens billed");
+        }
+    }
+}
+
+/// **0.13.0 F5 — the manner is visible in a real answer.**
+///
+/// The one thing the suite cannot see. `tests/contract.rs` proves the prompt is
+/// attached, bounded and neutral, and that io-harness's own sections survive it;
+/// whether it makes an answer better is a person's judgement, taken once, on the
+/// reply this prints into `evidence/0.13.0/`.
+///
+/// **Nothing here asserts on the reply's words.** 0.4.0 paid for that lesson and
+/// 0.12.0 paid for it again: identical code, same goal, same model, different
+/// prose — and once a different outcome. What is asserted is what reached the
+/// store. `TurnKind::Reply` is io-harness's own answer to "was this turn answered
+/// rather than run": one completion, no step staged, no tool call, no approver
+/// consulted. A question about how the agent is doing that reaches for a tool is
+/// the defect this release exists to remove, and it is the ONE fact about the
+/// prose that is durable enough to assert.
+///
+/// The contract is built by `io_cli::contract::session`, not by the harness's own
+/// `default_contract` — which is the whole point: the prompt rides the contract,
+/// so a live arm that took a session's own turn would be exercising
+/// `SystemPrompt::Builtin` and passing.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f5_an_ordinary_question_is_answered_rather_than_worked_on() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("greeting.txt"), "hello\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::session(
+        "How are you?",
+        root.to_path_buf(),
+        &io_cli::contract::Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    );
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let result = session
+        .turn_bounded_observed(&contract, &provider, &store, &policy, &DenyAll, &observer)
+        .await
+        .expect("the turn runs");
+
+    let reply = result.reply.clone().unwrap_or_default();
+    println!("outcome: {:?}  kind: {:?}", result.outcome, result.kind);
+    println!("--- the reply, for evidence/0.13.0/ ---\n{reply}\n---");
+
+    assert_eq!(
+        result.kind,
+        io_harness::TurnKind::Reply,
+        "an ordinary question reached for a tool: {:?}",
+        result.outcome,
+    );
+    assert!(
+        !reply.trim().is_empty(),
+        "the turn was answered and the answer was empty",
+    );
+
+    // And no tool call happened on the wire either, which is the same claim read
+    // off the events rather than off the result — the two disagreeing would mean
+    // the interface and the store had different accounts of one turn.
+    let events = collected.lock().expect("not poisoned").clone();
+    let calls = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::ToolCall { .. }))
+        .count();
+    assert_eq!(calls, 0, "the turn made {calls} tool calls");
 }
