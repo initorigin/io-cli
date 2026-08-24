@@ -436,6 +436,12 @@ fn f6_a_quoted_path_with_a_space_and_a_narrow_no_break_space_is_attached() {
 /// One pair, and only a matching one. A file may legally have a quote in its
 /// name, and stripping every quote would be this crate overruling the
 /// filesystem.
+///
+/// **Unix only, because the premise is.** Windows rejects `"` in a filename
+/// outright — `ERROR_INVALID_NAME`, code 123 — so the file this is about cannot
+/// be created there and the rule it checks cannot be violated there either. CI
+/// found that, which is the point of running it on all three.
+#[cfg(unix)]
 #[test]
 fn f6_only_one_matching_pair_of_quotes_comes_off() {
     let dir = tempfile::tempdir().expect("a temporary directory");
