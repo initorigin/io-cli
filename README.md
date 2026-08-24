@@ -49,7 +49,7 @@ on one row and the keys and the posture on the next.](docs/screenshot.png)
 `io` does not enter the alternate screen and does not capture the mouse, in any
 mode, behind any flag. Every finished message, tool call and system line is
 committed into the terminal's own scrollback; eight rows at the bottom hold the
-activity line, the live row, two rows of composer and a three-row footer, and
+live row, the activity line, two rows of composer and a three-row footer, and
 only those repaint.
 
 So when the session ends the whole conversation is still there. Your terminal's
@@ -117,17 +117,22 @@ writes no key to disk at all.
 Two rows sit above the composer for exactly as long as a turn is in flight, and
 neither is there before the first one or after the last one ends.
 
-The top row is the **activity line**: a word for the turn, chosen once per step
-so it moves when the work does rather than on a timer of its own, the elapsed
-clock, and the token count the run has been billed for. On a narrow terminal it
-drops the count and then the clock, which is the rule the status line under it
-already follows.
-
-Under it, the **live row** says what is happening right now, in this order: the
+The top row is the **live row**: what is happening right now, in this order — the
 run is waiting on you, or a tool call is open and this is the verb and the path,
 or the model is thinking, or it is the tail of the answer as it streams. Waiting
 on a person outranks everything, because every other thing that row can say is
-about work going on without you.
+about work going on without you. It sits directly under the transcript, which is
+what it is the continuation of.
+
+Under it, past a row of air, is the **activity line**: a word for the turn, chosen
+once per step so it moves when the work does rather than on a timer of its own,
+the elapsed clock, and the token count the run has been billed for. On a narrow
+terminal it drops the count and then the clock, which is the rule the status line
+under it already follows.
+
+**These two swapped places in 0.13.1.** Through 0.13.0 the work was drawn under
+the line describing it, so the newest words the agent had written read as a
+footnote to a spinner.
 
 What lands in the scrollback is designed rather than defaulted. A tool call reads
 as a verb and a workspace-relative path — `Read src/lib.rs`, not `read_file` and
@@ -370,10 +375,18 @@ and propose first. If that is what you wanted, `/plan on` is where it lives now.
 and only the next turn**, and says so before the turn goes. Attach again for the
 question after it.
 
-The path is read through io-harness's own workspace, under the same policy as
-everything else — its documentation is explicit that this is the same gate a
-source read passes and not a second one — so an image outside what the session
-may read is refused exactly the way a file outside it already is. What may be
+A path **inside the workspace** is read through io-harness's own workspace, under
+the same policy as everything else — its documentation is explicit that this is
+the same gate a source read passes and not a second one — so an image the session
+may not read is refused exactly the way a file it may not read already is.
+
+A path **outside the workspace** is read directly, and that is deliberate. Since
+0.13.1 `/attach ~/Pictures/shot.png` works: the file an operator points at is
+almost never inside the repository, and every absolute path was refused before —
+which made the command unusable for the one thing most people attach. This is the
+only read in the product that is not the agent's, and it is the boundary `!`
+already crosses when it runs your own shell line. Quotes come off, so a path
+dragged in from Finder works with the spaces it has. What may be
 sent is io-harness's decision too: bmp, tiff, ico, tga and pnm are converted to
 PNG on the way in, jpeg, png, gif and webp go as they are, and svg, heic and avif
 are refused **by name**, because a refusal that says which format it was is one

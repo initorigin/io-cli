@@ -6,6 +6,41 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-24
+
+The session answers every keystroke.
+
+**The prompt froze when it grew past two rows, and it is fixed.** Pressing the
+newline key a second time — or running `/clear`, or expanding a large pasted block
+back to its full text — could stop the session dead for seconds, and on a measured
+run it stopped for 5.7 seconds and then answered nothing at all. All three do the
+same thing underneath: they re-place the inline viewport, which needs the terminal
+to itself for a moment, and the keyboard reader was taking it straight back every
+time it let go. A reader now stands aside while a placement wants the terminal.
+The same keystroke, measured on the same script against the same binary: **5.7
+seconds of silence before, 11 milliseconds after.**
+
+**A prompt written on more than one line is read back as more than one line.** A
+two-line prompt was echoed as one run-together row, because a rendered line is one
+row and a newline inside it draws as nothing.
+
+**`/attach` takes the path you actually have.** Three things were wrong with it at
+once. A path dragged in from Finder arrived quoted and the quotes were never taken
+off, so the extension read as `png"` and io said your screenshot was not an image.
+The quoting escaped every non-ASCII character, which includes the narrow no-break
+space macOS puts in every screenshot's name — so the path named no file even
+unquoted. And a path outside the workspace was refused outright, which is where
+screenshots live. `/attach ~/Pictures/shot.png` now works. A path inside the
+workspace still goes through the session's policy, unchanged; a path outside it is
+read directly, because that is the operator's own file and the same boundary `!`
+already crosses.
+
+**The work is now above the line that says it is working**, with a row of air
+between them. Through 0.13.0 the streaming row was drawn under the activity line,
+so the newest words the agent had written read as a footnote to a spinner rather
+than as the transcript continuing. If you have a screenshot or a recording of an
+older release, this is what looks different.
+
 ## [0.13.0] - 2026-08-24
 
 Five defaults that were never set.
