@@ -53,6 +53,7 @@ pub mod settings;
 pub mod shell;
 pub mod splash;
 pub mod status;
+pub mod stdin;
 pub mod term;
 pub mod theme;
 pub mod transcript;

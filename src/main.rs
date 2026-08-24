@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
@@ -1801,33 +1801,16 @@ struct Keyboard {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Who is allowed to read stdin right now.
-///
-/// A process has one terminal and this binary starts one reader over it, so the
-/// lock is a `static` rather than a handle threaded through five signatures that
-/// have nothing else to do with it. The reader holds it around each poll; a
-/// viewport being placed holds it for the placement, and thereby waits out an
-/// in-flight read rather than racing the cursor reply out of stdin.
-static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Take the stdin lock, ignoring a previous holder's panic.
-///
-/// A poisoned lock here means the reader thread died mid-poll. That is worth
-/// nothing to the session — there is no state behind this mutex to be left
-/// inconsistent, only the terminal — so the guard is taken anyway rather than
-/// turning a dead reader into a dead session.
-fn reading() -> std::sync::MutexGuard<'static, ()> {
-    READING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// Re-place the viewport at `height`, with nothing reading stdin while it lands.
+///
+/// The lock is [`io_cli::stdin`]'s, which is also where the reason it has to be
+/// fair is written down: without the reader standing aside, this call waits for a
+/// scheduling accident rather than for one poll.
 fn replace_viewport(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     height: u16,
 ) -> Result<(), String> {
-    let _parked = reading();
+    let _parked = io_cli::stdin::placing();
     screen.replace(height).map_err(|error| error.to_string())
 }
 
@@ -1855,24 +1838,23 @@ impl Keyboard {
                 // cannot: the palette re-places the viewport in the middle of a
                 // session, and the channel this reader owns is what the session
                 // is waiting on.
-                let held = reading();
-                // A short poll rather than a blocking read, so the flag is seen.
-                match crossterm::event::poll(Duration::from_millis(40)) {
-                    Ok(true) => match crossterm::event::read() {
-                        Ok(event) => {
-                            if tx.send(event).is_err() {
-                                break;
-                            }
+                // One call, because the poll and the read are one critical
+                // section — and because it is the call that stands aside for a
+                // placement. A reader that took the lock unconditionally and
+                // released it at the bottom of the loop would take it again
+                // before the waiter was ever scheduled, which is the freeze
+                // 0.13.1 exists to end. `io_cli::stdin` holds the whole rule.
+                match io_cli::stdin::next_event() {
+                    Ok(Some(event)) => {
+                        if tx.send(event).is_err() {
+                            break;
                         }
-                        Err(_) => break,
-                    },
-                    Ok(false) => {}
-                    Err(_) => break,
+                    }
+                    // Nothing typed this interval, or a placement wanted the
+                    // terminal. Both mean the same thing here: go round again.
+                    Ok(None) => {}
+                    Err(io_cli::stdin::Broken) => break,
                 }
-                // Dropped at the top of every iteration rather than held across
-                // the loop, so a caller waiting to place a viewport waits one
-                // poll interval and never longer.
-                drop(held);
             }
         });
         (
