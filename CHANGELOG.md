@@ -59,7 +59,10 @@ anybody types.
 
 **`/attach` is gone; drag a picture onto the prompt or paste it.** A command was
 something you had to be told about before you could use the feature. Pasting the
-same file again toggles between the marker and the path it stands for.
+same file again toggles between the marker and the path it stands for. The word
+is not kept as a hidden alias: `/attach` is answered the way any other word that
+is not a command is — `there is no /attach. The commands are:` — and the list
+under it is the truth.
 
 **An attachment is `[Image #1]`.** A picture is no longer drawn when you attach
 it or when you send the turn: the marker is what the prompt carries, what the

@@ -574,10 +574,10 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // **`/attach` is gone, and 0.13.1 is where it went.** A picture is
         // attached by dropping it on the prompt or pasting it — which is what an
         // operator already does in every other window they talk to a model in —
-        // and a command was a thing they had to be told about first. The word
-        // still parses to the sentence that says so rather than to nothing, so a
-        // reader who learned it is answered rather than ignored.
-        "attach" => Action::Image(None),
+        // and a command was a thing they had to be told about first. The word is
+        // not kept as an alias: an unknown command is answered by the same
+        // sentence every other unknown one is, and a command list with a hidden
+        // survivor in it is a list nobody can trust.
         // **The picture, on demand.** An attachment is `[Image #1]` on the prompt
         // and `[Image #1]` in the transcript — twenty rows of somebody's
         // screenshot in the middle of a conversation is not what a reader wants

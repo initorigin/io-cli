@@ -380,9 +380,10 @@ press, whichever backspace you use. `/image 1` draws the picture itself, at the
 bottom, when you want to look at it — a committed row belongs to your terminal's
 scrollback, so it cannot be opened in place.
 
-**`/attach` was removed in 0.13.1.** It was a command you had to be told about
-before you could use the feature, and dropping a picture into the window is what
-everyone already does.
+**`/attach` was removed in 0.13.1**, alias and all. It was a command you had to
+be told about before you could use the feature, and dropping a picture into the
+window is what everyone already does. Typing it is answered the way any other
+word that is not a command is.
 
 A path **inside the workspace** is read through io-harness's own workspace, under
 the same policy as everything else — its documentation is explicit that this is

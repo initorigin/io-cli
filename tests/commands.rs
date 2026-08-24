@@ -187,21 +187,30 @@ fn the_key_table_covers_every_key_this_release_binds() {
 /// stripping it belongs to `attach::prepare`, beside the read it guards, rather
 /// than in two places.
 #[test]
-fn attach_is_no_longer_a_command_and_says_so() {
+fn attach_is_no_longer_a_command_at_all() {
     // **`/attach` went away in 0.13.1.** A picture is attached by dropping it on
     // the prompt or pasting it, which is what an operator already does in every
     // other window they talk to a model in; a command was something they had to
-    // be told about first. The word still parses — to the sentence `/image` says
-    // when it is given nothing — so a reader who learned it is answered rather
-    // than met with silence.
-    assert_eq!(
-        commands::parse("attach @my pictures/shot.png", &defaults(), &DARK),
-        Action::Image(None),
-    );
-    assert_eq!(
-        commands::parse("attach", &defaults(), &DARK),
-        Action::Image(None),
-    );
+    // be told about first. The word is not kept as a hidden alias either: it is
+    // answered by whatever answers any other word that is not a command.
+    for line in ["attach @my pictures/shot.png", "attach"] {
+        let Action::Print(said) = commands::parse(line, &defaults(), &DARK) else {
+            panic!("{line:?} is still a command");
+        };
+        let text = text(&said);
+        assert!(
+            text.contains("there is no /attach"),
+            "the answer names the word that was typed: {text}",
+        );
+        assert!(
+            text.contains("/image"),
+            "and lists what there is instead: {text}",
+        );
+        assert!(
+            !text.contains("/attach "),
+            "the command list does not still carry it: {text}",
+        );
+    }
 
     // And `/image` is the command that survived, with a number after it.
     assert_eq!(
