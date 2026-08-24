@@ -484,7 +484,13 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
         "plan_rejected",
         "cancelled",
         "awaiting_recovery",
+        // All three spellings io-harness writes. Only the bare one was listed
+        // here, and `escalated_terminal` — the one an operator actually meets,
+        // because it is what a provider refusing the request outright ends a turn
+        // as — printed as a bare token with nothing under it.
         "escalated",
+        "escalated_terminal",
+        "escalated_retryable",
     ] {
         assert!(outcome_help(outcome).is_some(), "{outcome}");
     }

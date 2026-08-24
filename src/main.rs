@@ -1450,7 +1450,11 @@ async fn turn<P: Provider>(
     app.finished();
 
     match outcome {
-        Some(Err(error)) => app.say(Tone::Error, error.to_string()),
+        // The operator's sentence in front of the harness's own line — see
+        // `io_cli::failure`. A provider that will not take an image says so in the
+        // vocabulary of a routing layer, and "HTTP 404" is not something anybody
+        // can act on.
+        Some(Err(error)) => app.say(Tone::Error, io_cli::failure::said(&error)),
         // Abandoned. The run's own record is whatever io-harness had written by
         // the time the future was dropped, and saying so is the honest line: the
         // work above is real and the turn did not finish.

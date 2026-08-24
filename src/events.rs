@@ -1692,9 +1692,21 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
             "the run stopped in the middle of a call whose effect cannot be \
              established from here. Check whether it landed before asking again.",
         ),
-        "escalated" => Some(
+        // **All three spellings.** io-harness writes `escalated_terminal` for a
+        // failure it will not retry and `escalated_retryable` for one it would
+        // have, and only the bare `escalated` was matched here — so the outcome
+        // an operator actually meets, `error: escalated_terminal`, printed as a
+        // token with nothing under it. It is what a provider that refuses the
+        // request outright ends a turn as, which is the case a model that cannot
+        // take an image produces, and the line above it is now the sentence
+        // `crate::failure` writes.
+        "escalated" | "escalated_terminal" => Some(
+            "the provider refused the request and the run gave up. The line above \
+             says what it refused.",
+        ),
+        "escalated_retryable" => Some(
             "the provider kept failing and the run gave up. The retries are in the \
-             transcript above.",
+             transcript above; asking again may work.",
         ),
         _ => None,
     }

@@ -37,6 +37,7 @@ pub mod contract;
 pub mod diff;
 pub mod events;
 pub mod exec;
+pub mod failure;
 pub mod fleet;
 pub mod fuzzy;
 pub mod glyphs;
