@@ -53,6 +53,29 @@ pub enum Reply {
 /// **It has to exist.** The whole safety of this is that prose is never quoted
 /// at somebody: a sentence is not a path, and a path this process cannot see is
 /// not one either, so both are pasted exactly as they arrived.
+/// `text` with every `%XX` turned back into the byte it stands for.
+///
+/// Only what a `file://` URL needs. A sequence that is not valid UTF-8 once
+/// decoded is handed back as it came, because a path this cannot read is not a
+/// path this should guess at.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' && at + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&text[at + 1..at + 3], 16) {
+                out.push(byte);
+                at += 3;
+                continue;
+            }
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
 /// Every path a paste names, when it names paths at all.
 ///
 /// **A drop of three files is one paste**, and the terminal writes the paths on
@@ -70,42 +93,69 @@ pub fn pasted_paths(text: &str) -> Vec<String> {
     if let Some(one) = pasted_path(text) {
         return vec![one];
     }
-    for pieces in [split_lines(text), split_spaces(text)] {
-        if pieces.len() > 1 {
-            let found: Vec<String> = pieces.iter().filter_map(|piece| pasted_path(piece)).collect();
-            if found.len() == pieces.len() {
-                return found;
-            }
+    let lines = split_lines(text);
+    if lines.len() > 1 {
+        let found: Vec<String> = lines.iter().filter_map(|line| pasted_path(line)).collect();
+        if found.len() == lines.len() {
+            return found;
         }
     }
-    Vec::new()
+    split_greedy(text)
 }
 
-fn split_lines(text: &str) -> Vec<&str> {
-    text.lines().map(str::trim).filter(|line| !line.is_empty()).collect()
+fn split_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
-/// `text` split at spaces a backslash does not escape.
-fn split_spaces(text: &str) -> Vec<&str> {
-    let mut pieces = Vec::new();
-    let mut start = 0;
-    let mut escaped = false;
-    for (at, character) in text.char_indices() {
-        match character {
-            '\\' => escaped = !escaped,
-            ' ' if !escaped => {
-                if at > start {
-                    pieces.push(&text[start..at]);
-                }
-                start = at + 1;
+/// How many whitespace-separated pieces a paste may have before this stops
+/// trying to read it as a list of paths.
+///
+/// The scan below asks the filesystem about a prefix at a time, so a paragraph
+/// would be a great many questions to answer "no, that is prose". A drop or a
+/// copy of files is a handful of paths; anything past this is not one.
+const MOST_PIECES: usize = 64;
+
+/// `text` read as a sequence of paths, longest match first.
+///
+/// **This is the one that reads what `Cmd+C` in Finder writes.** A drop escapes
+/// the spaces inside a name; a copy does not — so `…/Screenshot 2026-08-24 at
+/// 8.52.27 PM.png` arrives as eight words, and two of those pasted together are
+/// sixteen with no marker anywhere saying where one path ends and the next
+/// begins. Splitting on spaces finds nothing that exists; splitting on nothing
+/// finds one thing that does not.
+///
+/// So the filesystem is what says where the boundary is: take the longest run of
+/// words from here that names a file, keep it, and start again after it. A run
+/// that names nothing ends the whole attempt, which is what stops a sentence
+/// mentioning a file from being read as one.
+fn split_greedy(text: &str) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 || words.len() > MOST_PIECES {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let mut took = None;
+        for end in (at + 1..=words.len()).rev() {
+            if let Some(path) = pasted_path(&words[at..end].join(" ")) {
+                took = Some((path, end));
+                break;
             }
-            _ => escaped = false,
+        }
+        match took {
+            Some((path, end)) => {
+                found.push(path);
+                at = end;
+            }
+            None => return Vec::new(),
         }
     }
-    if start < text.len() {
-        pieces.push(&text[start..]);
-    }
-    pieces
+    found
 }
 
 pub fn pasted_path(text: &str) -> Option<String> {
@@ -113,7 +163,22 @@ pub fn pasted_path(text: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.contains('\n') {
         return None;
     }
+    // A `file://` URL is what several applications put on the pasteboard instead
+    // of a path, and what it carries is percent-encoded — `%20` for every space
+    // in a screenshot's name.
     let unescaped = trimmed.trim_matches(['"', '\'']).replace("\\ ", " ");
+    let unescaped = match unescaped.strip_prefix("file://") {
+        // `file:///C:/Users/…` on Windows: the authority is empty and the path
+        // that follows opens with a slash the drive letter does not want.
+        Some(rest) => {
+            let decoded = percent_decoded(rest);
+            match decoded.strip_prefix('/') {
+                Some(drive) if drive.chars().nth(1) == Some(':') => drive.to_string(),
+                _ => decoded,
+            }
+        }
+        None => unescaped,
+    };
     let candidate = std::path::Path::new(&unescaped);
     if !candidate.exists() {
         return None;

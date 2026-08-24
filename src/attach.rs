@@ -125,9 +125,15 @@ fn unquote(path: &str) -> &str {
 /// downstream expands it.
 fn outside(root: &Path, path: &str) -> Option<std::path::PathBuf> {
     let expanded = match path.strip_prefix('~') {
+        // `HOME` on Unix, `USERPROFILE` on Windows, which is where a Windows
+        // shell puts the same fact. Asking only for `HOME` meant `~` was not a
+        // home directory on Windows at all — the path stayed literal and named
+        // nothing.
         Some(rest) => {
-            let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
-            home.join(rest.trim_start_matches('/'))
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(std::path::PathBuf::from)?;
+            home.join(rest.trim_start_matches(['/', '\\']))
         }
         None => std::path::PathBuf::from(path),
     };

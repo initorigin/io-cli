@@ -727,3 +727,97 @@ fn f16_several_paths_in_one_paste_are_several_pictures() {
     // Nor is a real path beside a word that names nothing.
     assert!(pasted_paths(&format!("{} nonsense", one.display())).is_empty());
 }
+
+/// F16 — what `Cmd+C` in Finder writes, which is not what a drop writes.
+///
+/// A drop escapes the spaces inside a name; a copy does not. So a screenshot
+/// arrives as eight words, and two of them pasted together are sixteen with
+/// nothing marking where one path ends and the next begins — which is why a copy
+/// of two pictures came out as `[pasted text #1, 210 characters]`. The
+/// filesystem is what says where the boundary is: the longest run of words from
+/// here that names a file.
+#[test]
+fn f16_paths_with_unescaped_spaces_are_found_by_asking_the_filesystem() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let one = dir.path().join("Screenshot 2026-08-24 at 8.52.27 PM.png");
+    let two = dir.path().join("Screenshot 2026-08-24 at 9.18.37 PM.png");
+    for path in [&one, &two] {
+        fs::write(path, support::png_bytes(2, 2)).expect("write");
+    }
+    let real = |path: &std::path::Path| {
+        path.canonicalize().expect("a real path").display().to_string()
+    };
+
+    // One, with four unescaped spaces in its name.
+    assert_eq!(pasted_paths(&one.display().to_string()), vec![real(&one)]);
+
+    // Two, run together with nothing but a space between them.
+    let both = format!("{} {}", one.display(), two.display());
+    assert_eq!(
+        pasted_paths(&both),
+        vec![real(&one), real(&two)],
+        "the boundary between two unescaped paths is where the filesystem puts it",
+    );
+
+    // A sentence that names a real file is still a sentence.
+    assert!(
+        pasted_paths(&format!("look at {}", one.display())).is_empty(),
+        "prose around a path is prose",
+    );
+}
+
+/// A `file://` URL is what several applications put on the pasteboard instead of
+/// a path, percent-encoded.
+#[test]
+fn f16_a_file_url_is_a_path() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let picture = dir.path().join("a picture.png");
+    fs::write(&picture, support::png_bytes(2, 2)).expect("write");
+    let real = picture
+        .canonicalize()
+        .expect("a real path")
+        .display()
+        .to_string();
+
+    let url = format!("file://{}", picture.display().to_string().replace(' ', "%20"));
+    assert_eq!(pasted_paths(&url), vec![real]);
+}
+
+/// F16 — `~` is a home directory on every platform this ships to.
+///
+/// `HOME` on Unix and `USERPROFILE` on Windows, which is where a Windows shell
+/// puts the same fact. Asking only for `HOME` meant `~` was not a home directory
+/// on Windows at all: the path stayed literal and named nothing.
+#[test]
+fn f16_a_tilde_is_the_home_directory_on_this_platform() {
+    let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+    else {
+        // Neither is set, which is a machine this cannot be asserted on rather
+        // than a failure. Said out loud instead of passing quietly.
+        println!("no HOME and no USERPROFILE: nothing to expand against");
+        return;
+    };
+    let picture = home.join("io-cli-tilde-test.png");
+    if fs::write(&picture, support::png_bytes(2, 2)).is_err() {
+        println!("{} is not writable: nothing to assert", home.display());
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let staged = prepare(
+        workspace.path(),
+        &Policy::permissive(),
+        true,
+        "~/io-cli-tilde-test.png",
+    );
+    let _ = fs::remove_file(&picture);
+
+    let staged = staged.unwrap_or_else(|error| panic!("~ was not expanded: {error}"));
+    assert_eq!(staged.media_type, "image/png");
+}
