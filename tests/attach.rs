@@ -821,3 +821,43 @@ fn f16_a_tilde_is_the_home_directory_on_this_platform() {
     let staged = staged.unwrap_or_else(|error| panic!("~ was not expanded: {error}"));
     assert_eq!(staged.media_type, "image/png");
 }
+
+/// F16 — the shape a macOS copy of several screenshots actually has.
+///
+/// Single-quoted, space-separated, and every name carrying a **narrow no-break
+/// space** — U+202F, which is what macOS writes between the time and the `AM`.
+/// That character is whitespace to `split_whitespace` and is not a space to the
+/// filesystem, so a scan that split the paste into words and joined them back
+/// together with a space rebuilt a path that named nothing, and four pictures
+/// came out as `[pasted text #1, 210 characters]`. A candidate is a slice of the
+/// original text now, never a reconstruction of it.
+#[test]
+fn f16_a_copy_of_several_screenshots_is_several_pictures() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let names = [
+        "Screenshot 2026-08-23 at 11.03.09\u{202f}PM.png",
+        "Screenshot 2026-08-23 at 11.03.15\u{202f}PM.png",
+        "Screenshot 2026-08-24 at 8.41.37\u{202f}AM.png",
+        "Screenshot 2026-08-24 at 9.18.37\u{202f}PM.png",
+    ];
+    let mut quoted = Vec::new();
+    let mut real = Vec::new();
+    for name in names {
+        let path = dir.path().join(name);
+        fs::write(&path, support::png_bytes(2, 2)).expect("write");
+        quoted.push(format!("'{}'", path.display()));
+        real.push(path.canonicalize().expect("a real path").display().to_string());
+    }
+
+    assert_eq!(
+        pasted_paths(&quoted.join(" ")),
+        real,
+        "four quoted screenshots are four pictures",
+    );
+    // One of them alone, still quoted, is still one.
+    assert_eq!(pasted_paths(&quoted[0]), vec![real[0].clone()]);
+    // And the name keeps the character it was written with.
+    assert!(real[0].contains('\u{202f}'), "{}", real[0]);
+}

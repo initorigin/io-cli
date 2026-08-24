@@ -476,6 +476,29 @@ impl App {
         // to know about first. What arrives is a path, and a path naming an image
         // that exists is the whole test; the driver does the staging, because the
         // session, the provider and the policy are its.
+        // **A way to see what a terminal actually inserts.** Set `IO_DEBUG_PASTE`
+        // to a file and every paste is appended to it verbatim, with the paths
+        // this crate found in it underneath. A paste is the one input this
+        // product cannot reproduce from the outside — what lands on the prompt is
+        // whatever the terminal made of whatever the pasteboard held — so when a
+        // copy of two pictures comes out as text, this is the only thing that
+        // says why.
+        if let Some(to) = std::env::var_os("IO_DEBUG_PASTE") {
+            let found = crate::composer::pasted_paths(text);
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(to)
+                .map(|mut file| {
+                    use std::io::Write;
+                    writeln!(
+                        file,
+                        "--- paste, {} bytes\n{text:?}\nfound {} path(s): {found:?}",
+                        text.len(),
+                        found.len(),
+                    )
+                });
+        }
         let paths = crate::composer::pasted_paths(text);
         if paths
             .iter()

@@ -133,16 +133,38 @@ const MOST_PIECES: usize = 64;
 /// that names nothing ends the whole attempt, which is what stops a sentence
 /// mentioning a file from being read as one.
 fn split_greedy(text: &str) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    // Where each word starts and ends, as byte offsets into `text`. Offsets and
+    // not the words themselves, because a candidate has to be a *slice of the
+    // original*: joining words back together with a space is what broke this the
+    // first time. macOS writes a narrow no-break space — U+202F — before the `AM`
+    // in every screenshot's name, and that character is whitespace to
+    // `split_whitespace` and not a space to the filesystem, so every rejoined
+    // candidate named a file that does not exist.
+    let mut words: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (at, character) in text.char_indices() {
+        match (character.is_whitespace(), start) {
+            (false, None) => start = Some(at),
+            (true, Some(from)) => {
+                words.push((from, at));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        words.push((from, text.len()));
+    }
     if words.len() < 2 || words.len() > MOST_PIECES {
         return Vec::new();
     }
+
     let mut found = Vec::new();
     let mut at = 0;
     while at < words.len() {
         let mut took = None;
         for end in (at + 1..=words.len()).rev() {
-            if let Some(path) = pasted_path(&words[at..end].join(" ")) {
+            if let Some(path) = pasted_path(&text[words[at].0..words[end - 1].1]) {
                 took = Some((path, end));
                 break;
             }
