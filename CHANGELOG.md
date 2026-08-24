@@ -35,6 +35,36 @@ workspace still goes through the session's policy, unchanged; a path outside it 
 read directly, because that is the operator's own file and the same boundary `!`
 already crosses.
 
+**The prompt wraps, and there is one cursor.** `tui-textarea` scrolls sideways
+rather than wrapping and paints its own block cursor, while everything io-cli
+measures assumes a wrap — so a long prompt was drawn clipped at the left, with
+two cursor blocks on it in two different places, and the viewport had grown for
+rows nothing used. The composer draws its own wrapped rows now: text that reaches
+the right edge continues on the next line, the window follows the insertion
+point, and the only cursor on screen is the terminal's own.
+
+**Pasting the same block again toggles it both ways.** Expanding a collapsed
+paste used to leave the block in the prompt with its placeholder gone, so the
+next paste of the same clipboard appended a fresh one — `[pasted text #2]`, then
+`#3`, then `#4`, piling up after text that was already there.
+
+**A pasted block deletes as one thing on every backwards deletion.**
+`Option+Backspace` and `Ctrl+W` used to eat `[pasted text #8, 464 characters]`
+one word at a time, and a placeholder is matched by its exact text — so the first
+press had already stopped it standing for the block it named.
+
+**A picture no longer lands on top of what was there.** The rows a committed
+image occupies were the viewport a moment ago, and nothing erased them, so an
+image that did not fill its box was drawn into a stale prompt and status line.
+
+**A failed turn says what it means before it quotes the provider.** Attaching a
+screenshot to a model that cannot look at one used to end with
+`error: escalated_terminal` and a routing layer's JSON about HTTP 404. Six
+conditions now get a sentence in front of the provider's own line — no image
+support, no credit, a rate limit, a rejected credential, an unroutable model, and
+a conversation past the context length. The provider's text is never replaced,
+only prefaced.
+
 **The work is now above the line that says it is working**, with a row of air
 between them. Through 0.13.0 the streaming row was drawn under the activity line,
 so the newest words the agent had written read as a footnote to a spinner rather

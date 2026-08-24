@@ -180,6 +180,7 @@ place the agent's manner is decided is a second thing to keep true.
 | --- | --- |
 | `Enter` | send the prompt |
 | `Shift+Enter` | new line — or `Alt+Enter`, `Ctrl+J`, or end the line with \ |
+| paste again | the same block again: shows it, then collapses it back |
 | `Up / Down` | walk prompt history |
 | `Ctrl+C` | stop the turn; again to stop it now; twice at an empty prompt, exit |
 | `Ctrl+D` | exit, on an empty prompt |
