@@ -548,16 +548,36 @@ impl Events {
                 // by eye at a scroll. The mark is accent and bold, and the words
                 // are bold in the ordinary foreground — a colour would make them
                 // one more coloured thing among many.
-                let mut lines = vec![Line::from(vec![
-                    Span::styled(
-                        theme.glyphs.marker,
-                        theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        goal.clone(),
-                        theme.style(Tone::Normal).add_modifier(Modifier::BOLD),
-                    ),
-                ])];
+                //
+                // **A prompt written on three lines is three rows.** A `Line` is
+                // one row and a newline inside a span is not a break — ratatui
+                // draws the cells and the newline is not one, so `abc\ndef` came
+                // back as `abcdef` and the operator could not read their own
+                // words. The rest of the prompt is indented under the first
+                // character rather than under the mark, so the block reads as one
+                // thing said once.
+                let marker = theme.glyphs.marker;
+                let indent = " ".repeat(marker.chars().count());
+                let mut lines: Vec<Line<'static>> = goal
+                    .split('\n')
+                    .enumerate()
+                    .map(|(row, line)| {
+                        Line::from(vec![
+                            Span::styled(
+                                if row == 0 {
+                                    marker.to_string()
+                                } else {
+                                    indent.clone()
+                                },
+                                theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                line.to_string(),
+                                theme.style(Tone::Normal).add_modifier(Modifier::BOLD),
+                            ),
+                        ])
+                    })
+                    .collect();
                 if self.plain {
                     lines.push(Line::from(Span::styled(
                         format!("  provider:{provider}"),
@@ -1672,9 +1692,21 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
             "the run stopped in the middle of a call whose effect cannot be \
              established from here. Check whether it landed before asking again.",
         ),
-        "escalated" => Some(
+        // **All three spellings.** io-harness writes `escalated_terminal` for a
+        // failure it will not retry and `escalated_retryable` for one it would
+        // have, and only the bare `escalated` was matched here — so the outcome
+        // an operator actually meets, `error: escalated_terminal`, printed as a
+        // token with nothing under it. It is what a provider that refuses the
+        // request outright ends a turn as, which is the case a model that cannot
+        // take an image produces, and the line above it is now the sentence
+        // `crate::failure` writes.
+        "escalated" | "escalated_terminal" => Some(
+            "the provider refused the request and the run gave up. The line above \
+             says what it refused.",
+        ),
+        "escalated_retryable" => Some(
             "the provider kept failing and the run gave up. The retries are in the \
-             transcript above.",
+             transcript above; asking again may work.",
         ),
         _ => None,
     }

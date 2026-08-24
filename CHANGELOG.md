@@ -6,6 +6,119 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-24
+
+The session answers every keystroke.
+
+**The prompt froze when it grew past two rows, and it is fixed.** Pressing the
+newline key a second time — or running `/clear`, or expanding a large pasted block
+back to its full text — could stop the session dead for seconds, and on a measured
+run it stopped for 5.7 seconds and then answered nothing at all. All three do the
+same thing underneath: they re-place the inline viewport, which needs the terminal
+to itself for a moment, and the keyboard reader was taking it straight back every
+time it let go. A reader now stands aside while a placement wants the terminal.
+The same keystroke, measured on the same script against the same binary: **5.7
+seconds of silence before, 11 milliseconds after.**
+
+**A prompt written on more than one line is read back as more than one line.** A
+two-line prompt was echoed as one run-together row, because a rendered line is one
+row and a newline inside it draws as nothing.
+
+**`/attach` takes the path you actually have.** Three things were wrong with it at
+once. A path dragged in from Finder arrived quoted and the quotes were never taken
+off, so the extension read as `png"` and io said your screenshot was not an image.
+The quoting escaped every non-ASCII character, which includes the narrow no-break
+space macOS puts in every screenshot's name — so the path named no file even
+unquoted. And a path outside the workspace was refused outright, which is where
+screenshots live. `/attach ~/Pictures/shot.png` now works. A path inside the
+workspace still goes through the session's policy, unchanged; a path outside it is
+read directly, because that is the operator's own file and the same boundary `!`
+already crosses.
+
+**The prompt wraps, and there is one cursor.** `tui-textarea` scrolls sideways
+rather than wrapping and paints its own block cursor, while everything io-cli
+measures assumes a wrap — so a long prompt was drawn clipped at the left, with
+two cursor blocks on it in two different places, and the viewport had grown for
+rows nothing used. The composer draws its own wrapped rows now: text that reaches
+the right edge continues on the next line, the window follows the insertion
+point, and the only cursor on screen is the terminal's own.
+
+**Pasting the same block again toggles it both ways.** Expanding a collapsed
+paste used to leave the block in the prompt with its placeholder gone, so the
+next paste of the same clipboard appended a fresh one — `[pasted text #2]`, then
+`#3`, then `#4`, piling up after text that was already there.
+
+**A pasted block deletes as one thing on every backwards deletion.**
+`Option+Backspace` and `Ctrl+W` used to eat `[pasted text #8, 464 characters]`
+one word at a time, and a placeholder is matched by its exact text — so the first
+press had already stopped it standing for the block it named.
+
+**The composer is one row at rest** and grows to what a prompt needs. The second
+row was there for a paste too big to read in one and was empty for every prompt
+anybody types.
+
+**`/attach` is gone; drag a picture onto the prompt or paste it.** A command was
+something you had to be told about before you could use the feature. Pasting the
+same file again toggles between the marker and the path it stands for. The word
+is not kept as a hidden alias: `/attach` is answered the way any other word that
+is not a command is — `there is no /attach. The commands are:` — and the list
+under it is the truth.
+
+**A marker deletes with the space written for it**, so one press removes one
+thing under every backspace — `Option+Backspace` used to eat `1]` off the end and
+leave `[Image #` on the prompt. The path a repeat paste toggles to is quoted, the
+way any pasted path is. And `/clear` resets the numbering: `[Image #1]` and
+`[pasted text #1]` count from one again, because the ones before them belonged to
+the conversation that ended.
+
+**An attachment is `[Image #1]`.** A picture is no longer drawn when you attach
+it or when you send the turn: the marker is what the prompt carries, what the
+agent is told and what the transcript keeps, and it deletes as one thing exactly
+as a pasted block does. `/image 1` draws it when you want to see it — a fresh
+copy at the bottom, because a committed row belongs to the terminal's scrollback
+and nothing here can reach back into it. `/image` is no longer a second spelling
+of `/attach`.
+
+**Notices moved to the footer.** Stopping one turn used to leave three
+warning-coloured rows in your scrollback — `stopping at the next step boundary`,
+`stopping now`, `stopped` — sitting between two answers forever. None of them is
+part of the conversation. A notice now takes the footer's last row, replaces the
+one before it, and is gone at your next keystroke. What still reaches the
+transcript is what belongs to the record: what was authorised, what was answered,
+and why a turn failed.
+
+**A drop of several files is several pictures.** A terminal writes a multiple
+selection on one line, separated by spaces with any space inside a name escaped —
+or one per line. Read as a single string none of that was a path, so dropping
+three pictures at once did nothing at all.
+
+**A turn stopped before it did anything is taken back whole.** No step, nothing
+streamed, nothing on screen but the echo of your prompt: `esc` abandons it at
+once, the rows come off the screen, and the prompt goes back in the composer
+ready to edit or send again. Nothing is said, because nothing happened.
+
+**A rule over the composer**, matching the one under it. The prompt had a
+boundary on one side only, so it read as the tail of whatever the turn had last
+written rather than as the field it is.
+
+**A picture no longer lands on top of what was there.** The rows a committed
+image occupies were the viewport a moment ago, and nothing erased them, so an
+image that did not fill its box was drawn into a stale prompt and status line.
+
+**A failed turn says what it means before it quotes the provider.** Attaching a
+screenshot to a model that cannot look at one used to end with
+`error: escalated_terminal` and a routing layer's JSON about HTTP 404. Six
+conditions now get a sentence in front of the provider's own line — no image
+support, no credit, a rate limit, a rejected credential, an unroutable model, and
+a conversation past the context length. The provider's text is never replaced,
+only prefaced.
+
+**The work is now above the line that says it is working**, with a row of air
+between them. Through 0.13.0 the streaming row was drawn under the activity line,
+so the newest words the agent had written read as a footnote to a spinner rather
+than as the transcript continuing. If you have a screenshot or a recording of an
+older release, this is what looks different.
+
 ## [0.13.0] - 2026-08-24
 
 Five defaults that were never set.

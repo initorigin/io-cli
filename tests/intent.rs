@@ -148,7 +148,7 @@ async fn the_overlay_refuses_a_paste_and_keeps_the_composer_clear() {
     app.open_intent(questions.recv().await.expect("asked"));
 
     assert!(
-        !app.paste("a paragraph from somewhere else", false),
+        app.paste("a paragraph from somewhere else", false) == io_cli::app::Pasted::Refused,
         "a modal surface refuses a paste",
     );
 

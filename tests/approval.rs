@@ -728,7 +728,7 @@ async fn f4_every_tone_that_means_something_renders_its_word() {
 
             (Some(word), Carrier::Transcript) => {
                 let mut app = App::new(DARK, "opus-5");
-                app.say(tone, "write to /etc/hosts");
+                app.record(tone, "write to /etc/hosts");
                 let text: String = app
                     .take_pending()
                     .iter()
@@ -793,7 +793,7 @@ async fn f7_a_paste_does_not_land_behind_an_open_approval() {
     app.open_approval(ask);
 
     assert!(
-        !app.paste("from the clipboard", false),
+        app.paste("from the clipboard", false) == io_cli::app::Pasted::Refused,
         "a question is on screen, and it takes the keyboard",
     );
     assert!(

@@ -42,6 +42,134 @@ pub enum Reply {
     Submitted(String),
 }
 
+/// `text` with every `%XX` turned back into the byte it stands for.
+///
+/// Only what a `file://` URL needs. A sequence that is not valid UTF-8 once
+/// decoded is handed back as it came, because a path this cannot read is not a
+/// path this should guess at.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' && at + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&text[at + 1..at + 3], 16) {
+                out.push(byte);
+                at += 3;
+                continue;
+            }
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+/// Every path a paste names, when it names paths at all.
+///
+/// **A drop of three files is one paste**, and the terminal writes the paths on
+/// one line separated by spaces, with any space inside a name escaped — or, in
+/// some terminals, one per line. Read as a single string none of that is a path,
+/// so a multiple selection dropped on the prompt did nothing at all: it fell
+/// through to being pasted as text.
+///
+/// The whole text is tried first, so a name with an unescaped space in it — which
+/// is what a copied path from a file manager looks like — is still one path. Then
+/// one path per line. Then a scan that asks the filesystem where one
+/// path ends and the next begins. A split is only accepted when *every* piece of
+/// it names something that exists, which is what keeps a sentence about two files
+/// from being read as two files.
+pub fn pasted_paths(text: &str) -> Vec<String> {
+    if let Some(one) = pasted_path(text) {
+        return vec![one];
+    }
+    let lines = split_lines(text);
+    if lines.len() > 1 {
+        let found: Vec<String> = lines.iter().filter_map(|line| pasted_path(line)).collect();
+        if found.len() == lines.len() {
+            return found;
+        }
+    }
+    split_greedy(text)
+}
+
+fn split_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// How many whitespace-separated pieces a paste may have before this stops
+/// trying to read it as a list of paths.
+///
+/// The scan below asks the filesystem about a prefix at a time, so a paragraph
+/// would be a great many questions to answer "no, that is prose". A drop or a
+/// copy of files is a handful of paths; anything past this is not one.
+const MOST_PIECES: usize = 64;
+
+/// `text` read as a sequence of paths, longest match first.
+///
+/// **This is the one that reads what `Cmd+C` in Finder writes.** A drop escapes
+/// the spaces inside a name; a copy does not — so `…/Screenshot 2026-08-24 at
+/// 8.52.27 PM.png` arrives as eight words, and two of those pasted together are
+/// sixteen with no marker anywhere saying where one path ends and the next
+/// begins. Splitting on spaces finds nothing that exists; splitting on nothing
+/// finds one thing that does not.
+///
+/// So the filesystem is what says where the boundary is: take the longest run of
+/// words from here that names a file, keep it, and start again after it. A run
+/// that names nothing ends the whole attempt, which is what stops a sentence
+/// mentioning a file from being read as one.
+fn split_greedy(text: &str) -> Vec<String> {
+    // Where each word starts and ends, as byte offsets into `text`. Offsets and
+    // not the words themselves, because a candidate has to be a *slice of the
+    // original*: joining words back together with a space is what broke this the
+    // first time. macOS writes a narrow no-break space — U+202F — before the `AM`
+    // in every screenshot's name, and that character is whitespace to
+    // `split_whitespace` and not a space to the filesystem, so every rejoined
+    // candidate named a file that does not exist.
+    let mut words: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (at, character) in text.char_indices() {
+        match (character.is_whitespace(), start) {
+            (false, None) => start = Some(at),
+            (true, Some(from)) => {
+                words.push((from, at));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        words.push((from, text.len()));
+    }
+    if words.len() < 2 || words.len() > MOST_PIECES {
+        return Vec::new();
+    }
+
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let mut took = None;
+        for end in (at + 1..=words.len()).rev() {
+            if let Some(path) = pasted_path(&text[words[at].0..words[end - 1].1]) {
+                took = Some((path, end));
+                break;
+            }
+        }
+        match took {
+            Some((path, end)) => {
+                found.push(path);
+                at = end;
+            }
+            None => return Vec::new(),
+        }
+    }
+    found
+}
+
 /// The path a paste names, if it names one that exists.
 ///
 /// Dragging a file into a terminal pastes its path, and a file manager's copy
@@ -53,12 +181,27 @@ pub enum Reply {
 /// **It has to exist.** The whole safety of this is that prose is never quoted
 /// at somebody: a sentence is not a path, and a path this process cannot see is
 /// not one either, so both are pasted exactly as they arrived.
-fn pasted_path(text: &str) -> Option<String> {
+pub fn pasted_path(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.contains('\n') {
         return None;
     }
+    // A `file://` URL is what several applications put on the pasteboard instead
+    // of a path, and what it carries is percent-encoded — `%20` for every space
+    // in a screenshot's name.
     let unescaped = trimmed.trim_matches(['"', '\'']).replace("\\ ", " ");
+    let unescaped = match unescaped.strip_prefix("file://") {
+        // `file:///C:/Users/…` on Windows: the authority is empty and the path
+        // that follows opens with a slash the drive letter does not want.
+        Some(rest) => {
+            let decoded = percent_decoded(rest);
+            match decoded.strip_prefix('/') {
+                Some(drive) if drive.chars().nth(1) == Some(':') => drive.to_string(),
+                _ => decoded,
+            }
+        }
+        None => unescaped,
+    };
     let candidate = std::path::Path::new(&unescaped);
     if !candidate.exists() {
         return None;
@@ -70,6 +213,29 @@ fn pasted_path(text: &str) -> Option<String> {
             .display()
             .to_string(),
     )
+}
+
+/// `path` wrapped in quotes, and nothing else done to it.
+///
+/// **A quoting, never a debug escape, and 0.13.1 is what that cost.** This wrote
+/// `format!("{path:?}")` up to 0.13.0, and `Debug` for a string escapes every
+/// character Rust considers unprintable — which includes the U+202F narrow
+/// no-break space macOS puts between the time and the `AM` in every screenshot's
+/// name. What landed on the prompt line was `\u{202f}` as six literal characters,
+/// so the path named no file even once its quotes came off, and `/attach` refused
+/// the operator's own screenshot in a sentence about image formats.
+///
+/// The mark is chosen rather than escaped into: a path carrying a double quote is
+/// wrapped in single quotes, one carrying both is left bare. That keeps this the
+/// exact inverse of [`crate::attach::unquote`], which takes off one matching pair
+/// and knows nothing about escapes — two halves that agree because neither of
+/// them has anything to agree about.
+fn quoted(path: &str) -> String {
+    match (path.contains('"'), path.contains('\'')) {
+        (false, _) => format!("\"{path}\""),
+        (true, false) => format!("'{path}'"),
+        (true, true) => path.to_string(),
+    }
 }
 
 pub struct Composer {
@@ -91,6 +257,14 @@ pub struct Composer {
     /// a file where the file should have been, and nothing on screen would say
     /// so. Here the collapsed form exists only inside this type.
     pastes: Vec<(String, String)>,
+    /// Markers standing for an attached image, oldest first.
+    ///
+    /// Unlike a paste's placeholder these expand to nothing: `[Image #1]` is
+    /// what the operator sees, what the agent is told, and what the transcript
+    /// records — the picture itself rides the turn as media rather than as text.
+    /// They are here for one reason: so that a marker deletes as one thing, the
+    /// way a pasted block does, instead of leaving `[Image #` on a prompt.
+    markers: Vec<(String, String)>,
 }
 
 impl Default for Composer {
@@ -111,6 +285,7 @@ impl Composer {
             recalled: None,
             draft: String::new(),
             pastes: Vec::new(),
+            markers: Vec::new(),
         }
     }
 
@@ -200,13 +375,70 @@ impl Composer {
 
     /// Rows the composer needs at this width, prompt marker included.
     pub fn height(&self, width: u16) -> u16 {
-        let usable = width.saturating_sub(PROMPT.len() as u16).max(1) as usize;
-        self.area
-            .lines()
-            .iter()
-            .map(|line| line.chars().count().div_ceil(usable).max(1) as u16)
-            .sum::<u16>()
+        let room = usize::from(width.saturating_sub(PROMPT.len() as u16)).max(1);
+        u16::try_from(self.wrapped(room).0.len())
+            .unwrap_or(u16::MAX)
             .max(1)
+    }
+
+    /// The prompt as the rows it actually occupies at `room` columns, and where
+    /// the insertion point is among them as `(row, column)`.
+    ///
+    /// **One function, because there used to be three answers and they
+    /// disagreed.** `height`, `rows_wanted` and `cursor` each did this
+    /// arithmetic, and the widget underneath did something else again: a
+    /// `TextArea` does not wrap, it scrolls sideways. So a prompt long enough to
+    /// wrap was drawn clipped at the left while io-cli had grown the viewport for
+    /// rows the widget was never going to use, and the cursor io-cli placed and
+    /// the block the widget drew sat in two different places — the two cursors
+    /// 0.13.1 was reported with. Everything visual now comes from here.
+    ///
+    /// A logical line that is exactly `room` wide takes one row, and the cursor
+    /// past its last character is on the next one. That is what an editor does,
+    /// and it is why the cursor's row can be one past the text's.
+    fn wrapped(&self, room: usize) -> (Vec<String>, (usize, usize)) {
+        let (at_row, at_column) = self.area.cursor();
+        let mut rows: Vec<String> = Vec::new();
+        let mut at = (0, 0);
+        for (number, line) in self.area.lines().iter().enumerate() {
+            let first = rows.len();
+            let characters: Vec<char> = line.chars().collect();
+            if characters.is_empty() {
+                rows.push(String::new());
+            } else {
+                for chunk in characters.chunks(room) {
+                    rows.push(chunk.iter().collect());
+                }
+            }
+            if number == at_row {
+                at = (first + at_column / room, at_column % room);
+                // The insertion point past the end of a row that is exactly full
+                // stays *on* that row, at the edge, rather than opening one
+                // below it. A terminal's own cursor does the same thing — it
+                // rests in the last column with the wrap pending — and the
+                // alternative is a composer that grows a row for a prompt whose
+                // text ends flush, which is what `f9_a_prompt_wider_than_the_
+                // terminal_asks_for_more_rows` has asserted since 0.11.0.
+                if at.0 >= rows.len() {
+                    at = (rows.len().saturating_sub(1), room);
+                }
+            }
+        }
+        if rows.is_empty() {
+            rows.push(String::new());
+        }
+        (rows, at)
+    }
+
+    /// The first visible row, given `height` rows to draw in.
+    ///
+    /// The window follows the insertion point rather than the end of the text, so
+    /// editing the middle of a long prompt keeps what is being edited on screen.
+    fn scroll(rows: usize, at: usize, height: usize) -> usize {
+        if height == 0 || rows <= height {
+            return 0;
+        }
+        at.saturating_sub(height - 1).min(rows - height)
     }
 
     /// Feed a key.
@@ -272,23 +504,14 @@ impl Composer {
             // is bad enough; the first of them is worse, because a placeholder
             // is matched by its exact text and an edited one silently stops
             // standing for the block it named.
-            (KeyCode::Backspace, m) if !m.contains(KeyModifiers::ALT) => {
-                self.editing();
-                match self.placeholder_before_cursor() {
-                    Some(placeholder) => {
-                        for _ in 0..placeholder.chars().count() {
-                            self.area.delete_char();
-                        }
-                        // The block goes with it. A prompt that still carried it
-                        // would send text nothing on screen stands for.
-                        self.pastes.retain(|(held, _)| held != &placeholder);
-                    }
-                    None => {
-                        self.area.delete_char();
-                    }
-                }
-                Reply::Idle
-            }
+            // **Every backwards deletion, not just the plain one.** This used to
+            // exclude `Alt`, so `Option+Backspace` — the delete-word every macOS
+            // reader has in their fingers — fell through to the widget and ate
+            // `[pasted text #8, 464 chara` one word at a time, leaving a
+            // placeholder that had silently stopped standing for anything.
+            // `Ctrl+W` is the same key by another name.
+            (KeyCode::Backspace, _) => self.delete_backwards(key),
+            (KeyCode::Char('w'), m) if m == KeyModifiers::CONTROL => self.delete_backwards(key),
             // History, but only from the edge of the text: inside a multiline
             // prompt the arrows have to move the cursor, or a long prompt cannot
             // be edited at all.
@@ -327,24 +550,50 @@ impl Composer {
         // something quotes it. The check is that it names a file that exists, so
         // ordinary prose is never quoted at somebody.
         if let Some(path) = pasted_path(text) {
-            self.area.insert_str(format!("{path:?}"));
+            self.area.insert_str(quoted(&path));
             return;
         }
 
-        // **The same block pasted twice is a request to see it.** The first
-        // paste collapses to a placeholder because a screenful of someone
-        // else's text is not a prompt you can read; pressing paste again on the
-        // same block is the operator saying they want it after all, so the
-        // placeholder standing for it is replaced by what it stands for.
-        if let Some((placeholder, held)) = self
-            .pastes
-            .iter()
-            .find(|(_, held)| held == text)
-            .cloned()
-            .filter(|(placeholder, _)| self.typed().contains(placeholder.as_str()))
+        // **The same block pasted again toggles what is on screen.** The first
+        // paste collapses to a placeholder because a screenful of someone else's
+        // text is not a prompt you can read; pressing paste again on the same
+        // block is the operator saying they want to see it, and pressing it once
+        // more is them saying they have seen enough.
+        //
+        // **It toggles both ways since 0.13.1**, and the missing half was a
+        // defect an operator hit in the first minute: expanding used to leave the
+        // block in the prompt with its placeholder gone, so the *next* paste of
+        // the same clipboard matched nothing and appended a fresh placeholder —
+        // `[pasted text #2, 462 characters]`, then `#3`, then `#4`, piling up
+        // after text that was already there. The block is looked up by what it
+        // holds, and what is on screen decides which way the toggle goes.
+        if let Some((placeholder, held)) =
+            self.pastes.iter().find(|(_, held)| held == text).cloned()
         {
-            let expanded = self.typed().replace(&placeholder, &held);
-            self.replace(&expanded);
+            let typed = self.typed();
+            if typed.contains(placeholder.as_str()) {
+                let expanded = typed.replace(&placeholder, &held);
+                self.replace(&expanded);
+                return;
+            }
+            if typed.contains(held.as_str()) {
+                let collapsed = typed.replace(&held, &placeholder);
+                self.replace(&collapsed);
+                return;
+            }
+            // **Neither form is in the prompt, so this is an insertion — but of a
+            // block this composer already knows, under the number it already
+            // has.** The operator expanded the paste and then edited it, which is
+            // the ordinary thing to do, and the edit means the block is no longer
+            // in the prompt verbatim. Minting `#2`, then `#3`, then `#4` for the
+            // same clipboard is what an operator was shown, and none of them
+            // could be toggled either, because each new placeholder stood for a
+            // block whose expanded form was already there under somebody's edits.
+            //
+            // One number per block, for the life of the prompt. The next press
+            // finds this placeholder on screen and expands it, so the toggle is
+            // working again on the very next keystroke rather than never.
+            self.area.insert_str(&placeholder);
             return;
         }
 
@@ -377,6 +626,67 @@ impl Composer {
         self.pastes.push((placeholder, text.to_string()));
     }
 
+    /// Put a marker for an attached image in the prompt.
+    ///
+    /// **The marker is the whole of what is sent about the picture.** It goes to
+    /// the model as the words `[Image #1]`, and the picture itself rides the turn
+    /// as media, staged on the session — so the prompt the operator reads, the
+    /// prompt the agent is given and the row the transcript keeps are the same
+    /// three characters of text. Nothing is drawn: an image in a terminal is
+    /// twenty rows of somebody's screenshot in the middle of a conversation, and
+    /// `/image` is there for the moment somebody wants to see it again.
+    ///
+    /// It deletes as one thing, exactly as a pasted block does.
+    pub fn attach(&mut self, marker: &str, path: &str) {
+        self.editing();
+        // **Pasting the same picture again toggles what is on the prompt**, the
+        // way pasting the same block of text does: the marker is what it reads as
+        // by default, and the path is there for an operator checking they
+        // attached the right file. Either way the picture itself is staged on the
+        // turn — this is a view of an attachment, not the attachment.
+        let typed = self.typed();
+        if let Some((held, held_path)) = self
+            .markers
+            .iter()
+            .find(|(_, held_path)| held_path == path)
+            .cloned()
+        {
+            // Quoted, for the same reason any pasted path is: a path with a
+            // space in it is two words to everything downstream unless something
+            // says otherwise, and the operator toggling to the path is usually
+            // checking they attached the file they meant.
+            let shown_path = quoted(&held_path);
+            if typed.contains(held.as_str()) {
+                let shown = typed.replace(&held, &shown_path);
+                self.replace(&shown);
+                return;
+            }
+            if typed.contains(shown_path.as_str()) {
+                let shown = typed.replace(&shown_path, &held);
+                self.replace(&shown);
+                return;
+            }
+            // Neither form is on the prompt any more, so this is an insertion of
+            // a picture this composer already knows — under the number it already
+            // has, never a new one.
+            self.area.insert_str(format!("{held} "));
+            return;
+        }
+        // A space after it, so the sentence an operator types next does not run
+        // into the bracket.
+        self.area.insert_str(format!("{marker} "));
+        self.markers.push((marker.to_string(), path.to_string()));
+    }
+
+    /// Whether this prompt already stands for `path`.
+    ///
+    /// Asked by the driver before it stages a picture a second time: a repeat
+    /// paste is a request to change what is on screen, not to attach the same
+    /// file twice.
+    pub fn attached(&self, path: &str) -> bool {
+        self.markers.iter().any(|(_, held)| held == path)
+    }
+
     /// Put `text` in the prompt, replacing whatever is there, cursor at the end.
     ///
     /// The slash palette's `Enter`, and its only caller. The command is *typed*
@@ -404,6 +714,7 @@ impl Composer {
         self.recalled = None;
         self.draft.clear();
         self.pastes.clear();
+        self.markers.clear();
     }
 
     /// Render into `area`, prompt marker included.
@@ -445,7 +756,26 @@ impl Composer {
             )),
             marker,
         );
-        frame.render_widget(&self.area, text);
+        // **The prompt's own rows, wrapped here rather than by the widget.**
+        // `tui-textarea` scrolls sideways instead of wrapping, and every other
+        // measurement in this product assumes a wrap — so drawing the widget
+        // meant a long prompt clipped at the left, a viewport grown for rows
+        // nothing used, and the widget's own block cursor sitting somewhere other
+        // than the terminal cursor io-cli had placed. The editing is still the
+        // widget's; the picture is this crate's.
+        let room = usize::from(text.width).max(1);
+        let (rows, (at_row, _)) = self.wrapped(room);
+        let top = Self::scroll(rows.len(), at_row, usize::from(text.height));
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(
+                rows.iter()
+                    .skip(top)
+                    .take(usize::from(text.height))
+                    .map(|row| Line::from(row.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            text,
+        );
 
         // The real terminal cursor is put where the insertion point is, and that
         // is done here rather than left to a caller. ratatui hides the cursor on
@@ -453,6 +783,10 @@ impl Composer {
         // only focus indicator a screen reader has — the criticism the whole
         // category is unusable for. Owning it in the widget that owns the
         // insertion point means no frame can forget.
+        //
+        // It is also now the *only* cursor on screen. The widget drew a second
+        // one — an inverted cell at its own idea of the insertion point — and the
+        // two agreed only while the prompt fitted on one row.
         let (x, y) = self.cursor(text);
         frame.set_cursor_position(Position { x, y });
     }
@@ -460,15 +794,19 @@ impl Composer {
     /// The cursor's position inside `area`, which is the text region rather than
     /// the whole composer.
     pub fn cursor(&self, text: Rect) -> (u16, u16) {
-        let (row, column) = self.area.cursor();
-        let width = text.width.max(1);
-        // Wrapped rows count: a cursor past the end of a visual row is on the next
-        // one, and reporting it off the right edge puts the terminal's cursor
-        // somewhere the text is not.
-        let column = column as u16;
+        // The same wrap the frame is drawn from, and the same scroll, so the
+        // caret cannot land on a row the prompt is not on. Reading a second
+        // arithmetic here is what put two cursors on the screen.
+        let room = usize::from(text.width).max(1);
+        let (rows, (at_row, at_column)) = self.wrapped(room);
+        let top = Self::scroll(rows.len(), at_row, usize::from(text.height));
+        let row = u16::try_from(at_row.saturating_sub(top)).unwrap_or(u16::MAX);
+        let column = u16::try_from(at_column).unwrap_or(u16::MAX);
         (
-            text.x + column % width,
-            (text.y + row as u16 + column / width).min(text.bottom().saturating_sub(1)),
+            // Never off the right edge: a caret resting past a full row sits in
+            // its last cell, which is where a terminal puts its own.
+            (text.x + column).min(text.right().saturating_sub(1)),
+            (text.y + row).min(text.bottom().saturating_sub(1)),
         )
     }
 
@@ -479,14 +817,38 @@ impl Composer {
     /// needs the rows those wraps take or the operator is typing into a window
     /// they cannot see the top of.
     pub fn rows_wanted(&self, width: u16) -> u16 {
-        let room = usize::from(width.saturating_sub(PROMPT.len() as u16)).max(1);
-        let rows: usize = self
-            .area
-            .lines()
-            .iter()
-            .map(|line| line.chars().count().div_ceil(room).max(1))
-            .sum();
-        u16::try_from(rows).unwrap_or(u16::MAX).max(1)
+        self.height(width)
+    }
+
+    /// Delete backwards, taking a placeholder as one thing when the cursor is at
+    /// the end of one.
+    ///
+    /// **A placeholder deletes as one thing, because it is one thing.**
+    /// Thirty-five presses to remove `[pasted text #4, 366 characters]` is bad
+    /// enough; the first of them is worse, because a placeholder is matched by
+    /// its exact text and an edited one silently stops standing for the block it
+    /// named. Which deletion key was pressed does not change that — a word-wise
+    /// delete leaves the same broken half a line as a character-wise one.
+    ///
+    /// Anything not sitting at the end of a placeholder is the widget's own
+    /// deletion, whichever one the key means.
+    fn delete_backwards(&mut self, key: KeyEvent) -> Reply {
+        self.editing();
+        match self.placeholder_before_cursor() {
+            Some((placeholder, spaces)) => {
+                for _ in 0..placeholder.chars().count() + spaces {
+                    self.area.delete_char();
+                }
+                // The block goes with it. A prompt that still carried it would
+                // send text nothing on screen stands for.
+                self.pastes.retain(|(held, _)| held != &placeholder);
+                self.markers.retain(|(held, _)| held != &placeholder);
+            }
+            None => {
+                self.area.input(key);
+            }
+        }
+        Reply::Idle
     }
 
     fn current_line(&self) -> &str {
@@ -570,26 +932,38 @@ impl Composer {
     /// one thing — and the first press already breaks it, because a placeholder
     /// is matched by its exact text and an edited one stops standing for
     /// anything.
-    fn placeholder_before_cursor(&self) -> Option<String> {
+    fn placeholder_before_cursor(&self) -> Option<(String, usize)> {
         let (row, column) = self.area.cursor();
         let line = self.area.lines().get(row)?;
         let before: String = line.chars().take(column).collect();
+        // **The trailing space belongs to the thing before it.** An image marker
+        // is written as `[Image #1] ` so the next word does not run into the
+        // bracket, and the cursor sits after that space — so a deletion took the
+        // space first and then, with a word-wise key, ate `1]` off the marker and
+        // left `[Image #` on the prompt. The space is counted here and goes with
+        // the marker, which is what makes one press remove one thing.
+        let trimmed = before.trim_end_matches(' ');
+        let spaces = before.chars().count() - trimmed.chars().count();
         self.pastes
             .iter()
             .map(|(placeholder, _)| placeholder)
-            .filter(|placeholder| before.ends_with(placeholder.as_str()))
+            .chain(self.markers.iter().map(|(marker, _)| marker))
+            .filter(|placeholder| trimmed.ends_with(placeholder.as_str()))
             .max_by_key(|placeholder| placeholder.chars().count())
             .cloned()
+            .map(|placeholder| (placeholder, spaces))
     }
 
     fn replace(&mut self, text: &str) {
         let recalled = self.recalled;
         let draft = std::mem::take(&mut self.draft);
         let pastes = std::mem::take(&mut self.pastes);
+        let markers = std::mem::take(&mut self.markers);
         self.clear();
         self.recalled = recalled;
         self.draft = draft;
         self.pastes = pastes;
+        self.markers = markers;
         self.area.insert_str(text);
         self.area.move_cursor(CursorMove::End);
     }

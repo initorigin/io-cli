@@ -73,13 +73,115 @@ pub struct Staged {
 /// product's path completion, so `/attach @docs/shot.png` is how the path gets
 /// typed in the first place, and the marker is still on the line when the command
 /// is submitted.
+/// A path with one matching pair of surrounding quotes taken off.
+///
+/// **The path a drag pastes arrives quoted, and until 0.13.1 that was fatal.**
+/// Dragging a file into the terminal — or copying one out of Finder — pastes its
+/// path, and [`crate::composer::Composer::paste`] wraps a path with a space in it
+/// so that everything downstream reads it as one word. What arrived here was
+/// therefore `"…/Screenshot 2026-08-24 at 8.00.01 AM.png"`, whose extension is
+/// `png"`, which `Media::source_type_for` correctly says is not an image — and
+/// the operator was told their screenshot was not a picture.
+///
+/// Exactly one pair, and only when both ends carry the same mark. A file named
+/// `"quoted".png` is legal on macOS and on Linux, and taking every quote off
+/// would be this function deciding it knows better than the filesystem. A path
+/// that is quoted twice is a path somebody typed oddly, and it is left as it is
+/// so the refusal names what they typed.
+fn unquote(path: &str) -> &str {
+    for mark in ['"', '\''] {
+        if let Some(inner) = path
+            .strip_prefix(mark)
+            .and_then(|rest| rest.strip_suffix(mark))
+        {
+            return inner;
+        }
+    }
+    path
+}
+
+/// The file this path names, when it is one the workspace cannot reach.
+///
+/// **`/attach` is the operator's own action, and 0.13.1 is where that started to
+/// matter.** Every other read in this product is the *agent's* — a tool call,
+/// gated by the policy, about a path the model chose. This one is a person
+/// pointing at a file they are looking at, and the file they point at is almost
+/// never inside the repository: a screenshot lives in `~/Pictures`, a diagram
+/// lives on the desktop, and `io_harness::tools::Workspace::resolve` refuses
+/// every absolute path outright. So io refused the operator's own screenshot,
+/// twice over — first for its quotes, then for its address.
+///
+/// It is the same boundary `!` already crosses: a shell line the operator typed
+/// runs in the operator's own shell, unpoliced, because it is theirs. An image
+/// they hand the agent is theirs in exactly the same way, and they could have
+/// pasted it into any other chat window without asking anybody.
+///
+/// The policy still governs everything inside the root, so a repository that
+/// denies `secrets/**` still denies it here — what is added is the case the gate
+/// could only ever answer with "no". `None` means "the workspace can reach this",
+/// and the caller reads it through the gate.
+///
+/// A leading `~` is a home directory: it is what an operator types, and nothing
+/// downstream expands it.
+fn outside(root: &Path, path: &str) -> Option<std::path::PathBuf> {
+    let expanded = match path.strip_prefix('~') {
+        // `HOME` on Unix, `USERPROFILE` on Windows, which is where a Windows
+        // shell puts the same fact. Asking only for `HOME` meant `~` was not a
+        // home directory on Windows at all — the path stayed literal and named
+        // nothing.
+        Some(rest) => {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(std::path::PathBuf::from)?;
+            home.join(rest.trim_start_matches(['/', '\\']))
+        }
+        None => std::path::PathBuf::from(path),
+    };
+    if !expanded.is_absolute() {
+        return None;
+    }
+    // Under the root, addressed absolutely: the gate can reach it, and should.
+    // Compared on the canonical forms where they are available, because
+    // `/var` and `/private/var` are the same directory on macOS and a raw
+    // comparison would send half the temporary directories on the machine down
+    // the ungated path.
+    let real = expanded.canonicalize().unwrap_or_else(|_| expanded.clone());
+    let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if real.starts_with(&base) {
+        return None;
+    }
+    Some(expanded)
+}
+
+/// `path` as the workspace addresses it: relative to the root, `/`-separated.
+///
+/// An absolute path under the root reaches this as an absolute path — the
+/// operator typed it, or the composer quoted it out of a drag — and the harness
+/// refuses those by construction. Anything already relative is handed back
+/// untouched.
+fn relative(root: &Path, path: &str) -> String {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return path.to_string();
+    }
+    let real = candidate.canonicalize();
+    let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    real.ok()
+        .and_then(|real| {
+            real.strip_prefix(&base)
+                .ok()
+                .map(|rest| rest.display().to_string())
+        })
+        .unwrap_or_else(|| path.to_string())
+}
+
 pub fn prepare(
     root: &Path,
     policy: &Policy,
     accepts_images: bool,
     path: &str,
 ) -> Result<Staged, String> {
-    let path = path.trim().trim_start_matches('@');
+    let path = unquote(path.trim()).trim_start_matches('@');
     if path.is_empty() {
         return Err("say which file: /attach @path/to/image.png".to_string());
     }
@@ -102,11 +204,18 @@ pub fn prepare(
         ));
     }
 
-    // The same gate as any read the agent makes. A denied path is refused with
-    // the harness's own sentence, which names the path and the rule.
-    let bytes = Workspace::with_policy(root, policy.clone())
-        .read_bytes(path)
-        .map_err(|error| error.to_string())?;
+    // **Inside the workspace: the same gate as any read the agent makes.**
+    // Outside it: the operator's own file, read directly. Which of the two this
+    // is decided in `outside`, and the reasoning is written there.
+    let bytes = match outside(root, path) {
+        Some(file) => std::fs::read(&file)
+            .map_err(|error| format!("{} cannot be read: {error}", file.display()))?,
+        // A denied path is refused with the harness's own sentence, which names
+        // the path and the rule.
+        None => Workspace::with_policy(root, policy.clone())
+            .read_bytes(&relative(root, path))
+            .map_err(|error| error.to_string())?,
+    };
 
     // Converts, or refuses by name and by bound. Both messages are the
     // harness's and are shown unchanged.
@@ -126,16 +235,17 @@ pub fn prepare(
 /// only" is the part an operator has to know in advance — it is what tells them
 /// to attach again rather than wondering why the follow-up question got a
 /// different answer.
-pub fn staged_note(staged: &Staged) -> String {
+pub fn staged_note(staged: &Staged, number: usize) -> String {
     let kind = staged
         .media_type
         .strip_prefix("image/")
         .unwrap_or(staged.media_type);
+    // The number first, because it is the handle: it is on the prompt as
+    // `[Image #1]` and it is what `/image 1` takes.
     format!(
-        "attached {} ({}, {} bytes) to the next turn, and only the next one",
+        "[Image #{number}] {} ({kind}, {}) — on the next turn only, /image {number} draws it",
         staged.path,
-        kind,
-        staged.media.byte_len(),
+        crate::picture::bytes(staged.media.byte_len()),
     )
 }
 

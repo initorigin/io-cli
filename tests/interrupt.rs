@@ -89,7 +89,14 @@ fn f6_ctrl_c_during_a_turn_interrupts_it_and_keeps_the_partial_output() {
 fn f6_ctrl_c_twice_at_an_idle_composer_exits() {
     let mut app = App::new(DARK, "m");
     assert_eq!(app.key(control('c')), Command::None, "the first one warns");
-    let warning = text_of(&app.take_pending());
+    // In the footer since 0.13.1: it answers the key just pressed and is gone at
+    // the next one, rather than living in the scrollback for the session's life.
+    let warning = app
+        .status
+        .notice
+        .as_ref()
+        .map(|(_, text)| text.clone())
+        .unwrap_or_default();
     assert!(
         warning.contains("again"),
         "the first Ctrl+C should say what the second one does: {warning:?}",
