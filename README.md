@@ -136,6 +136,37 @@ io-harness sent, because a verb invented for it would mean nothing. A turn ends
 on its answer: the run's step and token counts are on the status line beside the
 provider, which is where every other number in this interface lives.
 
+## The agent's manner
+
+From 0.13.0 every turn carries a system prompt `io` wrote. Before it, every turn
+ran io-harness's built-in description, which names the tools and says nothing
+about how to answer — so an ordinary question came back from a model with a tool
+catalogue and no idea what it was.
+
+What the prompt sets is small and deliberate: what `io` is, that the person
+reading is at a terminal in a pane a few rows tall, that the answer comes first
+and briefly, that work is reported in the past tense once it is done rather than
+narrated in advance, and that the output is monospaced text about eighty columns
+wide — fenced code, no wide tables, no markup that expects a browser.
+
+**It is appended, not substituted.** io-harness composes it into the prompt it
+was already building, between its own tool catalogue and the boundary section, so
+the harness keeps its framing, its catalogue, the sentence that decides how a turn
+ends, and everything it says about what this run may do. `io` adds a manner; it
+does not stand in for the description of the request.
+
+It names no model and no vendor, because the model is yours to choose and there
+are hundreds of them. It claims no tool, no skill and no permission, because what
+the agent may reach is decided by the contract this turn was given — a prompt
+that promised a browser would be lying on every session that has not configured
+one.
+
+**Per-repository voice belongs in the repository.** io-harness discovers what
+`[instructions]` points at — `AGENTS.md` by default — and composes it into the
+same prompt as a clearly attributed section. That is where "in this codebase, do
+it this way" goes. There is no `[app.io-cli]` key for the prompt itself: a second
+place the agent's manner is decided is a second thing to keep true.
+
 ## Keys
 
 <!-- keys:start -->
@@ -167,6 +198,15 @@ for `Enter` and for `Shift+Enter` and the newline binding is unreachable. What i
 pushed is popped again on every path out of the process, a panic included. The
 trailing-backslash fallback still works everywhere, and on a terminal that does
 not advertise the protocol nothing is written at all.
+
+**And from 0.13.0 `io` tells you which one that is.** The table above is the
+shipped naming, and a README is read on a machine other than the one it
+describes — so `/help` and the wizard's closing screen name the key *this*
+terminal can report. On one that cannot report `Shift+Enter` they name
+`Alt+Enter` and the trailing backslash, and say the key is unreportable here
+rather than leaving you to press it and watch a half-written prompt go to the
+model. Nothing about the composer changed: `Shift+Enter`, `Alt+Enter`, `Ctrl+J`
+and a trailing `\` all still work wherever the terminal can distinguish them.
 
 ### Moving a key
 

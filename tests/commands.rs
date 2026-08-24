@@ -1,7 +1,7 @@
 //! The slash commands and the keybinding table.
 
 use io_cli::commands::{self, Action, COMMANDS, KEYS};
-use io_cli::keys::Keys;
+use io_cli::keys::{Keys, Newline};
 use io_cli::theme::DARK;
 
 /// The bindings a session with no `[app.io-cli.keys]` runs under. What each of
@@ -124,7 +124,10 @@ fn an_unknown_command_says_what_does_exist() {
 
 #[test]
 fn help_prints_every_key_and_every_command() {
-    let printed = text(&commands::help(&defaults(), &DARK));
+    // `KEYS` is the table for a terminal that can report `Shift+Enter`, so the
+    // naming this renders with is that one. What the *other* terminal's table
+    // says is F9's own question and `tests/keyboard.rs` asks it.
+    let printed = text(&commands::help(&defaults(), &DARK, Newline::of(true)));
     for (key, what) in KEYS {
         assert!(printed.contains(key), "{key} is missing from /help");
         assert!(printed.contains(what), "{key}'s description is missing");

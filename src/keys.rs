@@ -36,6 +36,16 @@
 //! operator inside a running agent. Both spellings of that mistake are refused
 //! out loud: naming `interrupt`, and binding anything *else* onto `ctrl+c`.
 //!
+//! # What the newline key is called
+//!
+//! [`Newline`] is the other thing in here, and it is not a binding: the composer
+//! has taken four spellings of "put a new line in the prompt" since 0.6.0 and
+//! none of them moves. What it decides is which one io *names*, which depends on
+//! whether the terminal can report `Shift+Enter` at all. It lives beside the
+//! bindings because it answers the same question every surface in this module
+//! answers — *what do I tell the operator to press* — and because a second module
+//! for one decision is a second place that answer could be given differently.
+//!
 //! # What a bad line does
 //!
 //! Nothing fatal, and nothing silent. An unreadable value leaves its action on
@@ -469,6 +479,102 @@ impl Keys {
         } else {
             Some(Hit::Fire(action))
         }
+    }
+}
+
+/// How this session names the key that puts a new line in the prompt.
+///
+/// **Nothing about the composer is decided here.** It has taken four spellings
+/// since 0.6.0 — `Shift+Enter`, `Alt+Enter`, `Ctrl+J` and a trailing `\` — and
+/// all four still work (`src/composer.rs:215`). What this decides is which of
+/// them io *names*, and that is a different question with a different answer per
+/// terminal: `Shift+Enter` needs the Kitty keyboard protocol, and without it a
+/// terminal sends the identical byte for `Enter` and for `Shift+Enter` (see
+/// [`crate::term::KEYBOARD_FLAGS`]). On such a terminal a table that says
+/// `Shift+Enter` is naming the key that *sends* the prompt, and the operator who
+/// presses it watches a half-written goal go to the model with no way to tell an
+/// unreportable key from a broken product.
+///
+/// So the surfaces that name it are handed one of these rather than each writing
+/// the key into its own string: the key reference [`crate::commands::rows`]
+/// renders, and the wizard's closing screen ([`crate::wizard::Wizard::summary_at`]).
+///
+/// [`Newline::of`] is the whole decision and it is **pure** — its argument is the
+/// answer, not the question — the way [`crate::theme::Background::from_colorfgbg`]
+/// takes the string [`crate::theme::Background::detect`] read. That split is what
+/// a test can drive both ways, and it is what stops the failure this exists to
+/// prevent: a surface that worked the answer out for itself is a session where
+/// two screens name two different keys, and the reader has no way to know which
+/// one this terminal will honour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Newline {
+    /// The first column of a key table: the chord to press for a new line.
+    pub key: &'static str,
+    /// The second column: what it does, and the spellings that work beside it.
+    /// It carries the em dash [`crate::commands`]'s table substitutes a glyph
+    /// for, so it reads on an ASCII terminal too.
+    pub what: &'static str,
+    /// The same fact for a surface with no table to put it in, one short line
+    /// per row and no glyph in any of them.
+    ///
+    /// Two rows where there is a caveat to say, rather than one long sentence:
+    /// the wizard's paragraph does not wrap and clips from the right, and the
+    /// caveat is precisely the half a clipped line would lose.
+    pub said: &'static [&'static str],
+}
+
+impl Newline {
+    /// The decision, given whether the terminal advertises the protocol.
+    ///
+    /// `advertised` is [`crate::term::keyboard_advertised`]'s answer, passed in.
+    /// Nothing here reads the environment, queries a terminal or looks at a
+    /// `TERM` variable, which is what makes both arms reachable from a test on a
+    /// machine that is neither.
+    ///
+    /// The `true` arm is also the row `crate::commands::KEYS` ships and the
+    /// README prints — documentation is read on a machine other than the one it
+    /// describes, so the shipped table names the key the product prefers and
+    /// this is what corrects it for the terminal actually in front of the
+    /// operator. `tests/keyboard.rs` asserts the two are the same pair, so the
+    /// wording cannot be changed in one place only.
+    pub const fn of(advertised: bool) -> Self {
+        if advertised {
+            Self {
+                key: "Shift+Enter",
+                what: "new line \u{2014} or `Alt+Enter`, `Ctrl+J`, or end the line with \\",
+                said: &["Shift+Enter puts a new line in the prompt."],
+            }
+        } else {
+            Self {
+                key: "Alt+Enter",
+                // `Shift+Enter` is *said* rather than listed. Dropping it in
+                // silence would leave every reader who has seen it in the README
+                // or in another product wondering whether io forgot it, and they
+                // would go and press it to find out — which is the keystroke this
+                // whole decision exists to keep them from.
+                what: "new line \u{2014} or `Ctrl+J`, or end the line with \\; \
+                       this terminal cannot report `Shift+Enter`",
+                said: &[
+                    "Alt+Enter puts a new line in the prompt, or end the line with \\.",
+                    "This terminal cannot report Shift+Enter.",
+                ],
+            }
+        }
+    }
+
+    /// The decision for the terminal this process is attached to.
+    ///
+    /// It **reads** the answer [`crate::term::keyboard_advertised`] recorded when
+    /// the session attached; it never asks the question. Asking writes a query to
+    /// the tty and waits up to two seconds for a reply, which is a thing to do
+    /// once at startup and never on the way to drawing a table — and doing it
+    /// here would also make every test that renders one of these surfaces depend
+    /// on the terminal `cargo test` happened to run under.
+    ///
+    /// A process that never attached — every test, and `io exec` — gets `false`,
+    /// which is the honest answer for a terminal that has not said otherwise.
+    pub fn here() -> Self {
+        Self::of(crate::term::keyboard_answer())
     }
 }
 

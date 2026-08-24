@@ -3,9 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use io_cli::contract::{session, Capabilities};
+use io_cli::contract::{session, Capabilities, PROMPT};
 use io_cli::settings::CliSettings;
 use io_harness::TaskContract;
+
+mod support;
 
 fn root() -> PathBuf {
     PathBuf::from("/tmp/io-cli-contract")
@@ -23,15 +25,17 @@ fn root() -> PathBuf {
 /// which only this test fails — and it fails by changing every existing
 /// operator's turn without saying so.
 ///
-/// **Two fields are deliberately not io-harness's own.** The first is the step
+/// **Three fields are deliberately not io-harness's own.** The first is the step
 /// cap.
 /// `TaskContract::workspace` caps a turn at twelve, which a turn that reads a
 /// repository and writes a file reaches with the work half done — an operator
 /// saw `error: step_cap_reached` under an unfinished answer, which is a ceiling
 /// reported as a failure. The second is the responder, which 0.12.0 puts on every
 /// turn rather than only a contained one — a question asked on an ordinary turn
-/// used to pause the run with nobody offered it. Everything else still has to
-/// match, and this test is what says so.
+/// used to pause the run with nobody offered it. The third is 0.13.0's own system
+/// prompt, which every turn carries because `SystemPrompt::Builtin` says what the
+/// tools are and nothing about how to answer. Everything else still has to match,
+/// and this test is what says so.
 #[test]
 fn nothing_configured_is_the_contract_the_session_built_before() {
     let (answerer, _questions) = io_cli::intent::channel();
@@ -45,12 +49,304 @@ fn nothing_configured_is_the_contract_the_session_built_before() {
     );
     let default = TaskContract::workspace("bring the docs up to date", root())
         .with_max_steps(io_cli::contract::MAX_STEPS)
-        .with_responder(responder);
+        .with_responder(responder)
+        .with_system_prompt(io_harness::SystemPrompt::Append(PROMPT.to_string()));
 
     assert_eq!(format!("{built:?}"), format!("{default:?}"));
     // The number is a judgement and may move; what may not is that a turn stops
     // for a reason other than the cap. `a_turn_is_not_capped_at_twelve_steps`
     // reads it off the built contract, which is where it can actually be wrong.
+}
+
+/// **F1 — the prompt is on the contract itself, so both arms carry it.**
+///
+/// The difference the test above allows, asserted as the one it is: a contract
+/// built here is `Append` with io-cli's own constant, and it is that whether the
+/// turn can fan out or not — `f6_both_arms_are_handed_one_contract` is what makes
+/// "the contract" singular, and this is what puts the prompt on it.
+///
+/// Sabotage: attach the prompt inside one arm's branch in `src/main.rs` — under
+/// which this fails, and it fails by recreating the arm drift 0.12.0's F6 exists
+/// to prevent.
+#[test]
+fn every_turn_carries_io_clis_own_system_prompt() {
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+    let built = session(
+        "bring the docs up to date",
+        root(),
+        &Capabilities::default(),
+        responder,
+        None,
+    );
+
+    assert_eq!(
+        built.prompt,
+        io_harness::SystemPrompt::Append(PROMPT.to_string()),
+        "the manner is appended to io-harness's own description, not put in place of it",
+    );
+}
+
+/// **F2 — the prompt names no provider and no model.**
+///
+/// io-cli is pointed at a catalogue of four hundred models by a flag, so a prompt
+/// that told one of them what it was would be wrong on every other. The needles
+/// are assembled from fragments at run time so this file does not match itself,
+/// the way `tests/timing.rs` does it.
+///
+/// Sabotage: write `You are Claude` into the constant — under which only this
+/// fails, and it fails on the one property that makes the prompt shippable
+/// against a catalogue nobody here chose.
+#[test]
+fn the_prompt_names_no_vendor_and_no_model() {
+    let lowered = PROMPT.to_ascii_lowercase();
+    let vendors = [
+        ["open", "router"].concat(),
+        ["anth", "ropic"].concat(),
+        ["open", "ai"].concat(),
+        ["cla", "ude"].concat(),
+        ["g", "pt"].concat(),
+        ["deep", "seek"].concat(),
+        ["gem", "ini"].concat(),
+        ["ll", "ama"].concat(),
+        ["mis", "tral"].concat(),
+        ["gr", "ok"].concat(),
+        ["qw", "en"].concat(),
+    ];
+    for vendor in &vendors {
+        assert!(
+            !lowered.contains(vendor.as_str()),
+            "the prompt names `{vendor}`, and the model reading it is chosen by a flag",
+        );
+    }
+
+    // And no first-person claim about a family, which is the same defect written
+    // without a brand name in it.
+    for claim in [
+        ["i am a", " language model"].concat(),
+        ["i am an", " ai assistant"].concat(),
+        ["trained by", " "].concat(),
+    ] {
+        assert!(
+            !lowered.contains(claim.trim_end()),
+            "the prompt claims `{claim}` on behalf of a model it does not know",
+        );
+    }
+}
+
+/// **F3 — the prompt states no capability io-harness has not granted.**
+///
+/// What the agent may reach is composed around this text by the harness, from the
+/// contract — so a prompt naming a tool would be lying on every turn whose
+/// contract omits it, which for a browser tool is every default session. The
+/// names are read out of the locked io-harness source rather than copied here,
+/// through the reader `tests/support/mod.rs` already has for `EventKind` and
+/// `RunOutcome`.
+///
+/// Sabotage: add "you can browse the web" to the constant — under which only this
+/// fails.
+#[test]
+fn the_prompt_names_no_tool_the_contract_may_not_carry() {
+    let lowered = PROMPT.to_ascii_lowercase();
+    let names = support::harness_tool_names();
+    assert!(
+        names.len() > 20,
+        "the reader found {} tool names, which is not the workspace set",
+        names.len(),
+    );
+    for name in &names {
+        assert!(
+            !lowered.contains(name.as_str()),
+            "the prompt names the `{name}` tool, which a turn's contract may not carry",
+        );
+        // The spaced spelling too: "read file" is the same claim as `read_file`
+        // written for a person, and it is the one a prose prompt reaches for.
+        let spaced = name.replace('_', " ");
+        assert!(
+            !lowered.contains(spaced.as_str()),
+            "the prompt names the `{name}` tool in words",
+        );
+    }
+}
+
+/// The prompt is a bounded cost, and the bound is written down.
+///
+/// It is prepaid on every turn of every session, so its size is a fact about the
+/// product rather than a detail of its prose. The number may move when the words
+/// do; what may not is that nobody notices it moving.
+#[test]
+fn the_prompt_is_bounded_and_the_number_is_written_down() {
+    assert!(
+        PROMPT.len() <= 1_600,
+        "the prompt is {} bytes and the bound is 1600",
+        PROMPT.len(),
+    );
+    assert!(
+        PROMPT.len() >= 300,
+        "the prompt is {} bytes, which is not a manner",
+        PROMPT.len(),
+    );
+}
+
+/// **F4 — io-harness's own sections survive the append.**
+///
+/// `Append` is a name, and a name is not a property. What this asserts is the
+/// composed prompt a provider was really handed on a turn that really ran, with a
+/// skill discovered, a repository instruction set and a boundary being enforced —
+/// every section the harness composes, alongside io-cli's own text.
+///
+/// It has to be a turn: `run::prompts::compose` is `pub(super)` in io-harness and
+/// `EventKind::PromptComposed` carries the prompt's size rather than its text, so
+/// `CompletionRequest.system` is the only place the composition is readable from
+/// outside that crate.
+///
+/// Sabotage: switch `Append` to `Replace` in `contract::session` — under which
+/// this fails, and it fails on the harness's own description of the request it is
+/// building, which io-cli would then be silently standing in for.
+#[tokio::test]
+async fn f4_io_harnesss_own_sections_survive_the_append() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let skills = dir.path().join("skills");
+    std::fs::create_dir(&skills).expect("mkdir");
+    std::fs::write(
+        skills.join("migrations.md"),
+        "---\nname: migrations\ndescription: how this repo changes a schema\n---\nbody\n",
+    )
+    .expect("write");
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = session(
+        "say hello",
+        dir.path().to_path_buf(),
+        &Capabilities {
+            skills: Some(skills),
+            ..Capabilities::default()
+        },
+        Arc::new(answerer),
+        None,
+    )
+    .with_instruction("Project instructions from `AGENTS.md`:\nprefer small diffs");
+
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let mut opened = io_harness::Session::open(&store, dir.path()).expect("a session");
+    let provider = support::Capturing::new();
+    // Not permissive, so there is a boundary to be told about at all:
+    // `boundary_section` returns `None` for a permissive policy outside a
+    // container, and a test asserting the section under one would be asserting
+    // nothing.
+    let policy = io_harness::Policy::permissive()
+        .layer("test")
+        .deny_read("private/**");
+    opened
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &io_harness::observe::Ignore,
+        )
+        .await
+        .expect("a captured turn cannot fail");
+
+    let systems = provider.systems();
+    assert_eq!(
+        systems.len(),
+        2,
+        "the turn opened conversationally and then did work, which is two descriptions",
+    );
+
+    // io-cli's own block, whole, on **both** — the opening a turn may answer from
+    // and the workspace description every later step runs on. A release that
+    // appended to one of them would be an agent with a manner only while it was
+    // deciding whether to have one.
+    for composed in &systems {
+        assert!(
+            composed.contains(PROMPT),
+            "io-cli's manner is not in the composed prompt:\n{composed}",
+        );
+    }
+
+    let composed = &systems[1];
+    // The harness's framing and its tool catalogue, which `Replace` would take.
+    for section in [
+        "You are an agent working across a repository",
+        "read_file",
+        "Skills available to you",
+        "migrations",
+        "This repository carries its own guidance",
+        "prefer small diffs",
+        "Your boundary.",
+    ] {
+        assert!(
+            composed.contains(section),
+            "the composed prompt lost {section:?}:\n{composed}",
+        );
+    }
+    // And the crate's own last word is still last. **Which** last word depends on
+    // the turn: a first completion that may still be answered ends with the
+    // sentence deciding what a turn is, and a step of decided work ends with the
+    // crate's "call tools". Both are io-harness's, and both are emitted after
+    // anything an embedder or a repository supplied — which is the property, not
+    // the wording.
+    let tail = composed.trim_end();
+    assert!(
+        tail.ends_with("act.") || tail.ends_with("call tools."),
+        "the crate's ending is not at the end:\n{composed}",
+    );
+    assert!(
+        !tail.ends_with(PROMPT.trim_end()),
+        "io-cli's block has the last word, which is what `Append` exists to prevent",
+    );
+    // Order, not just presence: io-cli's block sits after the catalogue and
+    // before the boundary, which is what makes it an append rather than a
+    // preamble that could weaken the sentence deciding how a turn ends.
+    let ours = composed.find(PROMPT).expect("io-cli's block");
+    let catalogue = composed.find("read_file").expect("the catalogue");
+    let boundary = composed.find("Your boundary.").expect("the boundary");
+    assert!(
+        catalogue < ours && ours < boundary,
+        "io-cli's block is at {ours}, the catalogue at {catalogue}, the boundary at {boundary}",
+    );
+}
+
+/// One constant, one module, one call site.
+///
+/// A second place the agent's manner is set is a second thing to keep true, which
+/// is the rule `contract::session` was built on — and it is how a release that
+/// sets a prompt on one arm's turn and not the other's happens.
+#[test]
+fn the_manner_is_set_in_exactly_one_place() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sites = Vec::new();
+    for entry in std::fs::read_dir(&src).expect("src/ is readable").flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a source file");
+        // The whitespace is removed first: rustfmt decides where a builder chain
+        // breaks, and a grep for `with_system_prompt(` would go blind the day it
+        // put the argument on its own line.
+        let squashed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        let calls = squashed.matches("with_system_prompt(").count();
+        if calls > 0 {
+            sites.push((path, calls));
+        }
+    }
+
+    assert_eq!(
+        sites.len(),
+        1,
+        "the prompt is attached in one module, and these set it: {sites:?}",
+    );
+    let (path, calls) = &sites[0];
+    assert_eq!(*calls, 1, "one call site, not {calls}");
+    assert!(
+        path.ends_with("contract.rs"),
+        "the module that owns the contract owns its manner, not {}",
+        path.display(),
+    );
 }
 
 /// Absent configuration is an absent capability, not an empty one that reads as

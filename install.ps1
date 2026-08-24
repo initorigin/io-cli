@@ -15,6 +15,15 @@
     does not defend against a compromised repository; piping a script from the
     internet into a shell is a trust-the-publisher model however it is written.
 
+    It says all of that out loud while it happens: the target it resolved, where
+    the version came from, every URL it fetches, BOTH checksums before it compares
+    them, where the binary landed and what that binary says its version is.
+    Printing both checksums rather than "checksum ok" is the point — the operator
+    can see the comparison instead of being told its result, and an install that
+    only announces its own success is exactly the one nobody can audit. Failures
+    go through Fail, which writes to the error stream, so a log of what went right
+    never buries the one line somebody greps for.
+
 .PARAMETER Version
     Install this version instead of the latest. Also read from $env:IO_VERSION.
 
@@ -48,12 +57,16 @@ if ($arch -ne 'AMD64') {
     Fail "there is no Windows $arch build yet. Build from source: cargo build --release"
 }
 $target = 'x86_64-pc-windows-msvc'
+Write-Host "detected Windows $arch -> target $target"
 
-if (-not $Version) {
+if ($Version) {
+    $versionFrom = 'IO_VERSION'
+} else {
     # The Release page redirects to the newest tag, so the newest version is
     # readable without an API token and without parsing JSON.
+    $versionFrom = "https://github.com/$repo/releases/latest"
     try {
-        $response = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -MaximumRedirection 5 -UseBasicParsing
+        $response = Invoke-WebRequest -Uri $versionFrom -MaximumRedirection 5 -UseBasicParsing
         $final = $response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
     } catch {
         Fail "could not reach GitHub to find the latest version: $_"
@@ -63,6 +76,11 @@ if (-not $Version) {
     }
     $Version = $Matches['v']
 }
+
+# Where the version came from decides which of two very different things just
+# happened: an operator pinning a version, or this script trusting GitHub to name
+# the newest one. Printing the number without its source hides that.
+Write-Host "version $Version (from $versionFrom)"
 
 if (-not $BaseUrl) {
     $BaseUrl = "https://github.com/$repo/releases/download/v$Version"
@@ -80,12 +98,14 @@ $work = Join-Path ([System.IO.Path]::GetTempPath()) ("io-install-" + [System.Gui
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 try {
-    Write-Host "io $Version for $target"
-
     $archivePath = Join-Path $work $archive
     $sumsPath = Join-Path $work 'SHA256SUMS'
     try {
+        # Announced before the fetch rather than after it, so a download that
+        # hangs or fails names the URL that was in flight.
+        Write-Host "downloading $BaseUrl/$archive"
         Invoke-WebRequest -Uri "$BaseUrl/$archive" -OutFile $archivePath -UseBasicParsing
+        Write-Host "downloading $BaseUrl/SHA256SUMS"
         Invoke-WebRequest -Uri "$BaseUrl/SHA256SUMS" -OutFile $sumsPath -UseBasicParsing
     } catch {
         Fail "could not download from $BaseUrl : $_"
@@ -98,6 +118,11 @@ try {
     $expected = ($line -split '\s+')[0].ToLowerInvariant()
     $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 
+    # Both numbers, before the comparison. "checksum ok" on its own is a claim;
+    # these two lines are the evidence for it, and they are what makes a
+    # wrong-but-matching SHA256SUMS visible to somebody reading the output.
+    Write-Host "expected $expected"
+    Write-Host "computed $actual"
     if ($expected -ne $actual) {
         Fail "checksum mismatch for $archive`n  expected $expected`n  actual   $actual`nNothing was installed."
     }
@@ -108,10 +133,12 @@ try {
     if (-not (Test-Path $binary)) {
         Fail "$archive does not contain io.exe"
     }
+    Write-Host "unpacked $archive"
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -Path $binary -Destination (Join-Path $InstallDir 'io.exe') -Force
-    Write-Host "installed $(Join-Path $InstallDir 'io.exe')"
+    $installed = Join-Path $InstallDir 'io.exe'
+    Copy-Item -Path $binary -Destination $installed -Force
+    Write-Host "installed $installed"
 
     # The USER PATH, never the machine PATH: the machine one needs administrator
     # rights and would change the environment for everybody on the box.
@@ -127,7 +154,15 @@ try {
         Write-Host 'If you would rather set it yourself, this is the line:'
         Write-Host "    `$env:Path += ';$InstallDir'"
     } else {
-        Write-Host 'run: io'
+        Write-Host "$InstallDir is on your user PATH; run: io"
+    }
+
+    # The last line of the narration is the binary's own, not this script's: the
+    # only proof that what was verified and copied is a program this machine can
+    # run. A native command's exit code does not throw, so it is checked by hand.
+    & $installed --version
+    if ($LASTEXITCODE -ne 0) {
+        Fail "installed $installed but it will not run here"
     }
 } finally {
     Remove-Item -Path $work -Recurse -Force -ErrorAction SilentlyContinue
