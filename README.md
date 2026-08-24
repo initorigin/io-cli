@@ -280,7 +280,6 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/fleet` | show the children this turn has spawned |
-| `/attach` | put an image in front of the agent, for the next turn only |
 | `/image` | draw an attached image again: /image 1 |
 | `/clear` | start a new conversation; this one stays in /resume |
 
@@ -373,22 +372,28 @@ and propose first. If that is what you wanted, `/plan on` is where it lives now.
 
 ## Pictures
 
-`/attach @docs/shot.png` puts an image in front of the agent for the **next turn
-and only the next turn**, and says so before the turn goes. Attach again for the
-question after it.
+**Drag a picture onto the prompt, or copy it and paste.** That is the whole of
+it — there is no command. What lands is `[Image #1]`, and the picture rides the
+**next turn and only the next turn**. Paste the same file again to toggle between
+the marker and the path it stands for; backspace takes the marker off in one
+press, whichever backspace you use. `/image 1` draws the picture itself, at the
+bottom, when you want to look at it — a committed row belongs to your terminal's
+scrollback, so it cannot be opened in place.
+
+**`/attach` was removed in 0.13.1.** It was a command you had to be told about
+before you could use the feature, and dropping a picture into the window is what
+everyone already does.
 
 A path **inside the workspace** is read through io-harness's own workspace, under
 the same policy as everything else — its documentation is explicit that this is
 the same gate a source read passes and not a second one — so an image the session
 may not read is refused exactly the way a file it may not read already is.
 
-A path **outside the workspace** is read directly, and that is deliberate. Since
-0.13.1 `/attach ~/Pictures/shot.png` works: the file an operator points at is
-almost never inside the repository, and every absolute path was refused before —
-which made the command unusable for the one thing most people attach. This is the
-only read in the product that is not the agent's, and it is the boundary `!`
-already crosses when it runs your own shell line. Quotes come off, so a path
-dragged in from Finder works with the spaces it has. What may be
+A path **outside the workspace** is read directly, and that is deliberate: the
+file you point at is almost never inside the repository, and every absolute path
+was refused before — which made this unusable for the one thing most people
+attach. This is the only read in the product that is not the agent's, and it is
+the boundary `!` already crosses when it runs your own shell line. What may be
 sent is io-harness's decision too: bmp, tiff, ico, tga and pnm are converted to
 PNG on the way in, jpeg, png, gif and webp go as they are, and svg, heic and avif
 are refused **by name**, because a refusal that says which format it was is one

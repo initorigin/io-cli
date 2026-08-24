@@ -440,7 +440,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     .map_err(|error| error.to_string())?;
             }
             if let Event::Paste(text) = event {
-                app.paste(&text, picker.is_some());
+                match app.paste(&text, picker.is_some()) {
+                    io_cli::app::Pasted::Picture(path) => {
+                        paste_picture(&mut app, &mut session, &provider, &policy, &path)
+                    }
+                    io_cli::app::Pasted::Text | io_cli::app::Pasted::Refused => {}
+                }
             }
             paint(screen, &mut app)?;
             continue;
@@ -874,40 +879,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // the completion above and the turn below build it — so what may
                 // be attached and what the agent may read are the same set by
                 // construction rather than by two agreeing lists.
-                Action::Attach(path) => {
-                    let effective =
-                        approval::session_policy(&policy, app.posture(), app.remembered());
-                    match io_cli::attach::prepare(
-                        session.root(),
-                        &effective,
-                        // The provider's own answer, asked here rather than left
-                        // to `ensure_media_accepted` inside the turn — that one
-                        // fires after a prompt has been typed.
-                        provider.accepts_images(),
-                        &path,
-                    ) {
-                        Ok(staged) => {
-                            // **A marker, not a picture.** `[Image #1]` goes on
-                            // the prompt, rides the turn as the words the agent
-                            // is given, and is what the transcript keeps — while
-                            // the image itself is staged on the session as media.
-                            // Twenty rows of somebody's screenshot in the middle
-                            // of a conversation is not what a reader wants by
-                            // default, and `/image 1` is there for the moment
-                            // they do.
-                            let number = app.attached(&staged.path);
-                            let note = io_cli::attach::staged_note(&staged, number);
-                            app.composer.attach(&format!("[Image #{number}]"));
-                            // Staged on the session, so io-harness's `drive` folds
-                            // it in and `mem::take`s it. Nothing is kept here: the
-                            // one-turn-only property is the harness's, and a copy
-                            // on this side would quietly undo it.
-                            session.attach([staged.media]);
-                            app.say(Tone::Muted, note);
-                        }
-                        Err(error) => app.say(Tone::Error, error),
-                    }
-                }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —
@@ -1150,6 +1121,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     Instant::now(),
                 )
                 .await?;
+                // Anything dropped onto the prompt while the turn held the
+                // session is staged now that it has let go.
+                for path in app.take_queued_pictures() {
+                    paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                }
             }
         }
 
@@ -1169,6 +1145,41 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
 /// accepted it for the wire, so the agent will see it; what failed is this
 /// crate's ability to show the operator the same thing, and saying so beats
 /// refusing an attachment that is going to work.
+/// Stage a pasted picture and put its marker on the prompt.
+///
+/// **The whole of how an image is attached since 0.13.1.** An operator drags the
+/// file onto the prompt, or copies it and presses paste; the terminal delivers
+/// the path; and this is what turns that into `[Image #1]` and a staged
+/// attachment. There is no command: a command is something a reader has to be
+/// told about first, and dragging a picture into a window is not.
+fn paste_picture<P: Provider>(
+    app: &mut App,
+    session: &mut Session,
+    provider: &P,
+    policy: &Policy,
+    path: &str,
+) {
+    // Already on this prompt: a repeat paste is a request to change what is on
+    // screen — the marker or the path it stands for — and never a second copy of
+    // the same file on the same turn.
+    if app.composer.attached(path) {
+        app.composer.attach("", path);
+        return;
+    }
+    let effective = approval::session_policy(policy, app.posture(), app.remembered());
+    match io_cli::attach::prepare(session.root(), &effective, provider.accepts_images(), path) {
+        Ok(staged) => {
+            let number = app.attached(&staged.path);
+            let note = io_cli::attach::staged_note(&staged, number);
+            app.composer
+                .attach(&format!("[Image #{number}]"), &staged.path);
+            session.attach([staged.media]);
+            app.say(Tone::Muted, note);
+        }
+        Err(error) => app.say(Tone::Error, error),
+    }
+}
+
 fn commit_drawn(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -1488,7 +1499,21 @@ async fn turn<P: Provider>(
                     // before a turn starts — and the approval is refused inside
                     // `App::paste`.
                     Event::Paste(text) => {
-                        app.paste(&text, false);
+                        match app.paste(&text, false) {
+                            // The turn holds the session and staging needs it,
+                            // so a picture dropped mid-turn waits rather than
+                            // being dropped or half-attached. It is staged the
+                            // moment the turn lets go, which is the next thing
+                            // the driver does.
+                            io_cli::app::Pasted::Picture(path) => {
+                                app.queue_picture(&path);
+                                app.say(
+                                    Tone::Muted,
+                                    "picture held until this turn ends, then attached",
+                                );
+                            }
+                            io_cli::app::Pasted::Text | io_cli::app::Pasted::Refused => {}
+                        }
                     }
                     _ => {}
                 }

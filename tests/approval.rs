@@ -793,7 +793,7 @@ async fn f7_a_paste_does_not_land_behind_an_open_approval() {
     app.open_approval(ask);
 
     assert!(
-        !app.paste("from the clipboard", false),
+        app.paste("from the clipboard", false) == io_cli::app::Pasted::Refused,
         "a question is on screen, and it takes the keyboard",
     );
     assert!(

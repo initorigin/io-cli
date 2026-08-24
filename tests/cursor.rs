@@ -612,7 +612,7 @@ fn f2_the_composer_sets_a_cursor_past_a_collapsed_paste() {
 
     let mut app = App::new(DARK, "opus-5");
     assert!(
-        app.paste(&pasted, false),
+        app.paste(&pasted, false) == io_cli::app::Pasted::Text,
         "nothing was open, so the paste had nowhere to go but the composer",
     );
 

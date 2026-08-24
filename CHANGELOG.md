@@ -53,6 +53,14 @@ next paste of the same clipboard appended a fresh one — `[pasted text #2]`, th
 one word at a time, and a placeholder is matched by its exact text — so the first
 press had already stopped it standing for the block it named.
 
+**The composer is one row at rest** and grows to what a prompt needs. The second
+row was there for a paste too big to read in one and was empty for every prompt
+anybody types.
+
+**`/attach` is gone; drag a picture onto the prompt or paste it.** A command was
+something you had to be told about before you could use the feature. Pasting the
+same file again toggles between the marker and the path it stands for.
+
 **An attachment is `[Image #1]`.** A picture is no longer drawn when you attach
 it or when you send the turn: the marker is what the prompt carries, what the
 agent is told and what the transcript keeps, and it deletes as one thing exactly

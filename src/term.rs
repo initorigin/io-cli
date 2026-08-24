@@ -49,7 +49,7 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 /// Lines the live viewport occupies: the unfinished tail of a streaming answer,
-/// a blank row, the activity line, a rule, two rows of composer, and the
+/// a blank row, the activity line, a rule, one row of composer, and the
 /// three-row footer.
 ///
 /// **Six since 0.11.0, and two of them are new.** The activity line buys the one
@@ -60,10 +60,12 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// the activity line reads as the last line of the work rather than as the line
 /// describing it.
 ///
-/// **Nine since 0.13.1, and the ninth is the rule over the composer.** The
-/// footer has opened with one since 0.1.0 and the prompt had a boundary on one
-/// side only, so the composer read as the tail of whatever the turn had last
-/// written rather than as the field it is.
+/// **Still eight in 0.13.1, and the rows moved.** A rule was added over the
+/// composer — the footer has opened with one since 0.1.0 and the prompt had a
+/// boundary on one side only — and the composer gave up the row that pays for
+/// it: it sits at one row at rest and grows to what a prompt needs. The second
+/// row was there for a paste too big to read in one and was empty for every
+/// prompt anybody types.
 ///
 /// Both rows are *claimed* whether or not a turn is running and *drawn* only
 /// while one is, so the composer is two rows at every moment of a session. A
@@ -84,7 +86,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// same four rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
-pub const VIEWPORT_HEIGHT: u16 = 9;
+pub const VIEWPORT_HEIGHT: u16 = 8;
 
 /// Rows the wizard's viewport occupies.
 ///

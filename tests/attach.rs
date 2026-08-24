@@ -485,7 +485,7 @@ fn f14_an_attachment_is_a_marker_the_composer_deletes_whole() {
             KeyModifiers::NONE,
         ));
     }
-    composer.attach("[Image #1]");
+    composer.attach("[Image #1]", "/tmp/shot.png");
 
     assert_eq!(composer.typed(), "look at [Image #1] ");
     assert_eq!(
@@ -501,7 +501,7 @@ fn f14_an_attachment_is_a_marker_the_composer_deletes_whole() {
         KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
     ] {
         let mut composer = io_cli::composer::Composer::new();
-        composer.attach("[Image #1]");
+        composer.attach("[Image #1]", "/tmp/shot.png");
         // Past the trailing space the marker is followed by.
         composer.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         composer.key(key);
@@ -544,4 +544,71 @@ fn f14_the_caption_names_the_number_the_file_and_the_size() {
         !caption.contains("391790"),
         "a byte count is not a size anybody reads: {caption}",
     );
+}
+
+/// F15 — a pasted picture is an attachment, and there is no command.
+///
+/// Dropping an image on the prompt is what an operator already does in every
+/// other window they talk to a model in; `/attach` was something they had to be
+/// told about first. What `App::paste` answers with is what the driver acts on:
+/// a path naming an image that exists is staged and marked, anything else is
+/// text.
+#[test]
+fn f15_a_pasted_image_path_is_recognised_as_a_picture() {
+    use io_cli::app::{App, Pasted};
+    use io_cli::theme::DARK;
+
+    let dir = workspace();
+    let picture = dir.path().join("shot.png");
+    let mut app = App::new(DARK, "opus-5");
+
+    assert_eq!(
+        app.paste(&picture.display().to_string(), false),
+        Pasted::Picture(
+            picture
+                .canonicalize()
+                .expect("a real path")
+                .display()
+                .to_string()
+        ),
+        "a path naming an image that exists is an attachment",
+    );
+
+    // A path naming something that is not an image is a path, and prose is prose.
+    let notes = dir.path().join("notes.md");
+    assert_eq!(app.paste(&notes.display().to_string(), false), Pasted::Text);
+    assert_eq!(
+        app.paste("look at the picture in my documents", false),
+        Pasted::Text,
+    );
+}
+
+/// Pasting the same picture again toggles what the prompt shows, and never
+/// attaches it twice.
+#[test]
+fn f15_pasting_the_same_picture_again_toggles_the_marker_and_the_path() {
+    let mut composer = io_cli::composer::Composer::new();
+    composer.attach("[Image #1]", "/tmp/shot.png");
+    assert_eq!(composer.typed(), "[Image #1] ");
+    assert!(composer.attached("/tmp/shot.png"));
+
+    composer.attach("[Image #1]", "/tmp/shot.png");
+    assert_eq!(
+        composer.typed(),
+        "/tmp/shot.png ",
+        "the second paste shows the file it stands for",
+    );
+
+    composer.attach("[Image #1]", "/tmp/shot.png");
+    assert_eq!(
+        composer.typed(),
+        "[Image #1] ",
+        "and the third puts the marker back",
+    );
+
+    // A second picture is a second number; the first keeps its own.
+    composer.attach("[Image #2]", "/tmp/other.png");
+    let typed = composer.typed();
+    assert!(typed.contains("[Image #1]"), "{typed:?}");
+    assert!(typed.contains("[Image #2]"), "{typed:?}");
 }

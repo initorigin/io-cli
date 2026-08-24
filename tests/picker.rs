@@ -612,7 +612,7 @@ fn f7_a_paste_does_not_leak_past_an_open_picker() {
     let mut app = App::new(DARK, "opus-5");
 
     assert!(
-        !app.paste("from the clipboard", true),
+        app.paste("from the clipboard", true) == io_cli::app::Pasted::Refused,
         "a picker owns the keyboard, and a paste is the keyboard",
     );
     assert!(

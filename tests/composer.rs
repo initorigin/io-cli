@@ -502,7 +502,7 @@ fn f7_a_paste_reaches_the_composer_when_nothing_is_in_the_way() {
     let mut app = App::new(DARK, "opus-5");
 
     assert!(
-        app.paste("from the clipboard", false),
+        app.paste("from the clipboard", false) == io_cli::app::Pasted::Text,
         "nothing was open, so the paste had nowhere else to go",
     );
     assert_eq!(app.composer.text(), "from the clipboard");
@@ -520,7 +520,10 @@ fn f7_a_paste_while_a_turn_is_running_is_not_dropped() {
     let mut app = App::new(DARK, "opus-5");
     app.started();
 
-    assert!(app.paste("typed while it worked", false));
+    assert_eq!(
+        app.paste("typed while it worked", false),
+        io_cli::app::Pasted::Text
+    );
     assert_eq!(app.composer.text(), "typed while it worked");
 }
 

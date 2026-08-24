@@ -53,7 +53,7 @@ pub enum Reply {
 /// **It has to exist.** The whole safety of this is that prose is never quoted
 /// at somebody: a sentence is not a path, and a path this process cannot see is
 /// not one either, so both are pasted exactly as they arrived.
-fn pasted_path(text: &str) -> Option<String> {
+pub fn pasted_path(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.contains('\n') {
         return None;
@@ -121,7 +121,7 @@ pub struct Composer {
     /// records — the picture itself rides the turn as media rather than as text.
     /// They are here for one reason: so that a marker deletes as one thing, the
     /// way a pasted block does, instead of leaving `[Image #` on a prompt.
-    markers: Vec<String>,
+    markers: Vec<(String, String)>,
 }
 
 impl Default for Composer {
@@ -494,12 +494,49 @@ impl Composer {
     /// `/image` is there for the moment somebody wants to see it again.
     ///
     /// It deletes as one thing, exactly as a pasted block does.
-    pub fn attach(&mut self, marker: &str) {
+    pub fn attach(&mut self, marker: &str, path: &str) {
         self.editing();
+        // **Pasting the same picture again toggles what is on the prompt**, the
+        // way pasting the same block of text does: the marker is what it reads as
+        // by default, and the path is there for an operator checking they
+        // attached the right file. Either way the picture itself is staged on the
+        // turn — this is a view of an attachment, not the attachment.
+        let typed = self.typed();
+        if let Some((held, held_path)) = self
+            .markers
+            .iter()
+            .find(|(_, held_path)| held_path == path)
+            .cloned()
+        {
+            if typed.contains(held.as_str()) {
+                let shown = typed.replace(&held, &held_path);
+                self.replace(&shown);
+                return;
+            }
+            if typed.contains(held_path.as_str()) {
+                let shown = typed.replace(&held_path, &held);
+                self.replace(&shown);
+                return;
+            }
+            // Neither form is on the prompt any more, so this is an insertion of
+            // a picture this composer already knows — under the number it already
+            // has, never a new one.
+            self.area.insert_str(format!("{held} "));
+            return;
+        }
         // A space after it, so the sentence an operator types next does not run
         // into the bracket.
         self.area.insert_str(format!("{marker} "));
-        self.markers.push(marker.to_string());
+        self.markers.push((marker.to_string(), path.to_string()));
+    }
+
+    /// Whether this prompt already stands for `path`.
+    ///
+    /// Asked by the driver before it stages a picture a second time: a repeat
+    /// paste is a request to change what is on screen, not to attach the same
+    /// file twice.
+    pub fn attached(&self, path: &str) -> bool {
+        self.markers.iter().any(|(_, held)| held == path)
     }
 
     /// Put `text` in the prompt, replacing whatever is there, cursor at the end.
@@ -657,7 +694,7 @@ impl Composer {
                 // The block goes with it. A prompt that still carried it would
                 // send text nothing on screen stands for.
                 self.pastes.retain(|(held, _)| held != &placeholder);
-                self.markers.retain(|held| held != &placeholder);
+                self.markers.retain(|(held, _)| held != &placeholder);
             }
             None => {
                 self.area.input(key);
@@ -754,7 +791,7 @@ impl Composer {
         self.pastes
             .iter()
             .map(|(placeholder, _)| placeholder)
-            .chain(self.markers.iter())
+            .chain(self.markers.iter().map(|(marker, _)| marker))
             .filter(|placeholder| before.ends_with(placeholder.as_str()))
             .max_by_key(|placeholder| placeholder.chars().count())
             .cloned()

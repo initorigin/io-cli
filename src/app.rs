@@ -31,8 +31,15 @@ use crate::theme::{Theme, Tone};
 /// [`App::tick`], which is what decides whether a frame is drawn.
 pub const TICK: Duration = Duration::from_millis(100);
 
-/// Rows the composer has at rest, and has had since 0.1.0.
-pub const COMPOSER_ROWS: u16 = 2;
+/// Rows the composer has at rest.
+///
+/// **One since 0.13.1, and two before it.** The second row was there for a paste
+/// too big to read in one, and it was empty for every prompt anybody actually
+/// types — a blank row between the rule and the line being written, which reads
+/// as the field not knowing where it starts. The composer grows to the rows a
+/// prompt needs the moment it needs them, so nothing is lost by not claiming them
+/// in advance.
+pub const COMPOSER_ROWS: u16 = 1;
 
 /// The most rows a prompt may take, however long it is.
 ///
@@ -99,6 +106,19 @@ pub enum Command {
     Rewind,
 }
 
+/// What a paste turned out to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pasted {
+    /// Ordinary text; the composer has it.
+    Text,
+    /// A path naming an image that exists. The driver stages it and puts the
+    /// marker on the prompt — see [`App::attached`] and
+    /// [`crate::composer::Composer::attach`].
+    Picture(String),
+    /// Something else owns the keyboard, so nothing was pasted at all.
+    Refused,
+}
+
 pub struct App {
     pub composer: Composer,
     pub status: Status,
@@ -157,6 +177,13 @@ pub struct App {
     /// relative to the workspace, and the process's working directory is not the
     /// same thing under `io -C <dir>`.
     root: std::path::PathBuf,
+    /// Pictures pasted while a turn was running, waiting to be staged.
+    ///
+    /// A turn holds the session, and staging an attachment needs it — so a
+    /// picture dropped onto the prompt mid-turn waits here until the turn is
+    /// over rather than being dropped or half-attached. The operator is told it
+    /// is waiting, and a moment later it is `[Image #1]` like any other.
+    queued: Vec<String>,
     /// Every image attached in this session, by path, oldest first.
     ///
     /// The index into it is the number in `[Image #1]`, and the path is all that
@@ -220,6 +247,7 @@ impl App {
             quits: 0,
             armed: None,
             contained: false,
+            queued: Vec::new(),
             images: Vec::new(),
             turn_rows: 0,
             echo_rows: 0,
@@ -435,12 +463,23 @@ impl App {
     /// keyboard while they are up, and a paste that slipped past either would
     /// land in a composer sitting behind the overlay — typed by nobody, seen by
     /// nobody, and sent with the next prompt.
-    pub fn paste(&mut self, text: &str, picker_open: bool) -> bool {
+    pub fn paste(&mut self, text: &str, picker_open: bool) -> Pasted {
         if picker_open || self.modal() {
-            return false;
+            return Pasted::Refused;
+        }
+        // **A picture pasted is a picture attached, since 0.13.1.** Dragging an
+        // image onto the prompt is how an operator attaches one — it is what they
+        // already do in every other window — and `/attach` was a command they had
+        // to know about first. What arrives is a path, and a path naming an image
+        // that exists is the whole test; the driver does the staging, because the
+        // session, the provider and the policy are its.
+        if let Some(path) = crate::composer::pasted_path(text) {
+            if io_harness::Media::source_type_for(&path).is_some() {
+                return Pasted::Picture(path);
+            }
         }
         self.composer.paste(text);
-        true
+        Pasted::Text
     }
 
     /// Answer the open question. The overlay closes, the run goes on, and the
@@ -513,6 +552,16 @@ impl App {
             && self.status.steps.unwrap_or(0) == 0
             && self.events.live().trim().is_empty()
             && self.turn_rows <= self.echo_rows
+    }
+
+    /// Hold a picture until the running turn lets go of the session.
+    pub fn queue_picture(&mut self, path: impl Into<String>) {
+        self.queued.push(path.into());
+    }
+
+    /// The pictures that were waiting, in the order they were dropped.
+    pub fn take_queued_pictures(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.queued)
     }
 
     /// Remember an attached image and return the number its marker carries.
@@ -1305,7 +1354,7 @@ impl App {
         // written rather than as the field it is. It is the second row given up
         // on a short terminal, after the blank: a boundary is worth less than the
         // row it would take from the prompt itself.
-        let rule_rows = u16::from(area.height >= 9);
+        let rule_rows = u16::from(area.height >= 8);
         let activity = if activity_rows == 1 {
             self.status.activity(area.width, &self.theme)
         } else {
