@@ -55,29 +55,35 @@ fn the_leading_at_sign_of_a_completed_path_is_not_part_of_the_path() {
 }
 
 #[test]
-fn a_path_outside_the_root_is_refused_by_the_workspace_and_not_read() {
-    // The whole of F1: the gate is io-harness's, and it is the same gate a source
-    // read passes. Reading with `std::fs` after resolving would attach a file the
-    // session was told it may not read — which is the sabotage arm for this
-    // criterion.
+fn a_path_outside_the_root_is_read_because_the_operator_pointed_at_it() {
+    // **Superseded in 0.13.1, deliberately.** Through 0.13.0 this asserted the
+    // opposite: a file outside the session root was refused, and reading it with
+    // `std::fs` was named here as the sabotage arm. That rule made `/attach`
+    // unusable for the only file most operators ever attach — a screenshot, which
+    // macOS writes to `~/Pictures` and never to the repository — and
+    // `Workspace::resolve` refuses every absolute path, so there was no spelling
+    // that worked.
+    //
+    // What changed is whose action this is. Every other read in this product is
+    // the agent's, gated by the policy, about a path a model chose. `/attach` is
+    // a person pointing at their own file, which is the boundary `!` already
+    // crosses when it runs the operator's own shell line unpoliced. The gate
+    // still governs everything inside the root — the test below this one is that
+    // claim, and it is what the sabotage arm now belongs to.
     let dir = workspace();
     let outside = tempfile::tempdir().expect("somewhere else");
     fs::write(outside.path().join("secret.png"), support::png_bytes(2, 2)).expect("write");
 
-    let escape = outside.path().join("secret.png");
-    let error = prepare(
+    let elsewhere = outside.path().join("secret.png");
+    let staged = prepare(
         dir.path(),
         &Policy::permissive(),
         true,
-        escape.to_str().expect("utf-8 path"),
+        elsewhere.to_str().expect("utf-8 path"),
     )
-    .err()
-    .expect("a path outside the session root is not attachable");
+    .unwrap_or_else(|error| panic!("a file the operator pointed at was refused: {error}"));
 
-    assert!(
-        !error.is_empty(),
-        "the workspace's own refusal names the path",
-    );
+    assert_eq!(staged.media_type, "image/png");
 }
 
 #[test]
@@ -385,4 +391,78 @@ mod viewed {
             "no half blocks under the plain form: {rendered}",
         );
     }
+}
+
+/// F6 — the path a drag pastes is the path that is attached.
+///
+/// Dragging a file into the terminal, or copying one out of Finder, pastes its
+/// path, and the composer wraps it so that a path with a space in it stays one
+/// word. Until 0.13.1 the quotes reached `Media::source_type_for`, which read the
+/// extension as `png"` and correctly said it was not an image — so io refused the
+/// operator's own screenshot in a sentence about image formats. The name below is
+/// the shape macOS actually writes: a space before the date, and a U+202F narrow
+/// no-break space before the `AM`.
+#[test]
+fn f6_a_quoted_path_with_a_space_and_a_narrow_no_break_space_is_attached() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "Screenshot 2026-08-24 at 8.00.01\u{202f}AM.png";
+    fs::write(dir.path().join(name), support::png_bytes(4, 2)).expect("write");
+
+    let quoted = format!("\"{name}\"");
+    let staged = prepare(dir.path(), &Policy::permissive(), true, &quoted)
+        .unwrap_or_else(|error| panic!("a quoted path was refused: {error}"));
+    assert_eq!(staged.media_type, "image/png");
+    assert_eq!(staged.path, name, "the quotes belong to the prompt, not to the path");
+
+    // A single-quoted one too, because that is what the composer writes for a
+    // path that itself carries a double quote.
+    let staged = prepare(dir.path(), &Policy::permissive(), true, &format!("'{name}'"))
+        .unwrap_or_else(|error| panic!("a single-quoted path was refused: {error}"));
+    assert_eq!(staged.path, name);
+
+    // And the unquoted one still works, which is what everything that types a
+    // path by hand sends.
+    prepare(dir.path(), &Policy::permissive(), true, name).expect("an unquoted path");
+}
+
+/// One pair, and only a matching one. A file may legally have a quote in its
+/// name, and stripping every quote would be this crate overruling the
+/// filesystem.
+#[test]
+fn f6_only_one_matching_pair_of_quotes_comes_off() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "\"quoted\".png";
+    fs::write(dir.path().join(name), support::png_bytes(2, 2)).expect("write");
+
+    let staged = prepare(dir.path(), &Policy::permissive(), true, name)
+        .unwrap_or_else(|error| panic!("a file whose name carries quotes was refused: {error}"));
+    assert_eq!(staged.path, name);
+}
+
+/// The policy still governs the workspace. What was added is the case the gate
+/// could only ever answer "no" to, not a way around the gate.
+#[test]
+fn f6_a_denied_path_inside_the_workspace_is_still_refused() {
+    let dir = workspace();
+    let denied = Policy::permissive().layer("test").deny_read("shot.png");
+
+    let refused = prepare(dir.path(), &denied, true, "shot.png")
+        .err()
+        .expect("a policy that denies the read still denies it");
+    assert!(
+        refused.contains("shot.png"),
+        "the refusal names the path: {refused}"
+    );
+
+    // And the same file addressed absolutely is the same refusal, rather than a
+    // way round it: a path under the root goes through the gate however it is
+    // spelled.
+    let absolute = dir.path().join("shot.png").display().to_string();
+    let refused = prepare(dir.path(), &denied, true, &absolute)
+        .err()
+        .expect("an absolute path under the root goes through the gate too");
+    assert!(
+        refused.contains("shot.png"),
+        "the refusal names the path: {refused}"
+    );
 }

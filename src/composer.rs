@@ -72,6 +72,29 @@ fn pasted_path(text: &str) -> Option<String> {
     )
 }
 
+/// `path` wrapped in quotes, and nothing else done to it.
+///
+/// **A quoting, never a debug escape, and 0.13.1 is what that cost.** This wrote
+/// `format!("{path:?}")` up to 0.13.0, and `Debug` for a string escapes every
+/// character Rust considers unprintable — which includes the U+202F narrow
+/// no-break space macOS puts between the time and the `AM` in every screenshot's
+/// name. What landed on the prompt line was `\u{202f}` as six literal characters,
+/// so the path named no file even once its quotes came off, and `/attach` refused
+/// the operator's own screenshot in a sentence about image formats.
+///
+/// The mark is chosen rather than escaped into: a path carrying a double quote is
+/// wrapped in single quotes, one carrying both is left bare. That keeps this the
+/// exact inverse of [`crate::attach::unquote`], which takes off one matching pair
+/// and knows nothing about escapes — two halves that agree because neither of
+/// them has anything to agree about.
+fn quoted(path: &str) -> String {
+    match (path.contains('"'), path.contains('\'')) {
+        (false, _) => format!("\"{path}\""),
+        (true, false) => format!("'{path}'"),
+        (true, true) => path.to_string(),
+    }
+}
+
 pub struct Composer {
     area: TextArea<'static>,
     /// Prompts already submitted, oldest first.
@@ -327,7 +350,7 @@ impl Composer {
         // something quotes it. The check is that it names a file that exists, so
         // ordinary prose is never quoted at somebody.
         if let Some(path) = pasted_path(text) {
-            self.area.insert_str(format!("{path:?}"));
+            self.area.insert_str(quoted(&path));
             return;
         }
 

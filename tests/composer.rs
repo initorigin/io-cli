@@ -611,3 +611,61 @@ fn a_pasted_path_is_quoted_and_prose_is_not() {
     prose.paste("look at the picture in my documents");
     assert_eq!(prose.typed(), "look at the picture in my documents");
 }
+
+/// F6's other half — a pasted path is quoted, never debug-escaped.
+///
+/// `format!("{path:?}")` is what this wrote up to 0.13.0, and `Debug` for a
+/// string escapes every character Rust considers unprintable — including the
+/// U+202F narrow no-break space macOS puts in every screenshot's name. What
+/// landed on the prompt was `\u{202f}` as six literal characters, so the path
+/// named no file even once `/attach` took the quotes off.
+#[test]
+fn f6_a_pasted_path_keeps_the_characters_it_was_pasted_with() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "Screenshot 2026-08-24 at 8.00.01\u{202f}AM.png";
+    let path = dir.path().join(name);
+    std::fs::write(&path, b"not really a png").expect("write");
+
+    let mut composer = Composer::new();
+    composer.paste(&path.display().to_string());
+    let typed = composer.typed();
+
+    assert!(
+        typed.contains('\u{202f}'),
+        "the narrow no-break space was escaped out of the path: {typed:?}",
+    );
+    assert!(
+        !typed.contains("\\u{"),
+        "a debug escape reached the prompt line: {typed:?}",
+    );
+    // Quoted, because that is what keeps a path with a space in it one word for
+    // everything downstream.
+    assert!(typed.starts_with('"') && typed.ends_with('"'), "{typed:?}");
+    assert!(typed.contains(name), "{typed:?}");
+}
+
+/// What the composer writes, `/attach` reads. The two halves are tested apart —
+/// `tests/attach.rs` owns the reading — so this asserts they meet.
+#[test]
+fn f6_what_the_composer_quotes_is_what_attach_unquotes() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "one two.png";
+    let path = dir.path().join(name);
+    std::fs::write(&path, support::png_bytes(2, 2)).expect("write");
+
+    let mut composer = Composer::new();
+    composer.paste(&path.display().to_string());
+
+    // Canonicalized, because the composer canonicalizes what it quotes and macOS
+    // hands out `/var/…` for a `/private/var/…` temporary directory. A workspace
+    // rooted at one and handed a path under the other is a path that escapes it.
+    let root = dir.path().canonicalize().expect("a real path");
+    let staged = io_cli::attach::prepare(
+        &root,
+        &io_harness::Policy::permissive(),
+        true,
+        &composer.text(),
+    )
+    .unwrap_or_else(|error| panic!("what the composer wrote was refused: {error}"));
+    assert_eq!(staged.media_type, "image/png");
+}
