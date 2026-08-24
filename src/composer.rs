@@ -42,17 +42,6 @@ pub enum Reply {
     Submitted(String),
 }
 
-/// The path a paste names, if it names one that exists.
-///
-/// Dragging a file into a terminal pastes its path, and a file manager's copy
-/// does the same. What arrives may be shell-escaped — `My\ Documents` — or
-/// already quoted, and it is one line either way. Quoting it is what makes a
-/// path with a space in it survive as one word; resolving it to an absolute path
-/// is what makes it survive the agent's working directory being somewhere else.
-///
-/// **It has to exist.** The whole safety of this is that prose is never quoted
-/// at somebody: a sentence is not a path, and a path this process cannot see is
-/// not one either, so both are pasted exactly as they arrived.
 /// `text` with every `%XX` turned back into the byte it stands for.
 ///
 /// Only what a `file://` URL needs. A sequence that is not valid UTF-8 once
@@ -86,9 +75,10 @@ fn percent_decoded(text: &str) -> String {
 ///
 /// The whole text is tried first, so a name with an unescaped space in it — which
 /// is what a copied path from a file manager looks like — is still one path. Then
-/// lines, then space-separated tokens with `\ ` treated as an escape. A split is
-/// only accepted when *every* piece of it names something that exists, which is
-/// what keeps a sentence about two files from being read as two files.
+/// one path per line. Then a scan that asks the filesystem where one
+/// path ends and the next begins. A split is only accepted when *every* piece of
+/// it names something that exists, which is what keeps a sentence about two files
+/// from being read as two files.
 pub fn pasted_paths(text: &str) -> Vec<String> {
     if let Some(one) = pasted_path(text) {
         return vec![one];
@@ -180,6 +170,17 @@ fn split_greedy(text: &str) -> Vec<String> {
     found
 }
 
+/// The path a paste names, if it names one that exists.
+///
+/// Dragging a file into a terminal pastes its path, and a file manager's copy
+/// does the same. What arrives may be shell-escaped — `My\ Documents` — or
+/// already quoted, and it is one line either way. Quoting it is what makes a
+/// path with a space in it survive as one word; resolving it to an absolute path
+/// is what makes it survive the agent's working directory being somewhere else.
+///
+/// **It has to exist.** The whole safety of this is that prose is never quoted
+/// at somebody: a sentence is not a path, and a path this process cannot see is
+/// not one either, so both are pasted exactly as they arrived.
 pub fn pasted_path(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.contains('\n') {
@@ -375,7 +376,9 @@ impl Composer {
     /// Rows the composer needs at this width, prompt marker included.
     pub fn height(&self, width: u16) -> u16 {
         let room = usize::from(width.saturating_sub(PROMPT.len() as u16)).max(1);
-        u16::try_from(self.wrapped(room).0.len()).unwrap_or(u16::MAX).max(1)
+        u16::try_from(self.wrapped(room).0.len())
+            .unwrap_or(u16::MAX)
+            .max(1)
     }
 
     /// The prompt as the rows it actually occupies at `room` columns, and where
@@ -508,9 +511,7 @@ impl Composer {
             // placeholder that had silently stopped standing for anything.
             // `Ctrl+W` is the same key by another name.
             (KeyCode::Backspace, _) => self.delete_backwards(key),
-            (KeyCode::Char('w'), m) if m == KeyModifiers::CONTROL => {
-                self.delete_backwards(key)
-            }
+            (KeyCode::Char('w'), m) if m == KeyModifiers::CONTROL => self.delete_backwards(key),
             // History, but only from the edge of the text: inside a multiline
             // prompt the arrows have to move the cursor, or a long prompt cannot
             // be edited at all.

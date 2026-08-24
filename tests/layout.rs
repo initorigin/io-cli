@@ -15,9 +15,9 @@ mod support;
 
 use std::time::Duration;
 
-use io_harness::{EventKind, RunEvent};
 use io_cli::app::App;
 use io_cli::theme::DARK;
+use io_harness::{EventKind, RunEvent};
 
 /// A session with a turn in flight and one line of streamed prose in the live
 /// row.
@@ -25,16 +25,24 @@ fn working() -> App {
     let mut app = App::new(DARK, "opus-5");
     app.started();
     app.event(
-        &RunEvent::new(1, 1, EventKind::Started {
-            goal: "count the tests".into(),
-            provider: "openrouter".into(),
-        }),
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::Started {
+                goal: "count the tests".into(),
+                provider: "openrouter".into(),
+            },
+        ),
         Duration::from_secs(1),
     );
     app.event(
-        &RunEvent::new(1, 1, EventKind::Token {
-            text: "STREAMING".into(),
-        }),
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::Token {
+                text: "STREAMING".into(),
+            },
+        ),
         Duration::from_secs(1),
     );
     app
@@ -47,11 +55,7 @@ fn rows(app: &mut App, height: u16) -> Vec<String> {
     screen
         .draw(|frame| app.render(frame, frame.area()))
         .expect("frame");
-    screen
-        .viewport_text()
-        .lines()
-        .map(str::to_string)
-        .collect()
+    screen.viewport_text().lines().map(str::to_string).collect()
 }
 
 /// Where the row holding `needle` is, or a panic naming what was on screen.

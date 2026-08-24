@@ -69,7 +69,9 @@ pub fn advice(error: &Error) -> Option<&'static str> {
              different model with /model.",
         );
     }
-    if said.contains("context length") || said.contains("context_length") || said.contains("too many tokens")
+    if said.contains("context length")
+        || said.contains("context_length")
+        || said.contains("too many tokens")
     {
         return Some(
             "the conversation is longer than this model will take. `/clear` starts a \

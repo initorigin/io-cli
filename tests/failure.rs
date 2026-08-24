@@ -13,8 +13,9 @@ fn no_image_endpoint() -> Error {
     Error::Provider {
         kind: ProviderErrorKind::Request,
         status: Some(404),
-        message: r#"{"error":{"message":"No endpoints found that support image input","code":404}}"#
-            .to_string(),
+        message:
+            r#"{"error":{"message":"No endpoints found that support image input","code":404}}"#
+                .to_string(),
         retry_after: None,
     }
 }
@@ -45,7 +46,10 @@ fn the_harness_line_survives_underneath_the_sentence() {
     let error = no_image_endpoint();
     let said = said(&error);
 
-    assert!(said.starts_with("this model cannot look at pictures"), "{said}");
+    assert!(
+        said.starts_with("this model cannot look at pictures"),
+        "{said}"
+    );
     assert!(
         said.contains(&error.to_string()),
         "the harness's own line is still there in full: {said}",
@@ -71,11 +75,20 @@ fn an_unrecognised_failure_is_the_harness_line_and_nothing_added() {
 #[test]
 fn the_recognised_failures_are_matched_on_what_they_say() {
     let cases = [
-        ("Insufficient credits to complete this request", "out of credit"),
+        (
+            "Insufficient credits to complete this request",
+            "out of credit",
+        ),
         ("Rate limit exceeded for this key", "rate-limiting"),
         ("No auth credentials found", "rejected the credential"),
-        ("No endpoints found for this model", "no provider behind this gateway"),
-        ("This request exceeds the maximum context length", "longer than this model"),
+        (
+            "No endpoints found for this model",
+            "no provider behind this gateway",
+        ),
+        (
+            "This request exceeds the maximum context length",
+            "longer than this model",
+        ),
     ];
     for (message, expected) in cases {
         let error = Error::Provider {
@@ -84,8 +97,7 @@ fn the_recognised_failures_are_matched_on_what_they_say() {
             message: message.to_string(),
             retry_after: None,
         };
-        let advice = advice(&error)
-            .unwrap_or_else(|| panic!("{message:?} was not recognised"));
+        let advice = advice(&error).unwrap_or_else(|| panic!("{message:?} was not recognised"));
         assert!(
             advice.contains(expected),
             "{message:?} was matched to the wrong sentence: {advice}",

@@ -886,7 +886,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // with the key that closes it, rather than as a refusal —
                     // the caps are what the fan-out runs under and there is no
                     // safe default for somebody else's token ceiling.
-                    (None, _) => app.say(
+                    (None, _) => app.record(
                         Tone::Muted,
                         "no [app.io-cli.containment] in the configuration, so a turn here \
                          cannot fan out. Set max_total_agents, max_concurrent_agents, \
@@ -904,16 +904,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             "not contained — this turn does the work itself and cannot fan out"
                                 .to_string()
                         };
-                        app.say(Tone::Muted, where_it_is);
+                        app.record(Tone::Muted, where_it_is);
                     }
                     (Some(caps), Some(true)) => {
                         contained = true;
                         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
-                        app.say(Tone::Muted, notice);
+                        app.record(Tone::Muted, notice);
                     }
                     (Some(_), Some(false)) => {
                         contained = false;
-                        app.say(
+                        app.record(
                             Tone::Muted,
                             "not contained from the next turn — it does the work itself and \
                              cannot fan out",
@@ -949,7 +949,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // mode that outlives the turn it was set on has to be
                     // readable from the screen rather than from memory.
                     app.status.planning = planning;
-                    app.say(Tone::Muted, said);
+                    // **A mode report is a record, not a notice.** It outlives
+                    // the keystroke that asked for it — the mode is in force
+                    // until something changes it — and it carries the sentence
+                    // saying how to change it, which does not fit the one row a
+                    // notice has. `App::say` is for what answers a key and is
+                    // gone at the next one.
+                    app.record(Tone::Muted, said);
                 }
                 // The picture, drawn now, at the bottom. It cannot open the row
                 // it was announced on: that row is in the terminal's scrollback,

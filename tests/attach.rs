@@ -412,12 +412,20 @@ fn f6_a_quoted_path_with_a_space_and_a_narrow_no_break_space_is_attached() {
     let staged = prepare(dir.path(), &Policy::permissive(), true, &quoted)
         .unwrap_or_else(|error| panic!("a quoted path was refused: {error}"));
     assert_eq!(staged.media_type, "image/png");
-    assert_eq!(staged.path, name, "the quotes belong to the prompt, not to the path");
+    assert_eq!(
+        staged.path, name,
+        "the quotes belong to the prompt, not to the path"
+    );
 
     // A single-quoted one too, because that is what the composer writes for a
     // path that itself carries a double quote.
-    let staged = prepare(dir.path(), &Policy::permissive(), true, &format!("'{name}'"))
-        .unwrap_or_else(|error| panic!("a single-quoted path was refused: {error}"));
+    let staged = prepare(
+        dir.path(),
+        &Policy::permissive(),
+        true,
+        &format!("'{name}'"),
+    )
+    .unwrap_or_else(|error| panic!("a single-quoted path was refused: {error}"));
     assert_eq!(staged.path, name);
 
     // And the unquoted one still works, which is what everything that types a
@@ -480,10 +488,7 @@ fn f14_an_attachment_is_a_marker_the_composer_deletes_whole() {
 
     let mut composer = io_cli::composer::Composer::new();
     for character in "look at ".chars() {
-        composer.key(KeyEvent::new(
-            KeyCode::Char(character),
-            KeyModifiers::NONE,
-        ));
+        composer.key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
     }
     composer.attach("[Image #1]", "/tmp/shot.png");
 
@@ -525,7 +530,11 @@ fn f14_the_marker_number_is_a_handle_the_session_keeps() {
     assert_eq!(app.image(1), Some("/tmp/one.png"));
     assert_eq!(app.image(2), Some("/tmp/two.png"));
     assert_eq!(app.image(3), None, "a number nobody attached names nothing");
-    assert_eq!(app.image(0), None, "the numbering a person reads starts at one");
+    assert_eq!(
+        app.image(0),
+        None,
+        "the numbering a person reads starts at one"
+    );
 }
 
 /// What the caption says, which is everything needed to tell one attachment from
@@ -621,11 +630,7 @@ fn f15_pasting_the_same_picture_again_toggles_the_marker_and_the_path() {
 fn f15_one_press_removes_a_marker_and_its_space() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    for modifiers in [
-        KeyModifiers::NONE,
-        KeyModifiers::ALT,
-        KeyModifiers::CONTROL,
-    ] {
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::CONTROL] {
         let mut composer = io_cli::composer::Composer::new();
         composer.attach("[Image #1]", "/tmp/shot.png");
         assert_eq!(composer.typed(), "[Image #1] ");
@@ -668,7 +673,11 @@ fn f15_clear_resets_the_image_numbering() {
 
     assert!(app.clear_conversation(), "an idle session clears");
 
-    assert_eq!(app.images(), 0, "the attachments belonged to that conversation");
+    assert_eq!(
+        app.images(),
+        0,
+        "the attachments belonged to that conversation"
+    );
     assert_eq!(
         app.attached("/tmp/three.png"),
         1,
@@ -699,7 +708,10 @@ fn f16_several_paths_in_one_paste_are_several_pictures() {
         fs::write(path, support::png_bytes(2, 2)).expect("write");
     }
     let real = |path: &std::path::Path| {
-        path.canonicalize().expect("a real path").display().to_string()
+        path.canonicalize()
+            .expect("a real path")
+            .display()
+            .to_string()
     };
 
     // Space-separated, which is what a drop of two files writes.
@@ -720,7 +732,10 @@ fn f16_several_paths_in_one_paste_are_several_pictures() {
 
     // One path with an unescaped space — a path copied from a file manager — is
     // still one path, because the whole text is tried first.
-    assert_eq!(pasted_paths(&spaced.display().to_string()), vec![real(&spaced)]);
+    assert_eq!(
+        pasted_paths(&spaced.display().to_string()),
+        vec![real(&spaced)]
+    );
 
     // And prose about two files is not two files.
     assert!(pasted_paths("look at one.png and two.png").is_empty());
@@ -747,7 +762,10 @@ fn f16_paths_with_unescaped_spaces_are_found_by_asking_the_filesystem() {
         fs::write(path, support::png_bytes(2, 2)).expect("write");
     }
     let real = |path: &std::path::Path| {
-        path.canonicalize().expect("a real path").display().to_string()
+        path.canonicalize()
+            .expect("a real path")
+            .display()
+            .to_string()
     };
 
     // One, with four unescaped spaces in its name.
@@ -783,7 +801,10 @@ fn f16_a_file_url_is_a_path() {
         .display()
         .to_string();
 
-    let url = format!("file://{}", picture.display().to_string().replace(' ', "%20"));
+    let url = format!(
+        "file://{}",
+        picture.display().to_string().replace(' ', "%20")
+    );
     assert_eq!(pasted_paths(&url), vec![real]);
 }
 
@@ -848,7 +869,12 @@ fn f16_a_copy_of_several_screenshots_is_several_pictures() {
         let path = dir.path().join(name);
         fs::write(&path, support::png_bytes(2, 2)).expect("write");
         quoted.push(format!("'{}'", path.display()));
-        real.push(path.canonicalize().expect("a real path").display().to_string());
+        real.push(
+            path.canonicalize()
+                .expect("a real path")
+                .display()
+                .to_string(),
+        );
     }
 
     assert_eq!(

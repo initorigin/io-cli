@@ -96,7 +96,10 @@ fn an_early_stop_undoes_the_turn_instead_of_reporting_it() {
     let mut app = App::new(DARK, "opus-5");
     just_started(&mut app, "count the tests");
 
-    assert!(app.undoable(), "a turn with only its echo on screen is undoable");
+    assert!(
+        app.undoable(),
+        "a turn with only its echo on screen is undoable"
+    );
     assert_eq!(
         app.key(key(KeyCode::Esc)),
         Command::Abandon,
@@ -112,7 +115,10 @@ fn an_early_stop_undoes_the_turn_instead_of_reporting_it() {
         "count the tests",
         "the prompt is back in the composer, ready to edit or send again",
     );
-    assert!(app.take_pending().is_empty(), "and nothing is left to commit");
+    assert!(
+        app.take_pending().is_empty(),
+        "and nothing is left to commit"
+    );
 }
 
 /// A multi-line prompt is more rows of echo, and all of them come back off.

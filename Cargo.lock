@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "io-cli"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "clap",
  "crossterm",

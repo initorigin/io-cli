@@ -208,9 +208,8 @@ pub fn prepare(
     // Outside it: the operator's own file, read directly. Which of the two this
     // is decided in `outside`, and the reasoning is written there.
     let bytes = match outside(root, path) {
-        Some(file) => std::fs::read(&file).map_err(|error| {
-            format!("{} cannot be read: {error}", file.display())
-        })?,
+        Some(file) => std::fs::read(&file)
+            .map_err(|error| format!("{} cannot be read: {error}", file.display()))?,
         // A denied path is refused with the harness's own sentence, which names
         // the path and the rule.
         None => Workspace::with_policy(root, policy.clone())

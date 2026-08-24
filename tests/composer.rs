@@ -706,11 +706,7 @@ mod one_cursor {
             })
             .expect("frame");
         (
-            screen
-                .viewport_text()
-                .lines()
-                .map(str::to_string)
-                .collect(),
+            screen.viewport_text().lines().map(str::to_string).collect(),
             seen.get(),
         )
     }
@@ -766,7 +762,11 @@ mod one_cursor {
         let (_, (x, y)) = drawn(&composer, 22, 4);
         // Twenty-five characters at twenty usable columns: the twenty-sixth cell
         // is the sixth column of the second row.
-        assert_eq!((x, y), (2 + 5, 1), "the caret is where the next character goes");
+        assert_eq!(
+            (x, y),
+            (2 + 5, 1),
+            "the caret is where the next character goes"
+        );
     }
 
     #[test]
@@ -833,8 +833,16 @@ mod one_cursor {
         composer.key(key(KeyCode::Backspace));
         composer.key(key(KeyCode::Backspace));
         let (rows, (x, y)) = drawn(&composer, 40, 4);
-        assert_eq!((x, y), (2 + 3, 0), "the caret is back on the first row: {rows:?}");
-        assert_eq!(composer.height(40), 1, "and the composer wants one row again");
+        assert_eq!(
+            (x, y),
+            (2 + 3, 0),
+            "the caret is back on the first row: {rows:?}"
+        );
+        assert_eq!(
+            composer.height(40),
+            1,
+            "and the composer wants one row again"
+        );
     }
 }
 
