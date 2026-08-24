@@ -1331,9 +1331,11 @@ async fn turn<P: Provider>(
             }
             Some(asked) = questions.recv() => {
                 // The same shape one seam over: the run is stopped inside
-                // `Responder::answer` and the loop keeps turning. It can only
-                // arrive on a contained turn, because the responder reaches the
-                // run through the contract and only that arm carries one.
+                // `Responder::answer` and the loop keeps turning. It arrives on
+                // ANY turn — the responder is on the one contract both arms are
+                // handed, since 0.12.0. (This comment said "only a contained
+                // turn" until 0.13.0, which was true of 0.11.0 and of nothing
+                // since.)
                 app.open_intent(asked);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;
