@@ -113,16 +113,18 @@ fn f2_the_tick_stops_again_when_the_turn_ends() {
     );
 }
 
-/// The activity line: the second row the viewport draws.
+/// The activity line: the third row the viewport draws.
 ///
-/// The first is deliberately blank — the air between the sticky row and the
-/// transcript scrolling underneath it, without which the activity line reads as
-/// the last line of the work rather than the line describing it.
+/// The first is the streaming tail of what the agent is saying and the second is
+/// deliberately blank — the air between the work and the line describing it.
+/// **The order was the other way round until 0.13.1**, which is why this reads a
+/// row index at all: the line moved, and a helper that had gone on reading row
+/// one would have been asserting about the blank.
 fn activity_row(screen: &io_cli::term::Screen<support::Fixed>) -> String {
     screen
         .viewport_text()
         .lines()
-        .nth(1)
+        .nth(2)
         .unwrap_or_default()
         .to_string()
 }

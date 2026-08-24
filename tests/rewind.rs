@@ -728,6 +728,10 @@ fn f11_nothing_arms_while_a_turn_is_running() {
     // is about to write to, so it is refused with a sentence rather than queued.
     let mut app = app();
     app.started();
+    // A turn with a step behind it. A turn that has done nothing is taken back
+    // whole on the first press since 0.13.1 — see `App::undoable` — and what F11
+    // is about is the turn that has work in it.
+    app.status.steps = Some(1);
 
     // **`Esc` stops the turn now**, which is what every other agent in this
     // field does with it and what an operator presses it for. What F11 is about

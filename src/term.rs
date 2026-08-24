@@ -48,9 +48,9 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
-/// Lines the live viewport occupies: a blank row, the activity line, the
-/// unfinished tail of a streaming answer, two rows of composer, and the status
-/// line.
+/// Lines the live viewport occupies: the unfinished tail of a streaming answer,
+/// a blank row, the activity line, a rule, one row of composer, and the
+/// three-row footer.
 ///
 /// **Six since 0.11.0, and two of them are new.** The activity line buys the one
 /// thing the other four could not say — that a turn is alive and how long it has
@@ -59,6 +59,13 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// content ends exactly where the viewport begins, so without a row of its own
 /// the activity line reads as the last line of the work rather than as the line
 /// describing it.
+///
+/// **Still eight in 0.13.1, and the rows moved.** A rule was added over the
+/// composer — the footer has opened with one since 0.1.0 and the prompt had a
+/// boundary on one side only — and the composer gave up the row that pays for
+/// it: it sits at one row at rest and grows to what a prompt needs. The second
+/// row was there for a paste too big to read in one and was empty for every
+/// prompt anybody types.
 ///
 /// Both rows are *claimed* whether or not a turn is running and *drawn* only
 /// while one is, so the composer is two rows at every moment of a session. A
@@ -199,6 +206,56 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         }
     }
 
+    /// Take `rows` of committed content back off the screen, and bring the
+    /// viewport up with it.
+    ///
+    /// **The one thing in this product that unwrites something**, and it is
+    /// deliberately narrow: an operator who stops a turn a moment after pressing
+    /// Enter gets the session they had before they pressed it, rather than an
+    /// echo of a prompt that never ran sitting in their scrollback forever.
+    ///
+    /// It works because those rows are still on the *screen*: the cursor is put
+    /// at the first of them and everything from there down is erased. Content
+    /// that has scrolled past the top of the screen is gone in the sense that
+    /// matters here — it belongs to the scrollback, which no escape sequence
+    /// reaches — so a caller must not ask for more rows than [`Screen::erasable`]
+    /// reports.
+    ///
+    /// **And the viewport is placed again at the cursor**, which is the half that
+    /// took a second attempt. Erasing alone left ratatui's inline viewport
+    /// anchored where it had been: the composer and the footer went on drawing at
+    /// rows that were now blank, with the prompt stranded in the middle of the
+    /// screen and the footer painting over a row it no longer owned. The rows
+    /// above moved, so the viewport has to move, and re-placing it is the only
+    /// way an inline viewport moves at all.
+    ///
+    /// A caller must park whatever is reading stdin first, for the reason
+    /// [`Screen::replace`] documents: placing a viewport asks the terminal where
+    /// its cursor is and reads the answer off stdin.
+    pub fn rewind(&mut self, rows: u16) -> io::Result<()> {
+        let top = self.terminal.get_frame().area().y;
+        let up = rows.min(top);
+        if up == 0 {
+            return Ok(());
+        }
+        let height = self.rows();
+        // From the first row being taken back, down. That clears the rows
+        // themselves and the viewport under them, and leaves the cursor exactly
+        // where the next viewport is to be placed.
+        self.escape(&format!("\x1b[{};1H\x1b[0J", top - up + 1))?;
+        self.restore();
+        match Self::attach_with(height) {
+            Ok(fresh) => {
+                *self = fresh;
+                Ok(())
+            }
+            Err(error) => {
+                *self = Self::attach_with(VIEWPORT_HEIGHT)?;
+                Err(error)
+            }
+        }
+    }
+
     fn attach_raw(height: u16) -> io::Result<Self> {
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;
@@ -322,9 +379,31 @@ impl<B: Backend + Write> Screen<B> {
                 cell.set_symbol("");
             }
             if let Some(first) = buf.content.first_mut() {
-                first.set_symbol(payload);
+                // **`ESC[0J` first, and it is what makes the picture readable.**
+                // Every cell of this region prints nothing, which is what stops a
+                // row of spaces erasing the placement — but it also means nothing
+                // erases what the terminal was already showing there. The rows
+                // this region is made of are rows the viewport was occupying a
+                // moment ago, scrolled up, so a picture narrower or shorter than
+                // its box was drawn *into* the old composer and status line: half
+                // an image with a stale prompt beside it and a rule through it,
+                // which is what 0.13.1 was reported with.
+                //
+                // Erasing from here to the end of the display costs nothing that
+                // is not about to be redrawn: below this region is the viewport,
+                // and `self.last = None` above has already made the next frame a
+                // full repaint of it.
+                first.set_symbol(&format!("\x1b[0J{payload}"));
             }
         })
+    }
+
+    /// How many committed rows are still on screen above the viewport.
+    ///
+    /// The bound on [`Screen::rewind`]: rows above this are in the terminal's
+    /// scrollback, where nothing this process writes can reach them.
+    pub fn erasable(&mut self) -> u16 {
+        self.terminal.get_frame().area().y
     }
 
     /// Draw one viewport frame, wrapped in synchronized output — or draw nothing

@@ -1435,7 +1435,7 @@ fn f12_the_paste_placeholder_is_whole_at_eighty_columns_in_both_glyph_sets() {
         let set = theme.glyphs.name;
         let mut app = App::new(theme, "opus-5");
         assert!(
-            app.paste(&pasted, false),
+            app.paste(&pasted, false) == io_cli::app::Pasted::Text,
             "nothing was open, so the paste had nowhere to go but the composer ({set})",
         );
 

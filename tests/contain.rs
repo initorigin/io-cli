@@ -26,12 +26,15 @@ fn ctrl(code: char) -> KeyEvent {
 
 /// Everything the app has queued for the scrollback, as one string.
 fn said(app: &mut App) -> String {
-    app.take_pending()
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .map(|span| span.content.to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
+    // **The footer, since 0.13.1.** A sentence about stopping answers the key
+    // that was just pressed and is not part of the conversation; it used to be
+    // committed into the scrollback, where three of them stacked up over one
+    // decision and stayed there for the life of the terminal.
+    app.status
+        .notice
+        .as_ref()
+        .map(|(_, text)| text.clone())
+        .unwrap_or_default()
 }
 
 /// F1 — the four caps come out of `[app.io-cli.containment]` as io-harness's own
@@ -205,15 +208,19 @@ fn f7_the_bridge_continues_until_it_is_told_to_cancel() {
 fn f7_the_interrupt_says_where_the_turn_will_stop() {
     let mut app = App::new(DARK, "a-model");
     app.started();
+    // A step's worth of progress, because a turn that has done nothing is simply
+    // undone now and says nothing at all — see `App::undoable`.
+    app.status.steps = Some(1);
     assert_eq!(app.key(ctrl('c')), Command::Interrupt);
     let steered = said(&mut app);
     assert!(
-        steered.contains("next step boundary"),
+        steered.contains("next step"),
         "a steered turn stops at a step boundary: {steered}"
     );
 
     let mut app = App::new(DARK, "a-model");
     app.started();
+    app.status.steps = Some(1);
     app.contained = true;
     assert_eq!(app.key(ctrl('c')), Command::Interrupt);
     let contained = said(&mut app);

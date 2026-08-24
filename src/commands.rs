@@ -140,10 +140,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "make turns propose a plan before they work: on, off, or ask",
     ),
     ("/fleet", "show the children this turn has spawned"),
-    (
-        "/attach",
-        "put an image in front of the agent, for the next turn only",
-    ),
+    ("/image", "draw an attached image again: /image 1"),
     (
         "/clear",
         "start a new conversation; this one stays in /resume",
@@ -446,13 +443,12 @@ pub enum Action {
     Clear,
     /// Open the fleet view, or close it.
     Fleet,
-    /// Attach an image to the next turn, from a path under the session root.
+    /// Draw an image this session has attached, by the number its marker carries.
     ///
-    /// The string is the rest of the line rather than its first word, because a
-    /// path may contain spaces and the completion that produced it does not
-    /// quote. Empty when nothing followed the command, which is a request for
-    /// the sentence saying how to use it rather than an error.
-    Attach(String),
+    /// `None` means the operator typed `/image` with nothing after it, or with
+    /// something that is not a number: the answer to both is the same sentence
+    /// naming what there is.
+    Image(Option<usize>),
     /// Run later turns contained, stop doing so, or say which it is now.
     ///
     /// `None` is a question and never a toggle: the two modes differ in what a
@@ -575,17 +571,26 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             _ => Action::Plan(None),
         },
         "fleet" | "agents" => Action::Fleet,
-        // The REST of the line, not its second word: `@` completion inserts a
-        // path verbatim and a path may contain spaces, so taking one token would
-        // silently attach the wrong file — or nothing — for exactly the paths a
-        // reader is least able to retype.
-        "attach" | "image" => Action::Attach(
+        // **`/attach` is gone, and 0.13.1 is where it went.** A picture is
+        // attached by dropping it on the prompt or pasting it — which is what an
+        // operator already does in every other window they talk to a model in —
+        // and a command was a thing they had to be told about first. The word is
+        // not kept as an alias: an unknown command is answered by the same
+        // sentence every other unknown one is, and a command list with a hidden
+        // survivor in it is a list nobody can trust.
+        // **The picture, on demand.** An attachment is `[Image #1]` on the prompt
+        // and `[Image #1]` in the transcript — twenty rows of somebody's
+        // screenshot in the middle of a conversation is not what a reader wants
+        // by default — so this is how the picture is seen again. It draws a fresh
+        // copy at the bottom rather than opening the old line: a committed row
+        // belongs to the terminal's scrollback, and nothing in this process can
+        // reach back into it.
+        "image" | "images" => Action::Image(
             input
-                .trim_start()
-                .split_once(char::is_whitespace)
-                .map(|(_, rest)| rest.trim())
-                .unwrap_or_default()
-                .to_string(),
+                .split_whitespace()
+                .nth(1)
+                .map(|word| word.trim_start_matches('#'))
+                .and_then(|word| word.parse().ok()),
         ),
         "expand" => Action::Expand,
         // `/clear` and `/new` mean the same thing, for the reason `/resume` and

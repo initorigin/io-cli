@@ -484,7 +484,13 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
         "plan_rejected",
         "cancelled",
         "awaiting_recovery",
+        // All three spellings io-harness writes. Only the bare one was listed
+        // here, and `escalated_terminal` — the one an operator actually meets,
+        // because it is what a provider refusing the request outright ends a turn
+        // as — printed as a bare token with nothing under it.
         "escalated",
+        "escalated_terminal",
+        "escalated_retryable",
     ] {
         assert!(outcome_help(outcome).is_some(), "{outcome}");
     }
@@ -1914,4 +1920,71 @@ fn f8_a_prompt_after_an_answer_is_one_blank_row_and_not_two() {
         "the answer already ended its block with a blank, so a second one here is \
          a gap that reads as something left out: {committed:?}",
     );
+}
+
+/// F5 — a prompt written on more than one line is committed as more than one
+/// row.
+///
+/// A `Line` is one row and a newline inside a span is not a break: ratatui draws
+/// the cells and a `\n` is not one, so through 0.13.0 a prompt of `abc` and `def`
+/// was echoed as `abcdef` and the operator could not read back what they had
+/// sent. The defect was reported from a capture of exactly that.
+#[test]
+fn f5_a_multi_line_goal_is_committed_as_its_lines() {
+    let mut events = Events::new(DARK);
+    let committed = rows(events.event(
+        &event(EventKind::Started {
+            goal: "abc\ndef\nghi".into(),
+            provider: "openrouter".into(),
+        }),
+        Duration::ZERO,
+    ));
+
+    let said: Vec<&String> = committed
+        .iter()
+        .filter(|row| !row.trim().is_empty())
+        .collect();
+    assert_eq!(
+        said.len(),
+        3,
+        "three lines were typed, so three rows are committed: {committed:?}",
+    );
+    assert!(said[0].contains("abc"), "{committed:?}");
+    assert!(said[1].contains("def"), "{committed:?}");
+    assert!(said[2].contains("ghi"), "{committed:?}");
+    assert!(
+        committed.iter().all(|row| !row.contains('\n')),
+        "a committed row carries a newline, which draws as nothing: {committed:?}",
+    );
+
+    // The mark opens the block and the rest is indented under the first
+    // character, so the three rows read as one thing said once.
+    let marker = DARK.glyphs.marker;
+    assert!(said[0].starts_with(marker), "{committed:?}");
+    assert!(
+        said[1].starts_with(&" ".repeat(marker.chars().count())),
+        "a continuation row belongs under the first character, not under the \
+         mark: {committed:?}",
+    );
+    assert!(!said[1].contains(marker.trim()), "{committed:?}");
+}
+
+/// The row a one-line prompt has always committed, unchanged.
+#[test]
+fn f5_a_one_line_goal_is_still_one_row() {
+    let mut events = Events::new(DARK);
+    let committed = rows(events.event(
+        &event(EventKind::Started {
+            goal: "count the tests".into(),
+            provider: "openrouter".into(),
+        }),
+        Duration::ZERO,
+    ));
+
+    let said: Vec<&String> = committed
+        .iter()
+        .filter(|row| !row.trim().is_empty())
+        .collect();
+    assert_eq!(said.len(), 1, "{committed:?}");
+    assert!(said[0].contains("count the tests"), "{committed:?}");
 }

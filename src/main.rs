@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
@@ -440,7 +440,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     .map_err(|error| error.to_string())?;
             }
             if let Event::Paste(text) = event {
-                app.paste(&text, picker.is_some());
+                match app.paste(&text, picker.is_some()) {
+                    io_cli::app::Pasted::Picture(paths) => {
+                        for path in paths {
+                            paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                        }
+                    }
+                    io_cli::app::Pasted::Text | io_cli::app::Pasted::Refused => {}
+                }
             }
             paint(screen, &mut app)?;
             continue;
@@ -874,47 +881,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // the completion above and the turn below build it — so what may
                 // be attached and what the agent may read are the same set by
                 // construction rather than by two agreeing lists.
-                Action::Attach(path) => {
-                    let effective =
-                        approval::session_policy(&policy, app.posture(), app.remembered());
-                    match io_cli::attach::prepare(
-                        session.root(),
-                        &effective,
-                        // The provider's own answer, asked here rather than left
-                        // to `ensure_media_accepted` inside the turn — that one
-                        // fires after a prompt has been typed.
-                        provider.accepts_images(),
-                        &path,
-                    ) {
-                        Ok(staged) => {
-                            let (drawable, graphics) = forms(&app);
-                            let drawn = io_cli::picture::render(
-                                &staged.bytes,
-                                &staged.path,
-                                staged.media_type,
-                                drawable,
-                                graphics,
-                                screen.width(),
-                            );
-                            let note = app
-                                .theme
-                                .notice(Tone::Muted, io_cli::attach::staged_note(&staged));
-                            // Staged on the session, so io-harness's `drive` folds
-                            // it in and `mem::take`s it. Nothing is kept here: the
-                            // one-turn-only property is the harness's, and a copy
-                            // on this side would quietly undo it.
-                            session.attach([staged.media]);
-                            commit_drawn(screen, &mut app, drawn, Some(note))?;
-                        }
-                        Err(error) => app.say(Tone::Error, error),
-                    }
-                }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —
                     // the caps are what the fan-out runs under and there is no
                     // safe default for somebody else's token ceiling.
-                    (None, _) => app.say(
+                    (None, _) => app.record(
                         Tone::Muted,
                         "no [app.io-cli.containment] in the configuration, so a turn here \
                          cannot fan out. Set max_total_agents, max_concurrent_agents, \
@@ -932,16 +904,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             "not contained — this turn does the work itself and cannot fan out"
                                 .to_string()
                         };
-                        app.say(Tone::Muted, where_it_is);
+                        app.record(Tone::Muted, where_it_is);
                     }
                     (Some(caps), Some(true)) => {
                         contained = true;
                         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
-                        app.say(Tone::Muted, notice);
+                        app.record(Tone::Muted, notice);
                     }
                     (Some(_), Some(false)) => {
                         contained = false;
-                        app.say(
+                        app.record(
                             Tone::Muted,
                             "not contained from the next turn — it does the work itself and \
                              cannot fan out",
@@ -977,7 +949,61 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // mode that outlives the turn it was set on has to be
                     // readable from the screen rather than from memory.
                     app.status.planning = planning;
-                    app.say(Tone::Muted, said);
+                    // **A mode report is a record, not a notice.** It outlives
+                    // the keystroke that asked for it — the mode is in force
+                    // until something changes it — and it carries the sentence
+                    // saying how to change it, which does not fit the one row a
+                    // notice has. `App::say` is for what answers a key and is
+                    // gone at the next one.
+                    app.record(Tone::Muted, said);
+                }
+                // The picture, drawn now, at the bottom. It cannot open the row
+                // it was announced on: that row is in the terminal's scrollback,
+                // which nothing here reaches.
+                Action::Image(which) => {
+                    let total = app.images();
+                    match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
+                        Some((number, path)) => {
+                            let effective =
+                                approval::session_policy(&policy, app.posture(), app.remembered());
+                            match io_cli::attach::prepare(
+                                session.root(),
+                                &effective,
+                                provider.accepts_images(),
+                                &path,
+                            ) {
+                                Ok(staged) => {
+                                    let (drawable, graphics) = forms(&app);
+                                    let drawn = io_cli::picture::render(
+                                        &staged.bytes,
+                                        &staged.path,
+                                        staged.media_type,
+                                        drawable,
+                                        graphics,
+                                        screen.width(),
+                                    );
+                                    let caption = app.theme.notice(
+                                        Tone::Muted,
+                                        io_cli::picture::caption(
+                                            number,
+                                            &staged.path,
+                                            staged.media_type,
+                                            staged.bytes.len(),
+                                        ),
+                                    );
+                                    commit_drawn(screen, &mut app, drawn, Some(caption))?;
+                                }
+                                Err(error) => app.say(Tone::Error, error),
+                            }
+                        }
+                        None if total == 0 => {
+                            app.say(Tone::Muted, "no image has been attached in this session")
+                        }
+                        None => app.say(
+                            Tone::Muted,
+                            format!("say which one: /image 1 to /image {total}"),
+                        ),
+                    }
                 }
                 Action::Expand => {
                     let lines = expand(&session, &store, &app.theme, app.events.thought());
@@ -1038,7 +1064,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     .commit(&splash::lines(&app.theme, true, width, &about))
                                     .map_err(|error| error.to_string())?;
                                 let dash = app.theme.glyphs.dash;
-                                app.say(
+                                app.record(
                                     Tone::Muted,
                                     format!(
                                         "new conversation {dash} the last one is still in /resume"
@@ -1103,6 +1129,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     Instant::now(),
                 )
                 .await?;
+                // Anything dropped onto the prompt while the turn held the
+                // session is staged now that it has let go.
+                for path in app.take_queued_pictures() {
+                    paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                }
             }
         }
 
@@ -1122,6 +1153,47 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
 /// accepted it for the wire, so the agent will see it; what failed is this
 /// crate's ability to show the operator the same thing, and saying so beats
 /// refusing an attachment that is going to work.
+/// Stage a pasted picture and put its marker on the prompt.
+///
+/// **The whole of how an image is attached since 0.13.1.** An operator drags the
+/// file onto the prompt, or copies it and presses paste; the terminal delivers
+/// the path; and this is what turns that into `[Image #1]` and a staged
+/// attachment. There is no command: a command is something a reader has to be
+/// told about first, and dragging a picture into a window is not.
+fn paste_picture<P: Provider>(
+    app: &mut App,
+    session: &mut Session,
+    provider: &P,
+    policy: &Policy,
+    path: &str,
+) {
+    // Already on this prompt: a repeat paste is a request to change what is on
+    // screen — the marker or the path it stands for — and never a second copy of
+    // the same file on the same turn.
+    if app.composer.attached(path) {
+        app.composer.attach("", path);
+        return;
+    }
+    // A file dropped alongside pictures that is not one: it is a path, and a
+    // path on the prompt is what it was before this release too.
+    if io_harness::Media::source_type_for(path).is_none() {
+        app.composer.paste(path);
+        return;
+    }
+    let effective = approval::session_policy(policy, app.posture(), app.remembered());
+    match io_cli::attach::prepare(session.root(), &effective, provider.accepts_images(), path) {
+        Ok(staged) => {
+            let number = app.attached(&staged.path);
+            let note = io_cli::attach::staged_note(&staged, number);
+            app.composer
+                .attach(&format!("[Image #{number}]"), &staged.path);
+            session.attach([staged.media]);
+            app.say(Tone::Muted, note);
+        }
+        Err(error) => app.say(Tone::Error, error),
+    }
+}
+
 fn commit_drawn(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -1289,6 +1361,9 @@ async fn turn<P: Provider>(
     // `MissedTickBehavior::Delay` rather than the default: a turn that blocked the
     // loop should resume ticking from now, not fire a burst catching up on the
     // frames nobody saw.
+    // Set when a turn was taken back off the screen rather than stopped: there
+    // is nothing to report about a turn the session no longer shows.
+    let mut undone = false;
     let mut ticker = tokio::time::interval(io_cli::app::TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1373,6 +1448,31 @@ async fn turn<P: Provider>(
                             // commits whatever streamed before it.
                             Command::Abandon => {
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                // **A turn that had done nothing is taken back
+                                // whole.** `App::undoable` is what decides that
+                                // — no step, nothing streamed, nothing on screen
+                                // but the echo of the prompt — and what it buys
+                                // is the session the operator had a moment
+                                // before: the goal line comes off the screen and
+                                // the prompt goes back in the composer, ready to
+                                // edit or to send again.
+                                //
+                                // Only what is still on screen. Rows that have
+                                // scrolled past the top belong to the terminal's
+                                // scrollback, which nothing here reaches, so an
+                                // echo that long is left where it is.
+                                if app.undoable() && app.turn_rows() <= screen.erasable() {
+                                    let (rows, _) = app.undo_turn();
+                                    // The viewport is placed again at the rows
+                                    // that came back, which asks the terminal
+                                    // where its cursor is — so nothing may be
+                                    // reading stdin while it lands.
+                                    let _parked = io_cli::stdin::placing();
+                                    let _ = screen.rewind(rows);
+                                    drop(_parked);
+                                    undone = true;
+                                }
+
                                 // Nothing is constructed to stand in for a result
                                 // io-harness never returned. `TurnResult` is
                                 // `#[non_exhaustive]` and could not be anyway,
@@ -1419,7 +1519,23 @@ async fn turn<P: Provider>(
                     // before a turn starts — and the approval is refused inside
                     // `App::paste`.
                     Event::Paste(text) => {
-                        app.paste(&text, false);
+                        match app.paste(&text, false) {
+                            // The turn holds the session and staging needs it,
+                            // so a picture dropped mid-turn waits rather than
+                            // being dropped or half-attached. It is staged the
+                            // moment the turn lets go, which is the next thing
+                            // the driver does.
+                            io_cli::app::Pasted::Picture(paths) => {
+                                for path in paths {
+                                    app.queue_picture(&path);
+                                }
+                                app.say(
+                                    Tone::Muted,
+                                    "picture held until this turn ends, then attached",
+                                );
+                            }
+                            io_cli::app::Pasted::Text | io_cli::app::Pasted::Refused => {}
+                        }
                     }
                     _ => {}
                 }
@@ -1450,11 +1566,16 @@ async fn turn<P: Provider>(
     app.finished();
 
     match outcome {
-        Some(Err(error)) => app.say(Tone::Error, error.to_string()),
+        // The operator's sentence in front of the harness's own line — see
+        // `io_cli::failure`. A provider that will not take an image says so in the
+        // vocabulary of a routing layer, and "HTTP 404" is not something anybody
+        // can act on.
+        Some(Err(error)) => app.record(Tone::Error, io_cli::failure::said(&error)),
         // Abandoned. The run's own record is whatever io-harness had written by
         // the time the future was dropped, and saying so is the honest line: the
         // work above is real and the turn did not finish.
-        None => app.say(Tone::Warning, "stopped"),
+        None if undone => {}
+        None => app.say(Tone::Muted, "stopped"),
         Some(Ok(_)) => {}
     }
     app.status.elapsed = started.elapsed();
@@ -1801,33 +1922,16 @@ struct Keyboard {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Who is allowed to read stdin right now.
-///
-/// A process has one terminal and this binary starts one reader over it, so the
-/// lock is a `static` rather than a handle threaded through five signatures that
-/// have nothing else to do with it. The reader holds it around each poll; a
-/// viewport being placed holds it for the placement, and thereby waits out an
-/// in-flight read rather than racing the cursor reply out of stdin.
-static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Take the stdin lock, ignoring a previous holder's panic.
-///
-/// A poisoned lock here means the reader thread died mid-poll. That is worth
-/// nothing to the session — there is no state behind this mutex to be left
-/// inconsistent, only the terminal — so the guard is taken anyway rather than
-/// turning a dead reader into a dead session.
-fn reading() -> std::sync::MutexGuard<'static, ()> {
-    READING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// Re-place the viewport at `height`, with nothing reading stdin while it lands.
+///
+/// The lock is [`io_cli::stdin`]'s, which is also where the reason it has to be
+/// fair is written down: without the reader standing aside, this call waits for a
+/// scheduling accident rather than for one poll.
 fn replace_viewport(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     height: u16,
 ) -> Result<(), String> {
-    let _parked = reading();
+    let _parked = io_cli::stdin::placing();
     screen.replace(height).map_err(|error| error.to_string())
 }
 
@@ -1855,24 +1959,23 @@ impl Keyboard {
                 // cannot: the palette re-places the viewport in the middle of a
                 // session, and the channel this reader owns is what the session
                 // is waiting on.
-                let held = reading();
-                // A short poll rather than a blocking read, so the flag is seen.
-                match crossterm::event::poll(Duration::from_millis(40)) {
-                    Ok(true) => match crossterm::event::read() {
-                        Ok(event) => {
-                            if tx.send(event).is_err() {
-                                break;
-                            }
+                // One call, because the poll and the read are one critical
+                // section — and because it is the call that stands aside for a
+                // placement. A reader that took the lock unconditionally and
+                // released it at the bottom of the loop would take it again
+                // before the waiter was ever scheduled, which is the freeze
+                // 0.13.1 exists to end. `io_cli::stdin` holds the whole rule.
+                match io_cli::stdin::next_event() {
+                    Ok(Some(event)) => {
+                        if tx.send(event).is_err() {
+                            break;
                         }
-                        Err(_) => break,
-                    },
-                    Ok(false) => {}
-                    Err(_) => break,
+                    }
+                    // Nothing typed this interval, or a placement wanted the
+                    // terminal. Both mean the same thing here: go round again.
+                    Ok(None) => {}
+                    Err(io_cli::stdin::Broken) => break,
                 }
-                // Dropped at the top of every iteration rather than held across
-                // the loop, so a caller waiting to place a viewport waits one
-                // poll interval and never longer.
-                drop(held);
             }
         });
         (

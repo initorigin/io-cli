@@ -46,7 +46,7 @@ fn the_commands_are_the_commands() {
             // switch of its own.
             "/plan",
             "/fleet",
-            "/attach",
+            "/image",
             "/clear",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
@@ -187,21 +187,35 @@ fn the_key_table_covers_every_key_this_release_binds() {
 /// stripping it belongs to `attach::prepare`, beside the read it guards, rather
 /// than in two places.
 #[test]
-fn attach_takes_the_whole_rest_of_the_line() {
+fn attach_is_no_longer_a_command_at_all() {
+    // **`/attach` went away in 0.13.1.** A picture is attached by dropping it on
+    // the prompt or pasting it, which is what an operator already does in every
+    // other window they talk to a model in; a command was something they had to
+    // be told about first. The word is not kept as a hidden alias either: it is
+    // answered by whatever answers any other word that is not a command.
+    for line in ["attach @my pictures/shot.png", "attach"] {
+        let Action::Print(said) = commands::parse(line, &defaults(), &DARK) else {
+            panic!("{line:?} is still a command");
+        };
+        let text = text(&said);
+        assert!(
+            text.contains("there is no /attach"),
+            "the answer names the word that was typed: {text}",
+        );
+        assert!(
+            text.contains("/image"),
+            "and lists what there is instead: {text}",
+        );
+        assert!(
+            !text.contains("/attach "),
+            "the command list does not still carry it: {text}",
+        );
+    }
+
+    // And `/image` is the command that survived, with a number after it.
     assert_eq!(
-        commands::parse("attach @my pictures/shot.png", &defaults(), &DARK),
-        Action::Attach("@my pictures/shot.png".to_string()),
-    );
-    assert_eq!(
-        commands::parse("attach", &defaults(), &DARK),
-        Action::Attach(String::new()),
-        "no argument is a request for the sentence, not an error",
-    );
-    // `/image` is the other word a reader might reach for, the way `/continue`
-    // stands beside `/resume`.
-    assert_eq!(
-        commands::parse("image shot.png", &defaults(), &DARK),
-        Action::Attach("shot.png".to_string()),
+        commands::parse("image 1", &defaults(), &DARK),
+        Action::Image(Some(1)),
     );
 }
 
@@ -266,10 +280,22 @@ fn f8_clear_refuses_while_a_turn_is_in_flight_and_changes_nothing() {
     );
     assert_eq!(app.status.steps, Some(3));
 
-    let said = text(&app.take_pending());
+    // **The footer, since 0.13.1.** A refusal answers the key that was just
+    // pressed; it is not part of the conversation, and it used to be committed
+    // into the terminal's permanent scrollback where it stayed forever.
+    let said = app
+        .status
+        .notice
+        .as_ref()
+        .map(|(_, text)| text.clone())
+        .unwrap_or_default();
     assert!(
         said.contains("not while a turn is running"),
         "a refusal that says nothing is a key that appears to do nothing: {said:?}",
+    );
+    assert!(
+        app.take_pending().is_empty(),
+        "a refusal does not belong in the transcript",
     );
 }
 
@@ -296,4 +322,19 @@ fn f9_exit_is_listed_and_its_palette_row_leaves() {
         "the row is advertised and inert",
     );
     assert_eq!(commands::parse("exit", &defaults(), &DARK), Action::Quit);
+}
+
+/// F14 — `/image` takes the number off the marker.
+#[test]
+fn f14_image_parses_the_number_a_marker_carries() {
+    use io_cli::commands::{parse, Action};
+
+    let keys = io_cli::keys::Keys::default();
+    assert_eq!(parse("image 2", &keys, &DARK), Action::Image(Some(2)));
+    // `#2` is what is on the prompt, so it is what an operator retypes.
+    assert_eq!(parse("image #2", &keys, &DARK), Action::Image(Some(2)));
+    assert_eq!(parse("images 1", &keys, &DARK), Action::Image(Some(1)));
+    // Nothing, or nonsense: the same answer, which names what there is.
+    assert_eq!(parse("image", &keys, &DARK), Action::Image(None));
+    assert_eq!(parse("image blue", &keys, &DARK), Action::Image(None));
 }

@@ -502,7 +502,7 @@ fn f7_a_paste_reaches_the_composer_when_nothing_is_in_the_way() {
     let mut app = App::new(DARK, "opus-5");
 
     assert!(
-        app.paste("from the clipboard", false),
+        app.paste("from the clipboard", false) == io_cli::app::Pasted::Text,
         "nothing was open, so the paste had nowhere else to go",
     );
     assert_eq!(app.composer.text(), "from the clipboard");
@@ -520,7 +520,10 @@ fn f7_a_paste_while_a_turn_is_running_is_not_dropped() {
     let mut app = App::new(DARK, "opus-5");
     app.started();
 
-    assert!(app.paste("typed while it worked", false));
+    assert_eq!(
+        app.paste("typed while it worked", false),
+        io_cli::app::Pasted::Text
+    );
     assert_eq!(app.composer.text(), "typed while it worked");
 }
 
@@ -610,4 +613,373 @@ fn a_pasted_path_is_quoted_and_prose_is_not() {
     let mut prose = Composer::new();
     prose.paste("look at the picture in my documents");
     assert_eq!(prose.typed(), "look at the picture in my documents");
+}
+
+/// F6's other half — a pasted path is quoted, never debug-escaped.
+///
+/// `format!("{path:?}")` is what this wrote up to 0.13.0, and `Debug` for a
+/// string escapes every character Rust considers unprintable — including the
+/// U+202F narrow no-break space macOS puts in every screenshot's name. What
+/// landed on the prompt was `\u{202f}` as six literal characters, so the path
+/// named no file even once `/attach` took the quotes off.
+#[test]
+fn f6_a_pasted_path_keeps_the_characters_it_was_pasted_with() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "Screenshot 2026-08-24 at 8.00.01\u{202f}AM.png";
+    let path = dir.path().join(name);
+    std::fs::write(&path, b"not really a png").expect("write");
+
+    let mut composer = Composer::new();
+    composer.paste(&path.display().to_string());
+    let typed = composer.typed();
+
+    assert!(
+        typed.contains('\u{202f}'),
+        "the narrow no-break space was escaped out of the path: {typed:?}",
+    );
+    assert!(
+        !typed.contains("\\u{"),
+        "a debug escape reached the prompt line: {typed:?}",
+    );
+    // Quoted, because that is what keeps a path with a space in it one word for
+    // everything downstream.
+    assert!(typed.starts_with('"') && typed.ends_with('"'), "{typed:?}");
+    assert!(typed.contains(name), "{typed:?}");
+}
+
+/// What the composer writes, `/attach` reads. The two halves are tested apart —
+/// `tests/attach.rs` owns the reading — so this asserts they meet.
+#[test]
+fn f6_what_the_composer_quotes_is_what_attach_unquotes() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "one two.png";
+    let path = dir.path().join(name);
+    std::fs::write(&path, support::png_bytes(2, 2)).expect("write");
+
+    let mut composer = Composer::new();
+    composer.paste(&path.display().to_string());
+
+    // Canonicalized, because the composer canonicalizes what it quotes and macOS
+    // hands out `/var/…` for a `/private/var/…` temporary directory. A workspace
+    // rooted at one and handed a path under the other is a path that escapes it.
+    let root = dir.path().canonicalize().expect("a real path");
+    let staged = io_cli::attach::prepare(
+        &root,
+        &io_harness::Policy::permissive(),
+        true,
+        &composer.text(),
+    )
+    .unwrap_or_else(|error| panic!("what the composer wrote was refused: {error}"));
+    assert_eq!(staged.media_type, "image/png");
+}
+
+/// F9 — one cursor, and the rows the prompt is actually on.
+///
+/// `tui-textarea` scrolls sideways rather than wrapping, and it paints its own
+/// inverted block at its own idea of the insertion point. io-cli measures
+/// everything — the viewport's height, the rows the composer asks for, the caret
+/// it places — as if the text wrapped. So a prompt long enough to wrap was drawn
+/// clipped at the left with **two** cursor blocks on it, in different places,
+/// which is how 0.13.1 was reported. The composer draws its own wrapped rows now.
+mod one_cursor {
+    use super::*;
+
+    /// Every cell the frame drew, row by row, and where the terminal cursor was
+    /// left. A block cursor is a *cell* to a terminal, so the only way to count
+    /// cursors is to look at what was painted.
+    fn drawn(composer: &Composer, width: u16, height: u16) -> (Vec<String>, (u16, u16)) {
+        let (mut screen, _recorder) = support::screen_of(width, 24, height);
+        let seen = std::cell::Cell::new((0, 0));
+        screen
+            .draw(|frame| {
+                let area = frame.area();
+                composer.render(frame, area, &DARK);
+                let (x, y) = composer.cursor(Rect {
+                    x: area.x + PROMPT.len() as u16,
+                    width: area.width - PROMPT.len() as u16,
+                    ..area
+                });
+                // Relative to the viewport: an inline viewport does not start at
+                // the top of the terminal, and the row a test means is the row
+                // inside the composer.
+                seen.set((x - area.x, y - area.y));
+            })
+            .expect("frame");
+        (
+            screen.viewport_text().lines().map(str::to_string).collect(),
+            seen.get(),
+        )
+    }
+
+    /// **The assertion that catches the second cursor**, and it has to read the
+    /// bytes rather than the text: a cursor block is a *style*, not a character.
+    /// `tui-textarea` paints its insertion point as a reverse-video cell — SGR 7
+    /// — while the real terminal cursor is placed with a cursor-position escape
+    /// and writes no style at all. So a frame of the composer that carries a `7m`
+    /// is a frame with a second cursor drawn into it, which is what an operator
+    /// saw as two blocks in two places.
+    #[test]
+    fn f9_the_composer_paints_no_second_cursor() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, &"abcdefghij".repeat(6));
+
+        let (mut screen, recorder) = support::screen_of(22, 24, 4);
+        screen
+            .draw(|frame| composer.render(frame, frame.area(), &DARK))
+            .expect("frame");
+
+        let written = recorder.text();
+        assert!(
+            !written.contains("\x1b[7m"),
+            "the composer painted a reverse-video cell, which is a cursor block \
+             drawn on top of the one the terminal already has: {written:?}",
+        );
+    }
+
+    #[test]
+    fn f9_a_wrapped_prompt_is_drawn_wrapped_rather_than_scrolled_sideways() {
+        let mut composer = Composer::new();
+        // Three rows' worth at a width of twenty-two: twenty usable columns.
+        type_text(&mut composer, &"abcdefghij".repeat(6));
+
+        let (rows, _) = drawn(&composer, 22, 4);
+        assert!(
+            rows[0].starts_with("> abcdefghij"),
+            "the first row starts at the start of the prompt: {rows:?}",
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.contains("abcdefghij")).count(),
+            3,
+            "sixty characters at twenty columns are three drawn rows: {rows:?}",
+        );
+    }
+
+    #[test]
+    fn f9_the_caret_is_on_the_row_the_text_is_on() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, &"x".repeat(25));
+
+        let (_, (x, y)) = drawn(&composer, 22, 4);
+        // Twenty-five characters at twenty usable columns: the twenty-sixth cell
+        // is the sixth column of the second row.
+        assert_eq!(
+            (x, y),
+            (2 + 5, 1),
+            "the caret is where the next character goes"
+        );
+    }
+
+    #[test]
+    fn f9_the_window_follows_the_insertion_point() {
+        let mut composer = Composer::new();
+        // Ten rows of text in a composer two rows tall.
+        type_text(&mut composer, &"y".repeat(200));
+
+        let (rows, (_, y)) = drawn(&composer, 22, 2);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(
+            rows.iter().all(|row| row.contains('y')),
+            "a prompt taller than its box shows the end of itself: {rows:?}",
+        );
+        assert_eq!(y, 1, "the caret is on the last drawn row");
+    }
+
+    #[test]
+    fn f9_a_caret_at_the_end_of_a_full_row_stays_in_the_row() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, &"z".repeat(20));
+
+        assert_eq!(
+            composer.height(22),
+            1,
+            "a prompt that ends flush with the row does not grow one",
+        );
+        let (_, (x, y)) = drawn(&composer, 22, 2);
+        assert_eq!(
+            (x, y),
+            (21, 0),
+            "the caret rests in the last cell, the way a terminal's own does",
+        );
+    }
+
+    #[test]
+    fn f9_a_multi_line_prompt_draws_every_line() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, "one");
+        composer.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut composer, "two");
+        composer.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut composer, "three");
+
+        let (rows, (_, y)) = drawn(&composer, 40, 4);
+        assert!(rows[0].contains("one"), "{rows:?}");
+        assert!(rows[1].contains("two"), "{rows:?}");
+        assert!(rows[2].contains("three"), "{rows:?}");
+        assert_eq!(y, 2, "the caret is on the line being typed");
+    }
+
+    /// Backspacing back through a newline, which is the sequence the two-cursor
+    /// glitch was reported from: the caret follows the text back up.
+    #[test]
+    fn f9_backspacing_through_a_newline_brings_the_caret_back_with_it() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, "abc");
+        composer.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut composer, "d");
+
+        let (_, (_, before)) = drawn(&composer, 40, 4);
+        assert_eq!(before, 1);
+
+        composer.key(key(KeyCode::Backspace));
+        composer.key(key(KeyCode::Backspace));
+        let (rows, (x, y)) = drawn(&composer, 40, 4);
+        assert_eq!(
+            (x, y),
+            (2 + 3, 0),
+            "the caret is back on the first row: {rows:?}"
+        );
+        assert_eq!(
+            composer.height(40),
+            1,
+            "and the composer wants one row again"
+        );
+    }
+}
+
+/// F6 — pasting the same block again toggles it, and never piles up.
+///
+/// Expanding used to drop the placeholder from the prompt while leaving the
+/// block in `pastes`, so the *next* paste of the same clipboard matched nothing
+/// and appended a fresh placeholder after text that was already there:
+/// `[pasted text #2, 462 characters]`, then `#3`, then `#4`. An operator hit it
+/// in the first minute of 0.13.1.
+#[test]
+fn f6_pasting_the_same_block_again_toggles_it_rather_than_piling_up() {
+    let paste = big_paste();
+    let mut composer = Composer::new();
+
+    composer.paste(&paste);
+    let collapsed = composer.typed();
+    assert!(collapsed.contains("[pasted text #1"), "{collapsed:?}");
+
+    composer.paste(&paste);
+    let expanded = composer.typed();
+    assert!(
+        expanded.contains("the last line of the paste"),
+        "the second paste shows the block: {expanded:?}",
+    );
+
+    composer.paste(&paste);
+    let again = composer.typed();
+    assert_eq!(
+        again, collapsed,
+        "the third paste puts it back the way the first one had it",
+    );
+    assert!(
+        !again.contains("#2"),
+        "a repeat paste must not add a second placeholder: {again:?}",
+    );
+
+    // Four more presses, because the defect was cumulative and one round trip
+    // would not have caught it.
+    for _ in 0..4 {
+        composer.paste(&paste);
+    }
+    let typed = composer.typed();
+    assert!(!typed.contains("#2"), "{typed:?}");
+    // Whichever way it ended, the prompt is still exactly one copy of the block.
+    assert_eq!(composer.text(), paste);
+}
+
+/// F6 — a placeholder deletes as one thing, whichever backwards deletion key
+/// the reader has in their fingers.
+///
+/// The arm used to exclude `Alt`, so `Option+Backspace` — the delete-word every
+/// macOS reader uses — fell through to the widget and ate the placeholder one
+/// word at a time, leaving `[pasted text #8, 464 chara` on the prompt. A
+/// placeholder is matched by its exact text, so the first press had already
+/// stopped it standing for the block it named.
+#[test]
+fn f6_every_backwards_deletion_takes_a_placeholder_whole() {
+    let paste = big_paste();
+    for key in [
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+    ] {
+        let mut composer = Composer::new();
+        type_text(&mut composer, "look at ");
+        composer.paste(&paste);
+        assert!(composer.typed().contains("[pasted text #1"), "{key:?}");
+
+        composer.key(key);
+
+        assert_eq!(
+            composer.typed(),
+            "look at ",
+            "{key:?} left part of a placeholder behind",
+        );
+        assert_eq!(
+            composer.text(),
+            "look at ",
+            "{key:?} left the block on the prompt with nothing standing for it",
+        );
+    }
+}
+
+/// And a deletion that is not at a placeholder is still the widget's own.
+#[test]
+fn f6_a_word_delete_away_from_a_placeholder_still_deletes_a_word() {
+    let mut composer = Composer::new();
+    type_text(&mut composer, "one two three");
+
+    composer.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+
+    let typed = composer.typed();
+    assert!(
+        typed.starts_with("one two") && !typed.contains("three"),
+        "a word-wise delete away from a placeholder still deletes a word: {typed:?}",
+    );
+}
+
+/// F10 — a block keeps its number for the life of the prompt.
+///
+/// Expand a paste, edit the text, and neither form is in the prompt any more —
+/// the placeholder is gone and the block is no longer there verbatim. That used
+/// to mint `#2`, then `#3`, then `#4` for the same clipboard, and none of them
+/// could be toggled either: each stood for a block whose expanded form was
+/// already on the prompt under somebody's edits.
+#[test]
+fn f10_editing_an_expanded_paste_does_not_mint_a_new_number() {
+    let paste = big_paste();
+    let mut composer = Composer::new();
+
+    composer.paste(&paste);
+    composer.paste(&paste);
+    assert!(composer.typed().contains("the last line of the paste"));
+
+    // Edit it: five characters off the end, which is what breaks the verbatim
+    // match the toggle looked for.
+    for _ in 0..5 {
+        composer.key(key(KeyCode::Backspace));
+    }
+
+    // Three more presses of the same clipboard.
+    composer.paste(&paste);
+    let once = composer.typed();
+    assert!(once.contains("[pasted text #1"), "{once:?}");
+    assert!(!once.contains("#2"), "a second number was minted: {once:?}");
+
+    // And the toggle is working again immediately: the placeholder is on screen,
+    // so the next press expands it rather than adding anything.
+    composer.paste(&paste);
+    let twice = composer.typed();
+    assert!(!twice.contains("[pasted text #1"), "{twice:?}");
+    assert!(!twice.contains("#2"), "{twice:?}");
+
+    composer.paste(&paste);
+    let thrice = composer.typed();
+    assert!(thrice.contains("[pasted text #1"), "{thrice:?}");
+    assert!(!thrice.contains("#2"), "{thrice:?}");
 }

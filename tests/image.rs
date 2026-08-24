@@ -570,5 +570,22 @@ mod graphics {
             !after.contains(' '),
             "no cell after the placement may print a space over it: {after:?}",
         );
+
+        // **And the region is erased before the picture lands in it.** These rows
+        // were the viewport a moment ago, scrolled up; every cell of the region
+        // prints nothing, so without an erase the terminal keeps showing the old
+        // composer and status line behind and beside a picture that does not
+        // cover the whole box. 0.13.1 was reported with exactly that: half an
+        // image with a stale prompt through it. The erase runs before the
+        // placement, never after, or it would take the picture with it.
+        let before = written.split(&payload).next().expect("a prefix");
+        assert!(
+            before.contains("\x1b[0J"),
+            "the region is not erased before the placement: {before:?}",
+        );
+        assert!(
+            !after.contains("\x1b[0J"),
+            "an erase after the placement would erase the placement: {after:?}",
+        );
     }
 }

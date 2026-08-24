@@ -55,29 +55,35 @@ fn the_leading_at_sign_of_a_completed_path_is_not_part_of_the_path() {
 }
 
 #[test]
-fn a_path_outside_the_root_is_refused_by_the_workspace_and_not_read() {
-    // The whole of F1: the gate is io-harness's, and it is the same gate a source
-    // read passes. Reading with `std::fs` after resolving would attach a file the
-    // session was told it may not read — which is the sabotage arm for this
-    // criterion.
+fn a_path_outside_the_root_is_read_because_the_operator_pointed_at_it() {
+    // **Superseded in 0.13.1, deliberately.** Through 0.13.0 this asserted the
+    // opposite: a file outside the session root was refused, and reading it with
+    // `std::fs` was named here as the sabotage arm. That rule made `/attach`
+    // unusable for the only file most operators ever attach — a screenshot, which
+    // macOS writes to `~/Pictures` and never to the repository — and
+    // `Workspace::resolve` refuses every absolute path, so there was no spelling
+    // that worked.
+    //
+    // What changed is whose action this is. Every other read in this product is
+    // the agent's, gated by the policy, about a path a model chose. `/attach` is
+    // a person pointing at their own file, which is the boundary `!` already
+    // crosses when it runs the operator's own shell line unpoliced. The gate
+    // still governs everything inside the root — the test below this one is that
+    // claim, and it is what the sabotage arm now belongs to.
     let dir = workspace();
     let outside = tempfile::tempdir().expect("somewhere else");
     fs::write(outside.path().join("secret.png"), support::png_bytes(2, 2)).expect("write");
 
-    let escape = outside.path().join("secret.png");
-    let error = prepare(
+    let elsewhere = outside.path().join("secret.png");
+    let staged = prepare(
         dir.path(),
         &Policy::permissive(),
         true,
-        escape.to_str().expect("utf-8 path"),
+        elsewhere.to_str().expect("utf-8 path"),
     )
-    .err()
-    .expect("a path outside the session root is not attachable");
+    .unwrap_or_else(|error| panic!("a file the operator pointed at was refused: {error}"));
 
-    assert!(
-        !error.is_empty(),
-        "the workspace's own refusal names the path",
-    );
+    assert_eq!(staged.media_type, "image/png");
 }
 
 #[test]
@@ -385,4 +391,505 @@ mod viewed {
             "no half blocks under the plain form: {rendered}",
         );
     }
+}
+
+/// F6 — the path a drag pastes is the path that is attached.
+///
+/// Dragging a file into the terminal, or copying one out of Finder, pastes its
+/// path, and the composer wraps it so that a path with a space in it stays one
+/// word. Until 0.13.1 the quotes reached `Media::source_type_for`, which read the
+/// extension as `png"` and correctly said it was not an image — so io refused the
+/// operator's own screenshot in a sentence about image formats. The name below is
+/// the shape macOS actually writes: a space before the date, and a U+202F narrow
+/// no-break space before the `AM`.
+#[test]
+fn f6_a_quoted_path_with_a_space_and_a_narrow_no_break_space_is_attached() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "Screenshot 2026-08-24 at 8.00.01\u{202f}AM.png";
+    fs::write(dir.path().join(name), support::png_bytes(4, 2)).expect("write");
+
+    let quoted = format!("\"{name}\"");
+    let staged = prepare(dir.path(), &Policy::permissive(), true, &quoted)
+        .unwrap_or_else(|error| panic!("a quoted path was refused: {error}"));
+    assert_eq!(staged.media_type, "image/png");
+    assert_eq!(
+        staged.path, name,
+        "the quotes belong to the prompt, not to the path"
+    );
+
+    // A single-quoted one too, because that is what the composer writes for a
+    // path that itself carries a double quote.
+    let staged = prepare(
+        dir.path(),
+        &Policy::permissive(),
+        true,
+        &format!("'{name}'"),
+    )
+    .unwrap_or_else(|error| panic!("a single-quoted path was refused: {error}"));
+    assert_eq!(staged.path, name);
+
+    // And the unquoted one still works, which is what everything that types a
+    // path by hand sends.
+    prepare(dir.path(), &Policy::permissive(), true, name).expect("an unquoted path");
+}
+
+/// One pair, and only a matching one. A file may legally have a quote in its
+/// name, and stripping every quote would be this crate overruling the
+/// filesystem.
+///
+/// **Unix only, because the premise is.** Windows rejects `"` in a filename
+/// outright — `ERROR_INVALID_NAME`, code 123 — so the file this is about cannot
+/// be created there and the rule it checks cannot be violated there either. CI
+/// found that, which is the point of running it on all three.
+#[cfg(unix)]
+#[test]
+fn f6_only_one_matching_pair_of_quotes_comes_off() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let name = "\"quoted\".png";
+    fs::write(dir.path().join(name), support::png_bytes(2, 2)).expect("write");
+
+    let staged = prepare(dir.path(), &Policy::permissive(), true, name)
+        .unwrap_or_else(|error| panic!("a file whose name carries quotes was refused: {error}"));
+    assert_eq!(staged.path, name);
+}
+
+/// The policy still governs the workspace. What was added is the case the gate
+/// could only ever answer "no" to, not a way around the gate.
+#[test]
+fn f6_a_denied_path_inside_the_workspace_is_still_refused() {
+    let dir = workspace();
+    let denied = Policy::permissive().layer("test").deny_read("shot.png");
+
+    let refused = prepare(dir.path(), &denied, true, "shot.png")
+        .err()
+        .expect("a policy that denies the read still denies it");
+    assert!(
+        refused.contains("shot.png"),
+        "the refusal names the path: {refused}"
+    );
+
+    // And the same file addressed absolutely is the same refusal, rather than a
+    // way round it: a path under the root goes through the gate however it is
+    // spelled.
+    let absolute = dir.path().join("shot.png").display().to_string();
+    let refused = prepare(dir.path(), &denied, true, &absolute)
+        .err()
+        .expect("an absolute path under the root goes through the gate too");
+    assert!(
+        refused.contains("shot.png"),
+        "the refusal names the path: {refused}"
+    );
+}
+
+/// F14 — an attachment is `[Image #1]`, not a picture.
+///
+/// Twenty rows of somebody's screenshot in the middle of a conversation is not
+/// what a reader wants by default, and a committed picture cannot be folded away
+/// afterwards: the row belongs to the terminal's scrollback. So the marker is
+/// what the prompt carries, what the agent is told and what the transcript
+/// keeps, and `/image 1` draws the picture when somebody wants it.
+#[test]
+fn f14_an_attachment_is_a_marker_the_composer_deletes_whole() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut composer = io_cli::composer::Composer::new();
+    for character in "look at ".chars() {
+        composer.key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    composer.attach("[Image #1]", "/tmp/shot.png");
+
+    assert_eq!(composer.typed(), "look at [Image #1] ");
+    assert_eq!(
+        composer.text(),
+        "look at [Image #1] ",
+        "the marker is sent as itself: the picture rides the turn as media",
+    );
+
+    // One press per deletion key, and the whole marker goes — the same rule a
+    // pasted block has.
+    for key in [
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+    ] {
+        let mut composer = io_cli::composer::Composer::new();
+        composer.attach("[Image #1]", "/tmp/shot.png");
+        // Past the trailing space the marker is followed by.
+        composer.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        composer.key(key);
+        assert_eq!(composer.typed(), "", "{key:?} left part of a marker behind");
+    }
+}
+
+/// The numbering is the session's, one-based, and does not restart with a turn:
+/// `#3` has to mean one thing to somebody scrolling back.
+#[test]
+fn f14_the_marker_number_is_a_handle_the_session_keeps() {
+    use io_cli::app::App;
+    use io_cli::theme::DARK;
+
+    let mut app = App::new(DARK, "opus-5");
+    assert_eq!(app.images(), 0);
+    assert_eq!(app.image(1), None);
+
+    assert_eq!(app.attached("/tmp/one.png"), 1);
+    assert_eq!(app.attached("/tmp/two.png"), 2);
+    assert_eq!(app.image(1), Some("/tmp/one.png"));
+    assert_eq!(app.image(2), Some("/tmp/two.png"));
+    assert_eq!(app.image(3), None, "a number nobody attached names nothing");
+    assert_eq!(
+        app.image(0),
+        None,
+        "the numbering a person reads starts at one"
+    );
+}
+
+/// What the caption says, which is everything needed to tell one attachment from
+/// another, on one row.
+#[test]
+fn f14_the_caption_names_the_number_the_file_and_the_size() {
+    let caption = io_cli::picture::caption(2, "/tmp/shot.png", "image/png", 391_790);
+    assert!(caption.contains("[Image #2]"), "{caption}");
+    assert!(caption.contains("/tmp/shot.png"), "{caption}");
+    assert!(caption.contains("png"), "{caption}");
+    assert!(
+        caption.contains("382.6 KB"),
+        "a size a person can check against the file they attached: {caption}",
+    );
+    assert!(
+        !caption.contains("391790"),
+        "a byte count is not a size anybody reads: {caption}",
+    );
+}
+
+/// F15 — a pasted picture is an attachment, and there is no command.
+///
+/// Dropping an image on the prompt is what an operator already does in every
+/// other window they talk to a model in; `/attach` was something they had to be
+/// told about first. What `App::paste` answers with is what the driver acts on:
+/// a path naming an image that exists is staged and marked, anything else is
+/// text.
+#[test]
+fn f15_a_pasted_image_path_is_recognised_as_a_picture() {
+    use io_cli::app::{App, Pasted};
+    use io_cli::theme::DARK;
+
+    let dir = workspace();
+    let picture = dir.path().join("shot.png");
+    let mut app = App::new(DARK, "opus-5");
+
+    assert_eq!(
+        app.paste(&picture.display().to_string(), false),
+        Pasted::Picture(vec![picture
+            .canonicalize()
+            .expect("a real path")
+            .display()
+            .to_string()]),
+        "a path naming an image that exists is an attachment",
+    );
+
+    // A path naming something that is not an image is a path, and prose is prose.
+    let notes = dir.path().join("notes.md");
+    assert_eq!(app.paste(&notes.display().to_string(), false), Pasted::Text);
+    assert_eq!(
+        app.paste("look at the picture in my documents", false),
+        Pasted::Text,
+    );
+}
+
+/// Pasting the same picture again toggles what the prompt shows, and never
+/// attaches it twice.
+#[test]
+fn f15_pasting_the_same_picture_again_toggles_the_marker_and_the_path() {
+    let mut composer = io_cli::composer::Composer::new();
+    composer.attach("[Image #1]", "/tmp/shot.png");
+    assert_eq!(composer.typed(), "[Image #1] ");
+    assert!(composer.attached("/tmp/shot.png"));
+
+    composer.attach("[Image #1]", "/tmp/shot.png");
+    assert_eq!(
+        composer.typed(),
+        "\"/tmp/shot.png\" ",
+        "the second paste shows the file it stands for, quoted",
+    );
+
+    composer.attach("[Image #1]", "/tmp/shot.png");
+    assert_eq!(
+        composer.typed(),
+        "[Image #1] ",
+        "and the third puts the marker back",
+    );
+
+    // A second picture is a second number; the first keeps its own.
+    composer.attach("[Image #2]", "/tmp/other.png");
+    let typed = composer.typed();
+    assert!(typed.contains("[Image #1]"), "{typed:?}");
+    assert!(typed.contains("[Image #2]"), "{typed:?}");
+}
+
+/// F15 — a marker deletes with the space that was written for it.
+///
+/// The marker is written as `[Image #1] ` so the next word does not run into the
+/// bracket, and the cursor sits after that space. A deletion took the space
+/// first, and a word-wise one then ate `1]` off the marker and left `[Image #` on
+/// the prompt — which is the capture this was reported with.
+#[test]
+fn f15_one_press_removes_a_marker_and_its_space() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::CONTROL] {
+        let mut composer = io_cli::composer::Composer::new();
+        composer.attach("[Image #1]", "/tmp/shot.png");
+        assert_eq!(composer.typed(), "[Image #1] ");
+
+        composer.key(KeyEvent::new(KeyCode::Backspace, modifiers));
+        assert_eq!(
+            composer.typed(),
+            "",
+            "{modifiers:?} left something of the marker behind",
+        );
+    }
+}
+
+/// The path the toggle shows is quoted, the way any pasted path is.
+#[test]
+fn f15_the_toggled_path_is_quoted() {
+    let mut composer = io_cli::composer::Composer::new();
+    composer.attach("[Image #1]", "/tmp/two words.png");
+
+    composer.attach("[Image #1]", "/tmp/two words.png");
+    assert_eq!(
+        composer.typed(),
+        "\"/tmp/two words.png\" ",
+        "a path with a space in it is two words to everything downstream unquoted",
+    );
+
+    composer.attach("[Image #1]", "/tmp/two words.png");
+    assert_eq!(composer.typed(), "[Image #1] ", "and it toggles back");
+}
+
+/// F15 — a new conversation starts its numbering again.
+#[test]
+fn f15_clear_resets_the_image_numbering() {
+    use io_cli::app::App;
+    use io_cli::theme::DARK;
+
+    let mut app = App::new(DARK, "opus-5");
+    app.attached("/tmp/one.png");
+    assert_eq!(app.attached("/tmp/two.png"), 2);
+
+    assert!(app.clear_conversation(), "an idle session clears");
+
+    assert_eq!(
+        app.images(),
+        0,
+        "the attachments belonged to that conversation"
+    );
+    assert_eq!(
+        app.attached("/tmp/three.png"),
+        1,
+        "the next conversation starts at #1",
+    );
+    assert_eq!(
+        app.composer.text(),
+        "",
+        "and a prompt written against the conversation that ended goes with it",
+    );
+}
+
+/// F16 — a drop of several files is one paste, and every picture in it lands.
+///
+/// A terminal writes a multiple selection on one line, separated by spaces, with
+/// any space inside a name escaped — or one per line. Read as a single string
+/// none of that is a path, so dropping three pictures at once did nothing at
+/// all: it fell through to being pasted as text.
+#[test]
+fn f16_several_paths_in_one_paste_are_several_pictures() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let one = dir.path().join("one.png");
+    let two = dir.path().join("two.png");
+    let spaced = dir.path().join("a picture.png");
+    for path in [&one, &two, &spaced] {
+        fs::write(path, support::png_bytes(2, 2)).expect("write");
+    }
+    let real = |path: &std::path::Path| {
+        path.canonicalize()
+            .expect("a real path")
+            .display()
+            .to_string()
+    };
+
+    // Space-separated, which is what a drop of two files writes.
+    let both = format!("{} {}", one.display(), two.display());
+    assert_eq!(pasted_paths(&both), vec![real(&one), real(&two)]);
+
+    // One per line, which is what some terminals write instead.
+    let lines = format!("{}\n{}", one.display(), two.display());
+    assert_eq!(pasted_paths(&lines), vec![real(&one), real(&two)]);
+
+    // A name with a space in it, escaped the way a drop escapes it.
+    let escaped = format!(
+        "{} {}",
+        one.display(),
+        spaced.display().to_string().replace(' ', "\\ ")
+    );
+    assert_eq!(pasted_paths(&escaped), vec![real(&one), real(&spaced)]);
+
+    // One path with an unescaped space — a path copied from a file manager — is
+    // still one path, because the whole text is tried first.
+    assert_eq!(
+        pasted_paths(&spaced.display().to_string()),
+        vec![real(&spaced)]
+    );
+
+    // And prose about two files is not two files.
+    assert!(pasted_paths("look at one.png and two.png").is_empty());
+    // Nor is a real path beside a word that names nothing.
+    assert!(pasted_paths(&format!("{} nonsense", one.display())).is_empty());
+}
+
+/// F16 — what `Cmd+C` in Finder writes, which is not what a drop writes.
+///
+/// A drop escapes the spaces inside a name; a copy does not. So a screenshot
+/// arrives as eight words, and two of them pasted together are sixteen with
+/// nothing marking where one path ends and the next begins — which is why a copy
+/// of two pictures came out as `[pasted text #1, 210 characters]`. The
+/// filesystem is what says where the boundary is: the longest run of words from
+/// here that names a file.
+#[test]
+fn f16_paths_with_unescaped_spaces_are_found_by_asking_the_filesystem() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let one = dir.path().join("Screenshot 2026-08-24 at 8.52.27 PM.png");
+    let two = dir.path().join("Screenshot 2026-08-24 at 9.18.37 PM.png");
+    for path in [&one, &two] {
+        fs::write(path, support::png_bytes(2, 2)).expect("write");
+    }
+    let real = |path: &std::path::Path| {
+        path.canonicalize()
+            .expect("a real path")
+            .display()
+            .to_string()
+    };
+
+    // One, with four unescaped spaces in its name.
+    assert_eq!(pasted_paths(&one.display().to_string()), vec![real(&one)]);
+
+    // Two, run together with nothing but a space between them.
+    let both = format!("{} {}", one.display(), two.display());
+    assert_eq!(
+        pasted_paths(&both),
+        vec![real(&one), real(&two)],
+        "the boundary between two unescaped paths is where the filesystem puts it",
+    );
+
+    // A sentence that names a real file is still a sentence.
+    assert!(
+        pasted_paths(&format!("look at {}", one.display())).is_empty(),
+        "prose around a path is prose",
+    );
+}
+
+/// A `file://` URL is what several applications put on the pasteboard instead of
+/// a path, percent-encoded.
+#[test]
+fn f16_a_file_url_is_a_path() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let picture = dir.path().join("a picture.png");
+    fs::write(&picture, support::png_bytes(2, 2)).expect("write");
+    let real = picture
+        .canonicalize()
+        .expect("a real path")
+        .display()
+        .to_string();
+
+    let url = format!(
+        "file://{}",
+        picture.display().to_string().replace(' ', "%20")
+    );
+    assert_eq!(pasted_paths(&url), vec![real]);
+}
+
+/// F16 — `~` is a home directory on every platform this ships to.
+///
+/// `HOME` on Unix and `USERPROFILE` on Windows, which is where a Windows shell
+/// puts the same fact. Asking only for `HOME` meant `~` was not a home directory
+/// on Windows at all: the path stayed literal and named nothing.
+#[test]
+fn f16_a_tilde_is_the_home_directory_on_this_platform() {
+    let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+    else {
+        // Neither is set, which is a machine this cannot be asserted on rather
+        // than a failure. Said out loud instead of passing quietly.
+        println!("no HOME and no USERPROFILE: nothing to expand against");
+        return;
+    };
+    let picture = home.join("io-cli-tilde-test.png");
+    if fs::write(&picture, support::png_bytes(2, 2)).is_err() {
+        println!("{} is not writable: nothing to assert", home.display());
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let staged = prepare(
+        workspace.path(),
+        &Policy::permissive(),
+        true,
+        "~/io-cli-tilde-test.png",
+    );
+    let _ = fs::remove_file(&picture);
+
+    let staged = staged.unwrap_or_else(|error| panic!("~ was not expanded: {error}"));
+    assert_eq!(staged.media_type, "image/png");
+}
+
+/// F16 — the shape a macOS copy of several screenshots actually has.
+///
+/// Single-quoted, space-separated, and every name carrying a **narrow no-break
+/// space** — U+202F, which is what macOS writes between the time and the `AM`.
+/// That character is whitespace to `split_whitespace` and is not a space to the
+/// filesystem, so a scan that split the paste into words and joined them back
+/// together with a space rebuilt a path that named nothing, and four pictures
+/// came out as `[pasted text #1, 210 characters]`. A candidate is a slice of the
+/// original text now, never a reconstruction of it.
+#[test]
+fn f16_a_copy_of_several_screenshots_is_several_pictures() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let names = [
+        "Screenshot 2026-08-23 at 11.03.09\u{202f}PM.png",
+        "Screenshot 2026-08-23 at 11.03.15\u{202f}PM.png",
+        "Screenshot 2026-08-24 at 8.41.37\u{202f}AM.png",
+        "Screenshot 2026-08-24 at 9.18.37\u{202f}PM.png",
+    ];
+    let mut quoted = Vec::new();
+    let mut real = Vec::new();
+    for name in names {
+        let path = dir.path().join(name);
+        fs::write(&path, support::png_bytes(2, 2)).expect("write");
+        quoted.push(format!("'{}'", path.display()));
+        real.push(
+            path.canonicalize()
+                .expect("a real path")
+                .display()
+                .to_string(),
+        );
+    }
+
+    assert_eq!(
+        pasted_paths(&quoted.join(" ")),
+        real,
+        "four quoted screenshots are four pictures",
+    );
+    // One of them alone, still quoted, is still one.
+    assert_eq!(pasted_paths(&quoted[0]), vec![real[0].clone()]);
+    // And the name keeps the character it was written with.
+    assert!(real[0].contains('\u{202f}'), "{}", real[0]);
 }
