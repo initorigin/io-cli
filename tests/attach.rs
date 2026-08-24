@@ -595,8 +595,8 @@ fn f15_pasting_the_same_picture_again_toggles_the_marker_and_the_path() {
     composer.attach("[Image #1]", "/tmp/shot.png");
     assert_eq!(
         composer.typed(),
-        "/tmp/shot.png ",
-        "the second paste shows the file it stands for",
+        "\"/tmp/shot.png\" ",
+        "the second paste shows the file it stands for, quoted",
     );
 
     composer.attach("[Image #1]", "/tmp/shot.png");
@@ -611,4 +611,74 @@ fn f15_pasting_the_same_picture_again_toggles_the_marker_and_the_path() {
     let typed = composer.typed();
     assert!(typed.contains("[Image #1]"), "{typed:?}");
     assert!(typed.contains("[Image #2]"), "{typed:?}");
+}
+
+/// F15 — a marker deletes with the space that was written for it.
+///
+/// The marker is written as `[Image #1] ` so the next word does not run into the
+/// bracket, and the cursor sits after that space. A deletion took the space
+/// first, and a word-wise one then ate `1]` off the marker and left `[Image #` on
+/// the prompt — which is the capture this was reported with.
+#[test]
+fn f15_one_press_removes_a_marker_and_its_space() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    for modifiers in [
+        KeyModifiers::NONE,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
+    ] {
+        let mut composer = io_cli::composer::Composer::new();
+        composer.attach("[Image #1]", "/tmp/shot.png");
+        assert_eq!(composer.typed(), "[Image #1] ");
+
+        composer.key(KeyEvent::new(KeyCode::Backspace, modifiers));
+        assert_eq!(
+            composer.typed(),
+            "",
+            "{modifiers:?} left something of the marker behind",
+        );
+    }
+}
+
+/// The path the toggle shows is quoted, the way any pasted path is.
+#[test]
+fn f15_the_toggled_path_is_quoted() {
+    let mut composer = io_cli::composer::Composer::new();
+    composer.attach("[Image #1]", "/tmp/two words.png");
+
+    composer.attach("[Image #1]", "/tmp/two words.png");
+    assert_eq!(
+        composer.typed(),
+        "\"/tmp/two words.png\" ",
+        "a path with a space in it is two words to everything downstream unquoted",
+    );
+
+    composer.attach("[Image #1]", "/tmp/two words.png");
+    assert_eq!(composer.typed(), "[Image #1] ", "and it toggles back");
+}
+
+/// F15 — a new conversation starts its numbering again.
+#[test]
+fn f15_clear_resets_the_image_numbering() {
+    use io_cli::app::App;
+    use io_cli::theme::DARK;
+
+    let mut app = App::new(DARK, "opus-5");
+    app.attached("/tmp/one.png");
+    assert_eq!(app.attached("/tmp/two.png"), 2);
+
+    assert!(app.clear_conversation(), "an idle session clears");
+
+    assert_eq!(app.images(), 0, "the attachments belonged to that conversation");
+    assert_eq!(
+        app.attached("/tmp/three.png"),
+        1,
+        "the next conversation starts at #1",
+    );
+    assert_eq!(
+        app.composer.text(),
+        "",
+        "and a prompt written against the conversation that ended goes with it",
+    );
 }

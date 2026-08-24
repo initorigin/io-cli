@@ -64,6 +64,13 @@ is not kept as a hidden alias: `/attach` is answered the way any other word that
 is not a command is — `there is no /attach. The commands are:` — and the list
 under it is the truth.
 
+**A marker deletes with the space written for it**, so one press removes one
+thing under every backspace — `Option+Backspace` used to eat `1]` off the end and
+leave `[Image #` on the prompt. The path a repeat paste toggles to is quoted, the
+way any pasted path is. And `/clear` resets the numbering: `[Image #1]` and
+`[pasted text #1]` count from one again, because the ones before them belonged to
+the conversation that ended.
+
 **An attachment is `[Image #1]`.** A picture is no longer drawn when you attach
 it or when you send the turn: the marker is what the prompt carries, what the
 agent is told and what the transcript keeps, and it deletes as one thing exactly

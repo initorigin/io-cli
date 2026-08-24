@@ -826,6 +826,15 @@ impl App {
         // The same three the conversation-changing commands already reset,
         // beside each other for the same reason: every fact in them belongs to
         // the conversation that is ending.
+        //
+        // **The numbering goes with them.** `[Image #4]` in a conversation that
+        // has one picture in it is a number counting something the reader cannot
+        // see: the attachments belonged to the conversation that just ended, and
+        // the next one starts at `#1`. The composer is emptied for the same
+        // reason — a prompt half-written against a conversation that no longer
+        // exists, and a `[pasted text #3]` standing for a block nobody can reach.
+        self.images.clear();
+        self.composer.clear();
         self.status.forget_run();
         self.forget_fleet();
         self.events.forget();

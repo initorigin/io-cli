@@ -508,13 +508,18 @@ impl Composer {
             .find(|(_, held_path)| held_path == path)
             .cloned()
         {
+            // Quoted, for the same reason any pasted path is: a path with a
+            // space in it is two words to everything downstream unless something
+            // says otherwise, and the operator toggling to the path is usually
+            // checking they attached the file they meant.
+            let shown_path = quoted(&held_path);
             if typed.contains(held.as_str()) {
-                let shown = typed.replace(&held, &held_path);
+                let shown = typed.replace(&held, &shown_path);
                 self.replace(&shown);
                 return;
             }
-            if typed.contains(held_path.as_str()) {
-                let shown = typed.replace(&held_path, &held);
+            if typed.contains(shown_path.as_str()) {
+                let shown = typed.replace(&shown_path, &held);
                 self.replace(&shown);
                 return;
             }
@@ -687,8 +692,8 @@ impl Composer {
     fn delete_backwards(&mut self, key: KeyEvent) -> Reply {
         self.editing();
         match self.placeholder_before_cursor() {
-            Some(placeholder) => {
-                for _ in 0..placeholder.chars().count() {
+            Some((placeholder, spaces)) => {
+                for _ in 0..placeholder.chars().count() + spaces {
                     self.area.delete_char();
                 }
                 // The block goes with it. A prompt that still carried it would
@@ -784,17 +789,26 @@ impl Composer {
     /// one thing — and the first press already breaks it, because a placeholder
     /// is matched by its exact text and an edited one stops standing for
     /// anything.
-    fn placeholder_before_cursor(&self) -> Option<String> {
+    fn placeholder_before_cursor(&self) -> Option<(String, usize)> {
         let (row, column) = self.area.cursor();
         let line = self.area.lines().get(row)?;
         let before: String = line.chars().take(column).collect();
+        // **The trailing space belongs to the thing before it.** An image marker
+        // is written as `[Image #1] ` so the next word does not run into the
+        // bracket, and the cursor sits after that space — so a deletion took the
+        // space first and then, with a word-wise key, ate `1]` off the marker and
+        // left `[Image #` on the prompt. The space is counted here and goes with
+        // the marker, which is what makes one press remove one thing.
+        let trimmed = before.trim_end_matches(' ');
+        let spaces = before.chars().count() - trimmed.chars().count();
         self.pastes
             .iter()
             .map(|(placeholder, _)| placeholder)
             .chain(self.markers.iter().map(|(marker, _)| marker))
-            .filter(|placeholder| before.ends_with(placeholder.as_str()))
+            .filter(|placeholder| trimmed.ends_with(placeholder.as_str()))
             .max_by_key(|placeholder| placeholder.chars().count())
             .cloned()
+            .map(|placeholder| (placeholder, spaces))
     }
 
     fn replace(&mut self, text: &str) {
