@@ -548,16 +548,36 @@ impl Events {
                 // by eye at a scroll. The mark is accent and bold, and the words
                 // are bold in the ordinary foreground — a colour would make them
                 // one more coloured thing among many.
-                let mut lines = vec![Line::from(vec![
-                    Span::styled(
-                        theme.glyphs.marker,
-                        theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        goal.clone(),
-                        theme.style(Tone::Normal).add_modifier(Modifier::BOLD),
-                    ),
-                ])];
+                //
+                // **A prompt written on three lines is three rows.** A `Line` is
+                // one row and a newline inside a span is not a break — ratatui
+                // draws the cells and the newline is not one, so `abc\ndef` came
+                // back as `abcdef` and the operator could not read their own
+                // words. The rest of the prompt is indented under the first
+                // character rather than under the mark, so the block reads as one
+                // thing said once.
+                let marker = theme.glyphs.marker;
+                let indent = " ".repeat(marker.chars().count());
+                let mut lines: Vec<Line<'static>> = goal
+                    .split('\n')
+                    .enumerate()
+                    .map(|(row, line)| {
+                        Line::from(vec![
+                            Span::styled(
+                                if row == 0 {
+                                    marker.to_string()
+                                } else {
+                                    indent.clone()
+                                },
+                                theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                line.to_string(),
+                                theme.style(Tone::Normal).add_modifier(Modifier::BOLD),
+                            ),
+                        ])
+                    })
+                    .collect();
                 if self.plain {
                     lines.push(Line::from(Span::styled(
                         format!("  provider:{provider}"),
