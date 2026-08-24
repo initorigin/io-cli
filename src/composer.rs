@@ -223,13 +223,68 @@ impl Composer {
 
     /// Rows the composer needs at this width, prompt marker included.
     pub fn height(&self, width: u16) -> u16 {
-        let usable = width.saturating_sub(PROMPT.len() as u16).max(1) as usize;
-        self.area
-            .lines()
-            .iter()
-            .map(|line| line.chars().count().div_ceil(usable).max(1) as u16)
-            .sum::<u16>()
-            .max(1)
+        let room = usize::from(width.saturating_sub(PROMPT.len() as u16)).max(1);
+        u16::try_from(self.wrapped(room).0.len()).unwrap_or(u16::MAX).max(1)
+    }
+
+    /// The prompt as the rows it actually occupies at `room` columns, and where
+    /// the insertion point is among them as `(row, column)`.
+    ///
+    /// **One function, because there used to be three answers and they
+    /// disagreed.** `height`, `rows_wanted` and `cursor` each did this
+    /// arithmetic, and the widget underneath did something else again: a
+    /// `TextArea` does not wrap, it scrolls sideways. So a prompt long enough to
+    /// wrap was drawn clipped at the left while io-cli had grown the viewport for
+    /// rows the widget was never going to use, and the cursor io-cli placed and
+    /// the block the widget drew sat in two different places — the two cursors
+    /// 0.13.1 was reported with. Everything visual now comes from here.
+    ///
+    /// A logical line that is exactly `room` wide takes one row, and the cursor
+    /// past its last character is on the next one. That is what an editor does,
+    /// and it is why the cursor's row can be one past the text's.
+    fn wrapped(&self, room: usize) -> (Vec<String>, (usize, usize)) {
+        let (at_row, at_column) = self.area.cursor();
+        let mut rows: Vec<String> = Vec::new();
+        let mut at = (0, 0);
+        for (number, line) in self.area.lines().iter().enumerate() {
+            let first = rows.len();
+            let characters: Vec<char> = line.chars().collect();
+            if characters.is_empty() {
+                rows.push(String::new());
+            } else {
+                for chunk in characters.chunks(room) {
+                    rows.push(chunk.iter().collect());
+                }
+            }
+            if number == at_row {
+                at = (first + at_column / room, at_column % room);
+                // The insertion point past the end of a row that is exactly full
+                // stays *on* that row, at the edge, rather than opening one
+                // below it. A terminal's own cursor does the same thing — it
+                // rests in the last column with the wrap pending — and the
+                // alternative is a composer that grows a row for a prompt whose
+                // text ends flush, which is what `f9_a_prompt_wider_than_the_
+                // terminal_asks_for_more_rows` has asserted since 0.11.0.
+                if at.0 >= rows.len() {
+                    at = (rows.len().saturating_sub(1), room);
+                }
+            }
+        }
+        if rows.is_empty() {
+            rows.push(String::new());
+        }
+        (rows, at)
+    }
+
+    /// The first visible row, given `height` rows to draw in.
+    ///
+    /// The window follows the insertion point rather than the end of the text, so
+    /// editing the middle of a long prompt keeps what is being edited on screen.
+    fn scroll(rows: usize, at: usize, height: usize) -> usize {
+        if height == 0 || rows <= height {
+            return 0;
+        }
+        at.saturating_sub(height - 1).min(rows - height)
     }
 
     /// Feed a key.
@@ -354,21 +409,37 @@ impl Composer {
             return;
         }
 
-        // **The same block pasted twice is a request to see it.** The first
-        // paste collapses to a placeholder because a screenful of someone
-        // else's text is not a prompt you can read; pressing paste again on the
-        // same block is the operator saying they want it after all, so the
-        // placeholder standing for it is replaced by what it stands for.
-        if let Some((placeholder, held)) = self
-            .pastes
-            .iter()
-            .find(|(_, held)| held == text)
-            .cloned()
-            .filter(|(placeholder, _)| self.typed().contains(placeholder.as_str()))
+        // **The same block pasted again toggles what is on screen.** The first
+        // paste collapses to a placeholder because a screenful of someone else's
+        // text is not a prompt you can read; pressing paste again on the same
+        // block is the operator saying they want to see it, and pressing it once
+        // more is them saying they have seen enough.
+        //
+        // **It toggles both ways since 0.13.1**, and the missing half was a
+        // defect an operator hit in the first minute: expanding used to leave the
+        // block in the prompt with its placeholder gone, so the *next* paste of
+        // the same clipboard matched nothing and appended a fresh placeholder —
+        // `[pasted text #2, 462 characters]`, then `#3`, then `#4`, piling up
+        // after text that was already there. The block is looked up by what it
+        // holds, and what is on screen decides which way the toggle goes.
+        if let Some((placeholder, held)) =
+            self.pastes.iter().find(|(_, held)| held == text).cloned()
         {
-            let expanded = self.typed().replace(&placeholder, &held);
-            self.replace(&expanded);
-            return;
+            let typed = self.typed();
+            if typed.contains(placeholder.as_str()) {
+                let expanded = typed.replace(&placeholder, &held);
+                self.replace(&expanded);
+                return;
+            }
+            if typed.contains(held.as_str()) {
+                let collapsed = typed.replace(&held, &placeholder);
+                self.replace(&collapsed);
+                return;
+            }
+            // Neither form is in the prompt any more — it was cleared, or the
+            // operator deleted it — so this is an ordinary paste of a block this
+            // composer happens to have seen. It collapses again, under its own
+            // number, below.
         }
 
         // `chars`, never `len`: a byte count is not the size the operator can
@@ -468,7 +539,26 @@ impl Composer {
             )),
             marker,
         );
-        frame.render_widget(&self.area, text);
+        // **The prompt's own rows, wrapped here rather than by the widget.**
+        // `tui-textarea` scrolls sideways instead of wrapping, and every other
+        // measurement in this product assumes a wrap — so drawing the widget
+        // meant a long prompt clipped at the left, a viewport grown for rows
+        // nothing used, and the widget's own block cursor sitting somewhere other
+        // than the terminal cursor io-cli had placed. The editing is still the
+        // widget's; the picture is this crate's.
+        let room = usize::from(text.width).max(1);
+        let (rows, (at_row, _)) = self.wrapped(room);
+        let top = Self::scroll(rows.len(), at_row, usize::from(text.height));
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(
+                rows.iter()
+                    .skip(top)
+                    .take(usize::from(text.height))
+                    .map(|row| Line::from(row.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            text,
+        );
 
         // The real terminal cursor is put where the insertion point is, and that
         // is done here rather than left to a caller. ratatui hides the cursor on
@@ -476,6 +566,10 @@ impl Composer {
         // only focus indicator a screen reader has — the criticism the whole
         // category is unusable for. Owning it in the widget that owns the
         // insertion point means no frame can forget.
+        //
+        // It is also now the *only* cursor on screen. The widget drew a second
+        // one — an inverted cell at its own idea of the insertion point — and the
+        // two agreed only while the prompt fitted on one row.
         let (x, y) = self.cursor(text);
         frame.set_cursor_position(Position { x, y });
     }
@@ -483,15 +577,19 @@ impl Composer {
     /// The cursor's position inside `area`, which is the text region rather than
     /// the whole composer.
     pub fn cursor(&self, text: Rect) -> (u16, u16) {
-        let (row, column) = self.area.cursor();
-        let width = text.width.max(1);
-        // Wrapped rows count: a cursor past the end of a visual row is on the next
-        // one, and reporting it off the right edge puts the terminal's cursor
-        // somewhere the text is not.
-        let column = column as u16;
+        // The same wrap the frame is drawn from, and the same scroll, so the
+        // caret cannot land on a row the prompt is not on. Reading a second
+        // arithmetic here is what put two cursors on the screen.
+        let room = usize::from(text.width).max(1);
+        let (rows, (at_row, at_column)) = self.wrapped(room);
+        let top = Self::scroll(rows.len(), at_row, usize::from(text.height));
+        let row = u16::try_from(at_row.saturating_sub(top)).unwrap_or(u16::MAX);
+        let column = u16::try_from(at_column).unwrap_or(u16::MAX);
         (
-            text.x + column % width,
-            (text.y + row as u16 + column / width).min(text.bottom().saturating_sub(1)),
+            // Never off the right edge: a caret resting past a full row sits in
+            // its last cell, which is where a terminal puts its own.
+            (text.x + column).min(text.right().saturating_sub(1)),
+            (text.y + row).min(text.bottom().saturating_sub(1)),
         )
     }
 
@@ -502,14 +600,7 @@ impl Composer {
     /// needs the rows those wraps take or the operator is typing into a window
     /// they cannot see the top of.
     pub fn rows_wanted(&self, width: u16) -> u16 {
-        let room = usize::from(width.saturating_sub(PROMPT.len() as u16)).max(1);
-        let rows: usize = self
-            .area
-            .lines()
-            .iter()
-            .map(|line| line.chars().count().div_ceil(room).max(1))
-            .sum();
-        u16::try_from(rows).unwrap_or(u16::MAX).max(1)
+        self.height(width)
     }
 
     fn current_line(&self) -> &str {

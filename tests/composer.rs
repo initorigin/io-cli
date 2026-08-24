@@ -669,3 +669,213 @@ fn f6_what_the_composer_quotes_is_what_attach_unquotes() {
     .unwrap_or_else(|error| panic!("what the composer wrote was refused: {error}"));
     assert_eq!(staged.media_type, "image/png");
 }
+
+/// F9 — one cursor, and the rows the prompt is actually on.
+///
+/// `tui-textarea` scrolls sideways rather than wrapping, and it paints its own
+/// inverted block at its own idea of the insertion point. io-cli measures
+/// everything — the viewport's height, the rows the composer asks for, the caret
+/// it places — as if the text wrapped. So a prompt long enough to wrap was drawn
+/// clipped at the left with **two** cursor blocks on it, in different places,
+/// which is how 0.13.1 was reported. The composer draws its own wrapped rows now.
+mod one_cursor {
+    use super::*;
+
+    /// Every cell the frame drew, row by row, and where the terminal cursor was
+    /// left. A block cursor is a *cell* to a terminal, so the only way to count
+    /// cursors is to look at what was painted.
+    fn drawn(composer: &Composer, width: u16, height: u16) -> (Vec<String>, (u16, u16)) {
+        let (mut screen, _recorder) = support::screen_of(width, 24, height);
+        let seen = std::cell::Cell::new((0, 0));
+        screen
+            .draw(|frame| {
+                let area = frame.area();
+                composer.render(frame, area, &DARK);
+                let (x, y) = composer.cursor(Rect {
+                    x: area.x + PROMPT.len() as u16,
+                    width: area.width - PROMPT.len() as u16,
+                    ..area
+                });
+                // Relative to the viewport: an inline viewport does not start at
+                // the top of the terminal, and the row a test means is the row
+                // inside the composer.
+                seen.set((x - area.x, y - area.y));
+            })
+            .expect("frame");
+        (
+            screen
+                .viewport_text()
+                .lines()
+                .map(str::to_string)
+                .collect(),
+            seen.get(),
+        )
+    }
+
+    /// **The assertion that catches the second cursor**, and it has to read the
+    /// bytes rather than the text: a cursor block is a *style*, not a character.
+    /// `tui-textarea` paints its insertion point as a reverse-video cell — SGR 7
+    /// — while the real terminal cursor is placed with a cursor-position escape
+    /// and writes no style at all. So a frame of the composer that carries a `7m`
+    /// is a frame with a second cursor drawn into it, which is what an operator
+    /// saw as two blocks in two places.
+    #[test]
+    fn f9_the_composer_paints_no_second_cursor() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, &"abcdefghij".repeat(6));
+
+        let (mut screen, recorder) = support::screen_of(22, 24, 4);
+        screen
+            .draw(|frame| composer.render(frame, frame.area(), &DARK))
+            .expect("frame");
+
+        let written = recorder.text();
+        assert!(
+            !written.contains("\x1b[7m"),
+            "the composer painted a reverse-video cell, which is a cursor block \
+             drawn on top of the one the terminal already has: {written:?}",
+        );
+    }
+
+    #[test]
+    fn f9_a_wrapped_prompt_is_drawn_wrapped_rather_than_scrolled_sideways() {
+        let mut composer = Composer::new();
+        // Three rows' worth at a width of twenty-two: twenty usable columns.
+        type_text(&mut composer, &"abcdefghij".repeat(6));
+
+        let (rows, _) = drawn(&composer, 22, 4);
+        assert!(
+            rows[0].starts_with("> abcdefghij"),
+            "the first row starts at the start of the prompt: {rows:?}",
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.contains("abcdefghij")).count(),
+            3,
+            "sixty characters at twenty columns are three drawn rows: {rows:?}",
+        );
+    }
+
+    #[test]
+    fn f9_the_caret_is_on_the_row_the_text_is_on() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, &"x".repeat(25));
+
+        let (_, (x, y)) = drawn(&composer, 22, 4);
+        // Twenty-five characters at twenty usable columns: the twenty-sixth cell
+        // is the sixth column of the second row.
+        assert_eq!((x, y), (2 + 5, 1), "the caret is where the next character goes");
+    }
+
+    #[test]
+    fn f9_the_window_follows_the_insertion_point() {
+        let mut composer = Composer::new();
+        // Ten rows of text in a composer two rows tall.
+        type_text(&mut composer, &"y".repeat(200));
+
+        let (rows, (_, y)) = drawn(&composer, 22, 2);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(
+            rows.iter().all(|row| row.contains('y')),
+            "a prompt taller than its box shows the end of itself: {rows:?}",
+        );
+        assert_eq!(y, 1, "the caret is on the last drawn row");
+    }
+
+    #[test]
+    fn f9_a_caret_at_the_end_of_a_full_row_stays_in_the_row() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, &"z".repeat(20));
+
+        assert_eq!(
+            composer.height(22),
+            1,
+            "a prompt that ends flush with the row does not grow one",
+        );
+        let (_, (x, y)) = drawn(&composer, 22, 2);
+        assert_eq!(
+            (x, y),
+            (21, 0),
+            "the caret rests in the last cell, the way a terminal's own does",
+        );
+    }
+
+    #[test]
+    fn f9_a_multi_line_prompt_draws_every_line() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, "one");
+        composer.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut composer, "two");
+        composer.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut composer, "three");
+
+        let (rows, (_, y)) = drawn(&composer, 40, 4);
+        assert!(rows[0].contains("one"), "{rows:?}");
+        assert!(rows[1].contains("two"), "{rows:?}");
+        assert!(rows[2].contains("three"), "{rows:?}");
+        assert_eq!(y, 2, "the caret is on the line being typed");
+    }
+
+    /// Backspacing back through a newline, which is the sequence the two-cursor
+    /// glitch was reported from: the caret follows the text back up.
+    #[test]
+    fn f9_backspacing_through_a_newline_brings_the_caret_back_with_it() {
+        let mut composer = Composer::new();
+        type_text(&mut composer, "abc");
+        composer.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut composer, "d");
+
+        let (_, (_, before)) = drawn(&composer, 40, 4);
+        assert_eq!(before, 1);
+
+        composer.key(key(KeyCode::Backspace));
+        composer.key(key(KeyCode::Backspace));
+        let (rows, (x, y)) = drawn(&composer, 40, 4);
+        assert_eq!((x, y), (2 + 3, 0), "the caret is back on the first row: {rows:?}");
+        assert_eq!(composer.height(40), 1, "and the composer wants one row again");
+    }
+}
+
+/// F6 — pasting the same block again toggles it, and never piles up.
+///
+/// Expanding used to drop the placeholder from the prompt while leaving the
+/// block in `pastes`, so the *next* paste of the same clipboard matched nothing
+/// and appended a fresh placeholder after text that was already there:
+/// `[pasted text #2, 462 characters]`, then `#3`, then `#4`. An operator hit it
+/// in the first minute of 0.13.1.
+#[test]
+fn f6_pasting_the_same_block_again_toggles_it_rather_than_piling_up() {
+    let paste = big_paste();
+    let mut composer = Composer::new();
+
+    composer.paste(&paste);
+    let collapsed = composer.typed();
+    assert!(collapsed.contains("[pasted text #1"), "{collapsed:?}");
+
+    composer.paste(&paste);
+    let expanded = composer.typed();
+    assert!(
+        expanded.contains("the last line of the paste"),
+        "the second paste shows the block: {expanded:?}",
+    );
+
+    composer.paste(&paste);
+    let again = composer.typed();
+    assert_eq!(
+        again, collapsed,
+        "the third paste puts it back the way the first one had it",
+    );
+    assert!(
+        !again.contains("#2"),
+        "a repeat paste must not add a second placeholder: {again:?}",
+    );
+
+    // Four more presses, because the defect was cumulative and one round trip
+    // would not have caught it.
+    for _ in 0..4 {
+        composer.paste(&paste);
+    }
+    let typed = composer.typed();
+    assert!(!typed.contains("#2"), "{typed:?}");
+    // Whichever way it ended, the prompt is still exactly one copy of the block.
+    assert_eq!(composer.text(), paste);
+}
