@@ -48,9 +48,9 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
-/// Lines the live viewport occupies: a blank row, the activity line, the
-/// unfinished tail of a streaming answer, two rows of composer, and the status
-/// line.
+/// Lines the live viewport occupies: the unfinished tail of a streaming answer,
+/// a blank row, the activity line, a rule, two rows of composer, and the
+/// three-row footer.
 ///
 /// **Six since 0.11.0, and two of them are new.** The activity line buys the one
 /// thing the other four could not say — that a turn is alive and how long it has
@@ -59,6 +59,11 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// content ends exactly where the viewport begins, so without a row of its own
 /// the activity line reads as the last line of the work rather than as the line
 /// describing it.
+///
+/// **Nine since 0.13.1, and the ninth is the rule over the composer.** The
+/// footer has opened with one since 0.1.0 and the prompt had a boundary on one
+/// side only, so the composer read as the tail of whatever the turn had last
+/// written rather than as the field it is.
 ///
 /// Both rows are *claimed* whether or not a turn is running and *drawn* only
 /// while one is, so the composer is two rows at every moment of a session. A
@@ -79,7 +84,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// same four rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
-pub const VIEWPORT_HEIGHT: u16 = 8;
+pub const VIEWPORT_HEIGHT: u16 = 9;
 
 /// Rows the wizard's viewport occupies.
 ///
@@ -339,6 +344,42 @@ impl<B: Backend + Write> Screen<B> {
                 first.set_symbol(&format!("\x1b[0J{payload}"));
             }
         })
+    }
+
+    /// Take `rows` of committed content back off the screen.
+    ///
+    /// **The one thing in this product that unwrites something**, and it is
+    /// deliberately narrow: an operator who stops a turn a moment after pressing
+    /// Enter gets the session they had before they pressed it, rather than an
+    /// echo of a prompt that never ran sitting in their scrollback forever.
+    ///
+    /// It works because those rows are still on the *screen*: the cursor is moved
+    /// up over them and everything from there down is erased, which is the same
+    /// mechanism [`Screen::replace`] uses on the viewport's own rows. Content
+    /// that has scrolled past the top of the screen is gone in the sense that
+    /// matters here — it belongs to the scrollback, which no escape sequence
+    /// reaches — so a caller that cannot fit `rows` above the viewport must not
+    /// call this, and [`Screen::erasable`] is what answers that.
+    ///
+    /// The viewport is redrawn by the next frame: `last` is cleared, so the frame
+    /// after this one is a full repaint rather than a diff against a screen that
+    /// has moved.
+    pub fn rewind(&mut self, rows: u16) -> io::Result<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        let top = self.terminal.get_frame().area().y;
+        let up = rows.min(top);
+        self.last = None;
+        self.escape(&format!("\x1b[{};1H\x1b[0J", top.saturating_sub(up) + 1))
+    }
+
+    /// How many committed rows are still on screen above the viewport.
+    ///
+    /// The bound on [`Screen::rewind`]: rows above this are in the terminal's
+    /// scrollback, where nothing this process writes can reach them.
+    pub fn erasable(&mut self) -> u16 {
+        self.terminal.get_frame().area().y
     }
 
     /// Draw one viewport frame, wrapped in synchronized output — or draw nothing

@@ -230,16 +230,17 @@ pub fn prepare(
 /// only" is the part an operator has to know in advance — it is what tells them
 /// to attach again rather than wondering why the follow-up question got a
 /// different answer.
-pub fn staged_note(staged: &Staged) -> String {
+pub fn staged_note(staged: &Staged, number: usize) -> String {
     let kind = staged
         .media_type
         .strip_prefix("image/")
         .unwrap_or(staged.media_type);
+    // The number first, because it is the handle: it is on the prompt as
+    // `[Image #1]` and it is what `/image 1` takes.
     format!(
-        "attached {} ({}, {} bytes) to the next turn, and only the next one",
+        "[Image #{number}] {} ({kind}, {}) — on the next turn only, /image {number} draws it",
         staged.path,
-        kind,
-        staged.media.byte_len(),
+        crate::picture::bytes(staged.media.byte_len()),
     )
 }
 

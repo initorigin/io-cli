@@ -81,10 +81,17 @@ fn f7_the_streaming_row_is_above_the_activity_line() {
         "the streaming row is at {live} and the activity line at {activity}: the \
          work is still under the line that says it is working. {rows:#?}"
     );
+    // **A rule between them since 0.13.1.** The footer has opened with one since
+    // 0.1.0 and the prompt had a boundary on one side only, so the composer read
+    // as the tail of whatever the turn had last written rather than as a field.
+    assert!(
+        rows[activity + 1].chars().all(|c| c == '─' || c == '-'),
+        "a rule belongs between the activity line and the composer. {rows:#?}"
+    );
     assert_eq!(
-        activity + 1,
+        activity + 2,
         composer,
-        "the activity line belongs directly above the composer. {rows:#?}"
+        "the composer sits directly under its own rule. {rows:#?}"
     );
     assert!(
         rows[live + 1].trim().is_empty(),

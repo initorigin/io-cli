@@ -281,6 +281,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/fleet` | show the children this turn has spawned |
 | `/attach` | put an image in front of the agent, for the next turn only |
+| `/image` | draw an attached image again: /image 1 |
 | `/clear` | start a new conversation; this one stays in /resume |
 
 <!-- commands:end -->

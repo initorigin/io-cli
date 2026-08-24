@@ -931,3 +931,44 @@ fn f6_a_word_delete_away_from_a_placeholder_still_deletes_a_word() {
         "a word-wise delete away from a placeholder still deletes a word: {typed:?}",
     );
 }
+
+/// F10 — a block keeps its number for the life of the prompt.
+///
+/// Expand a paste, edit the text, and neither form is in the prompt any more —
+/// the placeholder is gone and the block is no longer there verbatim. That used
+/// to mint `#2`, then `#3`, then `#4` for the same clipboard, and none of them
+/// could be toggled either: each stood for a block whose expanded form was
+/// already on the prompt under somebody's edits.
+#[test]
+fn f10_editing_an_expanded_paste_does_not_mint_a_new_number() {
+    let paste = big_paste();
+    let mut composer = Composer::new();
+
+    composer.paste(&paste);
+    composer.paste(&paste);
+    assert!(composer.typed().contains("the last line of the paste"));
+
+    // Edit it: five characters off the end, which is what breaks the verbatim
+    // match the toggle looked for.
+    for _ in 0..5 {
+        composer.key(key(KeyCode::Backspace));
+    }
+
+    // Three more presses of the same clipboard.
+    composer.paste(&paste);
+    let once = composer.typed();
+    assert!(once.contains("[pasted text #1"), "{once:?}");
+    assert!(!once.contains("#2"), "a second number was minted: {once:?}");
+
+    // And the toggle is working again immediately: the placeholder is on screen,
+    // so the next press expands it rather than adding anything.
+    composer.paste(&paste);
+    let twice = composer.typed();
+    assert!(!twice.contains("[pasted text #1"), "{twice:?}");
+    assert!(!twice.contains("#2"), "{twice:?}");
+
+    composer.paste(&paste);
+    let thrice = composer.typed();
+    assert!(thrice.contains("[pasted text #1"), "{thrice:?}");
+    assert!(!thrice.contains("#2"), "{thrice:?}");
+}

@@ -295,6 +295,35 @@ fn fitted_cells(w: u32, h: u32, cols: u16, rows: u16) -> (u16, u16) {
     )
 }
 
+/// A size a person reads, from a byte count.
+///
+/// Two significant figures and a unit: `382 KB` is what an operator checks
+/// against the file they attached, and `391790 bytes` is not.
+pub fn bytes(count: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = count as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{count} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+/// The line that introduces a picture drawn on demand.
+///
+/// Everything a reader needs to tell one attachment from another — which number
+/// it is, which file, what it is and how large — on one row above the picture
+/// rather than as a paragraph beside it.
+pub fn caption(number: usize, path: &str, media_type: &str, size: usize) -> String {
+    let kind = media_type.strip_prefix("image/").unwrap_or(media_type);
+    format!("[Image #{number}] {path} ({kind}, {})", bytes(size))
+}
+
 /// The one line a picture becomes where cells are not allowed to carry it.
 ///
 /// Under `--plain`, under `NO_COLOR`, and under the ASCII glyph set, a half-block

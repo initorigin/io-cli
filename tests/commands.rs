@@ -47,6 +47,7 @@ fn the_commands_are_the_commands() {
             "/plan",
             "/fleet",
             "/attach",
+            "/image",
             "/clear",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
@@ -197,11 +198,14 @@ fn attach_takes_the_whole_rest_of_the_line() {
         Action::Attach(String::new()),
         "no argument is a request for the sentence, not an error",
     );
-    // `/image` is the other word a reader might reach for, the way `/continue`
-    // stands beside `/resume`.
+    // **`/image` stopped being a second spelling of `/attach` in 0.13.1.** An
+    // attachment is `[Image #1]` on the prompt now, and `/image 1` is what draws
+    // the picture it stands for — so the word names the thing an operator wants
+    // when they type it beside a number.
     assert_eq!(
         commands::parse("image shot.png", &defaults(), &DARK),
-        Action::Attach("shot.png".to_string()),
+        Action::Image(None),
+        "a path is not a marker number",
     );
 }
 
@@ -266,10 +270,22 @@ fn f8_clear_refuses_while_a_turn_is_in_flight_and_changes_nothing() {
     );
     assert_eq!(app.status.steps, Some(3));
 
-    let said = text(&app.take_pending());
+    // **The footer, since 0.13.1.** A refusal answers the key that was just
+    // pressed; it is not part of the conversation, and it used to be committed
+    // into the terminal's permanent scrollback where it stayed forever.
+    let said = app
+        .status
+        .notice
+        .as_ref()
+        .map(|(_, text)| text.clone())
+        .unwrap_or_default();
     assert!(
         said.contains("not while a turn is running"),
         "a refusal that says nothing is a key that appears to do nothing: {said:?}",
+    );
+    assert!(
+        app.take_pending().is_empty(),
+        "a refusal does not belong in the transcript",
     );
 }
 
@@ -296,4 +312,19 @@ fn f9_exit_is_listed_and_its_palette_row_leaves() {
         "the row is advertised and inert",
     );
     assert_eq!(commands::parse("exit", &defaults(), &DARK), Action::Quit);
+}
+
+/// F14 — `/image` takes the number off the marker.
+#[test]
+fn f14_image_parses_the_number_a_marker_carries() {
+    use io_cli::commands::{parse, Action};
+
+    let keys = io_cli::keys::Keys::default();
+    assert_eq!(parse("image 2", &keys, &DARK), Action::Image(Some(2)));
+    // `#2` is what is on the prompt, so it is what an operator retypes.
+    assert_eq!(parse("image #2", &keys, &DARK), Action::Image(Some(2)));
+    assert_eq!(parse("images 1", &keys, &DARK), Action::Image(Some(1)));
+    // Nothing, or nonsense: the same answer, which names what there is.
+    assert_eq!(parse("image", &keys, &DARK), Action::Image(None));
+    assert_eq!(parse("image blue", &keys, &DARK), Action::Image(None));
 }

@@ -114,6 +114,14 @@ pub struct Composer {
     /// a file where the file should have been, and nothing on screen would say
     /// so. Here the collapsed form exists only inside this type.
     pastes: Vec<(String, String)>,
+    /// Markers standing for an attached image, oldest first.
+    ///
+    /// Unlike a paste's placeholder these expand to nothing: `[Image #1]` is
+    /// what the operator sees, what the agent is told, and what the transcript
+    /// records — the picture itself rides the turn as media rather than as text.
+    /// They are here for one reason: so that a marker deletes as one thing, the
+    /// way a pasted block does, instead of leaving `[Image #` on a prompt.
+    markers: Vec<String>,
 }
 
 impl Default for Composer {
@@ -134,6 +142,7 @@ impl Composer {
             recalled: None,
             draft: String::new(),
             pastes: Vec::new(),
+            markers: Vec::new(),
         }
     }
 
@@ -429,10 +438,20 @@ impl Composer {
                 self.replace(&collapsed);
                 return;
             }
-            // Neither form is in the prompt any more — it was cleared, or the
-            // operator deleted it — so this is an ordinary paste of a block this
-            // composer happens to have seen. It collapses again, under its own
-            // number, below.
+            // **Neither form is in the prompt, so this is an insertion — but of a
+            // block this composer already knows, under the number it already
+            // has.** The operator expanded the paste and then edited it, which is
+            // the ordinary thing to do, and the edit means the block is no longer
+            // in the prompt verbatim. Minting `#2`, then `#3`, then `#4` for the
+            // same clipboard is what an operator was shown, and none of them
+            // could be toggled either, because each new placeholder stood for a
+            // block whose expanded form was already there under somebody's edits.
+            //
+            // One number per block, for the life of the prompt. The next press
+            // finds this placeholder on screen and expands it, so the toggle is
+            // working again on the very next keystroke rather than never.
+            self.area.insert_str(&placeholder);
+            return;
         }
 
         // `chars`, never `len`: a byte count is not the size the operator can
@@ -464,6 +483,25 @@ impl Composer {
         self.pastes.push((placeholder, text.to_string()));
     }
 
+    /// Put a marker for an attached image in the prompt.
+    ///
+    /// **The marker is the whole of what is sent about the picture.** It goes to
+    /// the model as the words `[Image #1]`, and the picture itself rides the turn
+    /// as media, staged on the session — so the prompt the operator reads, the
+    /// prompt the agent is given and the row the transcript keeps are the same
+    /// three characters of text. Nothing is drawn: an image in a terminal is
+    /// twenty rows of somebody's screenshot in the middle of a conversation, and
+    /// `/image` is there for the moment somebody wants to see it again.
+    ///
+    /// It deletes as one thing, exactly as a pasted block does.
+    pub fn attach(&mut self, marker: &str) {
+        self.editing();
+        // A space after it, so the sentence an operator types next does not run
+        // into the bracket.
+        self.area.insert_str(format!("{marker} "));
+        self.markers.push(marker.to_string());
+    }
+
     /// Put `text` in the prompt, replacing whatever is there, cursor at the end.
     ///
     /// The slash palette's `Enter`, and its only caller. The command is *typed*
@@ -491,6 +529,7 @@ impl Composer {
         self.recalled = None;
         self.draft.clear();
         self.pastes.clear();
+        self.markers.clear();
     }
 
     /// Render into `area`, prompt marker included.
@@ -618,6 +657,7 @@ impl Composer {
                 // The block goes with it. A prompt that still carried it would
                 // send text nothing on screen stands for.
                 self.pastes.retain(|(held, _)| held != &placeholder);
+                self.markers.retain(|held| held != &placeholder);
             }
             None => {
                 self.area.input(key);
@@ -714,6 +754,7 @@ impl Composer {
         self.pastes
             .iter()
             .map(|(placeholder, _)| placeholder)
+            .chain(self.markers.iter())
             .filter(|placeholder| before.ends_with(placeholder.as_str()))
             .max_by_key(|placeholder| placeholder.chars().count())
             .cloned()
@@ -723,10 +764,12 @@ impl Composer {
         let recalled = self.recalled;
         let draft = std::mem::take(&mut self.draft);
         let pastes = std::mem::take(&mut self.pastes);
+        let markers = std::mem::take(&mut self.markers);
         self.clear();
         self.recalled = recalled;
         self.draft = draft;
         self.pastes = pastes;
+        self.markers = markers;
         self.area.insert_str(text);
         self.area.move_cursor(CursorMove::End);
     }

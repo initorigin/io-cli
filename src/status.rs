@@ -125,6 +125,16 @@ pub struct Status {
     pub unknown: usize,
     /// Whether a turn is running.
     pub working: bool,
+    /// What io-cli has to say about the last keystroke, if anything.
+    ///
+    /// **The footer's last row, since 0.13.1, and it used to be the scrollback.**
+    /// `stopping at the next step`, `not while a turn is running`, `press Ctrl+C
+    /// again to exit`: every one of them answers a key that was just pressed, and
+    /// every one of them used to be committed into the terminal's permanent
+    /// record — so stopping a turn left three warning-coloured rows sitting
+    /// between two answers for as long as the scrollback lived. A notice replaces
+    /// the previous one and is gone at the next keystroke.
+    pub notice: Option<(Tone, String)>,
     /// The permission posture in force, by its short name — or `None` before one
     /// is known, which is the wizard's first moments and nothing else.
     ///
@@ -292,6 +302,7 @@ impl Status {
             lsp: 0,
             browser: None,
             working: false,
+            notice: None,
             elapsed: Duration::ZERO,
             plain: false,
             frame: 0,
@@ -702,7 +713,23 @@ impl Status {
             room,
         );
 
-        vec![rule, identity, counted]
+        // The notice takes the counts row while it is up. It is the least
+        // load-bearing of the three — the identity row says what this session is
+        // and the rule is the boundary — and a notice that pushed the viewport a
+        // row taller would move the prompt under the operator's hands every time
+        // one appeared.
+        match &self.notice {
+            Some((tone, text)) => vec![
+                rule,
+                identity,
+                row(
+                    vec![Span::styled(text.clone(), theme.style(*tone))],
+                    Vec::new(),
+                    room,
+                ),
+            ],
+            None => vec![rule, identity, counted],
+        }
     }
 
     /// The activity line, or `None` when no turn is in flight.

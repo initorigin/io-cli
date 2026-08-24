@@ -466,3 +466,82 @@ fn f6_a_denied_path_inside_the_workspace_is_still_refused() {
         "the refusal names the path: {refused}"
     );
 }
+
+/// F14 — an attachment is `[Image #1]`, not a picture.
+///
+/// Twenty rows of somebody's screenshot in the middle of a conversation is not
+/// what a reader wants by default, and a committed picture cannot be folded away
+/// afterwards: the row belongs to the terminal's scrollback. So the marker is
+/// what the prompt carries, what the agent is told and what the transcript
+/// keeps, and `/image 1` draws the picture when somebody wants it.
+#[test]
+fn f14_an_attachment_is_a_marker_the_composer_deletes_whole() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut composer = io_cli::composer::Composer::new();
+    for character in "look at ".chars() {
+        composer.key(KeyEvent::new(
+            KeyCode::Char(character),
+            KeyModifiers::NONE,
+        ));
+    }
+    composer.attach("[Image #1]");
+
+    assert_eq!(composer.typed(), "look at [Image #1] ");
+    assert_eq!(
+        composer.text(),
+        "look at [Image #1] ",
+        "the marker is sent as itself: the picture rides the turn as media",
+    );
+
+    // One press per deletion key, and the whole marker goes — the same rule a
+    // pasted block has.
+    for key in [
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+    ] {
+        let mut composer = io_cli::composer::Composer::new();
+        composer.attach("[Image #1]");
+        // Past the trailing space the marker is followed by.
+        composer.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        composer.key(key);
+        assert_eq!(composer.typed(), "", "{key:?} left part of a marker behind");
+    }
+}
+
+/// The numbering is the session's, one-based, and does not restart with a turn:
+/// `#3` has to mean one thing to somebody scrolling back.
+#[test]
+fn f14_the_marker_number_is_a_handle_the_session_keeps() {
+    use io_cli::app::App;
+    use io_cli::theme::DARK;
+
+    let mut app = App::new(DARK, "opus-5");
+    assert_eq!(app.images(), 0);
+    assert_eq!(app.image(1), None);
+
+    assert_eq!(app.attached("/tmp/one.png"), 1);
+    assert_eq!(app.attached("/tmp/two.png"), 2);
+    assert_eq!(app.image(1), Some("/tmp/one.png"));
+    assert_eq!(app.image(2), Some("/tmp/two.png"));
+    assert_eq!(app.image(3), None, "a number nobody attached names nothing");
+    assert_eq!(app.image(0), None, "the numbering a person reads starts at one");
+}
+
+/// What the caption says, which is everything needed to tell one attachment from
+/// another, on one row.
+#[test]
+fn f14_the_caption_names_the_number_the_file_and_the_size() {
+    let caption = io_cli::picture::caption(2, "/tmp/shot.png", "image/png", 391_790);
+    assert!(caption.contains("[Image #2]"), "{caption}");
+    assert!(caption.contains("/tmp/shot.png"), "{caption}");
+    assert!(caption.contains("png"), "{caption}");
+    assert!(
+        caption.contains("382.6 KB"),
+        "a size a person can check against the file they attached: {caption}",
+    );
+    assert!(
+        !caption.contains("391790"),
+        "a byte count is not a size anybody reads: {caption}",
+    );
+}

@@ -887,24 +887,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         &path,
                     ) {
                         Ok(staged) => {
-                            let (drawable, graphics) = forms(&app);
-                            let drawn = io_cli::picture::render(
-                                &staged.bytes,
-                                &staged.path,
-                                staged.media_type,
-                                drawable,
-                                graphics,
-                                screen.width(),
-                            );
-                            let note = app
-                                .theme
-                                .notice(Tone::Muted, io_cli::attach::staged_note(&staged));
+                            // **A marker, not a picture.** `[Image #1]` goes on
+                            // the prompt, rides the turn as the words the agent
+                            // is given, and is what the transcript keeps — while
+                            // the image itself is staged on the session as media.
+                            // Twenty rows of somebody's screenshot in the middle
+                            // of a conversation is not what a reader wants by
+                            // default, and `/image 1` is there for the moment
+                            // they do.
+                            let number = app.attached(&staged.path);
+                            let note = io_cli::attach::staged_note(&staged, number);
+                            app.composer.attach(&format!("[Image #{number}]"));
                             // Staged on the session, so io-harness's `drive` folds
                             // it in and `mem::take`s it. Nothing is kept here: the
                             // one-turn-only property is the harness's, and a copy
                             // on this side would quietly undo it.
                             session.attach([staged.media]);
-                            commit_drawn(screen, &mut app, drawn, Some(note))?;
+                            app.say(Tone::Muted, note);
                         }
                         Err(error) => app.say(Tone::Error, error),
                     }
@@ -979,6 +978,54 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     app.status.planning = planning;
                     app.say(Tone::Muted, said);
                 }
+                // The picture, drawn now, at the bottom. It cannot open the row
+                // it was announced on: that row is in the terminal's scrollback,
+                // which nothing here reaches.
+                Action::Image(which) => {
+                    let total = app.images();
+                    match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
+                        Some((number, path)) => {
+                            let effective =
+                                approval::session_policy(&policy, app.posture(), app.remembered());
+                            match io_cli::attach::prepare(
+                                session.root(),
+                                &effective,
+                                provider.accepts_images(),
+                                &path,
+                            ) {
+                                Ok(staged) => {
+                                    let (drawable, graphics) = forms(&app);
+                                    let drawn = io_cli::picture::render(
+                                        &staged.bytes,
+                                        &staged.path,
+                                        staged.media_type,
+                                        drawable,
+                                        graphics,
+                                        screen.width(),
+                                    );
+                                    let caption = app.theme.notice(
+                                        Tone::Muted,
+                                        io_cli::picture::caption(
+                                            number,
+                                            &staged.path,
+                                            staged.media_type,
+                                            staged.bytes.len(),
+                                        ),
+                                    );
+                                    commit_drawn(screen, &mut app, drawn, Some(caption))?;
+                                }
+                                Err(error) => app.say(Tone::Error, error),
+                            }
+                        }
+                        None if total == 0 => {
+                            app.say(Tone::Muted, "no image has been attached in this session")
+                        }
+                        None => app.say(
+                            Tone::Muted,
+                            format!("say which one: /image 1 to /image {total}"),
+                        ),
+                    }
+                }
                 Action::Expand => {
                     let lines = expand(&session, &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -1038,7 +1085,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     .commit(&splash::lines(&app.theme, true, width, &about))
                                     .map_err(|error| error.to_string())?;
                                 let dash = app.theme.glyphs.dash;
-                                app.say(
+                                app.record(
                                     Tone::Muted,
                                     format!(
                                         "new conversation {dash} the last one is still in /resume"
@@ -1289,6 +1336,9 @@ async fn turn<P: Provider>(
     // `MissedTickBehavior::Delay` rather than the default: a turn that blocked the
     // loop should resume ticking from now, not fire a burst catching up on the
     // frames nobody saw.
+    // Set when a turn was taken back off the screen rather than stopped: there
+    // is nothing to report about a turn the session no longer shows.
+    let mut undone = false;
     let mut ticker = tokio::time::interval(io_cli::app::TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1373,6 +1423,25 @@ async fn turn<P: Provider>(
                             // commits whatever streamed before it.
                             Command::Abandon => {
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                // **A turn that had done nothing is taken back
+                                // whole.** `App::undoable` is what decides that
+                                // — no step, nothing streamed, nothing on screen
+                                // but the echo of the prompt — and what it buys
+                                // is the session the operator had a moment
+                                // before: the goal line comes off the screen and
+                                // the prompt goes back in the composer, ready to
+                                // edit or to send again.
+                                //
+                                // Only what is still on screen. Rows that have
+                                // scrolled past the top belong to the terminal's
+                                // scrollback, which nothing here reaches, so an
+                                // echo that long is left where it is.
+                                if app.undoable() && app.turn_rows() <= screen.erasable() {
+                                    let (rows, _) = app.undo_turn();
+                                    let _ = screen.rewind(rows);
+                                    undone = true;
+                                }
+
                                 // Nothing is constructed to stand in for a result
                                 // io-harness never returned. `TurnResult` is
                                 // `#[non_exhaustive]` and could not be anyway,
@@ -1454,11 +1523,12 @@ async fn turn<P: Provider>(
         // `io_cli::failure`. A provider that will not take an image says so in the
         // vocabulary of a routing layer, and "HTTP 404" is not something anybody
         // can act on.
-        Some(Err(error)) => app.say(Tone::Error, io_cli::failure::said(&error)),
+        Some(Err(error)) => app.record(Tone::Error, io_cli::failure::said(&error)),
         // Abandoned. The run's own record is whatever io-harness had written by
         // the time the future was dropped, and saying so is the honest line: the
         // work above is real and the turn did not finish.
-        None => app.say(Tone::Warning, "stopped"),
+        None if undone => {}
+        None => app.say(Tone::Muted, "stopped"),
         Some(Ok(_)) => {}
     }
     app.status.elapsed = started.elapsed();
