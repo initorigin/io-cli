@@ -322,7 +322,21 @@ impl<B: Backend + Write> Screen<B> {
                 cell.set_symbol("");
             }
             if let Some(first) = buf.content.first_mut() {
-                first.set_symbol(payload);
+                // **`ESC[0J` first, and it is what makes the picture readable.**
+                // Every cell of this region prints nothing, which is what stops a
+                // row of spaces erasing the placement — but it also means nothing
+                // erases what the terminal was already showing there. The rows
+                // this region is made of are rows the viewport was occupying a
+                // moment ago, scrolled up, so a picture narrower or shorter than
+                // its box was drawn *into* the old composer and status line: half
+                // an image with a stale prompt beside it and a rule through it,
+                // which is what 0.13.1 was reported with.
+                //
+                // Erasing from here to the end of the display costs nothing that
+                // is not about to be redrawn: below this region is the viewport,
+                // and `self.last = None` above has already made the next frame a
+                // full repaint of it.
+                first.set_symbol(&format!("\x1b[0J{payload}"));
             }
         })
     }
