@@ -1791,9 +1791,15 @@ fn goal(events: &mut Events) -> Vec<String> {
 /// not blank, which is the state the rule has to notice. Asserted per rendered
 /// row, not on the joined text: "one blank row and not two" is a claim about
 /// rows, and a `str::lines()` of the flattened string cannot see it.
+/// One arrangement: a name for the failure message, and the events that leave the
+/// transcript ending on a designed row. Named rather than written inline because
+/// the tuple is what `clippy::type_complexity` objects to, and the objection is
+/// fair — the shape says nothing about what these are.
+type Arrangement = (&'static str, fn(&mut Events));
+
 #[test]
 fn f8_a_designed_block_and_the_next_prompt_are_not_one_block() {
-    let blocks: [(&str, fn(&mut Events)); 3] = [
+    let blocks: [Arrangement; 3] = [
         ("a thought footer", |events| {
             started_at(events, Duration::ZERO);
             events.event(

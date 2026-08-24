@@ -476,10 +476,7 @@ impl Capturing {
 }
 
 impl Provider for Capturing {
-    async fn complete(
-        &self,
-        request: CompletionRequest,
-    ) -> io_harness::Result<CompletionResponse> {
+    async fn complete(&self, request: CompletionRequest) -> io_harness::Result<CompletionResponse> {
         let mut systems = self.systems.lock().expect("the capture is not poisoned");
         systems.push(request.system.clone());
         // **The first completion and every later one are composed from different
