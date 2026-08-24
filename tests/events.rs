@@ -1765,3 +1765,153 @@ fn f4_no_tool_is_mapped_twice_and_no_row_is_empty() {
         "a name that is not in the table is not in the table",
     );
 }
+
+/// The goal line the operator's next words commit, at an age nothing measured.
+fn goal(events: &mut Events) -> Vec<String> {
+    rows(events.event(
+        &event(EventKind::Started {
+            goal: "read the parser".into(),
+            provider: "openrouter".into(),
+        }),
+        Duration::ZERO,
+    ))
+}
+
+/// **0.13.0 F8 — a designed block and the operator's next words are not one
+/// block.**
+///
+/// The `›` line is the only row in a transcript that its reader wrote, and it
+/// opens the block below it rather than closing the one above. Through 0.12.0 the
+/// gap rule in `Events::event` (src/events.rs:451) only knew about a block that
+/// ended in a tool cell, so a turn that ended on a thought footer or on a harness
+/// warning put the next goal on the row directly under it — two voices, one
+/// block, and nothing in the transcript saying where the operator came back in.
+///
+/// Each arrangement below leaves the transcript ending on a designed row that is
+/// not blank, which is the state the rule has to notice. Asserted per rendered
+/// row, not on the joined text: "one blank row and not two" is a claim about
+/// rows, and a `str::lines()` of the flattened string cannot see it.
+/// One arrangement: a name for the failure message, and the events that leave the
+/// transcript ending on a designed row. Named rather than written inline because
+/// the tuple is what `clippy::type_complexity` objects to, and the objection is
+/// fair — the shape says nothing about what these are.
+type Arrangement = (&'static str, fn(&mut Events));
+
+#[test]
+fn f8_a_designed_block_and_the_next_prompt_are_not_one_block() {
+    let blocks: [Arrangement; 3] = [
+        ("a thought footer", |events| {
+            started_at(events, Duration::ZERO);
+            events.event(
+                &event(thought("the parser is the only caller", 120)),
+                Duration::from_millis(400),
+            );
+        }),
+        ("a tool cell", |events| {
+            events.event(
+                &event(EventKind::ToolCall {
+                    name: "read_file".into(),
+                    target: "src/lib.rs".into(),
+                }),
+                Duration::ZERO,
+            );
+            events.event(
+                &event(EventKind::Step {
+                    decision: "read src/lib.rs".into(),
+                    tool_call: "read_file".into(),
+                    tokens: 5,
+                    changed: false,
+                }),
+                Duration::from_millis(250),
+            );
+        }),
+        ("a harness warning", |events| {
+            events.event(
+                &event(EventKind::Retry {
+                    kind: "timeout".into(),
+                    attempt: 2,
+                    delay_ms: 400,
+                }),
+                Duration::ZERO,
+            );
+        }),
+    ];
+
+    for (what, arrange) in blocks {
+        let mut events = Events::new(DARK);
+        arrange(&mut events);
+        let committed = goal(&mut events);
+
+        assert!(
+            committed[0].trim().is_empty(),
+            "the goal line arrived welded to {what}: {committed:?}",
+        );
+        // The second row is the goal itself. A second blank here is the gap an
+        // operator reads as something having been left out.
+        assert!(
+            committed[1].contains("read the parser"),
+            "two blank rows between {what} and the goal it introduces: {committed:?}",
+        );
+    }
+}
+
+/// **0.13.0 F8, the half that says where the rule lives.** The first prompt of a
+/// session opens the transcript, so nothing goes above it.
+///
+/// This is the control that separates the rule taken in `Events::event` from the
+/// same blank pushed inside the `Started` arm (src/events.rs:540). That arm
+/// cannot see `last_blank`, so a blank pushed there is pushed unconditionally and
+/// the session opens on an empty row — which is the exact case `last_blank` was
+/// introduced for, and why it starts `true` (src/events.rs:270). Remove this test
+/// and the sabotage passes the suite.
+#[test]
+fn f8_the_first_prompt_of_a_session_opens_the_transcript_rather_than_a_gap() {
+    let mut events = Events::new(DARK);
+    let committed = goal(&mut events);
+
+    assert!(
+        committed[0].contains("read the parser"),
+        "nothing was committed before this line, so there is nothing to separate \
+         it from: {committed:?}",
+    );
+}
+
+/// **0.13.0 F8 — one blank between turns, still never two.**
+///
+/// The ordinary turn is the case that has to look right: an answer, then the next
+/// prompt. `flush_text` ends the answer with a blank row (src/events.rs:438), so
+/// the gap rule must stand down here — a rule that pushed a blank for every goal
+/// line would put two rows of air under every answer in the session, which is the
+/// same defect this criterion is about, in the other direction.
+#[test]
+fn f8_a_prompt_after_an_answer_is_one_blank_row_and_not_two() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    // No trailing newline: the answer is still live, and the turn ending is what
+    // commits it — together with the one blank row that ends its block.
+    events.event(
+        &event(EventKind::Token {
+            text: "Here is the answer.".into(),
+        }),
+        Duration::ZERO,
+    );
+    let answer = rows(events.event(
+        &event(EventKind::Finished {
+            outcome: "finished".into(),
+            steps: 1,
+            tokens: 4,
+        }),
+        Duration::ZERO,
+    ));
+    assert!(
+        answer.last().is_some_and(|row| row.trim().is_empty()),
+        "the answer's own block should end with a blank row: {answer:?}",
+    );
+
+    let committed = goal(&mut events);
+    assert!(
+        committed[0].contains("read the parser"),
+        "the answer already ended its block with a blank, so a second one here is \
+         a gap that reads as something left out: {committed:?}",
+    );
+}

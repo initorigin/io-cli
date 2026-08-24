@@ -1,5 +1,7 @@
 //! F2 — the wizard writes what it showed.
 //! F3 — a bad key does not get past the wizard.
+//! F9 (0.13.0) — and its closing screen names a newline key this terminal can
+//!      actually send.
 //! N5 — the credential never reaches the screen, the scrollback, a log line or
 //!      the trace.
 //!
@@ -12,6 +14,7 @@ mod support;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use io_cli::keys::Newline;
 use io_cli::settings::{self, CliSettings, Posture};
 use io_cli::theme::DARK;
 use io_cli::wizard::{Progress, Step, Wizard};
@@ -808,4 +811,103 @@ fn the_rendered_file_is_the_harness_schema_and_nothing_of_our_own() {
         "an absent credential should be absent from the file: {text}",
     );
     assert!(text.contains("[app.io-cli]"), "got {text}");
+}
+
+/// **F9.** The last screen of the first run teaches a newline key that arrives.
+///
+/// This is the one moment io has a new operator's whole attention, and the next
+/// thing they do is type a prompt — so it is the right place to say which chord
+/// puts a second line in one, and the worst place to name a chord that submits
+/// it instead. Both terminals are rendered from here, because the value is an
+/// argument rather than something the screen works out for itself.
+#[test]
+fn f9_the_closing_screen_names_the_newline_key_that_works_here() {
+    let wizard = Wizard::new(DARK);
+
+    let advertised = lines(&wizard, Newline::of(true));
+    assert!(
+        advertised.iter().any(|line| line.contains("Shift+Enter")),
+        "a terminal that reports it is told to use it: {advertised:?}",
+    );
+    assert!(
+        !advertised.iter().any(|line| line.contains("cannot report")),
+        "there is nothing to apologise for on a terminal where the key works: \
+         {advertised:?}",
+    );
+
+    let unreportable = lines(&wizard, Newline::of(false));
+    assert!(
+        unreportable.iter().any(|line| line.contains("Alt+Enter")),
+        "the chord that arrives has to be the one named: {unreportable:?}",
+    );
+    // On the naming row itself, not anywhere on the screen: the path above it is
+    // the machine's and on Windows it is full of backslashes, so a screen-wide
+    // search would pass on half the platforms whatever this row said.
+    let names = unreportable
+        .iter()
+        .find(|line| line.contains("puts a new line"))
+        .expect("the closing screen names the key");
+    assert!(
+        names.contains('\\'),
+        "the trailing backslash works on every terminal there is and is the \
+         spelling this reader is left with: {names:?}",
+    );
+    assert!(
+        unreportable
+            .iter()
+            .any(|line| line.contains("cannot report Shift+Enter")),
+        "said rather than silently dropped: a first-run reader who has seen \
+         Shift+Enter elsewhere will press it to find out: {unreportable:?}",
+    );
+
+    // Both screens still say the thing this screen is *for*, and say it above the
+    // hint. The paragraph is clipped rather than scrolled, so on a terminal too
+    // short for the whole screen what goes has to be the hint and not the
+    // sentence naming the keystroke that writes the file.
+    for screen in [&advertised, &unreportable] {
+        let writes = screen
+            .iter()
+            .position(|line| line.contains("Enter to write it"))
+            .expect("the confirmation screen still says how to confirm");
+        let names = screen
+            .iter()
+            .position(|line| line.contains("puts a new line"))
+            .expect("and it names the newline key");
+        assert!(
+            writes < names,
+            "the hint is above the keystroke this screen is asking for, so a \
+             short terminal clips the wrong one: {screen:?}",
+        );
+    }
+
+    // No glyph in the rows that name the key. They are words on purpose:
+    // `--plain`, `NO_COLOR` and the ASCII set are exactly the sessions where a
+    // reader is already having trouble reading something, and these are the rows
+    // they are reading to fix it. Asserted over the naming rows only — the path
+    // above them comes from the machine and is shortened with an ellipsis when it
+    // has to be.
+    for line in unreportable
+        .iter()
+        .chain(advertised.iter())
+        .filter(|line| line.contains("new line") || line.contains("cannot report"))
+    {
+        assert!(
+            line.is_ascii(),
+            "a row that names a key must survive the ASCII glyph set: {line:?}",
+        );
+    }
+}
+
+/// The confirmation screen as plain strings, one per row.
+fn lines(wizard: &Wizard, newline: Newline) -> Vec<String> {
+    wizard
+        .summary_at(80, newline)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
 }

@@ -106,6 +106,50 @@ impl Capabilities {
 /// any of those, and it was standing in for all three.
 pub const MAX_STEPS: u32 = 1_000;
 
+/// What io-cli tells the agent about itself, appended to io-harness's own.
+///
+/// **Every turn before 0.13.0 ran `SystemPrompt::Builtin`**, which the harness
+/// documents as naming the tools and saying nothing about how to use them — no
+/// tone, no shape, no rule about length. What an operator got for an ordinary
+/// question was a model with a tool catalogue and no idea what it was.
+///
+/// Three properties make this text shippable, and each is a test rather than an
+/// intention:
+///
+/// - **It names no vendor and no model.** io-cli is pointed at a catalogue of
+///   four hundred models by a flag, so anything it said about *which* model was
+///   reading would be false for almost all of them.
+/// - **It claims no capability.** What the agent may reach is composed around
+///   this block by the harness, from the contract — a sentence about browsing
+///   would be a lie on every session with no `[app.io-cli.browser]`, which is
+///   every default session.
+/// - **It is bounded**, because it is prepaid on every turn of every session.
+///
+/// It is `SystemPrompt::Append` and not `Replace`: the harness's framing, its
+/// tool catalogue, the repository's own instructions, the boundary section and
+/// the ending all still have to reach the model, and this text sits between the
+/// catalogue and the boundary rather than in place of any of it.
+pub const PROMPT: &str = "\
+You are the agent inside io, a terminal interface to one repository. The person \
+reading you is at a terminal, in the middle of their own work, in a pane a few \
+rows tall.
+
+Answer what was asked, and put the answer first. A question about what something \
+is gets prose; a question about what to do gets the smallest step that does it. \
+Report work in the past tense once it is done, and never narrate what you are \
+about to do. When you do not know, or the answer is in a file you have not \
+opened, say so instead of guessing.
+
+Be brief by default: a sentence or two for a small question, a short paragraph \
+for a large one, and more only when you were asked for more. Prefer sentences to \
+bullets and bullets to tables. Point at code the way a terminal can act on it — \
+`src/thing.rs:42`.
+
+You are rendered as monospaced text in a pane the person cannot widen. Code goes \
+in a fenced block with its language named. Assume eighty columns: no wide \
+tables, no art drawn out of characters, no markup that expects a browser. Do not \
+refer to earlier output by where it is on the screen — it has scrolled.";
+
 pub fn session(
     text: impl Into<String>,
     root: PathBuf,
@@ -117,9 +161,14 @@ pub fn session(
     // resolves the responder inside the tool dispatch on any run, so there has
     // never been a reason for a question to reach a person on one kind of turn
     // and pause the run on the other.
+    // **Unconditional for the same reason, and in the one place a turn's contract
+    // is built.** Both arms are handed this value, so the manner cannot depend on
+    // whether a turn can fan out — which is the drift `tests/contract.rs`'s F6
+    // exists to make unrepresentable.
     let mut contract = TaskContract::workspace(text, root)
         .with_max_steps(MAX_STEPS)
-        .with_responder(responder);
+        .with_responder(responder)
+        .with_system_prompt(io_harness::SystemPrompt::Append(PROMPT.to_string()));
     // **Registering a gate is how the planning phase is turned on**, so this is
     // where the operator's `/plan` becomes a fact about the turn. `None` is not a
     // missing feature: it is a turn that works instead of proposing first, which

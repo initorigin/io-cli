@@ -430,16 +430,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         };
         let Event::Key(key) = event else {
             if let Event::Resize(width, height) = event {
-                // A terminal that resized under an open palette closes it and
-                // takes the rows back. The alternative is re-placing a tall
-                // viewport against a screen that may no longer have room for it,
-                // in the middle of an event this loop did not ask for — and the
-                // palette is one keystroke away from being reopened at the size
-                // the terminal now is.
-                if matches!(picker, Some((_, Pick::Palette))) {
-                    picker = None;
-                    replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
-                }
+                // 0.13.0 — the palette is drawn in the viewport the session
+                // already has, so a resize under an open palette is a resize like
+                // any other and there is nothing to take back. Up to 0.12.0 this
+                // arm closed the palette and re-placed the viewport, because the
+                // palette was the one surface that had grown it.
                 screen
                     .resize(width, height)
                     .map_err(|error| error.to_string())?;
@@ -457,8 +452,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
-            // Read before the match, because the match is what closes it.
-            let was_palette = matches!(kind, Pick::Palette);
             match open.key(key) {
                 Outcome::Chosen(index) => {
                     let label = open.rows()[index].label.clone();
@@ -694,14 +687,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Outcome::Cancelled => picker = None,
                 Outcome::Idle => {}
             }
-            // The rows go back the moment the palette is no longer the thing on
-            // screen — by a choice, by `Esc`, or by a choice that descended into
-            // a completion picker, which is a different picker and does not get
-            // the palette's height. A viewport left tall would be rows the
-            // operator never agreed to give up.
-            if was_palette && !matches!(picker, Some((_, Pick::Palette))) {
-                replace_viewport(screen, io_cli::term::VIEWPORT_HEIGHT)?;
-            }
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -714,23 +699,20 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // rather than a test written here, because nothing can reach this file.
         if commands::opens_palette(key, app.composer.is_empty(), app.armed()) {
             let rows = commands::palette(&templates, &skills);
-            // The whole list, subject only to the terminal's own height, which
-            // `Screen::attach_with` clamps to. A picker draws `height - 1` rows,
-            // so the row it is given back is the title's.
+            // **0.13.0 — a repaint, and nothing else.** Up to 0.12.0 this grew the
+            // viewport to hold every row and shrank it again on the way out, which
+            // put a terminal round trip on the keystroke: `Screen::replace` asks
+            // the terminal where its cursor is (`ESC[6n`) and takes the stdin lock
+            // to read the answer, twice per visit to the palette. On a terminal
+            // that does not answer, that is the two-second wait `term.rs` records
+            // — on `/`, which is the fastest thing an operator does.
             //
-            // Safe here and nowhere else: `opens_palette` is true only at an
-            // empty prompt with nothing armed, and a turn in flight never reaches
-            // this loop at all — so there is nothing streaming to be disturbed by
-            // a viewport landing somewhere new.
-            let tall = commands::palette_height(rows.len());
+            // What it costs is the whole-list view: the picker draws the rows the
+            // session's viewport has and scrolls and filters for the rest, which
+            // is what `/model` already does against four hundred models. That is
+            // the trade the release contract records, and the fallback if it turns
+            // out wrong is *not* to restore the round trip.
             picker = Some((Picker::new("Which command?", rows), Pick::Palette));
-            if let Err(error) = replace_viewport(screen, tall) {
-                // The session's viewport is back — `Screen::replace` puts it
-                // there before returning — so the palette is still usable at the
-                // height it has always had. Said rather than swallowed, because
-                // the operator asked for the whole list and is not getting it.
-                app.say(Tone::Muted, format!("the list stays short: {error}"));
-            }
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -1349,9 +1331,11 @@ async fn turn<P: Provider>(
             }
             Some(asked) = questions.recv() => {
                 // The same shape one seam over: the run is stopped inside
-                // `Responder::answer` and the loop keeps turning. It can only
-                // arrive on a contained turn, because the responder reaches the
-                // run through the contract and only that arm carries one.
+                // `Responder::answer` and the loop keeps turning. It arrives on
+                // ANY turn — the responder is on the one contract both arms are
+                // handed, since 0.12.0. (This comment said "only a contained
+                // turn" until 0.13.0, which was true of 0.11.0 and of nothing
+                // since.)
                 app.open_intent(asked);
                 app.status.elapsed = started.elapsed();
                 paint(screen, app)?;

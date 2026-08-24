@@ -1,5 +1,7 @@
 //! N7 — an installer never runs an unverified binary.
 //! N8 — an install needs no administrator rights.
+//! F10 — an install narrates itself.
+//! F11 — a failing install fails exactly as it did.
 //!
 //! Both scripts are exercised against a **local release**: a directory holding a
 //! real archive and a real `SHA256SUMS`, served over `file://`. That is enough to
@@ -8,6 +10,15 @@
 //! on a clean machine, in a new shell, with nothing else installed — and that is
 //! deliberately a human step against the published Release, because an installer
 //! verified only on the machine that built it is not verified.
+//!
+//! The narration (F10/F11) is asserted by RUNNING `install.sh` against that local
+//! release and matching the ordered sequence its stdout actually contains — never
+//! by reading the source, because a script can contain a print and still not reach
+//! it. `install.ps1` gets what this repository can honestly give it: its refusal
+//! path is executed under `pwsh` when `pwsh` is here, and its narration is matched
+//! in source order, because `Invoke-WebRequest` cannot fetch the `file://` release
+//! the shell fixture is built from. The behavioural half of the Windows story is
+//! the same human step against the published Release.
 
 #![cfg(unix)]
 
@@ -104,6 +115,32 @@ fn run_installer(release_dir: &Path, install_dir: &Path) -> std::process::Output
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .output()
         .expect("the installer runs")
+}
+
+/// Assert that every fragment appears in `text`, each one after the last.
+///
+/// Substrings rather than whole lines, so that a path or a checksum can be
+/// matched without the test having to reproduce the rest of its line — but the
+/// cursor only ever moves forward, so the ORDER is what is being asserted.
+fn assert_ordered(what: &str, text: &str, sequence: &[String]) {
+    let mut cursor = 0;
+    for fragment in sequence {
+        match text[cursor..].find(fragment.as_str()) {
+            Some(at) => cursor += at + fragment.len(),
+            None => panic!(
+                "{what}: {fragment:?} is missing, or comes before something it should follow\n\
+                 --- the output was ---\n{text}\n---",
+            ),
+        }
+    }
+}
+
+fn uname(flag: &str) -> String {
+    let out = Command::new("uname")
+        .arg(flag)
+        .output()
+        .expect("uname runs");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 #[test]
@@ -278,4 +315,216 @@ fn the_artifact_names_match_what_the_release_workflow_builds() {
         assert!(shell.contains(target), "install.sh cannot resolve {target}");
     }
     assert!(powershell.contains("x86_64-pc-windows-msvc"));
+}
+
+/// F10 — `install.sh` prints the whole install, in order, with the values in it.
+///
+/// The archive's real checksum is computed here and matched against BOTH the
+/// expected and the computed line, which is the sabotage this test exists for:
+/// drop the computed number and print only "checksum ok" and this fails on the
+/// `computed <sha>` line — the one whose value is that an operator can see the
+/// comparison rather than be told its result. Everything else is matched by its
+/// value too (the resolved target, the URLs actually fetched, the destination,
+/// the installed binary's own `--version` output), because a narration of
+/// constants would pass a test of constants and tell an operator nothing.
+#[test]
+fn f10_the_shell_installer_narrates_the_install_in_order() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let release_dir = dir.path().join("release");
+    let install_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&release_dir).expect("a release directory");
+    let archive = release(&release_dir, false);
+    let sum = sha256(&archive);
+
+    let output = run_installer(&release_dir, &install_dir);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "the installer failed\n{stdout}");
+
+    let base = format!("file://{}", release_dir.display());
+    let stage = format!("io-{VERSION}-{}", target());
+    assert_ordered(
+        "install.sh",
+        &stdout,
+        &[
+            // The detected OS and architecture are the machine's own words for
+            // itself, not this test's guess at them, and then the target.
+            format!(
+                "detected {} {} -> target {}",
+                uname("-s"),
+                uname("-m"),
+                target()
+            ),
+            format!("version {VERSION} (from IO_VERSION)"),
+            format!("downloading {base}/{stage}.tar.gz"),
+            format!("downloading {base}/SHA256SUMS"),
+            format!("expected {sum}"),
+            format!("computed {sum}"),
+            "checksum ok".to_string(),
+            format!("unpacked {stage}.tar.gz"),
+            format!("installed {}", install_dir.join("io").display()),
+            format!("{} is not on your PATH", install_dir.display()),
+            "io 9.9.9 (a stand-in)".to_string(),
+        ],
+    );
+
+    // The count is part of the criterion, not an accident of it: a script that
+    // prints twenty lines for a two-second install is worse than one that prints
+    // one, so the sequence above is the whole narration and nothing has been
+    // slipped in beside it. Sixteen is nine narration lines, the four-line PATH
+    // advice with its blank lines, and the binary's own version line.
+    assert_eq!(
+        stdout.lines().count(),
+        16,
+        "the narration grew or shrank; it is a decided sequence, not a volume\n{stdout}",
+    );
+}
+
+/// F11 — the narration is on stdout and every diagnostic stays on stderr.
+///
+/// Two runs, because one alone proves nothing: a good install must leave stderr
+/// completely empty, and a checksum mismatch must put its whole message on stderr
+/// with none of it on stdout. That is the sabotage — send the narration to stderr
+/// and the good run fails here, because the one line an operator greps a log for
+/// would be buried in a report of what went right.
+#[test]
+fn f11_the_narration_is_on_stdout_and_the_diagnostics_are_on_stderr() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let release_dir = dir.path().join("release");
+    std::fs::create_dir_all(&release_dir).expect("a release directory");
+    release(&release_dir, false);
+
+    let good = run_installer(&release_dir, &dir.path().join("bin"));
+    assert!(good.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&good.stderr).trim(),
+        "",
+        "an install that went right must say nothing on stderr",
+    );
+    assert!(String::from_utf8_lossy(&good.stdout).contains("checksum ok"));
+
+    let bad_dir = tempfile::tempdir().expect("a temporary directory");
+    let bad_release = bad_dir.path().join("release");
+    std::fs::create_dir_all(&bad_release).expect("a release directory");
+    release(&bad_release, true);
+
+    let bad = run_installer(&bad_release, &bad_dir.path().join("bin"));
+    let stdout = String::from_utf8_lossy(&bad.stdout);
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert_eq!(
+        bad.status.code(),
+        Some(1),
+        "a mismatch exits 1, exactly as it always has",
+    );
+    assert!(stderr.contains("checksum mismatch"), "{stderr}");
+    assert!(stderr.contains("Nothing was installed"), "{stderr}");
+    assert!(
+        !stdout.contains("checksum mismatch") && !stdout.contains("Nothing was installed"),
+        "the failure leaked onto stdout: {stdout}",
+    );
+    // It still narrated everything it did before it refused.
+    assert!(
+        stdout.contains("expected ") && stdout.contains("computed "),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("checksum ok"), "{stdout}");
+}
+
+/// F11 — a missing tool is the same refusal, with the same status, as before.
+///
+/// Run with a PATH that has nothing on it: `uname` is the first thing the script
+/// asks for, so this is the missing-tool `die` and not another one. The sabotage
+/// is any change that makes a missing tool quieter (a warning and a guess at the
+/// target) or louder (a stack of narration before the refusal): stdout has to be
+/// empty and the exit status has to be 1.
+#[test]
+fn f11_a_missing_tool_is_the_refusal_it_has_always_been() {
+    let output = Command::new("/bin/sh")
+        .arg(repo().join("install.sh"))
+        .env("PATH", "/nonexistent")
+        .env("IO_VERSION", VERSION)
+        .output()
+        .expect("the installer runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("this script needs uname"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "",
+        "a refusal narrates nothing on stdout",
+    );
+}
+
+/// F11 — `install.ps1` refuses an unsupported architecture on stderr, exit 1.
+///
+/// This is the half of the Windows story that can be run anywhere: no download,
+/// no archive, no `file://` URL that `Invoke-WebRequest` would not accept — just
+/// the first `Fail` in the script. Where `pwsh` is not installed the test SKIPS
+/// rather than fails, so the other half (the ordered narration) is covered by
+/// `f10_the_powershell_installer_prints_the_same_ordered_sequence`, which reads
+/// the source. When `pwsh` is here, both halves have run.
+#[test]
+fn f11_the_powershell_installer_refuses_an_unsupported_architecture() {
+    let output = Command::new("pwsh")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-File")
+        .arg(repo().join("install.ps1"))
+        .env("PROCESSOR_ARCHITECTURE", "ARM64")
+        .env("IO_VERSION", VERSION)
+        .output();
+    let Ok(output) = output else {
+        eprintln!("skipped: pwsh is not installed on this machine");
+        return;
+    };
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("there is no Windows ARM64 build yet"),
+        "the refusal must keep its message: {stderr}",
+    );
+    assert!(
+        !stdout.contains("downloading") && !stdout.contains("version "),
+        "it narrated an install it refused to do: {stdout}",
+    );
+}
+
+/// F10 — `install.ps1` prints the same ordered sequence as `install.sh`.
+///
+/// Read from the source, which is second best and admitted as such: the fixture
+/// the shell test installs from is a `file://` release, and `Invoke-WebRequest`
+/// will not fetch one, so there is no way to run this script end to end here. The
+/// order is still the property being asserted — a narration whose lines come in a
+/// different order is a different narration — and the same sabotage fails it:
+/// remove the computed checksum line and this stops finding it.
+#[test]
+fn f10_the_powershell_installer_prints_the_same_ordered_sequence() {
+    // git hands Windows a CRLF working copy, and every fragment below would then
+    // be found at the wrong offsets or not at all.
+    let powershell = std::fs::read_to_string(repo().join("install.ps1"))
+        .expect("install.ps1")
+        .replace("\r\n", "\n");
+
+    assert_ordered(
+        "install.ps1",
+        &powershell,
+        &[
+            r#"Write-Host "detected Windows $arch -> target $target""#.to_string(),
+            r#"Write-Host "version $Version (from $versionFrom)""#.to_string(),
+            r#"Write-Host "downloading $BaseUrl/$archive""#.to_string(),
+            r#"Write-Host "downloading $BaseUrl/SHA256SUMS""#.to_string(),
+            r#"Write-Host "expected $expected""#.to_string(),
+            r#"Write-Host "computed $actual""#.to_string(),
+            "Write-Host 'checksum ok'".to_string(),
+            r#"Write-Host "unpacked $archive""#.to_string(),
+            r#"Write-Host "installed $installed""#.to_string(),
+            "your user PATH".to_string(),
+            "& $installed --version".to_string(),
+        ],
+    );
 }

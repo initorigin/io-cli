@@ -6,6 +6,54 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-24
+
+Five defaults that were never set.
+
+**Every turn now carries a system prompt io-cli wrote, and a model will answer
+differently under it.** This is the change with the widest reach, so it is the
+first thing said: through 0.12.0 every turn ran io-harness's built-in
+description, which names the tools and says nothing about tone, format or length.
+The new prompt sets what `io` is, that the reader is at a terminal, that the
+answer comes first and briefly, that work is reported once done rather than
+narrated in advance, and that the output is monospaced text about eighty columns
+wide. It is **appended** to io-harness's own prompt, not substituted for it, so
+the harness keeps its framing, its tool catalogue, the repository's own
+instructions and the sentence that decides how a turn ends. It names no model and
+no vendor and claims no tool. There is no configuration key for it: per-repository
+voice belongs in the file io-harness's `[instructions]` discovers.
+
+**The palette no longer grows the viewport, and no longer shows every command at
+once.** If you are used to seeing the whole list on `/`, you will notice. What you
+get instead is the rows the session's viewport already has, and the rest by typing
+or arrowing — the behaviour `/model` has always had. What that buys is the
+keystroke: opening the palette used to re-place the viewport, which asks the
+terminal where its cursor is and takes the stdin lock to read the answer, and did
+it again on the way out. On a terminal that does not answer that query, `/` cost
+two seconds. It now costs a repaint.
+
+**A blank row between a designed block and your next prompt.** A thought footer, a
+tool cell or a harness warning followed by the `›` line used to read as one block
+in one voice. One row of air, never two.
+
+**`io` names the newline key that works on your terminal.** `Shift+Enter` is
+unreportable unless the terminal speaks the Kitty keyboard protocol — it sends the
+same byte as `Enter` — so on a terminal that does not, `/help`'s key reference and
+the wizard's closing screen now name `Alt+Enter` and the trailing backslash and
+say the key is unreportable here rather than listing it. The README's table keeps
+the advertised spelling, because a README is read somewhere else. Nothing about
+the composer changed: all four spellings work exactly as they did.
+
+**The installers say what they are doing.** `install.sh` and `install.ps1` now
+narrate every step on stdout: the target they resolved, where the version came
+from, each URL as it is fetched, the expected and the computed checksum **both**
+before comparing them, the destination and whether it is on `PATH`, and the
+installed binary's own `--version`. Every failure path is unchanged, message and
+exit status, and stays on stderr.
+
+No configuration change: a 0.12.0 configuration file is a valid 0.13.0
+configuration file, and no key is added, removed or reinterpreted.
+
 ## [0.12.0] - 2026-08-23
 
 The capabilities stopped being a mode.

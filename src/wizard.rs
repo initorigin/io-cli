@@ -27,6 +27,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tui_textarea::TextArea;
 
+use crate::keys::Newline;
 use crate::picker::{fit, fit_left, Outcome, Picker, Row};
 use crate::settings::{self, Posture};
 use crate::theme::{Background, Theme, Tone, THEMES};
@@ -623,7 +624,7 @@ impl Wizard {
     /// For a caller that wants the *facts* rather than the layout — what is on the
     /// screen, not how much of it a given terminal has room for.
     pub fn summary(&self) -> Vec<Line<'static>> {
-        self.summary_at(usize::MAX)
+        self.summary_at(usize::MAX, Newline::here())
     }
 
     /// The lines the confirmation screen shows: the exact path, and what will be
@@ -643,7 +644,15 @@ impl Wizard {
     /// for the same reason: every configuration path on one machine shares its
     /// first segments and is identified by its last, while a model id is
     /// identified by its vendor and family, which come first.
-    pub fn summary_at(&self, width: usize) -> Vec<Line<'static>> {
+    ///
+    /// **It also teaches the one key a new operator cannot guess**, and that is
+    /// what `newline` is for. This is the last screen of the first run, the only
+    /// moment io has the reader's whole attention, and the next thing they do is
+    /// type a prompt — so it says which chord puts a second line in one. Which
+    /// chord that is depends on the terminal (see [`Newline`]), and the answer
+    /// arrives as a value: a screen that decided for itself would be free to name
+    /// a different key from the one `/help` names in the same session.
+    pub fn summary_at(&self, width: usize, newline: Newline) -> Vec<Line<'static>> {
         let theme = self.theme;
         let glyphs = &theme.glyphs;
         // The width of the fixed text each line leads with. Written as the
@@ -699,7 +708,28 @@ impl Wizard {
                 "Enter to write it, Esc to leave without writing.",
                 theme.style(Tone::Muted),
             )),
+            Line::from(""),
         ]
+        .into_iter()
+        // **Below the keystroke this screen is asking for, not above it.** These
+        // rows are about the session that starts after the file is written, and
+        // this paragraph is clipped rather than scrolled — so on a terminal too
+        // short for the screen, what goes is the hint and not the sentence saying
+        // how to leave.
+        //
+        // Words, and no glyph in any of them: this is the line a reader keeps
+        // *because* a key did not do what another screen said, and `--plain`,
+        // `NO_COLOR` and the ASCII set all have to leave it intact. One `Line`
+        // per string rather than one long sentence, because the paragraph does
+        // not wrap and clips from the right — and on the terminal that cannot
+        // report `Shift+Enter`, the sentence saying so is the tail that would go.
+        .chain(newline.said.iter().map(|said| {
+            Line::from(Span::styled(
+                fit(said, width, glyphs),
+                theme.style(Tone::Muted),
+            ))
+        }))
+        .collect()
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -775,7 +805,14 @@ impl Wizard {
                     theme.style(Tone::Muted),
                 ))],
             ),
-            Step::Confirm => paragraph(frame, area, self.summary_at(area.width as usize)),
+            // `Newline::here` reads what the session recorded when it attached;
+            // it cannot start a terminal round trip, which is why it is safe on a
+            // path that runs once per frame.
+            Step::Confirm => paragraph(
+                frame,
+                area,
+                self.summary_at(area.width as usize, Newline::here()),
+            ),
             Step::Done | Step::Cancelled => {}
         }
     }

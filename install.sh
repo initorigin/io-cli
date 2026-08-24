@@ -8,6 +8,15 @@
 # the binary into a directory the current user owns. No sudo, nothing written
 # outside the user's own directories, and nothing left behind if anything fails.
 #
+# It says all of that out loud while it happens, on stdout: the target it
+# resolved, where the version came from, every URL it fetches, BOTH checksums
+# before it compares them, where the binary landed and what that binary says its
+# version is. The point of printing both checksums rather than "checksum ok" is
+# that the operator can see the comparison instead of being told its result — an
+# install that only announces its own success is exactly the one you cannot
+# audit. Diagnostics stay on stderr (see `die`) so a log of what went right never
+# buries the one line somebody greps for.
+#
 # The checksum defends against a truncated download and a tampered asset. It does
 # not defend against a compromised repository — piping a script from the internet
 # into a shell is a trust-the-publisher model however the script is written, and
@@ -69,17 +78,27 @@ case "$os-$arch" in
         die "no build for $os $arch. Build from source: cargo build --release" ;;
 esac
 
+say "detected $os $arch -> target $target"
+
 version="${IO_VERSION:-}"
-if [ -z "$version" ]; then
+if [ -n "$version" ]; then
+    version_from="IO_VERSION"
+else
     # The Release page redirects to the newest tag, so the newest version is
     # readable without an API token and without a JSON parser.
-    latest=$(fetch_effective_url "https://github.com/$REPO/releases/latest") ||
+    version_from="https://github.com/$REPO/releases/latest"
+    latest=$(fetch_effective_url "$version_from") ||
         die "could not reach GitHub to find the latest version"
     version=${latest##*/tag/v}
     case "$version" in
         ""|*/*) die "could not work out the latest version from '$latest'" ;;
     esac
 fi
+
+# Where the version came from decides which of two very different things just
+# happened: an operator pinning a version, or this script trusting GitHub to name
+# the newest one. Printing the number without its source hides that.
+say "version $version (from $version_from)"
 
 base="${IO_BASE_URL:-https://github.com/$REPO/releases/download/v$version}"
 stage="$BIN-$version-$target"
@@ -92,15 +111,23 @@ work=$(mktemp -d 2>/dev/null || mktemp -d -t io-install) || die "could not make 
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT INT TERM
 
-say "io $version for $target"
-
+# Announced before the fetch rather than after it, so a download that hangs or
+# fails names the URL that was in flight.
+say "downloading $base/$archive"
 fetch "$base/$archive" "$work/$archive" || die "could not download $base/$archive"
+say "downloading $base/SHA256SUMS"
 fetch "$base/SHA256SUMS" "$work/SHA256SUMS" || die "could not download $base/SHA256SUMS"
 
 expected=$(grep " $archive\$" "$work/SHA256SUMS" | cut -d' ' -f1 | head -1)
 [ -n "$expected" ] || die "SHA256SUMS does not mention $archive"
 
 actual=$(checksum "$work/$archive")
+
+# Both numbers, before the comparison. "checksum ok" on its own is a claim; these
+# two lines are the evidence for it, and they are what makes a wrong-but-matching
+# SHA256SUMS visible to somebody reading the output.
+say "expected $expected"
+say "computed $actual"
 if [ "$expected" != "$actual" ]; then
     die "checksum mismatch for $archive
   expected $expected
@@ -111,6 +138,7 @@ say "checksum ok"
 
 ( cd "$work" && tar xzf "$archive" ) || die "could not unpack $archive"
 [ -f "$work/$stage/$BIN" ] || die "$archive does not contain $BIN"
+say "unpacked $archive"
 
 mkdir -p "$dest" || die "could not create $dest"
 mv "$work/$stage/$BIN" "$dest/$BIN" || die "could not install into $dest"
@@ -123,7 +151,7 @@ say "installed $dest/$BIN"
 # is one they can read before they run it.
 case ":$PATH:" in
     *":$dest:"*)
-        say "run: $BIN"
+        say "$dest is on PATH; run: $BIN"
         ;;
     *)
         say ""
@@ -134,3 +162,7 @@ case ":$PATH:" in
         say "then open a new shell and run: $BIN"
         ;;
 esac
+
+# The last line of the narration is the binary's own, not this script's: the only
+# proof that what was verified and moved is a program this machine can run.
+"$dest/$BIN" --version || die "installed $dest/$BIN but it will not run here"
