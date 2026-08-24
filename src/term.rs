@@ -740,20 +740,41 @@ pub fn kitty_graphics() -> bool {
 /// a terminal that will not say whether it speaks the protocol is not one to push
 /// a protocol at.
 pub fn keyboard_advertised() -> bool {
-    /// Asked once per process, because the answer cannot change and asking is
-    /// not free.
-    ///
-    /// **crossterm writes a query and waits up to two seconds for the reply.**
-    /// A terminal that speaks the protocol answers at once; one that does not —
-    /// Apple's Terminal, most `script` sessions — answers never, and the wait is
-    /// paid in full. That was a one-off cost while an attach happened once per
-    /// process, and 0.11.0 made it not one: the palette re-places the viewport
-    /// when it opens and again when it closes, so an uncached probe would put
-    /// two seconds on each `/` and two more on each `Esc`, on exactly the
-    /// terminals that already have the worst of everything else.
-    static ADVERTISED: OnceLock<bool> = OnceLock::new();
     *ADVERTISED
         .get_or_init(|| crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false))
+}
+
+/// Asked once per process, because the answer cannot change and asking is not
+/// free.
+///
+/// **crossterm writes a query and waits up to two seconds for the reply.** A
+/// terminal that speaks the protocol answers at once; one that does not — Apple's
+/// Terminal, most `script` sessions — answers never, and the wait is paid in
+/// full. That was a one-off cost while an attach happened once per process, and
+/// 0.11.0 made it not one: the palette re-places the viewport when it opens and
+/// again when it closes, so an uncached probe would put two seconds on each `/`
+/// and two more on each `Esc`, on exactly the terminals that already have the
+/// worst of everything else.
+///
+/// At module scope rather than inside [`keyboard_advertised`] so that
+/// [`keyboard_answer`] can read what it recorded without being able to ask.
+static ADVERTISED: OnceLock<bool> = OnceLock::new();
+
+/// What [`keyboard_advertised`] answered, without asking it.
+///
+/// The distinction is the point, and it is what lets a surface that *names* the
+/// keyboard's keys — the key reference, the wizard's closing screen; see
+/// [`crate::keys::Newline`] — be handed the session's answer without any of them
+/// being able to start a terminal round trip on the way to drawing a row. The
+/// question is asked in exactly one place, [`Screen::attach_with`], before the
+/// first frame; everything after that reads.
+///
+/// `false` for a process that never attached, which is every test binary and
+/// `io exec`. That is the honest answer rather than a default: a terminal that
+/// was never asked has not advertised anything, and the fallback spellings work
+/// on every terminal there is.
+pub fn keyboard_answer() -> bool {
+    ADVERTISED.get().copied().unwrap_or(false)
 }
 
 /// Negotiate the protocol up, if `advertised`; otherwise write nothing at all.

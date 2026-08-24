@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::{App, Command};
 use io_cli::commands::{self, KEYS};
-use io_cli::keys::{Action, Binding, Chord, Hit, Keys};
+use io_cli::keys::{Action, Binding, Chord, Hit, Keys, Newline};
 use io_cli::settings::{self, Posture};
 use io_cli::theme::DARK;
 use io_harness::Config;
@@ -124,7 +124,9 @@ fn f9_a_rebound_key_drives_the_action_it_names() {
 fn f9_the_table_shows_the_binding_in_force() {
     let (keys, _) = Keys::resolve(Some(&asked(&[("clear", "ctrl+k")])));
 
-    let printed = text(&commands::help(&keys, &DARK));
+    // The advertised naming, so this test stays about rebinding: which key the
+    // newline row names is a terminal's answer and `tests/keyboard.rs` owns it.
+    let printed = text(&commands::help(&keys, &DARK, Newline::of(true)));
     assert!(
         printed.contains("Ctrl+K"),
         "/help must show the key this session actually clears with: {printed:?}",
@@ -141,7 +143,7 @@ fn f9_the_table_shows_the_binding_in_force() {
 
     // The rows a surface that is not `/help` would render, asserted at the
     // source so a second consumer cannot be given the defaults by accident.
-    let rows = commands::rows(&keys);
+    let rows = commands::rows(&keys, Newline::of(true));
     assert_eq!(
         rows.len(),
         KEYS.len(),
@@ -211,7 +213,7 @@ fn f9_ctrl_c_is_refused_as_rebindable() {
 /// without saying which is which invites the attempt.
 #[test]
 fn f9_the_table_marks_the_fixed_key() {
-    let rows = commands::rows(&Keys::default());
+    let rows = commands::rows(&Keys::default(), Newline::of(true));
     let (_, what) = rows
         .iter()
         .find(|(key, _)| key == "Ctrl+C")

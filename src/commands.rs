@@ -41,7 +41,7 @@ use ratatui::text::{Line, Span};
 // Qualified rather than imported: `Action` in this module is already a slash
 // command's outcome, and two types with one name in one file is how a reader
 // ends up reading the wrong one.
-use crate::keys::{self, Keys};
+use crate::keys::{self, Keys, Newline};
 use crate::picker::Row;
 use crate::theme::{Theme, Tone};
 
@@ -57,6 +57,14 @@ use crate::theme::{Theme, Tone};
 /// asserts that every action's default binding renders to a row that is in here,
 /// so a default changed in one place and not the other fails a test rather than
 /// quietly dropping a row out of the rebindable set.
+///
+/// **The newline row is the one row here that a terminal can overrule.** It is
+/// written as [`Newline::of(true)`](Newline::of) — the spelling for a terminal
+/// that can report `Shift+Enter` — because this list is also what the README
+/// prints, and a README is read on a machine other than the one it describes. On
+/// a terminal that cannot report it, [`rows`] substitutes the other spelling; the
+/// join is on this row's key column, and `tests/keyboard.rs` asserts the pair
+/// here is the pair [`Newline::of`] returns so the two cannot be worded apart.
 pub const KEYS: &[(&str, &str)] = &[
     ("Enter", "send the prompt"),
     (
@@ -487,10 +495,26 @@ pub enum Copied {
 /// a reader consulting the table is exactly the reader who might be about to try
 /// rebinding it, and a table that shows one immovable key beside five movable
 /// ones without saying which is which is a table that invites the attempt.
-pub fn rows(keys: &Keys) -> Vec<(String, String)> {
+///
+/// **`newline` is the second thing that can move a row, and it is not the
+/// configuration file's doing.** `Shift+Enter` is a key only on a terminal that
+/// speaks the Kitty keyboard protocol; elsewhere it is the byte `Enter` sends,
+/// so naming it in a row that says "new line" documents a keystroke that submits
+/// the prompt. The decision is [`Newline::of`] and it arrives here as a value —
+/// this function does not ask which terminal it is drawing for, because a table
+/// that answered that for itself is how two surfaces end up naming two different
+/// keys in one session.
+pub fn rows(keys: &Keys, newline: Newline) -> Vec<(String, String)> {
     let defaults = Keys::default();
     KEYS.iter()
         .map(|(name, what)| {
+            // Joined on the shipped spelling, which is `Newline::of(true)`'s own
+            // key column rather than a literal repeated here — the same shape as
+            // the `Action` join below, and asserted by `tests/keyboard.rs` for the
+            // same reason.
+            if *name == Newline::of(true).key {
+                return (newline.key.to_string(), newline.what.to_string());
+            }
             let Some(action) = keys::Action::ALL
                 .iter()
                 .copied()
@@ -512,9 +536,15 @@ pub fn rows(keys: &Keys) -> Vec<(String, String)> {
 ///
 /// An unknown command prints the list rather than erroring: a user who typed
 /// `/models` wants to be told what does exist, not that they were wrong.
+///
+/// This is where the newline naming enters the `/help` surface — one
+/// [`Newline::here`] for the whole table, read from what the session recorded
+/// when it attached. It is here rather than inside [`help`] or [`rows`] so that
+/// everything downstream of it is a pure function of the value, which is the
+/// property `tests/keyboard.rs` drives both ways.
 pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
     match input.split_whitespace().next().unwrap_or("help") {
-        "help" | "?" => Action::Print(help(keys, theme)),
+        "help" | "?" => Action::Print(help(keys, theme, Newline::here())),
         // **`/exit` and nothing else.** `/quit` was the listed spelling through
         // 0.10.0 and `/exit` the unlisted alias, which is two commands doing one
         // thing and a palette with a row for each. One name, and `q` for the
@@ -581,8 +611,12 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
 }
 
 /// The `/help` output: the keys in force, then the commands.
-pub fn help(keys: &Keys, theme: &Theme) -> Vec<Line<'static>> {
-    let bound = rows(keys);
+///
+/// It takes the newline naming rather than deciding it for the same reason
+/// [`rows`] does, and passing it down is what lets a test render this table for
+/// both kinds of terminal from a machine that is only one of them.
+pub fn help(keys: &Keys, theme: &Theme, newline: Newline) -> Vec<Line<'static>> {
+    let bound = rows(keys, newline);
     // Both tables, so `/help` lines up as one table rather than two — and
     // measured over the bindings in force rather than over the defaults, because
     // a rebinding can be wider than what it replaced.
