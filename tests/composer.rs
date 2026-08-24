@@ -879,3 +879,55 @@ fn f6_pasting_the_same_block_again_toggles_it_rather_than_piling_up() {
     // Whichever way it ended, the prompt is still exactly one copy of the block.
     assert_eq!(composer.text(), paste);
 }
+
+/// F6 — a placeholder deletes as one thing, whichever backwards deletion key
+/// the reader has in their fingers.
+///
+/// The arm used to exclude `Alt`, so `Option+Backspace` — the delete-word every
+/// macOS reader uses — fell through to the widget and ate the placeholder one
+/// word at a time, leaving `[pasted text #8, 464 chara` on the prompt. A
+/// placeholder is matched by its exact text, so the first press had already
+/// stopped it standing for the block it named.
+#[test]
+fn f6_every_backwards_deletion_takes_a_placeholder_whole() {
+    let paste = big_paste();
+    for key in [
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+    ] {
+        let mut composer = Composer::new();
+        type_text(&mut composer, "look at ");
+        composer.paste(&paste);
+        assert!(composer.typed().contains("[pasted text #1"), "{key:?}");
+
+        composer.key(key);
+
+        assert_eq!(
+            composer.typed(),
+            "look at ",
+            "{key:?} left part of a placeholder behind",
+        );
+        assert_eq!(
+            composer.text(),
+            "look at ",
+            "{key:?} left the block on the prompt with nothing standing for it",
+        );
+    }
+}
+
+/// And a deletion that is not at a placeholder is still the widget's own.
+#[test]
+fn f6_a_word_delete_away_from_a_placeholder_still_deletes_a_word() {
+    let mut composer = Composer::new();
+    type_text(&mut composer, "one two three");
+
+    composer.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+
+    let typed = composer.typed();
+    assert!(
+        typed.starts_with("one two") && !typed.contains("three"),
+        "a word-wise delete away from a placeholder still deletes a word: {typed:?}",
+    );
+}

@@ -350,22 +350,15 @@ impl Composer {
             // is bad enough; the first of them is worse, because a placeholder
             // is matched by its exact text and an edited one silently stops
             // standing for the block it named.
-            (KeyCode::Backspace, m) if !m.contains(KeyModifiers::ALT) => {
-                self.editing();
-                match self.placeholder_before_cursor() {
-                    Some(placeholder) => {
-                        for _ in 0..placeholder.chars().count() {
-                            self.area.delete_char();
-                        }
-                        // The block goes with it. A prompt that still carried it
-                        // would send text nothing on screen stands for.
-                        self.pastes.retain(|(held, _)| held != &placeholder);
-                    }
-                    None => {
-                        self.area.delete_char();
-                    }
-                }
-                Reply::Idle
+            // **Every backwards deletion, not just the plain one.** This used to
+            // exclude `Alt`, so `Option+Backspace` — the delete-word every macOS
+            // reader has in their fingers — fell through to the widget and ate
+            // `[pasted text #8, 464 chara` one word at a time, leaving a
+            // placeholder that had silently stopped standing for anything.
+            // `Ctrl+W` is the same key by another name.
+            (KeyCode::Backspace, _) => self.delete_backwards(key),
+            (KeyCode::Char('w'), m) if m == KeyModifiers::CONTROL => {
+                self.delete_backwards(key)
             }
             // History, but only from the edge of the text: inside a multiline
             // prompt the arrows have to move the cursor, or a long prompt cannot
@@ -601,6 +594,36 @@ impl Composer {
     /// they cannot see the top of.
     pub fn rows_wanted(&self, width: u16) -> u16 {
         self.height(width)
+    }
+
+    /// Delete backwards, taking a placeholder as one thing when the cursor is at
+    /// the end of one.
+    ///
+    /// **A placeholder deletes as one thing, because it is one thing.**
+    /// Thirty-five presses to remove `[pasted text #4, 366 characters]` is bad
+    /// enough; the first of them is worse, because a placeholder is matched by
+    /// its exact text and an edited one silently stops standing for the block it
+    /// named. Which deletion key was pressed does not change that — a word-wise
+    /// delete leaves the same broken half a line as a character-wise one.
+    ///
+    /// Anything not sitting at the end of a placeholder is the widget's own
+    /// deletion, whichever one the key means.
+    fn delete_backwards(&mut self, key: KeyEvent) -> Reply {
+        self.editing();
+        match self.placeholder_before_cursor() {
+            Some(placeholder) => {
+                for _ in 0..placeholder.chars().count() {
+                    self.area.delete_char();
+                }
+                // The block goes with it. A prompt that still carried it would
+                // send text nothing on screen stands for.
+                self.pastes.retain(|(held, _)| held != &placeholder);
+            }
+            None => {
+                self.area.input(key);
+            }
+        }
+        Reply::Idle
     }
 
     fn current_line(&self) -> &str {
