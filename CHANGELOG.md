@@ -87,6 +87,11 @@ one before it, and is gone at your next keystroke. What still reaches the
 transcript is what belongs to the record: what was authorised, what was answered,
 and why a turn failed.
 
+**A drop of several files is several pictures.** A terminal writes a multiple
+selection on one line, separated by spaces with any space inside a name escaped —
+or one per line. Read as a single string none of that was a path, so dropping
+three pictures at once did nothing at all.
+
 **A turn stopped before it did anything is taken back whole.** No step, nothing
 streamed, nothing on screen but the echo of your prompt: `esc` abandons it at
 once, the rows come off the screen, and the prompt goes back in the composer

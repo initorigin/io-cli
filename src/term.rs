@@ -206,6 +206,56 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         }
     }
 
+    /// Take `rows` of committed content back off the screen, and bring the
+    /// viewport up with it.
+    ///
+    /// **The one thing in this product that unwrites something**, and it is
+    /// deliberately narrow: an operator who stops a turn a moment after pressing
+    /// Enter gets the session they had before they pressed it, rather than an
+    /// echo of a prompt that never ran sitting in their scrollback forever.
+    ///
+    /// It works because those rows are still on the *screen*: the cursor is put
+    /// at the first of them and everything from there down is erased. Content
+    /// that has scrolled past the top of the screen is gone in the sense that
+    /// matters here — it belongs to the scrollback, which no escape sequence
+    /// reaches — so a caller must not ask for more rows than [`Screen::erasable`]
+    /// reports.
+    ///
+    /// **And the viewport is placed again at the cursor**, which is the half that
+    /// took a second attempt. Erasing alone left ratatui's inline viewport
+    /// anchored where it had been: the composer and the footer went on drawing at
+    /// rows that were now blank, with the prompt stranded in the middle of the
+    /// screen and the footer painting over a row it no longer owned. The rows
+    /// above moved, so the viewport has to move, and re-placing it is the only
+    /// way an inline viewport moves at all.
+    ///
+    /// A caller must park whatever is reading stdin first, for the reason
+    /// [`Screen::replace`] documents: placing a viewport asks the terminal where
+    /// its cursor is and reads the answer off stdin.
+    pub fn rewind(&mut self, rows: u16) -> io::Result<()> {
+        let top = self.terminal.get_frame().area().y;
+        let up = rows.min(top);
+        if up == 0 {
+            return Ok(());
+        }
+        let height = self.rows();
+        // From the first row being taken back, down. That clears the rows
+        // themselves and the viewport under them, and leaves the cursor exactly
+        // where the next viewport is to be placed.
+        self.escape(&format!("\x1b[{};1H\x1b[0J", top - up + 1))?;
+        self.restore();
+        match Self::attach_with(height) {
+            Ok(fresh) => {
+                *self = fresh;
+                Ok(())
+            }
+            Err(error) => {
+                *self = Self::attach_with(VIEWPORT_HEIGHT)?;
+                Err(error)
+            }
+        }
+    }
+
     fn attach_raw(height: u16) -> io::Result<Self> {
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;
@@ -346,34 +396,6 @@ impl<B: Backend + Write> Screen<B> {
                 first.set_symbol(&format!("\x1b[0J{payload}"));
             }
         })
-    }
-
-    /// Take `rows` of committed content back off the screen.
-    ///
-    /// **The one thing in this product that unwrites something**, and it is
-    /// deliberately narrow: an operator who stops a turn a moment after pressing
-    /// Enter gets the session they had before they pressed it, rather than an
-    /// echo of a prompt that never ran sitting in their scrollback forever.
-    ///
-    /// It works because those rows are still on the *screen*: the cursor is moved
-    /// up over them and everything from there down is erased, which is the same
-    /// mechanism [`Screen::replace`] uses on the viewport's own rows. Content
-    /// that has scrolled past the top of the screen is gone in the sense that
-    /// matters here — it belongs to the scrollback, which no escape sequence
-    /// reaches — so a caller that cannot fit `rows` above the viewport must not
-    /// call this, and [`Screen::erasable`] is what answers that.
-    ///
-    /// The viewport is redrawn by the next frame: `last` is cleared, so the frame
-    /// after this one is a full repaint rather than a diff against a screen that
-    /// has moved.
-    pub fn rewind(&mut self, rows: u16) -> io::Result<()> {
-        if rows == 0 {
-            return Ok(());
-        }
-        let top = self.terminal.get_frame().area().y;
-        let up = rows.min(top);
-        self.last = None;
-        self.escape(&format!("\x1b[{};1H\x1b[0J", top.saturating_sub(up) + 1))
     }
 
     /// How many committed rows are still on screen above the viewport.

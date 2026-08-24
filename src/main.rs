@@ -441,8 +441,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             }
             if let Event::Paste(text) = event {
                 match app.paste(&text, picker.is_some()) {
-                    io_cli::app::Pasted::Picture(path) => {
-                        paste_picture(&mut app, &mut session, &provider, &policy, &path)
+                    io_cli::app::Pasted::Picture(paths) => {
+                        for path in paths {
+                            paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                        }
                     }
                     io_cli::app::Pasted::Text | io_cli::app::Pasted::Refused => {}
                 }
@@ -1166,6 +1168,12 @@ fn paste_picture<P: Provider>(
         app.composer.attach("", path);
         return;
     }
+    // A file dropped alongside pictures that is not one: it is a path, and a
+    // path on the prompt is what it was before this release too.
+    if io_harness::Media::source_type_for(path).is_none() {
+        app.composer.paste(path);
+        return;
+    }
     let effective = approval::session_policy(policy, app.posture(), app.remembered());
     match io_cli::attach::prepare(session.root(), &effective, provider.accepts_images(), path) {
         Ok(staged) => {
@@ -1449,7 +1457,13 @@ async fn turn<P: Provider>(
                                 // echo that long is left where it is.
                                 if app.undoable() && app.turn_rows() <= screen.erasable() {
                                     let (rows, _) = app.undo_turn();
+                                    // The viewport is placed again at the rows
+                                    // that came back, which asks the terminal
+                                    // where its cursor is — so nothing may be
+                                    // reading stdin while it lands.
+                                    let _parked = io_cli::stdin::placing();
                                     let _ = screen.rewind(rows);
+                                    drop(_parked);
                                     undone = true;
                                 }
 
@@ -1505,8 +1519,10 @@ async fn turn<P: Provider>(
                             // being dropped or half-attached. It is staged the
                             // moment the turn lets go, which is the next thing
                             // the driver does.
-                            io_cli::app::Pasted::Picture(path) => {
-                                app.queue_picture(&path);
+                            io_cli::app::Pasted::Picture(paths) => {
+                                for path in paths {
+                                    app.queue_picture(&path);
+                                }
                                 app.say(
                                     Tone::Muted,
                                     "picture held until this turn ends, then attached",

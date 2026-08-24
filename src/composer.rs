@@ -53,6 +53,61 @@ pub enum Reply {
 /// **It has to exist.** The whole safety of this is that prose is never quoted
 /// at somebody: a sentence is not a path, and a path this process cannot see is
 /// not one either, so both are pasted exactly as they arrived.
+/// Every path a paste names, when it names paths at all.
+///
+/// **A drop of three files is one paste**, and the terminal writes the paths on
+/// one line separated by spaces, with any space inside a name escaped — or, in
+/// some terminals, one per line. Read as a single string none of that is a path,
+/// so a multiple selection dropped on the prompt did nothing at all: it fell
+/// through to being pasted as text.
+///
+/// The whole text is tried first, so a name with an unescaped space in it — which
+/// is what a copied path from a file manager looks like — is still one path. Then
+/// lines, then space-separated tokens with `\ ` treated as an escape. A split is
+/// only accepted when *every* piece of it names something that exists, which is
+/// what keeps a sentence about two files from being read as two files.
+pub fn pasted_paths(text: &str) -> Vec<String> {
+    if let Some(one) = pasted_path(text) {
+        return vec![one];
+    }
+    for pieces in [split_lines(text), split_spaces(text)] {
+        if pieces.len() > 1 {
+            let found: Vec<String> = pieces.iter().filter_map(|piece| pasted_path(piece)).collect();
+            if found.len() == pieces.len() {
+                return found;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    text.lines().map(str::trim).filter(|line| !line.is_empty()).collect()
+}
+
+/// `text` split at spaces a backslash does not escape.
+fn split_spaces(text: &str) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (at, character) in text.char_indices() {
+        match character {
+            '\\' => escaped = !escaped,
+            ' ' if !escaped => {
+                if at > start {
+                    pieces.push(&text[start..at]);
+                }
+                start = at + 1;
+            }
+            _ => escaped = false,
+        }
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    pieces
+}
+
 pub fn pasted_path(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.contains('\n') {

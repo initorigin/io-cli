@@ -564,13 +564,11 @@ fn f15_a_pasted_image_path_is_recognised_as_a_picture() {
 
     assert_eq!(
         app.paste(&picture.display().to_string(), false),
-        Pasted::Picture(
-            picture
-                .canonicalize()
-                .expect("a real path")
-                .display()
-                .to_string()
-        ),
+        Pasted::Picture(vec![picture
+            .canonicalize()
+            .expect("a real path")
+            .display()
+            .to_string()]),
         "a path naming an image that exists is an attachment",
     );
 
@@ -681,4 +679,51 @@ fn f15_clear_resets_the_image_numbering() {
         "",
         "and a prompt written against the conversation that ended goes with it",
     );
+}
+
+/// F16 — a drop of several files is one paste, and every picture in it lands.
+///
+/// A terminal writes a multiple selection on one line, separated by spaces, with
+/// any space inside a name escaped — or one per line. Read as a single string
+/// none of that is a path, so dropping three pictures at once did nothing at
+/// all: it fell through to being pasted as text.
+#[test]
+fn f16_several_paths_in_one_paste_are_several_pictures() {
+    use io_cli::composer::pasted_paths;
+
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let one = dir.path().join("one.png");
+    let two = dir.path().join("two.png");
+    let spaced = dir.path().join("a picture.png");
+    for path in [&one, &two, &spaced] {
+        fs::write(path, support::png_bytes(2, 2)).expect("write");
+    }
+    let real = |path: &std::path::Path| {
+        path.canonicalize().expect("a real path").display().to_string()
+    };
+
+    // Space-separated, which is what a drop of two files writes.
+    let both = format!("{} {}", one.display(), two.display());
+    assert_eq!(pasted_paths(&both), vec![real(&one), real(&two)]);
+
+    // One per line, which is what some terminals write instead.
+    let lines = format!("{}\n{}", one.display(), two.display());
+    assert_eq!(pasted_paths(&lines), vec![real(&one), real(&two)]);
+
+    // A name with a space in it, escaped the way a drop escapes it.
+    let escaped = format!(
+        "{} {}",
+        one.display(),
+        spaced.display().to_string().replace(' ', "\\ ")
+    );
+    assert_eq!(pasted_paths(&escaped), vec![real(&one), real(&spaced)]);
+
+    // One path with an unescaped space — a path copied from a file manager — is
+    // still one path, because the whole text is tried first.
+    assert_eq!(pasted_paths(&spaced.display().to_string()), vec![real(&spaced)]);
+
+    // And prose about two files is not two files.
+    assert!(pasted_paths("look at one.png and two.png").is_empty());
+    // Nor is a real path beside a word that names nothing.
+    assert!(pasted_paths(&format!("{} nonsense", one.display())).is_empty());
 }

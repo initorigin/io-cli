@@ -111,10 +111,13 @@ pub enum Command {
 pub enum Pasted {
     /// Ordinary text; the composer has it.
     Text,
-    /// A path naming an image that exists. The driver stages it and puts the
-    /// marker on the prompt — see [`App::attached`] and
-    /// [`crate::composer::Composer::attach`].
-    Picture(String),
+    /// Paths naming files that exist, at least one of them an image. The driver
+    /// stages each picture and puts its marker on the prompt — see
+    /// [`App::attached`] and [`crate::composer::Composer::attach`] — and pastes
+    /// anything that is not an image as the path it is.
+    ///
+    /// A list rather than one, because a drop of several files is one paste.
+    Picture(Vec<String>),
     /// Something else owns the keyboard, so nothing was pasted at all.
     Refused,
 }
@@ -473,10 +476,12 @@ impl App {
         // to know about first. What arrives is a path, and a path naming an image
         // that exists is the whole test; the driver does the staging, because the
         // session, the provider and the policy are its.
-        if let Some(path) = crate::composer::pasted_path(text) {
-            if io_harness::Media::source_type_for(&path).is_some() {
-                return Pasted::Picture(path);
-            }
+        let paths = crate::composer::pasted_paths(text);
+        if paths
+            .iter()
+            .any(|path| io_harness::Media::source_type_for(path).is_some())
+        {
+            return Pasted::Picture(paths);
         }
         self.composer.paste(text);
         Pasted::Text
