@@ -353,16 +353,58 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
     // the harness's own types to write a file and reads it back through `Config`;
     // a `from_str` into a shape of our own would be a second, disagreeing answer
     // to what a configuration file means.
+    //
+    // **`src/edit.rs` is the one exception and it is identified by path**, the
+    // way `src/shell.rs` is permitted `std::process::Command` and for the same
+    // reason: the rule is right and the module genuinely needs the thing it
+    // bans. 0.16.0 writes one value back into a file an operator wrote by hand,
+    // which means locating that value's bytes, which `toml`'s `Spanned` answers
+    // and nothing in io-harness does — `Config` exposes no writer, and the
+    // private `File` it wraps has no reachable `Serialize`.
+    //
+    // What keeps the exception honest is the assertion below it: `edit.rs`
+    // parses to find **byte offsets** and to prove its own result still parses,
+    // and never to decide what a setting means. It names no io-harness
+    // configuration type, so it cannot be a second reader of the file's meaning
+    // even by accident — which is the property this gate actually protects, and
+    // it is asserted rather than promised in a comment.
+    let editor = PathBuf::from("src/edit.rs");
     for (path, text) in sources() {
-        assert!(
-            !text.contains("toml::from_str"),
-            "{} parses TOML itself; configuration is io-harness's",
-            path.display(),
-        );
+        let permitted = path.ends_with(&editor);
+        if !permitted {
+            assert!(
+                !text.contains("toml::from_str"),
+                "{} parses TOML itself; configuration is io-harness's",
+                path.display(),
+            );
+        }
         assert!(
             !text.contains("toml::de::"),
             "{} reaches into TOML deserialization",
             path.display(),
+        );
+    }
+
+    // The permitted module must exist — a gate whose exception has been renamed
+    // away is a gate that quietly stops covering the file it was written for.
+    let (_, editor_text) = sources()
+        .into_iter()
+        .find(|(path, _)| path.ends_with(&editor))
+        .expect("src/edit.rs exists; the TOML-parsing exception is written for it");
+
+    for named in [
+        "io_harness::Config",
+        "io_harness::config",
+        "Config::discover",
+        "Config::from_toml",
+        "CliSettings",
+        "ProviderSpec",
+    ] {
+        assert!(
+            !editor_text.contains(named),
+            "src/edit.rs names `{named}`. It is permitted to parse TOML only because it \
+             works in bytes and never decides what a setting means; the moment it reaches \
+             for a configuration type it has become the second reader this gate forbids.",
         );
     }
 }

@@ -35,6 +35,7 @@ pub mod complete;
 pub mod composer;
 pub mod contract;
 pub mod diff;
+pub mod edit;
 pub mod events;
 pub mod exec;
 pub mod failure;
