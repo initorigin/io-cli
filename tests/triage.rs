@@ -101,11 +101,23 @@ fn every_line_kind_has_an_arm_in_the_renderer() {
         if *disposition != Disposition::Line {
             continue;
         }
+        // **At the match arm's own indentation, and not anywhere in the file.**
+        // A bare `contains` was satisfied by the variant's name appearing in a
+        // doc comment, which is how this test went green through the whole of
+        // 0.14.0's sabotage pass with the `Dialed` arm deleted: the `Sandbox`
+        // arm's prose names `EventKind::Dialed` to explain why it draws nothing
+        // itself, and that mention alone answered the question. That is the same
+        // defect this test was written in 0.11.0 to close, wearing the new
+        // table's clothes exactly as the comment above says — a name with no arm
+        // behind it. `tests/glyphs.rs` already reads arms this way, by the twelve
+        // spaces every match arm in that file sits at and no `use`, doc line or
+        // expression does.
         let arm = format!("EventKind::{}", variant(name));
+        let declared = format!("\n            {arm}");
         assert!(
-            source.contains(&arm),
+            source.contains(&declared),
             "{name} is triaged as a line and `{arm}` has no arm in src/events.rs, so it commits \
-             nothing at all",
+             nothing at all — a mention in a comment is not an arm",
         );
     }
 }
