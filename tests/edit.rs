@@ -268,3 +268,60 @@ fn n3_a_written_file_keeps_its_mode_and_lands_whole() {
         .collect();
     assert!(strays.is_empty(), "temporary files left behind: {strays:?}");
 }
+
+#[test]
+fn f1_an_array_of_tables_grows_by_a_whole_entry_and_shrinks_the_same_way() {
+    // The shape `set` cannot express: `set` reaches a key inside an entry that
+    // already exists, and an array of tables grows by gaining a block.
+    let after = edit::apply(
+        OPERATORS_FILE,
+        &[Edit::append("mcp", "id = \"docs\"\ncommand = \"mcp-docs\"")],
+    )
+    .unwrap();
+
+    assert!(after.contains("[[mcp]]"));
+    assert!(after.contains("id = \"docs\""));
+    for line in OPERATORS_FILE.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(after.contains(line), "line lost on append: {line:?}");
+    }
+
+    // And it comes back out, bytes and all.
+    let removed = edit::apply(&after, &[Edit::remove("mcp")]).unwrap();
+    assert!(!removed.contains("[[mcp]]"));
+    assert!(!removed.contains("mcp-docs"));
+    for line in OPERATORS_FILE.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(removed.contains(line), "line lost on remove: {line:?}");
+    }
+}
+
+#[test]
+fn f1_a_new_entry_goes_last_because_the_order_is_the_chain() {
+    const ONE: &str = "[[provider]]\nkind = \"openrouter\"\nmodel = \"a\"\n";
+    let after = edit::apply(
+        ONE,
+        &[Edit::append("provider", "kind = \"anthropic\"\nmodel = \"b\"")],
+    )
+    .unwrap();
+
+    let first = after.find("openrouter").unwrap();
+    let second = after.find("anthropic").unwrap();
+    assert!(
+        first < second,
+        "a new provider was inserted ahead of an existing one, which silently \
+         rearranges which provider a run uses"
+    );
+}
+
+#[test]
+fn f1_removing_the_second_entry_leaves_the_first() {
+    const TWO: &str = "\
+[[mcp]]
+id = \"docs\"
+
+[[mcp]]
+id = \"search\"
+";
+    let after = edit::apply(TWO, &[Edit::remove("mcp[1]")]).unwrap();
+    assert!(after.contains("docs"));
+    assert!(!after.contains("search"), "the wrong entry was removed");
+}

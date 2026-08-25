@@ -222,6 +222,87 @@ pub fn setting(config: &Config, key: &str) -> Setting {
     }
 }
 
+/// The file a scope writes to, whether or not it exists yet.
+///
+/// [`Config::sources`] answers this for a scope whose file is already there, and
+/// says nothing about one that is not — which is the case that matters, because
+/// writing a key into a scope for the first time is how an operator uses this.
+/// So the path is derived: the user scope from io-harness's own
+/// [`io_harness::config::user_path`], and the two workspace scopes from its own
+/// `PROJECT_FILE` and `LOCAL_FILE` constants, so io-cli never spells either name
+/// as a literal of its own.
+pub fn scope_path(root: &std::path::Path, scope: Scope) -> Option<PathBuf> {
+    match scope {
+        Scope::User => io_harness::config::user_path(),
+        Scope::Project => Some(root.join(io_harness::config::PROJECT_FILE)),
+        Scope::Local => Some(root.join(io_harness::config::LOCAL_FILE)),
+    }
+}
+
+/// Write one change into the scope the operator picked, and prove it landed.
+///
+/// **The write is verified by io-harness reading it back, and rolled back when it
+/// refuses.** That is what makes F4 work rather than being a second copy of the
+/// harness's rules: `refuse_widening` fires on the *scope of the file*, which only
+/// [`Config::discover`] knows — `Config::from_toml` has no path and therefore no
+/// scope — so the only honest way to ask "may this file say this" is to write it
+/// and re-discover. When the answer is no the original bytes go back and the
+/// harness's own sentence comes out, re-worded by nobody.
+///
+/// A scope with no file yet gets one, created through [`crate::settings::write`]
+/// so it lands `0600` like every other file this crate creates with a credential
+/// in reach.
+pub fn write(
+    root: &std::path::Path,
+    scope: Scope,
+    edits: &[crate::edit::Edit],
+) -> Result<(), String> {
+    let path = scope_path(root, scope)
+        .ok_or_else(|| "there is no path for that scope on this machine".to_string())?;
+
+    let before = std::fs::read_to_string(&path).ok();
+    if before.is_none() {
+        crate::settings::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+
+    crate::edit::write(&path, edits)?;
+
+    // The round trip. Anything io-harness refuses is undone before this returns.
+    match Config::discover(root) {
+        Ok(_) => Ok(()),
+        Err(refusal) => {
+            match &before {
+                Some(text) => {
+                    let _ = crate::settings::write(&path, text);
+                }
+                // The file did not exist before this call, so the state it must
+                // go back to is "absent" rather than "empty" — an empty io.toml
+                // left behind would be a project file this operator never wrote.
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+            Err(refusal.to_string())
+        }
+    }
+}
+
+/// Re-read everything a written change can alter.
+///
+/// **Both halves, and that is the whole point.** `main` builds its `Config` once
+/// and derives io-cli's own `CliSettings` from it once; a reload that refreshed
+/// only the `Config` would leave every `[app.io-cli]` answer — the theme, the
+/// glyph set, the keys, the capabilities — as it was at session start, so the
+/// surface would report a value that no turn was using. Returning the pair is
+/// what stops a caller refreshing one and forgetting the other.
+pub fn reload(
+    root: &std::path::Path,
+) -> Result<(Config, Option<crate::settings::CliSettings>), String> {
+    let config = Config::discover(root).map_err(|e| e.to_string())?;
+    let (stored, _) = crate::settings::stored(&config);
+    Ok((config, stored))
+}
+
 /// The rows as the picker draws them: the key, then its value and its origin.
 ///
 /// Content before metadata, which is this product's rule everywhere: the key is

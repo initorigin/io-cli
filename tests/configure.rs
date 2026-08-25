@@ -227,3 +227,241 @@ fn f2_the_catalogue_is_documented_rather_than_invented() {
         );
     }
 }
+
+// --- F3: the write lands in the scope that was picked, and takes effect -------
+
+#[test]
+fn f3_a_change_lands_in_the_picked_scope_and_nowhere_else() {
+    let s = scopes("[run]\nmax_steps = 10\n", "", "");
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+
+    configure::write(
+        s.root.path(),
+        Scope::Local,
+        &[io_cli::edit::Edit::set("run.max_steps", "42")],
+    )
+    .unwrap();
+
+    let local = std::fs::read_to_string(s.root.path().join("io.local.toml")).unwrap();
+    assert!(local.contains("max_steps = 42"));
+
+    // The user file is untouched: a write to one scope is a write to one file.
+    let user = std::fs::read_to_string(&s.user).unwrap();
+    assert!(user.contains("max_steps = 10"), "the user file was edited too");
+    assert!(
+        !s.root.path().join("io.toml").exists(),
+        "a project file was created by a write to the local scope"
+    );
+
+    std::env::remove_var("IO_CONFIG");
+}
+
+#[test]
+fn f3_the_reloaded_config_is_what_the_next_turn_is_built_from() {
+    let s = scopes("[run]\nmax_steps = 10\n", "", "");
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+
+    let (before, _) = configure::reload(s.root.path()).unwrap();
+    let opening = io_cli::contract::configured("go", s.root.path().to_path_buf(), &before);
+    assert_eq!(opening.max_steps, 10);
+
+    configure::write(
+        s.root.path(),
+        Scope::User,
+        &[io_cli::edit::Edit::set("run.max_steps", "42")],
+    )
+    .unwrap();
+
+    let (after, _) = configure::reload(s.root.path()).unwrap();
+    let next = io_cli::contract::configured("go", s.root.path().to_path_buf(), &after);
+    assert_eq!(
+        next.max_steps,
+        42,
+        "the next turn was built from the configuration as it was at session start"
+    );
+
+    std::env::remove_var("IO_CONFIG");
+}
+
+#[test]
+fn f3_reload_refreshes_io_cli_s_own_settings_too() {
+    // The half a reload forgets: `main` derives CliSettings from the Config once.
+    // A reload that returned only the Config would leave the theme, the glyph set
+    // and every capability as they were at session start.
+    let s = scopes("[app.io-cli]\ntheme = \"dark\"\n", "", "");
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+
+    let (_, before) = configure::reload(s.root.path()).unwrap();
+    assert_eq!(before.unwrap().theme.as_deref(), Some("dark"));
+
+    configure::write(
+        s.root.path(),
+        Scope::User,
+        &[io_cli::edit::Edit::set("app.io-cli.theme", "\"light\"")],
+    )
+    .unwrap();
+
+    let (_, after) = configure::reload(s.root.path()).unwrap();
+    assert_eq!(
+        after.unwrap().theme.as_deref(),
+        Some("light"),
+        "io-cli's own settings were not re-derived from the reloaded configuration"
+    );
+
+    std::env::remove_var("IO_CONFIG");
+}
+
+#[test]
+fn f3_a_scope_with_no_file_gets_one() {
+    let s = scopes("[run]\nmax_steps = 10\n", "", "");
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+
+    configure::write(
+        s.root.path(),
+        Scope::Project,
+        &[io_cli::edit::Edit::set("run.max_tokens", "50000")],
+    )
+    .unwrap();
+
+    let project = std::fs::read_to_string(s.root.path().join("io.toml")).unwrap();
+    assert!(project.contains("max_tokens = 50000"));
+
+    std::env::remove_var("IO_CONFIG");
+}
+
+// --- F4: a project-scoped widening is refused in the harness's own words ------
+
+/// Every case io-harness refuses in a project-scoped file: the two whole sections
+/// and each of `PROJECT_WIDENING`'s five key/value pairs.
+const WIDENINGS: &[(&str, &str)] = &[
+    ("policy.defaults.exec", "\"allow\""),
+    ("policy.defaults.net", "\"allow\""),
+    ("sandbox.allow_network", "true"),
+    ("sandbox.force_floor", "false"),
+    ("sandbox.mode", "\"full-access\""),
+];
+
+#[test]
+fn f4_a_project_scoped_widening_is_refused_with_the_harness_s_sentence() {
+    for (key, value) in WIDENINGS {
+        let s = scopes("[run]\nmax_steps = 10\n", "", "");
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+
+        let err = configure::write(
+            s.root.path(),
+            Scope::Project,
+            &[io_cli::edit::Edit::set(*key, *value)],
+        )
+        .expect_err(&format!("{key} = {value} should be refused at project scope"));
+
+        // io-harness's own words, not a summary of them. The half an operator
+        // needs is WHY, and only the harness says it.
+        assert!(
+            err.contains("narrow it and never widen it"),
+            "the refusal for {key} was re-worded by io-cli: {err}"
+        );
+        assert!(err.contains(key), "the refusal does not name the key: {err}");
+
+        // And the file is back as it was — a refused write leaves nothing behind.
+        assert!(
+            !s.root.path().join("io.toml").exists(),
+            "{key}: a refused write left a project file behind"
+        );
+
+        std::env::remove_var("IO_CONFIG");
+    }
+}
+
+#[test]
+fn f4_the_same_value_is_accepted_in_the_local_scope() {
+    // The rule is about the scope, not the value. Every one of these is legal in
+    // the file a repository does not deliver.
+    for (key, value) in WIDENINGS {
+        let s = scopes("[run]\nmax_steps = 10\n", "", "");
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+
+        configure::write(
+            s.root.path(),
+            Scope::Local,
+            &[io_cli::edit::Edit::set(*key, *value)],
+        )
+        .unwrap_or_else(|e| panic!("{key} = {value} should be legal in io.local.toml: {e}"));
+
+        std::env::remove_var("IO_CONFIG");
+    }
+}
+
+#[test]
+fn f4_a_refused_write_does_not_disturb_a_file_that_already_existed() {
+    let s = scopes(
+        "[run]\nmax_steps = 10\n",
+        "# a project file with a comment\n[run]\nmax_tokens = 9000\n",
+        "",
+    );
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+    let before = std::fs::read_to_string(s.root.path().join("io.toml")).unwrap();
+
+    let err = configure::write(
+        s.root.path(),
+        Scope::Project,
+        &[io_cli::edit::Edit::set("policy.defaults.exec", "\"allow\"")],
+    )
+    .unwrap_err();
+    assert!(err.contains("narrow it and never widen it"));
+
+    assert_eq!(
+        std::fs::read_to_string(s.root.path().join("io.toml")).unwrap(),
+        before,
+        "a refused write left the operator's project file changed"
+    );
+
+    std::env::remove_var("IO_CONFIG");
+}
+
+#[test]
+fn f4_the_two_whole_sections_are_refused_at_project_scope_as_well() {
+    // The other two of F4's seven: `[[hook]]` and `[browser]` are refused
+    // WHOLESALE in a project file rather than by value, because each names a
+    // program to run on this machine and io.toml arrives with a `git clone`.
+    let cases: Vec<(&str, io_cli::edit::Edit)> = vec![
+        (
+            "hook",
+            io_cli::edit::Edit::append("hook", "event = \"run_start\"\nrun = [\"echo\", \"hi\"]"),
+        ),
+        (
+            "browser",
+            io_cli::edit::Edit::set("browser.command", "\"firefox\""),
+        ),
+    ];
+
+    for (name, edit) in cases {
+        let s = scopes("[run]\nmax_steps = 10\n", "", "");
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+
+        let err = configure::write(s.root.path(), Scope::Project, &[edit])
+            .expect_err(&format!("a project-scoped [{name}] should be refused"));
+
+        assert!(
+            err.contains(name),
+            "the refusal for {name} does not name it: {err}"
+        );
+        assert!(
+            err.contains("git clone"),
+            "the refusal for {name} is not the harness's own sentence: {err}"
+        );
+        assert!(
+            !s.root.path().join("io.toml").exists(),
+            "{name}: a refused write left a project file behind"
+        );
+
+        std::env::remove_var("IO_CONFIG");
+    }
+}

@@ -60,6 +60,18 @@ use toml::Spanned;
 pub struct Edit {
     path: String,
     value: String,
+    kind: Kind,
+}
+
+/// What an edit does to the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// Replace one value's bytes, or add the key to its section.
+    Set,
+    /// Append a whole `[[path]]` entry to the end of the document.
+    Append,
+    /// Remove a whole `[[path]]` entry, or a `[path]` section, bytes and all.
+    Remove,
 }
 
 impl Edit {
@@ -71,6 +83,35 @@ impl Edit {
         Self {
             path: path.into(),
             value: value.into(),
+            kind: Kind::Set,
+        }
+    }
+
+    /// Append a new `[[path]]` entry whose body is `body`.
+    ///
+    /// The shape [`Edit::set`] cannot express: `set` reaches a key inside an
+    /// entry that already exists, and an array of tables grows by gaining a whole
+    /// new block. `body` is the entry's own `key = value` lines, without the
+    /// header — this writes the header.
+    ///
+    /// Appended at the end of the document rather than beside its siblings,
+    /// because an array of tables is ordered and a new entry belongs last: for
+    /// `[[provider]]` that order is the fallback chain, and inserting into the
+    /// middle of it would silently rearrange which provider a run uses.
+    pub fn append(path: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            value: body.into(),
+            kind: Kind::Append,
+        }
+    }
+
+    /// Remove the whole `[path]` section or `[[path]][index]` entry.
+    pub fn remove(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            value: String::new(),
+            kind: Kind::Remove,
         }
     }
 
@@ -94,6 +135,9 @@ struct Region {
     /// Which occurrence of `path` this is. Always 0 for a `[table]`; an
     /// `[[array]]` entry counts up from 0 in the order the file lists them.
     index: usize,
+    /// Where the header line itself starts. Equal to `body.start` for the
+    /// implicit region, which has no header.
+    start: usize,
     /// The bytes after the header line, up to the next header or the end.
     body: Range<usize>,
 }
@@ -108,6 +152,9 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
     // A value that is not TOML is refused before anything is spliced, so the
     // message names the value rather than the wreckage it would have made.
     for edit in edits {
+        if edit.kind != Kind::Set {
+            continue;
+        }
         if toml::from_str::<toml::value::Table>(&format!("probe = {}", edit.value)).is_err() {
             return Err(format!(
                 "`{}` is not a TOML value, so `{}` was not written and the file is unchanged",
@@ -126,6 +173,50 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
     let mut splices: Vec<(Range<usize>, String)> = Vec::new();
 
     for edit in edits {
+        match edit.kind {
+            Kind::Append => {
+                let mut block = String::new();
+                if !text.is_empty() && !text.ends_with('\n') {
+                    block.push('\n');
+                }
+                let body = edit.value.trim_end();
+                block.push_str(&format!("\n[[{}]]\n{body}\n", edit.path));
+                splices.push((text.len()..text.len(), block));
+                continue;
+            }
+            Kind::Remove => {
+                let (table_path, last) = split_path(&edit.path)?;
+                // `remove` names a SECTION, so every segment is part of the
+                // header — including the one `split_path` peeled off as a key.
+                // Its index has to be read here too: `split_path` only looks for
+                // one on the segments it treats as a table, and for `mcp[1]` the
+                // indexed segment IS the last one.
+                let mut names = table_path.names;
+                let mut index = table_path.index;
+                match last.split_once('[') {
+                    Some((name, rest)) => {
+                        let number = rest.strip_suffix(']').ok_or_else(|| {
+                            format!("`{}` has an unclosed index", edit.path)
+                        })?;
+                        index = number.parse().map_err(|_| {
+                            format!("`{}` has an index that is not a number", edit.path)
+                        })?;
+                        names.push(name.to_string());
+                    }
+                    None => names.push(last),
+                }
+                let region = regions
+                    .iter()
+                    .find(|r| r.path == names && r.index == index)
+                    .ok_or_else(|| {
+                        format!("there is no `{}` to remove in this file", edit.path)
+                    })?;
+                splices.push((region.start..region.body.end, String::new()));
+                continue;
+            }
+            Kind::Set => {}
+        }
+
         let (table_path, key) = split_path(&edit.path)?;
         let region = regions.iter().find(|r| {
             r.path == table_path.names && r.index == table_path.index
@@ -458,6 +549,7 @@ fn regions(text: &str) -> Result<Vec<Region>, String> {
     regions.push(Region {
         path: Vec::new(),
         index: 0,
+        start: 0,
         body: 0..first,
     });
 
@@ -488,6 +580,7 @@ fn regions(text: &str) -> Result<Vec<Region>, String> {
         regions.push(Region {
             path,
             index: *index,
+            start,
             body: line_end..body_end,
         });
         *index += 1;
