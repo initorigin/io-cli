@@ -1764,3 +1764,118 @@ fn f10_status_reports_the_next_turns_budgets_without_touching_the_session() {
         "the fixture session has run no turn, so it had no budgets to read",
     );
 }
+
+/// Held by every test here that reads or writes an `IO_CONFIG*` variable.
+///
+/// The environment is process-wide and this whole file is one binary, so two
+/// tests pointing `IO_CONFIG` at different files at once would make each other's
+/// `user_path` answer wrong — intermittently, on a loaded machine, which is the
+/// most expensive kind of failure to diagnose. The same shape `tests/wizard.rs`
+/// and `tests/contract.rs` use, and for the same reason.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// **0.15.0 F8 — `/status` says where io-cli keeps what it keeps, and who
+/// decided.**
+///
+/// One `home` row beside `workspace`, carrying the directory the configuration
+/// file and the store are *actually* in and the word that decided it. Drawn at
+/// eighty columns in the ASCII set with `Status::plain` on, which is the width
+/// and the mode the row has to survive: eighty is where a path folds, and plain
+/// is where a glyph that is not on the terminal would be the thing lost.
+///
+/// Three arms, one per word, and the third is the one that matters. `$IO_CONFIG`
+/// names a *file*, anywhere at all — so the directory in force is that file's
+/// parent and nothing io-cli would ever have chosen. The first arm is the
+/// ordinary post-`adopt` session: the variable is set, but it points at io-cli's
+/// own home, so it reads as `default` rather than crediting the operator for this
+/// crate's own doing.
+///
+/// Sabotage: report the home io-cli would have chosen (`home::path`) rather than
+/// the directory in force (`home::in_force`) — under which only F8 fails, and it
+/// fails on the `IO_CONFIG` arm, which is the one case the row exists to make
+/// legible.
+#[test]
+fn f8_status_names_the_home_in_force_and_the_word_that_decided_it() {
+    let _guard = env_lock();
+    let fixture = fixture();
+    let elsewhere = tempfile::tempdir().expect("a directory io-cli would never choose");
+    let named = elsewhere.path().join("named-by-the-operator");
+    std::fs::create_dir_all(&named).expect("the directory the file sits in");
+
+    // io-cli's own home, which is what `adopt` puts in `IO_CONFIG_HOME` and is
+    // therefore what an ordinary session's environment holds.
+    let own = io_cli::home::path().expect("this test runs with a home directory");
+
+    // The page as it lands in a scrollback at the width that can actually fail,
+    // in the glyph set a terminal that cannot draw the rich one gets.
+    let theme = DARK.with_glyphs(io_cli::glyphs::Glyphs::resolve(true, true, None));
+    let page = |dir: &std::path::Path, word: &str| {
+        let mut app = App::new(DARK, "opus-5");
+        // Set exactly where the driver sets it. It governs animation and nothing
+        // committed animates, so this surface must be unmoved by it — which is
+        // asserted by this test passing with it on.
+        app.status.plain = true;
+        let rows = committed(&app, &fixture, None, &theme, 80);
+
+        for row in &rows {
+            assert!(
+                row.chars().count() <= 80,
+                "a row overflowed eighty columns: {row:?}",
+            );
+            assert!(
+                row.is_ascii(),
+                "plain mode drew a glyph a terminal cannot: {row:?}"
+            );
+        }
+
+        // A path at eighty columns folds, and folding only ever inserts
+        // whitespace — so the comparison is made with every space taken out of
+        // both sides. Squeezed rather than `contains` on the joined page, which
+        // would fail on the fold rather than on the field.
+        let squeezed: String = rows
+            .concat()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let wanted: String = format!("home: {} {} {word}", dir.display(), theme.glyphs.dash)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            squeezed.contains(&wanted),
+            "the page did not say the home is {} by {word}: {rows:#?}",
+            dir.display(),
+        );
+    };
+
+    // 1. The ordinary session: the variable is there because `adopt` set it, and
+    //    it points at io-cli's own home, so nobody but io-cli decided.
+    std::env::remove_var("IO_CONFIG");
+    std::env::set_var("IO_CONFIG_HOME", &own);
+    page(&own, "default");
+
+    // 2. An operator who named a file outright, which wins over the directory —
+    //    and the home in force is that file's parent, which is nowhere io-cli
+    //    would have looked. **This is the arm the sabotage fails at**, and it is
+    //    second rather than last so that it is the first thing to go red.
+    assert_ne!(
+        named, own,
+        "the arm is only a test of `in_force` if the two differ",
+    );
+    std::env::set_var("IO_CONFIG", named.join("io.toml"));
+    page(&named, "IO_CONFIG");
+
+    // 3. An operator who named a directory of their own. `IO_CONFIG` has to go
+    //    first: it names a file and would win over the directory.
+    std::env::remove_var("IO_CONFIG");
+    std::env::set_var("IO_CONFIG_HOME", elsewhere.path());
+    page(elsewhere.path(), "IO_CONFIG_HOME");
+
+    // Left as this binary found it, so no test after this one reads a variable
+    // this one set.
+    std::env::remove_var("IO_CONFIG");
+    std::env::remove_var("IO_CONFIG_HOME");
+}
