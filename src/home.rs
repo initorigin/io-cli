@@ -1,0 +1,302 @@
+//! Where io-cli keeps what it keeps: one directory, `~/.io-cli`.
+//!
+//! Before 0.15.0 the answer was whatever io-harness's own resolution decided —
+//! `~/.config/io` on a Linux box, `$XDG_CONFIG_HOME/io` where that was set,
+//! `%APPDATA%\io` on Windows — with the run store beside whichever one applied.
+//! Three answers, none of them the product's name, and an operator who wanted to
+//! back their sessions up had to reconstruct a ladder from a README paragraph.
+//!
+//! This module names one. It is deliberately **not** a second configuration
+//! system: io-harness resolves `$IO_CONFIG`, then `$IO_CONFIG_HOME`, then the
+//! platform's own place, reading the environment at call time
+//! (`io-harness-0.66.0/src/config.rs:1667`), and there is no caller-supplied home
+//! anywhere in `Config`'s public surface — no `discover_in`, no builder. So the
+//! one lever is `$IO_CONFIG_HOME`, set once, before the first
+//! [`io_harness::Config::discover`]. Everything else here follows from that:
+//! because the store is derived from the configuration file's directory
+//! ([`crate::settings::store_path`]), naming the directory moves both.
+//!
+//! Two rules the rest of the module exists to keep. An operator who has already
+//! chosen is never moved — either variable set to a non-empty value and [`adopt`]
+//! does nothing at all. And nothing is destroyed: a file is never moved onto one
+//! that exists, and a source is removed only after its copy has been read back.
+
+use std::path::{Path, PathBuf};
+
+/// The directory name, under the operator's own home.
+const DIR: &str = ".io-cli";
+
+/// The configuration file's name, which is io-harness's and not ours.
+const FILE: &str = "io.toml";
+
+/// The store and the two files SQLite keeps beside it.
+///
+/// The siblings are not decoration. A `runs.db` moved without its `-wal` is a
+/// store missing every transaction the last session did not checkpoint, and
+/// SQLite opens it without complaint — so the loss shows up as a session that
+/// vanished rather than as an error anybody can act on.
+const STORE: [&str; 3] = ["runs.db", "runs.db-wal", "runs.db-shm"];
+
+/// What decided the directory the configuration and the store are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// io-cli's own home, because the operator named neither variable.
+    Default,
+    /// `$IO_CONFIG`, which names the file outright and wins over everything.
+    Config,
+    /// `$IO_CONFIG_HOME`, which names the directory.
+    ConfigHome,
+}
+
+impl Origin {
+    /// The word `/status` prints beside the path.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Origin::Default => "default",
+            Origin::Config => io_harness::config::CONFIG_VAR,
+            Origin::ConfigHome => io_harness::config::CONFIG_HOME_VAR,
+        }
+    }
+}
+
+/// What [`adopt`] did, in the order it did it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    /// The home in force after adoption.
+    pub home: PathBuf,
+    /// Each file that moved, as it was and as it is.
+    pub moved: Vec<(PathBuf, PathBuf)>,
+    /// Each file left where it was because the home already held one, as
+    /// (the file left behind, the file in force).
+    pub kept: Vec<(PathBuf, PathBuf)>,
+}
+
+impl Report {
+    /// One line per file, then one naming the home.
+    ///
+    /// The home line is last and unconditional: on a run that moved nothing it is
+    /// the whole report, which is the product answering "where does it live"
+    /// without being asked. Lines rather than a paragraph because the session
+    /// commits each one into the scrollback and `io exec` writes each to stderr.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.moved.len() + self.kept.len() + 1);
+        for (from, to) in &self.moved {
+            out.push(format!("moved {} to {}", from.display(), to.display()));
+        }
+        for (left, force) in &self.kept {
+            out.push(format!(
+                "kept {}; {} is left where it was",
+                force.display(),
+                left.display()
+            ));
+        }
+        out.push(format!("io keeps its files in {}", self.home.display()));
+        out
+    }
+}
+
+/// A variable that names something, treating an empty value as unset.
+///
+/// io-harness's own `env_dir` does exactly this, and reading it the other way
+/// would be worse than inconsistent: an empty `IO_CONFIG_HOME` would leave the
+/// harness with no user scope at all while io-cli believed the operator had
+/// chosen one, so the session would have neither a configuration file nor a home.
+fn named(var: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(var)?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
+/// The operator's own home directory.
+///
+/// `HOME` on unix, `USERPROFILE` on Windows — and Windows is why this is io-cli's
+/// rule rather than a call into the harness, whose Windows branch reads `APPDATA`
+/// and never consults a profile root. One path on every platform was the outcome;
+/// `%APPDATA%\io-cli` would have been a fourth answer rather than one.
+fn operator() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    named(var)
+}
+
+/// io-cli's home, whether or not it is the one in force.
+///
+/// `None` where the operator's home directory cannot be determined, which is the
+/// same shape [`io_harness::config::user_path`] returns for the same reason: a
+/// program that invents a path when it has no home writes into somebody else's.
+#[must_use]
+pub fn path() -> Option<PathBuf> {
+    Some(operator()?.join(DIR))
+}
+
+/// What the operator named, before anything of io-cli's own is set.
+///
+/// [`adopt`] decides on this and nothing else: a variable that is there at all is
+/// the operator having chosen, whatever it points at.
+fn chosen() -> Option<Origin> {
+    if named(io_harness::config::CONFIG_VAR).is_some() {
+        Some(Origin::Config)
+    } else if named(io_harness::config::CONFIG_HOME_VAR).is_some() {
+        Some(Origin::ConfigHome)
+    } else {
+        None
+    }
+}
+
+/// What decided the directory in force, without changing anything.
+///
+/// This cannot simply be [`chosen`], and the difference is the whole point: after
+/// [`adopt`] runs there **is** an `IO_CONFIG_HOME` in the environment, because
+/// io-cli put it there — so a status row reading the raw variable would credit the
+/// operator for this crate's own default. The rule instead is that a variable
+/// pointing at io-cli's own home reads as `default`, which is true when io-cli set
+/// it and equally true when an operator set it to the same directory. That keeps
+/// the answer a pure function of the environment, with no adoption-time state to
+/// remember and nothing that can go stale between startup and a `/status` typed an
+/// hour later.
+#[must_use]
+pub fn origin() -> Origin {
+    match chosen() {
+        Some(Origin::ConfigHome) if named(io_harness::config::CONFIG_HOME_VAR) == path() => {
+            Origin::Default
+        }
+        Some(origin) => origin,
+        None => Origin::Default,
+    }
+}
+
+/// The directory the configuration file and the store are actually in, and what
+/// decided it.
+///
+/// This is what `/status` shows, and it is deliberately derived from
+/// [`io_harness::config::user_path`] rather than from [`path`]: under `$IO_CONFIG`
+/// the file is somewhere io-cli did not choose, and a row reporting the home this
+/// crate *would* have picked would be wrong in exactly the case the row exists for.
+#[must_use]
+pub fn in_force() -> Option<(PathBuf, Origin)> {
+    let dir = io_harness::config::user_path()?.parent()?.to_path_buf();
+    Some((dir, origin()))
+}
+
+/// Expand a leading `~` against the operator's home directory.
+///
+/// io-harness substitutes `${env:…}` and `${file:…}` and nothing else
+/// (`config.rs:1965`), so a `~` an operator writes in a path reaches the code that
+/// uses it verbatim — and `Skills::discover` would then look in a directory
+/// literally named `~`. Expanding it here rather than asking the harness to keeps
+/// the substitution rules the harness's own.
+#[must_use]
+pub fn expand(path: &Path) -> PathBuf {
+    let Ok(rest) = path.strip_prefix("~") else {
+        return path.to_path_buf();
+    };
+    match operator() {
+        Some(home) => home.join(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+/// Take io-cli's home, moving an existing install into it, and report what happened.
+///
+/// Returns `None` — having changed nothing — when the operator has named a
+/// location themselves, and when there is no home directory to work from. A fixed
+/// default is not a forced one.
+///
+/// **Call this before the first [`io_harness::Config::discover`] and never after
+/// one.** `user_path`'s own doctest asserts it answers the same thing twice; a
+/// home adopted halfway through a process is precisely the moving answer that
+/// assertion forbids, and the visible symptom would be a configuration read from
+/// one directory while the store answered from another.
+pub fn adopt() -> Option<Report> {
+    if chosen().is_some() {
+        return None;
+    }
+    let home = path()?;
+
+    // Asked BEFORE the variable is set, because afterwards it answers the home
+    // and there is nothing left to migrate from.
+    let previous = io_harness::config::user_path();
+
+    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
+    create(&home).ok()?;
+
+    let mut report = Report {
+        home: home.clone(),
+        moved: Vec::new(),
+        kept: Vec::new(),
+    };
+
+    let Some(from) = previous.as_deref().and_then(Path::parent) else {
+        return Some(report);
+    };
+    if from == home {
+        return Some(report);
+    }
+
+    for name in std::iter::once(FILE).chain(STORE) {
+        let source = from.join(name);
+        let target = home.join(name);
+        // A source that is not there is the ordinary case, not a failure: most
+        // installs have no `-shm`, and a second `io` starting at the same moment
+        // finds the file the first one already moved.
+        if !source.exists() {
+            continue;
+        }
+        if target.exists() {
+            report.kept.push((source, target));
+            continue;
+        }
+        if relocate(&source, &target).is_ok() {
+            report.moved.push((source, target));
+        }
+    }
+
+    Some(report)
+}
+
+/// Create the home, readable by its owner alone on unix.
+///
+/// The configuration file inside it already carries a credential and is written
+/// `0600` by [`crate::settings::write`]; a world-readable directory around it is
+/// the same mistake one level up.
+fn create(home: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(home)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(home)
+    }
+}
+
+/// Move one file, across filesystems if it has to.
+///
+/// `rename` is atomic and is what happens whenever the two are on one filesystem,
+/// which is the ordinary case. Where they are not it fails with `EXDEV` and the
+/// fallback copies — and then compares what was written against what was there
+/// before removing the source, because a copy that was cut short and a source
+/// removed anyway is the one outcome this whole module exists to avoid.
+fn relocate(source: &Path, target: &Path) -> std::io::Result<()> {
+    if std::fs::rename(source, target).is_ok() {
+        return Ok(());
+    }
+    let expected = std::fs::metadata(source)?.len();
+    let written = std::fs::copy(source, target)?;
+    if written != expected || std::fs::metadata(target)?.len() != expected {
+        return Err(std::io::Error::other(
+            "the copy is not the size of what it was copied from",
+        ));
+    }
+    std::fs::remove_file(source)
+}
