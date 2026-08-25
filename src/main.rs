@@ -433,6 +433,28 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // Asked of the session rather than threaded down from `run`, so there is one
     // answer to "which workspace is this" and it is the harness's.
     app.set_root(session.root());
+    // **The ceilings are on the line before the first prompt, not after the first
+    // turn.** This release's whole claim is that the file an operator wrote is the
+    // session they get, and a session that showed no budget until a turn had
+    // already spent against one would be answering that question late — the
+    // moment to learn a conversation is capped at forty steps is before typing
+    // into it, not afterwards.
+    //
+    // Built from the same builder every turn uses, and bound `opening` so that
+    // `tests/contract.rs` can name all three call sites and still fail a fourth:
+    // recomposing the ceilings from `Config` here instead would be a second answer
+    // to the precedence question F1 exists to keep single, and it would drift the
+    // first time a layer moved. The goal is empty because nothing runs this one.
+    let (answerer, _opening_questions) = io_cli::intent::channel();
+    let opening = io_cli::contract::session(
+        String::new(),
+        session.root().to_path_buf(),
+        &config,
+        &capabilities,
+        std::sync::Arc::new(answerer),
+        None,
+    );
+    app.status.budgets = io_cli::status::Budgets::in_force(&opening);
     // What the file already says, read back rather than assumed. `None` means the
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.

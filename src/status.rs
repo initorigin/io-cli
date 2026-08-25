@@ -508,15 +508,35 @@ impl Status {
     /// keeps `tests/timing.rs`'s claim true and what makes the time budget's
     /// remainder a number a test can state rather than race.
     pub fn budgets_left(&self) -> Vec<String> {
+        self.budgets_left_of(self.budgets)
+    }
+
+    /// The same remainders against a set of ceilings this session has not
+    /// necessarily run under yet.
+    ///
+    /// **`/status` is the caller, and it exists so that reading the page changes
+    /// nothing.** That surface reports what the *next* turn would run under, and
+    /// the budgets reach [`Status::budgets`] only where a turn is built — so
+    /// asking before the first turn would otherwise be told there are no ceilings
+    /// while `io.toml` plainly sets three, which is the exact defect this release
+    /// exists to end. The first shape of it assigned the field instead, and a
+    /// read-only command that changes what is on the status line is a surprise
+    /// nobody asked for: the fields appeared the moment the page was opened.
+    ///
+    /// What is drawn *against* the ceilings is still this session's own — the
+    /// steps it has taken, the tokens it has been billed for, the time it has
+    /// spent — because those are facts about the session however the ceilings
+    /// were arrived at.
+    pub fn budgets_left_of(&self, budgets: Budgets) -> Vec<String> {
         let mut left = Vec::new();
-        if let Some(cap) = self.budgets.steps {
+        if let Some(cap) = budgets.steps {
             let rest = cap.saturating_sub(self.steps.unwrap_or(0));
             left.push(format!(
                 "left {rest}/{cap} step{}",
                 if rest == 1 { "" } else { "s" }
             ));
         }
-        if let Some(cap) = self.budgets.tokens {
+        if let Some(cap) = budgets.tokens {
             let rest = cap.saturating_sub(self.run_tokens.unwrap_or(0));
             left.push(format!(
                 "left {}/{} tok",
@@ -524,7 +544,7 @@ impl Status {
                 format_tokens(cap)
             ));
         }
-        if let Some(cap) = self.budgets.duration {
+        if let Some(cap) = budgets.duration {
             // No unit word, because `format_elapsed` already spells one into
             // every answer it gives — `12s`, `4m30s`, `1h02m` — and a `left
             // 4m30s/10m00s min` would be naming the unit twice and getting it
@@ -1237,7 +1257,7 @@ pub fn committed(
     // The budgets, through the one method both other renderers use. A budget that
     // does not exist contributes no row there, so the empty case is said here
     // rather than left as a gap somebody has to interpret.
-    let budgets = status.budgets_left();
+    let budgets = status.budgets_left_of(Budgets::in_force(contract));
     if budgets.is_empty() {
         facts.push((
             "budget".into(),

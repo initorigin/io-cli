@@ -661,16 +661,21 @@ fn f6_both_arms_are_handed_one_contract() {
     // uncontained turn ended up unable to answer a question. Both are
     // `contract::session`'s arguments now, where the test above reads them off a
     // value instead of off this file.
-    // The two call sites are named rather than counted, because the property is
-    // "one contract per turn", not "one mention of the builder in this file", and
-    // 0.14.0 is where those two stopped being the same sentence. `/status` reads
-    // the configured rosters off the same builder — it has to, since
-    // `Config::apply_to` is the only thing that can say what `[[mcp]]` and
-    // `[[lsp]]` hold and `contract::session` is the only call that also merges the
-    // `[app.io-cli]` scope — but it builds nothing that runs. Raising the count to
-    // two would have admitted a genuine second *arm* just as readily, which is the
-    // failure this test exists to make unrepresentable; binding each site to a name
-    // keeps a third one failing.
+    // **The call sites are named rather than counted, because the property is "one
+    // contract per turn", not "one mention of the builder in this file", and
+    // 0.14.0 is where those two stopped being the same sentence.** Two sites read
+    // a contract without running one: `/status` reports the configured rosters,
+    // and the opening one puts the ceilings on the status line before the first
+    // prompt. Both have to go through this builder rather than reading `Config`
+    // again, because `Config::apply_to` is the only thing that can say what
+    // `[[mcp]]` and `[[lsp]]` hold, and `contract::session` is the only call that
+    // also merges the `[app.io-cli]` scope and resolves the step-cap precedence —
+    // a second answer to either would drift the first time a layer moved.
+    //
+    // Counting to three instead would admit a genuine second ARM just as readily,
+    // which is the failure this test exists to make unrepresentable. Each site is
+    // bound to its own name and asserted once, so a fourth still fails and so does
+    // a second turn.
     assert_eq!(
         text.matches("let contract = io_cli::contract::session(")
             .count(),
@@ -684,9 +689,15 @@ fn f6_both_arms_are_handed_one_contract() {
         "`/status` reads one contract to report the configured rosters, and builds no turn",
     );
     assert_eq!(
+        text.matches("let opening = io_cli::contract::session(")
+            .count(),
+        1,
+        "the session reads one contract at startup to put the ceilings on the line, and runs none",
+    );
+    assert_eq!(
         text.matches("io_cli::contract::session(").count(),
-        2,
-        "the turn's contract and `/status`'s reading are the only two, so a third is a new arm",
+        3,
+        "the turn's contract and the two readers are the only three, so a fourth is a new arm",
     );
     assert!(
         !text.contains("with_responder") && !text.contains("with_plan_gate"),

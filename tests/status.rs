@@ -1372,11 +1372,29 @@ fn committed(
     theme: &io_cli::theme::Theme,
     width: u16,
 ) -> Vec<String> {
+    committed_of(app, fixture, &fixture.contract, caps, theme, width)
+}
+
+/// The same page against a contract other than the fixture's.
+///
+/// **The page's budgets come off the contract it is handed and never off
+/// `Status`**, so a test that wants the no-budget case has to hand it a contract
+/// carrying none — setting the field would prove nothing, because nothing reads
+/// it. That is the property itself: `/status` reports what the next turn would
+/// run under, and reading the page changes nothing about the session.
+fn committed_of(
+    app: &App,
+    fixture: &Fixture,
+    contract: &TaskContract,
+    caps: Option<&io_harness::Containment>,
+    theme: &io_cli::theme::Theme,
+    width: u16,
+) -> Vec<String> {
     io_cli::status::committed(
         &app.status,
         &fixture.session,
         &fixture.policy,
-        &fixture.contract,
+        contract,
         caps,
         theme,
         width,
@@ -1699,8 +1717,50 @@ fn f10_a_fact_no_event_has_reported_reads_as_unknown_rather_than_as_a_default() 
     // carries it, and `Budgets::in_force` is what knows it is not a budget.
     let bare = TaskContract::workspace("g", std::path::PathBuf::from("/tmp"))
         .with_max_steps(io_cli::contract::MAX_STEPS);
-    let mut app = App::new(DARK, "opus-5");
-    app.status.budgets = Budgets::in_force(&bare);
-    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+    let app = App::new(DARK, "opus-5");
+    let page = committed_of(&app, &fixture, &bare, None, &DARK, ROOMY).join("\n");
     assert!(page.contains("budget: none"), "{page}");
+}
+
+/// **0.14.0 F10 — the page reports the ceilings the next turn would run under,
+/// and reading it changes nothing.**
+///
+/// Both halves matter and each fails for its own reason. A session that has run
+/// no turn has nothing in `Status::budgets`, because that field is filled where a
+/// turn is built — so a page that read it would tell an operator whose `io.toml`
+/// sets three ceilings that there are none, which is precisely the silence this
+/// release exists to end. And the first shape of the fix assigned the field
+/// before composing, which answered the question but made a read-only command
+/// change what the status line said the moment it was opened.
+///
+/// The counters are still the session's own: what is drawn against a ceiling is a
+/// fact about this session however the ceiling was arrived at, so a page opened
+/// after three steps says three have gone.
+///
+/// Sabotage: compose the page from `Status::budgets` rather than from the
+/// contract — under which the first assertion fails on a fresh session, which is
+/// every session at the moment its operator first asks what it is running under.
+#[test]
+fn f10_status_reports_the_next_turns_budgets_without_touching_the_session() {
+    let fixture = fixture();
+    let mut app = App::new(DARK, "opus-5");
+    app.status.steps = Some(3);
+    let before = app.status.budgets;
+
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+
+    // The fixture's contract carries all three, and none of them ever reached
+    // `Status`.
+    assert!(page.contains("budget: left 17/20 steps"), "{page}");
+    assert!(page.contains("budget: left 10.0k/10.0k tok"), "{page}");
+    assert!(page.contains("budget: left 10m00s/10m00s"), "{page}");
+    assert_eq!(
+        app.status.budgets, before,
+        "opening the page must not put budgets on the status line",
+    );
+    assert_eq!(
+        before,
+        Budgets::default(),
+        "the fixture session has run no turn, so it had no budgets to read",
+    );
 }
