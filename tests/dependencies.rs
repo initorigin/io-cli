@@ -392,6 +392,17 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
         .find(|(path, _)| path.ends_with(&editor))
         .expect("src/edit.rs exists; the TOML-parsing exception is written for it");
 
+    // Comments stripped first: this module's own documentation explains WHY it
+    // may not reach for a configuration type, which means naming several of
+    // them. A gate that read prose would forbid the file from explaining itself,
+    // and the property is about what the code does.
+    let editor_code: String = editor_text
+        .lines()
+        .map(|line| line.trim_start())
+        .filter(|line| !line.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     for named in [
         "io_harness::Config",
         "io_harness::config",
@@ -401,7 +412,7 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
         "ProviderSpec",
     ] {
         assert!(
-            !editor_text.contains(named),
+            !editor_code.contains(named),
             "src/edit.rs names `{named}`. It is permitted to parse TOML only because it \
              works in bytes and never decides what a setting means; the moment it reaches \
              for a configuration type it has become the second reader this gate forbids.",

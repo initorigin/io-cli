@@ -268,12 +268,12 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // `c` matches FOUR rows since 0.13.1 removed `/attach`: `copy`, `copy diff`,
-    // `contain` and `clear` all begin with it, and `attach`, which merely held
-    // one, is no longer a command — a picture is attached by dropping it on the
-    // prompt.
-    // `co` narrows to the three that begin with `co`, because neither `attach`
-    // nor `clear` has an `o` after its `c`.
+    // `c` matches FIVE rows since 0.16.0 added `/config`: `copy`, `copy diff`,
+    // `contain`, `clear` and `config` all begin with it, and `attach`, which
+    // merely held one, stopped being a command in 0.13.1 — a picture is attached
+    // by dropping it on the prompt.
+    // `co` narrows to the four that begin with `co`, because `clear` has no `o`
+    // after its `c`.
     // The three score the same and the tie-break is the order they were handed
     // in. The defect: an unstable sort swaps them on a keystroke that did not
     // change the result, and `Enter` takes a row nobody chose.
@@ -284,10 +284,10 @@ fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
     // quietly stopped happening.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 4);
+    assert_eq!(picker.matching(), 5);
     assert_eq!(marked(&picker), "copy");
     type_at(&mut picker, "o");
-    assert_eq!(picker.matching(), 3);
+    assert_eq!(picker.matching(), 4);
     assert_eq!(
         marked(&picker),
         "copy",

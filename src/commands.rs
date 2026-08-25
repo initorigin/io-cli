@@ -143,6 +143,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "put the whole run's patch on the system clipboard",
     ),
     (
+        "/config",
+        "every setting, the value in force and the file that decided it",
+    ),
+    (
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
@@ -485,6 +489,18 @@ pub enum Action {
     /// and every exec until a proposal is approved, so a blind toggle is a coin
     /// flip between an agent that works and one that waits.
     Plan(Option<bool>),
+    /// Browse every setting, or write one.
+    ///
+    /// `None` opens the surface. `Some` is a key and the TOML source of its
+    /// value, which is what `/config <key> <value>` means — and the write does
+    /// not happen until a scope is chosen, because *which file* is half the
+    /// decision and this product has three of them.
+    ///
+    /// The value is carried as the operator typed it rather than parsed here.
+    /// io-harness decides what a value means; this crate decides which bytes go
+    /// where, and a value coerced on the way through would be io-cli inventing a
+    /// second opinion about a schema it does not own.
+    Config(Option<(String, String)>),
 }
 
 /// What `/copy` was asked for.
@@ -576,6 +592,31 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // whichever one that agent taught them.
         "resume" | "continue" => Action::Resume,
         "fork" | "branch" => Action::Fork,
+        // `/config` alone browses; `/config <key> <value>` writes. The value is
+        // everything after the key rather than the next word, so an array or an
+        // inline table can be typed whole — `allowed_domains = ["a", "b"]` is one
+        // value with a space in it, and splitting on whitespace would take half.
+        "config" | "settings" => {
+            let mut rest = input.split_whitespace().skip(1);
+            match rest.next() {
+                Some(key) => {
+                    let value = input
+                        .split_once(key)
+                        .map(|(_, after)| after.trim())
+                        .unwrap_or("")
+                        .to_string();
+                    if value.is_empty() {
+                        // A key with no value is a question, not a write. Naming
+                        // the key back is what tells the operator the surface
+                        // knows it, without touching a file on a half-typed line.
+                        Action::Config(Some((key.to_string(), String::new())))
+                    } else {
+                        Action::Config(Some((key.to_string(), value)))
+                    }
+                }
+                None => Action::Config(None),
+            }
+        }
         // `on` / `off` / nothing. Nothing REPORTS rather than toggles, because
         // this switch changes what a turn is — a blind toggle would be a coin
         // flip between a turn that can be steered and one that can fan out.
