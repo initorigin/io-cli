@@ -38,6 +38,7 @@ on one row and the keys and the posture on the next.](docs/screenshot.png)
 | **The boundary, visible** | The posture on the footer, a refusal that names the act, the target, the rule and the layer, and `Shift+Tab` to change it from the next turn |
 | **Approvals in place** | A write stops the run and shows the diff it proposes; `y`, `a` or `n`, answered where it was asked |
 | **A fan-out you can watch** | Contained turns spawn children under one shared ceiling; `Ctrl+F` shows the tree and what it is costing |
+| **Your file, in force** | Every section of `io.toml` bounds a session turn as it bounds `io exec`; the budgets in force are on the status line with what is left of them, and `/status` commits the whole state — policy layers, sandbox backend, caps, budgets, connections — into the scrollback |
 | **Undo** | `Esc Esc` at an empty prompt rewinds the last turn — its files, its memory and the conversation head |
 | **Conversations that survive** | `/resume` reopens an earlier session, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
 | **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json` |
@@ -134,12 +135,52 @@ under it already follows.
 the line describing it, so the newest words the agent had written read as a
 footnote to a spinner.
 
+**From 0.14.0 the status line also carries the ceilings actually in force**, each
+beside what is left of it — `left 17/20 steps`, `left 12.4k/200.0k tok`,
+`left 4m30s/10m00s` — for the step, token and duration budgets your `[run]` table
+sets. A budget you did not set draws no field at all, so a session that
+configured nothing looks exactly as it did: io-cli's own step floor is
+scaffolding rather than a number you chose, and reporting it back to you as a
+budget would be noise on every line. They appear once a turn has been built,
+because the contract is the one place the order of precedence is already
+resolved, and they are read off it rather than composed a second time from the
+file. **A turn that ends on a budget now says which budget**, in the vocabulary
+of a ceiling reached rather than of an error — `step_cap_reached`,
+`time_budget_exceeded` and `cost_budget_exceeded` were reported through the error
+path until this release, so what an operator met under a half-finished answer was
+`error: step_cap_reached`. All four are successful calls in io-harness and always
+were. The word stays the harness's; what changed is the weight it is said in.
+
 What lands in the scrollback is designed rather than defaulted. A tool call reads
 as a verb and a workspace-relative path — `Read src/lib.rs`, not `read_file` and
 an absolute path — and a tool this release has never seen keeps the name
 io-harness sent, because a verb invented for it would mean nothing. A turn ends
 on its answer: the run's step and token counts are on the status line beside the
 provider, which is where every other number in this interface lives.
+
+**Three more things reach the transcript in 0.14.0**, all of them facts
+io-harness has been emitting into every ordinary session and this interface has
+been discarding:
+
+- **Every outbound connection a contained command dialled**, with the host as the
+  command asked for it, the port, and whether the policy permitted it — `dialled
+  api.github.com:443 · permitted`, and a refusal drawn as a refusal rather than as
+  an error, because nothing broke when a boundary worked. The host is never a
+  resolved address: the policy's patterns are written against names, so a row
+  showing `140.82.121.4` would not match the rule that decided it. **An absent
+  dial line is not evidence of no egress** — the event has one emit site behind
+  three conditions, and a permissive or all-or-nothing policy names no host and
+  emits none of these ever.
+- **Each sandbox created, capped or destroyed**, with the backend that isolated
+  it where the event carries one — io-harness sets it on creation and on a command
+  and not on the other two, and nothing here invents one. A cap reached is drawn
+  as a limit reached and not as a failure: the sandbox did exactly what its
+  configuration told it to.
+- **A stalled agent, while it is stalling**, naming the step it stopped on and how
+  long it has been there. This needed no configuration to fire — a workspace turn
+  carries io-harness's default stall policy — and until now it reached you as a
+  session that had gone quiet, and then, once the run was over, as the word
+  `stalled` on the outcome line.
 
 ## The agent's manner
 
@@ -299,6 +340,20 @@ reasoning is committed as a thought — the word, how long the step had been goi
 then the text — and a thought longer than ten rows is fitted with the rest kept
 for `/expand`. io-harness neither stores reasoning nor folds it into the next
 prompt, so that copy is the only one there is.
+
+`/status` commits the whole session state, one fact per row: the workspace and
+the session id with the turn its head is at, the provider and model, every policy
+layer by name with the acts it governs, the containment caps and what has been
+drawn against them, **the sandbox mode asked for beside the backend that actually
+answered on this host**, every budget with what is left of it, how full the
+context is, and what is connected — MCP servers and language servers as *answered
+of configured*, the browser, the skills directory. Every field on it is a value
+io-harness supplied; nothing is io-cli's account of it. It is not a table, because
+a table has a column width and the widest cell here is a workspace path: a row too
+long for the terminal is folded and never cut, so eighty columns is a supported
+size rather than a degraded one. It reads the state and changes none of it — no
+plan gate is registered to build the contract it reports on, because registering
+one would turn the planning phase on.
 
 `/clear` starts a new conversation: a new session id, no prior turn sent to the
 model, and the run-scoped status fields back to zero. It clears the screen and
@@ -537,6 +592,14 @@ tested. `io` reports what the harness decided and never relabels it, so
 "…, then stop" in the goal, or a `max_steps` in `[run]`, is worth more than
 retrying.
 
+**A headless run takes io-cli's own step floor of a thousand from 0.14.0**, where
+it used to take io-harness's twelve. Twelve steps is not a turn — a run that reads
+a repository and writes a file spends them easily — so what an unattended job
+produced was `error: step_cap_reached` over half-finished work with nobody
+watching, which is the defect the floor exists to fix and is not made better by
+the run being unattended. A `[run] max_steps` you wrote still beats the floor, in
+either direction.
+
 ### The JSON
 
 One object per line, and nothing else on stdout, so it pipes straight into a
@@ -564,7 +627,7 @@ io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
 
-Five keys live there, and four tables:
+Six keys live there, and five tables:
 
 | Key | Is |
 | --- | --- |
@@ -572,12 +635,13 @@ Five keys live there, and four tables:
 | `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
-| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Contained turns only — see below. |
+| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. |
+| `max_steps` | how many steps one turn may take. **Deprecated in 0.14.0 and removed in 0.16.0**: `[run] max_steps` is where the number moves to. It still wins over `[run]` until then, and a file carrying it is told so once at session start. |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
 | `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
-| `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Contained turns only. |
-| `[[app.io-cli.lsp]]` | language servers for this workspace. Contained turns only. |
-| `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. Contained turns only. |
+| `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Merged with the top-level `[[mcp]]`, and wins a collision of ids. |
+| `[[app.io-cli.lsp]]` | language servers for this workspace. Merged with the top-level `[[lsp]]`, and wins a collision of ids. |
+| `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
 default rather than stopping a session from starting. A section io-harness cannot
@@ -596,44 +660,59 @@ and may never widen it, because a repository you cloned must not be able to gran
 itself permission. The wizard therefore writes the user-scope file, which is
 where widening is your own decision.
 
-**What this release reads from that file, and what it does not.** io-cli reads
-the provider, the permission policy and its own `[app.io-cli]` section. The
-policy's own defaults are what `Shift+Tab` cycles; a posture chosen with the key
-lasts for the session and is not written back, because a keystroke that rewrites
-a permission boundary on disk is the opposite of what that key is for.
+The policy's own defaults are what `Shift+Tab` cycles; a posture chosen with the
+key lasts for the session and is not written back, because a keystroke that
+rewrites a permission boundary on disk is the opposite of what that key is for.
 
-**The capabilities and the fan-out are one switch, and it is worth knowing before
-you configure any of them.** A session turn can be given a task contract only
-where io-harness offers an entry point that takes one, and the only session entry
-point that does is the *contained* one. So the responder, the plan gate, MCP
-servers, language servers, the browser and the skills directory all arrive
-together, on a turn that has `[app.io-cli.containment]` configured — and on no
-other turn.
+**The whole file reaches a session turn from 0.14.0, and it reaches `io exec`
+from the same call.** `[sandbox]` limits, `[run]` budgets, `[run.commit_identity]`,
+`[[agent]]`, `[web]`, `[memory]`, `[instructions]`, `[[mcp]]`, `[[lsp]]` and
+`[browser]` are all applied to a turn's contract, in your terminal exactly as in
+CI. There is no longer a section of this file that a session reads past.
 
-What that costs is nothing the contained turn had. It has never taken a steer
-inbox, so text typed mid-turn could never redirect it and `Ctrl+C` has always
-gone through the observer, ending it at the next boundary where no child is in
-flight. What it does **not** cost is the ordinary session: with no containment
-table, your turn is exactly the turn 0.9.0 ran, `Ctrl+C` included, carrying none
-of the above.
+The layers run weakest to strongest, and that order is asserted rather than
+described: io-harness's own defaults, then io-cli's step floor, then everything
+io-harness's own sections say, then `[sandbox]`, then `[app.io-cli]`. So a
+`[run] max_steps` you actually wrote beats io-cli's floor — a file that *lowers*
+the cap is honoured, not only one that raises it — and an `[app.io-cli]` server
+of the same id beats a top-level one. The two server lists are merged rather than
+replaced, and the session names any id it dropped.
 
-**An interactive session with no containment** therefore still does not apply
-`[sandbox]` limits, `[run]` budgets, `[[agent]]` or an `AGENTS.md` instruction
-file to a turn, and cannot be given a responder or a plan gate. The sandbox
-itself **is** on: a workspace turn runs commands inside it, with no resource
-ceilings.
+**Nothing rides `[app.io-cli.containment]` but the fan-out.** Through 0.11.0 the
+contained turn was the only session entry point io-harness let a caller hand a
+task contract to, so the responder, the plan gate, MCP servers, language servers,
+the browser and the skills directory all arrived on that one switch. 0.11.0 gave
+the ordinary turn a contract too. Every one of those has been on every turn since,
+contained or not, and no session turn takes a steer inbox — so containment costs
+no steering and grants no capability. It is the caps a fan-out runs under and
+nothing else.
 
-A **contained** turn does not apply `[run]`, `[sandbox]` or `[[agent]]` either —
-those live in io-harness's own sections and io-cli builds the contract from its
-own — but everything in `[app.io-cli]` above does reach it, and the containment
-table's token ceiling is what bounds it.
+**What changes for a file you already have.** No key is added, removed or
+renamed, and a 0.13.1 file is a valid 0.14.0 file. What changes is what it does:
 
-**`io exec` does apply them**, and that is not a second implementation — it is
-the same boundary reached from the other side. A headless run has nobody to
-steer it, so it can hand the harness a contract of its own, which is what
-`[sandbox]` and `[run]` travel in. So a `max_steps` or a `max_wall_secs` you set
-today has an effect in CI and none in your terminal, and that asymmetry is a
-property of the harness's entry points rather than a decision made here.
+- **A `[run]` block written for `io exec` now bounds your terminal.**
+  `max_steps = 20` is a reasonable thing to have set for an unattended CI run and
+  an unreasonable cap on a conversation. The status line carries each budget in
+  force with what is left of it and `/status` lists them all, so a turn that will
+  stop at a ceiling says which one before it gets there. If you want `[run]` for
+  CI only, move it to a project file or narrow it by scope.
+- **`io exec` now takes io-cli's own step floor of a thousand** instead of
+  io-harness's twelve. A headless run used to end `error: step_cap_reached` under
+  half-finished work with nobody watching. A `[run] max_steps` in the file still
+  beats the floor.
+
+**And `[web]` is a capability, not a preference.** Reaching a session turn, it
+gives the model the provider's own search and fetch — and it is the *vendor* that
+dials the URL, so the `net` rule in your policy is not what governs it. That rule
+decides what this machine may reach. A `[web]` table that did nothing in your
+terminal yesterday turns something on in it today, which is why the session says
+so at start in its own words rather than folding it into a list.
+
+**`[browser]` is refused in a project-scoped file**, by io-harness rather than by
+io-cli: it names a program to execute, and a project's `io.toml` arrives with a
+`git clone`. Write it in the user-scope file — the one `io setup` writes — where
+widening the boundary is your own decision. There is no project-scope route to a
+browser at all. io-cli's own `[app.io-cli.browser]` is read from either scope.
 
 `NO_COLOR` is read from the environment rather than from this file, and so is the
 locale behind `glyphs`. See [Reading it without seeing
@@ -641,19 +720,24 @@ it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.10.0 is the release where a contained session answers: the agent's question
-about what you meant is answered where it was asked, a proposed plan is approved,
-sent back or cancelled before any of it runs, the skills you gave it are in the
-palette, and the line says what the session is connected to. iTerm2 draws the
-real image.
+0.14.0 is the release where the configuration file reaches your terminal: every
+section of it bounds a session turn as it already bounded `io exec`, `/status`
+commits the whole picture into the scrollback, and the ceilings in force are on
+the status line beside what has been drawn against them.
 
-**None of that reaches a session without `[app.io-cli.containment]`.** io-harness
-offers exactly one session entry point that takes a caller's task contract, and
-it is the contained one — so the responder, the plan gate, the skills and the
-connection indicators all ride the same switch as the fan-out. A session without
-it is unchanged and keeps mid-turn `Ctrl+C`. See
-[Configuration](#configuration) for what that costs, which is nothing the
-contained turn ever had.
+**Four sections of the file are still not applied, and each has a reason.**
+`[[hook]]` and capability bundles reach a contract through their own builders and
+need a surface that reports what loaded and what was dropped; `[prices]` is not
+part of a contract at all and belongs with the release that reads the
+provider-call rows; there is no `[verify]` section to apply, and giving a session
+verification gates needs its own surface; and `run.templates` is the thirteenth
+`[run]` key, reachable only through its own accessor. None of them is a silent
+omission any more — this is where they are named.
+
+**There is no way to change a key from inside the session.** `/status` reads the
+state and never writes it, and editing configuration is 0.16.0 — a surface for
+changing a key is worth building once changing the key does something, which is
+what this release is.
 
 **Sixel is still absent**, because encoding it means palette quantisation and
 another dependency, for terminals that either speak one of the two protocols
@@ -761,7 +845,13 @@ change what a session looks like — 0.11.0 rewrote the transcript's vocabulary,
 and the release before it moved where a question is answered. What you can rely
 on is that every one of those is in [CHANGELOG.md](CHANGELOG.md), said plainly,
 and that a configuration file written for an older release keeps working: no key
-has been removed or reinterpreted since 0.1.0.
+has been removed or renamed since 0.1.0. One key is on its way out —
+`[app.io-cli] max_steps`, deprecated in 0.14.0 and removed in 0.16.0 — and it
+keeps working, and keeps winning, until then. **A section that was ignored may
+start being read**, which 0.14.0 did to eleven of them, and that is a behaviour
+change for a file that already carried one; it is the migration note in
+[Configuration](#configuration) and in the changelog rather than something to
+find out from a turn.
 
 ## Security
 

@@ -70,31 +70,63 @@ net = "deny"
 # name = "no-secrets"
 # rules = [{ act = "read", effect = "deny", pattern = ".env" }]
 
-# --- Not read by an interactive session -------------------------------------
+# --- What bounds a turn, in a session and in `io exec` alike (0.14.0) --------
 #
-# io-harness reads all of these; an `io` SESSION does not pass them to a turn, so
-# writing them here has no effect on what you type in a terminal. See the README:
-# the harness's steerable turn builds its own contract, and the entry point that
-# takes a caller's contract does not take a steer inbox, so honouring them in a
-# session would mean giving up Ctrl+C.
+# Every section below is io-harness's own — read and validated by it — and every
+# one of them reaches BOTH arms. A session turn and an `io exec` run build their
+# contract from the same call, so what you write here has the same effect in your
+# terminal as it has in CI.
 #
-#   [sandbox]      limits and network allowances
-#   [run]          step, token and duration budgets
-#   [instructions] AGENTS.md and friends
-#   [[mcp]] [[lsp]] [[agent]] [web] [browser]
+#   [sandbox]              resource limits and network allowances for a
+#                          contained command
+#   [run]                  the step, token and duration budgets, the retry,
+#                          stall and context policies, the exec timeout, the
+#                          read ceiling and the skills directory
+#   [run.commit_identity]  who a commit the agent makes is authored as. It is
+#                          INSIDE [run]: a file with no [run] table has none.
+#   [instructions]         AGENTS.md and whatever else you point it at
+#   [[mcp]]                MCP servers. Merged with [[app.io-cli.mcp]] below.
+#   [[lsp]]                language servers. Merged with [[app.io-cli.lsp]].
+#   [[agent]]              the roster a fan-out draws its children from
+#   [web]                  provider-executed search and fetch
+#   [memory]               how much durable memory a run may keep
 #
-# `io exec` DOES apply [sandbox] and [run], from 0.5.0 on. A headless run has
-# nobody to steer it, so it can hand the harness a contract of its own — which is
-# what those two sections travel in. The same file, the same boundary, reached
-# from the other side.
+# THIS BLOCK USED TO SAY THE OPPOSITE, and the reason it gave went stale a
+# release before the block did. Through 0.13.1 these sections reached `io exec`
+# and nothing else, because the harness's steerable session turn built its own
+# contract and took none from the caller. That stopped being how a session runs
+# in 0.11.0, when the ordinary turn moved to an entry point that does take one —
+# and Ctrl+C survived the move, because an interrupt travels on the observer
+# rather than through a steer inbox. What was left was an omission rather than a
+# constraint, and 0.14.0 closes it.
 #
-# The sandbox itself IS on in a session: a workspace turn runs commands inside it.
-# What is missing there is the configured ceilings, not the containment.
+# WHAT CHANGES FOR A FILE YOU ALREADY HAVE. A [run] block written for CI now
+# bounds your terminal too. `max_steps = 20` is a reasonable thing to have set
+# for an unattended run and an unreasonable cap on a conversation — so if that is
+# what this file says, it is now what your session says. The status line carries
+# each budget in force with what is left of it, and `/status` lists them all, so
+# a turn that will stop at a ceiling says which one before it gets there. An
+# operator who wants [run] for CI only moves it to a project file or narrows it
+# by scope.
+#
+# [web] IS A CAPABILITY AND NOT A PREFERENCE. It gives the model the provider's
+# own search and fetch, and the VENDOR is what dials the URL — so the `net` rule
+# in [policy.defaults] above is not what governs it. That rule decides what THIS
+# machine may reach. Writing [web] here turns the capability on for every session
+# as well as for every CI run, from a file that previously did nothing; the
+# session says so, in its own words, when it starts.
+#
+# [browser] is io-harness's too and is applied the same way, but it is REFUSED IN
+# A PROJECT-SCOPED FILE by io-harness itself: it names a program to execute, and
+# a project's io.toml arrives with a `git clone`. It works in the user-scope file
+# — the one `io setup` writes, and the one this example documents — and there is
+# no project-scope route to a browser at all. io-cli's own [app.io-cli.browser]
+# is below, and reaches a turn from either scope.
 
 # --- io-cli's own section ---------------------------------------------------
 #
-# Four keys and a table of keybindings. io-harness does not validate any of it, so
-# an unrecognised VALUE reads as the default rather than stopping a session. A
+# Six keys and five tables. io-harness does not validate any of it, so an
+# unrecognised VALUE reads as the default rather than stopping a session. A
 # table io-harness cannot parse at all is different: the session starts on the
 # defaults and says so, carrying the harness's own message.
 
@@ -129,6 +161,19 @@ diff = "unified"
 # false is the default and what an absent key means; it is written out so the file
 # says which way round it is.
 plain = false
+#
+# How many steps one turn may take.
+#
+# DEPRECATED IN 0.14.0, STILL WINNING, AND REMOVED IN 0.16.0. It exists because
+# the flat turn once had no way to raise io-harness's own cap of twelve, and
+# `[run] max_steps` above now does the same job from a table io-harness documents
+# itself. Until 0.16.0 this key keeps working and keeps beating `[run] max_steps`
+# — it is applied last, over everything the harness's own table said — and a file
+# that carries it is told so once at session start, naming where the number
+# moves to. A file with neither key gets io-cli's own floor of a thousand, which
+# is not a budget you set and therefore draws no field on the status line.
+#
+# max_steps = 40
 
 # The session's own keys, by action name. Absent means the defaults, which are the
 # ones in the README's table; every line below states its default and so changes
@@ -162,18 +207,18 @@ fleet = "ctrl+f"
 # task at all**, and it is absent by default: io-harness has one session entry
 # point that reaches its spawn loop, and these caps are what selects it.
 #
-# It is not a preference, and turning it on costs something. A contained turn
-# cannot be steered while it runs — the entry point that fans out takes no steer
-# inbox — and `[run]` budgets, `[sandbox]` and an agent roster do not apply to it.
-# `Ctrl+C` still ends it, at the next point where no child is in flight. The
-# session says all of that when it starts, and `/contain off` gives a turn back to
-# steering.
+# What it costs is smaller than it was, and it is not a mode. No session turn
+# takes a steer inbox — none has since 0.11.0 — so a contained turn gives up no
+# steering an ordinary one has. `Ctrl+C` still ends it, at the next point where no
+# child is in flight, and `/contain off` gives the next turn back.
 #
-# Since 0.10.0 it also DECIDES EVERY KEY BELOW IT. This is the only session turn
-# io-harness lets a caller hand a task contract to, and a responder, a plan gate,
-# MCP servers, language servers, a browser and a skills directory are all fields
-# of that contract — so with this table absent, none of the four settings after it
-# reaches a turn, however carefully they are written.
+# THROUGH 0.11.0 THIS TABLE DECIDED EVERY KEY BELOW IT, AND IT NO LONGER DOES.
+# io-harness's contained turn was then the only session entry point that took a
+# caller's task contract, so a responder, a plan gate, MCP servers, language
+# servers, a browser and a skills directory all rode this one switch. 0.11.0 gave
+# the ordinary turn a contract too, and 0.14.0 gave it the configuration file as
+# well. Every one of those reaches every turn now, and this table means exactly
+# what its name says: the caps a fan-out runs under.
 #
 # All four keys are required, because there is no safe default for somebody
 # else's token ceiling.
@@ -190,12 +235,16 @@ fleet = "ctrl+f"
 # max_depth = 2
 # max_total_tokens = 200000
 
-# --- What a contained turn carries (0.10.0) ---------------------------------
+# --- io-cli's own capabilities ----------------------------------------------
 #
-# Every setting below reaches a turn only when the containment table above is
-# present. That is not a rule invented here: these are fields of io-harness's
-# `TaskContract`, and its contained session turn is the only one that takes a
-# contract from the caller.
+# Every setting below reaches EVERY turn, contained or not. These are fields of
+# io-harness's `TaskContract`, and both a session turn and an `io exec` run hand
+# it one.
+#
+# They are also the strongest layer of the five: applied after `Config::apply_to`,
+# so a server named here beats one of the same id in the top-level [[mcp]] or
+# [[lsp]] — the two lists are merged rather than replaced, and the session names
+# the duplicate it dropped when a file writes an id in both places.
 #
 # A directory of skills for the agent. They appear in the `/` palette by name,
 # and choosing one puts `use the <name> skill: ` in the prompt — the file itself

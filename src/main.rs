@@ -337,7 +337,9 @@ struct Interactive<'a, 'b> {
     /// `Config::apply_to`, so `[app.io-cli] max_steps` beats a `[run] max_steps`
     /// and a `[[app.io-cli.mcp]]` beats a `[[mcp]]` of the same id. It reaches
     /// every turn, contained or not — the coupling that made that untrue was
-    /// removed in 0.12.0.
+    /// removed in 0.11.0, when the flat arm moved onto an entry point that takes
+    /// a caller's contract. 0.12.0 is a different change: it is where the plan
+    /// gate stopped riding containment.
     capabilities: io_cli::contract::Capabilities,
     /// What io-harness discovered in the configured skills directory, walked once
     /// at startup. Empty when nothing is configured and empty when the walk
