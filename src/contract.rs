@@ -57,13 +57,6 @@ pub struct Capabilities {
     pub browser: Option<io_harness::BrowserConfig>,
     /// `[app.io-cli] skills` — the directory io-harness discovers skills in.
     pub skills: Option<PathBuf>,
-    /// `[app.io-cli] max_steps` — how many steps one turn may take.
-    ///
-    /// io-harness's `TaskContract::workspace` caps a turn at twelve, which a
-    /// turn that reads a repository and writes a file reaches with the work half
-    /// done. Raising it is why 0.11.0 gave the flat turn a contract at all, and
-    /// is therefore the accidental cause of the whole coupling coming apart.
-    pub max_steps: Option<u32>,
 }
 
 impl Capabilities {
@@ -77,7 +70,6 @@ impl Capabilities {
             lsp: settings.lsp.clone().unwrap_or_default(),
             browser: settings.browser.clone(),
             skills: settings.skills.clone(),
-            max_steps: settings.max_steps,
         }
     }
 
@@ -206,6 +198,15 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
         Some(sandbox) => contract.with_contained_exec(sandbox),
         None => contract,
     };
+    // **The three ceilings, here rather than beside the other `[app.io-cli]`
+    // keys, and the placement is the criterion.** `max_parallel_reads`,
+    // `spawn_background_after` and `detached_spawns` are `TaskContract` fields
+    // with no io-harness configuration key of their own, so io-cli names them —
+    // and they belong in the half BOTH arms share. [`session`] is the session's
+    // alone; `io exec` calls only this function, so a ceiling applied there
+    // would bound a terminal and leave CI running with the defaults, which is
+    // the 0.14.0 asymmetry this product deleted once already.
+    let contract = crate::settings::ceilings(config).apply(contract);
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.
@@ -406,9 +407,6 @@ pub fn session(
     }
     if let Some(skills) = &caps.skills {
         contract = contract.with_skills(skills.clone());
-    }
-    if let Some(max_steps) = caps.max_steps {
-        contract = contract.with_max_steps(max_steps);
     }
     // **The one point after both keys have had their say.** `[run] skills` was
     // applied by `Config::apply_to` inside [`configured`] and `[app.io-cli]

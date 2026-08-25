@@ -165,7 +165,9 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         lsp: Some(Vec::new()),
         browser: Some(io_harness::BrowserConfig::default()),
         skills: Some("/skills".into()),
-        max_steps: Some(40),
+        max_parallel_reads: Some(16),
+        spawn_background_after_secs: Some(120),
+        detached_spawns: Some(true),
     };
     let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");
@@ -199,7 +201,10 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
     // The sentence above the table counts them, and a count written in prose is
     // the first half of a table to go stale — this one said "five keys and four
     // tables" over a table of five keys and five tables, for four releases.
-    let words = ["no", "One", "Two", "Three", "Four", "Five", "Six", "Seven"];
+    let words = [
+        "no", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+        "Ten", "Eleven", "Twelve",
+    ];
     let sentence = format!(
         "{} keys live there, and {} tables",
         words[scalars],
@@ -309,37 +314,47 @@ fn no_documentation_surface_still_claims_the_old_asymmetry() {
 }
 
 #[test]
-fn the_deprecated_step_cap_is_documented_where_it_is_announced() {
-    // The notice, the README and the changelog have to agree on three things:
-    // the key is deprecated, `[run] max_steps` is where it goes, and 0.16.0 is
-    // when it stops being read. A deprecation whose three statements disagree is
-    // one an operator cannot act on.
-    let notice = io_cli::settings::deprecated_max_steps(Some(&io_cli::settings::CliSettings {
-        max_steps: Some(40),
-        ..Default::default()
-    }))
-    .expect("a file that wrote the key earns the notice");
+fn the_removed_step_cap_is_announced_where_it_was_promised() {
+    // F12. The key is GONE from `CliSettings` as of 0.16.0, and the notice is
+    // not — because `CliSettings` carries no `deny_unknown_fields`, so a file
+    // still holding the key would otherwise be ignored in silence and the
+    // operator's step cap would change with no error anywhere.
+    //
+    // So the notice reads the RAW section now. It is built through
+    // `Config::from_toml` rather than from a struct, which is the only way left
+    // to express "a file that still has this key" — there is no field to set.
+    let still_has_it = io_harness::Config::from_toml(
+        "[app.io-cli]\nmax_steps = 40\ntheme = \"dark\"\n",
+    )
+    .expect("a leftover key still LOADS, which is exactly the problem");
+    let notice = io_cli::settings::deprecated_max_steps(&still_has_it)
+        .expect("a file that still writes the key earns the notice");
     assert!(notice.contains("[run] max_steps"), "{notice}");
     assert!(notice.contains("0.16.0"), "{notice}");
+    assert!(
+        notice.contains("no longer read"),
+        "the notice must say the key is dead, not merely deprecated: {notice}"
+    );
 
     for name in ["README.md", "CHANGELOG.md"] {
         let text = read(name);
         assert!(
             text.contains("`[app.io-cli] max_steps`"),
-            "{name} should name the deprecated key",
+            "{name} should name the removed key",
         );
         assert!(
             text.contains("removed in 0.16.0"),
-            "{name} should say when the key stops being read",
+            "{name} should say when the key stopped being read",
         );
     }
 
-    // And a file that never wrote it is told nothing, which is the whole of F12.
-    assert!(io_cli::settings::deprecated_max_steps(None).is_none());
-    assert!(io_cli::settings::deprecated_max_steps(
-        Some(&io_cli::settings::CliSettings::default())
-    )
-    .is_none());
+    // A file that never wrote it is told nothing, which is the other half of F12
+    // — a notice on a session that is not affected teaches operators to stop
+    // reading notices.
+    let clean = io_harness::Config::from_toml("[app.io-cli]\ntheme = \"dark\"\n").unwrap();
+    assert!(io_cli::settings::deprecated_max_steps(&clean).is_none());
+    let empty = io_harness::Config::from_toml("").unwrap();
+    assert!(io_cli::settings::deprecated_max_steps(&empty).is_none());
 }
 
 #[test]

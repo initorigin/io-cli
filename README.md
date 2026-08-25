@@ -628,7 +628,7 @@ io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
 
-Six keys live there, and five tables:
+Eight keys live there, and five tables:
 
 | Key | Is |
 | --- | --- |
@@ -637,7 +637,9 @@ Six keys live there, and five tables:
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
 | `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `~/.io-cli/skills`. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}` and `${file:…}` and nothing else. |
-| `max_steps` | how many steps one turn may take. **Deprecated in 0.14.0 and removed in 0.16.0**: `[run] max_steps` is where the number moves to. It still wins over `[run]` until then, and a file carrying it is told so once at session start. |
+| `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
+| `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |
+| `detached_spawns` | whether a spawn may detach at all. Absent, it may. `false` buys a trace with every child's whole life in it, which a detached child gives up. |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
 | `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
 | `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Merged with the top-level `[[mcp]]`, and wins a collision of ids. |
@@ -872,10 +874,13 @@ Pre-1.0 and staying there until the owner says otherwise. A minor release may
 change what a session looks like — 0.11.0 rewrote the transcript's vocabulary,
 and the release before it moved where a question is answered. What you can rely
 on is that every one of those is in [CHANGELOG.md](CHANGELOG.md), said plainly,
-and that a configuration file written for an older release keeps working: no key
-has been removed or renamed since 0.1.0. One key is on its way out —
-`[app.io-cli] max_steps`, deprecated in 0.14.0 and removed in 0.16.0 — and it
-keeps working, and keeps winning, until then. **A section that was ignored may
+and that a configuration file written for an older release keeps working. **One
+key has been removed in the product's life so far**: `[app.io-cli] max_steps`,
+deprecated in 0.14.0 and removed in 0.16.0, with two releases' notice given in
+the terminal, the README and the changelog. A file that still carries it loads
+exactly as before — the key is ignored rather than rejected — and the session
+says so once at startup, naming the number that is no longer in force and
+`[run] max_steps` as where the cap lives now. **A section that was ignored may
 start being read**, which 0.14.0 did to eleven of them, and that is a behaviour
 change for a file that already carried one; it is the migration note in
 [Configuration](#configuration) and in the changelog rather than something to

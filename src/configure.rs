@@ -132,6 +132,11 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.diff",
     "app.io-cli.glyphs",
     "app.io-cli.plain",
+    // The three `TaskContract` ceilings io-harness gives no key of its own, so
+    // io-cli names them here and `/config` is where an operator meets them.
+    "app.io-cli.max_parallel_reads",
+    "app.io-cli.spawn_background_after_secs",
+    "app.io-cli.detached_spawns",
 ];
 
 /// Whether a key's value is a credential and must never be shown in full.

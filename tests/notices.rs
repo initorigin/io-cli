@@ -48,9 +48,12 @@ fn text(lines: &[ratatui::text::Line<'_>]) -> String {
 /// environment variable is one that cannot race another test.
 fn startup_notice(toml: &str) -> Option<String> {
     let config = Config::from_toml(toml).expect("the fixture file parses");
-    let (stored, complaint) = settings::stored(&config);
+    let (_, complaint) = settings::stored(&config);
     assert_eq!(complaint, None, "the fixture section reads");
-    settings::deprecated_max_steps(stored.as_ref())
+    // The RAW section, since 0.16.0 removed the typed field. A file still
+    // carrying the key LOADS — `CliSettings` has no `deny_unknown_fields` — which
+    // is exactly why the notice has to exist.
+    settings::deprecated_max_steps(&config)
 }
 
 fn notice(app: &App) -> String {
@@ -209,24 +212,25 @@ fn stopping_a_turn_says_one_thing_and_says_it_once() {
     );
 }
 
-/// **F12 — a file that wrote `[app.io-cli] max_steps` is told all three things.**
-/// The key it used, the number it got — this key still wins, so the number the
-/// notice quotes is the number the turn runs on — and `[run] max_steps` as where
-/// it moves to before 0.16.0 takes it away. A deprecation that names only the key
-/// leaves the operator to find the replacement themselves, and one that names
-/// only the replacement leaves them unsure whether their number is still being
-/// read.
+/// **F12 — a file that still writes `[app.io-cli] max_steps` is told all three
+/// things.** The key it used, the number that is NOT in force — the key was
+/// removed in 0.16.0, so the number it quotes is the one the turn is no longer
+/// running on — and `[run] max_steps` as where the cap lives now. A removal that
+/// names only the key leaves the operator to find the replacement themselves,
+/// and one that names only the replacement leaves them unsure whether their
+/// number was ever being read.
 ///
 /// Sabotage: emit the notice whenever the key is *readable* rather than when it
 /// was written — this arm still passes, and the two below it fail.
 #[test]
-fn a_file_that_wrote_the_deprecated_step_cap_is_told_where_it_moves() {
+fn a_file_that_still_writes_the_removed_step_cap_is_told_where_the_cap_lives() {
     let said = startup_notice("[app.io-cli]\ntheme = \"dark\"\nmax_steps = 40\n")
-        .expect("a file carrying the deprecated key earns a line");
+        .expect("a file carrying the removed key earns a line");
 
     assert!(said.contains("[app.io-cli] max_steps"), "{said:?}");
-    assert!(said.contains("40"), "the value it took: {said:?}");
-    assert!(said.contains("[run] max_steps"), "where it moves: {said:?}");
+    assert!(said.contains("40"), "the value it asked for: {said:?}");
+    assert!(said.contains("[run] max_steps"), "where the cap lives: {said:?}");
+    assert!(said.contains("no longer read"), "that it is dead: {said:?}");
 }
 
 /// **F12 — the new spelling alone says nothing.** `[run] max_steps` is where the
@@ -262,29 +266,31 @@ fn a_file_with_neither_spelling_is_told_nothing() {
         "the section is there; the deprecated key in it is not",
     );
     assert_eq!(startup_notice(""), None, "and an empty file says nothing");
-    assert_eq!(
-        settings::deprecated_max_steps(None),
-        None,
-        "nor does a session with no readable section at all",
-    );
 }
 
-/// **F12 — the deprecated key keeps winning, and the notice quotes what won.**
-/// Nothing about its precedence changes in this release: it is applied after
-/// `Config::apply_to` and therefore over a `[run] max_steps` in the same file,
-/// exactly as `tests/contract.rs`'s F4 asserts. Deprecating a key by quietly
-/// demoting it would break a working file in the release that promised only to
-/// say where the key went.
+/// **F12 — the removed key no longer wins anything, and the file is told.**
 ///
-/// Sabotage: apply `[app.io-cli] max_steps` before `Config::apply_to` instead of
-/// after — under which the contract takes the `[run]` value and this fails while
-/// the notice, still naming the number nobody ran on, keeps passing.
+/// Through 0.15.0 `[app.io-cli] max_steps` was applied after `Config::apply_to`
+/// and therefore beat a `[run] max_steps` in the same file. 0.16.0 removes it,
+/// which the 0.14.0 deprecation promised in the operator's own terminal, in the
+/// README and in the CHANGELOG.
+///
+/// **The removal is silent by construction and that is what this test is really
+/// about.** `CliSettings` carries no `#[serde(deny_unknown_fields)]`, so a file
+/// still holding the key parses fine and the key is simply ignored — no error,
+/// no warning, and a step cap that quietly changed. So both halves are asserted
+/// together: the `[run]` value is what the turn runs on now, AND the file is
+/// told its key is dead.
+///
+/// Sabotage: delete the notice along with the field — under which the first half
+/// still passes, the contract is still right, and an operator's turns quietly
+/// start ending at a different number with nothing on screen to say why.
 #[test]
-fn the_deprecated_step_cap_still_beats_the_run_table() {
+fn the_removed_step_cap_no_longer_wins_and_the_file_is_told() {
     let toml = "[run]\nmax_steps = 20\n\n[app.io-cli]\nmax_steps = 7\n";
-    let config = Config::from_toml(toml).expect("the fixture file parses");
+    let config = Config::from_toml(toml).expect("a file with the dead key still parses");
     let (stored, complaint) = settings::stored(&config);
-    assert_eq!(complaint, None);
+    assert_eq!(complaint, None, "an unknown key in [app.io-cli] is not a complaint");
 
     let (answerer, _questions) = io_cli::intent::channel();
     let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
@@ -298,13 +304,23 @@ fn the_deprecated_step_cap_still_beats_the_run_table() {
     );
 
     assert_eq!(
-        contract.max_steps, 7,
-        "the deprecated key is the strongest layer and still is",
+        contract.max_steps, 20,
+        "`[run] max_steps` is the whole answer now; the removed key won nothing",
     );
-    let said = startup_notice(toml).expect("and the file is told the key is going away");
+
+    let said = startup_notice(toml).expect("a file still carrying the key is told");
+    assert!(
+        said.contains("no longer read"),
+        "the notice must say the key is dead rather than going away: {said:?}",
+    );
+    assert!(
+        said.contains("[run] max_steps"),
+        "the notice must say where the cap lives now: {said:?}",
+    );
     assert!(
         said.contains('7'),
-        "the notice quotes the number the turn actually runs on: {said:?}",
+        "the notice quotes the number that is NOT in force, which is the fact \
+         the operator needs to act on: {said:?}",
     );
 }
 
@@ -327,7 +343,7 @@ fn every_startup_notice_reaches_the_scrollback() {
     let startup = [
         "`[app.io-cli]` could not be read; this session is running on the defaults",
         "`ctrl+q` is not an action this session knows",
-        "`[app.io-cli] max_steps` is deprecated; it moves to `[run] max_steps`",
+        "`[app.io-cli] max_steps` was removed in 0.16.0 and is no longer read",
     ];
 
     let mut app = App::new(DARK, "opus-5");

@@ -306,7 +306,7 @@ async fn drive(
     // why the answer comes from the field and not from the cap this session ended
     // up with — every session has one of those. The key keeps winning until
     // 0.16.0; this is the one line that says where it went.
-    if let Some(notice) = settings::deprecated_max_steps(stored.as_ref()) {
+    if let Some(notice) = settings::deprecated_max_steps(&config) {
         notices.push(notice);
     }
     let store = settings::store_path().ok_or("no place to keep the run store")?;

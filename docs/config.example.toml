@@ -272,6 +272,15 @@ fleet = "ctrl+f"
 # max_depth = 2
 # max_total_tokens = 200000
 
+# The three ceilings io-harness has no configuration key for. They are
+# TaskContract fields, so io-cli names them in its own section — and it applies
+# them in the half a session turn and an `io exec` run share, so what you write
+# here bounds your terminal exactly as it bounds CI.
+#
+# max_parallel_reads = 10          # read-only tool calls at once; 0 clamps to 1
+# spawn_background_after_secs = 120  # when a slow child is backgrounded
+# detached_spawns = true           # whether a spawn may detach at all
+
 # --- io-cli's own capabilities ----------------------------------------------
 #
 # Every setting below reaches EVERY turn, contained or not. These are fields of
