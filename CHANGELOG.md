@@ -6,6 +6,138 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-25
+
+The configuration file reaches your terminal.
+
+**Eleven sections of `io.toml` that an interactive session read past are now
+applied to every turn.** This is a behaviour change for any file that already
+carries one, so it is the first thing said: `[sandbox]`, `[run]`,
+`[run.commit_identity]`, `[instructions]`, `[[mcp]]`, `[[lsp]]`, `[[agent]]`,
+`[web]`, `[memory]` and `[browser]` were read by io-harness, validated by
+io-harness, documented in this product's own README and configuration example,
+and then discarded by every session turn — a developer who wrote
+`[run] max_tokens = 200000` and watched a turn spend past it was reading a file
+that did nothing, with nothing on screen saying so. The reason the documentation
+gave had been stale for three releases: the harness's steerable turn built its
+own contract, and the flat turn stopped taking that path in 0.11.0. What was left
+was an omission and not a constraint. A session turn and an `io exec` run now
+build the config-derived half of their contract from one call, so what the file
+says has the same effect in a terminal as it has in CI.
+
+**A `[run]` block written for CI now bounds a conversation.** `max_steps = 20` is
+a reasonable thing to have set for an unattended run and an unreasonable cap on a
+session, and if that is what your file says, that is now what your terminal does.
+The session names what the file turned on when it starts, the status line carries
+each budget in force, and `/status` lists them all — so a turn that will stop at a
+ceiling says which one before it gets there rather than after. An operator who
+wants `[run]` for CI only moves it to a project file or narrows it by scope.
+
+**`[web]` is a capability and not a preference, and it deserves its own
+sentence.** Reaching a session turn it gives the model the provider's own search
+and fetch, and it is the *vendor* that dials the URL — so the `net` rule in your
+permission policy is not what governs it. That rule decides what this machine may
+reach. A `[web]` table that did nothing in your terminal yesterday turns something
+on in it today, from a file you may have written for something else, which is why
+the session says so in its own words at start rather than folding it into a list
+of what was applied.
+
+**`/status` commits the whole session state into the scrollback.** One fact per
+row: the workspace and the session id with the turn its head is at, the provider
+and model, every policy layer by name with the acts it governs, the containment
+caps and the draw against them, the sandbox mode asked for beside the backend that
+actually answered on this host, every budget with what is left, how full the
+context is, and what is connected — MCP servers and language servers as answered
+of configured, the browser, the skills directory. Every field on it is a value
+io-harness supplied. It commits upward rather than opening a pane, the same answer
+`Ctrl+T` and `/expand` already give, and it is not a table: a table has a column
+width, the widest cell here is a workspace path, and a row too long for the
+terminal is folded rather than cut. It is a command and not a key, deliberately —
+a key is cheap to add later and expensive to take back once it is in anybody's
+fingers.
+
+**The ceilings in force are on the status line, beside what has been drawn against
+them.** `left 17/20 steps`, `left 12.4k/200.0k tok`, `left 4m30s/10m00s`, for each
+of the step, token and duration budgets that exists and for no others: a budget
+you did not set draws no field, so a session that configured nothing looks exactly
+as it did. They are read off the contract the turn was built from rather than
+composed a second time out of the file, which is the only place the order of
+precedence is already resolved.
+
+**A turn that ends on a budget says which budget.** `step_cap_reached`,
+`time_budget_exceeded` and `cost_budget_exceeded` were reported through the error
+path, so what an operator met under a half-finished answer was
+`error: step_cap_reached` — a ceiling drawn as a crash. All four outcomes are
+successful calls in io-harness and always have been. The word stays the harness's,
+because this interface reports what the harness decided and never relabels it;
+what changed is the weight it is said in.
+
+**Three event kinds reach the transcript that never have.** All three have been
+emitted into every ordinary session and dropped here. **Every outbound connection
+a contained command dialled** is now a line carrying the host as the command asked
+for it, the port and whether the policy permitted it — never a resolved address,
+because the policy's patterns are written against names and a row showing
+`140.82.121.4` would not match the rule that decided it. A refusal is drawn as a
+refusal and not as an error: nothing broke, the boundary worked. An absent dial
+line is **not** evidence of no egress — a permissive or all-or-nothing policy
+names no host and emits none of these ever. **Each sandbox created, capped or
+destroyed** says so, with the backend that isolated it where io-harness carries
+one and no invented name where it does not; a cap reached is drawn as a limit
+reached, because the sandbox did exactly what its configuration told it to.
+**A stalled agent is on screen while it is stalling**, naming the step it stopped
+on and how long it has been there, rather than reaching you as a session that had
+gone quiet and then, once the run was over, as one word on the outcome line.
+
+**`io exec` takes io-cli's own step floor of a thousand**, where it used to take
+io-harness's twelve. Twelve steps is not a turn, so an unattended job ended
+`error: step_cap_reached` over half-finished work with nobody watching — the same
+defect the floor exists to fix in a session, made worse rather than better by the
+run being unattended. A `[run] max_steps` in the file still beats the floor, in
+either direction.
+
+**Servers named in both scopes are merged rather than one list replacing the
+other.** io-harness's `with_mcp` and `with_lsp` assign the whole collection, so
+applying `[[mcp]]` and then `[[app.io-cli.mcp]]` in sequence silently discarded
+the first list — an operator with servers in both would have lost one set with no
+message. They are concatenated and deduplicated by id, the `[app.io-cli]` entry
+winning a collision because it is the more specific scope, and the session names
+the id that lost.
+
+**`[app.io-cli] max_steps` is deprecated, still honoured, and removed in 0.16.0.**
+It exists because the flat turn once had no way to raise io-harness's cap of
+twelve, and `[run] max_steps` now does that job — two spellings for one number in
+one file, where the less discoverable of the two wins. Nothing about it changes
+here: a file carrying it gets exactly the cap it asks for, and still beats
+`[run] max_steps`. What is new is one line at session start naming the key, the
+value it took and where the number moves to. A file carrying only `[run] max_steps`
+says nothing, and neither does a file carrying neither — a deprecation notice on a
+session that is not using the deprecated key teaches operators to stop reading the
+start-up lines.
+
+**A startup notice is committed rather than said.** Six things can put a sentence
+in that list — a section io-harness could not read, a keybinding naming no action,
+a templates directory that would not walk, a skills directory that would not
+either, a server named in both scopes and this release's `max_steps` deprecation —
+and they were written to the footer, which *replaces*: a file with several things
+wrong with it showed the last one and silently dropped every earlier one. Each
+takes a row of its own in the scrollback now.
+
+**The documentation said the opposite of the code, and in five places it had been
+wrong since 0.11.0.** `docs/config.example.toml` carried a block headed "Not read
+by an interactive session" naming eight tables; the README marked `skills`,
+`[[app.io-cli.mcp]]`, `[[app.io-cli.lsp]]` and `[app.io-cli.browser]` "contained
+turns only", said the capabilities and the fan-out were one switch, and said an
+uncontained session could not be given a responder or a plan gate. All four
+capabilities have been applied unconditionally, and the responder with them, since
+0.11.0 gave the ordinary turn a contract. Those claims are gone. Nothing rides
+`[app.io-cli.containment]` but the fan-out.
+
+No key is added, removed or renamed, and a 0.13.1 configuration file is a valid
+0.14.0 configuration file; what changes is what an existing one does, which is the
+migration note above. An older binary reading a file that has moved to
+`[run] max_steps` falls back to io-cli's own floor, which is what it did before
+the key existed. Nothing is asked of io-harness; the pin stays at 0.66.
+
 ## [0.13.1] - 2026-08-24
 
 The session answers every keystroke.

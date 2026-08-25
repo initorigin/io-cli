@@ -318,11 +318,11 @@ fn f8_tokens_are_coalesced_rather_than_committed_one_at_a_time() {
 /// one, and the two that defer still defer.
 ///
 /// The old invariant — *no* kind renders to nothing — died with the wildcard that
-/// made it true, and `Stalled` is where that shows: it is silent here now,
-/// because the run's own outcome carries the word and a line beside it would say
-/// the same thing twice. What this test still owns is that a `Line` kind is not
-/// quietly emptied, and that a token and a tool call are deferred rather than
-/// discarded.
+/// made it true, and `ApprovalRequested` is where that shows: it is silent here,
+/// because the overlay is on screen at the moment the question is asked and a
+/// line beside it would say the same thing twice. What this test still owns is
+/// that a `Line` kind is not quietly emptied, and that a token and a tool call
+/// are deferred rather than discarded.
 #[test]
 fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
     let mut events = Events::new(DARK);
@@ -422,6 +422,14 @@ fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
     assert_eq!(outcome_tone("success"), Tone::Success);
 
     // Stopped deliberately: not a failure, and not silence either.
+    //
+    // The three ceilings joined `budget_ceiling_reached` here in 0.14.0, which is
+    // the release that gave an interactive session budgets to reach in the first
+    // place. A ceiling is the operator's own instruction being carried out, so
+    // reporting one through the error path tells them their run broke at the
+    // moment their limit held — and `src/contract.rs` documents `error:
+    // step_cap_reached` under an unfinished answer as the exact reason io-cli
+    // raised the step floor at all. Reaching a bound you set is not a failure.
     for outcome in [
         "cancelled",
         "denied",
@@ -429,6 +437,9 @@ fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
         "plan_rejected",
         "stalled",
         "budget_ceiling_reached",
+        "step_cap_reached",
+        "time_budget_exceeded",
+        "cost_budget_exceeded",
     ] {
         assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
     }
@@ -1987,4 +1998,201 @@ fn f5_a_one_line_goal_is_still_one_row() {
         .collect();
     assert_eq!(said.len(), 1, "{committed:?}");
     assert!(said[0].contains("count the tests"), "{committed:?}");
+}
+
+/// 0.14.0 F7 — a dial is drawn, permitted or refused.
+///
+/// Sabotage: restore `Disposition::Silent` on the `dialed` row in
+/// `src/triage.rs`, under which only F7 fails — on both lines being gone from
+/// the scrollback, with `Status::unknown` unmoved, because a triaged-silent kind
+/// was never counted there and cannot start being.
+#[test]
+fn f7_a_dial_carries_the_host_as_asked_the_port_and_the_verdict() {
+    let mut events = Events::new(DARK);
+
+    let permitted = rendered(
+        &mut events,
+        EventKind::Dialed {
+            host: "api.github.com".into(),
+            port: 443,
+            allowed: true,
+        },
+    );
+    // **The name the command asked for, beside the port, exactly as the event
+    // carried them.** Nothing in this process resolves anything, so the only way
+    // an address could appear on this row is if the arm composed a target of its
+    // own — and an address would not match the policy pattern that decided the
+    // dial, which is written against names.
+    assert!(permitted.contains("api.github.com:443"), "{permitted:?}");
+    // The verdict in a word and not in a colour alone: `NO_COLOR`, a monochrome
+    // terminal and a screen reader all read the words and none of them read the
+    // tone.
+    assert!(permitted.contains("permitted"), "{permitted:?}");
+    assert!(!permitted.contains("refused"), "{permitted:?}");
+
+    let lines = events.event(
+        &event(EventKind::Dialed {
+            host: "api.github.com".into(),
+            port: 443,
+            allowed: false,
+        }),
+        Duration::ZERO,
+    );
+    let refused = flatten(lines.clone());
+    assert!(refused.contains("refused"), "{refused:?}");
+    assert!(refused.contains("api.github.com:443"), "{refused:?}");
+    // Its own tone and not the error one, because nothing broke: the boundary
+    // worked. Asserted against the span's style rather than its text, since that
+    // is the half a `contains` cannot see.
+    let refusal = DARK.style(Tone::Refused);
+    assert!(
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.content.contains("refused") && span.style.fg == refusal.fg),
+        "a refused dial is drawn in the refusal tone: {lines:?}",
+    );
+}
+
+/// 0.14.0 F8 — a sandbox says what happened and what isolated it.
+///
+/// Sabotage: draw `cap_hit` through the error path — `Tone::Error` in place of
+/// the warning — under which only F8 fails, on a run whose cap held exactly as
+/// its operator configured it being reported to them as a run that broke.
+#[test]
+fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists() {
+    let mut events = Events::new(DARK);
+
+    // `create` and `exec` are the two io-harness sets a backend on, so the line
+    // carries what isolated the work.
+    for (kind, expected) in [("create", "created"), ("exec", "ran")] {
+        let line = rendered(
+            &mut events,
+            EventKind::Sandbox {
+                kind: kind.into(),
+                backend: Some("macos-sandbox-exec".into()),
+            },
+        );
+        assert!(line.contains(expected), "{kind}: {line:?}");
+        assert!(line.contains("macos-sandbox-exec"), "{kind}: {line:?}");
+    }
+
+    // `cap_hit` and `destroy` carry `None` always, so there is no backend to
+    // draw — and none is worked out here and printed as though the event had
+    // said it.
+    for kind in ["cap_hit", "destroy"] {
+        let line = rendered(
+            &mut events,
+            EventKind::Sandbox {
+                kind: kind.into(),
+                backend: None,
+            },
+        );
+        assert!(!line.trim().is_empty(), "{kind} drew nothing: {line:?}");
+        assert!(
+            !line.contains("sandbox-exec") && !line.contains("none"),
+            "{kind} has no backend and this line invented one: {line:?}",
+        );
+    }
+
+    // **A limit reached, and not a failure.** The sandbox did what it was
+    // configured to do, and the error path would say the opposite of that to the
+    // one person who chose the number.
+    let cap = rendered(
+        &mut events,
+        EventKind::Sandbox {
+            kind: "cap_hit".into(),
+            backend: None,
+        },
+    );
+    assert!(cap.contains("limit"), "{cap:?}");
+    assert!(
+        !cap.contains("error"),
+        "a cap that held is not an error: {cap:?}",
+    );
+    assert!(
+        !cap.contains("failed") && !cap.contains("broke"),
+        "a cap that held did not fail: {cap:?}",
+    );
+}
+
+/// 0.14.0 F8 — the `dial` kind draws nothing, because F7 already drew that dial.
+///
+/// io-harness builds it as a `destroy` event with the kind overwritten and emits
+/// it immediately beside `EventKind::Dialed` for the same connection, so a
+/// session drawing both would put every dial in the transcript twice — and the
+/// copy here is the poorer one, carrying the word and neither the host, the port
+/// nor the verdict. `gate_phase_failed` and `gate_output` are the other two that
+/// draw nothing: they belong to an execution gate, and a session has none until
+/// 0.24.0.
+///
+/// Sabotage: give `"dial"` a sentence of its own in the `Sandbox` arm, under
+/// which only this fails, on one dial arriving as two rows that disagree about
+/// how much they know.
+#[test]
+fn f8_the_dial_kind_of_a_sandbox_event_is_left_to_the_dial_itself() {
+    let mut events = Events::new(DARK);
+    for kind in ["dial", "gate_phase_failed", "gate_output"] {
+        let lines = events.event(
+            &event(EventKind::Sandbox {
+                kind: kind.into(),
+                backend: None,
+            }),
+            Duration::ZERO,
+        );
+        assert!(lines.is_empty(), "{kind} drew a line: {lines:?}");
+    }
+    // Drawn nowhere is not the same as undecided. `sandbox` has a disposition,
+    // so none of these reaches the counter that exists for a kind nobody has
+    // decided about.
+    assert_eq!(
+        events.unknown(),
+        0,
+        "a kind the table holds was counted as one this release has never seen",
+    );
+}
+
+/// 0.14.0 F9 — a stalled agent is on screen before anybody interrupts it.
+///
+/// `EventKind::Stalled` is a unit variant carrying nothing at all, so the line is
+/// composed from the run state around it: `RunEvent::step` for the step it
+/// stopped on, and the session age the driver handed in against the age the last
+/// step opened at for how long it has been there. **Both are stated by this
+/// test and neither is measured** — N1 forbids the renderer a clock, and a line
+/// composed only of state handed to it is what that rule buys.
+///
+/// Sabotage: restore `Disposition::Silent` on the `stalled` row in
+/// `src/triage.rs`, under which only F9 fails, on the line's absence rather than
+/// on `Status::unknown`, and a stall goes back to being visible as a session
+/// that has simply stopped saying anything.
+#[test]
+fn f9_a_stall_names_the_step_it_stopped_on_and_how_long_it_has_been_there() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::ZERO);
+    // The step that goes on to stall opens four seconds into the session …
+    events.event(
+        &RunEvent::new(
+            1,
+            6,
+            EventKind::Step {
+                decision: "read the same file again".into(),
+                tool_call: "read_file".into(),
+                tokens: 40,
+                changed: false,
+            },
+        ),
+        Duration::from_secs(4),
+    );
+    // … and the stall arrives on step seven, two and a half seconds after it.
+    let stalled = flatten(events.event(
+        &RunEvent::new(1, 7, EventKind::Stalled),
+        Duration::from_millis(6_500),
+    ));
+
+    assert!(stalled.contains("step 7"), "{stalled:?}");
+    assert!(stalled.contains("2.5s"), "{stalled:?}");
+    // And what it means, which is the half a reader of a quiet session would
+    // otherwise assume the opposite of: the run is over rather than working.
+    assert!(stalled.contains("circles"), "{stalled:?}");
+    assert!(stalled.contains("stops here"), "{stalled:?}");
 }

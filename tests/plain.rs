@@ -610,3 +610,101 @@ fn f5_the_activity_line_says_its_state_in_a_word_under_every_mode() {
         "a plain session animated its activity line: {plain:?}",
     );
 }
+
+/// **0.14.0 F11 — `/status` in plain mode is the same content in the ASCII set,
+/// with no colour carrying meaning of its own.**
+///
+/// The three switches this codebase models stay three, and this test is what says
+/// `/status` did not grow a fourth. The **glyph set** is `Theme::glyphs`, which
+/// `Glyphs::resolve` already answers ASCII for whenever `--plain` is on, so the
+/// plain page is the rich page with the dash and the rule substituted and nothing
+/// else moved — asserted row for row, not by a count. **`NO_COLOR`** is
+/// `Theme::coloured`, and the page under `MONO` is character-for-character the
+/// page under `DARK`, which is the whole of "no colour carries a meaning on its
+/// own": every fact here is spelled in words, so a reader with no colour at all
+/// loses nothing. And **`Status::plain`** governs whether anything *animates*,
+/// which nothing committed into a scrollback ever does — so it changes this
+/// surface not at all, and that is asserted rather than assumed.
+///
+/// Sabotage: render it as a table — under which only F11 fails, at eighty
+/// columns. The row-for-row comparison here is the arm that would also catch a
+/// second, quieter failure: a page that padded its labels into a column would
+/// pad them to different widths under two glyph sets whose dashes differ, and the
+/// two pages would stop being the same content.
+#[test]
+fn f11_status_in_plain_mode_is_the_same_content_in_the_ascii_set() {
+    use io_cli::status::Status;
+
+    let dir = tempfile::tempdir().expect("a workspace");
+    let store = Store::memory().expect("an in-memory store");
+    let session = Session::open(&store, dir.path()).expect("a session");
+    let policy = Policy::permissive()
+        .layer("ops-baseline")
+        .allow_read("src/*")
+        .deny_net("*");
+    let contract = io_harness::TaskContract::workspace("summarise the module", dir.path())
+        .with_max_steps(20)
+        .with_skills(dir.path().join("skills"));
+
+    // One page, drawn with a given glyph set and a given palette. Everything else
+    // about the session is identical, so any difference between two calls is the
+    // difference between the two switches.
+    let page = |glyphs: io_cli::glyphs::Glyphs, palette: Theme, plain: bool| -> Vec<String> {
+        let theme = palette.with_glyphs(glyphs);
+        let mut status = Status::new("anthropic/claude-sonnet-4");
+        // The mode, set exactly where the driver sets it.
+        status.plain = plain;
+        status.budgets = io_cli::status::Budgets::in_force(&contract);
+        io_cli::status::committed(&status, &session, &policy, &contract, None, &theme, 80)
+            .iter()
+            .map(text_of)
+            .collect()
+    };
+
+    let rich = page(Glyphs::resolve(false, true, None), DARK, false);
+    let ascii = page(Glyphs::resolve(true, true, None), DARK, true);
+
+    assert_eq!(
+        rich.len(),
+        ascii.len(),
+        "plain mode lost or gained a row rather than substituting a glyph:\n{rich:#?}\n{ascii:#?}",
+    );
+    assert!(
+        ascii.iter().all(|row| row.is_ascii()),
+        "a row a terminal cannot draw reached the mode that exists because it \
+         cannot: {ascii:#?}",
+    );
+    for (rich_row, ascii_row) in rich.iter().zip(&ascii) {
+        let substituted = rich_row
+            .replace(io_cli::glyphs::UNICODE.dash, io_cli::glyphs::ASCII.dash)
+            .replace(
+                io_cli::glyphs::UNICODE.rule,
+                &io_cli::glyphs::ASCII.rule.to_string(),
+            );
+        assert_eq!(
+            substituted, *ascii_row,
+            "the two sets say different things, not the same thing differently",
+        );
+    }
+
+    // No colour carries a meaning of its own: with every tone the same, the page
+    // is the same page.
+    let uncoloured = page(
+        Glyphs::resolve(false, true, None),
+        io_cli::theme::MONO,
+        false,
+    );
+    assert_eq!(
+        rich, uncoloured,
+        "a fact on the page was carried by its colour rather than by its words",
+    );
+
+    // And the mode itself changes nothing here, because there is nothing on a
+    // committed page to still.
+    let unstilled = page(Glyphs::resolve(true, true, None), DARK, false);
+    assert_eq!(
+        ascii, unstilled,
+        "`Status::plain` moved a committed surface, which means it is being read \
+         as a fourth switch rather than as the animation gate it is",
+    );
+}

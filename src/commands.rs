@@ -126,6 +126,17 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/expand",
         "commit the last step's full detail into the scrollback",
     ),
+    // **A command and not a key, and the decision is recorded rather than left
+    // open.** The keys are nearly all spoken for, nothing yet shows this is
+    // checked often enough to spend one of the few that are left, and a key is
+    // cheap to add later and expensive to take back once it is in anybody's
+    // fingers. It sits beside `/expand` because the two are the same *kind* of
+    // surface — both commit upward into the terminal's own scrollback rather
+    // than opening a pane — and a reader looking for one will find the other.
+    (
+        "/status",
+        "commit the whole session state into the scrollback",
+    ),
     ("/copy", "put the last answer on the system clipboard"),
     (
         "/copy diff",
@@ -430,6 +441,17 @@ pub enum Action {
     /// The detail is in the run's durable trace already — this reads it back
     /// rather than the screen having been the archive.
     Expand,
+    /// Commit the whole session state into the scrollback.
+    ///
+    /// **Into the scrollback and never into a pane**, which is the same answer
+    /// [`Action::Expand`] and [`Action::Transcript`] give to "show me more": the
+    /// viewport is four rows and cannot grow, and the terminal's own search,
+    /// selection and copy-mode already work on everything committed above it.
+    /// Every field of it is a value io-harness supplied — the policy layers, the
+    /// backend that actually answered, the draw against the tree's ceiling, the
+    /// budgets in force, the context fill, the servers that came up — so what is
+    /// committed is the state io-harness is in and not io-cli's account of it.
+    Status,
     /// Put something on the system clipboard over OSC 52.
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
@@ -593,6 +615,11 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
                 .and_then(|word| word.parse().ok()),
         ),
         "expand" => Action::Expand,
+        // One spelling. `/state` is not taken as an alias: the word on the
+        // status line, in the README and in this table is `status`, and a second
+        // name for a surface nobody has typed yet is a name to keep working
+        // forever in exchange for nothing.
+        "status" => Action::Status,
         // `/clear` and `/new` mean the same thing, for the reason `/resume` and
         // `/continue` do: both words are in the field's vocabulary and a reader
         // arrives having been taught one of them by another agent.

@@ -252,6 +252,18 @@ async fn drive(
     if let Some(complaint) = complaint {
         notices.push(complaint);
     }
+    // A server named in both `[[mcp]]` and `[[app.io-cli.mcp]]` is reconciled on
+    // every turn and reported here, once. The file does not change while the
+    // session runs, so the sentence is the same on the fiftieth turn as on the
+    // first — and a warning that repeats is one an operator learns to read past.
+    notices.extend(io_cli::contract::server_notices(&config, &capabilities));
+    // Said only by a file that actually wrote `[app.io-cli] max_steps`, which is
+    // why the answer comes from the field and not from the cap this session ended
+    // up with — every session has one of those. The key keeps winning until
+    // 0.16.0; this is the one line that says where it went.
+    if let Some(notice) = settings::deprecated_max_steps(stored.as_ref()) {
+        notices.push(notice);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -272,6 +284,7 @@ async fn drive(
         Interactive {
             screen,
             inputs,
+            config,
             catalogue_spec,
             store,
             session,
@@ -294,6 +307,12 @@ async fn drive(
 struct Interactive<'a, 'b> {
     screen: &'a mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &'b mut UnboundedReceiver<Event>,
+    /// The whole configuration, carried down to the one place a turn's contract
+    /// is built rather than re-read there. Every applicable section of it reaches
+    /// an interactive turn through `contract::session` from 0.14.0, which is what
+    /// this field exists for; the values already read out of it above — the
+    /// policy, `[app.io-cli]`, the templates — are read once and stay read once.
+    config: Config,
     catalogue_spec: ProviderSpec,
     store: Store,
     session: Session,
@@ -313,9 +332,14 @@ struct Interactive<'a, 'b> {
     /// means the session cannot fan out at all, which is every session that
     /// configures nothing.
     containment: Option<io_harness::Containment>,
-    /// What `[app.io-cli]` asked a turn's contract to carry. Reaches a turn only
-    /// where the contract does, which is the contained turn — see
-    /// [`io_cli::contract`].
+    /// What `[app.io-cli]` asked a turn's contract to carry, and the strongest of
+    /// the layers `io_cli::contract::configured` documents: it is applied after
+    /// `Config::apply_to`, so `[app.io-cli] max_steps` beats a `[run] max_steps`
+    /// and a `[[app.io-cli.mcp]]` beats a `[[mcp]]` of the same id. It reaches
+    /// every turn, contained or not — the coupling that made that untrue was
+    /// removed in 0.11.0, when the flat arm moved onto an entry point that takes
+    /// a caller's contract. 0.12.0 is a different change: it is where the plan
+    /// gate stopped riding containment.
     capabilities: io_cli::contract::Capabilities,
     /// What io-harness discovered in the configured skills directory, walked once
     /// at startup. Empty when nothing is configured and empty when the walk
@@ -335,6 +359,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.screen,
             self.inputs,
             make,
+            self.config,
             self.catalogue_spec,
             self.store,
             self.session,
@@ -360,6 +385,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &mut UnboundedReceiver<Event>,
     make: F,
+    // Held for the whole session and handed to every turn, because the file is
+    // what a turn's contract is built from since 0.14.0.
+    config: Config,
     spec: ProviderSpec,
     store: Store,
     mut session: Session,
@@ -384,8 +412,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // never briefly the defaults, and so the notices are the first thing in the
     // scrollback rather than something that appears under an answer.
     app.set_keys(keys);
+    // **Committed, not said, and through 0.13.1 this was `App::say` — which
+    // replaces.** A startup notice is not the answer to a keystroke: nobody has
+    // pressed anything yet, and the footer's line is gone at the first key that
+    // is. Worse than misplaced, `say` *replaces*: six things can put a sentence
+    // in this list — a section io-harness could not read, a keybinding naming no
+    // action, a templates directory that would not walk, a skills directory that
+    // would not either, a server named in both scopes, and this release's
+    // `max_steps` deprecation — and saying them in a loop shows the last one and
+    // silently drops every earlier one. Two of those six are new in 0.14.0, so a
+    // file with several things wrong with it is exactly the file that lost the
+    // most. What the session refused has to survive until the operator reads it,
+    // so each takes a row of its own in the scrollback — which is what the
+    // comment above has claimed since it was written.
     for notice in notices {
-        app.say(Tone::Warning, notice);
+        app.record(Tone::Warning, notice);
     }
     // Said once, before anything is drawn or any turn starts. Everything the mode
     // governs — the indicator, and the state words that go to scrollback in its
@@ -394,6 +435,28 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // Asked of the session rather than threaded down from `run`, so there is one
     // answer to "which workspace is this" and it is the harness's.
     app.set_root(session.root());
+    // **The ceilings are on the line before the first prompt, not after the first
+    // turn.** This release's whole claim is that the file an operator wrote is the
+    // session they get, and a session that showed no budget until a turn had
+    // already spent against one would be answering that question late — the
+    // moment to learn a conversation is capped at forty steps is before typing
+    // into it, not afterwards.
+    //
+    // Built from the same builder every turn uses, and bound `opening` so that
+    // `tests/contract.rs` can name all three call sites and still fail a fourth:
+    // recomposing the ceilings from `Config` here instead would be a second answer
+    // to the precedence question F1 exists to keep single, and it would drift the
+    // first time a layer moved. The goal is empty because nothing runs this one.
+    let (answerer, _opening_questions) = io_cli::intent::channel();
+    let opening = io_cli::contract::session(
+        String::new(),
+        session.root().to_path_buf(),
+        &config,
+        &capabilities,
+        std::sync::Arc::new(answerer),
+        None,
+    );
+    app.status.budgets = io_cli::status::Budgets::in_force(&opening);
     // What the file already says, read back rather than assumed. `None` means the
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.
@@ -1009,6 +1072,54 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let lines = expand(&session, &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // **Committed upward, exactly as `/expand` and `Ctrl+T` are.**
+                // The viewport is four rows and cannot grow, so everything that
+                // shows more of something writes into the terminal's own
+                // scrollback — one answer to "show me more" rather than three.
+                //
+                // The contract is built by the same call the next turn would
+                // build it with, so the configured rosters and the skills
+                // directory on this page are the ones that would actually reach
+                // it rather than a second reading of the file. A responder is
+                // required to build one and this contract runs nothing, so the
+                // channel is opened and dropped — the same shape
+                // `contract::server_notices` already uses to ask a question only
+                // `Config::apply_to` can answer. The plan gate is `None` here
+                // and deliberately: registering one turns io-harness's planning
+                // phase on, and reading the state must not change it.
+                Action::Status => {
+                    // Bound as `reading` and not as `contract`, deliberately:
+                    // `tests/plan.rs` finds the turn's builder by the binding
+                    // name and asserts the plan-gate argument on *that* call is
+                    // the operator's switch. This one is not a turn's contract
+                    // and must not be the call that gate is read off — a second
+                    // binding of the same name would hand the assertion the
+                    // wrong argument list, and it would go green on a `None`
+                    // that means something else entirely.
+                    let (answerer, _questions) = io_cli::intent::channel();
+                    let reading = io_cli::contract::session(
+                        String::new(),
+                        session.root().to_path_buf(),
+                        &config,
+                        &capabilities,
+                        std::sync::Arc::new(answerer),
+                        None,
+                    );
+                    let lines = io_cli::status::committed(
+                        &app.status,
+                        &session,
+                        &policy,
+                        &reading,
+                        // What the NEXT turn would run under, which is why
+                        // `/contain off` reads as not contained here: the caps
+                        // are only in force on a turn that takes the contained
+                        // entry point.
+                        containment.as_ref().filter(|_| contained),
+                        &app.theme,
+                        screen.width(),
+                    );
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
                 Action::Copy(what) => {
                     let (payload, said) = to_copy(&session, &store, what);
                     match payload {
@@ -1111,6 +1222,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     &store,
                     &mut session,
                     &effective,
+                    &config,
                     // The caps reach the turn only while the session is in
                     // contained mode, so `/contain off` is a real switch and not
                     // a label: with `None` here the turn built below is the
@@ -1269,6 +1381,11 @@ async fn turn<P: Provider>(
     store: &Store,
     session: &mut Session,
     policy: &Policy,
+    // What the operator's file asks of this turn. Beside the policy because it is
+    // the other half of the same answer: the policy is the boundary the harness
+    // enforces, and this is every ceiling, budget, roster and capability the same
+    // file set — none of which reached an interactive turn before 0.14.0.
+    config: &Config,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
     // Whether this turn proposes a plan before it works. The operator's `/plan`,
@@ -1341,10 +1458,24 @@ async fn turn<P: Provider>(
     let contract = io_cli::contract::session(
         text.clone(),
         root.clone(),
+        config,
         capabilities,
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
     );
+    // **Read off the contract that is about to run, and never recomposed from the
+    // configuration.** The ceilings on the line have to be the ceilings in force,
+    // and the only thing that knows the whole order of precedence — the floor,
+    // the file, then `[app.io-cli]` — is the contract this call just built. Asking
+    // `Config` a second time here would be a second answer to a question F1 exists
+    // to make sure has one.
+    //
+    // It follows that the fields appear once a turn has been built rather than at
+    // the very first idle prompt, which is the honest cost of not duplicating the
+    // precedence: a session that has run nothing has not yet composed a contract
+    // to read them from. They then persist, because `Status::forget_run` does not
+    // clear them — the file does not change while a session runs.
+    app.status.budgets = io_cli::status::Budgets::in_force(&contract);
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {

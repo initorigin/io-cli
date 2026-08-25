@@ -90,6 +90,13 @@ fn f2_the_gate_follows_the_operator_and_not_the_caps() {
     let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
     let text = std::fs::read_to_string(driver).expect("the driver");
 
+    // **The binding name is load-bearing here as of 0.14.0.** `/status` reads a
+    // contract off the same builder and its call sits earlier in the file, so a
+    // split on the bare `io_cli::contract::session(` would land on the reader and
+    // assert the gate against a call that never carries one. `let contract =` is
+    // the turn's; `let reading =` is `/status`'s. `tests/contract.rs` asserts that
+    // both names exist exactly once, so this split cannot quietly start matching
+    // the wrong one.
     let call = text
         .split_once("let contract = io_cli::contract::session(")
         .expect("one contract is built for every turn")

@@ -6,9 +6,9 @@ mod support;
 use std::time::Duration;
 
 use io_cli::app::App;
-use io_cli::status::{format_elapsed, Status};
+use io_cli::status::{format_elapsed, Budgets, Status};
 use io_cli::theme::{DARK, MONO};
-use io_harness::{EventKind, RunEvent};
+use io_harness::{EventKind, RunEvent, TaskContract};
 
 /// A run event at step zero, which is where everything but a step sits.
 fn event(kind: EventKind) -> RunEvent {
@@ -1086,4 +1086,681 @@ fn f6_the_connections_are_forgotten_with_the_run() {
     assert_eq!(status.browser, None);
     let line = rendered(&status, 120);
     assert!(!line.contains("mcp") && !line.contains("lsp") && !line.contains("web"));
+}
+
+/// The footer's rows as one string, the way [`rendered`] gives the one-row form.
+fn footed(status: &Status, width: u16) -> String {
+    let mut text = String::new();
+    for line in status.footer(width, &DARK) {
+        for span in &line.spans {
+            text.push_str(span.content.as_ref());
+        }
+    }
+    text
+}
+
+/// **Both of them, named, because `Status` has two renderers and only one of
+/// them is what an operator is looking at.**
+///
+/// `Status::line` is the one-row form and has exactly one production caller —
+/// the fallback for a terminal under seven rows. `Status::footer` is the
+/// three-row form `Status::render` takes on everything taller, which is to say
+/// on every real terminal. 0.12.0 added a field to `line`, asserted `line`, went
+/// green, and shipped a word that was nowhere on screen in a live capture. Every
+/// budget claim below runs over this pair rather than over either one.
+fn both_renderers(status: &Status) -> [(&'static str, String); 2] {
+    [
+        ("Status::line", rendered(status, 200)),
+        ("Status::footer", footed(status, 200)),
+    ]
+}
+
+/// A contract carrying all three budgets, the way an operator's `[run]` table
+/// leaves one.
+fn budgeted() -> TaskContract {
+    TaskContract::workspace("summarise the module", std::path::PathBuf::from("/tmp"))
+        .with_max_steps(20)
+        .with_token_budget(10_000)
+        .with_time_budget(Duration::from_secs(600))
+}
+
+/// **F6 — every budget in force is on the line, with what is left of it.**
+///
+/// The three are read off the contract and the remainder is arithmetic over
+/// counters `Status` already carries: the steps the run has taken, the tokens
+/// this turn has spent, and how long it has been going. Nothing here is a second
+/// counter for a number already on the line, and nothing here reads a clock —
+/// `elapsed` is a value the driver handed in, which is what makes the time
+/// budget's remainder something this test can state rather than race.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_every_budget_in_force_is_drawn_with_what_is_left_of_it() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.budgets = Budgets::in_force(&budgeted());
+    // Three steps taken, two and a half thousand tokens spent, a minute and a
+    // half gone. Every one of these is a field the line already draws, which is
+    // the point: the budget is the same fact with a ceiling on it.
+    status.steps = Some(3);
+    status.run_tokens = Some(2_500);
+    status.elapsed = Duration::from_secs(90);
+
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("left 17/20 steps"),
+            "{renderer} does not say what is left of the step budget: {text:?}",
+        );
+        assert!(
+            text.contains("left 7.5k/10.0k tok"),
+            "{renderer} does not say what is left of the token budget: {text:?}",
+        );
+        assert!(
+            text.contains("left 8m30s/10m00s"),
+            "{renderer} does not say what is left of the time budget: {text:?}",
+        );
+    }
+}
+
+/// **F6 — a session with no `[run]` table shows no budget field at all.**
+///
+/// The absence half, and the one that keeps this feature free on the
+/// overwhelming majority of lines. It is the same rule `tokens`, `spend` and the
+/// background-job count are held to: a session with no budget has not been given
+/// a budget of zero, and a `left 0/0` would report every default session as one
+/// about to stop.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_a_session_with_no_configured_budget_draws_no_budget_field_anywhere() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.steps = Some(3);
+    status.run_tokens = Some(2_500);
+    status.elapsed = Duration::from_secs(90);
+
+    assert!(
+        status.budgets_left().is_empty(),
+        "a status nobody configured composed a budget: {:?}",
+        status.budgets_left(),
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("left "),
+            "{renderer} drew a budget on a session that has none: {text:?}",
+        );
+    }
+}
+
+/// **F6 — io-cli's own step floor is not a budget the operator set.**
+///
+/// `TaskContract::max_steps` is a plain `u32` and is therefore always populated,
+/// so "is there a step budget" is a question the contract cannot answer on its
+/// own. `contract::configured` sets `MAX_STEPS` on every turn — a thousand,
+/// chosen precisely so the cap is not the thing that ends a turn — and a line
+/// reading `left 997/1000 steps` on every default session would be io-cli
+/// reporting its own scaffolding back as a ceiling somebody chose.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_the_step_budget_is_the_operators_and_never_io_clis_own_floor() {
+    let root = std::path::PathBuf::from("/tmp");
+    let floor =
+        TaskContract::workspace("goal", root.clone()).with_max_steps(io_cli::contract::MAX_STEPS);
+    assert_eq!(
+        Budgets::in_force(&floor).steps,
+        None,
+        "the floor every turn carries was read as a budget the operator asked for",
+    );
+
+    // The number itself is not what is special: a file that names a cap has named
+    // one, whatever it is, and twenty is a cap somebody typed.
+    let asked = TaskContract::workspace("goal", root).with_max_steps(20);
+    assert_eq!(Budgets::in_force(&asked).steps, Some(20));
+}
+
+/// **F6 — what is left moves as the turn spends, and stops at nothing left.**
+///
+/// A budget is a ceiling the harness stops a run at rather than a fence the run
+/// cannot cross: the step that ends a turn may finish over its token budget. `0`
+/// left is the honest reading of that, and a wrapped subtraction would report an
+/// exhausted budget as an enormous one — which is the failure this arm exists
+/// for rather than the arithmetic in the ordinary case.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_a_budget_spent_past_its_ceiling_reads_as_nothing_left() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.budgets = Budgets::in_force(&budgeted());
+
+    status.steps = Some(19);
+    status.run_tokens = Some(9_999);
+    status.elapsed = Duration::from_secs(599);
+    assert_eq!(
+        status.budgets_left(),
+        vec![
+            "left 1/20 step".to_string(),
+            // One token left, spelled the way `format_tokens` spells anything
+            // under a thousand: a bare number, not `0.0k`.
+            "left 1/10.0k tok".to_string(),
+            "left 1s/10m00s".to_string(),
+        ],
+        "the last step of a budget is singular and the remainders are the \
+         subtraction",
+    );
+
+    status.steps = Some(25);
+    status.run_tokens = Some(12_000);
+    status.elapsed = Duration::from_secs(900);
+    assert_eq!(
+        status.budgets_left(),
+        vec![
+            "left 0/20 steps".to_string(),
+            "left 0/10.0k tok".to_string(),
+            "left 0s/10m00s".to_string(),
+        ],
+        "a turn that overran its budget reported more left than it started with",
+    );
+}
+
+/// **F6 — a budget is a session fact and survives what the run does not.**
+///
+/// `Status::forget_run` clears the counters a budget is measured against, and it
+/// must not clear the budget: `io.toml` does not change while a session runs, so
+/// `/resume` onto another conversation, a `/fork` away from this one and a
+/// rewind all land under the same `[run]` table they started under. A budget
+/// blanked by any of the three would leave an operator with a turn that will
+/// stop at a ceiling and nothing on screen saying which.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_the_budgets_outlive_the_run_whose_counters_they_bound() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.budgets = Budgets::in_force(&budgeted());
+    status.steps = Some(11);
+
+    status.forget_run();
+
+    assert_eq!(status.budgets, Budgets::in_force(&budgeted()));
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("left 20/20 steps"),
+            "{renderer} lost the budget with the run it was bounding: {text:?}",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0.14.0 F10 — `/status` commits the whole state, and every field is io-harness's.
+// ---------------------------------------------------------------------------
+
+/// A width nothing folds at, so the assertions below are about *content*.
+///
+/// Whether the page wraps rather than truncating is F11's claim and is asserted
+/// in `tests/narrow.rs` at eighty columns, which is the width that can actually
+/// fail. Asserting content at a width where a workspace path folds across two
+/// rows would make every `contains` here fail for a reason that has nothing to do
+/// with the field it names.
+const ROOMY: u16 = 200;
+
+/// Everything `status::committed` needs, each piece as io-harness hands it over.
+///
+/// The workspace and the conversation come from a real `Session` over a real
+/// store rather than from three loose values, because the criterion names the
+/// `Session` as the source of both and a test that passed its own numbers in
+/// would be asserting the format string and nothing else.
+struct Fixture {
+    /// Held so the workspace the session was opened over outlives the session.
+    _dir: tempfile::TempDir,
+    /// Held for the same reason: the session was opened over it.
+    _store: io_harness::Store,
+    session: io_harness::Session,
+    policy: io_harness::Policy,
+    contract: TaskContract,
+    caps: io_harness::Containment,
+}
+
+fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().expect("a workspace");
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let session = io_harness::Session::open(&store, dir.path()).expect("a session");
+    // Two named layers over three acts, which is what an operator's file leaves
+    // and what `Policy::layers` — a public field — carries.
+    let policy = io_harness::Policy::permissive()
+        .layer("ops-baseline")
+        .allow_read("src/*")
+        .allow_write("out/*")
+        .layer("secrets")
+        .deny_read(".env")
+        .deny_net("ads.example.com");
+    let contract = TaskContract::workspace("summarise the module", dir.path().to_path_buf())
+        .with_max_steps(20)
+        .with_token_budget(10_000)
+        .with_time_budget(Duration::from_secs(600))
+        .with_mcp(vec![
+            io_harness::McpServer::stdio("docs", "docs-server"),
+            io_harness::McpServer::stdio("issues", "issues-server"),
+        ])
+        .with_lsp(vec![io_harness::LspServer::new(
+            "rust-analyzer",
+            "rust-analyzer",
+        )])
+        .with_skills(dir.path().join("skills"));
+    Fixture {
+        _dir: dir,
+        _store: store,
+        session,
+        policy,
+        contract,
+        caps: io_harness::Containment::new(12, 4, 2, 200_000),
+    }
+}
+
+/// The committed page as a reader would see it: every row, spans concatenated.
+fn committed(
+    app: &App,
+    fixture: &Fixture,
+    caps: Option<&io_harness::Containment>,
+    theme: &io_cli::theme::Theme,
+    width: u16,
+) -> Vec<String> {
+    committed_of(app, fixture, &fixture.contract, caps, theme, width)
+}
+
+/// The same page against a contract other than the fixture's.
+///
+/// **The page's budgets come off the contract it is handed and never off
+/// `Status`**, so a test that wants the no-budget case has to hand it a contract
+/// carrying none — setting the field would prove nothing, because nothing reads
+/// it. That is the property itself: `/status` reports what the next turn would
+/// run under, and reading the page changes nothing about the session.
+fn committed_of(
+    app: &App,
+    fixture: &Fixture,
+    contract: &TaskContract,
+    caps: Option<&io_harness::Containment>,
+    theme: &io_cli::theme::Theme,
+    width: u16,
+) -> Vec<String> {
+    io_cli::status::committed(
+        &app.status,
+        &fixture.session,
+        &fixture.policy,
+        contract,
+        caps,
+        theme,
+        width,
+    )
+    .iter()
+    .map(|line| {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    })
+    .collect()
+}
+
+/// A session with every live fact reported, each through the event that carries
+/// it and through the one function the driver calls.
+fn reported() -> App {
+    let mut app = App::new(DARK, "anthropic/claude-sonnet-4.5");
+    app.event(
+        &event(EventKind::Started {
+            goal: "summarise the module".into(),
+            provider: "openrouter".into(),
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::Contained {
+            mode: "workspace-write".into(),
+            backend: "macos-sandbox-exec".into(),
+            roots: 2,
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::SpendDraw {
+                tokens: 1_500,
+                remaining: Some(198_500),
+            },
+        ),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::Compacted {
+            through_step: 4,
+            before_tokens: 11_000,
+            after_tokens: 6_000,
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::Mcp {
+            server: "docs".into(),
+            tool: None,
+            ok: None,
+            millis: None,
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::Mcp {
+            server: "docs".into(),
+            tool: Some("search".into()),
+            ok: Some(true),
+            millis: Some(12),
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::LspStarted {
+            server: "rust-analyzer".into(),
+            root: "/tmp/workspace".into(),
+            ready_ms: 900,
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::BrowserStarted {
+            binary: "/usr/bin/chromium".into(),
+            headless: true,
+            ready_ms: 400,
+        }),
+        Duration::ZERO,
+    );
+    app.event(
+        &event(EventKind::BrowserNavigated {
+            host: "docs.rs:443".into(),
+            permitted: true,
+        }),
+        Duration::ZERO,
+    );
+    app
+}
+
+/// **0.14.0 F10 — `/status` commits the whole state, and every field on it is a
+/// value io-harness supplied.**
+///
+/// One capture, and one assertion per fact, so a field that stops arriving is
+/// named rather than folded into a single failure. Each value here reached the
+/// page by the route the criterion names: the layers off `Policy::layers`, the
+/// backend off `EventKind::Contained` because `ExecContainment` is `pub(crate)`,
+/// the draw off the `SpendDraw` stream because the containment `Ledger` is never
+/// returned, the connected servers off `Mcp` and `LspStarted` because
+/// `McpSession` and `LspSession` are `pub(crate)` too, and the workspace and the
+/// conversation off the `Session` itself.
+///
+/// Sabotage: hard-code the backend name rather than reading `EventKind::Contained`
+/// — under which only F10 fails, on a host whose chain selects a different rung,
+/// which is the difference between the mode asked for and the backend that
+/// applied that the README already insists on.
+#[test]
+fn f10_status_commits_every_field_from_the_value_io_harness_supplied() {
+    let fixture = fixture();
+    let mut app = reported();
+    app.status.budgets = Budgets::in_force(&fixture.contract);
+    app.status.steps = Some(3);
+    app.status.run_tokens = Some(2_500);
+    app.status.elapsed = Duration::from_secs(90);
+
+    let rows = committed(&app, &fixture, Some(&fixture.caps), &DARK, ROOMY);
+    let page = rows.join("\n");
+
+    // The workspace and the conversation, from the `Session`.
+    assert!(
+        page.contains(&fixture.session.root().display().to_string()),
+        "the workspace root is the session's own: {page}",
+    );
+    assert!(
+        page.contains(&format!("session: {}", fixture.session.id())),
+        "the session id is the session's own: {page}",
+    );
+
+    // The model and the provider, the latter from `EventKind::Started`.
+    assert!(
+        page.contains("model: anthropic/claude-sonnet-4.5"),
+        "{page}"
+    );
+    assert!(page.contains("provider: openrouter"), "{page}");
+
+    // Every layer by name with the acts it governs, from `Policy::layers`.
+    assert!(
+        page.contains("policy ops-baseline: read, write"),
+        "a layer is named with the acts it governs: {page}",
+    );
+    assert!(
+        page.contains("policy secrets: read, reach"),
+        "a second layer is a second row, in the harness's own stacking order: {page}",
+    );
+
+    // The mode asked for beside the backend that answered.
+    assert!(
+        page.contains("sandbox: workspace-write/macos-sandbox-exec"),
+        "the mode without the backend is an intention, not a fact: {page}",
+    );
+
+    // The caps, and the draw against them.
+    assert!(
+        page.contains("up to 12 agents, 4 at once per tier, 2 deep, 200000 tokens"),
+        "the containment caps are the ones the next turn runs under: {page}",
+    );
+    assert!(
+        page.contains("drawn: 1.5k of 200.0k"),
+        "the draw comes from the SpendDraw stream, not from a ledger nobody returns: {page}",
+    );
+
+    // Each budget with what is left, in `Status::budgets_left`'s own spelling and
+    // never a third one.
+    for text in app.status.budgets_left() {
+        assert!(
+            page.contains(&format!("budget: {text}")),
+            "the page composed a budget of its own instead of reading {text:?}: {page}",
+        );
+    }
+    assert!(page.contains("budget: left 17/20 steps"), "{page}");
+
+    // The context fill, read off the field the fold set rather than recomputed —
+    // the denominator is io-harness's own declared budget, so a number written
+    // out here would be wrong the first time the harness changed it.
+    let fill = app.status.context.expect("the fold reported one");
+    assert!(page.contains(&format!("context: {fill}%")), "{page}");
+
+    // What is connected, beside what was configured.
+    assert!(
+        page.contains("mcp: 1 of 2 configured connected, offering 1 tool"),
+        "a server that answered and a server that is named in the file are \
+         different facts, and both are on the page: {page}",
+    );
+    assert!(page.contains("lsp: 1 of 1 configured started"), "{page}");
+    assert!(page.contains("browser: at docs.rs:443"), "{page}");
+    let skills = fixture
+        .contract
+        .skills
+        .as_ref()
+        .expect("the fixture configured one");
+    assert!(
+        page.contains(&format!("skills: {}", skills.display())),
+        "the skills directory is the contract's own: {page}",
+    );
+
+    // The edges, so a reader can tell how far the passage goes in a scrollback
+    // that already holds every earlier turn.
+    assert!(rows[0].ends_with("status"), "{:?}", rows[0]);
+    assert!(
+        rows[rows.len() - 1].ends_with("status ends"),
+        "{:?}",
+        rows[rows.len() - 1],
+    );
+}
+
+/// **0.14.0 F10 — nothing on `/status` is computed by io-cli, asserted rather
+/// than said in prose.**
+///
+/// Two readings, because either alone can be green while the claim is false. The
+/// first is structural: none of the seven labels `io_harness::Backend::as_str`
+/// can return appears anywhere in `src/status.rs`, so the backend on the page
+/// cannot have been written there — which is exactly what the sabotage would
+/// have to do. The second is behavioural: with only the event changed, the page
+/// moves to whatever the event said, including a name no host in this repository
+/// would ever select.
+///
+/// Sabotage: hard-code the backend name rather than reading `EventKind::Contained`
+/// — under which only F10 fails, at the first of these two assertions on a
+/// literal in the source and at the second on a host that chose another rung.
+#[test]
+fn f10_no_field_on_status_is_a_name_io_cli_wrote_for_itself() {
+    // Comment rows are stripped first, and deliberately: `Status::fields` names
+    // `workspace-write/macos-sandbox-exec` in a comment as the worked example of
+    // why the containment field is ordered where it is, and that sentence is
+    // documentation rather than a value anything renders. What this assertion is
+    // against is a backend label reaching a *string* the page is built from.
+    let source: String = std::fs::read_to_string("src/status.rs")
+        .expect("the status module")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for backend in [
+        io_harness::Backend::MacosSandboxExec,
+        io_harness::Backend::LinuxLandlock,
+        io_harness::Backend::LinuxBubblewrap,
+        io_harness::Backend::LinuxNamespaces,
+        io_harness::Backend::WindowsAppContainer,
+        io_harness::Backend::WindowsJobObject,
+        io_harness::Backend::PortableFloor,
+    ] {
+        assert!(
+            !source.contains(backend.as_str()),
+            "`{}` is written into src/status.rs, so the backend on the page is \
+             io-cli's guess rather than the one that actually applied",
+            backend.as_str(),
+        );
+    }
+
+    // And the page follows the event wherever it goes, including to a rung this
+    // host would never select.
+    let fixture = fixture();
+    for backend in ["linux-landlock", "windows-appcontainer", "none"] {
+        let mut app = App::new(DARK, "opus-5");
+        app.event(
+            &event(EventKind::Contained {
+                mode: "full-access".into(),
+                backend: backend.into(),
+                roots: 0,
+            }),
+            Duration::ZERO,
+        );
+        let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+        assert!(
+            page.contains(&format!("sandbox: full-access/{backend}")),
+            "the page did not follow the event to `{backend}`: {page}",
+        );
+    }
+}
+
+/// **0.14.0 F10 — a fact nothing has reported is said to be unknown, never
+/// invented.**
+///
+/// The three `pub(crate)` facts are the ones with no live handle behind them, so
+/// before a turn has run there is genuinely nothing true to say about the
+/// backend, the draw or the connections. A page that filled them with a default
+/// would be reporting `portable-floor` and `0` as observations, which is the one
+/// failure mode that makes the whole surface untrustworthy: the reader cannot
+/// tell an answer from a placeholder.
+///
+/// Sabotage: render the absent backend as the weakest rung rather than as
+/// unknown — under which only this test fails, on a session that has run nothing
+/// claiming to know how its commands would be contained.
+#[test]
+fn f10_a_fact_no_event_has_reported_reads_as_unknown_rather_than_as_a_default() {
+    let fixture = fixture();
+    let app = App::new(DARK, "opus-5");
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+
+    assert!(
+        page.contains("sandbox: not known until a turn has run"),
+        "{page}",
+    );
+    assert!(
+        page.contains("provider: not known until a turn has started"),
+        "{page}",
+    );
+    assert!(
+        page.contains("nothing has been drawn against the tree yet"),
+        "{page}",
+    );
+    assert!(
+        page.contains("context: not known until the context has been folded"),
+        "{page}",
+    );
+    assert!(page.contains("mcp: 0 of 2 configured connected"), "{page}");
+    assert!(page.contains("browser: not configured"), "{page}");
+    assert!(
+        page.contains("containment: not contained"),
+        "a session that cannot fan out says so rather than dropping the field: {page}",
+    );
+    // A budget that does not exist is an absence somebody has to be told about,
+    // not a gap to interpret. The floor is on the contract because every turn
+    // carries it, and `Budgets::in_force` is what knows it is not a budget.
+    let bare = TaskContract::workspace("g", std::path::PathBuf::from("/tmp"))
+        .with_max_steps(io_cli::contract::MAX_STEPS);
+    let app = App::new(DARK, "opus-5");
+    let page = committed_of(&app, &fixture, &bare, None, &DARK, ROOMY).join("\n");
+    assert!(page.contains("budget: none"), "{page}");
+}
+
+/// **0.14.0 F10 — the page reports the ceilings the next turn would run under,
+/// and reading it changes nothing.**
+///
+/// Both halves matter and each fails for its own reason. A session that has run
+/// no turn has nothing in `Status::budgets`, because that field is filled where a
+/// turn is built — so a page that read it would tell an operator whose `io.toml`
+/// sets three ceilings that there are none, which is precisely the silence this
+/// release exists to end. And the first shape of the fix assigned the field
+/// before composing, which answered the question but made a read-only command
+/// change what the status line said the moment it was opened.
+///
+/// The counters are still the session's own: what is drawn against a ceiling is a
+/// fact about this session however the ceiling was arrived at, so a page opened
+/// after three steps says three have gone.
+///
+/// Sabotage: compose the page from `Status::budgets` rather than from the
+/// contract — under which the first assertion fails on a fresh session, which is
+/// every session at the moment its operator first asks what it is running under.
+#[test]
+fn f10_status_reports_the_next_turns_budgets_without_touching_the_session() {
+    let fixture = fixture();
+    let mut app = App::new(DARK, "opus-5");
+    app.status.steps = Some(3);
+    let before = app.status.budgets;
+
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+
+    // The fixture's contract carries all three, and none of them ever reached
+    // `Status`.
+    assert!(page.contains("budget: left 17/20 steps"), "{page}");
+    assert!(page.contains("budget: left 10.0k/10.0k tok"), "{page}");
+    assert!(page.contains("budget: left 10m00s/10m00s"), "{page}");
+    assert_eq!(
+        app.status.budgets, before,
+        "opening the page must not put budgets on the status line",
+    );
+    assert_eq!(
+        before,
+        Budgets::default(),
+        "the fixture session has run no turn, so it had no budgets to read",
+    );
 }

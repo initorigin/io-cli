@@ -112,6 +112,223 @@ fn the_readme_command_table_is_the_command_table() {
     assert_eq!(rows, COMMANDS.len());
 }
 
+/// The `[app.io-cli]` table in the README, sliced by the prose either side of it.
+///
+/// It has no `<!-- -->` markers because it is not generated — the descriptions are
+/// written for a reader, not derived from a doc comment. What is asserted instead
+/// is that it has a row for every key the struct actually carries, which is the
+/// gate that was missing: `max_steps` was added to `CliSettings` in 0.10.0 and
+/// this table never mentioned it once.
+fn settings_table(readme: &str) -> &str {
+    let from = readme
+        .find("keys live there")
+        .expect("the README introduces the [app.io-cli] table");
+    let to = readme[from..]
+        .find("Because the section is unvalidated")
+        .expect("the prose that closes the [app.io-cli] table")
+        + from;
+    &readme[from..to]
+}
+
+#[test]
+fn the_readme_documents_every_key_of_the_io_cli_section() {
+    // Serialized rather than listed by hand, so a key added to `CliSettings`
+    // fails here instead of shipping undocumented. A scalar is written as
+    // `theme`; a table is `[app.io-cli.keys]` and a list of tables is
+    // `[[app.io-cli.mcp]]`, and any of the three spellings satisfies the row.
+    let readme = read("README.md");
+    let table = settings_table(&readme);
+
+    // Every field set, because `skip_serializing_if` drops a `None` — a default
+    // value here would assert against a table with nothing in it.
+    let every = io_cli::settings::CliSettings {
+        theme: Some("dark".into()),
+        diff: Some("unified".into()),
+        glyphs: Some("ascii".into()),
+        plain: Some(false),
+        keys: Some(Default::default()),
+        containment: Some(io_harness::Containment::new(12, 4, 2, 200_000)),
+        mcp: Some(Vec::new()),
+        lsp: Some(Vec::new()),
+        browser: Some(io_harness::BrowserConfig::default()),
+        skills: Some("/skills".into()),
+        max_steps: Some(40),
+    };
+    let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
+    let keys = value.as_object().expect("a table");
+
+    let (mut scalars, mut tables) = (0, 0);
+    for (name, held) in keys {
+        let spellings = [
+            format!("| `{name}` |"),
+            format!("| `[app.io-cli.{name}]` |"),
+            format!("| `[[app.io-cli.{name}]]` |"),
+        ];
+        assert!(
+            spellings.iter().any(|row| table.contains(row)),
+            "the README's [app.io-cli] table has no row for `{name}`",
+        );
+        if held.is_object() || held.is_array() {
+            tables += 1;
+        } else {
+            scalars += 1;
+        }
+    }
+
+    let rows = table.lines().filter(|line| line.starts_with("| `")).count();
+    assert_eq!(
+        rows,
+        keys.len(),
+        "the README's [app.io-cli] table has {rows} rows and the section has {}",
+        keys.len(),
+    );
+
+    // The sentence above the table counts them, and a count written in prose is
+    // the first half of a table to go stale — this one said "five keys and four
+    // tables" over a table of five keys and five tables, for four releases.
+    let words = ["no", "One", "Two", "Three", "Four", "Five", "Six", "Seven"];
+    let sentence = format!(
+        "{} keys live there, and {} tables",
+        words[scalars],
+        words[tables].to_lowercase(),
+    );
+    assert!(
+        readme.contains(&sentence),
+        "the README should say `{sentence}`",
+    );
+}
+
+#[test]
+fn the_readme_quotes_the_budget_fields_the_status_line_actually_draws() {
+    // 0.14.0's F6. The budgets are the one part of the status line a README can
+    // quote verbatim, and a quoted format that has drifted is worse than no
+    // example: an operator reads it as the thing to grep their scrollback for.
+    let readme = read("README.md");
+    let mut status = io_cli::status::Status::new("a-model");
+    status.budgets = io_cli::status::Budgets {
+        steps: Some(20),
+        tokens: Some(200_000),
+        duration: Some(std::time::Duration::from_secs(600)),
+    };
+    status.steps = Some(3);
+    status.run_tokens = Some(187_600);
+    status.elapsed = std::time::Duration::from_secs(330);
+
+    let drawn = status.budgets_left();
+    assert_eq!(drawn.len(), 3, "one field per budget in force: {drawn:?}");
+    for text in drawn {
+        assert!(
+            readme.contains(&format!("`{text}`")),
+            "the README should quote the budget field the line draws: `{text}`",
+        );
+    }
+
+    // And a session that configured nothing draws none of them, which is the
+    // half of F6 that keeps io-cli's own step floor off the line.
+    let quiet = io_cli::status::Status::new("a-model");
+    assert!(quiet.budgets_left().is_empty());
+}
+
+#[test]
+fn no_documentation_surface_still_claims_the_old_asymmetry() {
+    // Through 0.13.1 both files said an interactive session read past most of
+    // `io.toml` and that `[app.io-cli.containment]` was what carried the
+    // capabilities. The first stopped being true in 0.14.0 and the second in
+    // 0.11.0. A claim this specific cannot be caught by reading the diff of the
+    // release that falsifies it, so it is caught here.
+    let readme = read("README.md");
+    let example = read("docs/config.example.toml");
+    for (name, text) in [
+        ("README.md", &readme),
+        ("docs/config.example.toml", &example),
+    ] {
+        for stale in [
+            "Not read by an interactive session",
+            "Contained turns only",
+            "and on no other turn",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{name} still says {stale:?}, which has not been true since 0.14.0",
+            );
+        }
+    }
+
+    // Every section `Config::apply_to` carries is named in the example as
+    // something that reaches both arms, so a reader looking for one finds it
+    // where the old block used to deny it.
+    for section in [
+        "[sandbox]",
+        "[run]",
+        "[run.commit_identity]",
+        "[instructions]",
+        "[[mcp]]",
+        "[[lsp]]",
+        "[[agent]]",
+        "[web]",
+        "[memory]",
+        "[browser]",
+    ] {
+        assert!(
+            example.contains(section),
+            "docs/config.example.toml should document {section}",
+        );
+    }
+
+    // The two facts about that widening an operator has to be told rather than
+    // left to discover: `[web]` is a capability the *vendor* exercises, so the
+    // local `net` rule is not what governs it, and `[browser]` is refused in a
+    // project-scoped file by io-harness itself.
+    for (name, text) in [
+        ("README.md", &readme),
+        ("docs/config.example.toml", &example),
+    ] {
+        let said = text.to_lowercase();
+        assert!(
+            said.contains("capability") && said.contains("vendor"),
+            "{name} should say `[web]` is a capability and that the vendor dials the URL",
+        );
+        assert!(
+            said.contains("project"),
+            "{name} should say where `[browser]` is refused",
+        );
+    }
+}
+
+#[test]
+fn the_deprecated_step_cap_is_documented_where_it_is_announced() {
+    // The notice, the README and the changelog have to agree on three things:
+    // the key is deprecated, `[run] max_steps` is where it goes, and 0.16.0 is
+    // when it stops being read. A deprecation whose three statements disagree is
+    // one an operator cannot act on.
+    let notice = io_cli::settings::deprecated_max_steps(Some(&io_cli::settings::CliSettings {
+        max_steps: Some(40),
+        ..Default::default()
+    }))
+    .expect("a file that wrote the key earns the notice");
+    assert!(notice.contains("[run] max_steps"), "{notice}");
+    assert!(notice.contains("0.16.0"), "{notice}");
+
+    for name in ["README.md", "CHANGELOG.md"] {
+        let text = read(name);
+        assert!(
+            text.contains("`[app.io-cli] max_steps`"),
+            "{name} should name the deprecated key",
+        );
+        assert!(
+            text.contains("removed in 0.16.0"),
+            "{name} should say when the key stops being read",
+        );
+    }
+
+    // And a file that never wrote it is told nothing, which is the whole of F12.
+    assert!(io_cli::settings::deprecated_max_steps(None).is_none());
+    assert!(io_cli::settings::deprecated_max_steps(
+        Some(&io_cli::settings::CliSettings::default())
+    )
+    .is_none());
+}
+
 #[test]
 fn the_changelog_has_a_section_for_this_version() {
     // `release.yml` refuses to cut a Release without one, and finding that out

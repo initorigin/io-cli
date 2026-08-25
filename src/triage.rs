@@ -85,8 +85,10 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     ("replan", Disposition::Line, "the replan line"),
     (
         "stalled",
-        Disposition::Silent,
-        "the run's own outcome: `Finished` carries `stalled` and `outcome_help` says what it means",
+        Disposition::Line,
+        "the stall line, naming the step it stopped on and how long it has been there — the run's \
+         own outcome says the same word much later, and only once nobody is still waiting for it \
+         to say something",
     ),
     ("spawned", Disposition::Line, "the spawn line"),
     ("child_detached", Disposition::Line, "the detach line"),
@@ -125,9 +127,12 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     ),
     (
         "sandbox",
-        Disposition::Silent,
-        "the contained command's own tool cell, whose result column says whether it worked, and \
-         the durable trace",
+        Disposition::Line,
+        "the sandbox line, for the four kinds an ordinary session can see — `create`, `exec`, \
+         `cap_hit` and `destroy`. The other three reach no line and each has its own route: \
+         `dial` is drawn by `dialed`, which carries the host, the port and the verdict this kind \
+         does not, and `gate_phase_failed` and `gate_output` belong to a verification gate no \
+         session has until 0.24.0",
     ),
     (
         "mcp",
@@ -214,8 +219,9 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     ("contained", Disposition::Status, "the containment field"),
     (
         "dialed",
-        Disposition::Silent,
-        "the contained command's own failure, and the durable trace",
+        Disposition::Line,
+        "the dial line, carrying the host as the command asked for it, the port, and whether the \
+         policy permitted it",
     ),
     (
         "finished",

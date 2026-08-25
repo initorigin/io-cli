@@ -217,6 +217,160 @@ fn f5_an_activity_line_over_an_unchanged_turn_is_not_drawn_twice() {
     );
 }
 
+/// **0.14.0 F6 — a budget in force reaches a real frame, in both of the forms
+/// the status line has.**
+///
+/// Asserted on the rendered viewport rather than on a `Line`, which is the half
+/// a unit test cannot give: `Status::render` picks between two renderers on the
+/// height of the area it is handed, and a claim made against whichever one the
+/// test happened to call is a claim about a function rather than about a screen.
+/// A viewport eight rows tall gives the status area three rows and draws
+/// `Status::footer`, which is what the binary shows at every ordinary prompt; a
+/// viewport of four gives it one and draws `Status::line`, which has exactly one
+/// production caller and it is this fallback. 0.12.0 filled `line` alone, went
+/// green, and put nothing on the operator's screen.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_a_budget_in_force_reaches_a_rendered_frame_in_both_status_line_forms() {
+    use std::time::Duration;
+
+    /// The viewport a session with all three budgets set draws at `viewport`
+    /// rows.
+    fn drawn(viewport: u16) -> String {
+        let (mut screen, _recorder) = support::screen_of(160, 40, viewport);
+        let mut app = io_cli::app::App::new(io_cli::theme::DARK, "m");
+        app.status.budgets = io_cli::status::Budgets::in_force(
+            &io_harness::TaskContract::workspace("goal", std::path::PathBuf::from("/tmp"))
+                .with_max_steps(20)
+                .with_token_budget(10_000)
+                .with_time_budget(Duration::from_secs(600)),
+        );
+        app.status.steps = Some(3);
+        app.status.run_tokens = Some(2_500);
+        app.status.elapsed = Duration::from_secs(90);
+        screen
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("frame");
+        screen.viewport_text().to_string()
+    }
+
+    // Eight rows: the status area gets three and the footer is what is drawn.
+    let footer = drawn(8);
+    // Four: one row for the status area, and the one-row form is the fallback.
+    let line = drawn(4);
+
+    for (form, text) in [("the footer", &footer), ("the one-row form", &line)] {
+        assert!(
+            text.contains("left 17/20 steps"),
+            "{form} drew no step budget: {text:?}",
+        );
+        assert!(
+            text.contains("left 7.5k/10.0k tok"),
+            "{form} drew no token budget: {text:?}",
+        );
+        assert!(
+            text.contains("left 8m30s/10m00s"),
+            "{form} drew no time budget: {text:?}",
+        );
+    }
+}
+
+/// **0.14.0 F6 — a turn ended by a budget names the budget, and is not an
+/// error.**
+///
+/// **Budget exhaustion is `Ok` in io-harness and always has been.** A run that
+/// spends its steps, its seconds or its tokens returns a `RunOutcome` saying
+/// which — `StepCapReached`, `TimeBudgetExceeded`, `CostBudgetExceeded` — so
+/// nothing on the `Result` distinguishes a ceiling from a clean finish, and the
+/// interactive driver's own `match` on the turn's return has nothing to say
+/// about any of them. The only thing that reaches a reader is the outcome word
+/// on `EventKind::Finished`, and until 0.14.0 three of the four ceilings fell
+/// through `outcome_tone` to `Tone::Error`.
+///
+/// So this asserts the tone through the bytes rather than through the enum: what
+/// the operator met was the literal string `error: step_cap_reached` over a
+/// half-finished answer, and that string is what must not come back.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_a_turn_ended_by_each_budget_commits_a_line_naming_it_rather_than_an_error() {
+    use std::time::Duration;
+
+    for outcome in [
+        "step_cap_reached",
+        "time_budget_exceeded",
+        "cost_budget_exceeded",
+    ] {
+        let (mut screen, recorder) = support::screen_of(160, 40, 8);
+        let mut app = io_cli::app::App::new(io_cli::theme::DARK, "m");
+        app.started();
+        app.event(
+            &io_harness::RunEvent::new(
+                1,
+                4,
+                io_harness::EventKind::Finished {
+                    outcome: outcome.to_string(),
+                    steps: 4,
+                    tokens: 9_000,
+                },
+            ),
+            Duration::from_secs(30),
+        );
+        app.finished();
+
+        let committed = app.take_pending();
+        assert!(
+            !committed.is_empty(),
+            "a turn that ended at the {outcome} ceiling committed nothing at all",
+        );
+        // **The tone's word and the outcome are two spans, so the pairing is
+        // asserted on the line and the frame is asserted for the word.** A tone
+        // carrier is drawn in the tone's own colour and the text beside it in the
+        // ordinary foreground, which puts a colour escape between the two in the
+        // byte stream — `contains("error: step_cap_reached")` over the bytes
+        // would be a claim that passes because of the escape rather than because
+        // of the tone.
+        let said: String = committed
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            said.contains(&format!("warning: {outcome}")),
+            "the ceiling was not drawn in the tone `budget_ceiling_reached` has \
+             always had: {said:?}",
+        );
+        assert!(
+            !said.contains("error:"),
+            "a ceiling was reported through the error path: {said:?}",
+        );
+
+        screen.commit(&committed).expect("commit");
+        screen
+            .draw(|frame| app.render(frame, frame.area()))
+            .expect("frame");
+
+        let text = recorder.text();
+        assert!(
+            text.contains(outcome),
+            "the frame does not name the budget that ended the turn: {outcome}",
+        );
+        // The word itself is one span and survives the byte stream whole, so this
+        // is the frame-level half of the same claim: the tone carrier `error`
+        // never leaves the process for a turn that reached a ceiling.
+        assert!(
+            !text.contains("error"),
+            "the word `error` reached the terminal for a turn that ended at the \
+             {outcome} ceiling",
+        );
+    }
+}
+
 #[test]
 fn a_resize_makes_the_next_identical_frame_a_real_repaint() {
     // Same reason, different cause: recomputing an inline viewport clears it.
