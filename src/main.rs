@@ -37,17 +37,31 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run()) {
+    // **The migration report is owed until somebody delivers it.** `run` fills this
+    // and each arm empties it as it takes it — `io exec` on stderr, a session into
+    // its scrollback — so anything still here is a report nobody has said, which is
+    // to say a run that died between adopting the home and having anywhere to
+    // speak. Found by running the binary twice: once with a file io-harness could
+    // not parse and once with an unreadable store, an operator saw an error naming
+    // a path they had never seen, one keystroke after their old directory emptied,
+    // with nothing anywhere saying their install had just moved. Held here rather
+    // than patched at each early return, because the next early return would not
+    // know to do it.
+    let mut report = Vec::new();
+    match runtime.block_on(run(&mut report)) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             // Printed after the terminal has been restored, never into raw mode.
+            for line in report {
+                eprintln!("{line}");
+            }
             eprintln!("io: {error}");
             ExitCode::from(io_cli::exec::FAILED)
         }
     }
 }
 
-async fn run() -> Result<u8, String> {
+async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     let cli = Cli::parse();
     let root = match cli.dir {
         Some(dir) => dir,
@@ -63,7 +77,7 @@ async fn run() -> Result<u8, String> {
     // visible symptom is a `/resume` that silently finds nothing. Empty when the
     // operator named a location themselves, which is `adopt` refusing to move
     // anybody who has already chosen.
-    let report = io_cli::home::adopt().map_or_else(Vec::new, |report| report.lines());
+    *report = io_cli::home::adopt().map_or_else(Vec::new, |report| report.lines());
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
     // The notice this read produces is dropped *here* and only here: `run` may
     // hand control to the wizard, which rewrites the very file this just failed
@@ -93,8 +107,10 @@ async fn run() -> Result<u8, String> {
         // **stderr, one line each, never stdout.** `io exec --json` writes NDJSON
         // on stdout and a line of prose in that stream breaks every machine
         // reading it — the session's scrollback and this are the same lines said
-        // in the two places a run can be watched from.
-        for line in report {
+        // in the two places a run can be watched from. Drained rather than read,
+        // because `main` says whatever is left and a report said twice is a report
+        // an operator stops reading.
+        for line in report.drain(..) {
             eprintln!("{line}");
         }
         return io_cli::exec::main(args, config, root, cli.model).await;
@@ -192,7 +208,9 @@ async fn run() -> Result<u8, String> {
         theme,
         cli.model,
         plain,
-        report,
+        // Taken, not borrowed: from here the session owns the report and `main` has
+        // nothing left to say on its behalf.
+        std::mem::take(report),
         &root,
     )
     .await;

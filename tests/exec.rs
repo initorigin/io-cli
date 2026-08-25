@@ -1114,3 +1114,86 @@ fn f6_the_headless_home_report_is_on_stderr_and_not_in_the_json_stream() {
         );
     }
 }
+
+/// **F6, through the door the report did not cover — found by running the binary.**
+///
+/// A configuration file io-harness cannot parse ends `run` at the discovery,
+/// which is *before* either arm reaches the place the report was written. So an
+/// operator whose install had just been moved saw `unknown field … in
+/// ~/.io-cli/io.toml` and nothing at all about the move: a path they had never
+/// seen, naming a file they did not put there, one keystroke after their old
+/// directory emptied. That is the "my sessions are gone" reading this release
+/// exists to prevent, and no unit test could see it — the ordering lives in
+/// `src/main.rs`, which nothing under `tests/` links.
+///
+/// The failing file is deliberately *valid TOML* with an unknown key, so the
+/// failure is io-harness's schema and not a parse error, and the assertion is
+/// that both things are said: what moved, and then what is wrong with it.
+#[test]
+fn f6_a_configuration_that_cannot_be_read_still_says_what_moved() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let fixture = dir.path();
+
+    #[cfg(windows)]
+    let legacy = fixture.join("AppData").join("Roaming").join("io");
+    #[cfg(not(windows))]
+    let legacy = fixture.join(".config").join("io");
+
+    std::fs::create_dir_all(&legacy).expect("the pre-0.15.0 directory");
+    std::fs::write(legacy.join("io.toml"), "model = \"not-a-key\"\n")
+        .expect("a file io-harness will refuse");
+
+    let home = fixture.join(".io-cli");
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .arg("-C")
+        .arg(fixture)
+        .arg("exec")
+        .arg("--json")
+        .arg("--policy")
+        .arg("ask-writes")
+        .arg("say nothing")
+        .env_remove(io_harness::config::CONFIG_VAR)
+        .env_remove(io_harness::config::CONFIG_HOME_VAR);
+    #[cfg(windows)]
+    command
+        .env("USERPROFILE", fixture)
+        .env("APPDATA", fixture.join("AppData").join("Roaming"));
+    #[cfg(not(windows))]
+    command.env("HOME", fixture).env_remove("XDG_CONFIG_HOME");
+
+    let run = command.output().expect("the built binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+
+    assert!(
+        home.join("io.toml").is_file(),
+        "the file did not move, so this test is about nothing; stderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains(&format!(
+            "moved {} to {}",
+            legacy.join("io.toml").display(),
+            home.join("io.toml").display()
+        )),
+        "the move was not reported on the run that failed to read what it moved:\n{stderr}",
+    );
+    assert!(
+        stderr.contains(&format!("io keeps its files in {}", home.display())),
+        "the home was not named on the run that most needed it named:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("unknown field"),
+        "the configuration error itself was lost:\n{stderr}",
+    );
+    // Order matters: the move is the context for the error, so it is said first.
+    assert!(
+        stderr.find("io keeps its files in") < stderr.find("unknown field"),
+        "the error arrived before the explanation for the path in it:\n{stderr}",
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "a run that never started wrote to the JSON stream: {stdout:?}",
+    );
+}
