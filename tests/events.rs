@@ -422,6 +422,14 @@ fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
     assert_eq!(outcome_tone("success"), Tone::Success);
 
     // Stopped deliberately: not a failure, and not silence either.
+    //
+    // The three ceilings joined `budget_ceiling_reached` here in 0.14.0, which is
+    // the release that gave an interactive session budgets to reach in the first
+    // place. A ceiling is the operator's own instruction being carried out, so
+    // reporting one through the error path tells them their run broke at the
+    // moment their limit held — and `src/contract.rs` documents `error:
+    // step_cap_reached` under an unfinished answer as the exact reason io-cli
+    // raised the step floor at all. Reaching a bound you set is not a failure.
     for outcome in [
         "cancelled",
         "denied",
@@ -429,6 +437,9 @@ fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
         "plan_rejected",
         "stalled",
         "budget_ceiling_reached",
+        "step_cap_reached",
+        "time_budget_exceeded",
+        "cost_budget_exceeded",
     ] {
         assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
     }

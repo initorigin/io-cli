@@ -257,6 +257,13 @@ async fn drive(
     // session runs, so the sentence is the same on the fiftieth turn as on the
     // first — and a warning that repeats is one an operator learns to read past.
     notices.extend(io_cli::contract::server_notices(&config, &capabilities));
+    // Said only by a file that actually wrote `[app.io-cli] max_steps`, which is
+    // why the answer comes from the field and not from the cap this session ended
+    // up with — every session has one of those. The key keeps winning until
+    // 0.16.0; this is the one line that says where it went.
+    if let Some(notice) = settings::deprecated_max_steps(stored.as_ref()) {
+        notices.push(notice);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -403,8 +410,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // never briefly the defaults, and so the notices are the first thing in the
     // scrollback rather than something that appears under an answer.
     app.set_keys(keys);
+    // **Committed, not said, and through 0.13.1 this was `App::say` — which
+    // replaces.** A startup notice is not the answer to a keystroke: nobody has
+    // pressed anything yet, and the footer's line is gone at the first key that
+    // is. Worse than misplaced, `say` *replaces*: six things can put a sentence
+    // in this list — a section io-harness could not read, a keybinding naming no
+    // action, a templates directory that would not walk, a skills directory that
+    // would not either, a server named in both scopes, and this release's
+    // `max_steps` deprecation — and saying them in a loop shows the last one and
+    // silently drops every earlier one. Two of those six are new in 0.14.0, so a
+    // file with several things wrong with it is exactly the file that lost the
+    // most. What the session refused has to survive until the operator reads it,
+    // so each takes a row of its own in the scrollback — which is what the
+    // comment above has claimed since it was written.
     for notice in notices {
-        app.say(Tone::Warning, notice);
+        app.record(Tone::Warning, notice);
     }
     // Said once, before anything is drawn or any turn starts. Everything the mode
     // governs — the indicator, and the state words that go to scrollback in its
@@ -1371,6 +1391,19 @@ async fn turn<P: Provider>(
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
     );
+    // **Read off the contract that is about to run, and never recomposed from the
+    // configuration.** The ceilings on the line have to be the ceilings in force,
+    // and the only thing that knows the whole order of precedence — the floor,
+    // the file, then `[app.io-cli]` — is the contract this call just built. Asking
+    // `Config` a second time here would be a second answer to a question F1 exists
+    // to make sure has one.
+    //
+    // It follows that the fields appear once a turn has been built rather than at
+    // the very first idle prompt, which is the honest cost of not duplicating the
+    // precedence: a session that has run nothing has not yet composed a contract
+    // to read them from. They then persist, because `Status::forget_run` does not
+    // clear them — the file does not change while a session runs.
+    app.status.budgets = io_cli::status::Budgets::in_force(&contract);
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {

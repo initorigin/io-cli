@@ -6,9 +6,9 @@ mod support;
 use std::time::Duration;
 
 use io_cli::app::App;
-use io_cli::status::{format_elapsed, Status};
+use io_cli::status::{format_elapsed, Budgets, Status};
 use io_cli::theme::{DARK, MONO};
-use io_harness::{EventKind, RunEvent};
+use io_harness::{EventKind, RunEvent, TaskContract};
 
 /// A run event at step zero, which is where everything but a step sits.
 fn event(kind: EventKind) -> RunEvent {
@@ -1086,4 +1086,214 @@ fn f6_the_connections_are_forgotten_with_the_run() {
     assert_eq!(status.browser, None);
     let line = rendered(&status, 120);
     assert!(!line.contains("mcp") && !line.contains("lsp") && !line.contains("web"));
+}
+
+/// The footer's rows as one string, the way [`rendered`] gives the one-row form.
+fn footed(status: &Status, width: u16) -> String {
+    let mut text = String::new();
+    for line in status.footer(width, &DARK) {
+        for span in &line.spans {
+            text.push_str(span.content.as_ref());
+        }
+    }
+    text
+}
+
+/// **Both of them, named, because `Status` has two renderers and only one of
+/// them is what an operator is looking at.**
+///
+/// `Status::line` is the one-row form and has exactly one production caller —
+/// the fallback for a terminal under seven rows. `Status::footer` is the
+/// three-row form `Status::render` takes on everything taller, which is to say
+/// on every real terminal. 0.12.0 added a field to `line`, asserted `line`, went
+/// green, and shipped a word that was nowhere on screen in a live capture. Every
+/// budget claim below runs over this pair rather than over either one.
+fn both_renderers(status: &Status) -> [(&'static str, String); 2] {
+    [
+        ("Status::line", rendered(status, 200)),
+        ("Status::footer", footed(status, 200)),
+    ]
+}
+
+/// A contract carrying all three budgets, the way an operator's `[run]` table
+/// leaves one.
+fn budgeted() -> TaskContract {
+    TaskContract::workspace("summarise the module", std::path::PathBuf::from("/tmp"))
+        .with_max_steps(20)
+        .with_token_budget(10_000)
+        .with_time_budget(Duration::from_secs(600))
+}
+
+/// **F6 — every budget in force is on the line, with what is left of it.**
+///
+/// The three are read off the contract and the remainder is arithmetic over
+/// counters `Status` already carries: the steps the run has taken, the tokens
+/// this turn has spent, and how long it has been going. Nothing here is a second
+/// counter for a number already on the line, and nothing here reads a clock —
+/// `elapsed` is a value the driver handed in, which is what makes the time
+/// budget's remainder something this test can state rather than race.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_every_budget_in_force_is_drawn_with_what_is_left_of_it() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.budgets = Budgets::in_force(&budgeted());
+    // Three steps taken, two and a half thousand tokens spent, a minute and a
+    // half gone. Every one of these is a field the line already draws, which is
+    // the point: the budget is the same fact with a ceiling on it.
+    status.steps = Some(3);
+    status.run_tokens = Some(2_500);
+    status.elapsed = Duration::from_secs(90);
+
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("left 17/20 steps"),
+            "{renderer} does not say what is left of the step budget: {text:?}",
+        );
+        assert!(
+            text.contains("left 7.5k/10.0k tok"),
+            "{renderer} does not say what is left of the token budget: {text:?}",
+        );
+        assert!(
+            text.contains("left 8m30s/10m00s"),
+            "{renderer} does not say what is left of the time budget: {text:?}",
+        );
+    }
+}
+
+/// **F6 — a session with no `[run]` table shows no budget field at all.**
+///
+/// The absence half, and the one that keeps this feature free on the
+/// overwhelming majority of lines. It is the same rule `tokens`, `spend` and the
+/// background-job count are held to: a session with no budget has not been given
+/// a budget of zero, and a `left 0/0` would report every default session as one
+/// about to stop.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_a_session_with_no_configured_budget_draws_no_budget_field_anywhere() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.steps = Some(3);
+    status.run_tokens = Some(2_500);
+    status.elapsed = Duration::from_secs(90);
+
+    assert!(
+        status.budgets_left().is_empty(),
+        "a status nobody configured composed a budget: {:?}",
+        status.budgets_left(),
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("left "),
+            "{renderer} drew a budget on a session that has none: {text:?}",
+        );
+    }
+}
+
+/// **F6 — io-cli's own step floor is not a budget the operator set.**
+///
+/// `TaskContract::max_steps` is a plain `u32` and is therefore always populated,
+/// so "is there a step budget" is a question the contract cannot answer on its
+/// own. `contract::configured` sets `MAX_STEPS` on every turn — a thousand,
+/// chosen precisely so the cap is not the thing that ends a turn — and a line
+/// reading `left 997/1000 steps` on every default session would be io-cli
+/// reporting its own scaffolding back as a ceiling somebody chose.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_the_step_budget_is_the_operators_and_never_io_clis_own_floor() {
+    let root = std::path::PathBuf::from("/tmp");
+    let floor =
+        TaskContract::workspace("goal", root.clone()).with_max_steps(io_cli::contract::MAX_STEPS);
+    assert_eq!(
+        Budgets::in_force(&floor).steps,
+        None,
+        "the floor every turn carries was read as a budget the operator asked for",
+    );
+
+    // The number itself is not what is special: a file that names a cap has named
+    // one, whatever it is, and twenty is a cap somebody typed.
+    let asked = TaskContract::workspace("goal", root).with_max_steps(20);
+    assert_eq!(Budgets::in_force(&asked).steps, Some(20));
+}
+
+/// **F6 — what is left moves as the turn spends, and stops at nothing left.**
+///
+/// A budget is a ceiling the harness stops a run at rather than a fence the run
+/// cannot cross: the step that ends a turn may finish over its token budget. `0`
+/// left is the honest reading of that, and a wrapped subtraction would report an
+/// exhausted budget as an enormous one — which is the failure this arm exists
+/// for rather than the arithmetic in the ordinary case.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_a_budget_spent_past_its_ceiling_reads_as_nothing_left() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.budgets = Budgets::in_force(&budgeted());
+
+    status.steps = Some(19);
+    status.run_tokens = Some(9_999);
+    status.elapsed = Duration::from_secs(599);
+    assert_eq!(
+        status.budgets_left(),
+        vec![
+            "left 1/20 step".to_string(),
+            // One token left, spelled the way `format_tokens` spells anything
+            // under a thousand: a bare number, not `0.0k`.
+            "left 1/10.0k tok".to_string(),
+            "left 1s/10m00s".to_string(),
+        ],
+        "the last step of a budget is singular and the remainders are the \
+         subtraction",
+    );
+
+    status.steps = Some(25);
+    status.run_tokens = Some(12_000);
+    status.elapsed = Duration::from_secs(900);
+    assert_eq!(
+        status.budgets_left(),
+        vec![
+            "left 0/20 steps".to_string(),
+            "left 0/10.0k tok".to_string(),
+            "left 0s/10m00s".to_string(),
+        ],
+        "a turn that overran its budget reported more left than it started with",
+    );
+}
+
+/// **F6 — a budget is a session fact and survives what the run does not.**
+///
+/// `Status::forget_run` clears the counters a budget is measured against, and it
+/// must not clear the budget: `io.toml` does not change while a session runs, so
+/// `/resume` onto another conversation, a `/fork` away from this one and a
+/// rewind all land under the same `[run]` table they started under. A budget
+/// blanked by any of the three would leave an operator with a turn that will
+/// stop at a ceiling and nothing on screen saying which.
+///
+/// Sabotage: report the ceiling through the error path — under which only F6
+/// fails, by reproducing the `error: step_cap_reached` under an unfinished
+/// answer that `src/contract.rs` documents as the reason `MAX_STEPS` exists.
+#[test]
+fn f6_the_budgets_outlive_the_run_whose_counters_they_bound() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.budgets = Budgets::in_force(&budgeted());
+    status.steps = Some(11);
+
+    status.forget_run();
+
+    assert_eq!(status.budgets, Budgets::in_force(&budgeted()));
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("left 20/20 steps"),
+            "{renderer} lost the budget with the run it was bounding: {text:?}",
+        );
+    }
 }

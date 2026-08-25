@@ -12,6 +12,7 @@
 
 use std::time::Duration;
 
+use io_harness::TaskContract;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -87,6 +88,57 @@ impl Field {
         Self {
             bold: true,
             ..Self::new(text, tone)
+        }
+    }
+}
+
+/// The ceilings the operator's configuration put on a turn, as the contract
+/// carries them.
+///
+/// **Three `Option`s and not three numbers, because two of the three genuinely
+/// may not exist.** `TaskContract::max_duration` and `TaskContract::max_tokens`
+/// are `Option` in io-harness itself — a turn with no time budget is not a turn
+/// with a budget of zero — and a field rendered from a `0` on that side would
+/// report an exhausted budget on every session whose operator never set one.
+///
+/// **The step cap is the odd one, and it is the reason this type exists at all
+/// rather than three loose fields on [`Status`].** `TaskContract::max_steps` is
+/// a plain `u32` and is therefore *always* set, so "does a step budget exist" is
+/// not a question the contract answers. [`Budgets::in_force`] asks a different
+/// one — whether anybody chose it — by comparing the cap against
+/// [`crate::contract::MAX_STEPS`], which is io-cli's own floor and exists
+/// precisely so that the step cap is not the thing that ends a turn. A line
+/// reading `left 997/1000 steps` on every session would be reporting io-cli's
+/// scaffolding back to the operator as a budget they set, and 0.14.0's F6 is
+/// explicit that a session with no `[run]` table shows no budget field at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Budgets {
+    /// `[run] max_steps`, or `[app.io-cli] max_steps` where that beat it — and
+    /// `None` where the cap is still io-cli's own floor.
+    pub steps: Option<u32>,
+    /// `[run] max_tokens`, summed across the turn's completions.
+    pub tokens: Option<u64>,
+    /// `[run] max_duration_secs`, as wall time across the turn.
+    pub duration: Option<Duration>,
+}
+
+impl Budgets {
+    /// What this turn's contract actually bounds, read off the contract and never
+    /// off the file.
+    ///
+    /// **The contract is the one place the precedence is already resolved.**
+    /// `crate::contract::configured` documents five layers — io-harness's own
+    /// defaults, io-cli's step floor, `Config::apply_to`, `[sandbox]` and
+    /// `[app.io-cli]` — and by the time a `TaskContract` exists, a `[run]`
+    /// budget the file lowered and an `[app.io-cli] max_steps` that outranked it
+    /// are the same single fact. Reading `io.toml` a second time here would be a
+    /// second answer to a question already settled, and the two would drift the
+    /// first time a layer moved.
+    pub fn in_force(contract: &TaskContract) -> Self {
+        Self {
+            steps: (contract.max_steps != crate::contract::MAX_STEPS).then_some(contract.max_steps),
+            tokens: contract.max_tokens,
+            duration: contract.max_duration,
         }
     }
 }
@@ -277,6 +329,22 @@ pub struct Status {
     /// report a blocked request as a successful one. `None` for a browser that
     /// started and has gone nowhere yet.
     pub browser: Option<(String, Option<bool>)>,
+    /// The budgets the operator's configuration put on a turn.
+    ///
+    /// **A session fact and not a run fact**, which is why it is not cleared by
+    /// [`Status::forget_run`] beside the counters it is measured against. The
+    /// file does not change while a session runs, so `/resume` onto another
+    /// conversation, a `/fork` away from this one and a rewind all land under the
+    /// same `[run]` table they started under — and a budget blanked by any of
+    /// them would leave the operator with a turn that will stop at a ceiling and
+    /// nothing on screen saying which.
+    ///
+    /// Set by the driver from the contract it built, in the same place and the
+    /// same way `planning` is: nothing here reads the configuration, and nothing
+    /// here invents a default. `Budgets::default()` — no budget at all — is what
+    /// every session carries until a contract says otherwise, and it draws
+    /// nothing.
+    pub budgets: Budgets,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
     /// the clock: an indicator that read the time would be a second timer.
     frame: usize,
@@ -305,6 +373,7 @@ impl Status {
             notice: None,
             elapsed: Duration::ZERO,
             plain: false,
+            budgets: Budgets::default(),
             frame: 0,
         }
     }
@@ -395,6 +464,69 @@ impl Status {
             return None;
         }
         Some(frames[self.frame % frames.len()])
+    }
+
+    /// Each budget in force, with what is left of it — and nothing at all for
+    /// the ones that do not exist.
+    ///
+    /// **One method feeding both renderers, and that is the whole point of it
+    /// being a method rather than two blocks.** `Status` is drawn two ways:
+    /// [`Status::line`] is the one-row form, and [`Status::footer`] is the
+    /// three-row form [`Status::render`] picks on any terminal seven rows or
+    /// taller — which is to say the form the binary actually draws at an ordinary
+    /// prompt, while `line` has one production caller and it is the short-terminal
+    /// fallback. 0.12.0 added a field to `line` alone, asserted `line` alone, and
+    /// shipped a mode that was nowhere on screen in a live capture. Composing the
+    /// text once here means the two forms cannot say different things about a
+    /// budget, whatever a test happens to call.
+    ///
+    /// **What is left is arithmetic over counters this struct already carries.**
+    /// `steps` is what the run has taken, `run_tokens` is what the turn has spent
+    /// — the turn's own counter and not the session's, because the token budget
+    /// bounds a run — and `elapsed` is how long it has been going. A second set
+    /// of counters tracking the same three numbers would be three more things
+    /// that can disagree with the line above them. There is no single accessor to
+    /// read instead: `EventKind::SpendDraw` carries a remainder, and io-harness
+    /// emits it from the contained tree loop only, so a flat session would never
+    /// see one.
+    ///
+    /// Saturating on all three. A budget is a ceiling the harness stops the run
+    /// at, not a fence it cannot cross — the last step of a turn may finish over
+    /// its token budget — and `0` left is the honest reading of that, where a
+    /// wrapped subtraction would report an exhausted budget as an enormous one.
+    ///
+    /// **No clock is read here.** `elapsed` arrives from the driver, which is what
+    /// keeps `tests/timing.rs`'s claim true and what makes the time budget's
+    /// remainder a number a test can state rather than race.
+    pub fn budgets_left(&self) -> Vec<String> {
+        let mut left = Vec::new();
+        if let Some(cap) = self.budgets.steps {
+            let rest = cap.saturating_sub(self.steps.unwrap_or(0));
+            left.push(format!(
+                "left {rest}/{cap} step{}",
+                if rest == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(cap) = self.budgets.tokens {
+            let rest = cap.saturating_sub(self.run_tokens.unwrap_or(0));
+            left.push(format!(
+                "left {}/{} tok",
+                format_tokens(rest),
+                format_tokens(cap)
+            ));
+        }
+        if let Some(cap) = self.budgets.duration {
+            // No unit word, because `format_elapsed` already spells one into
+            // every answer it gives — `12s`, `4m30s`, `1h02m` — and a `left
+            // 4m30s/10m00s min` would be naming the unit twice and getting it
+            // wrong on the hour.
+            left.push(format!(
+                "left {}/{}",
+                format_elapsed(cap.saturating_sub(self.elapsed)),
+                format_elapsed(cap)
+            ));
+        }
+        left
     }
 
     /// The fields, most important first.
@@ -509,6 +641,21 @@ impl Status {
         // not a footnote about what it did.
         if self.planning {
             fields.push(Field::new("planning".to_string(), Tone::Normal));
+        }
+        // **Right of the counters they bound and left of the tree's own spend.**
+        // A budget is read against the number beside it — `3 steps` and `left
+        // 17/20 steps` are one fact split in two — so the two travel together and
+        // narrow together. It is left of `spend` because `spend` is the sub-agent
+        // tree's shared ceiling and appears on almost no line at all, while a
+        // budget an operator wrote in `[run]` is in force on every turn of the
+        // session that configured it.
+        //
+        // `Tone::Normal` rather than the muted tone the counters wear, for the
+        // reason `planning` and the background-job count are: this is a bound on
+        // what the agent may do and the explanation for a turn that is about to
+        // stop, not a footnote about what it did.
+        for text in self.budgets_left() {
+            fields.push(Field::new(text, Tone::Normal));
         }
         if let Some((drawn, remaining)) = self.spend {
             let text = match remaining {
@@ -650,6 +797,15 @@ impl Status {
         if let Some(context) = self.context {
             counts.push(format!("ctx {context}%"));
         }
+        // **Here as well as on `Status::line`, from the same method, and that is
+        // deliberate rather than tidy.** This is the row the binary draws at an
+        // ordinary prompt — `Status::render` takes the footer on any terminal
+        // seven rows or taller — so a budget added to `line` alone would be a
+        // budget no operator ever saw, which is exactly what 0.12.0's planning
+        // field did and what the comment in the `allowed` group below records.
+        // Beside the counters rather than in the group on the right: what is left
+        // of a budget is a number, and it moves every step.
+        counts.extend(self.budgets_left());
         if let Some((done, total)) = self.plan {
             counts.push(format!("plan {done}/{total}"));
         }

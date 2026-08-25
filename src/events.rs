@@ -1758,11 +1758,30 @@ pub fn outcome_tone(outcome: &str) -> Tone {
         "success" | "finished" => Tone::Success,
         // Somebody or something stopped it deliberately. Not a failure, and not
         // nothing either — the work did not complete.
-        "cancelled"
-        | "denied"
-        | "refused"
-        | "plan_rejected"
-        | "stalled"
+        "cancelled" | "denied" | "refused" | "plan_rejected" | "stalled" => Tone::Warning,
+        // **A ceiling, which is not a failure — 0.14.0's F6.** All four of these
+        // are `Ok` in io-harness and always have been: a run that spends its
+        // steps, its seconds or its tokens returns a `RunOutcome` saying which,
+        // and nothing went wrong. Three of the four fell through to `Tone::Error`
+        // until this release, so what an operator met under a half-finished
+        // answer was `error: step_cap_reached` — a ceiling reported as a crash,
+        // and the exact sentence `src/contract.rs` names as the reason
+        // `contract::MAX_STEPS` exists at all. Raising the cap made it rarer
+        // without making it right, and 0.14.0 hands the operator budgets of their
+        // own to reach, so the vocabulary has to be correct before the feature
+        // ships rather than after.
+        //
+        // `budget_ceiling_reached` was already here, alone, which is what made
+        // its three siblings read as a different class of event from a fact they
+        // are indistinguishable from.
+        //
+        // **The word stays io-harness's own.** This interface reports what the
+        // harness decided and never relabels it; what changed is the tone it is
+        // said in, and `outcome_help` below is the sentence that says what each
+        // of them means here.
+        "step_cap_reached"
+        | "time_budget_exceeded"
+        | "cost_budget_exceeded"
         | "budget_ceiling_reached" => Tone::Warning,
         // Waiting on a human this release has no way of asking. A warning rather
         // than an error: nothing went wrong, the run simply cannot go on from
