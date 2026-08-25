@@ -104,16 +104,29 @@ pub struct CliSettings {
     pub skills: Option<std::path::PathBuf>,
     /// How many steps one turn may take: `max_steps = 40`.
     ///
-    /// **io-harness caps a session turn at twelve and io-cli cannot raise it on
-    /// the steered path**, because that path builds its own contract and takes
-    /// none from the caller. A real turn that reads a repository and writes a
-    /// file spends twelve steps easily, and what an operator sees is
-    /// `error: step_cap_reached` with the work half done.
+    /// **Deprecated in 0.14.0, still winning, and removed in 0.16.0** — the
+    /// release that rewrites the configuration surface, which is where a key
+    /// disappearing costs an operator one migration instead of two. This release
+    /// gives `[run] max_steps` the same job on an interactive turn, so one file
+    /// now has two spellings for one number and the less discoverable one wins:
+    /// [`crate::contract::session`] applies this key after `Config::apply_to` and
+    /// therefore over everything the harness's own table said. None of that
+    /// changes here. A file that already carries this key gets exactly the cap it
+    /// asks for, which is what `tests/contract.rs`'s F4 asserts, and
+    /// [`deprecated_max_steps`] says so once at session start rather than leaving
+    /// the operator to discover at 0.16.0 that a number they wrote stopped being
+    /// read.
     ///
-    /// So this is honoured on the one path that carries a contract — a contained
-    /// session, `[app.io-cli.containment]` — and the outcome's own sentence says
-    /// so where it is refused. `[run] max_steps` is a different knob for a
-    /// different entry point: it reaches `io exec` and never an interactive turn.
+    /// **The reason this was ever io-cli's own key is gone, and was gone before
+    /// this doc stopped claiming it.** It used to say io-harness caps a session
+    /// turn at twelve and io-cli cannot raise it on the steered path, and that
+    /// the key is therefore honoured on the one path carrying a contract — a
+    /// contained session. Both clauses stopped being true in 0.11.0, which moved
+    /// the flat arm onto `Session::turn_bounded_observed`: an entry point that
+    /// takes the caller's contract. Every turn has carried a cap io-cli chose
+    /// since then — [`crate::contract::MAX_STEPS`], a thousand — and
+    /// `[run] max_steps` now reaches that same field from a table io-harness
+    /// documents itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
 }
@@ -180,6 +193,36 @@ pub fn stored(config: &io_harness::Config) -> (Option<CliSettings>, Option<Strin
             )),
         ),
     }
+}
+
+/// The one line a file carrying `[app.io-cli] max_steps` earns at session start.
+///
+/// **`None` unless the operator wrote the key, and that distinction is the whole
+/// of this function.** The question is not what step cap this session runs under
+/// — every session runs under one, [`crate::contract::MAX_STEPS`] where nothing
+/// says otherwise — but whether the file spells it in the table that is going
+/// away. Asking the first question instead of the second would put a deprecation
+/// notice on the file `io setup` writes, which names no `max_steps` at all: an
+/// operator who is told at every start about a key they have never used is one
+/// who stops reading the start-up lines, and the next line they skip is the one
+/// that mattered. So this reads the field, where `None` is a key nobody wrote and
+/// `Some` is a number somebody typed.
+///
+/// The sentence names three things because an operator acting on it needs all
+/// three: the key, the value it took — this key still beats `[run] max_steps`,
+/// so the number quoted is the number the turn runs on — and where it moves to.
+/// It is a notice and not a refusal: removal is 0.16.0, and until then a file
+/// that says nothing new keeps working unchanged.
+///
+/// It lives here rather than at its call site in `src/main.rs` for the reason
+/// [`plain`] does: nothing under `tests/` can link the binary, so a decision
+/// written inline there is one no test drives and no sabotage can fail.
+pub fn deprecated_max_steps(stored: Option<&CliSettings>) -> Option<String> {
+    let steps = stored?.max_steps?;
+    Some(format!(
+        "`[app.io-cli] max_steps` is deprecated; this turn runs on the {steps} steps it asks for, \
+         and the key moves to `[run] max_steps`. It is read until 0.16.0."
+    ))
 }
 
 /// Whether this session runs in plain mode: `--plain`, or `[app.io-cli] plain`.
