@@ -110,6 +110,29 @@ fn every_line_kind_has_an_arm_in_the_renderer() {
     }
 }
 
+/// 0.14.0 F7, F8 and F9 — the three rows this release promoted, and the one
+/// sabotage all three of them take.
+///
+/// **None of these kinds was ever untriaged**, whatever the contract said before
+/// `US-IO-CLI-0.14.0-I01` corrected it. All three were in the table from 0.11.0
+/// and all three were deliberately `Silent`, so `Status::unknown` never moved for
+/// any of them and could not have: `Events::undesigned` increments only for a
+/// name the table does not hold. Restoring `Disposition::Silent` on any one row
+/// is therefore the sabotage each criterion actually has, and this is where it
+/// fails first — before the renderer's own tests, and naming the row rather than
+/// the sentence that went missing because of it.
+#[test]
+fn the_three_kinds_this_release_draws_are_lines_rather_than_silent() {
+    for name in ["dialed", "sandbox", "stalled"] {
+        assert_eq!(
+            triage::disposition(name),
+            Some(Disposition::Line),
+            "{name} is drawn by this release, so a `Silent` row here is a line gone from the \
+             scrollback with the unknown counter still at zero and nothing else saying so",
+        );
+    }
+}
+
 /// The other direction, in behaviour rather than in source: a kind whose fact
 /// belongs to a status field or to another event commits no line.
 ///
@@ -128,7 +151,6 @@ fn a_status_or_silent_kind_commits_nothing() {
             tokens: 12,
             remaining: Some(400),
         },
-        EventKind::Stalled,
         EventKind::Fleet {
             tier: 1,
             working: 2,
@@ -138,10 +160,6 @@ fn a_status_or_silent_kind_commits_nothing() {
         EventKind::PlanProposed {
             plan_id: 4,
             steps: Vec::new(),
-        },
-        EventKind::Sandbox {
-            kind: "create".into(),
-            backend: Some("macos-sandbox-exec".into()),
         },
         EventKind::Mcp {
             server: "docs".into(),
@@ -215,11 +233,6 @@ fn a_status_or_silent_kind_commits_nothing() {
             mode: "workspace-write".into(),
             backend: "macos-sandbox-exec".into(),
             roots: 1,
-        },
-        EventKind::Dialed {
-            host: "example.com".into(),
-            port: 443,
-            allowed: false,
         },
     ];
 

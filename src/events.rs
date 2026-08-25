@@ -1111,8 +1111,7 @@ impl Events {
                 lines
             }
             // The run continues, which is the half an operator would otherwise
-            // assume the opposite of. `Stalled` is the terminal one and it is
-            // silent here on purpose: it arrives as the run's own outcome.
+            // assume the opposite of. `Stalled`, below, is the terminal one.
             EventKind::Replan { window } => {
                 let mut lines = self.flush_text();
                 lines.push(theme.notice(
@@ -1120,6 +1119,38 @@ impl Events {
                     format!(
                         "nothing has changed in {window} steps, so the agent was told once to try \
                          something else"
+                    ),
+                ));
+                lines
+            }
+            // **The one every ordinary session has been emitting and this one
+            // has been discarding.** `TaskContract::workspace` carries
+            // `StallPolicy::default()` — three steps that change nothing — so no
+            // operator ever turned this on and none of them ever saw it either:
+            // until 0.14.0 the fact reached its reader as a session that had
+            // gone quiet, and then, once the run was already over, as the word
+            // `stalled` on the outcome line. Being told after the fact that the
+            // last two minutes were the agent going in circles is not the same
+            // service as being told while it is happening, and the whole of F9
+            // is that difference.
+            //
+            // **The variant carries nothing at all**, so there is no payload to
+            // render and the line is composed from the run state around the
+            // event instead: `RunEvent::step` is the step it stopped on, and
+            // `step_at` is the session age that step opened at, set by the
+            // `Step` arm above from an age the driver handed in. Neither is read
+            // from a clock here, which N1 requires and which is also what makes
+            // the line assertable — a test states the two ages and the interval
+            // between them is arithmetic rather than timing.
+            EventKind::Stalled => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    format!(
+                        "the agent is still going in circles, so the run stops \
+                         here{separator}step {}{separator}{} since that step opened",
+                        event.step,
+                        format_millis(at.saturating_sub(self.step_at)),
                     ),
                 ));
                 lines
@@ -1325,6 +1356,114 @@ impl Events {
                 // server reaching a run and a tool it offered both land, and
                 // `triage::TRIAGE` records that route.
                 Vec::new()
+            }
+            // **What isolated the work, said in the operator's words rather than
+            // inferred from a tool cell that happened to succeed.** Seven kinds
+            // reach this channel and four of them are drawn.
+            //
+            // **`dial` is not one of them.** io-harness builds it as a `destroy`
+            // event with the kind overwritten and emits it immediately beside
+            // `EventKind::Dialed` for the same outbound connection, so a session
+            // drawing both would put every dial in the transcript twice — and
+            // the copy here is the poorer one, carrying the word and nothing
+            // else where the dial itself carries the host, the port and the
+            // verdict. `gate_phase_failed` and `gate_output` are the other two:
+            // they belong to an execution gate, and a steerable turn is built on
+            // `TaskContract::workspace`, which carries `Verification::None`. So
+            // neither can arrive in a session before 0.24.0 gives one a gate,
+            // and neither is given a sentence written in advance of the release
+            // that could check it.
+            //
+            // An empty `Vec` is this module's own word for "nothing yet" and is
+            // the honest way to say all three: a caller cannot tell it from a
+            // dropped event because there is nothing there to tell apart.
+            //
+            // **`cap_hit` is a limit reached and not a failure.** The sandbox
+            // did exactly what its configuration told it to; reporting that
+            // through the error path would tell an operator their run broke at
+            // the moment their cap held, which is the opposite of what happened
+            // and the opposite of the reason they set one.
+            //
+            // The backend is carried where the event has one and never invented
+            // where it does not. io-harness sets it on `create` and `exec`
+            // alone — `SandboxEvent::cap_hit` and `SandboxEvent::destroy` both
+            // write `None`, always — so the `Option` is rendered as it arrives
+            // rather than filled in with a name this module worked out for
+            // itself.
+            EventKind::Sandbox { kind, backend } => {
+                // The sentence and its tone decided together, in one place, so
+                // that a kind cannot be given a line here and a weight somewhere
+                // else that disagrees with it.
+                let (said, tone) = match kind.as_str() {
+                    "create" => ("a sandbox was created", Tone::Muted),
+                    "exec" => ("a command ran in the sandbox", Tone::Muted),
+                    "cap_hit" => ("the sandbox reached a limit it was given", Tone::Warning),
+                    "destroy" => ("the sandbox was torn down", Tone::Muted),
+                    _ => return Vec::new(),
+                };
+                let mut text = said.to_string();
+                if let Some(backend) = backend {
+                    text.push_str(&format!("{separator}{backend}"));
+                }
+                let mut lines = self.flush_text();
+                // A tone that carries a word writes its own line at the left
+                // margin, like every other notice in this module; one that does
+                // not takes the muted leader, so an unweighted fact sits in the
+                // same column as the tool cells it belongs among.
+                lines.push(if tone.word().is_some() {
+                    theme.notice(tone, text)
+                } else {
+                    Line::from(vec![
+                        Span::styled(leader(separator), theme.style(Tone::Muted)),
+                        Span::styled(text, theme.style(Tone::Normal)),
+                    ])
+                });
+                lines
+            }
+            // **The one place in this product where a contained command's egress
+            // is an observation rather than an inference.** A sandbox denies
+            // egress structurally — the backend gives the child no route out —
+            // so until io-harness put a loopback proxy in the route there was no
+            // attempt to see, and the proxy decides by applying the run's own
+            // `Policy` to `host:port`, which is the same rule that refuses this
+            // crate's own network tools reaching a second caller.
+            //
+            // **The host as the command asked for it, and never an address.**
+            // io-harness carries the unresolved name for the reason this line
+            // prints it: the policy's patterns are written against names, so a
+            // row showing `140.82.121.4` would not match the rule that decided
+            // it and its reader could not tell which rule to change.
+            //
+            // A refusal is `Tone::Refused` and not `Tone::Error`, for the reason
+            // that tone exists: nothing broke, the boundary worked. A permitted
+            // dial says so in a word rather than in a colour alone, because a
+            // colour is nothing under `NO_COLOR`, on a monochrome terminal or to
+            // a screen reader.
+            //
+            // **An absent dial line is not evidence of no egress**, and nothing
+            // in this interface should be read as though it were. The event has
+            // one emit site behind three conjoined preconditions — the turn is
+            // contained, the policy `names_hosts()`, and the selected backend
+            // reaches the proxy — so a permissive or all-or-nothing policy names
+            // no host and emits none of these ever, and a proxy that fails to
+            // bind is logged and dropped while the run carries on.
+            EventKind::Dialed {
+                host,
+                port,
+                allowed,
+            } => {
+                let mut lines = self.flush_text();
+                lines.push(if *allowed {
+                    Line::from(vec![
+                        Span::styled(leader(separator), theme.style(Tone::Muted)),
+                        Span::styled(format!("dialled {host}:{port}"), theme.style(Tone::Normal)),
+                        Span::styled(separator, theme.style(Tone::Muted)),
+                        Span::styled("permitted", theme.style(Tone::Muted)),
+                    ])
+                } else {
+                    theme.notice(Tone::Refused, format!("dialled {host}:{port}"))
+                });
+                lines
             }
             // Guarded on the items rather than only on the tag, because io-harness
             // accepts a write of none: `parse_todo_items` validates each item it is
