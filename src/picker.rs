@@ -96,11 +96,7 @@ impl Row {
     /// A row that says what kind it is.
     ///
     /// `mark` is drawn before the label and is not matched against.
-    pub fn marked(
-        mark: &'static str,
-        label: impl Into<String>,
-        detail: impl Into<String>,
-    ) -> Self {
+    pub fn marked(mark: &'static str, label: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
             label: label.into(),
             detail: Some(detail.into()),

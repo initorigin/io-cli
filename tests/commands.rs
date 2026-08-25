@@ -531,7 +531,10 @@ fn f17_usage_answers_and_is_never_listed() {
 
     // It answers, with what `/status` answers.
     assert_eq!(commands::parse("usage", &defaults(), &DARK), Action::Status);
-    assert_eq!(commands::parse("status", &defaults(), &DARK), Action::Status);
+    assert_eq!(
+        commands::parse("status", &defaults(), &DARK),
+        Action::Status
+    );
 
     // And it is nowhere: not in the inventory, not in a group, not a palette row.
     assert!(

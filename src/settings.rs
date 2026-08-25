@@ -542,8 +542,7 @@ impl Ceilings {
             contract = contract.with_max_parallel_reads(reads);
         }
         if let Some(secs) = self.spawn_background_after_secs {
-            contract =
-                contract.with_spawn_background_after(std::time::Duration::from_secs(secs));
+            contract = contract.with_spawn_background_after(std::time::Duration::from_secs(secs));
         }
         // Only the `false` arm does anything: `without_detached_spawns` is the
         // only lever io-harness offers and the default is already true, so

@@ -122,7 +122,10 @@ fn f2_the_winning_scope_is_the_one_reported() {
 
     assert_eq!(steps.decided.word(), "local");
     assert_eq!(steps.value.as_deref(), Some("30"));
-    assert_eq!(config.origin("run.max_steps").last().unwrap().scope, Scope::Local);
+    assert_eq!(
+        config.origin("run.max_steps").last().unwrap().scope,
+        Scope::Local
+    );
 }
 
 #[test]
@@ -183,7 +186,10 @@ fn n2_a_credential_is_never_shown_in_full() {
 
     // Anything that is not a credential is untouched.
     assert_eq!(configure::redact("run.max_steps", "30"), "30");
-    assert_eq!(configure::redact("app.io-cli.theme", "\"dark\""), "\"dark\"");
+    assert_eq!(
+        configure::redact("app.io-cli.theme", "\"dark\""),
+        "\"dark\""
+    );
 }
 
 #[test]
@@ -248,7 +254,10 @@ fn f3_a_change_lands_in_the_picked_scope_and_nowhere_else() {
 
     // The user file is untouched: a write to one scope is a write to one file.
     let user = std::fs::read_to_string(&s.user).unwrap();
-    assert!(user.contains("max_steps = 10"), "the user file was edited too");
+    assert!(
+        user.contains("max_steps = 10"),
+        "the user file was edited too"
+    );
     assert!(
         !s.root.path().join("io.toml").exists(),
         "a project file was created by a write to the local scope"
@@ -277,8 +286,7 @@ fn f3_the_reloaded_config_is_what_the_next_turn_is_built_from() {
     let (after, _) = configure::reload(s.root.path()).unwrap();
     let next = io_cli::contract::configured("go", s.root.path().to_path_buf(), &after);
     assert_eq!(
-        next.max_steps,
-        42,
+        next.max_steps, 42,
         "the next turn was built from the configuration as it was at session start"
     );
 
@@ -357,7 +365,9 @@ fn f4_a_project_scoped_widening_is_refused_with_the_harness_s_sentence() {
             Scope::Project,
             &[io_cli::edit::Edit::set(*key, *value)],
         )
-        .expect_err(&format!("{key} = {value} should be refused at project scope"));
+        .expect_err(&format!(
+            "{key} = {value} should be refused at project scope"
+        ));
 
         // io-harness's own words, not a summary of them. The half an operator
         // needs is WHY, and only the harness says it.
@@ -365,7 +375,10 @@ fn f4_a_project_scoped_widening_is_refused_with_the_harness_s_sentence() {
             err.contains("narrow it and never widen it"),
             "the refusal for {key} was re-worded by io-cli: {err}"
         );
-        assert!(err.contains(key), "the refusal does not name the key: {err}");
+        assert!(
+            err.contains(key),
+            "the refusal does not name the key: {err}"
+        );
 
         // And the file is back as it was — a refused write leaves nothing behind.
         assert!(

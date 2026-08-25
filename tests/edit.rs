@@ -76,7 +76,10 @@ fn f1_a_scalar_is_replaced_and_every_other_byte_survives() {
 
     // The things a re-serialisation loses, named one at a time so a failure says
     // which kind of loss happened rather than only that the bytes differ.
-    assert!(after.contains("# My io configuration."), "header comment lost");
+    assert!(
+        after.contains("# My io configuration."),
+        "header comment lost"
+    );
     assert!(
         after.contains("# deliberately low while I am debugging"),
         "the inline comment on the edited line itself was lost"
@@ -196,8 +199,11 @@ fn f1_a_dotted_key_is_refused_rather_than_mis_spliced() {
 fn f1_the_result_is_always_still_the_harness_schema() {
     // Every edit this module makes is read back before it is allowed to land.
     // A value that is not valid TOML is refused rather than written.
-    let err = edit::apply(OPERATORS_FILE, &[Edit::set("run.max_steps", "not a number")])
-        .unwrap_err();
+    let err = edit::apply(
+        OPERATORS_FILE,
+        &[Edit::set("run.max_steps", "not a number")],
+    )
+    .unwrap_err();
     assert!(!err.is_empty(), "an unparseable result must be refused");
     // And the refusal is not a panic, which is the only other way this could go.
 }
@@ -250,13 +256,19 @@ fn n3_a_written_file_keeps_its_mode_and_lands_whole() {
     edit::write(&path, &[Edit::set("run.max_steps", "45")]).unwrap();
 
     let after = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(assert_only_span_changed(OPERATORS_FILE, &after, "run.max_steps"), "45");
+    assert_eq!(
+        assert_only_span_changed(OPERATORS_FILE, &after, "run.max_steps"),
+        "45"
+    );
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "the credential file's mode was widened by a write");
+        assert_eq!(
+            mode, 0o600,
+            "the credential file's mode was widened by a write"
+        );
     }
 
     // No temporary file is left behind next to it.
@@ -299,7 +311,10 @@ fn f1_a_new_entry_goes_last_because_the_order_is_the_chain() {
     const ONE: &str = "[[provider]]\nkind = \"openrouter\"\nmodel = \"a\"\n";
     let after = edit::apply(
         ONE,
-        &[Edit::append("provider", "kind = \"anthropic\"\nmodel = \"b\"")],
+        &[Edit::append(
+            "provider",
+            "kind = \"anthropic\"\nmodel = \"b\"",
+        )],
     )
     .unwrap();
 
@@ -352,7 +367,10 @@ max_steps = 30
         "the move did not reorder the chain:\n{up}"
     );
     // With its comment, its unmodelled key, and nothing else disturbed.
-    assert!(up.contains("# the cheap one, second on purpose"), "comment lost");
+    assert!(
+        up.contains("# the cheap one, second on purpose"),
+        "comment lost"
+    );
     assert!(up.contains("preset = \"groq\""), "key lost");
     assert!(up.contains("max_steps = 30"), "a later section moved");
     let config = io_harness::Config::from_toml(&up).expect("the moved file loads");
@@ -361,5 +379,9 @@ max_steps = 30
     // And moving it back is the identity, which is the property a one-way
     // implementation would fail.
     let back = edit::apply(&up, &[Edit::move_entry("provider", 0, 1)]).unwrap();
-    assert_eq!(back.trim_end(), CHAIN.trim_end(), "a move is not reversible");
+    assert_eq!(
+        back.trim_end(),
+        CHAIN.trim_end(),
+        "a move is not reversible"
+    );
 }

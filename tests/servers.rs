@@ -92,7 +92,11 @@ fn f5_three_states_are_distinguishable_at_once() {
     );
 
     // Three words, three states, no two the same.
-    let mut words: Vec<&str> = vec![docs.state.word(), search.state.word(), Reached::NotYet.word()];
+    let mut words: Vec<&str> = vec![
+        docs.state.word(),
+        search.state.word(),
+        Reached::NotYet.word(),
+    ];
     words.sort();
     words.dedup();
     assert_eq!(words.len(), 3);
@@ -112,7 +116,11 @@ fn f5_the_count_is_distinct_tools_and_never_calls() {
     }
     let list = servers::servers(&config, &observed);
     let docs = list.iter().find(|s| s.id == "docs").unwrap();
-    assert_eq!(docs.state, Reached::Answered { tools: 1 }, "five calls is one tool");
+    assert_eq!(
+        docs.state,
+        Reached::Answered { tools: 1 },
+        "five calls is one tool"
+    );
 }
 
 #[test]
@@ -251,7 +259,10 @@ max_steps = 30
     let config = Config::from_toml(&after).expect("the written file loads");
     let left: Vec<&str> = config.mcp_servers().iter().map(|s| s.id.as_str()).collect();
     assert_eq!(left, vec!["search"]);
-    assert!(after.contains("max_steps = 30"), "a later section was taken with it");
+    assert!(
+        after.contains("max_steps = 30"),
+        "a later section was taken with it"
+    );
 }
 
 #[test]
@@ -268,10 +279,17 @@ command = \"mcp-docs\"
 env = { TOKEN = \"abc\" }
 args = [\"--verbose\"]
 ";
-    let after = io_cli::edit::apply(EXTRA, &[servers::edit(0, "command", "\"mcp-docs-2\"")]).unwrap();
+    let after =
+        io_cli::edit::apply(EXTRA, &[servers::edit(0, "command", "\"mcp-docs-2\"")]).unwrap();
 
-    assert!(after.contains("env = { TOKEN = \"abc\" }"), "an unmodelled key vanished");
-    assert!(after.contains("args = [\"--verbose\"]"), "an unmodelled key vanished");
+    assert!(
+        after.contains("env = { TOKEN = \"abc\" }"),
+        "an unmodelled key vanished"
+    );
+    assert!(
+        after.contains("args = [\"--verbose\"]"),
+        "an unmodelled key vanished"
+    );
     assert!(after.contains("command = \"mcp-docs-2\""));
 }
 

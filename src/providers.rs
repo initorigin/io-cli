@@ -284,11 +284,7 @@ fn entry(index: usize, spec: &ProviderSpec, raw_key: Option<&str>) -> Entry {
     }
 }
 
-fn credential(
-    api_key: Option<&str>,
-    raw_key: Option<&str>,
-    variable: &'static str,
-) -> Credential {
+fn credential(api_key: Option<&str>, raw_key: Option<&str>, variable: &'static str) -> Credential {
     // The raw text first: it is what the operator wrote, and it is the only
     // place an indirection still exists by the time a `Config` has parsed.
     if let Some(raw) = raw_key {

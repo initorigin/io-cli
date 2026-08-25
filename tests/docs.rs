@@ -202,8 +202,8 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
     // the first half of a table to go stale — this one said "five keys and four
     // tables" over a table of five keys and five tables, for four releases.
     let words = [
-        "no", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
-        "Ten", "Eleven", "Twelve",
+        "no", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+        "Eleven", "Twelve",
     ];
     let sentence = format!(
         "{} keys live there, and {} tables",
@@ -323,10 +323,9 @@ fn the_removed_step_cap_is_announced_where_it_was_promised() {
     // So the notice reads the RAW section now. It is built through
     // `Config::from_toml` rather than from a struct, which is the only way left
     // to express "a file that still has this key" — there is no field to set.
-    let still_has_it = io_harness::Config::from_toml(
-        "[app.io-cli]\nmax_steps = 40\ntheme = \"dark\"\n",
-    )
-    .expect("a leftover key still LOADS, which is exactly the problem");
+    let still_has_it =
+        io_harness::Config::from_toml("[app.io-cli]\nmax_steps = 40\ntheme = \"dark\"\n")
+            .expect("a leftover key still LOADS, which is exactly the problem");
     let notice = io_cli::settings::deprecated_max_steps(&still_has_it)
         .expect("a file that still writes the key earns the notice");
     assert!(notice.contains("[run] max_steps"), "{notice}");

@@ -910,9 +910,7 @@ fn f14_headings_are_shown_while_browsing_and_gone_the_moment_anything_is_typed()
     // A heading is a line of its own, so it is matched as a whole line — a
     // substring test would find "configure" inside "…servers configured" and
     // fail on a row that is behaving perfectly.
-    let is_heading_line = |text: &str, title: &str| {
-        text.lines().any(|line| line.trim() == title)
-    };
+    let is_heading_line = |text: &str, title: &str| text.lines().any(|line| line.trim() == title);
 
     let browsing = drawn(&mut picker);
     assert!(

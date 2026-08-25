@@ -85,7 +85,10 @@ fn f7_reordering_the_panel_reorders_the_file_and_therefore_the_chain() {
 
     let moved = config(&after);
     let chain = providers::chain(&moved.config);
-    assert_eq!(chain[0].kind, "groq", "the promoted entry is the one now used");
+    assert_eq!(
+        chain[0].kind, "groq",
+        "the promoted entry is the one now used"
+    );
     assert_eq!(chain[1].kind, "openrouter");
 
     // io-harness agrees, which is the half that matters: the head is what a run
@@ -98,8 +101,14 @@ fn f7_reordering_the_panel_reorders_the_file_and_therefore_the_chain() {
     );
 
     // The entry arrived with its own bytes.
-    assert!(after.contains("# the cheap one"), "a comment was left behind");
-    assert!(after.contains("IO_CLI_TEST_GROQ_KEY"), "the indirection was lost");
+    assert!(
+        after.contains("# the cheap one"),
+        "a comment was left behind"
+    );
+    assert!(
+        after.contains("IO_CLI_TEST_GROQ_KEY"),
+        "the indirection was lost"
+    );
 }
 
 #[test]
@@ -161,7 +170,10 @@ fn f8_the_preset_list_is_the_harness_s_own() {
     let mut theirs = harness.clone();
     mine.sort();
     theirs.sort();
-    assert_eq!(mine, theirs, "io-cli's preset list has drifted from io-harness's");
+    assert_eq!(
+        mine, theirs,
+        "io-cli's preset list has drifted from io-harness's"
+    );
 }
 
 #[test]
@@ -229,7 +241,10 @@ fn n2_a_credential_is_described_and_never_shown() {
     assert_eq!(chain[0].credential, Credential::Written);
     for row in providers::rows(&chain) {
         let text = format!("{} {}", row.label, row.detail.unwrap_or_default());
-        assert!(!text.contains("supersecret"), "a credential reached a row: {text}");
+        assert!(
+            !text.contains("supersecret"),
+            "a credential reached a row: {text}"
+        );
     }
 }
 

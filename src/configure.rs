@@ -164,7 +164,14 @@ pub fn redact(path: &str, value: &str) -> String {
     if bare.starts_with("${env:") || bare.starts_with("${file:") {
         return value.to_string();
     }
-    let tail: String = bare.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = bare
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     if bare.len() <= 4 {
         "\"set\"".to_string()
     } else {

@@ -235,10 +235,7 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Session,
         &["/clear", "/resume", "/fork", "/setup", "/exit"],
     ),
-    (
-        Group::Turn,
-        &["/model", "/contain", "/plan", "/profile"],
-    ),
+    (Group::Turn, &["/model", "/contain", "/plan", "/profile"]),
     (
         Group::Inspect,
         &[
@@ -445,11 +442,7 @@ fn entries(templates: &Templates, skills: &io_harness::Skills) -> Vec<Entry> {
                 // has: `crate::fuzzy` ranks an exact name above a prefix above a
                 // scatter, and with the slash on, every label begins with the
                 // same character so both top tiers are unreachable.
-                row: Row::marked(
-                    COMMAND_MARK,
-                    name.strip_prefix('/').unwrap_or(name),
-                    what,
-                ),
+                row: Row::marked(COMMAND_MARK, name.strip_prefix('/').unwrap_or(name), what),
                 chosen: Some(Chosen::Command(name)),
             });
         }

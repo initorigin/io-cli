@@ -805,12 +805,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         // The same both-halves rule a write
                                         // follows: a profile can carry
                                         // `[app.io-cli]` keys too.
-                                        let (stored, _) =
-                                            io_cli::settings::stored(&overlaid);
+                                        let (stored, _) = io_cli::settings::stored(&overlaid);
                                         capabilities =
-                                            io_cli::contract::Capabilities::stored(
-                                                stored.as_ref(),
-                                            );
+                                            io_cli::contract::Capabilities::stored(stored.as_ref());
                                         config = overlaid;
                                         app.record(
                                             Tone::Success,
@@ -830,8 +827,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             }
                         }
                         Pick::ConfigScope { key, value, paths } => {
-                            match paths.get(index) {
-                                Some((scope, _)) => {
+                            // An index past the end puts nothing in the file,
+                            // which is the same answer every other picker arm
+                            // gives a row it cannot resolve.
+                            if let Some((scope, _)) = paths.get(index) {
+                                {
                                     let root = session.root().to_path_buf();
                                     let edits =
                                         [io_cli::edit::Edit::set(key.clone(), value.clone())];
@@ -869,7 +869,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         Err(refusal) => app.record(Tone::Refused, refusal),
                                     }
                                 }
-                                None => {}
                             }
                         }
                         Pick::Palette => match commands::palette_pick(&templates, &skills, index) {
@@ -1079,10 +1078,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Provider => {
                     let chain = io_cli::providers::chain(&config);
                     if chain.is_empty() {
-                        app.record(
-                            Tone::Muted,
-                            "no provider is configured; run `io setup`",
-                        );
+                        app.record(Tone::Muted, "no provider is configured; run `io setup`");
                     } else {
                         picker = Some((
                             Picker::new(
@@ -1106,19 +1102,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     } else {
                         let rows: Vec<Row> =
                             names.iter().map(|name| Row::new(name.clone())).collect();
-                        picker =
-                            Some((Picker::new("Which profile?", rows), Pick::Profile(names)));
+                        picker = Some((Picker::new("Which profile?", rows), Pick::Profile(names)));
                     }
                 }
                 Action::Config(None) => {
                     let settings = io_cli::configure::settings(&config);
-                    let paths: Vec<String> =
-                        settings.iter().map(|s| s.path.clone()).collect();
+                    let paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
                     picker = Some((
-                        Picker::new(
-                            "Which setting?",
-                            io_cli::configure::rows(&settings),
-                        ),
+                        Picker::new("Which setting?", io_cli::configure::rows(&settings)),
                         Pick::Config(paths),
                     ));
                 }

@@ -182,8 +182,9 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
     }
 
     let regions = regions(text)?;
-    let parsed: toml::Value = toml::from_str(text)
-        .map_err(|e| format!("this configuration file does not parse, so nothing was written: {e}"))?;
+    let parsed: toml::Value = toml::from_str(text).map_err(|e| {
+        format!("this configuration file does not parse, so nothing was written: {e}")
+    })?;
 
     // Each edit becomes one splice: a byte range to replace and the text to put
     // there. A replacement is the value's own span; an insertion is an empty
@@ -214,9 +215,7 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                     regions
                         .iter()
                         .find(|r| r.path == names && r.index == index)
-                        .ok_or_else(|| {
-                            format!("there is no `{}[{index}]` in this file", edit.path)
-                        })
+                        .ok_or_else(|| format!("there is no `{}[{index}]` in this file", edit.path))
                 };
                 if from == to {
                     continue;
@@ -250,9 +249,9 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 let mut index = table_path.index;
                 match last.split_once('[') {
                     Some((name, rest)) => {
-                        let number = rest.strip_suffix(']').ok_or_else(|| {
-                            format!("`{}` has an unclosed index", edit.path)
-                        })?;
+                        let number = rest
+                            .strip_suffix(']')
+                            .ok_or_else(|| format!("`{}` has an unclosed index", edit.path))?;
                         index = number.parse().map_err(|_| {
                             format!("`{}` has an index that is not a number", edit.path)
                         })?;
@@ -263,9 +262,7 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 let region = regions
                     .iter()
                     .find(|r| r.path == names && r.index == index)
-                    .ok_or_else(|| {
-                        format!("there is no `{}` to remove in this file", edit.path)
-                    })?;
+                    .ok_or_else(|| format!("there is no `{}` to remove in this file", edit.path))?;
                 splices.push((region.start..region.body.end, String::new()));
                 continue;
             }
@@ -273,17 +270,15 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
         }
 
         let (table_path, key) = split_path(&edit.path)?;
-        let region = regions.iter().find(|r| {
-            r.path == table_path.names && r.index == table_path.index
-        });
+        let region = regions
+            .iter()
+            .find(|r| r.path == table_path.names && r.index == table_path.index);
 
         match region {
             Some(region) => {
                 let body = &text[region.body.clone()];
                 let flat: BTreeMap<String, Spanned<toml::Value>> = toml::from_str(body)
-                    .map_err(|e| {
-                        format!("the `{}` section does not parse: {e}", edit.path)
-                    })?;
+                    .map_err(|e| format!("the `{}` section does not parse: {e}", edit.path))?;
 
                 match flat.get(&key) {
                     Some(spanned) => {
@@ -293,7 +288,8 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                         // the value's. The tell is that the span's text is not a
                         // value on its own.
                         let found = &text[absolute.clone()];
-                        if toml::from_str::<toml::value::Table>(&format!("probe = {found}")).is_err()
+                        if toml::from_str::<toml::value::Table>(&format!("probe = {found}"))
+                            .is_err()
                         {
                             return Err(dotted_refusal(&edit.path));
                         }
@@ -331,7 +327,9 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
     // Right to left, so an earlier splice never invalidates a later offset.
     // Doing it in one pass is the point: two sequential calls would hide an
     // offset bug that only shows when two edits share a document.
-    splices.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    // Stable, which a move depends on: it pushes a removal and an insertion that
+    // can share a start, and they have to stay in the order they were pushed.
+    splices.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let mut out = text.to_string();
     for (range, replacement) in splices {
         out.replace_range(range, &replacement);
@@ -412,8 +410,7 @@ pub fn value_at(text: &str, path: &str) -> Option<String> {
 /// carried over, because the file holds a credential and a write is not a reason
 /// to widen it.
 pub fn write(path: &Path, edits: &[Edit]) -> Result<(), String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let updated = apply(&text, edits)?;
 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -483,9 +480,9 @@ fn split_path(path: &str) -> Result<(TablePath, String), String> {
         // `mcp[1]` addresses the second `[[mcp]]` entry. Only the last section
         // segment may carry an index, which is what an array of tables is.
         if let Some((name, rest)) = segment.split_once('[') {
-            let number = rest.strip_suffix(']').ok_or_else(|| {
-                format!("`{path}` has an unclosed index")
-            })?;
+            let number = rest
+                .strip_suffix(']')
+                .ok_or_else(|| format!("`{path}` has an unclosed index"))?;
             index = number
                 .parse()
                 .map_err(|_| format!("`{path}` has an index that is not a number"))?;
@@ -649,10 +646,7 @@ fn regions(text: &str) -> Result<Vec<Region>, String> {
             .collect();
 
         let index = seen.entry(path.clone()).or_insert(0);
-        let body_end = header_starts
-            .get(n + 1)
-            .copied()
-            .unwrap_or(bytes.len());
+        let body_end = header_starts.get(n + 1).copied().unwrap_or(bytes.len());
 
         regions.push(Region {
             path,

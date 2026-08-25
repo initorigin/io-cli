@@ -1460,7 +1460,10 @@ detached_spawns = false
 
     // The headless arm builds from `configured` and nothing else.
     let headless = io_cli::contract::configured("a goal", root(), &config);
-    assert_eq!(headless.max_parallel_reads, 3, "io exec: max_parallel_reads");
+    assert_eq!(
+        headless.max_parallel_reads, 3,
+        "io exec: max_parallel_reads"
+    );
     assert_eq!(
         headless.spawn_background_after,
         Some(std::time::Duration::from_secs(45)),
@@ -1479,7 +1482,10 @@ detached_spawns = false
         responder,
         None,
     );
-    assert_eq!(interactive.max_parallel_reads, 3, "session: max_parallel_reads");
+    assert_eq!(
+        interactive.max_parallel_reads, 3,
+        "session: max_parallel_reads"
+    );
     assert_eq!(
         interactive.spawn_background_after,
         Some(std::time::Duration::from_secs(45)),
@@ -1521,8 +1527,7 @@ fn f11_a_file_that_asks_for_nothing_leaves_every_default_alone() {
 /// a setter for `true` would be inventing a second way to say the default.
 #[test]
 fn f11_asking_for_the_default_explicitly_changes_nothing() {
-    let agrees =
-        io_harness::Config::from_toml("[app.io-cli]\ndetached_spawns = true\n").unwrap();
+    let agrees = io_harness::Config::from_toml("[app.io-cli]\ndetached_spawns = true\n").unwrap();
     let built = io_cli::contract::configured("a goal", root(), &agrees);
     assert!(built.detached_spawns);
 }

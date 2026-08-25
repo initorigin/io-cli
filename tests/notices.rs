@@ -229,7 +229,10 @@ fn a_file_that_still_writes_the_removed_step_cap_is_told_where_the_cap_lives() {
 
     assert!(said.contains("[app.io-cli] max_steps"), "{said:?}");
     assert!(said.contains("40"), "the value it asked for: {said:?}");
-    assert!(said.contains("[run] max_steps"), "where the cap lives: {said:?}");
+    assert!(
+        said.contains("[run] max_steps"),
+        "where the cap lives: {said:?}"
+    );
     assert!(said.contains("no longer read"), "that it is dead: {said:?}");
 }
 
@@ -290,7 +293,10 @@ fn the_removed_step_cap_no_longer_wins_and_the_file_is_told() {
     let toml = "[run]\nmax_steps = 20\n\n[app.io-cli]\nmax_steps = 7\n";
     let config = Config::from_toml(toml).expect("a file with the dead key still parses");
     let (stored, complaint) = settings::stored(&config);
-    assert_eq!(complaint, None, "an unknown key in [app.io-cli] is not a complaint");
+    assert_eq!(
+        complaint, None,
+        "an unknown key in [app.io-cli] is not a complaint"
+    );
 
     let (answerer, _questions) = io_cli::intent::channel();
     let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
