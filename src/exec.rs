@@ -7,14 +7,17 @@
 //! composer, the picker or the theme, and `tests/exec.rs` asserts that rather
 //! than trusting it.
 //!
-//! **It takes the contract-shaped entry point, and that is the whole reason the
-//! sandbox and the budgets work here.** An interactive turn goes through
-//! `Session::turn_steered`, which builds its own `TaskContract` internally in
-//! order to accept a steer inbox — so it cannot be told about `[sandbox]` limits
-//! or `[run]` budgets, which is the limitation this product has carried since
-//! 0.2.0. A headless run has nobody to steer it, so it can hand in a contract of
-//! its own, and `Session::turn_bounded_observed` takes both that contract and an
-//! observer.
+//! **It takes the contract-shaped entry point, and it stopped being the only arm
+//! that does.** Through 0.13.1 this module was the only place `[sandbox]` limits
+//! and `[run]` budgets had any effect, and the reason given was that an
+//! interactive turn went through `Session::turn_steered`, which builds its own
+//! `TaskContract` internally in order to accept a steer inbox. That reason went
+//! stale in 0.11.0, when the flat turn moved to
+//! `Session::turn_bounded_observed` — which takes a caller's contract — and
+//! `Ctrl+C` survived the move because an interrupt travels as `Flow::Cancel` on
+//! the observer rather than through a steer inbox. 0.14.0 deletes what was left
+//! of the asymmetry: [`contract`] and `contract::session` are both built from
+//! [`crate::contract::configured`], so what the file says reaches either arm.
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -331,30 +334,28 @@ pub async fn turn<P: Provider>(
 }
 
 /// The task contract, assembled from the harness's defaults, the configuration
-/// file, and nothing else in this release.
+/// file, and the `--sandbox` flag.
 ///
-/// The order matters and one step of it is easy to assume wrongly:
-/// **`Config::apply_to` applies `[run]` but neither `[policy]` nor
-/// `[sandbox]`.** The policy travels as its own argument to the turn, and the
-/// sandbox has to be attached here by hand.
+/// **The config-derived half is [`crate::contract::configured`], which an
+/// interactive session builds from too.** Both the order of precedence and the
+/// two steps that are easy to assume wrongly — `Config::apply_to` applies
+/// neither `[policy]` nor `[sandbox]`, and a `[sandbox]` attached where the file
+/// has none imposes real ceilings on a run that asked for none — are documented
+/// there rather than restated here, so there is one place either can be wrong.
 ///
-/// `[sandbox]` is attached only when the file actually has one. A default
-/// `SandboxConfig` carries default resource limits, while
-/// `TaskContract::workspace` deliberately starts from `SandboxLimits::none()` —
-/// so attaching one unconditionally would impose caps on a run whose operator
-/// never asked for any.
+/// 0.14.0 — a headless run takes io-cli's step floor as well, which it did not
+/// before. `io exec` ran on io-harness's own twelve and reported the ceiling it
+/// hit as `error: step_cap_reached` under half-finished work, with nobody
+/// watching. A `[run] max_steps` in the file still beats the floor.
+///
+/// What stays here is the flag, because a flag is not a property of the project.
 pub fn contract(
     config: &Config,
     session: &Session,
     goal: String,
     sandbox: Option<ExecMode>,
 ) -> TaskContract {
-    let contract = TaskContract::workspace(goal, session.root().to_path_buf());
-    let contract = config.apply_to(contract);
-    let contract = match config.sandbox() {
-        Some(sandbox) => contract.with_contained_exec(sandbox),
-        None => contract,
-    };
+    let contract = crate::contract::configured(goal, session.root().to_path_buf(), config);
     // The flag last, so it beats the file, and applied with `with_exec_mode`
     // rather than by replacing the whole `SandboxConfig` — the limits the file
     // set are the operator's and are not this flag's to discard.

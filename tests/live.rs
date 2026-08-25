@@ -30,8 +30,22 @@ use io_cli::settings::Posture;
 use io_cli::theme::DARK;
 use io_cli::verify;
 use io_harness::{
-    DenyAll, EventKind, Flow, Observer, Policy, ProviderSpec, RunEvent, Session, Steer, Store,
+    Config, DenyAll, EventKind, Flow, Observer, Policy, ProviderSpec, RunEvent, Session, Steer,
+    Store,
 };
+
+/// The configuration every arm in this file runs under: none at all.
+///
+/// From 0.14.0 `contract::session` reads the operator's `io.toml` and applies it,
+/// so a session's contract is a function of a file as well as of its arguments.
+/// Every arm here was written before that and asserts something else entirely —
+/// a real turn against a real endpoint — so each is handed a configuration that
+/// names nothing, which is what keeps the contract they were written against
+/// exactly what it was. An arm that wants a section applied should say so in its
+/// own fixture rather than inherit one from this machine.
+fn no_configuration() -> Config {
+    Config::from_toml("").expect("an empty configuration file parses")
+}
 
 fn key() -> String {
     std::env::var("OPENROUTER_API_KEY")
@@ -1205,9 +1219,10 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
     let contract = io_cli::contract::session(
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
+        &no_configuration(),
         &Capabilities::default(),
         Arc::new(answerer),
-        Some(Arc::new(gate)),
+        Some(Arc::new(gate) as Arc<dyn io_harness::PlanGate>),
     )
     // **Bounded, and that is a finding rather than tidiness.** The first run of
     // this test used `DenyAll` — the approver the other live tests use, whose
@@ -1403,6 +1418,7 @@ async fn live_f1_a_question_is_answered_on_an_uncontained_turn() {
         "notes.md contains the line `old line` twice. Replace exactly one of them with `new \
          line`. If it is not clear which one is meant, ask before editing.",
         root.to_path_buf(),
+        &no_configuration(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1518,6 +1534,7 @@ async fn live_f2_a_contained_turn_does_not_plan_unless_asked() {
     let contract = io_cli::contract::session(
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
+        &no_configuration(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1631,9 +1648,10 @@ async fn live_f2_a_gate_the_operator_asked_for_reaches_the_run() {
     let contract = io_cli::contract::session(
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
+        &no_configuration(),
         &Capabilities::default(),
         Arc::new(answerer),
-        Some(Arc::new(gate)),
+        Some(Arc::new(gate) as Arc<dyn io_harness::PlanGate>),
     )
     .with_max_steps(12);
 
@@ -2338,6 +2356,7 @@ async fn live_what_the_system_prompt_costs_on_one_model() {
             true => io_cli::contract::session(
                 "How are you?",
                 root.to_path_buf(),
+                &no_configuration(),
                 &io_cli::contract::Capabilities::default(),
                 responder,
                 None,
@@ -2409,6 +2428,7 @@ async fn live_f5_an_ordinary_question_is_answered_rather_than_worked_on() {
     let contract = io_cli::contract::session(
         "How are you?",
         root.to_path_buf(),
+        &no_configuration(),
         &io_cli::contract::Capabilities::default(),
         Arc::new(answerer),
         None,

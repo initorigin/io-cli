@@ -15,13 +15,42 @@ mod support;
 
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::{App, Command};
+use io_cli::settings;
 use io_cli::theme::{Tone, DARK};
-use io_harness::{EventKind, RunEvent};
+use io_harness::{Config, EventKind, RunEvent};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// The text of everything committed into the scrollback, one row per line.
+fn text(lines: &[ratatui::text::Line<'_>]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What a session start makes of a file, read the way `src/main.rs` reads one.
+///
+/// `Config::from_toml` and not `Config::discover`: nothing here depends on a
+/// section discovery populates, and a fixture that touches no filesystem and no
+/// environment variable is one that cannot race another test.
+fn startup_notice(toml: &str) -> Option<String> {
+    let config = Config::from_toml(toml).expect("the fixture file parses");
+    let (stored, complaint) = settings::stored(&config);
+    assert_eq!(complaint, None, "the fixture section reads");
+    settings::deprecated_max_steps(stored.as_ref())
 }
 
 fn notice(app: &App) -> String {
@@ -177,5 +206,152 @@ fn stopping_a_turn_says_one_thing_and_says_it_once() {
     assert!(
         app.take_pending().is_empty(),
         "and neither press writes a row into the conversation",
+    );
+}
+
+/// **F12 — a file that wrote `[app.io-cli] max_steps` is told all three things.**
+/// The key it used, the number it got — this key still wins, so the number the
+/// notice quotes is the number the turn runs on — and `[run] max_steps` as where
+/// it moves to before 0.16.0 takes it away. A deprecation that names only the key
+/// leaves the operator to find the replacement themselves, and one that names
+/// only the replacement leaves them unsure whether their number is still being
+/// read.
+///
+/// Sabotage: emit the notice whenever the key is *readable* rather than when it
+/// was written — this arm still passes, and the two below it fail.
+#[test]
+fn a_file_that_wrote_the_deprecated_step_cap_is_told_where_it_moves() {
+    let said = startup_notice("[app.io-cli]\ntheme = \"dark\"\nmax_steps = 40\n")
+        .expect("a file carrying the deprecated key earns a line");
+
+    assert!(said.contains("[app.io-cli] max_steps"), "{said:?}");
+    assert!(said.contains("40"), "the value it took: {said:?}");
+    assert!(said.contains("[run] max_steps"), "where it moves: {said:?}");
+}
+
+/// **F12 — the new spelling alone says nothing.** `[run] max_steps` is where the
+/// key is going, so a file already there has nothing to migrate and nothing to
+/// be told.
+///
+/// Sabotage: key the notice off the step cap this session ended up running under
+/// rather than off the field — every session has a cap, so this arm fails.
+#[test]
+fn a_file_with_only_run_max_steps_is_told_nothing() {
+    assert_eq!(
+        startup_notice("[run]\nmax_steps = 20\n"),
+        None,
+        "the file uses the spelling this release is moving to",
+    );
+}
+
+/// **F12 — and neither does a file that names no step cap at all**, which
+/// includes the one `io setup` writes: `settings::render` leaves `max_steps` out
+/// deliberately. A deprecation notice on a session that is not using the
+/// deprecated key is noise, and an operator who is told at every start about a
+/// key they have never used is one who stops reading the start-up lines — after
+/// which the line they skip is the one that mattered.
+///
+/// Sabotage: emit the notice whenever `[app.io-cli]` is *present* rather than
+/// when the key inside it was written — under which the first arm here fails, on
+/// the default file.
+#[test]
+fn a_file_with_neither_spelling_is_told_nothing() {
+    assert_eq!(
+        startup_notice("[app.io-cli]\ntheme = \"dark\"\n"),
+        None,
+        "the section is there; the deprecated key in it is not",
+    );
+    assert_eq!(startup_notice(""), None, "and an empty file says nothing");
+    assert_eq!(
+        settings::deprecated_max_steps(None),
+        None,
+        "nor does a session with no readable section at all",
+    );
+}
+
+/// **F12 — the deprecated key keeps winning, and the notice quotes what won.**
+/// Nothing about its precedence changes in this release: it is applied after
+/// `Config::apply_to` and therefore over a `[run] max_steps` in the same file,
+/// exactly as `tests/contract.rs`'s F4 asserts. Deprecating a key by quietly
+/// demoting it would break a working file in the release that promised only to
+/// say where the key went.
+///
+/// Sabotage: apply `[app.io-cli] max_steps` before `Config::apply_to` instead of
+/// after — under which the contract takes the `[run]` value and this fails while
+/// the notice, still naming the number nobody ran on, keeps passing.
+#[test]
+fn the_deprecated_step_cap_still_beats_the_run_table() {
+    let toml = "[run]\nmax_steps = 20\n\n[app.io-cli]\nmax_steps = 7\n";
+    let config = Config::from_toml(toml).expect("the fixture file parses");
+    let (stored, complaint) = settings::stored(&config);
+    assert_eq!(complaint, None);
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+    let contract = io_cli::contract::session(
+        "a goal",
+        std::path::PathBuf::from("."),
+        &config,
+        &io_cli::contract::Capabilities::stored(stored.as_ref()),
+        responder,
+        None,
+    );
+
+    assert_eq!(
+        contract.max_steps, 7,
+        "the deprecated key is the strongest layer and still is",
+    );
+    let said = startup_notice(toml).expect("and the file is told the key is going away");
+    assert!(
+        said.contains('7'),
+        "the notice quotes the number the turn actually runs on: {said:?}",
+    );
+}
+
+/// **Every startup notice reaches the scrollback, not just the last one.**
+///
+/// `App::say` writes `status.notice`, which holds one line: a session with an
+/// unreadable `[app.io-cli]`, a keybinding naming no action and a deprecated step
+/// cap showed the third and silently dropped the first two. These lines are not
+/// answers to a keystroke — nobody has pressed anything yet, and the footer's
+/// line is gone at the first key that is — so `src/main.rs` commits them.
+///
+/// The binary cannot be linked from here, which is why this asserts the property
+/// of the two calls rather than of the loop: `record` accumulates and `say`
+/// replaces, and the loop uses the one that accumulates.
+///
+/// Sabotage: put `say` back in that loop — which is the shipped 0.13.1 behaviour,
+/// and under which only this fails.
+#[test]
+fn every_startup_notice_reaches_the_scrollback() {
+    let startup = [
+        "`[app.io-cli]` could not be read; this session is running on the defaults",
+        "`ctrl+q` is not an action this session knows",
+        "`[app.io-cli] max_steps` is deprecated; it moves to `[run] max_steps`",
+    ];
+
+    let mut app = App::new(DARK, "opus-5");
+    for line in startup {
+        app.record(Tone::Warning, line);
+    }
+    let committed = app.take_pending();
+    assert_eq!(committed.len(), 3, "one row each: {committed:?}");
+    let scrollback = text(&committed);
+    for line in startup {
+        assert!(scrollback.contains(line), "{line:?} survived");
+    }
+
+    let mut replaced = App::new(DARK, "opus-5");
+    for line in startup {
+        replaced.say(Tone::Warning, line);
+    }
+    assert!(
+        replaced.take_pending().is_empty(),
+        "which is what saying them instead costs",
+    );
+    assert_eq!(
+        notice(&replaced),
+        startup[2],
+        "the footer holds one line, so the last sender wins and the rest are lost",
     );
 }

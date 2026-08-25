@@ -563,6 +563,23 @@ fn every_event_this_release_renders_draws_in_ascii() {
             passed: false,
             reasons: vec!["the tests do not cover the error path".into()],
         },
+        // 0.14.0 — the three kinds this release stopped discarding. Each was
+        // `Disposition::Silent` until now, so each is new to this sweep for the
+        // same reason it is new to the transcript, and the arm chosen here is
+        // the one that actually carries a glyph: a refused dial draws through
+        // the refusal tone, and a sandbox `create` draws the muted leader and a
+        // separator. A permitted dial and the other sandbox kinds take the same
+        // two paths, so covering these covers those.
+        EventKind::Dialed {
+            host: "docs.rs".into(),
+            port: 443,
+            allowed: false,
+        },
+        EventKind::Sandbox {
+            kind: "create".into(),
+            backend: Some("macos-sandbox-exec".into()),
+        },
+        EventKind::Stalled,
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is
