@@ -7,8 +7,21 @@
 //! when one of them stops agreeing.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use io_cli::commands::{COMMANDS, KEYS};
+
+/// Held by every test in this file that reads or writes an `IO_CONFIG*` variable.
+///
+/// The same shape `tests/wizard.rs` and `tests/home.rs` use. The environment is
+/// process-wide and this binary's tests share a process, so a second writer makes
+/// the first one's answer wrong intermittently — the most expensive kind of
+/// failure to diagnose, and the reason this guard exists before there is a
+/// second writer rather than after.
+fn env_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -367,6 +380,82 @@ fn the_readme_states_what_the_checksum_does_not_defend_against() {
     assert!(readme.contains("trust-the-publisher"), "{readme}");
 }
 
+/// The paragraph that says where io keeps an operator's files.
+///
+/// It is prose rather than a generated table, and until 0.15.0 nothing asserted
+/// a word of it — which is how a repository ends up with a discovery ladder in
+/// its README that no release has read since the one that wrote it. The
+/// directory name is taken from [`io_cli::home::path`] and the variable from
+/// io-harness, so renaming either fails here rather than leaving the README
+/// naming a directory the binary no longer uses.
+#[test]
+fn the_readme_says_where_io_keeps_its_files() {
+    let readme = read("README.md");
+    let (_, section) = readme
+        .split_once("### Where io keeps your things")
+        .expect("the README should have a section saying where io keeps its files");
+    let section = section.split("\n## ").next().unwrap_or(section);
+
+    let home = io_cli::home::path().expect("a home directory to take the name from");
+    let dir = home
+        .file_name()
+        .expect("the home is a directory under the operator's own")
+        .to_string_lossy()
+        .into_owned();
+    for named in [
+        format!("`~/{dir}`"),
+        format!("`%USERPROFILE%\\{dir}`"),
+        format!("`~/{dir}/skills`"),
+    ] {
+        assert!(
+            section.contains(&named),
+            "the README should name {named}, which is where io-cli actually looks",
+        );
+    }
+
+    // The ladder in the order io-harness walks it. Asserted as positions and not
+    // as four `contains`, because a paragraph that names all four in the wrong
+    // order is the way this sentence goes wrong and every `contains` passes on
+    // it.
+    let mut walked = 0;
+    for rung in [
+        "`$IO_CONFIG`",
+        "`$IO_CONFIG_HOME/io.toml`",
+        "`$XDG_CONFIG_HOME/io/io.toml`",
+        "`%APPDATA%\\io\\io.toml`",
+    ] {
+        let at = section
+            .find(rung)
+            .unwrap_or_else(|| panic!("the README should name {rung} in the discovery order"));
+        assert!(at > walked, "{rung} is out of order in the README's ladder");
+        walked = at;
+    }
+
+    // N4: io-cli sets the variable in its own process environment, so every
+    // child a session starts inherits it. A README that names the home and
+    // leaves that out has documented the outcome and hidden the mechanism.
+    let var = io_harness::config::CONFIG_HOME_VAR;
+    assert!(
+        section.contains(var),
+        "the README should name the {var} io-cli sets to put the file there",
+    );
+    assert!(
+        section.contains("inherit") && section.contains("nested `io`"),
+        "the README should say every child a session starts inherits {var}",
+    );
+
+    // And the one act of this release that touches files io-cli did not create,
+    // said where an operator upgrading will read it rather than in a changelog.
+    assert!(
+        section.contains("moved into the home"),
+        "the README should say an existing install is moved on the first run",
+    );
+    assert!(
+        section.contains("nothing is overwritten") && section.contains("Nothing is deleted"),
+        "the README should say what the move does not do",
+    );
+}
+
 #[test]
 fn the_shipped_configuration_example_is_a_file_io_harness_accepts() {
     // The example is documentation that runs: if the harness stops accepting it,
@@ -383,6 +472,12 @@ fn the_shipped_configuration_example_is_a_file_io_harness_accepts() {
 
     // Read as the USER scope, which is what it documents and where widening is
     // allowed. Read as a project file it would rightly be refused.
+    //
+    // Under the lock from 0.15.0. This was the one `IO_CONFIG*` writer in this
+    // repository's tests that took no guard, and it was harmless only while
+    // nothing else in the process wrote that variable — which stopped being true
+    // when `home::adopt` became a writer of it.
+    let _guard = env_lock();
     std::env::set_var("IO_CONFIG", &path);
     let config = io_harness::Config::discover(&workspace);
     std::env::remove_var("IO_CONFIG");

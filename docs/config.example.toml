@@ -5,13 +5,21 @@
 # io-harness itself; `[app.io-cli]` is the section it deliberately leaves alone
 # for whoever is building on top of it.
 #
-# Where this file goes:
+# Where this file goes. The order is io-harness's:
 #
 #   $IO_CONFIG                       a file, named outright
 #   $IO_CONFIG_HOME/io.toml          a directory, named outright
 #   $XDG_CONFIG_HOME/io/io.toml      unix
 #   ~/.config/io/io.toml             unix, when XDG_CONFIG_HOME is unset
 #   %APPDATA%\io\io.toml             Windows
+#
+# From 0.15.0 io-cli sets $IO_CONFIG_HOME to its own home — `~/.io-cli`, or
+# `%USERPROFILE%\.io-cli` on Windows — before io-harness resolves anything, so
+# the second row is what answers unless you have named a location yourself. Set
+# $IO_CONFIG or $IO_CONFIG_HOME and io-cli sets nothing and moves nothing. The
+# run store `runs.db` sits beside this file wherever this file ends up, and on
+# the first 0.15.0 run an existing pair is moved into the home together, each
+# file named on screen, nothing overwritten and nothing deleted.
 #
 # A project's own `io.toml` and a gitignored `io.local.toml` layer on top.
 
@@ -251,7 +259,13 @@ fleet = "ctrl+f"
 # is read by the MODEL, through a tool, under this session's own policy. Both
 # layouts are discovered: `skills/migrations.md` and `skills/api-style/SKILL.md`.
 #
-# skills = "~/.config/io/skills"
+# Absent, this is `~/.io-cli/skills`, so writing the key is how you point at a
+# directory somewhere else rather than how you turn skills on. A leading `~` is
+# your home directory: io-harness substitutes `${env:...}` and `${file:...}` and
+# nothing else, so io-cli expands the tilde itself before handing the path over.
+# A `~` anywhere but the front is a directory literally named `~`.
+#
+# skills = "~/.io-cli/skills"
 
 # MCP servers, in io-harness's own shape — io-cli defines no schema for one. The
 # transport is a tag beside the rest of the fields rather than a nested table.

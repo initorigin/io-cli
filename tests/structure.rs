@@ -4,6 +4,10 @@
 //! Both are assertions over the bytes io-cli writes to the terminal, and both are
 //! written so that a later release cannot reintroduce fullscreen or a clear-based
 //! redraw without turning a named test red.
+//!
+//! O1 — and one assertion that is not about bytes at all: the order of two calls
+//! in `src/main.rs`. Nothing under `tests/` links the binary, so a decision made
+//! in the driver is one no test can drive; this file reads the driver instead.
 
 mod support;
 
@@ -119,4 +123,80 @@ fn every_frame_is_wrapped_in_synchronized_output() {
 
     assert_eq!(begins, 2, "one begin-synchronized-update per frame");
     assert_eq!(ends, begins, "every begin is closed by an end");
+}
+
+/// `src/main.rs`, with every comment taken off before anything is matched.
+///
+/// The stripping is the whole difference between a gate and a green light. 0.14.0
+/// shipped a check that asserted the source contained `EventKind::Dialed` and was
+/// satisfied by a *comment* naming the variant — a passing test over code that had
+/// none of it. Prose about `adopt` is exactly as easy to write, so the prose is
+/// removed and what is left is the code the compiler sees. `//` appears in no
+/// string literal in this file and it has no block comments, so a line cut at the
+/// first `//` is a line cut at its comment.
+fn driver_without_comments() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(path).expect("the driver is readable");
+    text.lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **O1.** The home is adopted before the configuration is discovered.
+///
+/// Presence is not the property; order is. `io_harness::config::user_path` reads
+/// the environment at call time, so a `Config` discovered before `home::adopt` set
+/// `IO_CONFIG_HOME` is a configuration read out of the directory the run store —
+/// derived from that file's own directory — has already left. The symptom is not
+/// an error: it is a session that starts fine, writes to one place, and answers
+/// `/resume` from another that is empty.
+///
+/// It is asserted here because nothing under `tests/` links the binary, which is
+/// how this repository already pins the decisions `src/main.rs` makes — see
+/// `tests/contract.rs` and `tests/plan.rs`. The offsets come from the source with
+/// its comments removed, so the paragraph you are reading could be pasted into the
+/// driver and this test would still fail.
+#[test]
+fn o1_the_home_is_adopted_before_the_configuration_is_discovered() {
+    let text = driver_without_comments();
+
+    let adopt = text
+        .find("io_cli::home::adopt()")
+        .expect("`run` calls `io_cli::home::adopt`, in code and not in a sentence about it");
+    // The first one, which is the only one either arm reaches — the wizard's
+    // re-read below it happens after a file has been written.
+    let discover = text
+        .find("Config::discover(")
+        .expect("`run` discovers the configuration");
+
+    assert!(
+        adopt < discover,
+        "the home is adopted at byte {adopt} and the configuration discovered at {discover}: \
+         a configuration discovered first is read from the directory the store has left",
+    );
+}
+
+/// **F6, the session arm.** What the migration did is committed into the
+/// scrollback rather than said on a row that repaints.
+///
+/// `App::say` answers a keystroke and is gone at the next one. A migration happens
+/// once, on the run after an upgrade, and the operator it matters to has pressed
+/// nothing yet — so said, it would be replaced by the first thing they typed and
+/// never be seen again. `App::record` is the half that belongs to the conversation.
+///
+/// The call is matched with the loop it sits in, so the assertion is over the code
+/// that runs and not over the word `record` appearing anywhere in the file.
+#[test]
+fn f6_the_migration_report_is_recorded_rather_than_said() {
+    let text = driver_without_comments();
+
+    assert!(
+        text.contains("for line in report {\n        app.record(Tone::Muted, line);"),
+        "the migration report reaches the scrollback through `App::record`; `App::say` would \
+         put it on the footer's row, where the first keystroke replaces it",
+    );
 }

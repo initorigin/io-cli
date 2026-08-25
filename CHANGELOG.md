@@ -6,6 +6,80 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-25
+
+io keeps its things in one place.
+
+**`~/.io-cli` is now the answer to "where does it live", on every platform, and an
+existing install moves into it the first time you run this version.** Before this
+release there were three answers and none of them carried the product's name:
+`~/.config/io` on a Linux box, `$XDG_CONFIG_HOME/io` where that was set,
+`%APPDATA%\io` on Windows — with the run store sitting beside whichever one
+applied, undocumented and untested. One directory to back up, to copy to another
+machine, to delete when you are finished with it, and to name in a bug report.
+
+**The move is the part to read before upgrading.** On the first 0.15.0 run,
+`io.toml` and the run store are moved from wherever they were into `~/.io-cli`,
+and each file that moved is named on screen — in the scrollback in a session, on
+stderr under `io exec`, never on stdout, because `--json` writes NDJSON there. If
+the run cannot start at all — a configuration file that will not parse, a store
+that will not open — the report is still said, ahead of the error. That is the
+moment it matters most: an error naming a path you have never seen, one keystroke
+after your old directory emptied, is the reading this release exists to prevent.
+Nothing is overwritten: where the home already holds a file, the one already there
+is the one that stays and the other is left exactly where it was. Nothing is
+deleted, and a file copied across filesystems has its copy checked before the
+original goes. If you would rather keep the old location, set `IO_CONFIG_HOME` to
+it before you first run 0.15.0 — and if you have already set `IO_CONFIG` or
+`IO_CONFIG_HOME`, nothing here happens to you at all: no variable is set, no file
+is moved, and you are not told about a migration that did not occur.
+
+**The store moves with the file because it has to.** The run store's path is
+derived from the configuration file's own directory, so moving one without the
+other would empty `/resume` on upgrade. Its write-ahead log moves with it for the
+same reason one level down: SQLite opens a `runs.db` whose `-wal` was left behind
+without complaining and simply does not contain the last session, which is a loss
+that arrives as a session that vanished rather than as an error. The durable
+memory the agent writes for itself is rows in that store rather than a file, so it
+travels with it.
+
+**This is a product choosing its home, not a second configuration system.**
+io-harness has resolved `$IO_CONFIG`, then `$IO_CONFIG_HOME`, then the platform's
+own place since the 0.19.0 that introduced `io.toml` at all, and it reads them at
+the moment it is asked. So io-cli names the second one for you when you have named
+neither, once, before the first read — and the resolution order itself is
+unchanged. One consequence stated rather than left to be found: the variable is
+set in io-cli's own process, so every child a session starts inherits it — a `!`
+shell line, a spawned agent, a nested `io`. For a nested `io` that is the right
+answer; for anything else it is one more variable in the environment.
+
+**A tilde is a home directory now, in a skills path.** io-harness substitutes
+`${env:…}` and `${file:…}` and nothing else, so a `~` written in a `skills` key
+reached the directory walk verbatim and named a directory literally called `~` —
+which the configuration example shipped as its own suggestion. io-cli expands a
+leading `~` before handing the path over, and where no `skills` key is set at all
+the default is `~/.io-cli/skills`, which is created with the home so that it is a
+real place to drop a file into. Where you have chosen your own location and io-cli
+made no home, a default naming a directory that does not exist is not used at all
+— io-harness refuses such a directory outright rather than finding nothing in it,
+which would be every turn failing rather than an empty catalogue.
+
+**And `/` lists the skills the model was given.** The palette walked
+`[app.io-cli] skills` alone, so a `[run] skills` reached the agent while the
+command list showed nothing from it. It asks for the same directory the turn is
+built with now, which closes that gap rather than widening it with a new default.
+
+**`/status` gained a `home` row**, naming the directory your configuration file and
+run store are actually in and the word that decided it — `default`, `IO_CONFIG` or
+`IO_CONFIG_HOME`. It reports the directory in force rather than the one io-cli
+would have chosen, which are the same thing until you have chosen otherwise, and
+that is exactly when a row like this earns its place.
+
+Rolling back is a variable or a move, because nothing here destroys anything.
+Reinstall 0.14.0 and set `IO_CONFIG_HOME=~/.io-cli` and it reads the moved files
+where they now are, with no history lost; without that variable it looks in the
+old location, finds it empty, and your files are still on disk in the home.
+
 ## [0.14.0] - 2026-08-25
 
 The configuration file reaches your terminal.

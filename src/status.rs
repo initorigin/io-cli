@@ -1153,6 +1153,24 @@ pub fn committed(
     // threaded down from the driver, so there is one answer to "which workspace
     // is this" and it is io-harness's — the same rule `App::set_root` follows.
     facts.push(("workspace".into(), session.root().display().to_string()));
+
+    // **Where io-cli keeps what it keeps, and who decided.** The directory in
+    // force rather than [`crate::home::path`]: under `$IO_CONFIG` the file is
+    // somewhere io-cli did not choose, and reporting the home this crate *would*
+    // have picked would be wrong in the one case this row exists for. The word
+    // beside it is `Origin::word`, so `default`, `IO_CONFIG` and `IO_CONFIG_HOME`
+    // are spelled by the module that decides between them and not a second time
+    // here.
+    facts.push((
+        "home".into(),
+        match crate::home::in_force() {
+            Some((dir, origin)) => format!("{} {dash} {}", dir.display(), origin.word()),
+            // Same shape `io_harness::config::user_path` returns for the same
+            // reason: with no home directory to work from there is no answer, and
+            // inventing one would name a directory nothing reads.
+            None => format!("not known {dash} this process has no home directory"),
+        },
+    ));
     facts.push((
         "session".into(),
         match session.head() {

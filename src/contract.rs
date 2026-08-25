@@ -202,8 +202,69 @@ refer to earlier output by where it is on the screen — it has scrolled.";
 /// alone: it is io-cli's own table and `io exec` does not read it.
 pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> TaskContract {
     let contract = config.apply_to(TaskContract::workspace(text, root).with_max_steps(MAX_STEPS));
-    match config.sandbox() {
+    let contract = match config.sandbox() {
         Some(sandbox) => contract.with_contained_exec(sandbox),
+        None => contract,
+    };
+    // `[run] skills` has had its say, and `io exec` reads no other key that can
+    // name one — so for the headless arm this is already the point after every
+    // key. [`session`] calls this again once `[app.io-cli]` has had its own.
+    resolve_skills(contract)
+}
+
+/// The skills directory this session will really hand the agent, for the one
+/// surface that has to know it before a turn exists.
+///
+/// The palette is walked once at startup, so it cannot read the answer off a
+/// contract — and it has always walked `[app.io-cli] skills` alone, which meant a
+/// `[run] skills` reached the model while `/` listed nothing from it. 0.15.0 would
+/// have widened that hole rather than left it, because the home default reaches
+/// the model too. So the palette asks the same resolution the contract uses,
+/// through a throwaway contract, rather than a second copy of the precedence that
+/// could disagree with the first.
+pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -> Option<PathBuf> {
+    let contract = config.apply_to(TaskContract::workspace(String::new(), root));
+    let contract = match &capabilities.skills {
+        Some(dir) => contract.with_skills(dir.clone()),
+        None => contract,
+    };
+    resolve_skills(contract).skills
+}
+
+/// `~/.io-cli/skills`, when there is something there to discover.
+///
+/// **The existence test is not caution, it is the whole of what makes this
+/// default safe.** `Skills::discover` does not return early on a directory that
+/// is not there — it returns `Error::Config("skills directory … does not exist")`
+/// (`io-harness-0.66.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// propagates it from `run.rs` at run start, before the first completion. A
+/// contract that named this directory unconditionally would therefore fail every
+/// turn of every operator who has never made one, which is almost all of them.
+/// Filtered, an operator with no `~/.io-cli/skills` gets a contract with no
+/// skills directory, which is exactly the contract they got before this release.
+fn default_skills() -> Option<PathBuf> {
+    let dir = crate::home::path()?.join("skills");
+    dir.is_dir().then_some(dir)
+}
+
+/// The skills directory a contract actually carries: whatever named it, with a
+/// leading `~` expanded, or io-cli's own home where nothing named one.
+///
+/// **One expansion for two keys, applied after both have had their say.**
+/// io-harness substitutes `${env:…}` and `${file:…}` and nothing else
+/// (`io-harness-0.66.0/src/config.rs:1965` — there is no tilde branch anywhere in
+/// it), so a `~` an operator wrote in `[run] skills` or `[app.io-cli] skills`
+/// reaches `Skills::discover` as a directory whose name is one character long.
+/// Expanding at each key instead would be two places to keep true and two places
+/// for the next key to be forgotten in.
+fn resolve_skills(contract: TaskContract) -> TaskContract {
+    let dir = contract
+        .skills
+        .as_deref()
+        .map(crate::home::expand)
+        .or_else(default_skills);
+    match dir {
+        Some(dir) => contract.with_skills(dir),
         None => contract,
     }
 }
@@ -290,6 +351,15 @@ pub fn server_notices(config: &Config, caps: &Capabilities) -> Vec<String> {
 /// [`configured`] safe to call unconditionally: `Config::apply_to` carries only
 /// what the file named, and `Config::sandbox` is `None` where the file has no
 /// `[sandbox]`.
+///
+/// **0.15.0 adds one thing an operator did not ask for, and it is conditional on
+/// the operator's own disk rather than on their file.** A contract that no key
+/// named a skills directory for carries `~/.io-cli/skills` — but only where that
+/// directory exists, because `Skills::discover` fails the run on one that does
+/// not — `Error::Config("skills directory … does not exist")`, propagated by
+/// `TaskContract::discover_skills` before the first completion. An operator who
+/// has never made the directory gets the
+/// contract they got before, field for field.
 pub fn session(
     text: impl Into<String>,
     root: PathBuf,
@@ -340,5 +410,10 @@ pub fn session(
     if let Some(max_steps) = caps.max_steps {
         contract = contract.with_max_steps(max_steps);
     }
-    contract
+    // **The one point after both keys have had their say.** `[run] skills` was
+    // applied by `Config::apply_to` inside [`configured`] and `[app.io-cli]
+    // skills` two lines up, so this is where a `~` either of them carries becomes
+    // a home directory and where a session that named neither picks up
+    // `~/.io-cli/skills`.
+    resolve_skills(contract)
 }
