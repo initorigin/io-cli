@@ -110,15 +110,25 @@ fn f2_an_operator_who_has_chosen_is_not_moved() {
 
     for (var, value) in [
         (io_harness::config::CONFIG_HOME_VAR, dir.path().join("mine")),
-        (io_harness::config::CONFIG_VAR, dir.path().join("mine").join("io.toml")),
+        (
+            io_harness::config::CONFIG_VAR,
+            dir.path().join("mine").join("io.toml"),
+        ),
     ] {
         fresh(dir.path());
         let chosen = platform(dir.path()).join("io.toml");
         write(&chosen, "# the file that must not move\n");
         std::env::set_var(var, &value);
 
-        assert_eq!(home::adopt(), None, "{var} names a location; nothing is adopted");
-        assert!(chosen.exists(), "{var} was set, so nothing may have been moved");
+        assert_eq!(
+            home::adopt(),
+            None,
+            "{var} names a location; nothing is adopted"
+        );
+        assert!(
+            chosen.exists(),
+            "{var} was set, so nothing may have been moved"
+        );
         assert!(
             !dir.path().join(".io-cli").exists(),
             "{var} was set, so io-cli's own home is not even created"
@@ -169,7 +179,44 @@ fn f3_the_file_and_the_store_are_both_in_the_home() {
     assert_eq!(report.home, home);
     assert_eq!(io_harness::config::user_path(), Some(home.join("io.toml")));
     assert_eq!(io_cli::settings::store_path(), Some(home.join("runs.db")));
-    assert_eq!(home::in_force(), Some((home, Origin::Default)));
+    assert_eq!(home::in_force(), Some((home.clone(), Origin::Default)));
+    // `Skills::discover` ERRORS on a directory that does not exist rather than
+    // walking away from one, and `discover_skills` propagates that at run start —
+    // so a skills default pointing at a directory nobody made is every turn
+    // failing, not an empty catalogue. Adoption makes the place real.
+    assert!(
+        home.join("skills").is_dir(),
+        "the skills directory is made with the home, so the default is a real place"
+    );
+}
+
+/// **F5's other half.** A home that cannot be created is not adopted, and the
+/// variable is not set behind the operator's back.
+///
+/// Setting `IO_CONFIG_HOME` and then failing would move the configuration path
+/// with nobody told: `adopt` would return `None`, so nothing is reported, while
+/// io-harness had already been pointed at a directory that does not exist.
+#[test]
+fn f5_a_home_that_cannot_be_created_is_not_adopted() {
+    let _guard = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    // A file where the home's parent would have to be a directory.
+    let blocked = dir.path().join("blocked");
+    std::fs::write(&blocked, "not a directory").expect("the file");
+    fresh(&blocked);
+
+    assert_eq!(
+        home::adopt(),
+        None,
+        "the home could not be created, so none was taken"
+    );
+    assert_eq!(
+        std::env::var_os(io_harness::config::CONFIG_HOME_VAR),
+        None,
+        "and io-harness was not pointed at a directory that does not exist"
+    );
+
+    fresh(dir.path());
 }
 
 /// **F8's premise, and a defect this test found.** The variable io-cli sets is not
@@ -195,7 +242,10 @@ fn f8_the_variable_io_cli_sets_is_not_the_operators_choice() {
         "io-cli set the variable, so io-cli is still what decided the directory"
     );
 
-    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, dir.path().join("elsewhere"));
+    std::env::set_var(
+        io_harness::config::CONFIG_HOME_VAR,
+        dir.path().join("elsewhere"),
+    );
     assert_eq!(
         home::origin(),
         Origin::ConfigHome,
@@ -221,7 +271,9 @@ fn f4_an_existing_install_moves_with_its_write_ahead_log() {
     write(&previous.join("io.toml"), "# the operator's own file\n");
 
     let store = Store::open(previous.join("runs.db")).expect("a store");
-    let run = store.start_run("a goal recorded before the move", "io.toml").expect("a run");
+    let run = store
+        .start_run("a goal recorded before the move", "io.toml")
+        .expect("a run");
     assert!(
         previous.join("runs.db-wal").exists(),
         "the store is opened in WAL mode, so an uncheckpointed write leaves one"
@@ -243,10 +295,16 @@ fn f4_an_existing_install_moves_with_its_write_ahead_log() {
          store moved without its write-ahead log silently loses"
     );
     assert!(
-        report.moved.iter().any(|(from, _)| from.ends_with("runs.db-wal")),
+        report
+            .moved
+            .iter()
+            .any(|(from, _)| from.ends_with("runs.db-wal")),
         "the report names the write-ahead log, so an operator can see it moved"
     );
-    assert!(!previous.join("io.toml").exists(), "a move leaves nothing behind");
+    assert!(
+        !previous.join("io.toml").exists(),
+        "a move leaves nothing behind"
+    );
 }
 
 /// **F5.** Nothing already in the home is overwritten, and the operator is told
@@ -269,7 +327,10 @@ fn f5_nothing_in_the_home_is_ever_overwritten() {
         "# newer\n",
         "the file the operator already had in the home is the one that survives"
     );
-    assert!(previous.exists(), "and the older one is left where it was, not deleted");
+    assert!(
+        previous.exists(),
+        "and the older one is left where it was, not deleted"
+    );
     assert!(report.moved.is_empty());
     assert_eq!(report.kept.len(), 1);
     assert!(report.lines().iter().any(|line| line.contains("kept")));
@@ -293,7 +354,10 @@ fn f9_running_twice_moves_nothing_the_second_time() {
     let second = home::adopt().expect("the home is adopted again");
 
     assert!(second.moved.is_empty(), "there is nothing left to move");
-    assert!(second.kept.is_empty(), "and nothing to keep, because the source is gone");
+    assert!(
+        second.kept.is_empty(),
+        "and nothing to keep, because the source is gone"
+    );
     assert_eq!(
         second.lines().len(),
         1,
@@ -314,9 +378,16 @@ fn n3_the_home_is_readable_by_its_owner_alone() {
     fresh(dir.path());
 
     let report = home::adopt().expect("the home is adopted");
-    let mode = std::fs::metadata(&report.home).expect("the home").permissions().mode();
+    let mode = std::fs::metadata(&report.home)
+        .expect("the home")
+        .permissions()
+        .mode();
 
-    assert_eq!(mode & 0o777, 0o700, "the directory around a credential is not world-readable");
+    assert_eq!(
+        mode & 0o777,
+        0o700,
+        "the directory around a credential is not world-readable"
+    );
 }
 
 /// **F7's half of the bargain.** A leading tilde is the operator's home directory;
@@ -333,7 +404,11 @@ fn a_tilde_is_the_home_directory_and_nothing_else_is_touched() {
         dir.path().join(".io-cli").join("skills")
     );
     let absolute = dir.path().join("elsewhere");
-    assert_eq!(home::expand(&absolute), absolute, "a real path is returned unchanged");
+    assert_eq!(
+        home::expand(&absolute),
+        absolute,
+        "a real path is returned unchanged"
+    );
     assert_eq!(
         home::expand(Path::new("skills")),
         PathBuf::from("skills"),
@@ -347,5 +422,8 @@ fn a_tilde_is_the_home_directory_and_nothing_else_is_touched() {
 fn the_origin_word_is_the_variable_the_harness_reads() {
     assert_eq!(Origin::Default.word(), "default");
     assert_eq!(Origin::Config.word(), io_harness::config::CONFIG_VAR);
-    assert_eq!(Origin::ConfigHome.word(), io_harness::config::CONFIG_HOME_VAR);
+    assert_eq!(
+        Origin::ConfigHome.word(),
+        io_harness::config::CONFIG_HOME_VAR
+    );
 }

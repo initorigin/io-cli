@@ -78,6 +78,62 @@ fn discovered(files: &[(&str, &str)]) -> (tempfile::TempDir, Config) {
     (dir, config)
 }
 
+/// The operator's own home directory, for the length of one test.
+///
+/// **Every assertion about a contract's `skills` field needs this from 0.15.0**,
+/// including the ones that assert the field is empty: `io_cli::home` reads `HOME`
+/// (and `USERPROFILE`, which is where Windows keeps the same fact) at call time,
+/// and a contract with no configured directory now carries `~/.io-cli/skills`
+/// where that directory exists. Without a home of its own, `f2` would pass or
+/// fail on whether the person running the suite happens to have made one.
+///
+/// The caller holds [`env_lock`] for the whole of it — the environment is
+/// process-wide and these tests share a process — and the previous values go back
+/// when the guard drops, so a test that does not take the lock still sees the
+/// home it was started with.
+struct HomeFixture {
+    dir: tempfile::TempDir,
+    previous: [(&'static str, Option<std::ffi::OsString>); 2],
+}
+
+impl HomeFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("a home directory");
+        let previous = ["HOME", "USERPROFILE"].map(|var| (var, std::env::var_os(var)));
+        for (var, _) in &previous {
+            std::env::set_var(var, dir.path());
+        }
+        Self { dir, previous }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
+    /// `~/.io-cli/skills`, made on disk.
+    ///
+    /// Made rather than merely named because `Skills::discover` fails a run on a
+    /// directory that is not there, so `contract::default_skills` only offers one
+    /// that is — a fixture that skipped the `mkdir` would be asserting the
+    /// absence of the default rather than its presence.
+    fn skills(&self) -> PathBuf {
+        let dir = self.path().join(".io-cli").join("skills");
+        std::fs::create_dir_all(&dir).expect("the default skills directory");
+        dir
+    }
+}
+
+impl Drop for HomeFixture {
+    fn drop(&mut self) {
+        for (var, value) in &self.previous {
+            match value {
+                Some(value) => std::env::set_var(var, value),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+}
+
 /// A file whose every applicable section is set to a value distinguishable from
 /// both io-harness's default and io-cli's own floor.
 ///
@@ -201,6 +257,9 @@ const GUIDE: &str = "never widen the boundary in a fixture";
 #[test]
 fn f2_nothing_configured_is_the_contract_the_session_built_before() {
     let _guard = env_lock();
+    // A home with no `.io-cli/skills` in it, so "unchanged" is a fact about
+    // `contract::session` and not about the machine running the suite.
+    let _home = HomeFixture::new();
     let (dir, config) = discovered(&[]);
     let root = dir.path().to_path_buf();
 
@@ -631,6 +690,12 @@ fn what_the_file_asks_for_is_what_the_contract_carries() {
 /// doc surfaces are the other half of this release.
 #[test]
 fn f6_both_arms_are_handed_one_contract() {
+    // One home for both builds: the skills default is read out of the
+    // environment, so a test that let it move between them would be comparing two
+    // machines rather than two arms.
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+
     // (1) Same inputs, same contract — there is no containment to differ on.
     let (answerer, _questions) = io_cli::intent::channel();
     let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
@@ -1207,5 +1272,161 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
         server_notices(&one_scope, &Capabilities::default()).is_empty(),
         "a notice about a duplicate nobody wrote is noise that teaches operators \
          to stop reading the start-up lines",
+    );
+}
+
+/// **F7 — a tilde is a home directory, never a directory named `~`.**
+///
+/// io-harness substitutes `${env:…}` and `${file:…}` and nothing else — there is
+/// no tilde branch anywhere in `io-harness-0.66.0/src/config.rs` — so a `~` an
+/// operator writes in `[run] skills` reaches `Skills::discover` verbatim and the
+/// harness looks inside a directory whose name is one character long. The
+/// operator's skills sit exactly where they said they would, and the session
+/// lists none of them.
+///
+/// The fixture goes through `Config::discover` and not `Config::from_toml`,
+/// because `from_toml` parses at project scope and this is an assertion about
+/// what discovery populates.
+///
+/// Sabotage: pass the tilde through — return the contract from `resolve_skills`
+/// untouched — under which only this and the two below fail, and they fail on the
+/// literal `~/notes` this asserts against.
+#[test]
+fn f7_a_tilde_in_run_skills_is_the_operators_home() {
+    let _guard = env_lock();
+    let home = HomeFixture::new();
+    let (dir, config) = discovered(&[("io.toml", "[run]\nskills = \"~/notes\"\n")]);
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = session(
+        "read the notes",
+        dir.path().to_path_buf(),
+        &config,
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    );
+
+    let carried = contract.skills.clone().expect("a skills directory");
+    assert_eq!(
+        carried,
+        home.path().join("notes"),
+        "`[run] skills` reaches the turn as a directory that exists",
+    );
+    // The inverse of the sabotage, said outright: the thing that must not survive
+    // is the character itself, whatever else the path turns out to be.
+    assert!(
+        carried.is_absolute() && !carried.starts_with("~"),
+        "`{}` is what `Skills::discover` would be handed",
+        carried.display(),
+    );
+}
+
+/// **F7 — and the same for io-cli's own table, which is applied later.**
+///
+/// `[app.io-cli] skills` is set after `Config::apply_to` has had its say, so an
+/// expansion written into `configured` alone would leave this one literal. This
+/// is the second key the single expansion point exists for, and the assertion is
+/// also the precedence one: the narrower table wins.
+///
+/// Sabotage: expand only inside `configured` — under which this fails and
+/// `f7_a_tilde_in_run_skills_is_the_operators_home` passes, which is the shape of
+/// a half-applied rule.
+#[test]
+fn f7_a_tilde_in_the_app_table_is_the_operators_home_and_beats_run() {
+    let _guard = env_lock();
+    let home = HomeFixture::new();
+    let (dir, config) = discovered(&[("io.toml", "[run]\nskills = \"~/from-run\"\n")]);
+
+    let settings: CliSettings =
+        toml::from_str("skills = \"~/from-app\"\n").expect("`[app.io-cli]` parses");
+    let caps = Capabilities::stored(Some(&settings));
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = session(
+        "read the notes",
+        dir.path().to_path_buf(),
+        &config,
+        &caps,
+        Arc::new(answerer),
+        None,
+    );
+
+    assert_eq!(
+        contract.skills,
+        Some(home.path().join("from-app")),
+        "the narrower table wins, and it wins expanded",
+    );
+}
+
+/// **F7 — with neither key set, skills live in io-cli's own home.**
+///
+/// The default an operator gets for making the directory and writing a file in
+/// it: no configuration, no path to type, and both arms take it because it is
+/// applied in `contract::configured`, which `io exec` builds from too.
+///
+/// Sabotage: drop the `or_else(default_skills)` — under which only this fails, on
+/// a contract carrying no directory while `~/.io-cli/skills` holds skills nobody
+/// will be told about.
+#[test]
+fn f7_skills_default_to_io_clis_own_home() {
+    let _guard = env_lock();
+    let home = HomeFixture::new();
+    let skills = home.skills();
+    let (dir, config) = discovered(&[]);
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = session(
+        "read the notes",
+        dir.path().to_path_buf(),
+        &config,
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    );
+    assert_eq!(contract.skills, Some(skills.clone()), "the session arm");
+
+    let headless =
+        io_cli::contract::configured("read the notes", dir.path().to_path_buf(), &config);
+    assert_eq!(
+        headless.skills,
+        Some(skills),
+        "and `io exec`, which is built from the same half",
+    );
+}
+
+/// **F7's other half — the default is offered, never imposed.**
+///
+/// `Skills::discover` does **not** return early on a directory that is not there:
+/// it returns `Error::Config("skills directory … does not exist")`, and
+/// `TaskContract::discover_skills` propagates it at run start, before the first
+/// completion. A default that named `~/.io-cli/skills` unconditionally would
+/// therefore fail every turn for every operator who has never made one — a
+/// feature that breaks the product for everybody who did not ask for it.
+///
+/// Sabotage: drop the `is_dir()` test in `contract::default_skills` — under which
+/// this fails and `f2_nothing_configured_is_the_contract_the_session_built_before`
+/// fails with it, on a contract that no longer matches the one the session built
+/// before this release.
+#[test]
+fn a_home_with_no_skills_directory_is_the_contract_of_the_release_before() {
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+    let (dir, config) = discovered(&[]);
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = session(
+        "read the notes",
+        dir.path().to_path_buf(),
+        &config,
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    );
+
+    assert_eq!(
+        contract.skills, None,
+        "an operator who never made the directory must not have their run refused \
+         by a default they did not ask for",
     );
 }

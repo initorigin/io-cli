@@ -29,6 +29,16 @@ const DIR: &str = ".io-cli";
 /// The configuration file's name, which is io-harness's and not ours.
 const FILE: &str = "io.toml";
 
+/// The skills directory, created with the home so the default is a real place.
+///
+/// `Skills::discover` **errors** on a directory that does not exist — it does not
+/// walk away from one — and `TaskContract::discover_skills` propagates that with
+/// `?` at run start, before the first completion. So a default pointing at a
+/// directory nobody has made is not an empty catalogue; it is every turn failing.
+/// Making it here is what lets the default be unconditional, and it is also the
+/// only way an operator finds out where to put a skill without reading a document.
+const SKILLS: &str = "skills";
+
 /// The store and the two files SQLite keeps beside it.
 ///
 /// The siblings are not decoration. A `runs.db` moved without its `-wal` is a
@@ -223,8 +233,16 @@ pub fn adopt() -> Option<Report> {
     // and there is nothing left to migrate from.
     let previous = io_harness::config::user_path();
 
-    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
+    // Created BEFORE the variable is set, and the variable is not set at all if it
+    // cannot be: pointing io-harness at a directory that does not exist and then
+    // returning `None` would move the configuration path with nobody told, which
+    // is the one outcome worse than not adopting a home.
     create(&home).ok()?;
+    // Best effort, and deliberately not fatal: a home without a skills directory
+    // is a home with no skills in it, while a home that could not be created at
+    // all is a product with nowhere to live.
+    let _ = create(&home.join(SKILLS));
+    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
 
     let mut report = Report {
         home: home.clone(),
