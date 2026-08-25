@@ -21,7 +21,11 @@ machine, to delete when you are finished with it, and to name in a bug report.
 **The move is the part to read before upgrading.** On the first 0.15.0 run,
 `io.toml` and the run store are moved from wherever they were into `~/.io-cli`,
 and each file that moved is named on screen — in the scrollback in a session, on
-stderr under `io exec`, never on stdout, because `--json` writes NDJSON there.
+stderr under `io exec`, never on stdout, because `--json` writes NDJSON there. If
+the run cannot start at all — a configuration file that will not parse, a store
+that will not open — the report is still said, ahead of the error. That is the
+moment it matters most: an error naming a path you have never seen, one keystroke
+after your old directory emptied, is the reading this release exists to prevent.
 Nothing is overwritten: where the home already holds a file, the one already there
 is the one that stays and the other is left exactly where it was. Nothing is
 deleted, and a file copied across filesystems has its copy checked before the
