@@ -41,6 +41,7 @@ pub mod failure;
 pub mod fleet;
 pub mod fuzzy;
 pub mod glyphs;
+pub mod home;
 pub mod intent;
 pub mod keys;
 pub mod markdown;

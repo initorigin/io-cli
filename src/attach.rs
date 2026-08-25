@@ -122,21 +122,13 @@ fn unquote(path: &str) -> &str {
 /// and the caller reads it through the gate.
 ///
 /// A leading `~` is a home directory: it is what an operator types, and nothing
-/// downstream expands it.
+/// downstream expands it. [`crate::home::expand`] is the one place in this crate
+/// that does — the contract's skills directory needs the same rule, and two
+/// spellings of "what `~` means" is one more than anybody can keep true. A home
+/// that cannot be determined leaves the path literal, which is not absolute, so
+/// this still answers `None` and the gate still sees it.
 fn outside(root: &Path, path: &str) -> Option<std::path::PathBuf> {
-    let expanded = match path.strip_prefix('~') {
-        // `HOME` on Unix, `USERPROFILE` on Windows, which is where a Windows
-        // shell puts the same fact. Asking only for `HOME` meant `~` was not a
-        // home directory on Windows at all — the path stayed literal and named
-        // nothing.
-        Some(rest) => {
-            let home = std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(std::path::PathBuf::from)?;
-            home.join(rest.trim_start_matches(['/', '\\']))
-        }
-        None => std::path::PathBuf::from(path),
-    };
+    let expanded = crate::home::expand(Path::new(path));
     if !expanded.is_absolute() {
         return None;
     }

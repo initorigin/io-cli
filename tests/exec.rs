@@ -997,3 +997,203 @@ fn a_recovery_pause_exits_paused_and_is_described_as_a_pause() {
         "the run is waiting for a recovery decision, after 3 steps"
     );
 }
+
+/// 0.15.0 F6, the headless arm — the migration report is on stderr, and the
+/// `--json` stream on stdout stays parseable.
+///
+/// **This one spawns the binary, and it has to.** The printing lives in
+/// `src/main.rs`, which no integration test can link — the same gap
+/// `f8_the_provider_names_are_spelled_the_way_the_harness_spells_them` above says
+/// was found by running the release binary rather than by a test. `exec::to_stdout`
+/// already keeps the *reply* out of the NDJSON stream and is unit-tested; nothing
+/// in the library can see a report `main` writes beside it. So this is the only
+/// shape that fails under F6's second sabotage arm, which writes the report to
+/// stdout.
+///
+/// **`--policy ask-writes` is the invocation, because it terminates without a
+/// provider.** `exec::main` refuses the posture on its first line, before a store
+/// is opened, a session is created or a provider is built, so the run needs no
+/// credential, makes no network call and cannot hang. The adoption happens earlier
+/// still — before `Config::discover`, which is the only place it may happen — so
+/// the report is written whatever the run then does with itself. The exit status is
+/// deliberately not what is asserted here: it is the streams that carry the claim.
+///
+/// Every variable is set on the **child** and never through `std::env::set_var`.
+/// Other files in this suite own the process environment and take a lock over it;
+/// a `set_var` here would reach across that lock into whatever is running beside
+/// it. `XDG_CONFIG_HOME` is cleared on unix, and `APPDATA` redirected on Windows,
+/// for the reason `tests/home.rs` gives: otherwise the platform's own place is
+/// wherever the person running the suite keeps theirs, and the fixture would
+/// migrate their real configuration file.
+#[test]
+fn f6_the_headless_home_report_is_on_stderr_and_not_in_the_json_stream() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let fixture = dir.path();
+
+    // Where io-harness would have put it before this release.
+    #[cfg(windows)]
+    let legacy = fixture.join("AppData").join("Roaming").join("io");
+    #[cfg(not(windows))]
+    let legacy = fixture.join(".config").join("io");
+
+    std::fs::create_dir_all(&legacy).expect("the pre-0.15.0 directory");
+    std::fs::write(
+        legacy.join("io.toml"),
+        "[[provider]]\nkind = \"openrouter\"\nmodel = \"m\"\n",
+    )
+    .expect("the pre-0.15.0 configuration file");
+
+    let home = fixture.join(".io-cli");
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .arg("-C")
+        .arg(fixture)
+        .arg("exec")
+        .arg("--json")
+        .arg("--policy")
+        .arg("ask-writes")
+        .arg("say nothing")
+        .env_remove(io_harness::config::CONFIG_VAR)
+        .env_remove(io_harness::config::CONFIG_HOME_VAR);
+    #[cfg(windows)]
+    command
+        .env("USERPROFILE", fixture)
+        .env("APPDATA", fixture.join("AppData").join("Roaming"));
+    #[cfg(not(windows))]
+    command.env("HOME", fixture).env_remove("XDG_CONFIG_HOME");
+
+    let run = command.output().expect("the built binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+
+    // The migration happened at all — otherwise every assertion below is about a
+    // run that had nothing to report.
+    assert!(
+        home.join("io.toml").is_file(),
+        "the pre-0.15.0 configuration file did not reach {}; stderr was:\n{stderr}",
+        home.display(),
+    );
+    assert!(
+        !legacy.join("io.toml").exists(),
+        "the file was copied rather than moved, so two configurations now disagree",
+    );
+
+    // `Report::lines`, verbatim: one line naming source and destination, one
+    // naming the home. Compared as whole lines so a prefix `main` adds is allowed
+    // and a reworded report is not.
+    let moved = format!(
+        "moved {} to {}",
+        legacy.join("io.toml").display(),
+        home.join("io.toml").display(),
+    );
+    let where_it_lives = format!("io keeps its files in {}", home.display());
+    assert!(
+        stderr.contains(&moved),
+        "stderr does not say what moved. Expected a line containing:\n{moved}\ngot:\n{stderr}",
+    );
+    assert!(
+        stderr.contains(&where_it_lives),
+        "stderr does not name the home. Expected a line containing:\n\
+         {where_it_lives}\ngot:\n{stderr}",
+    );
+
+    // The sabotage this test exists for: the same lines written to stdout.
+    assert!(
+        !stdout.contains("io keeps its files in") && !stdout.contains(&moved),
+        "the migration report is on stdout, where `io exec --json` writes NDJSON \
+         and every reader of that stream chokes on a line of prose:\n{stdout}",
+    );
+
+    // And the standing `--json` gate, restated against the real process rather
+    // than against an observer in memory: nothing on stdout that is not an object.
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            "stdout carries a line that is not a JSON object: {line:?}",
+        );
+    }
+}
+
+/// **F6, through the door the report did not cover — found by running the binary.**
+///
+/// A configuration file io-harness cannot parse ends `run` at the discovery,
+/// which is *before* either arm reaches the place the report was written. So an
+/// operator whose install had just been moved saw `unknown field … in
+/// ~/.io-cli/io.toml` and nothing at all about the move: a path they had never
+/// seen, naming a file they did not put there, one keystroke after their old
+/// directory emptied. That is the "my sessions are gone" reading this release
+/// exists to prevent, and no unit test could see it — the ordering lives in
+/// `src/main.rs`, which nothing under `tests/` links.
+///
+/// The failing file is deliberately *valid TOML* with an unknown key, so the
+/// failure is io-harness's schema and not a parse error, and the assertion is
+/// that both things are said: what moved, and then what is wrong with it.
+#[test]
+fn f6_a_configuration_that_cannot_be_read_still_says_what_moved() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let fixture = dir.path();
+
+    #[cfg(windows)]
+    let legacy = fixture.join("AppData").join("Roaming").join("io");
+    #[cfg(not(windows))]
+    let legacy = fixture.join(".config").join("io");
+
+    std::fs::create_dir_all(&legacy).expect("the pre-0.15.0 directory");
+    std::fs::write(legacy.join("io.toml"), "model = \"not-a-key\"\n")
+        .expect("a file io-harness will refuse");
+
+    let home = fixture.join(".io-cli");
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .arg("-C")
+        .arg(fixture)
+        .arg("exec")
+        .arg("--json")
+        .arg("--policy")
+        .arg("ask-writes")
+        .arg("say nothing")
+        .env_remove(io_harness::config::CONFIG_VAR)
+        .env_remove(io_harness::config::CONFIG_HOME_VAR);
+    #[cfg(windows)]
+    command
+        .env("USERPROFILE", fixture)
+        .env("APPDATA", fixture.join("AppData").join("Roaming"));
+    #[cfg(not(windows))]
+    command.env("HOME", fixture).env_remove("XDG_CONFIG_HOME");
+
+    let run = command.output().expect("the built binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+
+    assert!(
+        home.join("io.toml").is_file(),
+        "the file did not move, so this test is about nothing; stderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains(&format!(
+            "moved {} to {}",
+            legacy.join("io.toml").display(),
+            home.join("io.toml").display()
+        )),
+        "the move was not reported on the run that failed to read what it moved:\n{stderr}",
+    );
+    assert!(
+        stderr.contains(&format!("io keeps its files in {}", home.display())),
+        "the home was not named on the run that most needed it named:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("unknown field"),
+        "the configuration error itself was lost:\n{stderr}",
+    );
+    // Order matters: the move is the context for the error, so it is said first.
+    assert!(
+        stderr.find("io keeps its files in") < stderr.find("unknown field"),
+        "the error arrived before the explanation for the path in it:\n{stderr}",
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "a run that never started wrote to the JSON stream: {stdout:?}",
+    );
+}

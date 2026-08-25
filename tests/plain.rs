@@ -39,6 +39,7 @@
 
 mod support;
 
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use io_cli::app::App;
@@ -49,6 +50,16 @@ use io_cli::theme::{Theme, DARK};
 use io_harness::{ApproveAll, Policy, Session, Steer, Store};
 use ratatui::text::Line;
 use support::Scripted;
+
+/// Held by every test in this file that reads or writes an `IO_CONFIG*` variable.
+///
+/// One test does, since 0.15.0 put a directory read from the environment onto the
+/// `/status` page. The guard is the same shape `tests/wizard.rs` and
+/// `tests/home.rs` use.
+fn env_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// The prompt the scripted turn is driven with.
 const GOAL: &str = "write the note";
@@ -634,6 +645,20 @@ fn f5_the_activity_line_says_its_state_in_a_word_under_every_mode() {
 #[test]
 fn f11_status_in_plain_mode_is_the_same_content_in_the_ascii_set() {
     use io_cli::status::Status;
+
+    // 0.15.0 put a `home` row on this page, and it carries a real directory read
+    // from the process environment — so the ASCII assertion below would otherwise
+    // be an assertion about whoever is running the suite. Pinned to a literal
+    // rather than to a temporary directory, because a temporary directory is
+    // `$TMPDIR` and that is the same ambient answer one level along.
+    // `home::in_force` reads the environment and never the filesystem, so the path
+    // does not have to exist.
+    let _guard = env_lock();
+    std::env::remove_var(io_harness::config::CONFIG_VAR);
+    std::env::set_var(
+        io_harness::config::CONFIG_HOME_VAR,
+        "/io-cli-status-fixture",
+    );
 
     let dir = tempfile::tempdir().expect("a workspace");
     let store = Store::memory().expect("an in-memory store");
