@@ -325,3 +325,41 @@ id = \"search\"
     assert!(after.contains("docs"));
     assert!(!after.contains("search"), "the wrong entry was removed");
 }
+
+#[test]
+fn f1_an_entry_moves_with_its_comments_and_its_unmodelled_keys() {
+    // Order is meaning: for `[[provider]]` it is the fallback chain, so a move
+    // has to carry the entry's own bytes rather than rewrite the array.
+    const CHAIN: &str = "\
+[[provider]]
+kind = \"openrouter\"
+model = \"a\"
+
+# the cheap one, second on purpose
+[[provider]]
+kind = \"compatible\"
+preset = \"groq\"
+model = \"b\"
+
+[run]
+max_steps = 30
+";
+    let up = edit::apply(CHAIN, &[Edit::move_entry("provider", 1, 0)]).unwrap();
+
+    // The second entry is now first.
+    assert!(
+        up.find("groq").unwrap() < up.find("openrouter").unwrap(),
+        "the move did not reorder the chain:\n{up}"
+    );
+    // With its comment, its unmodelled key, and nothing else disturbed.
+    assert!(up.contains("# the cheap one, second on purpose"), "comment lost");
+    assert!(up.contains("preset = \"groq\""), "key lost");
+    assert!(up.contains("max_steps = 30"), "a later section moved");
+    let config = io_harness::Config::from_toml(&up).expect("the moved file loads");
+    assert_eq!(config.fallback_specs().len(), 1);
+
+    // And moving it back is the identity, which is the property a one-way
+    // implementation would fail.
+    let back = edit::apply(&up, &[Edit::move_entry("provider", 0, 1)]).unwrap();
+    assert_eq!(back.trim_end(), CHAIN.trim_end(), "a move is not reversible");
+}

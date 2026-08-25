@@ -72,6 +72,8 @@ enum Kind {
     Append,
     /// Remove a whole `[[path]]` entry, or a `[path]` section, bytes and all.
     Remove,
+    /// Move one `[[path]]` entry to another position in its array.
+    Move,
 }
 
 impl Edit {
@@ -112,6 +114,22 @@ impl Edit {
             path: path.into(),
             value: String::new(),
             kind: Kind::Remove,
+        }
+    }
+
+    /// Move the `from`-th entry of the `[[path]]` array to position `to`.
+    ///
+    /// **Order is meaning for an array of tables, and for `[[provider]]` it is
+    /// the fallback chain**: the first entry is the provider a run uses and each
+    /// later one is the next link. So this is not a cosmetic operation and it
+    /// cannot be done by rewriting the array — the entry's own bytes, comments
+    /// and unmodelled keys have to arrive at the new position intact, which is
+    /// the same property every other edit here keeps.
+    pub fn move_entry(path: impl Into<String>, from: usize, to: usize) -> Self {
+        Self {
+            path: path.into(),
+            value: format!("{from}:{to}"),
+            kind: Kind::Move,
         }
     }
 
@@ -182,6 +200,43 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 let body = edit.value.trim_end();
                 block.push_str(&format!("\n[[{}]]\n{body}\n", edit.path));
                 splices.push((text.len()..text.len(), block));
+                continue;
+            }
+            Kind::Move => {
+                let (from, to) = edit
+                    .value
+                    .split_once(':')
+                    .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+                    .ok_or_else(|| format!("`{}` has no positions to move between", edit.path))?;
+
+                let names = vec![edit.path.clone()];
+                let at = |index: usize| {
+                    regions
+                        .iter()
+                        .find(|r| r.path == names && r.index == index)
+                        .ok_or_else(|| {
+                            format!("there is no `{}[{index}]` in this file", edit.path)
+                        })
+                };
+                if from == to {
+                    continue;
+                }
+                let source = at(from)?;
+                let block = text[source.start..source.body.end].to_string();
+
+                // Both splices are computed against the ORIGINAL text and applied
+                // right to left, which is what makes a move one pass rather than
+                // a remove followed by an append that has to re-find everything.
+                let destination = at(to)?;
+                let insert = if to > from {
+                    // Moving down: land after the entry currently at `to`.
+                    destination.body.end
+                } else {
+                    // Moving up: land where that entry's header begins.
+                    destination.start
+                };
+                splices.push((source.start..source.body.end, String::new()));
+                splices.push((insert..insert, block));
                 continue;
             }
             Kind::Remove => {

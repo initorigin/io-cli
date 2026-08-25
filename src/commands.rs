@@ -151,6 +151,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "the MCP servers configured, and what this session has seen of each",
     ),
     (
+        "/provider",
+        "the providers configured, in the order a turn tries them",
+    ),
+    (
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
@@ -507,6 +511,8 @@ pub enum Action {
     Config(Option<(String, String)>),
     /// Show the configured MCP servers and what the session has seen of them.
     Mcp,
+    /// Show the provider chain, in the order a turn tries it.
+    Provider,
 }
 
 /// What `/copy` was asked for.
@@ -603,6 +609,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // inline table can be typed whole — `allowed_domains = ["a", "b"]` is one
         // value with a space in it, and splitting on whitespace would take half.
         "mcp" | "servers" => Action::Mcp,
+        "provider" | "providers" => Action::Provider,
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {

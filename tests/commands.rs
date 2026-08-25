@@ -46,6 +46,7 @@ fn the_commands_are_the_commands() {
             "/copy diff",
             "/config",
             "/mcp",
+            "/provider",
             "/contain",
             // 0.12.0 — the planning phase stopped being something
             // `[app.io-cli.containment]` switched on by accident, so it needs a

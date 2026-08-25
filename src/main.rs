@@ -761,6 +761,34 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 );
                             }
                         }
+                        // Says what the link is, and where it points. The chain
+                        // is arranged through `/config`, which is the one writer
+                        // this release gives the file.
+                        Pick::Provider => {
+                            let chain = io_cli::providers::chain(&config);
+                            if let Some(entry) = chain.get(index) {
+                                let place = if entry.index == 0 {
+                                    "used".to_string()
+                                } else {
+                                    format!("fallback {}", entry.index)
+                                };
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} · {} · {} · {}{}",
+                                        entry.kind,
+                                        entry.model,
+                                        place,
+                                        entry.credential.word(),
+                                        entry
+                                            .endpoint
+                                            .as_deref()
+                                            .map(|e| format!(" · {e}"))
+                                            .unwrap_or_default(),
+                                    ),
+                                );
+                            }
+                        }
                         Pick::Config(paths) => {
                             if let Some(key) = paths.get(index) {
                                 app.composer.set(&format!("/config {key} "));
@@ -1010,6 +1038,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         picker = Some((
                             Picker::new("MCP servers", io_cli::servers::rows(&list)),
                             Pick::Mcp,
+                        ));
+                    }
+                }
+                Action::Provider => {
+                    let chain = io_cli::providers::chain(&config);
+                    if chain.is_empty() {
+                        app.record(
+                            Tone::Muted,
+                            "no provider is configured; run `io setup`",
+                        );
+                    } else {
+                        picker = Some((
+                            Picker::new(
+                                "Providers, in the order they are tried",
+                                io_cli::providers::rows(&chain),
+                            ),
+                            Pick::Provider,
                         ));
                     }
                 }
@@ -2187,6 +2232,9 @@ enum Pick {
     /// this release: the write verbs are reached through `/config`, and the two
     /// the roadmap named that io-harness cannot express are not offered at all.
     Mcp,
+    /// The provider chain, in the order `providers::rows` drew it — which is
+    /// the order a turn tries it.
+    Provider,
     /// Which file a change goes into, and the change it is waiting on.
     ///
     /// Two steps rather than one because *which scope* is half the decision and

@@ -51,6 +51,7 @@ pub mod picker;
 pub mod picture;
 pub mod plan;
 pub mod provider;
+pub mod providers;
 pub mod rewind;
 pub mod servers;
 pub mod sessions;
