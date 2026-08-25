@@ -130,6 +130,35 @@ net = "deny"
 # — the one `io setup` writes, and the one this example documents — and there is
 # no project-scope route to a browser at all. io-cli's own [app.io-cli.browser]
 # is below, and reaches a turn from either scope.
+#
+# The keys themselves, by section. `/config` lists every one of these with the
+# value in force and the file that decided it, so this block is the written form
+# of a surface you can now open in a session — and each key is left commented,
+# because a key present with its own default is a key a reader has to wonder
+# about.
+#
+# [run]
+# max_steps = 40             # how many steps one turn may take
+# max_tokens = 250000        # the token ceiling for one turn
+# max_duration_secs = 900    # wall clock for one turn
+# max_retries = 3            # how many times a failed step is retried
+# exec_timeout_secs = 120    # how long one command may run
+#
+# [sandbox]
+# mode = "workspace-write"   # read-only | workspace-write | full-access
+# allow_network = false      # whether a contained command may reach the network
+# force_floor = true         # keep the floor even where the caller asked for less
+#
+# NOTE on the three sandbox keys above: `allow_network = true`, `force_floor =
+# false` and `mode = "full-access"` are each REFUSED in a project-scoped file by
+# io-harness itself, for the reason the policy note above gives. `/config` shows
+# you the harness's own sentence when a write would do that, rather than a
+# summary of it.
+#
+# [memory]                   # bounds the STORE, which outlives every run over it
+# max_entries = 500          # how many durable entries are kept
+# max_chars = 200000         # the total size of them
+# max_entry_chars = 4000     # the size of any one of them
 
 # --- io-cli's own section ---------------------------------------------------
 #

@@ -199,6 +199,42 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
     Ok(out)
 }
 
+/// The TOML source of the value at `path`, exactly as the file spells it.
+///
+/// **Quoting, not interpreting.** This returns the bytes between the `=` and the
+/// end of the value and says nothing about what they mean; it is the read half of
+/// the same span machinery [`apply`] writes through, and it exists because
+/// io-harness does not expose an accessor for every section it validates —
+/// `MemorySection` is private and there is no `Config::memory()`, so a surface
+/// that showed only what the typed API hands back would have a hole in it exactly
+/// where an operator had written something.
+///
+/// A caller pairs this with [`io_harness::Config::origin`], which names the file
+/// that decided the key. Quoting a named file's own bytes is a different act from
+/// deciding what a setting means, and `tests/dependencies.rs` holds this module to
+/// that line by asserting it names no configuration type.
+///
+/// `None` when the file does not carry the key at all, or carries it in a shape
+/// this module does not address — a dotted key or an inline table.
+pub fn value_at(text: &str, path: &str) -> Option<String> {
+    let (table_path, key) = split_path(path).ok()?;
+    let regions = regions(text).ok()?;
+    let region = regions
+        .iter()
+        .find(|r| r.path == table_path.names && r.index == table_path.index)?;
+
+    let body = &text[region.body.clone()];
+    let flat: BTreeMap<String, Spanned<toml::Value>> = toml::from_str(body).ok()?;
+    let span = flat.get(&key)?.span();
+    let absolute = region.body.start + span.start..region.body.start + span.end;
+    let found = &text[absolute];
+
+    // The dotted-key tell from [`apply`]: a span whose text is not a value on its
+    // own is the key rather than the value, and quoting it would be a lie.
+    toml::from_str::<toml::value::Table>(&format!("probe = {found}")).ok()?;
+    Some(found.to_string())
+}
+
 /// Read `path`, apply every edit, and put it back atomically.
 ///
 /// The new bytes go to a temporary file in the same directory and are renamed
