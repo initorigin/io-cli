@@ -80,6 +80,17 @@ pub struct Report {
     /// Each file left where it was because the home already held one, as
     /// (the file left behind, the file in force).
     pub kept: Vec<(PathBuf, PathBuf)>,
+    /// The file that could not be moved, where one could not be.
+    ///
+    /// **A migration that half happens is worse than one that does not**, and
+    /// Windows is where it can: that platform refuses to rename a file another
+    /// process holds open, so a second `io` running while this one starts would
+    /// let `io.toml` move while `runs.db` stayed behind — a configuration in the
+    /// new home, a store in the old one, and a `/resume` that finds nothing. When
+    /// this is `Some`, everything that had already moved has been moved back, the
+    /// environment was not touched, and the directory in force is the one it
+    /// always was.
+    pub blocked: Option<PathBuf>,
 }
 
 impl Report {
@@ -91,6 +102,15 @@ impl Report {
     /// commits each one into the scrollback and `io exec` writes each to stderr.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
+        if let Some(blocked) = &self.blocked {
+            return vec![
+                format!(
+                    "could not move {} — another io may be running",
+                    blocked.display()
+                ),
+                format!("io is still using {}", self.home.display()),
+            ];
+        }
         let mut out = Vec::with_capacity(self.moved.len() + self.kept.len() + 1);
         for (from, to) in &self.moved {
             out.push(format!("moved {} to {}", from.display(), to.display()));
@@ -242,18 +262,24 @@ pub fn adopt() -> Option<Report> {
     // is a home with no skills in it, while a home that could not be created at
     // all is a product with nowhere to live.
     let _ = create(&home.join(SKILLS));
-    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
 
     let mut report = Report {
         home: home.clone(),
         moved: Vec::new(),
         kept: Vec::new(),
+        blocked: None,
     };
 
+    // **The variable is set only once every file that had to move has moved**, and
+    // that ordering is the whole of the Windows story below: a home named while
+    // half an install is still in the old directory is a configuration and a store
+    // in two places.
     let Some(from) = previous.as_deref().and_then(Path::parent) else {
+        std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
         return Some(report);
     };
     if from == home {
+        std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
         return Some(report);
     }
 
@@ -270,11 +296,27 @@ pub fn adopt() -> Option<Report> {
             report.kept.push((source, target));
             continue;
         }
-        if relocate(&source, &target).is_ok() {
-            report.moved.push((source, target));
+        if relocate(&source, &target).is_err() {
+            // **Everything already moved goes back, and the home is not taken.**
+            // Windows refuses to rename a file another process holds open, so a
+            // second `io` running while this one starts is exactly how half an
+            // install ends up in each directory. Undone rather than reported and
+            // left, because the operator cannot put it back themselves without
+            // knowing which four names to look for.
+            for (was, is) in report.moved.iter().rev() {
+                let _ = relocate(is, was);
+            }
+            return Some(Report {
+                home: from.to_path_buf(),
+                moved: Vec::new(),
+                kept: Vec::new(),
+                blocked: Some(source),
+            });
         }
+        report.moved.push((source, target));
     }
 
+    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, &home);
     Some(report)
 }
 

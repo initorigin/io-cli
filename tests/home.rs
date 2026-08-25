@@ -258,9 +258,18 @@ fn f8_the_variable_io_cli_sets_is_not_the_operators_choice() {
 ///
 /// The claim is the run, not the file. A `runs.db` moved without its `-wal`
 /// opens without complaint and simply does not contain the last session, so a
-/// test counting files would pass over exactly the defect that matters. The
-/// connection is deliberately still open across the move, which is what leaves an
-/// uncheckpointed `-wal` on disk to be left behind.
+/// test counting files would pass over exactly the defect that matters.
+///
+/// **The fixture is a store a crashed process left behind, and it has to be.** An
+/// uncheckpointed `-wal` only survives on disk while a connection is open or after
+/// something died holding one — closing the last connection checkpoints it away.
+/// The first version of this test simply kept the connection open across the move,
+/// which is a shape that exists on unix and **cannot** on Windows, where a file
+/// another handle holds open cannot be renamed at all: it passed locally and CI's
+/// `windows-latest` row failed on it. So the store is built in a staging directory,
+/// copied to the pre-0.15.0 location while its `-wal` is still live, and the
+/// connection is dropped before anything moves — which is byte for byte what a
+/// crashed `io` leaves, on either platform, with nothing holding it.
 #[test]
 fn f4_an_existing_install_moves_with_its_write_ahead_log() {
     let _guard = env_lock();
@@ -270,17 +279,26 @@ fn f4_an_existing_install_moves_with_its_write_ahead_log() {
     let previous = platform(dir.path());
     write(&previous.join("io.toml"), "# the operator's own file\n");
 
-    let store = Store::open(previous.join("runs.db")).expect("a store");
+    let staging = dir.path().join("staging");
+    std::fs::create_dir_all(&staging).expect("a staging directory");
+    let store = Store::open(staging.join("runs.db")).expect("a store");
     let run = store
         .start_run("a goal recorded before the move", "io.toml")
         .expect("a run");
     assert!(
-        previous.join("runs.db-wal").exists(),
+        staging.join("runs.db-wal").exists(),
         "the store is opened in WAL mode, so an uncheckpointed write leaves one"
     );
+    for name in ["runs.db", "runs.db-wal", "runs.db-shm"] {
+        if staging.join(name).exists() {
+            std::fs::copy(staging.join(name), previous.join(name)).expect("the crashed store");
+        }
+    }
+    // Dropped before the move, so nothing holds the files: the copy above is the
+    // whole point, and it is what a process that died mid-run leaves behind.
+    drop(store);
 
     let report = home::adopt().expect("the home is adopted");
-    drop(store);
 
     let home = dir.path().join(".io-cli");
     assert_eq!(
@@ -305,6 +323,64 @@ fn f4_an_existing_install_moves_with_its_write_ahead_log() {
         !previous.join("io.toml").exists(),
         "a move leaves nothing behind"
     );
+}
+
+/// **F5, on the one platform where a move can fail for a reason nothing can fix.**
+///
+/// Windows refuses to rename a file another process holds open. So a second `io`
+/// running while this one starts is exactly how `io.toml` reaches the new home
+/// while `runs.db` stays in the old one — a configuration and a store in two
+/// directories, and a `/resume` that finds nothing. That partial state is worse
+/// than not migrating at all, so everything already moved is moved back, the
+/// environment is left alone, and the operator is told which file was in the way.
+///
+/// This test exists because CI found the defect and this machine could not:
+/// `f4`'s first fixture held the store open across the move, which is legal on
+/// unix and impossible here.
+#[cfg(windows)]
+#[test]
+fn f5_a_file_another_process_holds_open_abandons_the_move_rather_than_halving_it() {
+    let _guard = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    fresh(dir.path());
+
+    let previous = platform(dir.path());
+    write(&previous.join("io.toml"), "# the operator's own file\n");
+
+    // Held open for the duration, which on this platform makes it unrenameable.
+    let store = Store::open(previous.join("runs.db")).expect("a store");
+    store
+        .start_run("a goal nobody will read", "io.toml")
+        .expect("a run");
+
+    let report = home::adopt().expect("a home is still derived");
+
+    assert!(
+        report.blocked.is_some(),
+        "a file that could not move has to be named, not swallowed"
+    );
+    assert!(
+        report.moved.is_empty(),
+        "everything that moved was moved back"
+    );
+    assert!(
+        previous.join("io.toml").is_file(),
+        "the configuration file is where it was, not half-way to the new home"
+    );
+    assert_eq!(
+        std::env::var_os(io_harness::config::CONFIG_HOME_VAR),
+        None,
+        "the home was not taken, so io-harness still answers from the old directory"
+    );
+    assert_eq!(
+        report.home, previous,
+        "the report names the directory in force"
+    );
+    let lines = report.lines();
+    assert!(lines.iter().any(|line| line.contains("could not move")));
+    assert!(lines.iter().any(|line| line.contains("still using")));
+
+    drop(store);
 }
 
 /// **F5.** Nothing already in the home is overwritten, and the operator is told
