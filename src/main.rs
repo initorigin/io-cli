@@ -54,6 +54,16 @@ async fn run() -> Result<u8, String> {
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
 
+    // **Before the discovery on the next line, and this is the only discovery
+    // either arm reaches**, so one call here serves the session and `io exec`
+    // both. Order is the whole of it: `io_harness::config::user_path` reads the
+    // environment at call time, so a configuration discovered first would come
+    // from the old directory while the store — derived from the file's own
+    // directory by `settings::store_path` — answered from the new one, and the
+    // visible symptom is a `/resume` that silently finds nothing. Empty when the
+    // operator named a location themselves, which is `adopt` refusing to move
+    // anybody who has already chosen.
+    let report = io_cli::home::adopt().map_or_else(Vec::new, |report| report.lines());
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
     // The notice this read produces is dropped *here* and only here: `run` may
     // hand control to the wizard, which rewrites the very file this just failed
@@ -80,6 +90,13 @@ async fn run() -> Result<u8, String> {
     // wizard can be reached: `io exec` in a container with no configuration file
     // must fail with a sentence, never sit at a prompt nobody can answer.
     if let Some(Subcommand::Exec(args)) = cli.command {
+        // **stderr, one line each, never stdout.** `io exec --json` writes NDJSON
+        // on stdout and a line of prose in that stream breaks every machine
+        // reading it — the session's scrollback and this are the same lines said
+        // in the two places a run can be watched from.
+        for line in report {
+            eprintln!("{line}");
+        }
         return io_cli::exec::main(args, config, root, cli.model).await;
     }
 
@@ -175,6 +192,7 @@ async fn run() -> Result<u8, String> {
         theme,
         cli.model,
         plain,
+        report,
         &root,
     )
     .await;
@@ -199,6 +217,11 @@ async fn drive(
     // and a second read of the file at this depth would be a second answer to a
     // question already settled — one that silently drops the flag.
     plain: bool,
+    // What `home::adopt` did, carried down from `run` rather than asked for again
+    // here: `adopt` moves files, so a second call would be a second migration, and
+    // by the time there is an `App` to say this in the environment already names
+    // the home — there would be nothing left to report.
+    report: Vec<String>,
     root: &std::path::Path,
 ) -> Result<(), String> {
     let Some(spec) = config.provider_spec().cloned() else {
@@ -248,7 +271,11 @@ async fn drive(
     // The agent's own skills, walked once beside the templates and for the same
     // reasons — the palette filters on every character typed, and a directory
     // that would not walk has to say so or it reads as one nobody configured.
-    let (skills, complaint) = commands::skills(capabilities.skills.as_deref());
+    // Resolved rather than read off `[app.io-cli]`: the palette must list the same
+    // directory the turn hands the agent, or a skill the model can use is one the
+    // operator cannot see in `/`.
+    let skills_dir = io_cli::contract::skills_dir(&config, &capabilities, root.to_path_buf());
+    let (skills, complaint) = commands::skills(skills_dir.as_deref());
     if let Some(complaint) = complaint {
         notices.push(complaint);
     }
@@ -292,6 +319,7 @@ async fn drive(
             diff_style,
             keys,
             notices,
+            report,
             templates,
             theme,
             plain,
@@ -322,6 +350,10 @@ struct Interactive<'a, 'b> {
     /// What `[app.io-cli]` and `[run] templates` earned themselves, in the order
     /// they will be said.
     notices: Vec<String>,
+    /// What `home::adopt` did on the way in, in the order it did it. Empty when
+    /// the operator named their own location, and one line long — the home — on
+    /// every run that had nothing to move.
+    report: Vec<String>,
     /// What `[run] templates` points at, walked once at startup. Empty when
     /// nothing is configured and empty when the walk failed — the notice above is
     /// what tells those two apart.
@@ -367,6 +399,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.diff_style,
             self.keys,
             self.notices,
+            self.report,
             self.templates,
             self.theme,
             self.plain,
@@ -395,6 +428,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     diff_style: settings::DiffStyle,
     keys: io_cli::keys::Keys,
     notices: Vec<String>,
+    report: Vec<String>,
     templates: Templates,
     theme: Theme,
     plain: bool,
@@ -425,6 +459,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // most. What the session refused has to survive until the operator reads it,
     // so each takes a row of its own in the scrollback — which is what the
     // comment above has claimed since it was written.
+    // **Recorded, not said, and first.** What `home::adopt` did is a fact about
+    // where this install's files now are: a line naming each file it moved, and on
+    // an ordinary run the one line saying where they live. `say` would put it on
+    // the footer's row, where the first keystroke replaces it — and a migration
+    // that happened once, on an upgrade, would be gone before the operator who has
+    // to know about it pressed anything. It goes above the notices because it says
+    // which directory the file those notices are about was read from.
+    for line in report {
+        app.record(Tone::Muted, line);
+    }
     for notice in notices {
         app.record(Tone::Warning, notice);
     }
