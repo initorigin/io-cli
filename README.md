@@ -635,7 +635,7 @@ Six keys live there, and five tables:
 | `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
-| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. |
+| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `~/.io-cli/skills`. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}` and `${file:…}` and nothing else. |
 | `max_steps` | how many steps one turn may take. **Deprecated in 0.14.0 and removed in 0.16.0**: `[run] max_steps` is where the number moves to. It still wins over `[run]` until then, and a file carrying it is told so once at session start. |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
 | `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
@@ -650,10 +650,37 @@ reverted the theme, the diff style and everything else in the section at once wi
 nothing said about it, and the session now starts on the defaults carrying
 io-harness's own message — which names the key that broke — in its scrollback.
 
-The file is found in this order: `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`,
-else `$XDG_CONFIG_HOME/io/io.toml` or `~/.config/io/io.toml`, and
-`%APPDATA%\io\io.toml` on Windows. A project's own `io.toml` and a gitignored
-`io.local.toml` layer on top of it.
+### Where io keeps your things
+
+**One directory: `~/.io-cli`, or `%USERPROFILE%\.io-cli` on Windows.** The
+configuration file is in it, and so is the run store `runs.db` with the `-wal`
+and `-shm` SQLite keeps beside it — which is where the agent's durable memory
+lives too, because that is rows inside the store rather than a file of its own —
+and the skills directory, which is `~/.io-cli/skills` when `skills` names none.
+That is one directory to copy to a new machine, and one path to put in a bug
+report.
+
+The file is found in this order, which is io-harness's and is unchanged:
+`$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`, else `$XDG_CONFIG_HOME/io/io.toml`
+or `~/.config/io/io.toml`, and `%APPDATA%\io\io.toml` on Windows. What 0.15.0
+changed is that io-cli sets `IO_CONFIG_HOME` to its own home before io-harness
+resolves anything, so the second rung is the one that answers when you have named
+no location yourself. Set `IO_CONFIG` or `IO_CONFIG_HOME` and io-cli sets nothing
+and moves nothing — the location is yours. A project's own `io.toml` and a
+gitignored `io.local.toml` layer on top of whichever file was found.
+
+io-cli sets `IO_CONFIG_HOME` in its own process environment, which every child a
+session starts inherits: a `!` shell line, a spawned agent, a nested `io`. For a
+nested `io` that is the answer you want, since it reads the same home as the
+session that started it. For anything else it is one more variable in the
+environment that nothing reads.
+
+**On the first 0.15.0 run an existing install is moved into the home** — the
+configuration file and the store together, each file named on screen as it moves.
+Nothing is deleted, and nothing is overwritten: where the home already holds a
+file of that name, both are left where they are and the session says which one is
+in force. To keep the location you have, set `IO_CONFIG_HOME` to it before the
+first 0.15.0 run.
 
 One thing worth knowing: a **project** file may narrow the permission boundary
 and may never widen it, because a repository you cloned must not be able to grant
