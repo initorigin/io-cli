@@ -174,6 +174,124 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// What an operator is doing when they reach for a command.
+///
+/// **Grouped by the operator's intent rather than by which part of the harness
+/// answers**, because the second is an implementation detail and the first is
+/// the only thing somebody scanning a list of twenty is holding in their head.
+///
+/// Four groups and none longer than ten, which is the bound `tests/commands.rs`
+/// asserts. A flat list of twenty is a list nobody reads, and this release is the
+/// one that made it twenty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    /// The conversation itself: start one, leave one, come back to one.
+    Session,
+    /// What the next turn will do.
+    Turn,
+    /// Show me something. Everything here commits upward into the scrollback or
+    /// opens a list; none of it changes what a turn does.
+    Inspect,
+    /// Change the configuration file.
+    Configure,
+}
+
+impl Group {
+    /// The heading this group draws under.
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Session => "the session",
+            Group::Turn => "this turn",
+            Group::Inspect => "inspect",
+            Group::Configure => "configure",
+        }
+    }
+
+    /// Every group, in the order they are shown.
+    ///
+    /// Session first because it is what an operator reaches for when they are
+    /// lost; configure last because it is the one that writes.
+    pub fn all() -> [Group; 4] {
+        [
+            Group::Session,
+            Group::Turn,
+            Group::Inspect,
+            Group::Configure,
+        ]
+    }
+}
+
+/// Which group each command belongs to.
+///
+/// A second table rather than a third column on [`COMMANDS`], and the reason is
+/// the gate: `tests/commands.rs` asserts every name in `COMMANDS` appears here
+/// **exactly once**, so a command added without a group fails a named test
+/// rather than quietly appearing in no menu. A third column would make that
+/// unrepresentable, which sounds better and is worse — the failure would be a
+/// compile error in a file nobody was editing, rather than a test that says
+/// which command has no home.
+pub const GROUPS: &[(Group, &[&str])] = &[
+    (
+        Group::Session,
+        &["/clear", "/resume", "/fork", "/setup", "/exit"],
+    ),
+    (
+        Group::Turn,
+        &["/model", "/contain", "/plan", "/profile"],
+    ),
+    (
+        Group::Inspect,
+        &[
+            "/help",
+            "/status",
+            "/expand",
+            "/fleet",
+            "/mcp",
+            "/provider",
+            "/image",
+            "/copy",
+            "/copy diff",
+        ],
+    ),
+    (Group::Configure, &["/config", "/theme"]),
+];
+
+/// The group a command belongs to, or `None` for a name that is in none.
+pub fn group_of(name: &str) -> Option<Group> {
+    GROUPS
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .map(|(group, _)| *group)
+}
+
+/// Every command, gathered under its group, in [`Group::all`] order.
+///
+/// Within a group the order is [`GROUPS`]' own, which is chosen rather than
+/// alphabetical: `/clear` before `/exit` because one is what you reach for far
+/// more often than the other.
+pub fn grouped() -> Vec<(Group, Vec<(&'static str, &'static str)>)> {
+    Group::all()
+        .into_iter()
+        .map(|group| {
+            let names = GROUPS
+                .iter()
+                .find(|(g, _)| *g == group)
+                .map(|(_, names)| *names)
+                .unwrap_or(&[]);
+            let rows = names
+                .iter()
+                .filter_map(|name| {
+                    COMMANDS
+                        .iter()
+                        .find(|(command, _)| command == name)
+                        .map(|(command, what)| (*command, *what))
+                })
+                .collect();
+            (group, rows)
+        })
+        .collect()
+}
+
 /// Whether this keystroke opens the slash palette.
 ///
 /// `/` at an empty prompt, and only there. A `/` inside a line is a path
@@ -224,6 +342,26 @@ pub fn opens_palette(key: KeyEvent, prompt_empty: bool, armed: bool) -> bool {
 /// unreachable for templates.
 pub const TEMPLATE: &str = "template: ";
 
+/// What a row that RUNS when chosen is marked with.
+///
+/// Three marks, one per kind, and all three are ASCII so they survive the ASCII
+/// glyph set unchanged — `NO_COLOR` and `--plain` likewise, because a mark is
+/// text rather than a colour. They are the same width as each other so no
+/// column shifts between kinds.
+///
+/// A command runs; a template and a skill write text into the prompt and stop.
+/// That difference is what the marks carry, and before 0.16.0 it was carried
+/// only in the detail column — which the picker drops first on a narrow
+/// terminal, so the distinction disappeared exactly where a row is hardest to
+/// read. A command carried no mark at all.
+pub const COMMAND_MARK: &str = ":";
+
+/// What a row that fills the prompt from a configured template is marked with.
+pub const TEMPLATE_MARK: &str = "+";
+
+/// What a row that names one of the agent's own skills is marked with.
+pub const SKILL_MARK: &str = "*";
+
 /// What marks a palette row as one of the agent's own skills.
 ///
 /// A third kind of row and a third source: a command is this crate's, a template
@@ -265,21 +403,95 @@ pub const SKILL: &str = "skill: ";
 /// that configured no skills directory contributes none — the same "not
 /// configured" shape the templates have.
 pub fn palette(templates: &Templates, skills: &io_harness::Skills) -> Vec<Row> {
-    COMMANDS
-        .iter()
-        // `strip_prefix` rather than a trim of every leading slash: a command is
-        // spelled with exactly one, and a trim would quietly swallow a second.
-        .map(|(name, what)| Row::with_detail(name.strip_prefix('/').unwrap_or(name), *what))
-        .chain(templates.iter().map(|template| {
-            Row::with_detail(
-                template.name.clone(),
-                format!("{TEMPLATE}{}", template.description),
-            )
-        }))
-        .chain(skills.iter().map(|skill| {
-            Row::with_detail(skill.name.clone(), format!("{SKILL}{}", skill.description))
-        }))
+    entries(templates, skills)
+        .into_iter()
+        .map(|entry| entry.row)
         .collect()
+}
+
+/// One row of the palette, and what choosing it stands for.
+///
+/// `chosen` is `None` for a group heading, which is a row nobody can pick.
+struct Entry {
+    row: Row,
+    chosen: Option<Chosen>,
+}
+
+/// The palette, built once.
+///
+/// **[`palette`] and [`palette_pick`] both read this**, which is what keeps the
+/// index the picker hands back addressing the row it was drawn from. Before
+/// 0.16.0 the two walked the inventories separately and agreed because they were
+/// written next to each other; a grouped list with headings in it makes that
+/// agreement impossible to keep by inspection, because the rows and the things
+/// they stand for are no longer the same length.
+fn entries(templates: &Templates, skills: &io_harness::Skills) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+
+    // Commands, under their group headings. The headings are drawn while the
+    // list is browsed and dropped the moment anything is typed — see
+    // `Row::heading`.
+    for (group, rows) in grouped() {
+        if rows.is_empty() {
+            continue;
+        }
+        out.push(Entry {
+            row: Row::heading(group.title()),
+            chosen: None,
+        });
+        for (name, what) in rows {
+            out.push(Entry {
+                // The label drops the leading slash for the reason it always
+                // has: `crate::fuzzy` ranks an exact name above a prefix above a
+                // scatter, and with the slash on, every label begins with the
+                // same character so both top tiers are unreachable.
+                row: Row::marked(
+                    COMMAND_MARK,
+                    name.strip_prefix('/').unwrap_or(name),
+                    what,
+                ),
+                chosen: Some(Chosen::Command(name)),
+            });
+        }
+    }
+
+    let templates_rows: Vec<_> = templates.iter().collect();
+    if !templates_rows.is_empty() {
+        out.push(Entry {
+            row: Row::heading("prompt templates"),
+            chosen: None,
+        });
+        for template in templates_rows {
+            out.push(Entry {
+                row: Row::marked(
+                    TEMPLATE_MARK,
+                    template.name.clone(),
+                    format!("{TEMPLATE}{}", template.description),
+                ),
+                chosen: Some(Chosen::Template(template.name.clone())),
+            });
+        }
+    }
+
+    let skill_rows: Vec<_> = skills.iter().collect();
+    if !skill_rows.is_empty() {
+        out.push(Entry {
+            row: Row::heading("skills"),
+            chosen: None,
+        });
+        for skill in skill_rows {
+            out.push(Entry {
+                row: Row::marked(
+                    SKILL_MARK,
+                    skill.name.clone(),
+                    format!("{SKILL}{}", skill.description),
+                ),
+                chosen: Some(Chosen::Skill(skill.name.clone())),
+            });
+        }
+    }
+
+    out
 }
 
 // **`palette_height` was here until 0.13.0**, and its removal is the release.
@@ -314,21 +526,10 @@ pub fn palette_pick(
     skills: &io_harness::Skills,
     index: usize,
 ) -> Option<Chosen> {
-    match COMMANDS.get(index) {
-        Some((name, _)) => Some(Chosen::Command(name)),
-        // Saturating is not needed: this arm is only reached when `index` is at
-        // or past `COMMANDS.len()`.
-        None => {
-            let after_commands = index - COMMANDS.len();
-            match templates.iter().nth(after_commands) {
-                Some(template) => Some(Chosen::Template(template.name.clone())),
-                None => skills
-                    .iter()
-                    .nth(after_commands - templates.iter().count())
-                    .map(|skill| Chosen::Skill(skill.name.clone())),
-            }
-        }
-    }
+    entries(templates, skills)
+        .into_iter()
+        .nth(index)
+        .and_then(|entry| entry.chosen)
 }
 
 /// The prompt a chosen skill puts in the composer.
@@ -617,6 +818,13 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         "mcp" | "servers" => Action::Mcp,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile,
+        // **An alias earns no row of its own.** `/usage` is what an operator
+        // coming from another agent types for "what is this costing me", and the
+        // answer is `/status` — which already commits the spend, the budgets and
+        // what is left of them. A second row for one screen reads as a second
+        // screen, so this is answered and never listed: it is absent from
+        // `COMMANDS`, from the palette and from every group.
+        "usage" => Action::Status,
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {
@@ -725,8 +933,21 @@ pub fn help(keys: &Keys, theme: &Theme, newline: Newline) -> Vec<Line<'static>> 
         "Commands".to_string(),
         theme.style(Tone::Accent),
     )));
-    lines.extend(table(COMMANDS, width, theme));
-    lines.push(Line::from(""));
+    // **Grouped, and the groups are the palette's own.** Twenty commands in one
+    // column is a list nobody reads, and two surfaces disagreeing about how they
+    // are organised is worse than either arrangement — so both render
+    // [`grouped`] and neither holds an order of its own.
+    for (group, rows) in grouped() {
+        if rows.is_empty() {
+            continue;
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {}", group.title()),
+            theme.style(Tone::Muted),
+        )));
+        lines.extend(table(&rows, width, theme));
+        lines.push(Line::from(""));
+    }
     lines
 }
 
@@ -734,7 +955,19 @@ pub fn help(keys: &Keys, theme: &Theme, newline: Newline) -> Vec<Line<'static>> 
 /// not exist. Its first column is measured over the defaults, because there is
 /// no key table beside it here to line up with.
 fn commands(theme: &Theme) -> Vec<Line<'static>> {
-    table(COMMANDS, column(COMMANDS), theme)
+    let width = column(COMMANDS);
+    let mut lines = Vec::new();
+    for (group, rows) in grouped() {
+        if rows.is_empty() {
+            continue;
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {}", group.title()),
+            theme.style(Tone::Muted),
+        )));
+        lines.extend(table(&rows, width, theme));
+    }
+    lines
 }
 
 /// The widest first column of a table.

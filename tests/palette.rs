@@ -153,18 +153,44 @@ fn f1_a_slash_at_an_empty_prompt_opens_the_palette_and_nowhere_else() {
     assert_eq!(app.composer.text(), "/");
 }
 
+/// The rows a query could ever land on — every row that is not a group heading.
+///
+/// Since 0.16.0 the palette is grouped, so its row count is the inventory PLUS
+/// one heading per non-empty group. Every count below is about what an operator
+/// can choose, which is the inventory; a bare `.len()` would be counting the
+/// furniture.
+fn choosable(rows: &[io_cli::picker::Row]) -> usize {
+    rows.iter().filter(|row| !row.heading).count()
+}
+
+/// Where a command's row sits, by name, since the order is now grouped.
+fn row_of(name: &str) -> usize {
+    let bare = name.strip_prefix('/').unwrap_or(name);
+    commands::palette(&Templates::none(), &io_harness::Skills::none())
+        .iter()
+        .position(|row| row.label == bare)
+        .unwrap_or_else(|| panic!("{name} has no row"))
+}
+
 #[test]
 fn f1_the_palette_opens_on_the_rows_the_viewport_has() {
     let rows = commands::palette(&Templates::none(), &io_harness::Skills::none());
-    assert_eq!(rows.len(), COMMANDS.len());
-    for (row, (name, what)) in rows.iter().zip(COMMANDS) {
+    assert_eq!(choosable(&rows), COMMANDS.len());
+    let picks: Vec<&io_cli::picker::Row> = rows.iter().filter(|row| !row.heading).collect();
+    // Zipped against the GROUPED order rather than `COMMANDS`' own, because the
+    // palette is grouped by what the operator is doing and the inventory is not.
+    let grouped: Vec<(&str, &str)> = commands::grouped()
+        .into_iter()
+        .flat_map(|(_, rows)| rows)
+        .collect();
+    for (row, (name, what)) in picks.into_iter().zip(grouped) {
         // The label is the command with its leading `/` removed, and that is a
         // matching decision rather than a cosmetic one: with the slash in place
         // every haystack begins with the same character, so no query could ever
         // be a prefix of a row and the whole exact-then-prefix half of the
         // ranking would be unreachable in the one surface built on it.
         assert_eq!(row.label, name.strip_prefix('/').expect("a command"));
-        assert_eq!(row.detail.as_deref(), Some(*what));
+        assert_eq!(row.detail.as_deref(), Some(what));
     }
 
     // What the operator can see, through the terminal the product actually
@@ -179,7 +205,18 @@ fn f1_the_palette_opens_on_the_rows_the_viewport_has() {
         .expect("frame");
     assert!(recorder.contains("Which command?"));
     let viewport = screen.viewport_text();
-    for (name, _) in COMMANDS.iter().take(usize::from(height) - 1) {
+    // Grouped since 0.16.0, so what the first screenful holds is the first
+    // group and its heading — not `COMMANDS`' own head, which is an inventory
+    // order rather than a shown one.
+    let first_group = commands::grouped()
+        .into_iter()
+        .next()
+        .expect("at least one group");
+    assert!(
+        viewport.contains(first_group.0.title()),
+        "the first group's heading opens the list: {viewport:?}",
+    );
+    for (name, _) in first_group.1.iter().take(usize::from(height) - 2) {
         let label = name.strip_prefix('/').expect("a command");
         assert!(
             viewport.contains(label),
@@ -191,7 +228,9 @@ fn f1_the_palette_opens_on_the_rows_the_viewport_has() {
 #[test]
 fn f1_each_further_character_narrows_the_list() {
     let mut picker = palette();
-    assert_eq!(picker.matching(), COMMANDS.len());
+    // Headings are matched only by an empty query, so an opened palette shows
+    // them and the count is the inventory plus one per group.
+    assert_eq!(picker.matching(), COMMANDS.len() + commands::GROUPS.len());
 
     type_at(&mut picker, "o");
     let after_o = picker.matching();
@@ -285,12 +324,16 @@ fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
     let mut picker = palette();
     type_at(&mut picker, "c");
     assert_eq!(picker.matching(), 6);
-    assert_eq!(marked(&picker), "copy");
+    // `clear` and not `copy` since the list became grouped: the tie-break is the
+    // order the rows were handed in, and the session group now leads. The
+    // PROPERTY is unchanged and is what this test is about — the marked row must
+    // not move on a keystroke that did not change the result.
+    assert_eq!(marked(&picker), "clear");
     type_at(&mut picker, "o");
     assert_eq!(picker.matching(), 4);
     assert_eq!(
         marked(&picker),
-        "copy",
+        "contain",
         "the first row moved under the marker"
     );
 }
@@ -356,7 +399,8 @@ fn f1_a_palette_row_addresses_the_command_it_was_built_from() {
     // inventory. A palette that renumbered would put a different command in the
     // prompt from the one under the marker, and nothing on screen would say so.
     let none = Templates::none();
-    for (index, (name, _)) in COMMANDS.iter().enumerate() {
+    for (name, _) in COMMANDS.iter() {
+        let index = row_of(name);
         assert_eq!(
             commands::palette_pick(&none, &io_harness::Skills::none(), index),
             Some(Chosen::Command(name))
@@ -367,7 +411,11 @@ fn f1_a_palette_row_addresses_the_command_it_was_built_from() {
         );
     }
     assert_eq!(
-        commands::palette_pick(&none, &io_harness::Skills::none(), COMMANDS.len()),
+        commands::palette_pick(
+            &none,
+            &io_harness::Skills::none(),
+            commands::palette(&none, &io_harness::Skills::none()).len(),
+        ),
         None
     );
 }
@@ -391,7 +439,7 @@ fn f2_no_templates_configured_is_an_empty_section_and_not_an_error() {
         "a configuration that never mentioned templates has nothing to complain about",
     );
     assert_eq!(
-        commands::palette(&found, &io_harness::Skills::none()).len(),
+        choosable(&commands::palette(&found, &io_harness::Skills::none())),
         COMMANDS.len(),
         "an empty section contributes no rows",
     );
@@ -405,9 +453,12 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
     assert_eq!(found.len(), 2);
 
     let rows = commands::palette(&found, &io_harness::Skills::none());
-    assert_eq!(rows.len(), COMMANDS.len() + found.len());
-    for (offset, template) in found.iter().enumerate() {
-        let row = &rows[COMMANDS.len() + offset];
+    assert_eq!(choosable(&rows), COMMANDS.len() + found.len());
+    for template in found.iter() {
+        let row = rows
+            .iter()
+            .find(|row| row.label == template.name)
+            .unwrap_or_else(|| panic!("{} has no row", template.name));
         assert_eq!(row.label, template.name, "the row is not the template");
         // The description as io-harness computed it — the frontmatter's, else the
         // first prose line, else its own `(no description)`. Asserted against the
@@ -467,7 +518,7 @@ fn f2_a_configured_directory_that_cannot_be_walked_is_disclosed_with_the_harness
     let (found, complaint) = commands::templates(&configured(&missing));
     assert!(found.is_empty(), "nothing was discovered, which is true");
     assert_eq!(
-        commands::palette(&found, &io_harness::Skills::none()).len(),
+        choosable(&commands::palette(&found, &io_harness::Skills::none())),
         COMMANDS.len(),
         "and the palette therefore looks exactly like the unconfigured one",
     );
@@ -573,14 +624,22 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
     let (found, _) = commands::templates(&configured(dir.path()));
     let rows = commands::palette(&found, &io_harness::Skills::none());
 
-    for (index, (name, _)) in COMMANDS.iter().enumerate() {
+    for (name, _) in COMMANDS.iter() {
+        let index = rows
+            .iter()
+            .position(|row| row.label == name.strip_prefix('/').expect("a command"))
+            .expect("every command has a row");
         assert_eq!(
             commands::palette_pick(&found, &io_harness::Skills::none(), index),
             Some(Chosen::Command(name)),
         );
     }
     for (offset, template) in found.iter().enumerate() {
-        let index = COMMANDS.len() + offset;
+        let index = rows
+            .iter()
+            .position(|row| row.label == template.name)
+            .unwrap_or_else(|| panic!("{} has no row", template.name));
+        let _ = offset;
         assert_eq!(rows[index].label, template.name);
         assert_eq!(
             commands::palette_pick(&found, &io_harness::Skills::none(), index),
@@ -626,10 +685,13 @@ fn f5_every_discovered_skill_is_a_row_after_the_templates() {
 
     let none = Templates::none();
     let rows = commands::palette(&none, &skills);
-    assert_eq!(rows.len(), COMMANDS.len() + 2);
+    assert_eq!(choosable(&rows), COMMANDS.len() + 2);
 
-    for (offset, skill) in skills.iter().enumerate() {
-        let index = COMMANDS.len() + offset;
+    for skill in skills.iter() {
+        let index = rows
+            .iter()
+            .position(|row| row.label == skill.name)
+            .unwrap_or_else(|| panic!("{} has no row", skill.name));
         assert_eq!(rows[index].label, skill.name, "the row is not the skill");
         assert_eq!(
             rows[index].detail,
@@ -814,5 +876,143 @@ fn f7_every_row_below_the_fold_is_still_reachable() {
     assert!(
         scrolled.contains(last.as_str()),
         "the list did not scroll to the selection: {scrolled:?}",
+    );
+}
+
+// --- F14 and F16: the headings, and the marks ---------------------------------
+
+#[test]
+fn f14_headings_are_shown_while_browsing_and_gone_the_moment_anything_is_typed() {
+    let mut picker = palette();
+
+    // Browsing: every group's heading is a row.
+    let headings: Vec<&str> = picker
+        .rows()
+        .iter()
+        .filter(|row| row.heading)
+        .map(|row| row.label.as_str())
+        .collect();
+    assert_eq!(
+        headings.len(),
+        commands::GROUPS.len(),
+        "one heading per group while browsing",
+    );
+
+    let drawn = |picker: &mut io_cli::picker::Picker| {
+        let (mut screen, recorder) = support::screen(80, 24);
+        let _ = recorder;
+        screen
+            .draw(|frame| picker.render(frame, frame.area(), &DARK))
+            .expect("frame");
+        screen.viewport_text().to_string()
+    };
+
+    // A heading is a line of its own, so it is matched as a whole line — a
+    // substring test would find "configure" inside "…servers configured" and
+    // fail on a row that is behaving perfectly.
+    let is_heading_line = |text: &str, title: &str| {
+        text.lines().any(|line| line.trim() == title)
+    };
+
+    let browsing = drawn(&mut picker);
+    assert!(
+        is_heading_line(&browsing, "the session"),
+        "a group heading is drawn on its own line while browsing: {browsing:?}",
+    );
+
+    // One character, and the order is the matcher's alone.
+    type_at(&mut picker, "c");
+    let filtering = drawn(&mut picker);
+    for (group, _) in commands::GROUPS {
+        assert!(
+            !is_heading_line(&filtering, group.title()),
+            "the {} heading survived a query, and a ranked list with headings \
+             interleaved puts a heading above a row that ranked there for reasons \
+             having nothing to do with it: {filtering:?}",
+            group.title(),
+        );
+    }
+}
+
+#[test]
+fn f14_a_heading_can_never_be_chosen() {
+    let mut picker = palette();
+
+    // The marker opens past the first heading rather than on it.
+    assert_ne!(marked(&picker), "the session");
+    assert!(
+        !picker.rows()[picker.selection().expect("a selection")].heading,
+        "the palette opened with its marker on a heading",
+    );
+
+    // And walking the whole list never rests on one.
+    for _ in 0..picker.rows().len() * 2 {
+        picker.key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Down,
+        ));
+        let index = picker.selection().expect("a selection");
+        assert!(
+            !picker.rows()[index].heading,
+            "the marker landed on the heading {:?}",
+            picker.rows()[index].label,
+        );
+    }
+}
+
+#[test]
+fn f16_every_kind_of_row_carries_a_mark_and_it_is_not_in_the_detail() {
+    let dir = written();
+    let (templates, _) = commands::templates(&configured(dir.path()));
+    let rows = commands::palette(&templates, &io_harness::Skills::none());
+
+    let marks: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| !row.heading)
+        .map(|row| row.mark.expect("every choosable row is marked"))
+        .collect();
+    assert!(
+        marks.len() >= 2,
+        "commands and templates must be told apart: {marks:?}",
+    );
+    assert!(marks.contains(commands::COMMAND_MARK));
+    assert!(marks.contains(commands::TEMPLATE_MARK));
+
+    // **Not in the label**, because the matcher ranks the label and a shared
+    // first character makes an exact match and a prefix match unreachable.
+    for row in rows.iter().filter(|row| !row.heading) {
+        assert!(
+            !row.label.starts_with(row.mark.expect("marked")),
+            "the mark is inside the label, which is what the ranking reads: {:?}",
+            row.label,
+        );
+    }
+}
+
+#[test]
+fn f16_the_mark_survives_the_width_that_drops_the_detail() {
+    // The defect this criterion exists for: through 0.15.0 a template and a
+    // skill were marked only in their DETAIL, which the picker drops first on a
+    // narrow terminal — so the kinds became indistinguishable at exactly the
+    // width where a row is hardest to read, and a command carried no mark at all.
+    let dir = written();
+    let (templates, _) = commands::templates(&configured(dir.path()));
+    let mut picker = io_cli::picker::Picker::new(
+        "Which command?",
+        commands::palette(&templates, &io_harness::Skills::none()),
+    );
+
+    let (mut screen, _recorder) = support::screen(28, 24);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let narrow = screen.viewport_text();
+
+    assert!(
+        !narrow.contains("start a new conversation"),
+        "this width was supposed to be narrow enough to drop the detail: {narrow:?}",
+    );
+    assert!(
+        narrow.contains(commands::COMMAND_MARK),
+        "the kind mark went with the detail: {narrow:?}",
     );
 }

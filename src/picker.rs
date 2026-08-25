@@ -49,6 +49,29 @@ pub struct Row {
     pub label: String,
     /// A dimmer explanation, dropped first when the terminal is narrow.
     pub detail: Option<String>,
+    /// A short mark saying what KIND of row this is, drawn before the label.
+    ///
+    /// **Separate from the label because the matcher ranks the label**, and a
+    /// mark folded into it would give every row of a kind the same first
+    /// character — under which no query is ever a prefix of a row and both of
+    /// `crate::fuzzy`'s top tiers become unreachable. That is the defect the
+    /// palette's stripped slash exists to avoid, and it would have come straight
+    /// back as the price of marking the rows.
+    ///
+    /// **And separate from the detail because the detail is dropped first on a
+    /// narrow terminal**, which is exactly where a row is hardest to tell apart.
+    /// Through 0.15.0 a template and a skill were marked only in the detail, so
+    /// the distinction vanished at the width that needed it most.
+    pub mark: Option<&'static str>,
+    /// Whether this row is a heading rather than a choice.
+    ///
+    /// **A heading is drawn while the list is being browsed and disappears the
+    /// moment a character is typed**, which is not decoration: a ranked list with
+    /// headings interleaved puts a heading above a row that ranked there for
+    /// reasons having nothing to do with it. So [`Picker::refilter`] admits
+    /// headings only for an empty query, and nothing can be chosen while one is
+    /// under the marker.
+    pub heading: bool,
 }
 
 impl Row {
@@ -56,6 +79,8 @@ impl Row {
         Self {
             label: label.into(),
             detail: None,
+            mark: None,
+            heading: false,
         }
     }
 
@@ -63,6 +88,34 @@ impl Row {
         Self {
             label: label.into(),
             detail: Some(detail.into()),
+            mark: None,
+            heading: false,
+        }
+    }
+
+    /// A row that says what kind it is.
+    ///
+    /// `mark` is drawn before the label and is not matched against.
+    pub fn marked(
+        mark: &'static str,
+        label: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            detail: Some(detail.into()),
+            mark: Some(mark),
+            heading: false,
+        }
+    }
+
+    /// A group heading: shown while browsing, gone the moment anything is typed.
+    pub fn heading(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            detail: None,
+            mark: None,
+            heading: true,
         }
     }
 }
@@ -116,7 +169,7 @@ pub struct Picker {
 
 impl Picker {
     pub fn new(title: impl Into<String>, rows: Vec<Row>) -> Self {
-        Self {
+        let mut picker = Self {
             title: title.into(),
             matches: (0..rows.len()).collect(),
             intent: (!rows.is_empty()).then_some(0),
@@ -124,7 +177,15 @@ impl Picker {
             query: String::new(),
             cursor: 0,
             offset: 0,
-        }
+        };
+        // A grouped list opens with a heading in the first slot, and the marker
+        // may not rest on one. Stepping here rather than only in `refilter`
+        // because nothing has been typed yet, so `refilter` has not run — and a
+        // picker that opened with its marker on a heading would answer `Enter`
+        // with nothing.
+        picker.step_off_heading(1);
+        picker.intent = picker.matches.get(picker.cursor).copied();
+        picker
     }
 
     /// Open with a row already selected — what `/theme` does, so the picker opens
@@ -228,11 +289,42 @@ impl Picker {
     /// that misses.
     fn refilter(&mut self) {
         self.matches = fuzzy::rank(self.rows.iter().map(|row| row.label.as_str()), &self.query);
+        // **Headings survive only an empty query.** With anything typed the order
+        // is the matcher's alone, and a heading left in it would sit above
+        // whatever happened to rank there.
+        if !self.query.is_empty() {
+            self.matches.retain(|index| !self.rows[*index].heading);
+        }
         self.cursor = self
             .intent
             .and_then(|row| self.matches.iter().position(|index| *index == row))
             .unwrap_or(0);
         self.offset = 0;
+        // The marker opens on a choice rather than on a heading, which is the
+        // first row of an unfiltered grouped list.
+        self.step_off_heading(1);
+    }
+
+    /// Move the marker off a heading in `direction`, wrapping at the ends.
+    ///
+    /// A heading is not selectable, so every movement that could land on one
+    /// continues past it. Bounded by the number of rows so a list that is nothing
+    /// but headings terminates rather than spinning.
+    fn step_off_heading(&mut self, direction: isize) {
+        if self.matches.is_empty() {
+            return;
+        }
+        for _ in 0..self.matches.len() {
+            let Some(index) = self.matches.get(self.cursor) else {
+                self.cursor = 0;
+                continue;
+            };
+            if !self.rows[*index].heading {
+                return;
+            }
+            let len = self.matches.len() as isize;
+            self.cursor = (((self.cursor as isize + direction) % len + len) % len) as usize;
+        }
     }
 
     /// Record what the marker was just moved onto, and answer `Idle`.
@@ -276,26 +368,42 @@ impl Picker {
             // by typing a model name and watching the wrong thing happen. The
             // shipped keybinding table names the arrows and has never named these
             // two, so the documented way to move is the way that still works.
+            // Every movement continues past a heading, which is not selectable.
+            // Done here rather than by filtering headings out of `matches`,
+            // because they have to be DRAWN in their places — the whole point of
+            // them is where they sit.
             KeyCode::Up => {
                 self.cursor = self.cursor.saturating_sub(1);
+                self.step_off_heading(-1);
                 self.moved()
             }
             KeyCode::Down => {
                 if self.cursor + 1 < self.matches.len() {
                     self.cursor += 1;
                 }
+                self.step_off_heading(1);
                 self.moved()
             }
             KeyCode::Home => {
                 self.cursor = 0;
+                self.step_off_heading(1);
                 self.moved()
             }
             KeyCode::End => {
                 self.cursor = self.matches.len().saturating_sub(1);
+                self.step_off_heading(-1);
                 self.moved()
             }
             KeyCode::Enter => {
-                if self.matches.is_empty() {
+                // A heading under the marker cannot happen — every path that
+                // moves it steps off one — but `Enter` is the key that would turn
+                // a mistake here into the wrong action, so it declines rather
+                // than trusting that.
+                let on_heading = self
+                    .matches
+                    .get(self.cursor)
+                    .is_some_and(|index| self.rows[*index].heading);
+                if self.matches.is_empty() || on_heading {
                     Outcome::Idle
                 } else {
                     Outcome::Chosen(self.selected())
@@ -389,6 +497,19 @@ impl Picker {
             .skip(self.offset)
             .take(visible.max(1))
         {
+            // A heading is a label and nothing else: no marker, no mark, no
+            // detail, and never under the cursor. It exists only while the list
+            // is being browsed — `refilter` drops headings the moment anything is
+            // typed — so it can be drawn plainly here without a query to worry
+            // about.
+            if row.heading {
+                lines.push(Line::from(Span::styled(
+                    fit(&row.label, width, &theme.glyphs),
+                    theme.style(Tone::Muted),
+                )));
+                continue;
+            }
+
             let chosen = position == self.cursor;
             let marker = if chosen {
                 theme.glyphs.marker
@@ -404,19 +525,28 @@ impl Picker {
             // the string actually about to be drawn; the two sets agree on its
             // width today and this does not depend on them continuing to.
             let marker_width = marker.chars().count();
+            // The kind mark rides here, between the marker and the label, and
+            // never inside either. Not in the label, because the matcher ranks
+            // the label and a shared first character makes both of its top tiers
+            // unreachable; not in the detail, because the detail is the first
+            // thing dropped on a narrow terminal and the kind is what a reader
+            // most needs there.
+            let mark = row.mark.map(|mark| format!("{mark} ")).unwrap_or_default();
+            let mark_width = mark.chars().count();
             let label = fit(
                 &row.label,
-                width.saturating_sub(marker_width),
+                width.saturating_sub(marker_width + mark_width),
                 &theme.glyphs,
             );
             let label_width = label.chars().count();
-            let mut spans = vec![
-                Span::styled(marker, theme.style(Tone::Accent)),
-                Span::styled(
-                    label,
-                    theme.style(if chosen { Tone::Accent } else { Tone::Normal }),
-                ),
-            ];
+            let mut spans = vec![Span::styled(marker, theme.style(Tone::Accent))];
+            if !mark.is_empty() {
+                spans.push(Span::styled(mark, theme.style(Tone::Muted)));
+            }
+            spans.push(Span::styled(
+                label,
+                theme.style(if chosen { Tone::Accent } else { Tone::Normal }),
+            ));
             if let Some(detail) = &row.detail {
                 // Fitted rather than wrapped. A row that wraps makes the list
                 // stop being a list, and the label is the part that has to
@@ -427,7 +557,7 @@ impl Picker {
                 // reaches the buffer is a budget that disagrees with the row by
                 // however much they differ — and this budget being one cell out is
                 // precisely how an ellipsis ends up on the floor.
-                let used = marker_width + label_width + 2;
+                let used = marker_width + mark_width + label_width + 2;
                 if let Some(room) = width.checked_sub(used) {
                     if room > 1 {
                         spans.push(Span::styled("  ", theme.style(Tone::Muted)));
@@ -471,10 +601,20 @@ impl Picker {
         // does not, so the caret goes to its first character instead of two cells
         // inside its own sentence — a reader following the caret should land on
         // the start of what it is being told.
+        // Past the KIND MARK as well, on a row that has one. The caret says
+        // where the row's own name begins, and a mark is a fact about the row
+        // rather than part of what it is called — a reader following the caret
+        // onto `: clear` has been pointed at punctuation.
         let indent = if self.matches.is_empty() {
             0
         } else {
-            theme.glyphs.marker.chars().count() as u16
+            let mark = self
+                .matches
+                .get(self.cursor)
+                .and_then(|index| self.rows[*index].mark)
+                .map(|mark| mark.chars().count() + 1)
+                .unwrap_or(0);
+            (theme.glyphs.marker.chars().count() + mark) as u16
         };
         frame.set_cursor_position(Position {
             x: (area.x + indent).min(area.right().saturating_sub(1)),

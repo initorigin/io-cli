@@ -362,13 +362,19 @@ fn f9_exit_is_listed_and_its_palette_row_leaves() {
     use io_cli::commands::{palette, palette_pick, Chosen, COMMANDS};
     use io_harness::Templates;
 
-    let index = COMMANDS
-        .iter()
-        .position(|(name, _)| *name == "/exit")
-        .expect("`/exit` is in the inventory");
+    assert!(
+        COMMANDS.iter().any(|(name, _)| *name == "/exit"),
+        "`/exit` is in the inventory",
+    );
 
+    // Found by name rather than by the inventory's own index: since 0.16.0 the
+    // palette is grouped, so its rows are the commands in GROUP order with a
+    // heading before each group, and a position in `COMMANDS` addresses neither.
     let rows = palette(&Templates::none(), &io_harness::Skills::none());
-    assert_eq!(rows[index].label, "exit");
+    let index = rows
+        .iter()
+        .position(|row| row.label == "exit")
+        .expect("`/exit` has a row");
     assert_eq!(
         palette_pick(&Templates::none(), &io_harness::Skills::none(), index),
         Some(Chosen::Command("/exit")),
@@ -390,4 +396,155 @@ fn f14_image_parses_the_number_a_marker_carries() {
     // Nothing, or nonsense: the same answer, which names what there is.
     assert_eq!(parse("image", &keys, &DARK), Action::Image(None));
     assert_eq!(parse("image blue", &keys, &DARK), Action::Image(None));
+}
+
+// --- F13: the groups ----------------------------------------------------------
+
+#[test]
+fn f13_every_command_is_in_exactly_one_group() {
+    // Asserted against COMMANDS rather than against a hand-written list, so a
+    // command added later without a group fails here by name rather than
+    // quietly appearing in no menu.
+    use io_cli::commands::{group_of, Group, GROUPS};
+
+    for (name, _) in COMMANDS {
+        let homes: Vec<Group> = GROUPS
+            .iter()
+            .filter(|(_, names)| names.contains(name))
+            .map(|(group, _)| *group)
+            .collect();
+        assert_eq!(
+            homes.len(),
+            1,
+            "`{name}` is in {} groups; every command belongs to exactly one",
+            homes.len(),
+        );
+        assert!(group_of(name).is_some());
+    }
+
+    // And nothing is grouped that is not a command — a stale name here would be
+    // a heading over a row that does not exist.
+    for (group, names) in GROUPS {
+        for name in *names {
+            assert!(
+                COMMANDS.iter().any(|(command, _)| command == name),
+                "`{name}` is grouped under {} and is not a command",
+                group.title(),
+            );
+        }
+    }
+}
+
+#[test]
+fn f13_no_group_is_longer_than_ten() {
+    use io_cli::commands::GROUPS;
+
+    for (group, names) in GROUPS {
+        assert!(
+            names.len() <= 10,
+            "the {} group holds {} commands; a group longer than ten is the \
+             flat list this release replaced",
+            group.title(),
+            names.len(),
+        );
+        assert!(
+            !names.is_empty(),
+            "the {} group is empty, so it is a heading over nothing",
+            group.title(),
+        );
+    }
+}
+
+#[test]
+fn f13_grouped_covers_every_command_once() {
+    use io_cli::commands::grouped;
+
+    let mut seen: Vec<&str> = grouped()
+        .into_iter()
+        .flat_map(|(_, rows)| rows.into_iter().map(|(name, _)| name))
+        .collect();
+    let mut all: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
+    seen.sort();
+    all.sort();
+    assert_eq!(seen, all, "the grouped view lost or duplicated a command");
+}
+
+// --- F15 and F17: help, and the alias -----------------------------------------
+
+#[test]
+fn f15_help_is_grouped_and_carries_every_command() {
+    use io_cli::commands::{grouped, help, Group};
+
+    let lines = help(&defaults(), &DARK, io_cli::keys::Newline::of(true));
+    let text = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for group in Group::all() {
+        assert!(
+            text.lines().any(|line| line.trim() == group.title()),
+            "`/help` has no heading for the {} group: {text}",
+            group.title(),
+        );
+    }
+    for (name, _) in COMMANDS {
+        assert!(
+            text.contains(name),
+            "`/help` is missing {name}, which is a command an operator can type",
+        );
+    }
+    // And the grouping is the palette's own rather than a second arrangement.
+    let order: Vec<&str> = grouped()
+        .into_iter()
+        .flat_map(|(_, rows)| rows.into_iter().map(|(name, _)| name))
+        .collect();
+    let mut at = 0usize;
+    for name in order {
+        let found = text[at..]
+            .find(name)
+            .unwrap_or_else(|| panic!("{name} is out of the grouped order in /help"));
+        at += found + name.len();
+    }
+}
+
+#[test]
+fn f15_help_is_committed_rather_than_drawn_as_an_overlay() {
+    // `/help` answers with `Action::Print`, which the driver commits into the
+    // terminal's own scrollback. That is where this product puts anything worth
+    // reading twice, and it is what makes help survive the next keystroke.
+    match commands::parse("help", &defaults(), &DARK) {
+        Action::Print(lines) => assert!(!lines.is_empty()),
+        other => panic!("`/help` should be committed, not opened: {other:?}"),
+    }
+}
+
+#[test]
+fn f17_usage_answers_and_is_never_listed() {
+    use io_cli::commands::{group_of, palette, GROUPS};
+
+    // It answers, with what `/status` answers.
+    assert_eq!(commands::parse("usage", &defaults(), &DARK), Action::Status);
+    assert_eq!(commands::parse("status", &defaults(), &DARK), Action::Status);
+
+    // And it is nowhere: not in the inventory, not in a group, not a palette row.
+    assert!(
+        !COMMANDS.iter().any(|(name, _)| *name == "/usage"),
+        "an alias earns no row of its own",
+    );
+    assert!(group_of("/usage").is_none());
+    for (_, names) in GROUPS {
+        assert!(!names.contains(&"/usage"));
+    }
+    let rows = palette(&io_harness::Templates::none(), &io_harness::Skills::none());
+    assert!(
+        !rows.iter().any(|row| row.label == "usage"),
+        "a second row for one screen reads as a second screen",
+    );
 }
