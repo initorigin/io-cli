@@ -1053,9 +1053,9 @@ dependencies = [
 
 [[package]]
 name = "io-harness"
-version = "0.66.0"
+version = "0.67.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40e53519c2e7bb145996b48a4dceb210699ff664a93d67a745a0c51178ad0801"
+checksum = "bea823cc99e5c43894f0c260c25a2c8666882878bd534538d169806d6527a238"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
