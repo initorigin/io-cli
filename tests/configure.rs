@@ -465,3 +465,61 @@ fn f4_the_two_whole_sections_are_refused_at_project_scope_as_well() {
         std::env::remove_var("IO_CONFIG");
     }
 }
+
+// --- F10: named profiles ------------------------------------------------------
+
+#[test]
+fn f10_the_profiles_a_file_declares_are_listed() {
+    // io-harness has NO accessor for these: `with_profile` applies one by name
+    // and nothing lists them, because the merged table is private and profile
+    // keys do not appear in `Config::origins`. So they come from the file.
+    let s = scopes(
+        "[run]\nmax_steps = 10\n\n[profile.fast]\n[profile.fast.run]\nmax_steps = 99\n\n\
+         [profile.careful]\n[profile.careful.run]\nmax_steps = 3\n",
+        "",
+        "",
+    );
+    let config = s.config();
+    assert_eq!(
+        configure::profiles(&config),
+        vec!["careful".to_string(), "fast".to_string()],
+        "a profile with sub-tables is one profile, not two"
+    );
+}
+
+#[test]
+fn f10_a_file_with_no_profiles_lists_none() {
+    let s = scopes("[run]\nmax_steps = 10\n", "", "");
+    assert!(configure::profiles(&s.config()).is_empty());
+}
+
+#[test]
+fn f10_applying_a_profile_overlays_it_for_the_session() {
+    let s = scopes(
+        "[run]\nmax_steps = 10\n\n[profile.fast]\n[profile.fast.run]\nmax_steps = 99\n",
+        "",
+        "",
+    );
+    let config = s.config();
+    assert_eq!(
+        io_cli::contract::configured("go", s.root.path().to_path_buf(), &config).max_steps,
+        10
+    );
+
+    let fast = configure::with_profile(&config, "fast").unwrap();
+    assert_eq!(
+        io_cli::contract::configured("go", s.root.path().to_path_buf(), &fast).max_steps,
+        99,
+        "the profile did not reach the contract a turn is built from"
+    );
+}
+
+#[test]
+fn f10_a_profile_that_is_not_there_reports_the_harness_s_own_sentence() {
+    let s = scopes("[run]\nmax_steps = 10\n", "", "");
+    let err = configure::with_profile(&s.config(), "nope").unwrap_err();
+    assert!(
+        err.contains("no `[profile.nope]`"),
+        "io-cli re-worded the harness's refusal: {err}"
+    );
+}

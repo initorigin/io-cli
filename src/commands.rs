@@ -155,6 +155,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "the providers configured, in the order a turn tries them",
     ),
     (
+        "/profile",
+        "switch to a named profile from the configuration, for this session",
+    ),
+    (
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
@@ -513,6 +517,8 @@ pub enum Action {
     Mcp,
     /// Show the provider chain, in the order a turn tries it.
     Provider,
+    /// List the named profiles, and switch to one for this session.
+    Profile,
 }
 
 /// What `/copy` was asked for.
@@ -610,6 +616,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // value with a space in it, and splitting on whitespace would take half.
         "mcp" | "servers" => Action::Mcp,
         "provider" | "providers" => Action::Provider,
+        "profile" | "profiles" => Action::Profile,
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {

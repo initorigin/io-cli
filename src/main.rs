@@ -79,6 +79,15 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     // anybody who has already chosen.
     *report = io_cli::home::adopt().map_or_else(Vec::new, |report| report.lines());
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
+    // **A profile, if one was asked for, before anything reads the configuration.**
+    // Applied here rather than per arm so a session and an `io exec` run get the
+    // same overlay from the same decision, and refused with io-harness's own
+    // sentence — which names the profile and says it is not in this file, and is
+    // more than anything written here could say.
+    let config = match &cli.profile {
+        Some(name) => io_cli::configure::with_profile(&config, name)?,
+        None => config,
+    };
     // The notice this read produces is dropped *here* and only here: `run` may
     // hand control to the wizard, which rewrites the very file this just failed
     // to read, so a complaint raised now could be about a file that no longer
@@ -789,6 +798,32 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 );
                             }
                         }
+                        Pick::Profile(names) => {
+                            if let Some(name) = names.get(index) {
+                                match io_cli::configure::with_profile(&config, name) {
+                                    Ok(overlaid) => {
+                                        // The same both-halves rule a write
+                                        // follows: a profile can carry
+                                        // `[app.io-cli]` keys too.
+                                        let (stored, _) =
+                                            io_cli::settings::stored(&overlaid);
+                                        capabilities =
+                                            io_cli::contract::Capabilities::stored(
+                                                stored.as_ref(),
+                                            );
+                                        config = overlaid;
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "profile `{name}` is in force from the next \
+                                                 turn; nothing was written"
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Error, refusal),
+                                }
+                            }
+                        }
                         Pick::Config(paths) => {
                             if let Some(key) = paths.get(index) {
                                 app.composer.set(&format!("/config {key} "));
@@ -1056,6 +1091,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             ),
                             Pick::Provider,
                         ));
+                    }
+                }
+                Action::Profile => {
+                    let names = io_cli::configure::profiles(&config);
+                    if names.is_empty() {
+                        // The "not configured" shape again: an absent section is
+                        // not an error, and `[profile.<name>]` is io-harness's
+                        // own spelling rather than something to explain here.
+                        app.record(
+                            Tone::Muted,
+                            "this configuration declares no `[profile.<name>]` sections",
+                        );
+                    } else {
+                        let rows: Vec<Row> =
+                            names.iter().map(|name| Row::new(name.clone())).collect();
+                        picker =
+                            Some((Picker::new("Which profile?", rows), Pick::Profile(names)));
                     }
                 }
                 Action::Config(None) => {
@@ -2235,6 +2287,9 @@ enum Pick {
     /// The provider chain, in the order `providers::rows` drew it — which is
     /// the order a turn tries it.
     Provider,
+    /// The named profiles a file declares, in the order `configure::profiles`
+    /// sorted them.
+    Profile(Vec<String>),
     /// Which file a change goes into, and the change it is waiting on.
     ///
     /// Two steps rather than one because *which scope* is half the decision and

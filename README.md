@@ -322,6 +322,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/config` | every setting, the value in force and the file that decided it |
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
+| `/profile` | switch to a named profile from the configuration, for this session |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/fleet` | show the children this turn has spawned |

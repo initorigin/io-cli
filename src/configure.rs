@@ -324,3 +324,45 @@ pub fn rows(settings: &[Setting]) -> Vec<crate::picker::Row> {
         })
         .collect()
 }
+
+/// The `[profile.*]` names a configuration declares.
+///
+/// **io-harness has no accessor for these.** [`Config::with_profile`] applies one
+/// by name and reports its own sentence when the name is wrong, but nothing
+/// lists them: the merged table is private, and profile keys do not appear in
+/// [`Config::origins`]. So the names come from the file that declared them,
+/// through the same scan the writer cuts a document with.
+///
+/// Sorted and deduplicated, because a profile may declare sub-tables — a file
+/// with `[profile.fast]` and `[profile.fast.run]` has one profile, not two.
+pub fn profiles(config: &Config) -> Vec<String> {
+    let Some(text) = config
+        .sources()
+        .last()
+        .and_then(|(_, path)| std::fs::read_to_string(path).ok())
+    else {
+        return Vec::new();
+    };
+
+    let mut names: Vec<String> = crate::edit::sections(&text)
+        .into_iter()
+        .filter_map(|path| {
+            (path.first().map(String::as_str) == Some("profile"))
+                .then(|| path.get(1).cloned())
+                .flatten()
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Apply a named profile, or report io-harness's own refusal.
+///
+/// A thin wrapper on [`Config::with_profile`] so that io-cli holds no second
+/// opinion about what a profile overlay means — the harness applies it through
+/// the same merge the scopes use, which is why this is a call rather than a
+/// reimplementation.
+pub fn with_profile(config: &Config, name: &str) -> Result<Config, String> {
+    config.with_profile(name).map_err(|error| error.to_string())
+}

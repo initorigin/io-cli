@@ -47,6 +47,7 @@ fn the_commands_are_the_commands() {
             "/config",
             "/mcp",
             "/provider",
+            "/profile",
             "/contain",
             // 0.12.0 — the planning phase stopped being something
             // `[app.io-cli.containment]` switched on by accident, so it needs a

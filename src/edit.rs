@@ -345,6 +345,28 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
     Ok(out)
 }
 
+/// Every section header in the document, as its dotted path.
+///
+/// The same scan [`apply`] cuts the document with, exposed because io-harness
+/// has no accessor for one thing a caller needs to enumerate: the `[profile.*]`
+/// names a file declares. `Config::with_profile` applies one by name and says so
+/// when the name is wrong, and there is nothing that lists them — the merged
+/// table is private and profile keys do not appear in `Config::origins`.
+///
+/// Header paths only, and nothing about what is inside them: this stays a module
+/// that works in bytes.
+pub fn sections(text: &str) -> Vec<Vec<String>> {
+    regions(text)
+        .map(|found| {
+            found
+                .into_iter()
+                .filter(|region| !region.path.is_empty())
+                .map(|region| region.path)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The TOML source of the value at `path`, exactly as the file spells it.
 ///
 /// **Quoting, not interpreting.** This returns the bytes between the `=` and the
