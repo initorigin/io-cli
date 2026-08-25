@@ -147,6 +147,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "every setting, the value in force and the file that decided it",
     ),
     (
+        "/mcp",
+        "the MCP servers configured, and what this session has seen of each",
+    ),
+    (
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
@@ -501,6 +505,8 @@ pub enum Action {
     /// where, and a value coerced on the way through would be io-cli inventing a
     /// second opinion about a schema it does not own.
     Config(Option<(String, String)>),
+    /// Show the configured MCP servers and what the session has seen of them.
+    Mcp,
 }
 
 /// What `/copy` was asked for.
@@ -596,6 +602,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // everything after the key rather than the next word, so an array or an
         // inline table can be typed whole — `allowed_domains = ["a", "b"]` is one
         // value with a space in it, and splitting on whitespace would take half.
+        "mcp" | "servers" => Action::Mcp,
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {

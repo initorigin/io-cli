@@ -29,7 +29,7 @@ name = \"scout\"
 model = \"anthropic/claude-sonnet-4\"
 
 [instructions]
-paths = [\"AGENTS.md\"]
+files = [\"AGENTS.md\"]
 
 [app.io-cli]
 theme = \"dark\"

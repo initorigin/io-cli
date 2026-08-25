@@ -52,6 +52,7 @@ pub mod picture;
 pub mod plan;
 pub mod provider;
 pub mod rewind;
+pub mod servers;
 pub mod sessions;
 pub mod settings;
 pub mod shell;

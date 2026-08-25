@@ -316,7 +316,7 @@ pub struct Status {
     /// `NO_COLOR` and the ASCII set are both about what can be *drawn*, and this
     /// is about whether anything should *move*.
     pub plain: bool,
-    /// MCP servers that actually came up, and how many tools they offered.
+    /// MCP servers that actually came up, and how many CALLS they answered.
     ///
     /// **From `EventKind::Mcp` and never from the configuration**, which is the
     /// whole value of the field: a server that is configured and a server that
@@ -324,9 +324,19 @@ pub struct Status {
     /// the second. A configured server that failed to start leaves this at zero,
     /// which is what it should look like.
     ///
-    /// A count of servers and a count of tools, because "connected" is not the
-    /// question either — a server that came up offering nothing is a server that
-    /// will not help, and the tool count is the only thing that says so.
+    /// A count of servers and a count of calls, because "connected" is not the
+    /// question either — a server that came up and was never useful is a server
+    /// that will not help, and a count beside it is what says so.
+    ///
+    /// **The second number said `tools` from 0.10.0 to 0.16.0 and counted calls
+    /// the whole time.** `EventKind::Mcp` carries no tool count and
+    /// `io_harness::mcp` exposes no catalogue accessor, so the number this field
+    /// wanted was never on the wire and it counted the thing that was. 0.16.0
+    /// renames it rather than inventing the number, because `/mcp` now draws a
+    /// per-server count beside it and two numbers disagreeing about one word is
+    /// worse than one number with an honest label. See
+    /// `US-IO-CLI-0.16.0-I01`, and `US-IO-HARNESS-0.68.0-I01` for the release
+    /// that makes the original question answerable.
     pub mcp: (usize, usize),
     /// Language servers that came up for this workspace, by `LspStarted`.
     pub lsp: usize,
@@ -614,7 +624,7 @@ impl Status {
         // overwhelming majority of lines all three cost nothing at all.
         if self.mcp.0 > 0 {
             fields.push(Field::new(
-                format!("mcp {}/{} tools", self.mcp.0, self.mcp.1),
+                format!("mcp {}/{} calls", self.mcp.0, self.mcp.1),
                 Tone::Normal,
             ));
         }
@@ -842,7 +852,7 @@ impl Status {
             counts.push(format!("bg {}", self.jobs));
         }
         if self.mcp.0 > 0 {
-            counts.push(format!("mcp {}/{} tools", self.mcp.0, self.mcp.1));
+            counts.push(format!("mcp {}/{} calls", self.mcp.0, self.mcp.1));
         }
         if self.lsp > 0 {
             counts.push(format!("lsp {}", self.lsp));

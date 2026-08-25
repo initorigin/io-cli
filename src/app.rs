@@ -225,6 +225,13 @@ pub struct App {
     /// mid-turn must see what has already happened, and a model built only while
     /// somebody is watching would start empty at the moment it is wanted.
     pub fleet: crate::fleet::Fleet,
+    /// What this session has seen of each configured MCP server.
+    ///
+    /// Beside [`Status`]'s aggregate `mcp` pair rather than inside it: that
+    /// field answers "is anything connected" in one row of a status line, and
+    /// this answers "what happened to each of them" for `/mcp`. Neither is
+    /// derivable from the other — the pair carries no server names at all.
+    pub servers: crate::servers::Observed,
     /// Whether the fleet view has the composer's rows.
     fleet_open: bool,
     /// How much of a change a diff shows. From `[app.io-cli]`, defaulting to
@@ -257,6 +264,7 @@ impl App {
             submitted: String::new(),
             stopping: false,
             fleet: crate::fleet::Fleet::new(),
+            servers: crate::servers::Observed::default(),
             fleet_open: false,
             keys: Keys::default(),
             pending: Vec::new(),
@@ -628,6 +636,7 @@ impl App {
         self.pending.clear();
         self.events.forget();
         self.status.forget_run();
+        self.servers.forget();
         self.composer.set(&prompt);
         (rows, prompt)
     }
@@ -864,6 +873,7 @@ impl App {
         self.images.clear();
         self.composer.clear();
         self.status.forget_run();
+        self.servers.forget();
         self.forget_fleet();
         self.events.forget();
         true
@@ -984,11 +994,15 @@ impl App {
             // offered. Counting a call as a server would multiply one server into
             // as many as it was asked to do.
             io_harness::EventKind::Mcp { tool, .. } => {
-                let (servers, tools) = self.status.mcp;
+                let (servers, calls) = self.status.mcp;
                 self.status.mcp = match tool {
-                    None => (servers + 1, tools),
-                    Some(_) => (servers.max(1), tools + 1),
+                    None => (servers + 1, calls),
+                    Some(_) => (servers.max(1), calls + 1),
                 };
+                // And the per-server half, for `/mcp`. Folded here rather than at
+                // a second call site so the two cannot disagree about what the
+                // session saw.
+                self.servers.event(&event.kind);
             }
             io_harness::EventKind::LspStarted { .. } => {
                 self.status.lsp += 1;

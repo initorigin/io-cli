@@ -741,6 +741,26 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // about to change, types the value themselves, and
                         // presses Enter. A picker that wrote on a keystroke would
                         // change a file on the way past.
+                        // Choosing a server says what it is, in the scrollback.
+                        // There is nothing to open: the write verbs go through
+                        // `/config`, and a panel that opened a second editor
+                        // here would be a third way to write one file.
+                        Pick::Mcp => {
+                            let list = io_cli::servers::servers(&config, &app.servers);
+                            if let Some(server) = list.get(index) {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} — {} · {} · configured in the {} scope. \
+                                         A change takes effect on the next turn.",
+                                        server.id,
+                                        server.state.word(),
+                                        server.transport,
+                                        server.decided.word(),
+                                    ),
+                                );
+                            }
+                        }
                         Pick::Config(paths) => {
                             if let Some(key) = paths.get(index) {
                                 app.composer.set(&format!("/config {key} "));
@@ -976,6 +996,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         Tone::Muted,
                         "run `io setup` from the shell to change the configuration",
                     );
+                }
+                Action::Mcp => {
+                    let list = io_cli::servers::servers(&config, &app.servers);
+                    if list.is_empty() {
+                        // The "not configured" shape this product uses
+                        // everywhere: an empty section is not an error.
+                        app.record(
+                            Tone::Muted,
+                            "no MCP servers are configured; `/config` writes them",
+                        );
+                    } else {
+                        picker = Some((
+                            Picker::new("MCP servers", io_cli::servers::rows(&list)),
+                            Pick::Mcp,
+                        ));
+                    }
                 }
                 Action::Config(None) => {
                     let settings = io_cli::configure::settings(&config);
@@ -2147,6 +2183,10 @@ enum Pick {
     /// rather than read off a label because a label is a rendered string and the
     /// key is what a write addresses.
     Config(Vec<String>),
+    /// The MCP servers, in the order `servers::rows` drew them. Read-only in
+    /// this release: the write verbs are reached through `/config`, and the two
+    /// the roadmap named that io-harness cannot express are not offered at all.
+    Mcp,
     /// Which file a change goes into, and the change it is waiting on.
     ///
     /// Two steps rather than one because *which scope* is half the decision and
