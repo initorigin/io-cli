@@ -306,28 +306,60 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 
 <!-- commands:start -->
 
+Grouped by what you are doing rather than by which part of the harness answers.
+The `/` palette shows the same groups while you browse it and drops them the
+moment you type, because a ranked list with headings interleaved puts a heading
+above a row that ranked there for reasons having nothing to do with it.
+
+**the session**
+
+| Command | Does |
+| --- | --- |
+| `/clear` | start a new conversation; this one stays in /resume |
+| `/resume` | reopen an earlier session where it stopped |
+| `/fork` | continue from an earlier turn of this conversation |
+| `/setup` | run the first-run wizard again |
+| `/exit` | leave |
+
+**this turn**
+
+| Command | Does |
+| --- | --- |
+| `/model` | change the model the next turn is sent to |
+| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
+| `/plan` | make turns propose a plan before they work: on, off, or ask |
+| `/profile` | switch to a named profile from the configuration, for this session |
+
+**inspect**
+
 | Command | Does |
 | --- | --- |
 | `/help` | this table |
-| `/exit` | leave |
-| `/setup` | run the first-run wizard again |
-| `/theme` | change the theme for this session |
-| `/model` | change the model the next turn is sent to |
-| `/resume` | reopen an earlier session where it stopped |
-| `/fork` | continue from an earlier turn of this conversation |
-| `/expand` | commit the last step's full detail into the scrollback |
 | `/status` | commit the whole session state into the scrollback |
-| `/copy` | put the last answer on the system clipboard |
-| `/copy diff` | put the whole run's patch on the system clipboard |
-| `/config` | every setting, the value in force and the file that decided it |
+| `/expand` | commit the last step's full detail into the scrollback |
+| `/fleet` | show the children this turn has spawned |
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
-| `/profile` | switch to a named profile from the configuration, for this session |
-| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
-| `/plan` | make turns propose a plan before they work: on, off, or ask |
-| `/fleet` | show the children this turn has spawned |
 | `/image` | draw an attached image again: /image 1 |
-| `/clear` | start a new conversation; this one stays in /resume |
+| `/copy` | put the last answer on the system clipboard |
+| `/copy diff` | put the whole run's patch on the system clipboard |
+
+**configure**
+
+| Command | Does |
+| --- | --- |
+| `/config` | every setting, the value in force and the file that decided it |
+| `/theme` | change the theme for this session |
+
+`/usage` answers what `/status` answers and is deliberately not listed above: an
+alias earns no row of its own, because a second row for one screen reads as a
+second screen.
+
+In the palette each row carries a mark saying what it is — `:` runs a command,
+`+` fills the prompt from a configured template, `*` names one of the agent's own
+skills. The mark is beside the name rather than in the description, because the
+description is the first thing dropped on a narrow terminal and the kind is what
+you most need there.
 
 <!-- commands:end -->
 
@@ -630,6 +662,42 @@ leaves the data alone.
 io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
+
+### Without leaving the session
+
+**`/config` shows every key with the value in force and the file that decided
+it** — `user`, `project`, `local`, or `default` where no file decided it. A key
+no file named names no file rather than being blamed on the lowest-precedence
+one: io-harness reports an empty origin for it, and that is its own default
+speaking.
+
+Choosing a row puts its key in the prompt. `/config <key> <value>` asks which of
+the three files to write to, and only that choice writes. The change is in force
+from the next turn.
+
+**Your file survives it.** The comments, the blank lines, the order you chose and
+every section io-cli has no type for come back byte for byte — one value's bytes
+are replaced and the rest is copied through. The write is staged in a temporary
+file and renamed over the original, so a failure cannot truncate a configuration,
+and the mode is preserved.
+
+**A project-scoped change that would widen the boundary is refused in
+io-harness's own words**, and the same value is accepted in `io.local.toml` —
+the rule is about which file, not which value. io-cli keeps no copy of those
+rules: it writes, asks io-harness to read the file back, and restores it exactly
+when the answer is no.
+
+**`/mcp`** shows what is configured, which servers answered this session, how
+many distinct tools each answered, and the last failure. A server the session has
+not reached says so and is not shown as broken.
+
+**`/provider`** shows the `[[provider]]` array as what it is: the order a turn
+tries them. Reorder it and you have arranged the fallback chain io-harness has
+supported since its 0.27.0. The twenty-one presets it reaches through one
+`Compatible` provider are offered by name with the endpoint each resolves to.
+
+**`/profile`** switches to a named `[profile.<name>]` for the session, and
+`--profile <name>` picks one for a single run without writing anything.
 
 Eight keys live there, and five tables:
 
