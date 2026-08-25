@@ -808,15 +808,16 @@ fn a_turn_is_not_capped_at_twelve_steps() {
     );
     assert!(built.max_steps >= 1_000, "{}", built.max_steps);
 
-    // And the operator can still say otherwise, in either direction.
+    // And the operator can still say otherwise, in either direction — through
+    // `[run] max_steps`, which is the only spelling left. `[app.io-cli]
+    // max_steps` was removed in 0.16.0; the floor is applied BEFORE
+    // `Config::apply_to` precisely so a number the operator wrote beats it.
+    let file = io_harness::Config::from_toml("[run]\nmax_steps = 25\n").unwrap();
     let asked = session(
         "bring the docs up to date",
         root(),
-        &nothing(),
-        &Capabilities {
-            max_steps: Some(25),
-            ..Capabilities::default()
-        },
+        &file,
+        &Capabilities::default(),
         responder,
         None,
     );
@@ -1139,23 +1140,21 @@ fn f4_the_step_floor_sits_under_the_file_and_over_the_harness() {
         "a file that says nothing gets io-cli's floor, not the harness's twelve",
     );
 
-    // And `[app.io-cli] max_steps` is the strongest layer, over a `[run]` that
-    // named a number. Two spellings for one number, with the more specific scope
-    // winning; the key is deprecated in this release and removed in 0.16.0.
-    let deprecated = session(
+    // **There is no longer a second spelling, and that is this release's point.**
+    // `[app.io-cli] max_steps` was removed in 0.16.0, so `[run] max_steps` is
+    // the whole answer and there is no more specific scope to beat it. Two
+    // spellings for one number is what the removal ends.
+    let only = session(
         "a goal",
         written.path().to_path_buf(),
         &config,
-        &Capabilities {
-            max_steps: Some(7),
-            ..Capabilities::default()
-        },
+        &Capabilities::default(),
         responder,
         None,
     );
     assert_eq!(
-        deprecated.max_steps, 7,
-        "`[app.io-cli] max_steps` is applied after `Config::apply_to` and beats it",
+        only.max_steps, 20,
+        "`[run] max_steps` is the only spelling left and it beats io-cli's floor",
     );
 }
 
@@ -1429,4 +1428,106 @@ fn a_home_with_no_skills_directory_is_the_contract_of_the_release_before() {
         "an operator who never made the directory must not have their run refused \
          by a default they did not ask for",
     );
+}
+
+/// **F11 — the three ceilings with no other home, on both arms.**
+///
+/// `max_parallel_reads`, `spawn_background_after` and `detached_spawns` are
+/// `TaskContract` fields with **no io-harness configuration key at all** —
+/// `RunSection` carries thirteen and none of them is these — so io-cli names them
+/// under its own `[app.io-cli]`. A contract field with no surface is a field
+/// nobody sets.
+///
+/// They are applied in `contract::configured` rather than beside the other
+/// `[app.io-cli]` keys, and the placement IS the criterion: `configured` is the
+/// half a session turn and an `io exec` run share, while `session` is the
+/// session's alone. A ceiling applied in `session` would bound a terminal and
+/// leave CI running on the defaults, which is the 0.14.0 asymmetry this product
+/// already deleted once.
+///
+/// Sabotage: move the `ceilings` call from `configured` into `session` — under
+/// which the interactive arm still passes and the headless arm fails, which is
+/// exactly the shape of the bug.
+#[test]
+fn f11_the_three_ceilings_reach_a_session_turn_and_io_exec_alike() {
+    let toml = "\
+[app.io-cli]
+max_parallel_reads = 3
+spawn_background_after_secs = 45
+detached_spawns = false
+";
+    let config = io_harness::Config::from_toml(toml).expect("the fixture parses");
+
+    // The headless arm builds from `configured` and nothing else.
+    let headless = io_cli::contract::configured("a goal", root(), &config);
+    assert_eq!(
+        headless.max_parallel_reads, 3,
+        "io exec: max_parallel_reads"
+    );
+    assert_eq!(
+        headless.spawn_background_after,
+        Some(std::time::Duration::from_secs(45)),
+        "io exec: spawn_background_after",
+    );
+    assert!(!headless.detached_spawns, "io exec: detached_spawns");
+
+    // And the session arm, which wraps it.
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+    let interactive = session(
+        "a goal",
+        root(),
+        &config,
+        &Capabilities::default(),
+        responder,
+        None,
+    );
+    assert_eq!(
+        interactive.max_parallel_reads, 3,
+        "session: max_parallel_reads"
+    );
+    assert_eq!(
+        interactive.spawn_background_after,
+        Some(std::time::Duration::from_secs(45)),
+        "session: spawn_background_after",
+    );
+    assert!(!interactive.detached_spawns, "session: detached_spawns");
+}
+
+/// **F11 — a file that names none of them reproduces io-harness's own defaults.**
+///
+/// Field for field, because the failure worth catching is io-cli writing a
+/// default back explicitly: that turns an absence into a statement, and the next
+/// time io-harness changes one of these it would change for everyone except the
+/// people running this interface.
+#[test]
+fn f11_a_file_that_asks_for_nothing_leaves_every_default_alone() {
+    let bare = io_harness::Config::from_toml("").unwrap();
+    let built = io_cli::contract::configured("a goal", root(), &bare);
+    let untouched = io_harness::TaskContract::workspace("a goal", root());
+
+    assert_eq!(
+        built.max_parallel_reads, untouched.max_parallel_reads,
+        "max_parallel_reads moved without being asked (io-harness's own is 10)",
+    );
+    assert_eq!(
+        built.spawn_background_after, untouched.spawn_background_after,
+        "spawn_background_after moved without being asked",
+    );
+    assert_eq!(
+        built.detached_spawns, untouched.detached_spawns,
+        "detached_spawns moved without being asked",
+    );
+}
+
+/// **F11 — `detached_spawns = true` is agreement, not a change.**
+///
+/// `without_detached_spawns` is the only lever io-harness offers and the default
+/// is already true, so only the `false` arm may do anything. A build that called
+/// a setter for `true` would be inventing a second way to say the default.
+#[test]
+fn f11_asking_for_the_default_explicitly_changes_nothing() {
+    let agrees = io_harness::Config::from_toml("[app.io-cli]\ndetached_spawns = true\n").unwrap();
+    let built = io_cli::contract::configured("a goal", root(), &agrees);
+    assert!(built.detached_spawns);
 }

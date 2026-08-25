@@ -102,33 +102,30 @@ pub struct CliSettings {
     /// parses no skill file of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<std::path::PathBuf>,
-    /// How many steps one turn may take: `max_steps = 40`.
+
+    /// `max_parallel_reads` — how many read-only tool calls may run at once.
     ///
-    /// **Deprecated in 0.14.0, still winning, and removed in 0.16.0** — the
-    /// release that rewrites the configuration surface, which is where a key
-    /// disappearing costs an operator one migration instead of two. This release
-    /// gives `[run] max_steps` the same job on an interactive turn, so one file
-    /// now has two spellings for one number and the less discoverable one wins:
-    /// [`crate::contract::session`] applies this key after `Config::apply_to` and
-    /// therefore over everything the harness's own table said. None of that
-    /// changes here. A file that already carries this key gets exactly the cap it
-    /// asks for, which is what `tests/contract.rs`'s F4 asserts, and
-    /// [`deprecated_max_steps`] says so once at session start rather than leaving
-    /// the operator to discover at 0.16.0 that a number they wrote stopped being
-    /// read.
-    ///
-    /// **The reason this was ever io-cli's own key is gone, and was gone before
-    /// this doc stopped claiming it.** It used to say io-harness caps a session
-    /// turn at twelve and io-cli cannot raise it on the steered path, and that
-    /// the key is therefore honoured on the one path carrying a contract — a
-    /// contained session. Both clauses stopped being true in 0.11.0, which moved
-    /// the flat arm onto `Session::turn_bounded_observed`: an entry point that
-    /// takes the caller's contract. Every turn has carried a cap io-cli chose
-    /// since then — [`crate::contract::MAX_STEPS`], a thousand — and
-    /// `[run] max_steps` now reaches that same field from a table io-harness
-    /// documents itself.
+    /// A `TaskContract` field with **no io-harness configuration key at all**:
+    /// `RunSection` carries thirteen and this is not one of them, so a file has
+    /// never been able to say it. io-harness's own default is 10, and 0 is
+    /// clamped to 1 by the builder rather than meaning "none".
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
+    pub max_parallel_reads: Option<usize>,
+
+    /// `spawn_background_after_secs` — when a slow child is backgrounded.
+    ///
+    /// Absent is io-harness's own default, which is to wait however long the
+    /// child takes. Spelled with the `_secs` suffix the harness uses everywhere
+    /// a duration is a number in this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_background_after_secs: Option<u64>,
+
+    /// `detached_spawns` — whether a spawn may detach at all.
+    ///
+    /// Default true. `false` is the embedder asking for a trace with every
+    /// child's whole life in it, which is what a detached child gives up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached_spawns: Option<bool>,
 }
 
 /// The caps this session runs its turns under, if any.
@@ -195,33 +192,32 @@ pub fn stored(config: &io_harness::Config) -> (Option<CliSettings>, Option<Strin
     }
 }
 
-/// The one line a file carrying `[app.io-cli] max_steps` earns at session start.
+/// The one line a file still carrying `[app.io-cli] max_steps` earns.
 ///
-/// **`None` unless the operator wrote the key, and that distinction is the whole
-/// of this function.** The question is not what step cap this session runs under
-/// — every session runs under one, [`crate::contract::MAX_STEPS`] where nothing
-/// says otherwise — but whether the file spells it in the table that is going
-/// away. Asking the first question instead of the second would put a deprecation
-/// notice on the file `io setup` writes, which names no `max_steps` at all: an
-/// operator who is told at every start about a key they have never used is one
-/// who stops reading the start-up lines, and the next line they skip is the one
-/// that mattered. So this reads the field, where `None` is a key nobody wrote and
-/// `Some` is a number somebody typed.
+/// **The key was removed in 0.16.0 and the notice was not, and that pairing is
+/// the whole point.** `CliSettings` carries no `#[serde(deny_unknown_fields)]`,
+/// so deleting the field alone would make a leftover key *silently ignored*: no
+/// error anywhere, and an operator's step cap quietly back to
+/// [`crate::contract::MAX_STEPS`] or to whatever `[run] max_steps` says. A
+/// removal nobody is told about is indistinguishable from a bug.
 ///
-/// The sentence names three things because an operator acting on it needs all
-/// three: the key, the value it took — this key still beats `[run] max_steps`,
-/// so the number quoted is the number the turn runs on — and where it moves to.
-/// It is a notice and not a refusal: removal is 0.16.0, and until then a file
-/// that says nothing new keeps working unchanged.
-///
-/// It lives here rather than at its call site in `src/main.rs` for the reason
-/// [`plain`] does: nothing under `tests/` can link the binary, so a decision
-/// written inline there is one no test drives and no sabotage can fail.
-pub fn deprecated_max_steps(stored: Option<&CliSettings>) -> Option<String> {
-    let steps = stored?.max_steps?;
+/// So this reads the **raw** section rather than the typed struct — the field it
+/// used to read does not exist any more — through `Config::app`, with a shape
+/// that names only the dead key and ignores everything else in the table.
+pub fn deprecated_max_steps(config: &io_harness::Config) -> Option<String> {
+    /// Only the key that is gone. No `deny_unknown_fields`: every other
+    /// `[app.io-cli]` key is live and none of them is this function's business.
+    #[derive(Deserialize)]
+    struct Removed {
+        #[serde(default)]
+        max_steps: Option<u32>,
+    }
+
+    let steps = config.app::<Removed>(APP_KEY).ok()??.max_steps?;
     Some(format!(
-        "`[app.io-cli] max_steps` is deprecated; this turn runs on the {steps} steps it asks for, \
-         and the key moves to `[run] max_steps`. It is read until 0.16.0."
+        "`[app.io-cli] max_steps` was removed in 0.16.0 and is no longer read, so the {steps} \
+         steps it asks for are not in force. Use `[run] max_steps` instead, which bounds a \
+         session turn and an `io exec` run alike."
     ))
 }
 
@@ -441,10 +437,13 @@ pub fn render(
                 lsp: None,
                 browser: None,
                 skills: None,
-                // And the step cap for the same reason as the diff style: its
-                // absence is `contract::MAX_STEPS`, and a key written with its
-                // own default is a key a reader has to wonder about.
-                max_steps: None,
+                // And the three contract ceilings for the same reason as the
+                // diff style: each one's absence is io-harness's own default,
+                // and a key written with its own default is a key a reader has
+                // to wonder about. The wizard asks about none of them.
+                max_parallel_reads: None,
+                spawn_background_after_secs: None,
+                detached_spawns: None,
             },
         },
     };
@@ -503,5 +502,54 @@ pub fn write(path: &Path, contents: &str) -> io::Result<()> {
         // profile, which is already per-user, and pretending otherwise by
         // reporting a mode we did not set would be worse than saying nothing.
         std::fs::write(path, contents)
+    }
+}
+
+/// The three `TaskContract` ceilings io-harness gives no configuration key.
+///
+/// Read from `[app.io-cli]` because that is io-cli's own section and there is
+/// nowhere else: `RunSection` has thirteen fields and none of these is one, so a
+/// file has never been able to say them. Applied in
+/// [`crate::contract::configured`], which is the half a session turn and an
+/// `io exec` run share.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Ceilings {
+    max_parallel_reads: Option<usize>,
+    spawn_background_after_secs: Option<u64>,
+    detached_spawns: Option<bool>,
+}
+
+/// What `[app.io-cli]` asks of a contract's ceilings, or nothing.
+pub fn ceilings(config: &io_harness::Config) -> Ceilings {
+    let Some(stored) = stored(config).0 else {
+        return Ceilings::default();
+    };
+    Ceilings {
+        max_parallel_reads: stored.max_parallel_reads,
+        spawn_background_after_secs: stored.spawn_background_after_secs,
+        detached_spawns: stored.detached_spawns,
+    }
+}
+
+impl Ceilings {
+    /// Put them on a contract, each only where the file asked.
+    ///
+    /// A key the file does not name leaves io-harness's own default alone —
+    /// which for these three is 10, never, and permitted. Writing a default back
+    /// explicitly would turn an absence into a statement.
+    pub fn apply(self, mut contract: io_harness::TaskContract) -> io_harness::TaskContract {
+        if let Some(reads) = self.max_parallel_reads {
+            contract = contract.with_max_parallel_reads(reads);
+        }
+        if let Some(secs) = self.spawn_background_after_secs {
+            contract = contract.with_spawn_background_after(std::time::Duration::from_secs(secs));
+        }
+        // Only the `false` arm does anything: `without_detached_spawns` is the
+        // only lever io-harness offers and the default is already true, so
+        // `detached_spawns = true` in a file is agreement rather than a change.
+        if self.detached_spawns == Some(false) {
+            contract = contract.without_detached_spawns();
+        }
+        contract
     }
 }

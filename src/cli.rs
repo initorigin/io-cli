@@ -22,6 +22,20 @@ pub struct Cli {
     #[arg(short = 'C', long, value_name = "DIR", global = true)]
     pub dir: Option<PathBuf>,
 
+    /// A named profile from the configuration file, for this run only.
+    ///
+    /// `[profile.<name>]` is io-harness's own — a profile body is the file
+    /// format again, applied over the merged scopes through the same merge they
+    /// use. It has been in the harness since its 0.27.0 and no io-cli release
+    /// selected one until 0.16.0.
+    ///
+    /// `global` for the reason `-C` and `-m` are: a set of choices you want for
+    /// one run is exactly the thing you type on either side of a subcommand, and
+    /// `io exec --profile ci "…"` is the shape CI reaches for. Nothing is
+    /// written — a profile chosen here lasts the run and no longer.
+    #[arg(long, value_name = "NAME", global = true)]
+    pub profile: Option<String>,
+
     /// The model to use for this run, overriding the configured one.
     #[arg(short, long, value_name = "MODEL", global = true)]
     pub model: Option<String>,

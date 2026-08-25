@@ -6,6 +6,100 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-25
+
+Nobody edits `io.toml` by hand.
+
+**`/config` is the whole configuration file as a surface in the session.** Every
+key io-harness validates, with the value in force and the file that decided it —
+`user`, `project`, `local`, or `default` where no file decided it at all. A key
+no file named names no file: io-harness returns an empty origin for it, and
+attributing that to the lowest-precedence file would credit you for a value you
+never wrote. Choose a row to put its key in the prompt; `/config <key> <value>`
+asks which of the three files to write it to, and only that choice writes.
+
+**Your file survives the write.** The comments, the blank lines, the key order
+you chose, and every section io-cli has no type for — `[[agent]]`, `[[hook]]`,
+`[instructions]`, `[toolchain]`, `[prices]`, `[[plugin]]` — come back byte for
+byte. One value's bytes are replaced and everything else is copied through. The
+new bytes go to a temporary file and are renamed over the original, so a failed
+write cannot truncate a configuration, and the file's mode is preserved.
+
+**A project-scoped change that would widen the boundary is refused, in
+io-harness's own words.** All seven cases: a `[[hook]]` array, a `[browser]`
+table, and `policy.defaults.exec = "allow"`, `policy.defaults.net = "allow"`,
+`sandbox.allow_network = true`, `sandbox.force_floor = false` and
+`sandbox.mode = "full-access"`. The same values are accepted in `io.local.toml`,
+because the rule is about the scope rather than the value. io-cli holds no copy
+of those rules: it writes, asks io-harness to read it back, and puts the file
+back exactly as it was when the answer is no.
+
+**`/mcp`** shows what is configured, which servers answered this session, how
+many distinct tools each has answered, and the last failure. A server the session
+has not reached says so and is **not** drawn as a failure — that is the state
+every server is in before the first turn runs. Servers are added, edited and
+removed from the file through the same writer.
+
+**`/provider`** is where `[[provider]]` stops being a single entry. Several are
+configured, each with its own credential, model and endpoint, and the order they
+are listed in is the order a turn tries them — the fallback io-harness has
+supported since its 0.27.0, which this interface has drawn an event for without
+ever being able to cause. Entries are added, reordered and removed, and an entry
+moved keeps its own comments. The twenty-one vendor presets io-harness reaches
+through one `Compatible` provider are offered by name, with the endpoint each
+resolves to.
+
+**`/profile`** selects a named `[profile.<name>]` for the session, and
+`--profile <name>` selects one for a single run without writing anything.
+Profiles have been in io-harness since its 0.27.0 and no io-cli release had ever
+selected one.
+
+**Three ceilings gain a home**: `max_parallel_reads`, `spawn_background_after_secs`
+and `detached_spawns`, under `[app.io-cli]`, because io-harness has no
+configuration key for any of them. They apply to an interactive turn and to
+`io exec` alike.
+
+**The command surface is grouped**, because this release took it to twenty and a
+flat list of twenty is a list nobody reads: the session, this turn, inspect,
+configure, none longer than ten. The `/` palette shows the groups while you
+browse and drops them the moment you type. `/help` is the same grouping, written
+into the terminal's own scrollback. Each palette row now carries a mark saying
+whether it runs a command or fills the prompt — beside the name rather than in
+the description, because the description is what a narrow terminal drops first.
+`/usage` answers what `/status` answers and is listed nowhere.
+
+### Removed
+
+**`[app.io-cli] max_steps` was removed, as 0.14.0 said it would be.** It was
+deprecated in that release with a notice naming this one, in the terminal, in the
+README and in this file. Use `[run] max_steps`, which bounds a session turn and an
+`io exec` run alike.
+
+A file that still carries the key **loads exactly as before** — the key is
+ignored rather than rejected — and the session tells you once at startup, naming
+the number that is no longer in force. That notice is deliberate: `[app.io-cli]`
+is not schema-checked, so without it the key would simply stop working and your
+step cap would change with nothing on screen to say why.
+
+### Changed
+
+The status line's `mcp N/M tools` now reads `mcp N/M calls`. The second number
+has counted calls since 0.10.0: `EventKind::Mcp` carries no tool count and
+io-harness exposes no catalogue accessor, so the number that field wanted was
+never available and it counted the one that was. `/mcp` now draws a per-server
+count beside it, and two numbers disagreeing about one word is worse than one
+number with an honest label.
+
+### Known limitations
+
+`/mcp`'s tool count is how many distinct tools a server has **answered** this
+session, which is a lower bound on what it offers. There is no channel for the
+real number on io-harness 0.67. Disabling a configured server without removing it
+is not offered either: `McpServer` has no key for it, and because the type is
+`#[serde(flatten)]`-based an invented one would be accepted by the file and
+ignored by the harness — so the server would start anyway. Both are io-cli
+0.17.0's, behind an io-harness release.
+
 ## [0.15.0] - 2026-08-25
 
 io keeps its things in one place.

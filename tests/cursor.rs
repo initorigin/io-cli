@@ -500,10 +500,14 @@ fn f2_the_slash_palette_sets_a_cursor_on_the_row_the_query_left_under_the_marker
     let opened = draw(io_cli::term::VIEWPORT_HEIGHT, |frame| {
         picker.render(frame, frame.area(), &DARK)
     });
+    // `clear` and not `help` since 0.16.0: the palette is grouped, the session
+    // group is first, and `clear` leads it. The caret is on the row `Enter`
+    // takes, which is the first row that is not a HEADING — a heading is drawn
+    // in its place and can never be under the marker.
     assert!(
         opened
             .row_from_cursor("the slash palette")
-            .starts_with("help"),
+            .starts_with("clear"),
         "the cursor belongs at the start of the row Enter would take: {:?}",
         opened.text,
     );

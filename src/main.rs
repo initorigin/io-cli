@@ -79,6 +79,15 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     // anybody who has already chosen.
     *report = io_cli::home::adopt().map_or_else(Vec::new, |report| report.lines());
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
+    // **A profile, if one was asked for, before anything reads the configuration.**
+    // Applied here rather than per arm so a session and an `io exec` run get the
+    // same overlay from the same decision, and refused with io-harness's own
+    // sentence — which names the profile and says it is not in this file, and is
+    // more than anything written here could say.
+    let config = match &cli.profile {
+        Some(name) => io_cli::configure::with_profile(&config, name)?,
+        None => config,
+    };
     // The notice this read produces is dropped *here* and only here: `run` may
     // hand control to the wizard, which rewrites the very file this just failed
     // to read, so a complaint raised now could be about a file that no longer
@@ -306,7 +315,7 @@ async fn drive(
     // why the answer comes from the field and not from the cap this session ended
     // up with — every session has one of those. The key keeps winning until
     // 0.16.0; this is the one line that says where it went.
-    if let Some(notice) = settings::deprecated_max_steps(stored.as_ref()) {
+    if let Some(notice) = settings::deprecated_max_steps(&config) {
         notices.push(notice);
     }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
@@ -437,8 +446,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     inputs: &mut UnboundedReceiver<Event>,
     make: F,
     // Held for the whole session and handed to every turn, because the file is
-    // what a turn's contract is built from since 0.14.0.
-    config: Config,
+    // what a turn's contract is built from since 0.14.0. **Mutable since
+    // 0.16.0**: `/config` writes the file the session is reading, and a turn
+    // built from the configuration as it was at startup would contradict the
+    // surface that just said the value changed.
+    mut config: Config,
     spec: ProviderSpec,
     store: Store,
     mut session: Session,
@@ -451,7 +463,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     theme: Theme,
     plain: bool,
     containment: Option<io_harness::Containment>,
-    capabilities: io_cli::contract::Capabilities,
+    // Mutable for the reason `config` is, and it is the half a reload forgets:
+    // this is derived from `config` ONCE at startup, so refreshing only the
+    // `Config` would leave every `[app.io-cli]` answer stale while the rest of
+    // the session moved on.
+    mut capabilities: io_cli::contract::Capabilities,
     skills: io_harness::Skills,
     model: String,
 ) -> Result<(), String> {
@@ -728,6 +744,133 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `Pick::Resume` uses an `if let`: an index with nothing
                         // behind it puts nothing in the prompt rather than a
                         // guess.
+                        // A chosen setting FILLS the composer rather than
+                        // writing anything, which is the palette's own idiom and
+                        // the right one here: the operator sees the key they are
+                        // about to change, types the value themselves, and
+                        // presses Enter. A picker that wrote on a keystroke would
+                        // change a file on the way past.
+                        // Choosing a server says what it is, in the scrollback.
+                        // There is nothing to open: the write verbs go through
+                        // `/config`, and a panel that opened a second editor
+                        // here would be a third way to write one file.
+                        Pick::Mcp => {
+                            let list = io_cli::servers::servers(&config, &app.servers);
+                            if let Some(server) = list.get(index) {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} — {} · {} · configured in the {} scope. \
+                                         A change takes effect on the next turn.",
+                                        server.id,
+                                        server.state.word(),
+                                        server.transport,
+                                        server.decided.word(),
+                                    ),
+                                );
+                            }
+                        }
+                        // Says what the link is, and where it points. The chain
+                        // is arranged through `/config`, which is the one writer
+                        // this release gives the file.
+                        Pick::Provider => {
+                            let chain = io_cli::providers::chain(&config);
+                            if let Some(entry) = chain.get(index) {
+                                let place = if entry.index == 0 {
+                                    "used".to_string()
+                                } else {
+                                    format!("fallback {}", entry.index)
+                                };
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} · {} · {} · {}{}",
+                                        entry.kind,
+                                        entry.model,
+                                        place,
+                                        entry.credential.word(),
+                                        entry
+                                            .endpoint
+                                            .as_deref()
+                                            .map(|e| format!(" · {e}"))
+                                            .unwrap_or_default(),
+                                    ),
+                                );
+                            }
+                        }
+                        Pick::Profile(names) => {
+                            if let Some(name) = names.get(index) {
+                                match io_cli::configure::with_profile(&config, name) {
+                                    Ok(overlaid) => {
+                                        // The same both-halves rule a write
+                                        // follows: a profile can carry
+                                        // `[app.io-cli]` keys too.
+                                        let (stored, _) = io_cli::settings::stored(&overlaid);
+                                        capabilities =
+                                            io_cli::contract::Capabilities::stored(stored.as_ref());
+                                        config = overlaid;
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "profile `{name}` is in force from the next \
+                                                 turn; nothing was written"
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Error, refusal),
+                                }
+                            }
+                        }
+                        Pick::Config(paths) => {
+                            if let Some(key) = paths.get(index) {
+                                app.composer.set(&format!("/config {key} "));
+                            }
+                        }
+                        Pick::ConfigScope { key, value, paths } => {
+                            // An index past the end puts nothing in the file,
+                            // which is the same answer every other picker arm
+                            // gives a row it cannot resolve.
+                            if let Some((scope, _)) = paths.get(index) {
+                                {
+                                    let root = session.root().to_path_buf();
+                                    let edits =
+                                        [io_cli::edit::Edit::set(key.clone(), value.clone())];
+                                    match io_cli::configure::write(&root, *scope, &edits) {
+                                        Ok(()) => {
+                                            // Both halves, or the next turn runs
+                                            // on what the file said at startup.
+                                            match io_cli::configure::reload(&root) {
+                                                Ok((fresh, stored)) => {
+                                                    capabilities =
+                                                        io_cli::contract::Capabilities::stored(
+                                                            stored.as_ref(),
+                                                        );
+                                                    config = fresh;
+                                                    app.record(
+                                                        Tone::Success,
+                                                        format!(
+                                                            "{key} = {value}, written to the {} \
+                                                             scope and in force from the next turn",
+                                                            io_cli::configure::Decided::File {
+                                                                scope: *scope,
+                                                                path: Default::default(),
+                                                            }
+                                                            .word()
+                                                        ),
+                                                    );
+                                                }
+                                                Err(error) => app.record(Tone::Error, error),
+                                            }
+                                        }
+                                        // io-harness's own sentence, re-worded by
+                                        // nobody. `record` and not `say`: a
+                                        // refusal explains a boundary and outlives
+                                        // the keystroke that earned it.
+                                        Err(refusal) => app.record(Tone::Refused, refusal),
+                                    }
+                                }
+                            }
+                        }
                         Pick::Palette => match commands::palette_pick(&templates, &skills, index) {
                             Some(commands::Chosen::Command(command)) => app.composer.set(command),
                             // The rendered template, in the prompt and not on the
@@ -915,6 +1058,101 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         Tone::Muted,
                         "run `io setup` from the shell to change the configuration",
                     );
+                }
+                Action::Mcp => {
+                    let list = io_cli::servers::servers(&config, &app.servers);
+                    if list.is_empty() {
+                        // The "not configured" shape this product uses
+                        // everywhere: an empty section is not an error.
+                        app.record(
+                            Tone::Muted,
+                            "no MCP servers are configured; `/config` writes them",
+                        );
+                    } else {
+                        picker = Some((
+                            Picker::new("MCP servers", io_cli::servers::rows(&list)),
+                            Pick::Mcp,
+                        ));
+                    }
+                }
+                Action::Provider => {
+                    let chain = io_cli::providers::chain(&config);
+                    if chain.is_empty() {
+                        app.record(Tone::Muted, "no provider is configured; run `io setup`");
+                    } else {
+                        picker = Some((
+                            Picker::new(
+                                "Providers, in the order they are tried",
+                                io_cli::providers::rows(&chain),
+                            ),
+                            Pick::Provider,
+                        ));
+                    }
+                }
+                Action::Profile => {
+                    let names = io_cli::configure::profiles(&config);
+                    if names.is_empty() {
+                        // The "not configured" shape again: an absent section is
+                        // not an error, and `[profile.<name>]` is io-harness's
+                        // own spelling rather than something to explain here.
+                        app.record(
+                            Tone::Muted,
+                            "this configuration declares no `[profile.<name>]` sections",
+                        );
+                    } else {
+                        let rows: Vec<Row> =
+                            names.iter().map(|name| Row::new(name.clone())).collect();
+                        picker = Some((Picker::new("Which profile?", rows), Pick::Profile(names)));
+                    }
+                }
+                Action::Config(None) => {
+                    let settings = io_cli::configure::settings(&config);
+                    let paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
+                    picker = Some((
+                        Picker::new("Which setting?", io_cli::configure::rows(&settings)),
+                        Pick::Config(paths),
+                    ));
+                }
+                // A key with no value is a question. Naming what is in force and
+                // which file decided it is the answer, and nothing is written.
+                Action::Config(Some((key, value))) if value.is_empty() => {
+                    let setting = io_cli::configure::setting(&config, &key);
+                    let what = setting.value.as_deref().unwrap_or("not set");
+                    app.record(
+                        Tone::Muted,
+                        format!("{key} is {what} ({})", setting.decided.word()),
+                    );
+                }
+                Action::Config(Some((key, value))) => {
+                    // Every scope, whether or not its file exists yet — writing a
+                    // key into a scope for the first time is how this is used.
+                    let root = session.root().to_path_buf();
+                    let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
+                        io_harness::config::Scope::User,
+                        io_harness::config::Scope::Project,
+                        io_harness::config::Scope::Local,
+                    ]
+                    .into_iter()
+                    .filter_map(|scope| {
+                        io_cli::configure::scope_path(&root, scope).map(|p| (scope, p))
+                    })
+                    .collect();
+
+                    let rows: Vec<Row> = paths
+                        .iter()
+                        .map(|(scope, path)| {
+                            let word = io_cli::configure::Decided::File {
+                                scope: *scope,
+                                path: path.clone(),
+                            };
+                            Row::with_detail(word.word().to_string(), path.display().to_string())
+                        })
+                        .collect();
+
+                    picker = Some((
+                        Picker::new(format!("Write {key} where?"), rows),
+                        Pick::ConfigScope { key, value, paths },
+                    ));
                 }
                 Action::Theme => {
                     picker = Some((
@@ -2028,6 +2266,31 @@ enum Pick {
     /// last components rather than paths — see `complete::rows` for why — which
     /// is exactly why the entries are carried here and not read off a label.
     Complete(Vec<io_harness::tools::Entry>),
+    /// The settings surface, in the order `configure::rows` drew them, so a
+    /// chosen index reads straight back against this list. The paths are carried
+    /// rather than read off a label because a label is a rendered string and the
+    /// key is what a write addresses.
+    Config(Vec<String>),
+    /// The MCP servers, in the order `servers::rows` drew them. Read-only in
+    /// this release: the write verbs are reached through `/config`, and the two
+    /// the roadmap named that io-harness cannot express are not offered at all.
+    Mcp,
+    /// The provider chain, in the order `providers::rows` drew it — which is
+    /// the order a turn tries it.
+    Provider,
+    /// The named profiles a file declares, in the order `configure::profiles`
+    /// sorted them.
+    Profile(Vec<String>),
+    /// Which file a change goes into, and the change it is waiting on.
+    ///
+    /// Two steps rather than one because *which scope* is half the decision and
+    /// this product has three of them — a write that guessed would put an
+    /// operator's credential in the file a repository ships.
+    ConfigScope {
+        key: String,
+        value: String,
+        paths: Vec<(io_harness::config::Scope, std::path::PathBuf)>,
+    },
 }
 
 /// The completion picker over one directory of the workspace, or `None` when the

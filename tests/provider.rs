@@ -29,6 +29,20 @@ const CONSTRUCTORS: &[&str] = &[
 /// adding a file cannot quietly widen the exemption.
 const HANDSHAKE: &str = "verify.rs";
 
+/// The `/provider` panel, excluded the same way and for a different reason.
+///
+/// 0.16.0's panel names `Compatible::preset` to **interrogate** a preset — what
+/// base URL io-harness resolves it to, whether that URL is local, and what the
+/// refusal lists when the name is not one — and never to build a provider a turn
+/// will use. That is the opposite of what this gate protects: the rule is that
+/// one site constructs the provider both entry points run on, and a module that
+/// asks a question and throws the answer away is not a second site.
+///
+/// Excluded by name rather than by pattern, like `verify.rs`, and held to the
+/// distinction by [`f10_the_panel_interrogates_presets_and_never_runs_one`]
+/// below — without which this exemption would be a hole rather than a boundary.
+const PANEL: &str = "providers.rs";
+
 fn sources() -> Vec<(PathBuf, String)> {
     fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
         for entry in std::fs::read_dir(dir).expect("src is readable").flatten() {
@@ -54,7 +68,7 @@ fn f10_each_provider_is_constructed_in_exactly_one_place() {
     for constructor in CONSTRUCTORS {
         let sites: Vec<(PathBuf, usize)> = sources
             .iter()
-            .filter(|(path, _)| !path.ends_with(HANDSHAKE))
+            .filter(|(path, _)| !path.ends_with(HANDSHAKE) && !path.ends_with(PANEL))
             .map(|(path, text)| (path.clone(), text.matches(constructor).count()))
             .filter(|(_, count)| *count > 0)
             .collect();
@@ -62,9 +76,9 @@ fn f10_each_provider_is_constructed_in_exactly_one_place() {
         let total: usize = sites.iter().map(|(_, count)| count).sum();
         assert_eq!(
             total, 1,
-            "`{constructor}` should be written exactly once outside {HANDSHAKE}, \
-             so that the interactive and the headless entry points cannot drift \
-             apart. Found {sites:?}",
+            "`{constructor}` should be written exactly once outside {HANDSHAKE} \
+             and {PANEL}, so that the interactive and the headless entry points \
+             cannot drift apart. Found {sites:?}",
         );
 
         // Naming the file as well as the count is what makes this fail while the
@@ -76,6 +90,49 @@ fn f10_each_provider_is_constructed_in_exactly_one_place() {
             "`{constructor}` should live in src/provider.rs, the one site both \
              entry points reach. Found it in {}",
             path.display(),
+        );
+    }
+}
+
+/// The exemption above is a boundary rather than a hole.
+///
+/// `src/providers.rs` may name a constructor because it asks presets questions.
+/// What it may never do is keep one: a `Compatible` that reached a turn from
+/// there would be the second construction site this file exists to prevent, and
+/// it would be reached only on the interactive arm.
+#[test]
+fn f10_the_panel_interrogates_presets_and_never_runs_one() {
+    let panel = sources()
+        .into_iter()
+        .find(|(path, _)| path.ends_with(PANEL))
+        .map(|(_, text)| text)
+        .expect("src/providers.rs exists; the exemption is written for it");
+
+    // Nothing that runs a turn, and nothing that carries a provider outward.
+    for forbidden in [
+        "CompletionRequest",
+        ".complete(",
+        ".complete_streaming(",
+        "WithProvider",
+        "-> Compatible",
+        "Provider>",
+    ] {
+        assert!(
+            !panel.contains(forbidden),
+            "src/providers.rs names `{forbidden}`. It is exempt from the \
+             one-construction-site rule only because it interrogates presets and \
+             keeps nothing; the moment it holds or hands out a provider it has \
+             become the second site.",
+        );
+    }
+
+    // And every constructor it does name is immediately asked something and
+    // dropped — the calls are inside expressions that end in a question.
+    for line in panel.lines().filter(|l| l.contains("Compatible::preset")) {
+        let trimmed = line.trim();
+        assert!(
+            !trimmed.starts_with("let provider") && !trimmed.contains("self."),
+            "a `Compatible` is being kept in src/providers.rs: {trimmed}",
         );
     }
 }
