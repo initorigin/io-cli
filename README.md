@@ -306,24 +306,60 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 
 <!-- commands:start -->
 
+Grouped by what you are doing rather than by which part of the harness answers.
+The `/` palette shows the same groups while you browse it and drops them the
+moment you type, because a ranked list with headings interleaved puts a heading
+above a row that ranked there for reasons having nothing to do with it.
+
+**the session**
+
+| Command | Does |
+| --- | --- |
+| `/clear` | start a new conversation; this one stays in /resume |
+| `/resume` | reopen an earlier session where it stopped |
+| `/fork` | continue from an earlier turn of this conversation |
+| `/setup` | run the first-run wizard again |
+| `/exit` | leave |
+
+**this turn**
+
+| Command | Does |
+| --- | --- |
+| `/model` | change the model the next turn is sent to |
+| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
+| `/plan` | make turns propose a plan before they work: on, off, or ask |
+| `/profile` | switch to a named profile from the configuration, for this session |
+
+**inspect**
+
 | Command | Does |
 | --- | --- |
 | `/help` | this table |
-| `/exit` | leave |
-| `/setup` | run the first-run wizard again |
-| `/theme` | change the theme for this session |
-| `/model` | change the model the next turn is sent to |
-| `/resume` | reopen an earlier session where it stopped |
-| `/fork` | continue from an earlier turn of this conversation |
-| `/expand` | commit the last step's full detail into the scrollback |
 | `/status` | commit the whole session state into the scrollback |
+| `/expand` | commit the last step's full detail into the scrollback |
+| `/fleet` | show the children this turn has spawned |
+| `/mcp` | the MCP servers configured, and what this session has seen of each |
+| `/provider` | the providers configured, in the order a turn tries them |
+| `/image` | draw an attached image again: /image 1 |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
-| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
-| `/plan` | make turns propose a plan before they work: on, off, or ask |
-| `/fleet` | show the children this turn has spawned |
-| `/image` | draw an attached image again: /image 1 |
-| `/clear` | start a new conversation; this one stays in /resume |
+
+**configure**
+
+| Command | Does |
+| --- | --- |
+| `/config` | every setting, the value in force and the file that decided it |
+| `/theme` | change the theme for this session |
+
+`/usage` answers what `/status` answers and is deliberately not listed above: an
+alias earns no row of its own, because a second row for one screen reads as a
+second screen.
+
+In the palette each row carries a mark saying what it is — `:` runs a command,
+`+` fills the prompt from a configured template, `*` names one of the agent's own
+skills. The mark is beside the name rather than in the description, because the
+description is the first thing dropped on a narrow terminal and the kind is what
+you most need there.
 
 <!-- commands:end -->
 
@@ -627,7 +663,43 @@ io-cli has no configuration parser. io-harness owns discovery and layering, and
 io-cli's own settings live in the `[app.io-cli]` section that io-harness
 deliberately does not validate. See [`docs/config.example.toml`](docs/config.example.toml).
 
-Six keys live there, and five tables:
+### Without leaving the session
+
+**`/config` shows every key with the value in force and the file that decided
+it** — `user`, `project`, `local`, or `default` where no file decided it. A key
+no file named names no file rather than being blamed on the lowest-precedence
+one: io-harness reports an empty origin for it, and that is its own default
+speaking.
+
+Choosing a row puts its key in the prompt. `/config <key> <value>` asks which of
+the three files to write to, and only that choice writes. The change is in force
+from the next turn.
+
+**Your file survives it.** The comments, the blank lines, the order you chose and
+every section io-cli has no type for come back byte for byte — one value's bytes
+are replaced and the rest is copied through. The write is staged in a temporary
+file and renamed over the original, so a failure cannot truncate a configuration,
+and the mode is preserved.
+
+**A project-scoped change that would widen the boundary is refused in
+io-harness's own words**, and the same value is accepted in `io.local.toml` —
+the rule is about which file, not which value. io-cli keeps no copy of those
+rules: it writes, asks io-harness to read the file back, and restores it exactly
+when the answer is no.
+
+**`/mcp`** shows what is configured, which servers answered this session, how
+many distinct tools each answered, and the last failure. A server the session has
+not reached says so and is not shown as broken.
+
+**`/provider`** shows the `[[provider]]` array as what it is: the order a turn
+tries them. Reorder it and you have arranged the fallback chain io-harness has
+supported since its 0.27.0. The twenty-one presets it reaches through one
+`Compatible` provider are offered by name with the endpoint each resolves to.
+
+**`/profile`** switches to a named `[profile.<name>]` for the session, and
+`--profile <name>` picks one for a single run without writing anything.
+
+Eight keys live there, and five tables:
 
 | Key | Is |
 | --- | --- |
@@ -636,7 +708,9 @@ Six keys live there, and five tables:
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
 | `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `~/.io-cli/skills`. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}` and `${file:…}` and nothing else. |
-| `max_steps` | how many steps one turn may take. **Deprecated in 0.14.0 and removed in 0.16.0**: `[run] max_steps` is where the number moves to. It still wins over `[run]` until then, and a file carrying it is told so once at session start. |
+| `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
+| `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |
+| `detached_spawns` | whether a spawn may detach at all. Absent, it may. `false` buys a trace with every child's whole life in it, which a detached child gives up. |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
 | `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
 | `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Merged with the top-level `[[mcp]]`, and wins a collision of ids. |
@@ -871,10 +945,13 @@ Pre-1.0 and staying there until the owner says otherwise. A minor release may
 change what a session looks like — 0.11.0 rewrote the transcript's vocabulary,
 and the release before it moved where a question is answered. What you can rely
 on is that every one of those is in [CHANGELOG.md](CHANGELOG.md), said plainly,
-and that a configuration file written for an older release keeps working: no key
-has been removed or renamed since 0.1.0. One key is on its way out —
-`[app.io-cli] max_steps`, deprecated in 0.14.0 and removed in 0.16.0 — and it
-keeps working, and keeps winning, until then. **A section that was ignored may
+and that a configuration file written for an older release keeps working. **One
+key has been removed in the product's life so far**: `[app.io-cli] max_steps`,
+deprecated in 0.14.0 and removed in 0.16.0, with two releases' notice given in
+the terminal, the README and the changelog. A file that still carries it loads
+exactly as before — the key is ignored rather than rejected — and the session
+says so once at startup, naming the number that is no longer in force and
+`[run] max_steps` as where the cap lives now. **A section that was ignored may
 start being read**, which 0.14.0 did to eleven of them, and that is a behaviour
 change for a file that already carried one; it is the migration note in
 [Configuration](#configuration) and in the changelog rather than something to

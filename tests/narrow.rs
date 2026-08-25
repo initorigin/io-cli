@@ -973,6 +973,15 @@ fn f12_the_slash_palette_fits_eighty_columns_in_both_glyph_sets() {
             "Which command?",
             "the title is what a picker with an empty query draws ({set}): {opened:?}",
         );
+        // Since 0.16.0 the palette is grouped, so the row after the title is a
+        // group HEADING — drawn plainly, never marked, and never selectable.
+        let heading = rows.next().unwrap_or_default();
+        assert_eq!(
+            heading.trim(),
+            "the session",
+            "the first thing under the title is the first group's heading \
+             ({set}): {opened:?}",
+        );
         let first = rows.next().unwrap_or_default();
         assert!(
             first.starts_with(theme.glyphs.marker),
@@ -980,7 +989,7 @@ fn f12_the_slash_palette_fits_eighty_columns_in_both_glyph_sets() {
              ({set}): {opened:?}",
         );
         assert!(
-            first.contains("help") && first.contains("this table"),
+            first.contains("clear") && first.contains("start a new conversation"),
             "a command row carries its name and what it does ({set}): {first:?}",
         );
 

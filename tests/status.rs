@@ -813,8 +813,13 @@ fn f6_a_server_that_answered_is_named_with_the_tools_it_offered() {
         );
     }
 
-    assert_eq!(app.status.mcp, (1, 2), "one server, two tools");
-    assert!(rendered(&app.status, 120).contains("mcp 1/2 tools"));
+    assert_eq!(app.status.mcp, (1, 2), "one server, two calls");
+    // The label says `calls` from 0.16.0. It said `tools` and counted calls
+    // from 0.10.0, because EventKind::Mcp carries no tool count and there is no
+    // catalogue accessor — so the number this field wanted was never on the
+    // wire. `/mcp` draws a per-server count beside this one now, and two
+    // numbers disagreeing about one word is worse than an honest label.
+    assert!(rendered(&app.status, 120).contains("mcp 1/2 calls"));
 }
 
 #[test]
