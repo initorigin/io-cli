@@ -252,6 +252,11 @@ async fn drive(
     if let Some(complaint) = complaint {
         notices.push(complaint);
     }
+    // A server named in both `[[mcp]]` and `[[app.io-cli.mcp]]` is reconciled on
+    // every turn and reported here, once. The file does not change while the
+    // session runs, so the sentence is the same on the fiftieth turn as on the
+    // first — and a warning that repeats is one an operator learns to read past.
+    notices.extend(io_cli::contract::server_notices(&config, &capabilities));
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -272,6 +277,7 @@ async fn drive(
         Interactive {
             screen,
             inputs,
+            config,
             catalogue_spec,
             store,
             session,
@@ -294,6 +300,12 @@ async fn drive(
 struct Interactive<'a, 'b> {
     screen: &'a mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &'b mut UnboundedReceiver<Event>,
+    /// The whole configuration, carried down to the one place a turn's contract
+    /// is built rather than re-read there. Every applicable section of it reaches
+    /// an interactive turn through `contract::session` from 0.14.0, which is what
+    /// this field exists for; the values already read out of it above — the
+    /// policy, `[app.io-cli]`, the templates — are read once and stay read once.
+    config: Config,
     catalogue_spec: ProviderSpec,
     store: Store,
     session: Session,
@@ -313,9 +325,12 @@ struct Interactive<'a, 'b> {
     /// means the session cannot fan out at all, which is every session that
     /// configures nothing.
     containment: Option<io_harness::Containment>,
-    /// What `[app.io-cli]` asked a turn's contract to carry. Reaches a turn only
-    /// where the contract does, which is the contained turn — see
-    /// [`io_cli::contract`].
+    /// What `[app.io-cli]` asked a turn's contract to carry, and the strongest of
+    /// the layers `io_cli::contract::configured` documents: it is applied after
+    /// `Config::apply_to`, so `[app.io-cli] max_steps` beats a `[run] max_steps`
+    /// and a `[[app.io-cli.mcp]]` beats a `[[mcp]]` of the same id. It reaches
+    /// every turn, contained or not — the coupling that made that untrue was
+    /// removed in 0.12.0.
     capabilities: io_cli::contract::Capabilities,
     /// What io-harness discovered in the configured skills directory, walked once
     /// at startup. Empty when nothing is configured and empty when the walk
@@ -335,6 +350,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.screen,
             self.inputs,
             make,
+            self.config,
             self.catalogue_spec,
             self.store,
             self.session,
@@ -360,6 +376,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     inputs: &mut UnboundedReceiver<Event>,
     make: F,
+    // Held for the whole session and handed to every turn, because the file is
+    // what a turn's contract is built from since 0.14.0.
+    config: Config,
     spec: ProviderSpec,
     store: Store,
     mut session: Session,
@@ -1111,6 +1130,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     &store,
                     &mut session,
                     &effective,
+                    &config,
                     // The caps reach the turn only while the session is in
                     // contained mode, so `/contain off` is a real switch and not
                     // a label: with `None` here the turn built below is the
@@ -1269,6 +1289,11 @@ async fn turn<P: Provider>(
     store: &Store,
     session: &mut Session,
     policy: &Policy,
+    // What the operator's file asks of this turn. Beside the policy because it is
+    // the other half of the same answer: the policy is the boundary the harness
+    // enforces, and this is every ceiling, budget, roster and capability the same
+    // file set — none of which reached an interactive turn before 0.14.0.
+    config: &Config,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
     // Whether this turn proposes a plan before it works. The operator's `/plan`,
@@ -1341,6 +1366,7 @@ async fn turn<P: Provider>(
     let contract = io_cli::contract::session(
         text.clone(),
         root.clone(),
+        config,
         capabilities,
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
