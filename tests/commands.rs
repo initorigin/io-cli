@@ -38,6 +38,10 @@ fn the_commands_are_the_commands() {
             "/resume",
             "/fork",
             "/expand",
+            // 0.14.0 — a command and not a key. The keys are nearly all spoken
+            // for, and a key is cheap to add later and expensive to take back
+            // once it is in anybody's fingers.
+            "/status",
             "/copy",
             "/copy diff",
             "/contain",
@@ -104,6 +108,51 @@ fn each_command_resolves() {
         commands::parse("", &defaults(), &DARK),
         Action::Print(_)
     ));
+}
+
+/// **0.14.0 F10 — `/status` is in the command set and dispatches to its own
+/// action.**
+///
+/// Three claims and they are separable. It is *listed*, so a reader who opens
+/// `/help` or the palette finds it without being told it exists. It is a
+/// *command and not a key*, which is the decision the contract records: no
+/// keybinding in `KEYS` claims it, so nothing has spent one of the few that are
+/// left. And it *resolves*, to an action of its own rather than to the print
+/// every unknown command falls through to — which is what the driver matches on
+/// to commit the page.
+///
+/// Sabotage: render it as a table — under which F11 fails at eighty columns; the
+/// arm this test guards is the one before that, where a command that parses to
+/// `Action::Print` would put the *command list* in the scrollback and look, from
+/// a distance, like a surface that worked.
+#[test]
+fn f10_status_is_listed_as_a_command_and_resolves_to_its_own_action() {
+    assert!(
+        COMMANDS.iter().any(|(name, _)| *name == "/status"),
+        "a surface nobody is told about is a surface nobody uses",
+    );
+    assert_eq!(
+        commands::parse("status", &defaults(), &DARK),
+        Action::Status
+    );
+    // Arguments are tolerated and the first word decides, as everywhere else.
+    assert_eq!(
+        commands::parse("status now", &defaults(), &DARK),
+        Action::Status,
+    );
+    // A command and not a key: nothing in the key table claims it, and the
+    // palette row is the whole of how it is reached.
+    assert!(
+        !KEYS.iter().any(|(_, what)| what.contains("status")),
+        "0.14.0 decided this is a command; a key spent on it is a key taken back \
+         from somebody's fingers later",
+    );
+    // It commits into the scrollback like `/expand`, so it must not fall through
+    // to the print every unknown command lands on.
+    assert_ne!(
+        commands::parse("status", &defaults(), &DARK),
+        commands::parse("statuss", &defaults(), &DARK),
+    );
 }
 
 #[test]

@@ -1048,6 +1048,54 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let lines = expand(&session, &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // **Committed upward, exactly as `/expand` and `Ctrl+T` are.**
+                // The viewport is four rows and cannot grow, so everything that
+                // shows more of something writes into the terminal's own
+                // scrollback — one answer to "show me more" rather than three.
+                //
+                // The contract is built by the same call the next turn would
+                // build it with, so the configured rosters and the skills
+                // directory on this page are the ones that would actually reach
+                // it rather than a second reading of the file. A responder is
+                // required to build one and this contract runs nothing, so the
+                // channel is opened and dropped — the same shape
+                // `contract::server_notices` already uses to ask a question only
+                // `Config::apply_to` can answer. The plan gate is `None` here
+                // and deliberately: registering one turns io-harness's planning
+                // phase on, and reading the state must not change it.
+                Action::Status => {
+                    // Bound as `reading` and not as `contract`, deliberately:
+                    // `tests/plan.rs` finds the turn's builder by the binding
+                    // name and asserts the plan-gate argument on *that* call is
+                    // the operator's switch. This one is not a turn's contract
+                    // and must not be the call that gate is read off — a second
+                    // binding of the same name would hand the assertion the
+                    // wrong argument list, and it would go green on a `None`
+                    // that means something else entirely.
+                    let (answerer, _questions) = io_cli::intent::channel();
+                    let reading = io_cli::contract::session(
+                        String::new(),
+                        session.root().to_path_buf(),
+                        &config,
+                        &capabilities,
+                        std::sync::Arc::new(answerer),
+                        None,
+                    );
+                    let lines = io_cli::status::committed(
+                        &app.status,
+                        &session,
+                        &policy,
+                        &reading,
+                        // What the NEXT turn would run under, which is why
+                        // `/contain off` reads as not contained here: the caps
+                        // are only in force on a turn that takes the contained
+                        // entry point.
+                        containment.as_ref().filter(|_| contained),
+                        &app.theme,
+                        screen.width(),
+                    );
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
                 Action::Copy(what) => {
                     let (payload, said) = to_copy(&session, &store, what);
                     match payload {

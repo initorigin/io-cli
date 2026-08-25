@@ -275,6 +275,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 | `/resume` | reopen an earlier session where it stopped |
 | `/fork` | continue from an earlier turn of this conversation |
 | `/expand` | commit the last step's full detail into the scrollback |
+| `/status` | commit the whole session state into the scrollback |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
@@ -286,7 +287,7 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 <!-- commands:end -->
 
 **Everything that shows you more of something writes it into the terminal's own
-scrollback.** `Ctrl+T` and `/expand` do not open a pane: the viewport is a few
+scrollback.** `Ctrl+T`, `/expand` and `/status` do not open a pane: the viewport is a few
 rows and this product has no alternate screen, so the place to read something
 long is the buffer where the terminal's search, selection and tmux copy-mode
 already work. `/expand` reads the step's full output back out of the run's

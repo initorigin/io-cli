@@ -661,10 +661,32 @@ fn f6_both_arms_are_handed_one_contract() {
     // uncontained turn ended up unable to answer a question. Both are
     // `contract::session`'s arguments now, where the test above reads them off a
     // value instead of off this file.
+    // The two call sites are named rather than counted, because the property is
+    // "one contract per turn", not "one mention of the builder in this file", and
+    // 0.14.0 is where those two stopped being the same sentence. `/status` reads
+    // the configured rosters off the same builder — it has to, since
+    // `Config::apply_to` is the only thing that can say what `[[mcp]]` and
+    // `[[lsp]]` hold and `contract::session` is the only call that also merges the
+    // `[app.io-cli]` scope — but it builds nothing that runs. Raising the count to
+    // two would have admitted a genuine second *arm* just as readily, which is the
+    // failure this test exists to make unrepresentable; binding each site to a name
+    // keeps a third one failing.
     assert_eq!(
-        text.matches("io_cli::contract::session(").count(),
+        text.matches("let contract = io_cli::contract::session(")
+            .count(),
         1,
         "one contract is built per turn, not one per arm",
+    );
+    assert_eq!(
+        text.matches("let reading = io_cli::contract::session(")
+            .count(),
+        1,
+        "`/status` reads one contract to report the configured rosters, and builds no turn",
+    );
+    assert_eq!(
+        text.matches("io_cli::contract::session(").count(),
+        2,
+        "the turn's contract and `/status`'s reading are the only two, so a third is a new arm",
     );
     assert!(
         !text.contains("with_responder") && !text.contains("with_plan_gate"),

@@ -9,10 +9,19 @@
 //! Its narrow form drops fields from the right rather than wrapping, because a
 //! status line that becomes two lines has taken a row from the transcript and
 //! stopped being a status line.
+//!
+//! **And since 0.14.0 there is a second, much longer form of the same facts.**
+//! [`committed`] is what `/status` writes into the terminal's own scrollback: the
+//! whole state at once, laid out down the page rather than across a row, because
+//! nothing that has to fit in one line can carry a policy layer's rules or the
+//! caps a fan-out runs under. The two forms read the same values — the budgets
+//! come from [`Status::budgets_left`] on both, the backend from the same
+//! `containment` field — so the row and the page cannot say different things
+//! about one session.
 
 use std::time::Duration;
 
-use io_harness::TaskContract;
+use io_harness::{Containment, Policy, Session, TaskContract};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -1054,4 +1063,320 @@ pub fn format_tokens(tokens: u64) -> String {
 /// second word that says what is actually enforcing anything.
 pub fn format_containment(mode: &str, backend: &str) -> String {
     format!("{mode}/{backend}")
+}
+
+/// The whole session state, as the lines `/status` commits into the scrollback.
+///
+/// **Every field here is a value io-harness supplied, and the ones that are not
+/// readable from a live object are read from the event that carries them rather
+/// than reconstructed.** That is not a stylistic preference: three of these facts
+/// are behind `pub(crate)` in io-harness and there is no accessor for any of
+/// them. `ExecContainment` is private, so the backend that *actually* contained
+/// this run comes from the `Contained` event, which io-harness emits once per run
+/// and always — carrying `none` for full access rather than being absent — and it
+/// reaches this struct through `App::event`. The containment `Ledger` is built
+/// inside the tree run and never returned, so the draw against the tree's ceiling
+/// comes from the `SpendDraw` stream this interface already routes. `McpSession`
+/// and `LspSession` are private too, so what is *connected* comes from the `Mcp`
+/// and `LspStarted` events and is stated beside what the contract *configured*,
+/// which is the only pair that answers the question an operator is actually
+/// asking — a server named in the file and a server that answered are different
+/// facts.
+///
+/// **Nothing here is composed a second time.** The budgets are
+/// [`Status::budgets_left`], which is the same method the status line and the
+/// footer render, made public in this release precisely so that this surface does
+/// not become a third spelling of `left 17/20 steps`. The containment word is the
+/// same `mode/backend` pair [`format_containment`] built for the line. The
+/// contract handed in is the contract `crate::contract::session` would build for
+/// the next turn, so the configured rosters and the skills directory are the ones
+/// that would actually reach it.
+///
+/// **It is not a table, and that is a decision about eighty columns rather than
+/// about taste.** A table has a column width, a column width is decided by the
+/// widest cell, and the widest cell here is a workspace path — so at eighty
+/// columns a table either truncates the path or truncates everything beside it.
+/// This is one fact per row, `label: value`, with nothing padded into a column
+/// and nothing aligned across rows, so there is no width for anything to be
+/// squeezed out of. A row too long for the terminal is **folded**, never cut: a
+/// status surface that shortened the very thing a reader opened it to read would
+/// be the one surface in this product that cannot be trusted.
+///
+/// **Plain mode needs no path of its own here.** The three switches this codebase
+/// already models stay three: `NO_COLOR` is `Theme::coloured` and reaches this
+/// through `Theme::style`, the glyph set is `Theme::glyphs` and is already ASCII
+/// whenever `--plain` is on, and `Status::plain` governs whether anything
+/// *animates* — which nothing committed into a scrollback ever does. So plain
+/// mode is this same function drawn with the theme the session already carries,
+/// and the only difference on screen is the rule, the separator and the dash. No
+/// colour carries a meaning of its own on any row: every fact is spelled in
+/// words, which is also what makes it readable in a screen reader and in a log.
+#[allow(clippy::too_many_arguments)]
+pub fn committed(
+    status: &Status,
+    session: &Session,
+    policy: &Policy,
+    contract: &TaskContract,
+    // The caps the NEXT turn would run under, which is `None` both for a session
+    // that configured no `[app.io-cli.containment]` and for one that typed
+    // `/contain off`. Absence is drawn as the absence of containment rather than
+    // as a missing field: a session that cannot fan out is a fact about it.
+    caps: Option<&Containment>,
+    theme: &Theme,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let dash = theme.glyphs.dash;
+    let rule = theme.glyphs.rule;
+    let mut facts: Vec<(String, String)> = Vec::new();
+
+    // The workspace and the conversation, both asked of the `Session` rather than
+    // threaded down from the driver, so there is one answer to "which workspace
+    // is this" and it is io-harness's — the same rule `App::set_root` follows.
+    facts.push(("workspace".into(), session.root().display().to_string()));
+    facts.push((
+        "session".into(),
+        match session.head() {
+            Some(head) => format!("{} {dash} head at turn {head}", session.id()),
+            None => format!("{} {dash} no turn has run in it yet", session.id()),
+        },
+    ));
+    facts.push(("model".into(), status.model.clone()));
+    facts.push((
+        "provider".into(),
+        match &status.provider {
+            Some(provider) => provider.clone(),
+            // Absent rather than guessed. The provider is whichever one answered,
+            // and a fallback moves it mid-session — so before a turn has started
+            // there is nothing true to say.
+            None => {
+                format!("not known until a turn has started {dash} whichever one answers")
+            }
+        },
+    ));
+
+    // **Every layer by name, with the acts it governs.** `Policy::layers` is a
+    // public field and `Layer`, `Rule`, `Act` and `Effect` are all public, so this
+    // is the harness's own stack read out rather than io-cli's summary of it. The
+    // acts are deduplicated in the order they were written: a layer with forty
+    // rules over two acts is two words, and forty rows here would bury the layer
+    // whose one rule is the reason the agent was refused.
+    if policy.layers.is_empty() {
+        facts.push((
+            "policy".into(),
+            format!("no layer {dash} only the defaults decide"),
+        ));
+    }
+    for layer in &policy.layers {
+        let mut acts: Vec<&'static str> = Vec::new();
+        // Named `entry` rather than `rule`, which is already the rule glyph in
+        // this scope — two things called `rule` in one function is how a reader
+        // ends up reading the wrong one.
+        for entry in &layer.rules {
+            let word = crate::approval::act_word(entry.act);
+            if !acts.contains(&word) {
+                acts.push(word);
+            }
+        }
+        facts.push((
+            format!("policy {}", layer.name),
+            if acts.is_empty() {
+                format!("no rule {dash} it governs nothing")
+            } else {
+                acts.join(", ")
+            },
+        ));
+    }
+
+    // **The mode asked for beside the backend that answered, and never the mode
+    // alone.** The two disagree often — a `workspace-write` run on a host with no
+    // sandbox available reaches the portable floor — and it is the second word
+    // that says what is enforcing anything. It is `EventKind::Contained`'s pair,
+    // carried on this struct by `App::event`; nothing here names a backend.
+    facts.push((
+        "sandbox".into(),
+        match &status.containment {
+            Some(word) => word.clone(),
+            None => format!(
+                "not known until a turn has run {dash} the mode and the backend are \
+                 reported when one starts"
+            ),
+        },
+    ));
+    facts.push((
+        "containment".into(),
+        match caps {
+            Some(caps) => format!(
+                "up to {} agents, {} at once per tier, {} deep, {} tokens for the tree",
+                caps.max_total_agents,
+                caps.max_concurrent_agents,
+                caps.max_depth,
+                caps.max_total_tokens,
+            ),
+            None => format!(
+                "not contained {dash} the next turn does the work itself and cannot fan out"
+            ),
+        },
+    ));
+    facts.push((
+        "drawn".into(),
+        match status.spend {
+            Some((drawn, Some(left))) => format!(
+                "{} of {} against the tree",
+                format_tokens(drawn),
+                format_tokens(drawn + left)
+            ),
+            // A tree with no ceiling reports no remainder, and inventing a total
+            // from the draw would be a ceiling nobody set.
+            Some((drawn, None)) => {
+                format!("{} {dash} no ceiling was reported", format_tokens(drawn))
+            }
+            None => "nothing has been drawn against the tree yet".to_string(),
+        },
+    ));
+
+    // The budgets, through the one method both other renderers use. A budget that
+    // does not exist contributes no row there, so the empty case is said here
+    // rather than left as a gap somebody has to interpret.
+    let budgets = status.budgets_left();
+    if budgets.is_empty() {
+        facts.push((
+            "budget".into(),
+            format!("none {dash} no ceiling from `[run]` is in force"),
+        ));
+    }
+    for text in budgets {
+        facts.push(("budget".into(), text));
+    }
+
+    facts.push((
+        "context".into(),
+        match status.context {
+            Some(fill) => format!("{fill}% of the budget io-harness declares"),
+            None => "not known until the context has been folded once".to_string(),
+        },
+    ));
+
+    // **What answered, beside what was configured.** Either number alone is a
+    // half-answer: three configured and none connected is the state an operator
+    // is trying to find, and it reads exactly like a session with none configured
+    // if only the live count is shown.
+    facts.push((
+        "mcp".into(),
+        format!(
+            "{} of {} configured connected, offering {} tool{}",
+            status.mcp.0,
+            contract.mcp.len(),
+            status.mcp.1,
+            if status.mcp.1 == 1 { "" } else { "s" },
+        ),
+    ));
+    facts.push((
+        "lsp".into(),
+        format!(
+            "{} of {} configured started",
+            status.lsp,
+            contract.lsp.len()
+        ),
+    ));
+    facts.push((
+        "browser".into(),
+        match (&status.browser, &contract.browser) {
+            // A refusal is drawn as a refusal, for the reason the status line's
+            // own field is: a blocked host must not read like a visited one.
+            (Some((host, Some(true))), _) => format!("at {host}"),
+            (Some((host, Some(false))), _) => format!("refused {host}"),
+            (Some((_, None)), _) => "started, and has gone nowhere yet".to_string(),
+            (None, Some(_)) => format!("configured {dash} not started"),
+            (None, None) => "not configured".to_string(),
+        },
+    ));
+    facts.push((
+        "skills".into(),
+        match &contract.skills {
+            Some(dir) => dir.display().to_string(),
+            None => "not configured".to_string(),
+        },
+    ));
+
+    // Three of whatever the set draws a rule with, at both ends — the same edge
+    // `crate::transcript` gives a committed conversation, and for the same
+    // reason: this lands in a scrollback that already holds every earlier turn,
+    // and a passage with no edges is one a reader cannot tell the extent of.
+    let room = width as usize;
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{rule}{rule}{rule} status"),
+        theme.style(Tone::Accent),
+    ))];
+    for (label, value) in &facts {
+        for row in folded(&format!("{label}: {value}"), room, 2, 4) {
+            lines.push(Line::from(Span::styled(row, theme.style(Tone::Normal))));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        format!("{rule}{rule}{rule} status ends"),
+        theme.style(Tone::Accent),
+    )));
+    lines
+}
+
+/// `text` as rows no wider than `width`, indented `first` and then `rest`.
+///
+/// **Folded and never fitted**, which is the one thing this differs in from every
+/// other width-aware helper in this crate. `crate::picker::fit` and
+/// [`Status::line`] shorten, because a picker row and a status line each own
+/// exactly one row of a viewport that cannot grow. A committed surface owns as
+/// many rows as it needs, so there is no reason left to lose a character — and
+/// the characters most likely to be lost here are the tail of a workspace path
+/// and the tail of a policy layer's act list, which is to say the answer.
+///
+/// Broken at spaces, with a hanging indent that says a row is a continuation
+/// without aligning anything into a column. A word longer than the room it has —
+/// a deep path, an absurd model name — is **split** rather than allowed to
+/// overflow: eighty columns is a supported size, and a row that runs past it gets
+/// wrapped by the terminal at a place nothing here chose.
+fn folded(text: &str, width: usize, first: usize, rest: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let mut indent = first;
+    let mut row = " ".repeat(indent);
+    // Content characters on this row, which is its width less the indent. Counted
+    // rather than measured off `row` so the arithmetic is in one unit — the same
+    // reason `fits` counts characters and not bytes.
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let mut word = word;
+        loop {
+            // At least one cell, so a terminal narrower than the indent still
+            // makes progress instead of looping forever.
+            let room = width.saturating_sub(indent).max(1);
+            let space = usize::from(used > 0);
+            let length = word.chars().count();
+            if used + space + length <= room {
+                if space == 1 {
+                    row.push(' ');
+                }
+                row.push_str(word);
+                used += space + length;
+                break;
+            }
+            if used > 0 {
+                rows.push(std::mem::take(&mut row));
+                indent = rest;
+                row = " ".repeat(indent);
+                used = 0;
+                // Retried whole on the fresh row: a word is only ever split when
+                // a row of its own cannot hold it.
+                continue;
+            }
+            let head: String = word.chars().take(room).collect();
+            word = &word[head.len()..];
+            row.push_str(&head);
+            rows.push(std::mem::take(&mut row));
+            indent = rest;
+            row = " ".repeat(indent);
+        }
+    }
+    if used > 0 || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
 }

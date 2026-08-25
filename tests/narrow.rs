@@ -1596,3 +1596,160 @@ fn f5_the_activity_line_drops_the_token_count_then_the_clock() {
         }
     }
 }
+
+/// A workspace whose path is long enough that eighty columns cannot hold the row
+/// naming it.
+///
+/// A temporary directory's own name is short on some hosts and long on others, so
+/// a test that relied on it would fold on one machine and not on another — and
+/// the arm that matters here is the folded one. Nesting a run of named
+/// directories under it makes the row too long everywhere.
+/// The directory is returned beside the path because dropping it deletes the
+/// tree, and a session opened over a deleted workspace is a different test.
+///
+/// Named apart from [`deep_workspace`] above, which answers a different question
+/// — that one nests a long *file* under a workspace to overflow a picker row, and
+/// hands back only the directory because nothing needs the path.
+fn deep_workspace_root() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("a workspace");
+    let deep = dir
+        .path()
+        .join("services")
+        .join("ingestion-pipeline")
+        .join("crates")
+        .join("record-normaliser");
+    std::fs::create_dir_all(&deep).expect("the nested workspace");
+    (dir, deep)
+}
+
+/// **0.14.0 F11 — `/status` has a defined form at eighty columns, and it wraps
+/// rather than truncating.**
+///
+/// Both halves are asserted, because either alone passes for the wrong reason. No
+/// row is wider than eighty, which a surface that overflowed would fail — and
+/// every character of the longest facts is still on the page once the folding
+/// whitespace is taken out, which a surface that *fitted* rather than folded
+/// would fail while keeping every row comfortably inside eighty. A status page
+/// that shortened the very thing the reader opened it to read would be the one
+/// surface in this product that cannot be trusted.
+///
+/// Both glyph sets, because the arithmetic differs between them: the separator is
+/// three cells in both but the dash and the rule are not the same characters, and
+/// a fold measured in bytes rather than characters lands differently under each.
+///
+/// Sabotage: render it as a table — under which only F11 fails, at eighty
+/// columns, which is a supported size and not a degraded one. A table's column is
+/// as wide as its widest cell, the widest cell here is a workspace path, and at
+/// eighty columns the column either eats the page or the path loses its tail: the
+/// first assertion catches the one and the second catches the other.
+#[test]
+fn f11_status_folds_at_eighty_columns_rather_than_losing_the_end_of_a_row() {
+    let (_dir, root) = deep_workspace_root();
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let session = io_harness::Session::open(&store, &root).expect("a session");
+    let policy = io_harness::Policy::permissive()
+        .layer("organisation-baseline-secrets-and-egress")
+        .deny_read(".env")
+        .deny_write(".env")
+        .deny_net("*")
+        .allow_exec("cargo");
+    let skills = root.join("agent-skills-for-the-ingestion-pipeline");
+    let contract = io_harness::TaskContract::workspace("summarise the module", root.clone())
+        .with_max_steps(20)
+        .with_skills(skills.clone());
+    let caps = io_harness::Containment::new(12, 4, 2, 200_000);
+
+    let mut app = io_cli::app::App::new(io_cli::theme::DARK, "anthropic/claude-sonnet-4.5");
+    app.event(
+        &io_harness::RunEvent::new(
+            1,
+            0,
+            io_harness::EventKind::Contained {
+                mode: "workspace-write".into(),
+                backend: "macos-sandbox-exec".into(),
+                roots: 2,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    app.status.budgets = io_cli::status::Budgets::in_force(&contract);
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let rows = text_of(&io_cli::status::committed(
+            &app.status,
+            &session,
+            &policy,
+            &contract,
+            Some(&caps),
+            &theme,
+            WIDTH,
+        ));
+
+        for row in &rows {
+            assert!(
+                row.chars().count() <= WIDTH as usize,
+                "{set}: a row overflowed eighty columns: {row:?}",
+            );
+        }
+
+        // **Folded, not fitted.** Folding only ever inserts whitespace — a row
+        // break and an indent — at what was a space, or between two characters of
+        // a word too long for any row. So with every space taken out of both
+        // sides, what is on the page still contains what went into it, character
+        // for character, unless something was dropped.
+        let squeezed: String = rows
+            .concat()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        for whole in [
+            // The session's own answer for the root, not the path handed to
+            // `Session::open` — io-harness may resolve it, and the page reports
+            // what it resolved to.
+            session.root().display().to_string(),
+            skills.display().to_string(),
+            "organisation-baseline-secrets-and-egress".to_string(),
+            "up to 12 agents, 4 at once per tier, 2 deep, 200000 tokens for the tree".to_string(),
+        ] {
+            let wanted: String = whole.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                squeezed.contains(&wanted),
+                "{set}: {whole:?} lost its tail at eighty columns; the page was {rows:#?}",
+            );
+        }
+
+        // Nothing was shortened, so nothing says it was. The ellipsis is the mark
+        // every fitter in this crate appends, and its presence here would be the
+        // truncation the assertion above is meant to catch showing up by another
+        // route.
+        assert!(
+            !rows.iter().any(|row| row.contains(theme.glyphs.ellipsis)),
+            "{set}: a row was fitted rather than folded: {rows:#?}",
+        );
+
+        // Every fact still on the page, so folding did not cost a field.
+        let page = rows.join("\n");
+        for label in [
+            "workspace:",
+            "session:",
+            "model:",
+            "provider:",
+            "policy organisation",
+            "sandbox:",
+            "containment:",
+            "drawn:",
+            "budget:",
+            "context:",
+            "mcp:",
+            "lsp:",
+            "browser:",
+            "skills:",
+        ] {
+            assert!(
+                page.contains(label),
+                "{set}: `{label}` went missing at eighty columns: {page}",
+            );
+        }
+    }
+}
