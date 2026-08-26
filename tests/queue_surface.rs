@@ -15,9 +15,13 @@
 //! N2 is a refusal of a row. The viewport is subtracted from the terminal and
 //! the transcript is the terminal's own scrollback, so a surface that claimed a
 //! row per queued line would walk the conversation upward one row for every line
-//! typed against it. The rows come out of the composer's allowance instead —
-//! the way `Fleet::render` takes them — and the frame is the same height with
-//! nine prompts waiting as with none.
+//! typed against it. The rows are borrowed instead, and the frame is the same
+//! height with nine prompts waiting as with none: the composer's spare rows
+//! where a taller terminal has any — the way `Fleet::render` takes them — and,
+//! at the height a running turn is actually drawn at, the blank above the
+//! activity line, which the layout's own argument describes as carrying
+//! nothing. That is `US-IO-CLI-0.17.0-I02`, and the reason it exists is that
+//! the composer's allowance at that height *is* the composer's floor.
 //!
 //! Asserted on the rendered viewport rather than on the rectangles wherever a
 //! reader's answer differs from the renderer's arithmetic: a test that recomputed
@@ -116,8 +120,10 @@ fn row_of(rows: &[String], needle: &str) -> usize {
 /// Twelve rows leaves the composer five — the streaming row, the blank, the
 /// activity line, the rule and three rows of footer take the rest — of which one
 /// is the composer's own floor and four can be lent. It is not
-/// `term::VIEWPORT_HEIGHT`, and that is a finding rather than a convenience: see
-/// the note on `n2_the_surface_draws_nothing_when_the_composer_has_no_row_to_spare`.
+/// `term::VIEWPORT_HEIGHT`, and the difference is a finding rather than a
+/// convenience: at the running viewport there are no spare rows at all and the
+/// surface is drawn in the borrowed blank instead, with one row rather than
+/// four. See `n2_the_surface_is_visible_at_the_running_viewport_and_costs_it_no_height`.
 const TALL: u16 = 12;
 
 // ---------------------------------------------------------------------------
