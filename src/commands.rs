@@ -137,6 +137,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/status",
         "commit the whole session state into the scrollback",
     ),
+    // `/status` says how full the window is; this says what is in it. The two are
+    // one keystroke apart on purpose — the percentage is what makes an operator
+    // ask the question this answers.
+    (
+        "/context",
+        "what is in the model's window, read from the request that carried the turn",
+    ),
     ("/copy", "put the last answer on the system clipboard"),
     (
         "/copy diff",
@@ -241,6 +248,7 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         &[
             "/help",
             "/status",
+            "/context",
             "/expand",
             "/fleet",
             "/mcp",
@@ -662,6 +670,16 @@ pub enum Action {
     /// budgets in force, the context fill, the servers that came up — so what is
     /// committed is the state io-harness is in and not io-cli's account of it.
     Status,
+    /// Commit what the model's window actually held, section by section.
+    ///
+    /// Read off the request that carried the last turn and never reconstructed:
+    /// io-harness enumerates no context window, its prompt composer is private
+    /// and the event announcing a composed prompt carries a byte count with no
+    /// text. What it does hand the caller is the `CompletionRequest` itself, so
+    /// the catalogue on this page includes tools io-cli never registered —
+    /// because it is the catalogue the model was given rather than the one this
+    /// crate believes it asked for.
+    Context,
     /// Put something on the system clipboard over OSC 52.
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
@@ -883,6 +901,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // name for a surface nobody has typed yet is a name to keep working
         // forever in exchange for nothing.
         "status" => Action::Status,
+        "context" => Action::Context,
         // `/clear` and `/new` mean the same thing, for the reason `/resume` and
         // `/continue` do: both words are in the field's vocabulary and a reader
         // arrives having been taught one of them by another agent.

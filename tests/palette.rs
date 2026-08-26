@@ -307,12 +307,12 @@ fn f1_an_exact_name_outranks_a_prefix_which_outranks_a_scattered_match() {
 
 #[test]
 fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
-    // `c` matches SIX rows since 0.16.0: `copy`, `copy diff`, `contain`, `clear`
-    // and `config` all begin with it, and `mcp` merely holds one — which is the
-    // point of the arm, since a scattered match ranks below every prefix.
-    // `attach`, which also merely held one, stopped being a command in 0.13.1.
-    // `co` narrows to the four that begin with `co`: `clear` has no `o` after its
-    // `c`, and neither does `mcp`.
+    // `c` matches SEVEN rows since 0.17.0: `copy`, `copy diff`, `contain`,
+    // `clear`, `config` and `context` all begin with it, and `mcp` merely holds
+    // one — which is the point of the arm, since a scattered match ranks below
+    // every prefix. `attach`, which also merely held one, stopped being a command
+    // in 0.13.1. `co` narrows to the five that begin with `co`: `clear` has no
+    // `o` after its `c`, and neither does `mcp`.
     // The three score the same and the tie-break is the order they were handed
     // in. The defect: an unstable sort swaps them on a keystroke that did not
     // change the result, and `Enter` takes a row nobody chose.
@@ -323,14 +323,14 @@ fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
     // quietly stopped happening.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 6);
+    assert_eq!(picker.matching(), 7);
     // `clear` and not `copy` since the list became grouped: the tie-break is the
     // order the rows were handed in, and the session group now leads. The
     // PROPERTY is unchanged and is what this test is about — the marked row must
     // not move on a keystroke that did not change the result.
     assert_eq!(marked(&picker), "clear");
     type_at(&mut picker, "o");
-    assert_eq!(picker.matching(), 4);
+    assert_eq!(picker.matching(), 5);
     assert_eq!(
         marked(&picker),
         "contain",

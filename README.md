@@ -336,6 +336,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | --- | --- |
 | `/help` | this table |
 | `/status` | commit the whole session state into the scrollback |
+| `/context` | what is in the model's window, read from the request that carried the turn |
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/fleet` | show the children this turn has spawned |
 | `/mcp` | the MCP servers configured, and what this session has seen of each |

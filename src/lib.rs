@@ -34,6 +34,7 @@ pub mod commands;
 pub mod complete;
 pub mod composer;
 pub mod configure;
+pub mod context;
 pub mod contract;
 pub mod diff;
 pub mod edit;

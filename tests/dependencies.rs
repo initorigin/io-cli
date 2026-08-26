@@ -144,11 +144,49 @@ fn sources() -> Vec<(PathBuf, String)> {
 fn f7_no_source_file_loops_over_provider_responses() {
     // The agent loop is io-harness's. This crate calls a provider exactly once —
     // the wizard's verification handshake — and never in a loop; everything else
-    // goes through `Session::turn_steered`, which IS the harness's loop.
+    // goes through the harness's own steered turn entry points, which ARE the
+    // loop.
+    //
+    // **0.17.0 amends this gate rather than relaxing it.** `/context` can only
+    // say what is in the model's window by reading the request on its way to the
+    // provider, so `src/provider.rs` gained `Watched`, which implements the trait
+    // by handing every call straight to the provider it wraps. Those forwards are
+    // provider calls by the letter of the count and are the opposite of a second
+    // agent loop by its intent — so they are exempted BY PATH, and a new
+    // assertion below keeps the exemption a boundary: a forward must hand the
+    // call to the inner provider and must never look at what comes back. The
+    // shape is 0.7.0's amendment of the spawn ban, for the same reason.
+    let delegating = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("provider.rs");
+    let forwarding = std::fs::read_to_string(&delegating).expect("the provider module");
+    let forwards = forwarding.matches("self.inner.complete").count();
+    assert!(
+        forwards >= 3,
+        "the decorator forwards every completion method it implements; found {forwards}",
+    );
+    // A forward hands the request on and returns what the inner provider
+    // returned. If this module ever reads a response — a token, a tool call, a
+    // message — it has stopped decorating and started interpreting, which is the
+    // first half of an agent loop wherever it is written.
+    for interpreting in [".choices", ".tool_calls", "match response", "let response ="] {
+        assert!(
+            !forwarding.contains(interpreting),
+            "src/provider.rs reads a provider response (`{interpreting}`) — a decorator \
+             records the REQUEST and returns the answer untouched",
+        );
+    }
+
     let mut calls = Vec::new();
     for (path, text) in sources() {
-        let count =
-            text.matches(".complete(").count() + text.matches(".complete_streaming(").count();
+        // The forwards are subtracted rather than the file being skipped, so the
+        // decorator is still held to the no-top-level-loop rule below — an
+        // exemption that took a module out of the sweep entirely would exempt it
+        // from the half of this gate that matters most.
+        let forwarded = if path == delegating { forwards } else { 0 };
+        let count = (text.matches(".complete(").count()
+            + text.matches(".complete_streaming(").count())
+        .saturating_sub(forwarded);
         if count == 0 {
             continue;
         }

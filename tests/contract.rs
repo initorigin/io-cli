@@ -747,11 +747,17 @@ fn f6_both_arms_are_handed_one_contract() {
         1,
         "one contract is built per turn, not one per arm",
     );
+    // TWO reading sites from 0.17.0, and the number is the point rather than a
+    // tolerance: `/status` reports the configured rosters and `/context` reports
+    // the window the next turn would run under. Both READ a contract and neither
+    // takes a turn with it, which is why they share a binding name that is not
+    // `contract` — the assertion above finds the turn's builder by that name, and
+    // a page that bound it would hand that assertion the wrong argument list.
     assert_eq!(
         text.matches("let reading = io_cli::contract::session(")
             .count(),
-        1,
-        "`/status` reads one contract to report the configured rosters, and builds no turn",
+        2,
+        "`/status` and `/context` each read one contract to report with, and neither builds a turn",
     );
     assert_eq!(
         text.matches("let opening = io_cli::contract::session(")
@@ -761,8 +767,9 @@ fn f6_both_arms_are_handed_one_contract() {
     );
     assert_eq!(
         text.matches("io_cli::contract::session(").count(),
-        3,
-        "the turn's contract and the two readers are the only three, so a fourth is a new arm",
+        4,
+        "the turn's contract, the startup reading and the two reporting pages are the only four, \
+         so a fifth is a new arm",
     );
     assert!(
         !text.contains("with_responder") && !text.contains("with_plan_gate"),
