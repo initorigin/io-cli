@@ -1308,10 +1308,15 @@ pub fn committed(
     // half-answer: three configured and none connected is the state an operator
     // is trying to find, and it reads exactly like a session with none configured
     // if only the live count is shown.
+    // `status.mcp.1` counts CALLS, which this sentence called tools offered until
+    // 0.17.0 — the one site 0.16.0's rename missed, while the status line itself
+    // has said `mcp N/M calls` since. It is doubly wrong now that `/mcp` draws a
+    // real offered count from `EventKind::Mcp`'s own `tools` field: two different
+    // numbers under one word is worse than either alone.
     facts.push((
         "mcp".into(),
         format!(
-            "{} of {} configured connected, offering {} tool{}",
+            "{} of {} configured connected, answering {} call{}",
             status.mcp.0,
             contract.mcp.len(),
             status.mcp.1,

@@ -1589,7 +1589,12 @@ fn f10_status_commits_every_field_from_the_value_io_harness_supplied() {
 
     // What is connected, beside what was configured.
     assert!(
-        page.contains("mcp: 1 of 2 configured connected, offering 1 tool"),
+        // `answering N calls` and not `offering N tools`: the second number has
+        // counted calls since 0.10.0 and this was the one site 0.16.0's rename
+        // missed. `/mcp` draws the real offered count from the event's own
+        // `tools` field from 0.17.0, so two different numbers under one word
+        // would now contradict each other on two surfaces.
+        page.contains("mcp: 1 of 2 configured connected, answering 1 call"),
         "a server that answered and a server that is named in the file are \
          different facts, and both are on the page: {page}",
     );

@@ -1,4 +1,5 @@
-//! F5 and F6 — the `/mcp` panel's three states, and the writes it makes.
+//! F5, F6 and F9 — the `/mcp` panel's three states, the writes it makes, and the
+//! two counts it keeps apart.
 
 use io_cli::servers::{self, Observed, Reached};
 use io_harness::config::Config;
@@ -92,7 +93,13 @@ fn f5_three_states_are_distinguishable_at_once() {
     let docs = list.iter().find(|s| s.id == "docs").unwrap();
     let search = list.iter().find(|s| s.id == "search").unwrap();
 
-    assert_eq!(docs.state, Reached::Answered { tools: 2 });
+    assert_eq!(
+        docs.state,
+        Reached::Answered {
+            tools: 2,
+            offered: Some(3)
+        }
+    );
     assert_eq!(
         search.state,
         Reached::Failed {
@@ -127,7 +134,10 @@ fn f5_the_count_is_distinct_tools_and_never_calls() {
     let docs = list.iter().find(|s| s.id == "docs").unwrap();
     assert_eq!(
         docs.state,
-        Reached::Answered { tools: 1 },
+        Reached::Answered {
+            tools: 1,
+            offered: None
+        },
         "five calls is one tool"
     );
 }
@@ -146,7 +156,10 @@ fn f5_a_call_is_not_counted_as_a_second_server() {
     assert_eq!(list.len(), 2, "the panel is the CONFIGURED set, always");
     assert_eq!(
         list.iter().find(|s| s.id == "docs").unwrap().state,
-        Reached::Answered { tools: 2 }
+        Reached::Answered {
+            tools: 2,
+            offered: Some(3)
+        }
     );
 }
 
@@ -162,7 +175,10 @@ fn f5_an_outcome_the_event_did_not_carry_is_not_a_failure() {
     let list = servers::servers(&config, &observed);
     assert_eq!(
         list.iter().find(|s| s.id == "docs").unwrap().state,
-        Reached::Answered { tools: 1 },
+        Reached::Answered {
+            tools: 1,
+            offered: None
+        },
         "a call with no reported outcome was drawn as a failure"
     );
 }
@@ -193,6 +209,121 @@ fn f5_the_panel_reads_the_configuration_and_never_the_events_for_its_rows() {
     let list = servers::servers(&config, &observed);
     let ids: Vec<&str> = list.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, vec!["docs", "search"]);
+}
+
+// --- F9: offered, beside asked-for --------------------------------------------
+
+/// The row a server drew, by id.
+fn detail(config: &Config, observed: &Observed, id: &str) -> String {
+    let list = servers::servers(config, observed);
+    let rows = servers::rows(&list);
+    let at = list.iter().position(|s| s.id == id).expect("a configured id");
+    rows[at].detail.clone().expect("every row carries a detail")
+}
+
+#[test]
+fn f9_offered_and_asked_for_are_two_different_numbers() {
+    // The whole of F9: a server that announced ten tools and has been called
+    // twice has TWO facts about it, and neither answers for the other. Ten with
+    // two calls and ten with two hundred are different sessions; two asked for
+    // out of ten and two out of two are different servers.
+    let config = configured();
+    let mut observed = Observed::default();
+    observed.event(&reached_offering("docs", 10));
+    observed.event(&called("docs", "search_docs", Some(true)));
+    observed.event(&called("docs", "get_page", Some(true)));
+
+    assert_eq!(
+        observed.of("docs"),
+        Reached::Answered {
+            tools: 2,
+            offered: Some(10)
+        }
+    );
+
+    // And both reach the screen, as two numbers rather than one.
+    let drawn = detail(&config, &observed, "docs");
+    assert!(drawn.contains("10 offered"), "{drawn:?}");
+    assert!(drawn.contains("2 used"), "{drawn:?}");
+}
+
+#[test]
+fn f9_a_server_that_announced_no_tools_offers_zero_and_not_unknown() {
+    // `Some(0)` is a STATEMENT. A server that came up with an empty catalogue is
+    // a configuration an operator wants to see named, and drawing it the same as
+    // a server whose count was never heard would hide the one thing wrong with it.
+    let config = configured();
+    let mut observed = Observed::default();
+    observed.event(&reached_offering("docs", 0));
+
+    assert_eq!(
+        observed.of("docs"),
+        Reached::Answered {
+            tools: 0,
+            offered: Some(0)
+        }
+    );
+    let drawn = detail(&config, &observed, "docs");
+    assert!(drawn.contains("0 offered"), "{drawn:?}");
+}
+
+#[test]
+fn f9_a_server_that_has_only_been_called_does_not_report_offering_nothing() {
+    // THE SABOTAGE. Read a missing count as zero — `unwrap_or(0)` anywhere on the
+    // path — and this server, which has demonstrably answered two different tools,
+    // reports offering none. Every event here carries `tools: None`, because the
+    // count rides only the announcing event and this session never folded one in.
+    let config = configured();
+    let mut observed = Observed::default();
+    observed.event(&called("docs", "search_docs", Some(true)));
+    observed.event(&called("docs", "get_page", Some(true)));
+
+    assert_eq!(
+        observed.of("docs"),
+        Reached::Answered {
+            tools: 2,
+            offered: None
+        },
+        "a missing count was read as a stated zero"
+    );
+    let drawn = detail(&config, &observed, "docs");
+    assert!(
+        !drawn.contains("offered"),
+        "the panel claimed an offered count it never heard: {drawn:?}"
+    );
+    assert!(drawn.contains("2 tools used"), "{drawn:?}");
+}
+
+#[test]
+fn f9_a_later_event_without_the_count_does_not_erase_the_one_that_had_it() {
+    // The same sabotage from the other side: the announcing event states the
+    // count, then every call that follows carries `None`. Folding a `None` in as
+    // an assignment would delete a fact the session was told.
+    let mut observed = Observed::default();
+    observed.event(&reached_offering("docs", 7));
+    observed.event(&called("docs", "a", Some(true)));
+
+    assert_eq!(
+        observed.of("docs"),
+        Reached::Answered {
+            tools: 1,
+            offered: Some(7)
+        }
+    );
+}
+
+#[test]
+fn f9_a_server_never_reached_shows_neither_number() {
+    // Not reached is not "offered nothing, used nothing". It is the third state,
+    // and F5's whole point is that it stays its own thing.
+    let config = configured();
+    let observed = Observed::default();
+
+    assert_eq!(observed.of("docs"), Reached::NotYet);
+    let drawn = detail(&config, &observed, "docs");
+    assert!(!drawn.contains("offered"), "{drawn:?}");
+    assert!(!drawn.contains("used"), "{drawn:?}");
+    assert!(drawn.contains("not reached this session"), "{drawn:?}");
 }
 
 // --- F6: the writes -----------------------------------------------------------
