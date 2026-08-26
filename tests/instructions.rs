@@ -141,7 +141,11 @@ fn all_three_files_reach_the_configuration_once_the_list_is_installed() {
     let config = Config::discover(&root).expect("the written list parses");
     let read = config.instructions().join("\n");
 
-    for line in ["the repository rule", "the checkout rule", "the operator rule"] {
+    for line in [
+        "the repository rule",
+        "the checkout rule",
+        "the operator rule",
+    ] {
         assert!(
             read.contains(line),
             "`{line}` did not reach the configuration — a guidance file that is \
@@ -231,8 +235,14 @@ fn the_view_reports_what_each_file_holds_and_that_it_is_read() {
     for scope in SCOPES {
         let row = row(&view, scope);
         assert_eq!(row.path, at(&root, scope), "{scope:?} names the wrong file");
-        assert!(row.exists, "{scope:?} was written and the view says it is absent");
-        assert!(row.read, "{scope:?} exists, is named in the list, and is not read");
+        assert!(
+            row.exists,
+            "{scope:?} was written and the view says it is absent"
+        );
+        assert!(
+            row.read,
+            "{scope:?} exists, is named in the list, and is not read"
+        );
         assert_eq!(
             row.lines,
             std::fs::read_to_string(&row.path)
@@ -241,7 +251,10 @@ fn the_view_reports_what_each_file_holds_and_that_it_is_read() {
                 .count(),
             "{scope:?} reports a line count that is not the file's",
         );
-        assert!(row.lines > 1, "{scope:?} has a header and a bullet: {row:?}");
+        assert!(
+            row.lines > 1,
+            "{scope:?} has a header and a bullet: {row:?}"
+        );
     }
 }
 
@@ -285,7 +298,10 @@ fn a_project_list_replaces_the_user_one_and_the_unread_files_say_so() {
 
     for scope in [Scope::Local, Scope::User] {
         let row = row(&view, scope);
-        assert!(row.exists, "{scope:?} is on disk and the view says otherwise");
+        assert!(
+            row.exists,
+            "{scope:?} is on disk and the view says otherwise"
+        );
         assert!(
             !row.read,
             "{scope:?} exists and the view calls it read, but the project's own \
@@ -324,7 +340,10 @@ fn a_named_file_that_is_absent_is_skipped_and_reported_absent() {
     for scope in [Scope::Local, Scope::User] {
         let row = row(&view, scope);
         assert!(!row.exists, "{scope:?} was never written: {row:?}");
-        assert_eq!(row.lines, 0, "a file that is not there holds no lines: {row:?}");
+        assert_eq!(
+            row.lines, 0,
+            "a file that is not there holds no lines: {row:?}"
+        );
         assert!(!row.read, "{scope:?} cannot be read: {row:?}");
     }
 }

@@ -83,7 +83,10 @@ fn workspace(io_toml: &str, agents: &str) -> (tempfile::TempDir, Configuration) 
 /// assertion is a containment and not an equality — this file is not the place
 /// that pins the harness's wording.
 fn instructs(held: &Configuration, line: &str) -> bool {
-    held.config().instructions().iter().any(|i| i.contains(line))
+    held.config()
+        .instructions()
+        .iter()
+        .any(|i| i.contains(line))
 }
 
 /// The theme the held pair reports, which is the `CliSettings` half.

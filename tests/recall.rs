@@ -119,7 +119,13 @@ fn f6_lists_both_buckets_and_keeps_them_apart() {
     let workspace = tempfile::tempdir().expect("a workspace");
     let bucket = recall::workspace_key(workspace.path());
 
-    let wrote = remember(&store, &bucket, "test-command", "cargo test --lib", MemoryKind::Fact);
+    let wrote = remember(
+        &store,
+        &bucket,
+        "test-command",
+        "cargo test --lib",
+        MemoryKind::Fact,
+    );
     remember(
         &store,
         GLOBAL_MEMORY_WORKSPACE,
@@ -216,8 +222,13 @@ fn f6_the_workspace_bucket_is_the_canonicalised_root() {
     );
 
     // Read through the symlink, which is all the operator ever has.
-    let view = recall::view(&store, &link, &contract(&link, MemoryLimits::default()), None)
-        .expect("the view reads");
+    let view = recall::view(
+        &store,
+        &link,
+        &contract(&link, MemoryLimits::default()),
+        None,
+    )
+    .expect("the view reads");
     assert_eq!(
         view.entries.len(),
         1,
@@ -242,7 +253,10 @@ fn f6_a_root_that_cannot_be_canonicalised_falls_back_to_the_path_as_given() {
     // against a since-deleted workspace unreadable, which is the case a reader
     // most wants to look at.
     let (_keep, store) = store();
-    let gone = tempfile::tempdir().expect("a parent").path().join("deleted");
+    let gone = tempfile::tempdir()
+        .expect("a parent")
+        .path()
+        .join("deleted");
     assert!(!gone.exists(), "the fixture is a path that is not there");
 
     let bucket = recall::workspace_key(&gone);
@@ -252,9 +266,20 @@ fn f6_a_root_that_cannot_be_canonicalised_falls_back_to_the_path_as_given() {
         "unresolvable falls back to the path as given, byte for byte",
     );
 
-    remember(&store, &bucket, "why", "the workspace was moved", MemoryKind::Fact);
-    let view = recall::view(&store, &gone, &contract(&gone, MemoryLimits::default()), None)
-        .expect("the view reads");
+    remember(
+        &store,
+        &bucket,
+        "why",
+        "the workspace was moved",
+        MemoryKind::Fact,
+    );
+    let view = recall::view(
+        &store,
+        &gone,
+        &contract(&gone, MemoryLimits::default()),
+        None,
+    )
+    .expect("the view reads");
     assert_eq!(view.entries.len(), 1, "the fallback bucket is readable");
 }
 
@@ -272,8 +297,13 @@ fn f8_the_caps_are_named_per_scope_and_the_ceiling_is_both() {
         max_entry_chars: 120,
     };
 
-    let view = recall::view(&store, workspace.path(), &contract(workspace.path(), limits), None)
-        .expect("the view reads");
+    let view = recall::view(
+        &store,
+        workspace.path(),
+        &contract(workspace.path(), limits),
+        None,
+    )
+    .expect("the view reads");
 
     assert_eq!(
         view.caps
@@ -316,7 +346,12 @@ impl Remembering {
     fn with(batches: Vec<Vec<(&str, &str)>>) -> Self {
         let batches = batches
             .into_iter()
-            .map(|batch| batch.into_iter().map(|(k, v)| remember_call(k, v)).collect())
+            .map(|batch| {
+                batch
+                    .into_iter()
+                    .map(|(k, v)| remember_call(k, v))
+                    .collect()
+            })
             .collect();
         Self {
             batches: Mutex::new(batches),
@@ -382,7 +417,13 @@ async fn f8_eviction_refusal_and_recall_are_read_from_the_trace() {
 
     // Two notes at the cap. `alpha` is pinned by the operator, which is what makes
     // the run's overwrite a refusal rather than a write.
-    remember(&store, &bucket, "alpha", "the operators value", MemoryKind::Decision);
+    remember(
+        &store,
+        &bucket,
+        "alpha",
+        "the operators value",
+        MemoryKind::Decision,
+    );
     remember(&store, &bucket, "beta", "something older", MemoryKind::Fact);
     store
         .memory_pin(&bucket, "alpha", true)
@@ -467,8 +508,8 @@ async fn f8_eviction_refusal_and_recall_are_read_from_the_trace() {
 
     // --- draws: distinct runs, not rows -----------------------------------
     assert_ne!(first.run_id, second.run_id, "two turns, two runs");
-    let view = recall::view(&store, workspace.path(), &task, Some(second.run_id))
-        .expect("the view reads");
+    let view =
+        recall::view(&store, workspace.path(), &task, Some(second.run_id)).expect("the view reads");
 
     // How many recall ROWS name `alpha`, which is the number the wrong
     // implementation reports. Each turn assembles a prompt on every step, so a
@@ -594,8 +635,14 @@ fn f7_pinning_and_unpinning_act_on_the_bucket_the_scope_names() {
     // entry to carry the pin (`src/state/memory.rs:556-558`), so a `bool` read as
     // "did it work" would leave a surface showing a pin the store does not hold.
     assert_eq!(
-        recall::pin(&store, workspace.path(), Scope::Workspace, "never-written", true)
-            .expect("the call succeeds even though there is nothing to pin"),
+        recall::pin(
+            &store,
+            workspace.path(),
+            Scope::Workspace,
+            "never-written",
+            true
+        )
+        .expect("the call succeeds even though there is nothing to pin"),
         Pinned::NoEntry,
     );
     assert!(
@@ -617,7 +664,13 @@ fn f7_a_pinned_entry_survives_an_overwrite_and_an_unpinned_one_does_not() {
     let workspace = tempfile::tempdir().expect("a workspace");
     let bucket = recall::workspace_key(workspace.path());
 
-    remember(&store, &bucket, "owner", "the platform team", MemoryKind::Decision);
+    remember(
+        &store,
+        &bucket,
+        "owner",
+        "the platform team",
+        MemoryKind::Decision,
+    );
     remember(&store, &bucket, "retries", "three", MemoryKind::Fact);
     assert_eq!(
         recall::pin(&store, workspace.path(), Scope::Workspace, "owner", true)
@@ -707,7 +760,13 @@ fn f7_a_pinned_entry_survives_eviction_at_the_cap_and_an_unpinned_one_does_not()
     // id ASC` (`src/state/memory.rs:653-660`). The pin is therefore the only
     // thing that can decide which of the two goes.
     remember(&store, &bucket, "plain", "an older note", MemoryKind::Fact);
-    remember(&store, &bucket, "pinned", "the operators correction", MemoryKind::Decision);
+    remember(
+        &store,
+        &bucket,
+        "pinned",
+        "the operators correction",
+        MemoryKind::Decision,
+    );
     assert_eq!(
         recall::pin(&store, workspace.path(), Scope::Workspace, "pinned", true)
             .expect("the operator pins it"),
@@ -749,8 +808,14 @@ fn f7_a_pinned_entry_survives_eviction_at_the_cap_and_an_unpinned_one_does_not()
         .map(|e| e.key)
         .collect();
     assert_eq!(keys.len(), 2, "the cap of two holds");
-    assert!(keys.contains(&"pinned".to_string()), "the pinned note stands");
-    assert!(keys.contains(&"newcomer".to_string()), "and the new one landed");
+    assert!(
+        keys.contains(&"pinned".to_string()),
+        "the pinned note stands"
+    );
+    assert!(
+        keys.contains(&"newcomer".to_string()),
+        "and the new one landed"
+    );
     assert!(
         !keys.contains(&"plain".to_string()),
         "while the unpinned one went, which is the comparison that makes this a \
@@ -884,7 +949,13 @@ fn f7_a_pinned_entry_is_refused_and_an_unknown_key_is_absent() {
     let workspace = tempfile::tempdir().expect("a workspace");
     let bucket = recall::workspace_key(workspace.path());
 
-    remember(&store, &bucket, "owner", "the platform team", MemoryKind::Decision);
+    remember(
+        &store,
+        &bucket,
+        "owner",
+        "the platform team",
+        MemoryKind::Decision,
+    );
     assert_eq!(
         recall::pin(&store, workspace.path(), Scope::Workspace, "owner", true)
             .expect("the operator pins it"),

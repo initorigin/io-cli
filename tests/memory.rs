@@ -262,7 +262,9 @@ fn two_lines_appear_in_the_order_they_were_remembered() {
 
         let text = read(&path);
         let first = text.find("- first").expect("the first line is in the file");
-        let second = text.find("- second").expect("the second line is in the file");
+        let second = text
+            .find("- second")
+            .expect("the second line is in the file");
         assert!(
             first < second,
             "{scope:?} wrote the second line before the first:\n{text}",
@@ -282,8 +284,8 @@ fn surrounding_whitespace_does_not_reach_the_file() {
     let _guard = env_lock();
     let (_dir, root) = fixture();
 
-    let path = memory::remember(&root, Scope::Project, "  prefer small diffs \n")
-        .expect("the line lands");
+    let path =
+        memory::remember(&root, Scope::Project, "  prefer small diffs \n").expect("the line lands");
 
     assert!(
         read(&path).ends_with("- prefer small diffs\n"),

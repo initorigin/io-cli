@@ -145,7 +145,10 @@ pub fn remember(root: &Path, scope: Scope, line: &str) -> Result<PathBuf, String
     // directory's mode is not touched. The filter is the relative-root case:
     // `Path::new("x").parent()` is `Some("")`, and creating *that* fails rather
     // than doing nothing.
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         crate::home::create(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
 
