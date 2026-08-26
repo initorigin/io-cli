@@ -41,18 +41,36 @@ path = "src/lib.rs"
 # interface release and it is stated in the README and the CHANGELOG rather than
 # left to be discovered. It is governed by the same policy as any other read.
 io-harness = { version = "0.69", features = ["media", "browser"] }
-# ratatui stays at 0.29 and crossterm at 0.28 because `tui-textarea` 0.7 — the
-# composer — is built against exactly that pair. The 0.30 line has forks of the
-# textarea widget rather than a release of it, and taking one would mean depending
-# on somebody's fork of the one widget the composer is made of.
+# **`tui-textarea` is gone as of 0.18.0, and it is why this pair was frozen.**
+# The comment that stood here said ratatui stayed at 0.29 and crossterm at 0.28
+# because the composer was built out of that widget and the 0.30 line carried
+# forks of it rather than a release. That was true and it had a cost: the widget
+# has published nothing since 2024-10-22, it required `ratatui ^0.29.0` through
+# every feature path it had including `no-backend`, and 0.29 in turn required
+# `lru ^0.12.0` — a crate carrying an advisory whose fix landed in 0.16.3 and was
+# never backported. So the pin could not be bumped around; the dependency had to
+# go. io-cli owns its editing model now (`src/editor.rs`), and `lru` is out of the
+# tree entirely.
+#
+# `default-features = false` with `crossterm_0_28` rather than the default
+# `crossterm`, which resolves to 0.29: that bump is a separate decision from this
+# one, and taking both at once would put two crossterm versions in the tree for as
+# long as anything disagreed. Of the remaining defaults, `all-widgets` is only the
+# calendar and `macros` is only the declarative builders — this crate uses
+# neither, and the base widgets are not behind either flag.
+#
 # `unstable-rendered-line-info` is enabled for one method: `Paragraph::line_count`,
 # which answers how many rows a wrapped paragraph will occupy. `insert_before`
 # takes that height as an argument, and a caller that estimates it truncates
 # exactly the content this product exists to keep. It is a feature of a dependency
 # already taken, not a dependency.
-ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
+ratatui = { version = "0.30", default-features = false, features = [
+    "crossterm_0_28",
+    "layout-cache",
+    "underline-color",
+    "unstable-rendered-line-info",
+] }
 crossterm = "0.28"
-tui-textarea = "0.7"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }

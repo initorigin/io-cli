@@ -111,7 +111,7 @@ type Restore = Box<dyn Fn() + Send + Sync + 'static>;
 /// writing into a recorder rather than into a tty. The bound includes [`Write`]
 /// because the synchronized-output sequences are written to the backend directly:
 /// they wrap the frame ratatui draws, so they cannot be a widget.
-pub struct Screen<B: Backend + Write> {
+pub struct Screen<B: Backend<Error = io::Error> + Write> {
     terminal: Terminal<B>,
     /// Where a frame is laid out before anyone can see it. See [`Screen::draw`].
     probe: Terminal<Probe>,
@@ -310,7 +310,7 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     }
 }
 
-impl<B: Backend + Write> Screen<B> {
+impl<B: Backend<Error = io::Error> + Write> Screen<B> {
     /// Wrap a terminal that has already been built. The tests' way in.
     pub fn from_terminal(terminal: Terminal<B>) -> Self {
         Self {
@@ -568,7 +568,7 @@ impl<B: Backend + Write> Screen<B> {
     }
 }
 
-impl<B: Backend + Write> Drop for Screen<B> {
+impl<B: Backend<Error = io::Error> + Write> Drop for Screen<B> {
     fn drop(&mut self) {
         self.restore();
     }
@@ -606,6 +606,15 @@ struct Probe {
 }
 
 impl Backend for Probe {
+    /// ratatui 0.30 let a backend name its own failure type. This one writes
+    /// nowhere and cannot fail, but it is handed to the same [`Screen`] as the
+    /// real terminal — and `Screen` requires `Backend<Error = io::Error>`, so
+    /// that every `?` in it keeps meaning what it meant when the trait had no
+    /// associated type. A probe with a failure type of its own would make the
+    /// two backends stop being interchangeable, which is the whole reason it
+    /// exists.
+    type Error = io::Error;
+
     fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
     where
         I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
