@@ -39,6 +39,16 @@ const FILE: &str = "io.toml";
 /// only way an operator finds out where to put a skill without reading a document.
 const SKILLS: &str = "skills";
 
+/// The operator's own guidance file, beside the configuration file it belongs to.
+///
+/// Named here rather than in [`crate::memory`] because the name is a fact about
+/// this directory: it is what sits next to [`FILE`], it is io-cli's own and not
+/// io-harness's, and an operator backing the home up gets it with everything
+/// else. Deliberately **not** created with the home — an empty guidance file is
+/// a file the operator has to wonder about, and [`crate::memory::remember`]
+/// makes it with a header the moment there is a first line to put in it.
+pub(crate) const MEMORY: &str = "IO.md";
+
 /// The store and the two files SQLite keeps beside it.
 ///
 /// The siblings are not decoration. A `runs.db` moved without its `-wal` is a
@@ -325,7 +335,13 @@ pub fn adopt() -> Option<Report> {
 /// The configuration file inside it already carries a credential and is written
 /// `0600` by [`crate::settings::write`]; a world-readable directory around it is
 /// the same mistake one level up.
-fn create(home: &Path) -> std::io::Result<()> {
+///
+/// Reachable from [`crate::memory`] as well, which writes `IO.md` into this
+/// directory and would otherwise have to make it with a bare `create_dir_all` —
+/// two answers to what mode io-cli's home has, one of them from a module that
+/// has no business deciding. The mode applies only to directories this call
+/// actually creates, so passing an existing one changes nothing.
+pub(crate) fn create(home: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

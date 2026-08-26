@@ -401,6 +401,29 @@ pub fn value_at(text: &str, path: &str) -> Option<String> {
     Some(found.to_string())
 }
 
+/// Spell a list of strings as a TOML array literal.
+///
+/// The escaping is why this lives here and not at the call site. An absolute
+/// Windows path is full of backslashes and `\U` opens an escape in a basic
+/// string, so `format!("[\"{}\"]", path)` is either a parse error or a
+/// different path — and a path that parses to something else is skipped in
+/// silence by `config.rs:1886`, which is the quietest failure this crate can
+/// ship. `toml`'s own serializer knows the rules; a format string does not.
+///
+/// This module is the crate's only TOML speller by rule
+/// (`tests/dependencies.rs`), and that rule is about *meaning*, not syntax:
+/// building a value is the same kind of act as locating one with
+/// [`value_at`] — it is about how a file is spelled, never about what a
+/// setting means. So the exception stays exactly as wide as it already was.
+#[must_use]
+pub fn array(items: &[&str]) -> String {
+    let values = items
+        .iter()
+        .map(|item| toml::Value::String((*item).to_string()))
+        .collect();
+    toml::Value::Array(values).to_string()
+}
+
 /// Read `path`, apply every edit, and put it back atomically.
 ///
 /// The new bytes go to a temporary file in the same directory and are renamed

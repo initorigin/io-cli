@@ -213,6 +213,27 @@ same prompt as a clearly attributed section. That is where "in this codebase, do
 it this way" goes. There is no `[app.io-cli]` key for the prompt itself: a second
 place the agent's manner is decided is a second thing to keep true.
 
+**Naming files in `[instructions]` replaces that default rather than adding to
+it.** `AGENTS.md` is the whole automatic list, so a file that says
+`files = ["docs/RULES.md"]` has stopped `AGENTS.md` reaching the agent — silently,
+because a named file that does not exist is skipped without complaint. To keep it,
+list it. `/remember` writes the complete list for you, and `/memory` shows which
+files are actually being read, which is the only way to see that a project-scope
+`[instructions]` table has replaced a wider one from your own configuration:
+`files` is not one of the keys io-harness appends across scopes, so the
+nearest file wins outright.
+
+**Three scopes, and the difference between them is whether it gets committed.**
+`/remember` asks which one at the moment it writes: `AGENTS.md` for what the team
+should share, `AGENTS.local.md` for what only this checkout should know, and
+`~/.io-cli/IO.md` for what is true of every project. The first two are named
+relative to the repository; the third is written as an absolute path, because
+instruction names resolve against the directory the run was started in and io's
+own home is not that directory. A line takes effect on the **next turn** of the
+same session — io re-reads the configuration for every turn, so an edit you make
+in your own editor counts too, and a file that stops parsing leaves the last good
+one in force rather than ending the session.
+
 ## Keys
 
 <!-- keys:start -->
@@ -366,6 +387,8 @@ above a row that ranked there for reasons having nothing to do with it.
 | --- | --- |
 | `/config` | every setting, the value in force and the file that decided it |
 | `/theme` | change the theme for this session |
+| `/remember` | remember a line of guidance, in the scope you choose |
+| `/memory` | what io remembers: the instruction files, and the agent's own notes |
 
 `/usage` answers what `/status` answers and is deliberately not listed above: an
 alias earns no row of its own, because a second row for one screen reads as a
@@ -747,8 +770,9 @@ configuration file is in it, and so is the run store `runs.db` with the `-wal`
 and `-shm` SQLite keeps beside it — which is where the agent's durable memory
 lives too, because that is rows inside the store rather than a file of its own —
 and the skills directory, which is `~/.io-cli/skills` when `skills` names none.
-That is one directory to copy to a new machine, and one path to put in a bug
-report.
+`~/.io-cli/IO.md` is in it as well: the guidance you want in every project, which
+`/remember` writes when you pick that scope. That is one directory to copy to a
+new machine, and one path to put in a bug report.
 
 The file is found in this order, which is io-harness's and is unchanged:
 `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`, else `$XDG_CONFIG_HOME/io/io.toml`
