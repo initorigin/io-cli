@@ -1,0 +1,10 @@
+# The five skills io ships are `include_str!`'d into the binary and written to
+# disk verbatim, so their bytes are a product artifact rather than a source file
+# a developer reads. Without this, a Windows checkout produces CRLF, the same
+# release ships two different sets of bytes, and the manifest digest of a file io
+# wrote differs by the platform it was built on.
+#
+# io-harness reads either fence — `split_front_matter` strips `---\n` and
+# `---\r\n` alike and trims `\r` off every key — so this is about the artifact
+# being one artifact, not about the parser coping.
+skills/*.md text eol=lf
