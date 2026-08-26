@@ -471,6 +471,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     skills: io_harness::Skills,
     model: String,
 ) -> Result<(), String> {
+    // Every request the session makes goes past this, and it is the only way
+    // io-cli can say what is in the model's window: io-harness enumerates none
+    // of it — the composer is private and the event announcing a composed prompt
+    // carries a byte count with no text — while the request it hands the caller
+    // carries the system block, the tool catalogue and the messages as public
+    // fields. The MAKER is wrapped rather than the provider it makes, so a
+    // `/model` switch keeps reporting rather than quietly reverting to a
+    // provider nothing is watching.
+    let seen = io_cli::context::Seen::default();
+    let make = io_cli::provider::watching(make, seen.clone());
     // Built here rather than handed in, so there is one place a provider comes
     // from and `/model` cannot drift from startup.
     let mut provider = make(&model)?;
@@ -677,6 +687,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     // longer on screen.
                                     app.status.forget_run();
                                     app.forget_fleet();
+                                    // A window that outlives its conversation
+                                    // describes a turn the operator has left.
+                                    seen.forget();
                                     // Where they were, in the terminal's own
                                     // buffer rather than in a four-row viewport.
                                     commit_transcript(screen, &session, &store, &app.theme)?;
@@ -713,6 +726,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 Ok(()) => {
                                     app.status.forget_run();
                                     app.forget_fleet();
+                                    // A window that outlives its conversation
+                                    // describes a turn the operator has left.
+                                    seen.forget();
                                     app.say(
                                         Tone::Success,
                                         format!(
@@ -1041,6 +1057,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // The undone turn is where those numbers came from.
                     app.status.forget_run();
                     app.forget_fleet();
+                    // As above: the last request belonged to the undone turn.
+                    seen.forget();
                     for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                         app.say(tone, line);
                     }
@@ -1420,6 +1438,28 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                Action::Context => {
+                    // `reading` for the same reason the arm above binds it that
+                    // way — `tests/plan.rs` reads the plan-gate argument off a
+                    // binding called `contract`, and this is not a turn's.
+                    let (answerer, _questions) = io_cli::intent::channel();
+                    let reading = io_cli::contract::session(
+                        String::new(),
+                        session.root().to_path_buf(),
+                        &config,
+                        &capabilities,
+                        std::sync::Arc::new(answerer),
+                        None,
+                    );
+                    let lines = io_cli::context::committed(
+                        seen.latest().as_ref(),
+                        &reading,
+                        reading.max_tokens,
+                        &app.theme,
+                        screen.width(),
+                    );
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
                 Action::Copy(what) => {
                     let (payload, said) = to_copy(&session, &store, what);
                     match payload {
@@ -1508,43 +1548,81 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 let lines = shell::lines(&line, &ran, &app.theme);
                 screen.commit(&lines).map_err(|error| error.to_string())?;
             }
+            // **A prompt, and then whatever queued behind it while it ran.** The
+            // loop is what makes three queued lines three turns: each goes
+            // through `turn` on its own, so each gets its own echo, its own
+            // answer under it, its own clock and its own `Ctrl+C`. Joining them
+            // into one prompt would be one run answering everything in one
+            // breath, with no boundary an operator could stop it at — which is
+            // the shape queueing them was meant to avoid.
+            //
+            // Prompts typed *during* a queued turn queue behind the rest, because
+            // `App::next_queued_prompt` is asked again at the bottom of every
+            // pass rather than the queue being drained into a list up front.
             Command::Submit(text) => {
-                // Rebuilt every turn rather than kept, because `remembered` grows
-                // as the operator answers and the harness's own `remember` dies
-                // with the turn it was given in. With nothing remembered this is
-                // the session's policy unchanged.
-                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
-                turn(
-                    screen,
-                    inputs,
-                    &mut app,
-                    &provider,
-                    &store,
-                    &mut session,
-                    &effective,
-                    &config,
-                    // The caps reach the turn only while the session is in
-                    // contained mode, so `/contain off` is a real switch and not
-                    // a label: with `None` here the turn built below is the
-                    // steered turn, byte for byte.
-                    contained.then_some(containment.as_ref()).flatten(),
-                    &capabilities,
-                    planning,
-                    text,
-                    // **This turn's own clock, not the session's.** What a reader
-                    // wants of the row above the prompt is how long the thing in
-                    // front of them has been going; a clock that had been counting
-                    // since the terminal opened said `22m12s` about a turn six
-                    // seconds old. Every event age inside the turn is measured
-                    // from here too, which is what a tool cell's duration is a
-                    // difference of.
-                    Instant::now(),
-                )
-                .await?;
-                // Anything dropped onto the prompt while the turn held the
-                // session is staged now that it has let go.
-                for path in app.take_queued_pictures() {
-                    paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                let mut next = Some(text);
+                while let Some(text) = next.take() {
+                    // Rebuilt every turn rather than kept, because `remembered`
+                    // grows as the operator answers and the harness's own
+                    // `remember` dies with the turn it was given in. With nothing
+                    // remembered this is the session's policy unchanged.
+                    //
+                    // Inside the loop for the same reason it was ever rebuilt: a
+                    // queued turn runs under what the operator has allowed by the
+                    // time it starts, not by the time they typed it.
+                    let effective =
+                        approval::session_policy(&policy, app.posture(), app.remembered());
+                    let stopped = turn(
+                        screen,
+                        inputs,
+                        &mut app,
+                        &provider,
+                        &store,
+                        &mut session,
+                        &effective,
+                        &config,
+                        // The caps reach the turn only while the session is in
+                        // contained mode, so `/contain off` is a real switch and
+                        // not a label: with `None` here the turn built below is
+                        // the steered turn, byte for byte.
+                        contained.then_some(containment.as_ref()).flatten(),
+                        &capabilities,
+                        planning,
+                        text,
+                        // **This turn's own clock, not the session's.** What a
+                        // reader wants of the row above the prompt is how long the
+                        // thing in front of them has been going; a clock that had
+                        // been counting since the terminal opened said `22m12s`
+                        // about a turn six seconds old. Every event age inside the
+                        // turn is measured from here too, which is what a tool
+                        // cell's duration is a difference of.
+                        //
+                        // Read once per pass, so a queued turn is timed from the
+                        // moment it starts rather than from the prompt that ran
+                        // ahead of it.
+                        Instant::now(),
+                    )
+                    .await?;
+                    // Anything dropped onto the prompt while the turn held the
+                    // session is staged now that it has let go.
+                    for path in app.take_queued_pictures() {
+                        paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                    }
+                    // The stop key stops the session, not just the step in front
+                    // of the operator. Firing the queue here would turn one press
+                    // into three more turns against a conversation they had just
+                    // decided to steer somewhere else.
+                    if stopped {
+                        let dropped = app.forget_queued_prompts();
+                        if dropped > 0 {
+                            let dash = app.theme.glyphs.dash;
+                            app.say(
+                                Tone::Muted,
+                                format!("{dropped} queued {dash} dropped with the stopped turn"),
+                            );
+                        }
+                    }
+                    next = app.next_queued_prompt();
                 }
             }
         }
@@ -1672,6 +1750,11 @@ fn commit_viewed(
 }
 
 /// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
+///
+/// Returns whether the operator asked this turn to stop — the one thing about a
+/// turn the caller cannot see from outside it, and the thing the caller now has
+/// to decide about, because a prompt queue that fired after a stop would make the
+/// stop key start three more turns.
 #[allow(clippy::too_many_arguments)]
 async fn turn<P: Provider>(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -1694,7 +1777,7 @@ async fn turn<P: Provider>(
     planning: bool,
     text: String,
     started: Instant,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let (observer, mut events) = bridge::channel();
     // The one way a turn is stopped from the interface, contained or not. Both
     // arms take a contract now and neither takes a steer inbox, so `Flow::Cancel`
@@ -1795,6 +1878,11 @@ async fn turn<P: Provider>(
     // Set when a turn was taken back off the screen rather than stopped: there
     // is nothing to report about a turn the session no longer shows.
     let mut undone = false;
+    // Set by either stop key, and read by the caller. Both arms below are the
+    // operator asking for this turn to end: the first press cancels at a step
+    // boundary and the second drops the future, and neither is visible in what
+    // io-harness returns — a cancelled run comes back as an ordinary result.
+    let mut stopped = false;
     let mut ticker = tokio::time::interval(io_cli::app::TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1864,6 +1952,7 @@ async fn turn<P: Provider>(
                                 // boundary. That is the sentence
                                 // `App::interrupt_or_quit` has just put on screen.
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                stopped = true;
                             }
                             // **The second press, and it does not wait.** A
                             // cancel is honoured at a step boundary, and a step
@@ -1879,6 +1968,7 @@ async fn turn<P: Provider>(
                             // commits whatever streamed before it.
                             Command::Abandon => {
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                stopped = true;
                                 // **A turn that had done nothing is taken back
                                 // whole.** `App::undoable` is what decides that
                                 // — no step, nothing streamed, nothing on screen
@@ -1937,6 +2027,20 @@ async fn turn<P: Provider>(
                                     ),
                                 )
                             }
+                            // **`Command::Submit` no longer arrives here, and
+                            // that is the fix.** Through 0.16.0 a prompt typed
+                            // mid-turn reached this arm and was dropped without a
+                            // word — the worst shape a lost keystroke can take,
+                            // because the composer had already emptied and there
+                            // was nothing left to press `Enter` on again.
+                            // `App::compose` now queues it instead, so what falls
+                            // through here is only what this loop has always
+                            // ignored. The guard is in the library rather than in
+                            // this arm on purpose: nothing in `src/main.rs` is
+                            // linked by an integration test, so a branch written
+                            // here could not be sabotaged and would not be
+                            // covered — `tests/queue.rs` asserts the queueing
+                            // where a test can reach it.
                             _ => {}
                         }
                     }
@@ -2010,7 +2114,8 @@ async fn turn<P: Provider>(
         Some(Ok(_)) => {}
     }
     app.status.elapsed = started.elapsed();
-    paint(screen, app)
+    paint(screen, app)?;
+    Ok(stopped)
 }
 
 /// Draw what a step changed, by asking the store what it recorded.

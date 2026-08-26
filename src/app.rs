@@ -187,6 +187,24 @@ pub struct App {
     /// over rather than being dropped or half-attached. The operator is told it
     /// is waiting, and a moment later it is `[Image #1]` like any other.
     queued: Vec<String>,
+    /// Prompts finished while a turn was running, waiting for turns of their own.
+    ///
+    /// **A third thing, and neither of the two it sits between.** `queued` above
+    /// holds pictures, which are staged onto whatever prompt comes next;
+    /// `submitted` below is the one prompt *this* turn is about, kept single so
+    /// [`App::undo_turn`] has exactly one line to put back. This is a line the
+    /// operator finished while the session was busy: it is not part of the
+    /// running turn, it is not an attachment to it, and there can be several of
+    /// it. Overloading either neighbour would lose one of those three facts.
+    ///
+    /// Position in the vector is the whole of the ordering, and nothing here
+    /// carries a time — which is what lets a session that reads no clock still
+    /// fire these in the order they were typed.
+    ///
+    /// In memory for the length of the session and written nowhere. A prompt
+    /// that outlived the terminal it was typed into would come back as a turn
+    /// nobody asked for, against a conversation that had moved on without it.
+    prompts: Vec<String>,
     /// Every image attached in this session, by path, oldest first.
     ///
     /// The index into it is the number in `[Image #1]`, and the path is all that
@@ -258,6 +276,7 @@ impl App {
             armed: None,
             contained: false,
             queued: Vec::new(),
+            prompts: Vec::new(),
             images: Vec::new(),
             turn_rows: 0,
             echo_rows: 0,
@@ -598,6 +617,73 @@ impl App {
     /// The pictures that were waiting, in the order they were dropped.
     pub fn take_queued_pictures(&mut self) -> Vec<String> {
         std::mem::take(&mut self.queued)
+    }
+
+    /// Hold a prompt the operator finished while a turn had the session.
+    ///
+    /// **Kept, rather than sent or dropped.** Up to 0.16.0 this keystroke looked
+    /// accepted and was not: the composer empties on `Enter` whatever happens
+    /// next, so the line disappeared from the prompt exactly as a sent one does,
+    /// and then fell through the driver's catch-all and was gone. That is the
+    /// worst shape a lost keystroke can take — there is no error, no refusal and
+    /// no text left to press `Enter` on again. Holding it is the smallest honest
+    /// answer: the session cannot take it now, so it takes it next.
+    ///
+    /// The notice is the footer's rather than the scrollback's, because a queued
+    /// prompt is not yet part of the record. It becomes part of it when it runs,
+    /// as its own exchange with its own echo, and a line here would be a second
+    /// entry for one prompt. What keeps it visible in between is the queue
+    /// itself — state, which a surface can draw and a notice cannot.
+    pub fn queue_prompt(&mut self, text: impl Into<String>) {
+        self.prompts.push(text.into());
+        let waiting = self.prompts.len();
+        let dash = self.theme.glyphs.dash;
+        // Muted, like the picture held one line over: nothing has gone wrong and
+        // nothing was refused. The count is in the sentence because the second
+        // and third prompt otherwise produce a notice identical to the first,
+        // which reads as a keystroke that did nothing.
+        self.say(
+            Tone::Muted,
+            if waiting == 1 {
+                format!("queued {dash} it runs when this turn ends")
+            } else {
+                format!("{waiting} queued {dash} they run in order when this turn ends")
+            },
+        );
+    }
+
+    /// The prompt that has waited longest, taken off the front.
+    ///
+    /// **One at a time, and the driver runs a whole turn between two calls.**
+    /// That is what makes three queued lines three turns rather than one turn
+    /// carrying three questions: each gets its own echo, its own answer under it
+    /// and its own `Ctrl+C`. Joined into one prompt they would be a run that
+    /// answers everything in one breath and cannot be stopped part-way through,
+    /// which is the opposite of what queueing them was for.
+    pub fn next_queued_prompt(&mut self) -> Option<String> {
+        if self.prompts.is_empty() {
+            return None;
+        }
+        Some(self.prompts.remove(0))
+    }
+
+    /// What is waiting, oldest first.
+    ///
+    /// For a surface that draws the queue and for the tests. The driver takes
+    /// them one at a time through [`App::next_queued_prompt`] instead, so there
+    /// is no path that reads the whole queue in order to run it.
+    pub fn queued_prompts(&self) -> &[String] {
+        &self.prompts
+    }
+
+    /// Drop everything still waiting, and report how much was dropped.
+    ///
+    /// An operator stopping a turn is stopping the session, not just the step in
+    /// front of them. A queue that fired anyway would make the stop key start
+    /// three more turns, which is a key that reads as broken — and the prompts
+    /// were typed against a conversation that was going somewhere else.
+    pub fn forget_queued_prompts(&mut self) -> usize {
+        std::mem::take(&mut self.prompts).len()
     }
 
     /// Remember an attached image and return the number its marker carries.
@@ -1262,6 +1348,10 @@ impl App {
     /// `!` with nothing after it is nothing to run, and does nothing. It is not
     /// treated as a prompt, because a bare `!` submitted to a model is a
     /// keystroke that missed rather than a question.
+    ///
+    /// The first character decides *what* the line is; the mode decides whether a
+    /// prompt can be sent at all. A prompt finished while a turn holds the
+    /// session is queued rather than returned — see [`App::queue_prompt`].
     fn compose(&mut self, key: KeyEvent) -> Command {
         self.quits = 0;
         match self.composer.key(key) {
@@ -1271,6 +1361,26 @@ impl App {
                 None => match text.strip_prefix('!').map(str::trim) {
                     Some("") => Command::None,
                     Some(line) => Command::Shell(line.to_string()),
+                    // **The guard is here and not in the driver.** A
+                    // `Command::Submit` handed out mid-turn is an instruction
+                    // nobody can carry out: there is one session, one turn may
+                    // hold it, and every caller of [`App::key`] would otherwise
+                    // have to know that separately — which is how the driver's
+                    // turn loop came to drop this line in its catch-all while the
+                    // idle loop ran it. One session-wide fact, asked once, where
+                    // the mode is already known.
+                    //
+                    // The two arms above deliberately keep falling through. A
+                    // slash command and a `!` line are *refused* mid-turn with a
+                    // sentence, and refusing is right for them: `/model` or
+                    // `/fork` held for later would take effect at a moment nobody
+                    // could predict, and a shell line is the operator's own,
+                    // wanted now or not at all. Only a prompt is the kind of
+                    // thing that keeps its meaning after the turn in front of it.
+                    None if self.mode == Mode::Running => {
+                        self.queue_prompt(text);
+                        Command::None
+                    }
                     None => Command::Submit(text),
                 },
             },
