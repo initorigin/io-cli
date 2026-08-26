@@ -41,12 +41,22 @@ updates:
       # graph and closed nothing. So the dependency was removed rather than
       # bumped: the editing model is `src/editor.rs` now, and ratatui is on 0.30.
       #
-      # Alert #1 was dismissed as not-reachable rather than fixed by a version,
-      # and the evidence is this: in ratatui 0.29 `lru` backed the layout cache
-      # only (`src/layout/layout.rs:9` and `:31`), and `iter_mut` appears nowhere
-      # under `ratatui-0.29.0/src/layout/` — so `lru::IterMut`, which is the
-      # entire subject of the advisory, was never constructed on any path this
-      # binary could reach. The tree is clean by version now in any case:
+      # **Alert #1 closed as `fixed`, not dismissed**, at 2026-08-26T14:57:27Z —
+      # the moment the merge put `lru 0.18.2` in `Cargo.lock`. The plan had been
+      # to dismiss it as not-reachable, and the plan was overtaken: a dependency
+      # change that moves the version out of range closes the alert on its own,
+      # and a dismissal on top would have recorded a waiver for something that was
+      # actually repaired. Check an alert's state after the merge before
+      # dismissing anything.
+      #
+      # The unreachability evidence is kept because it is why this was never
+      # urgent, and why the release could be planned around the migration rather
+      # than rushed: in ratatui 0.29 `lru` backed the layout cache only
+      # (`src/layout/layout.rs:9` and `:31`), and `iter_mut` appears nowhere under
+      # `ratatui-0.29.0/src/layout/` — so `lru::IterMut`, the entire subject of the
+      # advisory, was never constructed on any path this binary could reach.
+      #
+      # What holds the tree clean from here is a gate rather than a judgement:
       # `ratatui-core` 0.30 takes a current `lru`, and
       # `tests/dependencies.rs::n1_the_composer_is_free_and_no_lru_is_in_the_advisorys_range`
       # fails the build if any `lru` in the lockfile falls inside the range.

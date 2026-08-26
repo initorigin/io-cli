@@ -77,7 +77,40 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     // visible symptom is a `/resume` that silently finds nothing. Empty when the
     // operator named a location themselves, which is `adopt` refusing to move
     // anybody who has already chosen.
-    *report = io_cli::home::adopt().map_or_else(Vec::new, |report| report.lines());
+    let adopted = io_cli::home::adopt();
+    *report = adopted
+        .as_ref()
+        .map_or_else(Vec::new, io_cli::home::Report::lines);
+    // **The skills io-cli ships go in immediately after the home is adopted and
+    // long before any contract is built**, because a skill written after the
+    // contract is a skill the run cannot be offered — and the run that would miss
+    // them is the first one of a new install, which is exactly the session in
+    // which somebody is most likely to ask for help.
+    //
+    // Gated on `adopt` having actually adopted, which is what the `Some` above
+    // means. An operator who set `IO_CONFIG` or `IO_CONFIG_HOME` themselves has
+    // chosen a home, `adopt` stands aside for them, and creating `~/.io-cli/skills`
+    // anyway would do something worse than nothing: `contract::default_skills`
+    // takes that directory the moment it exists, so io-cli would silently attach a
+    // skills directory to a run whose operator had pointed everything else
+    // somewhere else.
+    //
+    // It cannot fail the run. `install` returns report lines and never an error
+    // for exactly that reason — a read-only directory nobody has heard of is not
+    // a reason to refuse to start.
+    //
+    // **Into io-cli's own home, and NOT into a directory the operator chose.**
+    // `[run] skills` and `[app.io-cli] skills` both beat the default, and writing
+    // five files into whatever a team pointed at — a checked-out repository of
+    // shared skills, say — is not something a version bump should do quietly. The
+    // consequence is stated rather than hidden: where the two differ, the report
+    // says so below, and `/skills` lists the directory in force rather than this
+    // one.
+    if adopted.is_some() {
+        if let Some(home) = io_cli::home::path() {
+            report.extend(io_cli::skills::install(&home));
+        }
+    }
     let config = Config::discover(&root).map_err(|error| error.to_string())?;
     // **A profile, if one was asked for, before anything reads the configuration.**
     // Applied here rather than per arm so a session and an `io exec` run get the
@@ -317,6 +350,20 @@ async fn drive(
     if let Some(complaint) = complaint {
         notices.push(complaint);
     }
+    // **The one case where io-cli wrote its skills somewhere the run will not
+    // read**, said once, here, where the resolved directory is finally known.
+    // Silence would leave an operator with a startup line saying five skills were
+    // installed and a model that has never heard of them.
+    if let (Some(home), Some(in_force)) = (io_cli::home::path(), skills_dir.as_deref()) {
+        let ours = io_cli::skills::dir(&home);
+        if ours.is_dir() && ours != in_force {
+            notices.push(format!(
+                "the skills in force are in {} — io's own are in {} and are not being read",
+                in_force.display(),
+                ours.display(),
+            ));
+        }
+    }
     // A server named in both `[[mcp]]` and `[[app.io-cli.mcp]]` is reconciled on
     // every turn and reported here, once. The file does not change while the
     // session runs, so the sentence is the same on the fiftieth turn as on the
@@ -368,6 +415,28 @@ async fn drive(
         },
     )
     .await?
+}
+
+/// The `/skills` view over the directory the RUN reads.
+///
+/// Resolved through `contract::skills_dir` on every call rather than held: it is
+/// derived from the configuration, the configuration is re-discovered at each
+/// turn boundary, and a surface holding a directory decided at startup would go
+/// on listing one an operator has since pointed away from. The home is a separate
+/// argument because the manifest — which is what decides whose a file is — lives
+/// there and not in the skills directory.
+fn skills_view(
+    config: &Config,
+    capabilities: &io_cli::contract::Capabilities,
+    root: &std::path::Path,
+) -> io_cli::skillview::View {
+    let Some(home) = io_cli::home::path() else {
+        return io_cli::skillview::View::default();
+    };
+    match io_cli::contract::skills_dir(config, capabilities, root.to_path_buf()) {
+        Some(dir) => io_cli::skillview::view(&home, &dir),
+        None => io_cli::skillview::View::default(),
+    }
 }
 
 /// The interactive session, as something [`provider::build`] can run.
@@ -485,7 +554,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // `Config` would leave every `[app.io-cli]` answer stale while the rest of
     // the session moved on.
     mut capabilities: io_cli::contract::Capabilities,
-    skills: io_harness::Skills,
+    // Mutable from 0.19.0, and for a reason that did not exist before it: this is
+    // the list the `/` palette offers, walked once at startup, and until this
+    // release the directory behind it only ever changed out of band. `/skills`
+    // now turns one off and on from inside the session, so a list that stayed put
+    // would go on offering a skill the model's catalogue no longer has — and
+    // `read_skill` would refuse it by name.
+    mut skills: io_harness::Skills,
     // The named profile in force. `--profile` seeds it and `/profile` replaces
     // it; it is re-applied after every turn-boundary reload, which goes back to
     // the file and knows nothing about either.
@@ -831,6 +906,122 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         server.decided.word(),
                                     ),
                                 );
+                            }
+                        }
+                        // Says what the skill is and offers the one change there
+                        // is. The view is read again rather than carried: between
+                        // the row being drawn and this keystroke the operator may
+                        // have moved the file themselves, and a carried row would
+                        // then name a path that is no longer there.
+                        Pick::Skills(drawn) => {
+                            // **Located by what the row said, not by where it
+                            // sat.** The list is read again — the operator may
+                            // have moved a file in another pane between drawing
+                            // the rows and choosing one — and an index carried
+                            // across two different readings of a directory names
+                            // whichever skill happens to be in that position now.
+                            // Getting a *different* skill than the row you read,
+                            // silently, is worse than being told it moved.
+                            let drawn = drawn.get(index).cloned();
+                            let view = skills_view(&config, &capabilities, session.root());
+                            let found = drawn.as_ref().and_then(|(name, path)| {
+                                view.skills
+                                    .iter()
+                                    .find(|skill| &skill.name == name && &skill.path == path)
+                            });
+                            if found.is_none() && drawn.is_some() {
+                                app.record(
+                                    Tone::Muted,
+                                    "that skill is not where it was a moment ago; \
+                                     open `/skills` again",
+                                );
+                            }
+                            if let Some(skill) = found {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} — {} · {} · {} · {}",
+                                        skill.name,
+                                        skill.description,
+                                        skill.origin.word(),
+                                        if skill.enabled { "enabled" } else { "disabled" },
+                                        skill.path.display(),
+                                    ),
+                                );
+                                let verb = if skill.enabled {
+                                    "turn it off"
+                                } else {
+                                    "turn it back on"
+                                };
+                                // `descended`, not `picker`: the assignment at
+                                // the end of this match is unconditional, so a
+                                // second surface opened here would be built and
+                                // then thrown away. The same replace-in-place
+                                // `Pick::Complete` and `Pick::Remembered` use.
+                                descended = Some((
+                                    Picker::new(
+                                        format!("{}?", skill.name),
+                                        vec![Row::new(verb), Row::new("leave it as it is")],
+                                    ),
+                                    Pick::SkillToggle {
+                                        name: skill.name.clone(),
+                                        path: skill.path.clone(),
+                                        enabled: skill.enabled,
+                                    },
+                                ));
+                            }
+                        }
+                        // **A rename, and only ever a rename.** A copy would leave
+                        // one name resolving in both directories, and two skills
+                        // answering to one name is an `Err` from `Skills::discover`
+                        // that io-harness propagates at run start — every turn of
+                        // the session dead. So the failure of a move is said, and
+                        // nothing is written twice.
+                        Pick::SkillToggle {
+                            name,
+                            path,
+                            enabled,
+                        } => {
+                            if index != 0 {
+                                app.record(Tone::Muted, format!("{name} is unchanged"));
+                            } else {
+                                let moved = if *enabled {
+                                    io_cli::skillview::disable(path)
+                                } else {
+                                    io_cli::skillview::enable(path)
+                                };
+                                match moved {
+                                    Ok(to) => {
+                                        // **The palette's list is walked once at
+                                        // startup and this is the only thing in
+                                        // the product that changes the directory
+                                        // under it.** Leave it and `/` goes on
+                                        // offering a skill the model's catalogue
+                                        // no longer has, whose `read_skill` the
+                                        // harness refuses by name — or hides one
+                                        // that has just come back.
+                                        skills = io_cli::commands::skills(
+                                            io_cli::contract::skills_dir(
+                                                &config,
+                                                &capabilities,
+                                                session.root().to_path_buf(),
+                                            )
+                                            .as_deref(),
+                                        )
+                                        .0;
+                                        app.record(
+                                            Tone::Muted,
+                                            format!(
+                                                "{name} is now {} — {}. The next turn is composed \
+                                                 from the directory as it is then, so this is in \
+                                                 force immediately.",
+                                                if *enabled { "off" } else { "on" },
+                                                to.display(),
+                                            ),
+                                        );
+                                    }
+                                    Err(why) => app.record(Tone::Refused, why),
+                                }
                             }
                         }
                         // Says what the link is, and where it points. The chain
@@ -1279,6 +1470,62 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         picker = Some((
                             Picker::new("MCP servers", io_cli::servers::rows(&list)),
                             Pick::Mcp,
+                        ));
+                    }
+                }
+                // **Both directories, and a failed discovery is drawn rather than
+                // swallowed.** `view` reads the enabled set through the same
+                // `Skills::discover` the run makes, so what this lists is what the
+                // model is offered — and when that call fails the harness's own
+                // sentence goes into the scrollback, which is more than io-cli
+                // knows how to say: on a duplicate name it names both files. The
+                // rows still open afterwards, because the disabled set comes from
+                // a directory discovery never looks at and is exactly where the
+                // operator's next move probably is.
+                Action::Skills => {
+                    let view = skills_view(&config, &capabilities, session.root());
+                    if let Some(sentence) = &view.failed {
+                        app.record(Tone::Refused, sentence.clone());
+                    }
+                    if view.skills.is_empty() {
+                        if view.failed.is_none() {
+                            // **Not "on the next start".** `install` already ran
+                            // at the top of this one, so an empty list means it
+                            // was skipped or could not write — and promising a
+                            // fix on the next start promises a thing that will
+                            // happen again exactly as it just did. Name the
+                            // directory instead, which is the fact the operator
+                            // can act on.
+                            app.record(
+                                Tone::Muted,
+                                match io_cli::contract::skills_dir(
+                                    &config,
+                                    &capabilities,
+                                    session.root().to_path_buf(),
+                                ) {
+                                    Some(dir) => {
+                                        format!("no skills in {}", dir.display())
+                                    }
+                                    None => "no skills directory is in force".to_string(),
+                                },
+                            );
+                        }
+                    } else {
+                        picker = Some((
+                            Picker::new(
+                                "Skills",
+                                io_cli::skillview::rows(
+                                    &view.skills,
+                                    screen.width(),
+                                    &app.theme.glyphs,
+                                ),
+                            ),
+                            Pick::Skills(
+                                view.skills
+                                    .iter()
+                                    .map(|skill| (skill.name.clone(), skill.path.clone()))
+                                    .collect(),
+                            ),
                         ));
                     }
                 }
@@ -3086,6 +3333,27 @@ enum Pick {
     /// The provider chain, in the order `providers::rows` drew it — which is
     /// the order a turn tries it.
     Provider,
+    /// Every skill, in the order `skillview::rows` drew them, carried as the
+    /// `(name, path)` each row stood for.
+    ///
+    /// **Carried rather than re-derived by index**, which is the rule every other
+    /// list-bearing variant here follows. The view IS read again when a row is
+    /// chosen — the directory can change between two keystrokes — and an index
+    /// held across two readings of it addresses whichever skill is in that
+    /// position now. So the pair says which skill the operator actually read, and
+    /// a row that is no longer there is answered with a sentence.
+    Skills(Vec<(String, std::path::PathBuf)>),
+    /// One skill, and the move that decides whether the model is offered it.
+    ///
+    /// **Two steps rather than one, and for the reason [`Pick::ConfigScope`]
+    /// gives**: this is a picker that would otherwise change a file on the way
+    /// past. `/mcp`'s own arm says the same thing about why it opens no editor.
+    /// So the list says what a skill is, and the change is a second, named answer.
+    SkillToggle {
+        name: String,
+        path: std::path::PathBuf,
+        enabled: bool,
+    },
     /// The named profiles a file declares, in the order `configure::profiles`
     /// sorted them.
     Profile(Vec<String>),
