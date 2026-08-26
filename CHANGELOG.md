@@ -6,6 +6,68 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-26
+
+Say something while it works, and have it land.
+
+**A prompt typed during a turn is kept.** Until now it was destroyed: the
+composer took the keystrokes and drew them, and the `Enter` that followed reached
+a branch that discarded the text while the composer that held it had already
+cleared. The keystroke looked accepted and the prompt was gone. It now joins a
+queue in the order it was typed, drawn above the composer, and fires when the
+turn ends — one prompt per turn, each its own exchange in the scrollback and each
+interruptible. A turn you stop drops what was waiting, because one press of the
+stop key should not start the next three turns.
+
+**A queued line can be sent into the turn that is still running.** io-harness
+delivers it at the next step boundary, so the step in flight completes whole and
+the agent reads the correction before it chooses what to do next. That is the
+difference between redirecting an agent and killing it. It is not instant and the
+interface says so: a tool call in flight is not a safe place to change the
+conversation out from under.
+
+**`Ctrl+C` means exactly what it meant.** It is the instrument for stopping, and
+this is the release that stops it from being the only instrument for anything. It
+still reaches the run the same way it always has, it still pre-empts an approval,
+an intent question and a plan gate, and it is still refused as a rebindable
+chord.
+
+**`/context` says what is actually in the model's window.** The system block, the
+tool catalogue, the repository's instructions, each MCP server's tools, the
+recalled memory and the conversation — each with the tokens it costs, summing to
+a total against the window your configuration declares. It is read off the
+request that carried the turn rather than estimated beside it, which is why the
+catalogue includes tools io-cli never registered: it is the catalogue the model
+was handed.
+
+**`/compact` folds the conversation when you know a long thread is finished**,
+rather than when a threshold notices. It reports what folded, not what was asked
+for — a request over a conversation shorter than the fold's own floor does
+nothing, and with compaction turned off it does nothing, and in both cases the
+line says so instead of claiming a fold.
+
+**`/mcp` says how many tools a server offered**, beside how many have been asked
+for. Two different questions, two different numbers. A server that offered
+nothing says zero; a server whose events never carried the count says nothing,
+because reading a missing count as zero would report a server offering no tools
+while you watched it use them. This closes the deferral 0.16.0 recorded.
+
+**`ctx N%` is true for the first time if you configured your own window.** Its
+denominator was the crate default, so it was wrong for anyone who set `[context]`
+or `[run] max_tokens`, and it was blank until the first fold — the whole period
+in which the number was worth having.
+
+**`/status` says "answering N calls" where it said "offering N tools".** That
+number has counted calls since 0.10.0; it was the one site 0.16.0's rename
+missed.
+
+**io-harness 0.67 → 0.69.** Two breaking changes reach this crate and both land
+in tests rather than in what you run: `EventKind::Mcp` gained the offered-tool
+count, and `SteerInbox::pending` returns a struct rather than a tuple so that the
+third thing an operator can send did not have to grow it. No dependency was
+added, the feature list is unchanged, and every test that existed before this
+release still passes unchanged.
+
 ## [0.16.0] - 2026-08-25
 
 Nobody edits `io.toml` by hand.

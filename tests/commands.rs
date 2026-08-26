@@ -45,6 +45,9 @@ fn the_commands_are_the_commands() {
             // 0.17.0 — `/status` says how full the window is and this says what
             // is in it. Beside it in the table for that reason.
             "/context",
+            // 0.17.0 — a word rather than a default, because a delivered steer
+            // emits no event this interface can draw.
+            "/steer",
             "/copy",
             "/copy diff",
             "/config",

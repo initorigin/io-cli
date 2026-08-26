@@ -217,7 +217,10 @@ fn f5_the_panel_reads_the_configuration_and_never_the_events_for_its_rows() {
 fn detail(config: &Config, observed: &Observed, id: &str) -> String {
     let list = servers::servers(config, observed);
     let rows = servers::rows(&list);
-    let at = list.iter().position(|s| s.id == id).expect("a configured id");
+    let at = list
+        .iter()
+        .position(|s| s.id == id)
+        .expect("a configured id");
     rows[at].detail.clone().expect("every row carries a detail")
 }
 

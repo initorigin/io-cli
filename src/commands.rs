@@ -144,6 +144,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/context",
         "what is in the model's window, read from the request that carried the turn",
     ),
+    (
+        "/steer",
+        "send what is queued into the turn that is already running",
+    ),
     ("/copy", "put the last answer on the system clipboard"),
     (
         "/copy diff",
@@ -242,7 +246,10 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Session,
         &["/clear", "/resume", "/fork", "/setup", "/exit"],
     ),
-    (Group::Turn, &["/model", "/contain", "/plan", "/profile"]),
+    (
+        Group::Turn,
+        &["/model", "/contain", "/plan", "/profile", "/steer"],
+    ),
     (
         Group::Inspect,
         &[
@@ -670,6 +677,16 @@ pub enum Action {
     /// budgets in force, the context fill, the servers that came up — so what is
     /// committed is the state io-harness is in and not io-cli's account of it.
     Status,
+    /// Send what is queued into the turn that is already running.
+    ///
+    /// io-harness delivers it at the next step boundary, so the step in flight
+    /// finishes whole and the agent reads the correction before it chooses what
+    /// to do next. Deliberately a word rather than a default: a delivered steer
+    /// emits no event this interface can render, so a line sent automatically
+    /// would leave the screen with no echo at all — and `Steer::say` has no
+    /// undo, which would make every note typed to oneself mid-turn an
+    /// instruction to the agent.
+    Steer,
     /// Commit what the model's window actually held, section by section.
     ///
     /// Read off the request that carried the last turn and never reconstructed:
@@ -874,6 +891,12 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             _ => Action::Plan(None),
         },
         "fleet" | "agents" => Action::Fleet,
+        // Answered by the driver while a turn is running, which is the only time
+        // there is a turn to steer. It reaches this arm only at an idle prompt,
+        // where the honest answer is what it would have done and why it cannot —
+        // not "there is no such command", which is what an unregistered name
+        // gets and would be a lie about a command the palette lists.
+        "steer" => Action::Steer,
         // **`/attach` is gone, and 0.13.1 is where it went.** A picture is
         // attached by dropping it on the prompt or pasting it — which is what an
         // operator already does in every other window they talk to a model in —

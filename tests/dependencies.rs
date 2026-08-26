@@ -169,7 +169,12 @@ fn f7_no_source_file_loops_over_provider_responses() {
     // returned. If this module ever reads a response — a token, a tool call, a
     // message — it has stopped decorating and started interpreting, which is the
     // first half of an agent loop wherever it is written.
-    for interpreting in [".choices", ".tool_calls", "match response", "let response ="] {
+    for interpreting in [
+        ".choices",
+        ".tool_calls",
+        "match response",
+        "let response =",
+    ] {
         assert!(
             !forwarding.contains(interpreting),
             "src/provider.rs reads a provider response (`{interpreting}`) — a decorator \

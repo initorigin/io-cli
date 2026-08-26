@@ -187,10 +187,13 @@ impl<P: Provider> Provider for Watched<P> {
         on_call: &(dyn Fn(usize, &ToolCall) + Send + Sync),
     ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> {
         self.seen.record(&request);
-        self.inner.complete_streaming_calls(request, on_token, on_call)
+        self.inner
+            .complete_streaming_calls(request, on_token, on_call)
     }
 
-    fn models(&self) -> impl std::future::Future<Output = io_harness::Result<Vec<ModelInfo>>> + Send {
+    fn models(
+        &self,
+    ) -> impl std::future::Future<Output = io_harness::Result<Vec<ModelInfo>>> + Send {
         self.inner.models()
     }
 

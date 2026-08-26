@@ -785,12 +785,17 @@ fn f6_both_arms_are_handed_one_contract() {
     // that a newline sits in a particular place is an assertion about formatting
     // — it would go quietly blind the first time one of them grew an argument.
     let squashed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    // `_steered` from 0.17.0. io-harness 0.67.0 opened the two entry points that
+    // take the caller's contract AND a steer inbox on one call — until then a
+    // turn could carry a contract or be steered and never both, which is why
+    // 0.11.0 dropped steering. The argument lists are otherwise identical, so
+    // what this still asserts is what it always did: one contract, both arms.
     assert!(
-        squashed.contains("session.turn_contained_bounded_observed(&contract,"),
+        squashed.contains("session.turn_contained_bounded_steered(&contract,"),
         "the contained arm is handed the contract",
     );
     assert!(
-        squashed.contains("session.turn_bounded_observed(&contract,"),
+        squashed.contains("session.turn_bounded_steered(&contract,"),
         "and so is the flat one",
     );
 }

@@ -364,6 +364,27 @@ pub struct Status {
     /// every session carries until a contract says otherwise, and it draws
     /// nothing.
     pub budgets: Budgets,
+    /// Prompts the operator finished while a turn had the session, still waiting
+    /// to run.
+    ///
+    /// **A session fact and not a run fact, so [`Status::forget_run`] leaves it
+    /// standing — and the reason is sharper here than it is for `planning` or
+    /// `budgets`.** The queue itself is `App::prompts`; `forget_run` takes
+    /// `&mut Status` and can reach nothing else. Clearing the count here would
+    /// therefore not empty the queue, only stop saying how deep it is — and the
+    /// prompts would still fire, a turn each, out of a session whose line had
+    /// just finished claiming there were none. That is worse than the hole it
+    /// would be closing. `/resume`, `/fork` and a rewind change which
+    /// conversation is on screen and drop nothing the operator typed;
+    /// `App::forget_queued_prompts` is the one thing that drops them, and it
+    /// moves this number by moving the queue rather than by contradicting it.
+    ///
+    /// Zero renders as **nothing at all**, the rule `bg N`, `spend` and `tokens`
+    /// are held to: a session nobody typed ahead of has not queued zero prompts.
+    /// It is what keeps this field off the overwhelming majority of lines — a
+    /// queue exists only between an `Enter` pressed mid-turn and the end of the
+    /// turn after it.
+    pub queued_prompts: usize,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
     /// the clock: an indicator that read the time would be a second timer.
     frame: usize,
@@ -393,6 +414,7 @@ impl Status {
             elapsed: Duration::ZERO,
             plain: false,
             budgets: Budgets::default(),
+            queued_prompts: 0,
             frame: 0,
         }
     }
@@ -423,8 +445,11 @@ impl Status {
     /// read, and absent is the honest answer until the agent writes a list in the
     /// run that is now on screen.
     ///
-    /// The model, the posture, plain mode and the session's age are not run facts
-    /// and are left alone — the session is the same session either way.
+    /// The model, the posture, plain mode, the session's age and the depth of the
+    /// prompt queue are not run facts and are left alone — the session is the
+    /// same session either way, and the queue in particular is not even reachable
+    /// from here: see [`Status::queued_prompts`] for why blanking the count
+    /// would leave the line contradicting prompts that are still going to run.
     pub fn forget_run(&mut self) {
         self.tokens = None;
         // Both new in 0.11.0, and both run facts. The provider is the one that
@@ -568,6 +593,25 @@ impl Status {
         left
     }
 
+    /// What is waiting behind this turn, or nothing at all when nothing is.
+    ///
+    /// **One method feeding both renderers, for exactly the reason
+    /// [`Status::budgets_left`] is one, and N3 is that lesson a third time.**
+    /// [`Status::render`] takes [`Status::footer`] on any terminal seven rows or
+    /// taller — which is every real terminal — so [`Status::line`] is the
+    /// short-terminal fallback and the footer is what an operator is actually
+    /// looking at. A depth composed separately in each would be two spellings a
+    /// test could satisfy one of; a depth composed in `line` alone would be
+    /// 0.12.0's planning field again, green in a unit test and nowhere on screen
+    /// in a live capture.
+    ///
+    /// `Option` rather than a `String` that is sometimes empty, so the absence at
+    /// zero is decided here and cannot be forgotten by a caller: both renderers
+    /// push whatever this returns, and neither one asks about the count itself.
+    pub fn queued_left(&self) -> Option<String> {
+        (self.queued_prompts > 0).then(|| format!("queued {}", self.queued_prompts))
+    }
+
     /// The fields, most important first.
     pub fn fields(&self, theme: &Theme) -> Vec<Field> {
         // The WORD is the state, and the animation is only beside it. A spinner
@@ -607,6 +651,17 @@ impl Status {
         // asserts it never reaches a terminal again.
         if let Some(provider) = &self.provider {
             fields.push(Field::new(format!("provider:{provider}"), Tone::Muted));
+        }
+        // **Left of the background-job count, and that is a decision about what
+        // survives a narrow terminal rather than a tidy grouping.** `bg N` is
+        // work the agent started and the transcript a row above already names it;
+        // this is a keystroke io-cli took and has not run yet, and the only other
+        // thing that ever said so was a footer notice the next keystroke erases.
+        // Dropped, a prompt the operator watched vanish out of the composer is
+        // evidenced nowhere on screen at all — which is the lost keystroke this
+        // release exists to end, arrived at from the other side.
+        if let Some(text) = self.queued_left() {
+            fields.push(Field::new(text, Tone::Normal));
         }
         // **Immediately right of the clock, and above everything else this line
         // carries.** 0.8.0 drafted the spend field to the right of the containment
@@ -848,6 +903,14 @@ impl Status {
         if let Some((done, total)) = self.plan {
             counts.push(format!("plan {done}/{total}"));
         }
+        // **Here as well as on `Status::line`, out of the same method, for the
+        // reason the budgets four lines up are here.** This is the row the binary
+        // draws at an ordinary prompt, so a depth added to `line` alone would be
+        // a depth no operator ever saw — 0.12.0's planning field, again. Left of
+        // `bg` here too, so the two forms read the same order as well as the same
+        // words. `extend` over the `Option` because absent contributes nothing,
+        // which is the whole of the zero case.
+        counts.extend(self.queued_left());
         if self.jobs > 0 {
             counts.push(format!("bg {}", self.jobs));
         }
@@ -1350,6 +1413,20 @@ pub fn committed(
             None => "not configured".to_string(),
         },
     ));
+
+    // **`Status::queued_prompts` is deliberately not a row here, and the absence
+    // is a decision rather than a renderer somebody missed.** Every fact above
+    // is either a standing configuration — the workspace, the layers, the caps,
+    // the budgets, the rosters — or a session total that only ever climbs, so
+    // each one is still a true account of this session at the moment it was
+    // written. The queue is neither: it exists between an `Enter` pressed
+    // mid-turn and the end of the turn after it, and this page is *committed*,
+    // into a scrollback that keeps it for the rest of the session. A row reading
+    // `queue: 2 waiting` is false a turn later and goes on saying it, which would
+    // make it the one row on a page whose whole argument is that a status surface
+    // a reader cannot trust is worse than none. The line and the footer redraw,
+    // so they are where a depth that changes belongs — which is also why N3 names
+    // those two renderers and not this one.
 
     // Three of whatever the set draws a rule with, at both ends — the same edge
     // `crate::transcript` gives a committed conversation, and for the same

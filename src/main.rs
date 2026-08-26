@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Store, Templates};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
@@ -1438,6 +1438,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // Reached only at an idle prompt: while a turn runs the driver's
+                // own key handler answers `/steer` before `parse` is ever called,
+                // because that is where the inbox lives. So this arm is the
+                // honest "nothing to steer" and it says what the command would
+                // have done, rather than leaving a registered command looking
+                // broken to the operator who just found it in the palette.
+                Action::Steer => app.say(
+                    Tone::Muted,
+                    "nothing is running — /steer sends what is queued into a turn that is already \
+                     working, and it is read at that turn's next step",
+                ),
                 Action::Context => {
                     // `reading` for the same reason the arm above binds it that
                     // way — `tests/plan.rs` reads the plan-gate argument off a
@@ -1799,20 +1810,45 @@ async fn turn<P: Provider>(
     app.started();
     paint(screen, app)?;
 
+    // **The fifth seam, and the only one that speaks to a turn already in
+    // flight.** Every other channel above is something the run asks *this*
+    // interface for — an approval, a plan, an answer. This one goes the other
+    // way: `Steer::say` puts the operator's words into the run's own ledger at
+    // the next step boundary, so the step after it is composed with them present.
+    //
+    // Three things about it that decide the code below:
+    //
+    // - `SteerInbox` is not `Clone` and holds a `RefCell`, so it is `!Sync` and a
+    //   future borrowing it is not `Send`. That costs nothing here — the boxed
+    //   future below has never had a `Send` bound and is driven on this task —
+    //   but it is why the inbox stays a local and only the `Steer` half could
+    //   ever be handed anywhere else.
+    // - A delivered steer emits **no observer event**. There is no
+    //   `EventKind::Steered`; io-harness records a `steered` row in the run's
+    //   context trace instead. So nothing that arrives through `bridge` can
+    //   confirm delivery, and nothing this interface says may claim it — see the
+    //   `/steer` arm in the loop, which says *sent*, and the drain after the loop,
+    //   which is the one thing here that can honestly say *not* delivered.
+    // - Only the root is steered. `extras_for` in io-harness returns no extras
+    //   below depth zero, so on the contained arm a spawned child never hears the
+    //   operator; the agent that reads the message is the one that spawned it.
+    let (steer, inbox) = Steer::channel();
+
     // **The two turns this product can take, and one loop over both.** They are
     // genuinely different turns rather than one turn with a flag: only the
     // contained entry point passes a containment into io-harness's driver, so
-    // only it reaches the loop that owns the spawn tool — and it takes no
-    // `SteerInbox`, because no session entry point takes a caller's containment
-    // and a steer inbox together. Boxed to one type so the `select!` below is
-    // written once; a second loop would be a second place `Ctrl+C`, the ticker
-    // and the event drain could drift.
+    // only it reaches the loop that owns the spawn tool. Boxed to one type so the
+    // `select!` below is written once; a second loop would be a second place
+    // `Ctrl+C`, the ticker and the event drain could drift.
     //
-    // 0.10.0 — the contained arm is `turn_contained_bounded_observed` and carries
-    // a contract io-cli built, which is what a responder, a plan gate, MCP, LSP,
-    // a browser and skills are fields of. The flat arm is untouched: it is still
-    // `turn_steered`, still `default_contract`, and still the only one that can
-    // be steered mid-turn.
+    // 0.17.0 — both arms take a contract **and** an inbox, which through 0.66 was
+    // a choice. `turn_bounded_observed` and `turn_contained_bounded_observed` had
+    // no parameter for a steer inbox, so a session that wanted its own contract
+    // gave up steering to get one; io-cli made that trade in 0.11.0 and paid for
+    // it with a turn nobody could correct. io-harness 0.67.0 opened both, and
+    // `turn_bounded_steered` / `turn_contained_bounded_steered` are positionally
+    // the same two calls with `&inbox` appended — which is why the change that
+    // gives an operator their voice back mid-turn is one argument on each arm.
     // Taken before the future borrows the session, because it is needed inside the
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
@@ -1825,12 +1861,8 @@ async fn turn<P: Provider>(
     // fixed, and a turn that read a repository and wrote a file ended on
     // `error: step_cap_reached` with the work half done.
     //
-    // `turn_bounded_observed` takes a contract, streams the model's text, and is
-    // not contained. What it does not take is a steer inbox, and that costs
-    // nothing this interface offered: the only thing io-cli ever sent through
-    // one was an interrupt, and the observer's `Flow::Cancel` — the path a
-    // contained turn has always been stopped by — ends a turn at the same step
-    // boundary.
+    // `turn_bounded_steered` takes a contract, streams the model's text, is not
+    // contained, and reads the inbox above at every step boundary.
     // **Neither of the two seams rides containment any more.** The responder is
     // unconditional: io-harness resolves it inside the tool dispatch on any run,
     // so a question asked on an ordinary turn reaches the person watching instead
@@ -1862,12 +1894,12 @@ async fn turn<P: Provider>(
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {
-        Some(caps) => Box::pin(session.turn_contained_bounded_observed(
-            &contract, provider, store, policy, &approver, caps, &observer,
+        Some(caps) => Box::pin(session.turn_contained_bounded_steered(
+            &contract, provider, store, policy, &approver, caps, &observer, &inbox,
         )),
-        None => Box::pin(
-            session.turn_bounded_observed(&contract, provider, store, policy, &approver, &observer),
-        ),
+        None => Box::pin(session.turn_bounded_steered(
+            &contract, provider, store, policy, &approver, &observer, &inbox,
+        )),
     };
 
     // Lives for the turn and no longer, which is half of why an idle session
@@ -1943,13 +1975,18 @@ async fn turn<P: Provider>(
                         let command = app.key(key);
                         match command {
                             Command::Interrupt => {
-                                // **One path for both kinds of turn.** Neither
-                                // takes a steer inbox any more — a contained turn
-                                // never did, and the flat one gave its up for a
-                                // contract — so the observer is what io-harness
-                                // reads from the interface while a run goes, and
-                                // it honours `Flow::Cancel` at the next step
-                                // boundary. That is the sentence
+                                // **One path for both kinds of turn, and it is
+                                // the observer's.** Both arms now hold a
+                                // `SteerInbox` and `Steer::interrupt` would also
+                                // end the turn at a step boundary — and this key
+                                // is deliberately not routed through it. The two
+                                // paths end in the same `RunOutcome::Cancelled`
+                                // but they are recorded by different code in
+                                // io-harness, and moving the one key this product
+                                // refuses to let a configuration file rebind onto
+                                // a different mechanism buys an operator nothing
+                                // they can see. `Flow::Cancel` is honoured at the
+                                // next step boundary, which is the sentence
                                 // `App::interrupt_or_quit` has just put on screen.
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
                                 stopped = true;
@@ -2000,6 +2037,100 @@ async fn turn<P: Provider>(
                                 // and a fabricated outcome would be this
                                 // interface reporting a run it did not observe.
                                 break None;
+                            }
+                            // **`/steer` — what is queued goes to the turn that is
+                            // still running, and only because the operator asked.**
+                            //
+                            // The open question this release had to answer was
+                            // whether a line typed mid-turn should reach the
+                            // agent by itself. It must not, and the reason is the
+                            // second note where the inbox is built: a delivered
+                            // steer emits no event, so an interface cannot show
+                            // that the agent heard it. A
+                            // line sent by default would leave the screen with no
+                            // echo, no cell and no confirmation — the same shape
+                            // as the keystroke 0.16.0 lost, which `App::compose`
+                            // has just been fixed to stop losing. A queue is
+                            // visible state a surface can draw; a steer is not.
+                            // And `Steer::say` has no undo: an operator writing a
+                            // note to themselves while an agent works would be
+                            // changing what it does, once per stray sentence.
+                            //
+                            // So the queue keeps its promise — three lines are
+                            // three turns — and this is the one word that spends
+                            // it differently. It is a slash command rather than a
+                            // key because `App::compose` already lets `/` through
+                            // mid-turn on purpose, so nothing in the library had
+                            // to learn a new mode for it.
+                            //
+                            // **Said, never claimed delivered.** io-harness takes
+                            // the message at the next step boundary and records a
+                            // `steered` row in the run's own trace; no
+                            // `RunEvent` carries it, so `Ok` here means the
+                            // channel accepted the words and nothing more. The
+                            // sentence says exactly that. What *is* certain is
+                            // the negative, and the drain after this loop is
+                            // where it gets said.
+                            Command::Slash(ref line) if line.trim() == "steer" => {
+                                let dash = app.theme.glyphs.dash;
+                                let mut sent = 0usize;
+                                // The summary below is skipped when this is set,
+                                // because a count is not the answer to a refusal
+                                // — and `App::say` keeps one notice, so a
+                                // summary written over the error would be the
+                                // interface reporting success on the one path
+                                // where there was none.
+                                let mut refused = false;
+                                // Each on its own, in the order they were typed:
+                                // io-harness pushes one `Observation` per message
+                                // and the model reads them in that order. Joining
+                                // them would be one paragraph the operator never
+                                // wrote.
+                                while let Some(waiting) = app.next_queued_prompt() {
+                                    if let Err(error) = steer.say(waiting.clone()) {
+                                        // Unreachable while `inbox` is alive —
+                                        // and said rather than swallowed anyway,
+                                        // because the one thing worse than a
+                                        // correction that arrives late is one
+                                        // that reports success and goes nowhere.
+                                        app.queue_prompt(waiting);
+                                        app.say(
+                                            Tone::Warning,
+                                            format!("nothing is listening {dash} {error}"),
+                                        );
+                                        refused = true;
+                                        break;
+                                    }
+                                    // Into the transcript, not the footer. A
+                                    // steered line becomes an observation in the
+                                    // run's ledger, so it is part of the
+                                    // conversation rather than about it — and it
+                                    // is the only part that will never get an
+                                    // echo of its own, because it is not a turn.
+                                    app.record(
+                                        Tone::Muted,
+                                        format!("[mid-turn] {}", waiting.trim()),
+                                    );
+                                    sent += 1;
+                                }
+                                if !refused {
+                                    app.say(
+                                        Tone::Muted,
+                                        match sent {
+                                            0 => format!(
+                                                "nothing queued {dash} type a line first, then \
+                                                 /steer"
+                                            ),
+                                            1 => format!(
+                                                "sent {dash} the turn reads it at its next step"
+                                            ),
+                                            many => format!(
+                                                "{many} sent {dash} the turn reads them at its \
+                                                 next step"
+                                            ),
+                                        },
+                                    );
+                                }
                             }
                             // Refused with a sentence rather than dropped in
                             // silence. `/resume`, `/fork` and the rewind each move
@@ -2099,6 +2230,28 @@ async fn turn<P: Provider>(
         commit_viewed(screen, app, &root, policy, &event)?;
     }
     app.finished();
+
+    // **The one delivery fact this interface can state, and it is the negative
+    // one.** io-harness emits no event for a message it delivered, so there is
+    // nothing to read on the way in; what is left in the inbox after the turn has
+    // returned, though, is exactly what no step got to. `SteerInbox::pending` is
+    // public for this — a caller draining an inbox it is no longer handing to a
+    // turn, rather than discovering later that the operator's last words went
+    // with the channel.
+    //
+    // Into the transcript, because the words are the operator's and the sentence
+    // is about a run that has already ended — a footer notice would be gone at
+    // the next keystroke, and it would fight with `stopped` below.
+    //
+    // Not re-queued. A turn that ended because the operator stopped it must not
+    // start another one, and a turn that ended on its own has a composer waiting
+    // with nothing in the way.
+    for lost in inbox.pending().messages {
+        app.record(
+            Tone::Muted,
+            format!("[mid-turn, not delivered] {}", lost.trim()),
+        );
+    }
 
     match outcome {
         // The operator's sentence in front of the harness's own line — see

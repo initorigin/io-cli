@@ -222,7 +222,10 @@ fn server_of(tool: &str, contract: &TaskContract) -> String {
         None => return String::new(),
     };
     for server in &contract.mcp {
-        if bare.strip_prefix(&server.id).is_some_and(|r| r.starts_with("__")) {
+        if bare
+            .strip_prefix(&server.id)
+            .is_some_and(|r| r.starts_with("__"))
+        {
             return server.id.clone();
         }
     }

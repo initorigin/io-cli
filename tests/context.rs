@@ -150,7 +150,10 @@ fn section<'a>(sections: &'a [context::Section], label: &str) -> &'a context::Se
 struct Silent;
 
 impl Provider for Silent {
-    async fn complete(&self, _request: CompletionRequest) -> io_harness::Result<CompletionResponse> {
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> io_harness::Result<CompletionResponse> {
         Ok(CompletionResponse {
             text: Some("done".into()),
             ..Default::default()
@@ -169,13 +172,21 @@ async fn f7_the_window_is_read_from_the_request_that_carried_the_turn() {
 
     let watched = Watched::new(Silent, seen.clone());
     let answer = watched.complete(request()).await.expect("the mock answers");
-    assert_eq!(answer.text.as_deref(), Some("done"), "the decorator delegates");
+    assert_eq!(
+        answer.text.as_deref(),
+        Some("done"),
+        "the decorator delegates"
+    );
 
     let carried = seen.latest().expect("the request went past");
     assert_eq!(carried.system, system(), "the system block, byte for byte");
     assert_eq!(carried.messages, 2);
     assert_eq!(
-        carried.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        carried
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["read_file", UNKNOWN_TOOL, MCP_TOOL],
         "the catalogue as offered, in the order it was offered",
     );
@@ -324,8 +335,8 @@ fn f7_the_sections_sum_to_the_total_and_the_total_is_stated_against_the_window()
     // The denominator is the contract's own budget, not `ContextBudget::default`:
     // an operator who tightened `[context]` must see the ceiling they set.
     assert_eq!(context::window(&contract, None), 24_000);
-    let tightened = TaskContract::workspace("g", "/repo")
-        .with_context_budget(io_harness::ContextBudget {
+    let tightened =
+        TaskContract::workspace("g", "/repo").with_context_budget(io_harness::ContextBudget {
             max_tokens: 8_000,
             share: 0.25,
         });
@@ -412,7 +423,13 @@ fn f7_the_system_block_is_tokens_of_its_own_text_and_not_a_byte_count() {
     // The arithmetic, on the rendered page rather than on the values behind it —
     // which is where an operator does this subtraction and where a sabotaged row
     // stops reconciling.
-    let page = drawn(&context::committed(Some(&seen), &contract, None, &ascii(), 80));
+    let page = drawn(&context::committed(
+        Some(&seen),
+        &contract,
+        None,
+        &ascii(),
+        80,
+    ));
     let counted: u64 = page
         .iter()
         .filter_map(|row| row.split_once(": "))
@@ -441,7 +458,9 @@ fn f7_the_system_block_is_tokens_of_its_own_text_and_not_a_byte_count() {
 fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
     let empty = drawn(&context::committed(None, &contract(), None, &ascii(), 80));
     assert!(
-        empty.iter().any(|row| row.contains("nothing has been sent yet")),
+        empty
+            .iter()
+            .any(|row| row.contains("nothing has been sent yet")),
         "a window nothing has been sent through has no contents, and zeroes would \
          read as an empty one: {empty:#?}",
     );

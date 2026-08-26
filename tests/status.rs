@@ -1893,3 +1893,98 @@ fn f8_status_names_the_home_in_force_and_the_word_that_decided_it() {
     std::env::remove_var("IO_CONFIG");
     std::env::remove_var("IO_CONFIG_HOME");
 }
+
+/// **N3 — the queue depth is on every renderer that draws the status.**
+///
+/// `Status` has three renderers that do not share a body: `fields` feeds `line`
+/// and nothing else, `footer` is hand-built beside it, and `Status::render`
+/// takes the **footer** on any terminal seven rows or taller — which is to say
+/// on every terminal an operator actually has. So a field is not "on the status
+/// line" because `fields` composes it; it is on the status line when both forms
+/// draw it, in the same words, and the only way to know that is to read both.
+///
+/// **This is the test that kills the sabotage.** Add the depth to `fields` alone
+/// and the `Status::line` arm below stays green while the `Status::footer` arm
+/// goes red — on the renderer the binary draws, which is precisely how 0.12.0
+/// shipped a planning mode that was nowhere on screen in a live capture.
+///
+/// The spelling is asserted against `Status::queued_left` rather than against a
+/// literal repeated three times, so the one place that composes it is the one
+/// place a rename has to touch: a renderer that grew its own `format!` would
+/// fail here even if both forms happened to say something.
+#[test]
+fn n3_the_queue_depth_is_drawn_by_the_line_and_by_the_footer_alike() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+
+    // Nothing typed ahead, so nothing said. Both forms, because "absent at zero"
+    // is a claim about what reaches a terminal and not about one code path.
+    assert_eq!(
+        status.queued_left(),
+        None,
+        "a session nobody typed ahead of composed a depth",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("queued"),
+            "{renderer} drew a queue on a session with none: {text:?}",
+        );
+    }
+
+    status.queued_prompts = 3;
+    let spelling = status
+        .queued_left()
+        .expect("three waiting prompts are a queue");
+    assert_eq!(spelling, "queued 3", "the depth is spelled once, plainly");
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains(&spelling),
+            "{renderer} does not say what is waiting behind this turn: {text:?}",
+        );
+    }
+
+    // And back down to nothing when the queue drains, on both forms — a count
+    // that never returns to absent would leave every session that ever queued a
+    // prompt carrying the field for the rest of its life.
+    status.queued_prompts = 0;
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("queued"),
+            "{renderer} kept a drained queue on screen: {text:?}",
+        );
+    }
+}
+
+/// **N3 — the queue belongs to the session and outlives the run.**
+///
+/// `Status::forget_run` clears the per-run facts when the conversation under the
+/// line changes, and the depth is deliberately not one of them. The queue itself
+/// is `App::prompts` and `forget_run` cannot reach it — so a count blanked here
+/// would not drop a single prompt, it would only stop reporting them, and they
+/// would still fire a turn each under a line that had just said there were none.
+///
+/// Sabotage: clear `queued_prompts` in `forget_run` beside `jobs` — under which only
+/// this test fails, and it fails in the one state where the operator has typed
+/// ahead and then moved the conversation, which is exactly when a prompt firing
+/// unannounced is least welcome.
+#[test]
+fn n3_the_queue_depth_survives_forgetting_the_run() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.queued_prompts = 2;
+    // A run-scoped neighbour, so this test states the difference rather than
+    // just the half it is about.
+    status.jobs = 1;
+
+    status.forget_run();
+
+    assert_eq!(status.jobs, 0, "a background job belongs to its run");
+    assert_eq!(
+        status.queued_prompts, 2,
+        "the prompts the operator typed are still going to run",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("queued 2"),
+            "{renderer} stopped saying what is still waiting: {text:?}",
+        );
+    }
+}
