@@ -43,6 +43,7 @@ pub mod context;
 pub mod contract;
 pub mod diff;
 pub mod edit;
+pub mod editor;
 pub mod events;
 pub mod exec;
 pub mod failure;

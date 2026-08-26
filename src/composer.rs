@@ -1,6 +1,6 @@
 //! The composer: the one part of the viewport the user types into.
 //!
-//! `tui-textarea` does the editing. What is added here is the small set of
+//! [`crate::editor`] does the editing. What is added here is the small set of
 //! decisions a prompt has that a text editor does not: when `Enter` submits and
 //! when it inserts a newline, what the arrow keys mean at the edges of the text,
 //! and how a paste of a whole file behaves.
@@ -9,8 +9,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::Frame;
-use tui_textarea::{CursorMove, TextArea};
 
+use crate::editor::Editor;
 use crate::theme::{Theme, Tone};
 
 /// The prompt marker. Two cells, so wrapped continuation lines line up under the
@@ -239,7 +239,7 @@ fn quoted(path: &str) -> String {
 }
 
 pub struct Composer {
-    area: TextArea<'static>,
+    area: Editor,
     /// Prompts already submitted, oldest first.
     history: Vec<String>,
     /// Where the arrow keys currently are in `history`, or `None` when the user
@@ -275,12 +275,8 @@ impl Default for Composer {
 
 impl Composer {
     pub fn new() -> Self {
-        let mut area = TextArea::default();
-        // The composer draws its own prompt marker, so the widget must not also
-        // draw a border, a line number or a cursor-line highlight.
-        area.set_cursor_line_style(ratatui::style::Style::default());
         Self {
-            area,
+            area: Editor::new(),
             history: Vec::new(),
             recalled: None,
             draft: String::new(),
@@ -348,7 +344,7 @@ impl Composer {
     /// exits, `Esc` arms the rewind and `/` opens the palette on an empty
     /// composer, so this decides what three keystrokes mean.
     ///
-    /// Asked of [`Composer::text`] rather than of the widget's lines, because
+    /// Asked of [`Composer::text`] rather than of the editor's lines, because
     /// those two disagree the moment a paste is not what it looks like. Paste a
     /// blank region of a file — a run of indentation, a column of empty lines —
     /// and it is over [`PASTE_THRESHOLD`], so it collapses to a placeholder that
@@ -386,12 +382,13 @@ impl Composer {
     ///
     /// **One function, because there used to be three answers and they
     /// disagreed.** `height`, `rows_wanted` and `cursor` each did this
-    /// arithmetic, and the widget underneath did something else again: a
-    /// `TextArea` does not wrap, it scrolls sideways. So a prompt long enough to
-    /// wrap was drawn clipped at the left while io-cli had grown the viewport for
-    /// rows the widget was never going to use, and the cursor io-cli placed and
-    /// the block the widget drew sat in two different places — the two cursors
-    /// 0.13.1 was reported with. Everything visual now comes from here.
+    /// arithmetic, and the text-editing widget this was built on until 0.18.0 did
+    /// something else again: it did not wrap, it scrolled sideways. So a prompt
+    /// long enough to wrap was drawn clipped at the left while io-cli had grown
+    /// the viewport for rows the widget was never going to use, and the cursor
+    /// io-cli placed and the block the widget drew sat in two different places —
+    /// the two cursors 0.13.1 was reported with. Everything visual now comes from
+    /// here, and [`crate::editor`] deliberately draws nothing at all.
     ///
     /// A logical line that is exactly `room` wide takes one row, and the cursor
     /// past its last character is on the next one. That is what an editor does,
@@ -506,7 +503,7 @@ impl Composer {
             // standing for the block it named.
             // **Every backwards deletion, not just the plain one.** This used to
             // exclude `Alt`, so `Option+Backspace` — the delete-word every macOS
-            // reader has in their fingers — fell through to the widget and ate
+            // reader has in their fingers — fell through to the editor and ate
             // `[pasted text #8, 464 chara` one word at a time, leaving a
             // placeholder that had silently stopped standing for anything.
             // `Ctrl+W` is the same key by another name.
@@ -525,7 +522,7 @@ impl Composer {
             }
             _ => {
                 self.editing();
-                self.area.input(key);
+                self.area.key(key);
                 Reply::Idle
             }
         }
@@ -756,13 +753,14 @@ impl Composer {
             )),
             marker,
         );
-        // **The prompt's own rows, wrapped here rather than by the widget.**
-        // `tui-textarea` scrolls sideways instead of wrapping, and every other
-        // measurement in this product assumes a wrap — so drawing the widget
-        // meant a long prompt clipped at the left, a viewport grown for rows
-        // nothing used, and the widget's own block cursor sitting somewhere other
-        // than the terminal cursor io-cli had placed. The editing is still the
-        // widget's; the picture is this crate's.
+        // **The prompt's own rows, wrapped here rather than by a widget.**
+        // The text-editing widget this was built on until 0.18.0 scrolled
+        // sideways instead of wrapping, and every other measurement in this
+        // product assumes a wrap — so drawing it meant a long prompt clipped at
+        // the left, a viewport grown for rows nothing used, and the widget's own
+        // block cursor sitting somewhere other than the terminal cursor io-cli
+        // had placed. The editing is [`crate::editor`]'s; the picture is this
+        // function's, and there is no third opinion left to disagree with it.
         let room = usize::from(text.width).max(1);
         let (rows, (at_row, _)) = self.wrapped(room);
         let top = Self::scroll(rows.len(), at_row, usize::from(text.height));
@@ -781,7 +779,7 @@ impl Composer {
         // is done here rather than left to a caller. ratatui hides the cursor on
         // any frame that does not set a position, and a hidden cursor removes the
         // only focus indicator a screen reader has — the criticism the whole
-        // category is unusable for. Owning it in the widget that owns the
+        // category is unusable for. Owning it in the type that owns the
         // insertion point means no frame can forget.
         //
         // It is also now the *only* cursor on screen. The widget drew a second
@@ -830,7 +828,7 @@ impl Composer {
     /// named. Which deletion key was pressed does not change that — a word-wise
     /// delete leaves the same broken half a line as a character-wise one.
     ///
-    /// Anything not sitting at the end of a placeholder is the widget's own
+    /// Anything not sitting at the end of a placeholder is the editor's own
     /// deletion, whichever one the key means.
     fn delete_backwards(&mut self, key: KeyEvent) -> Reply {
         self.editing();
@@ -845,7 +843,7 @@ impl Composer {
                 self.markers.retain(|(held, _)| held != &placeholder);
             }
             None => {
-                self.area.input(key);
+                self.area.key(key);
             }
         }
         Reply::Idle
@@ -965,6 +963,6 @@ impl Composer {
         self.pastes = pastes;
         self.markers = markers;
         self.area.insert_str(text);
-        self.area.move_cursor(CursorMove::End);
+        self.area.move_to_end();
     }
 }
