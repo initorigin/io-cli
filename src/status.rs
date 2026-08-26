@@ -595,22 +595,21 @@ impl Status {
 
     /// The same share, taken from the durable trace once a step has landed.
     ///
-    /// **This is the numerator, and the store is the only place it exists.**
-    /// io-harness records `ContextEvent::assembled` — the assembler's own estimate
-    /// for the section it has just built — as one row per step, and emits no event
-    /// carrying that number. `EventKind::Compacted` says how big the section is
-    /// only on the steps where a fold happened, and `PromptComposed` counts the
-    /// *system* block in bytes, which is a different section measured in a
-    /// different unit. So a share that reads the event stream alone is blank until
-    /// a fold, and no arithmetic anywhere could have fixed that.
+    /// **NOT what `ctx N%` reports, and the reason is a live run.** This reads
+    /// `ContextEvent::assembled` — the observation section alone, which is what
+    /// `ContextBudget` bounds and what `Compacted::after_tokens` reports. It is a
+    /// coherent quantity and it was the field's numerator until the binary was
+    /// driven for real: `/context` totalled **4,363 tokens of 24,000** while the
+    /// status line one keystroke away said **`ctx 0%`**, because the page measures
+    /// the whole request and this measures the ledger inside it. Two surfaces
+    /// disagreeing about a word, on one screen, is worse than either number is
+    /// useful — and the percentage is what makes an operator open the page, so the
+    /// page is the one that must be right.
     ///
-    /// `est_tokens` and not `reported_tokens`, though the row carries both.
-    /// `reported_tokens` is what the provider billed for the whole request —
-    /// system block, tools, transcript and all — while `est_tokens` is the
-    /// observation section alone, which is the thing `ContextBudget` bounds and
-    /// the thing `Compacted::after_tokens` reports. `ctx N%` has to mean one
-    /// quantity, and mixing the two would make the number jump at every step
-    /// boundary for no reason a reader could see.
+    /// So the field now reports what the page totals, from the same snapshot, and
+    /// this is kept for the section number the page still shows. It answers "how
+    /// full is the part a fold would shrink"; `ctx N%` answers "how full is the
+    /// window", which is the question an overflow is the answer to.
     ///
     /// **Anchored on `Step`, for the reason `main.rs`'s `commit_edits` is.**
     /// io-harness documents `Step` as emitted once the step has been committed to
@@ -630,6 +629,34 @@ impl Status {
     /// decoration on a status line: a run whose work succeeded is not one to
     /// interrupt because a trace could not be re-read, and unlike a diff there is
     /// nothing here worth spending a scrollback row to apologise for.
+    /// The share `ctx N%` reports: the whole request, over the window.
+    ///
+    /// **The same numbers `/context` puts on its page, from the same snapshot, so
+    /// the two cannot disagree.** They did, and a live run is what found it: the
+    /// page totalled 4,363 tokens of 24,000 while the line said `ctx 0%`. The
+    /// percentage is what makes an operator open the page; a percentage that
+    /// contradicts the page is worse than no percentage at all.
+    ///
+    /// Taken from the request rather than the trace because that is what the
+    /// window bounds — an overflow is refused on the whole request, not on the
+    /// observations inside it — and because a request is what a page can show.
+    /// Where no request has been seen yet, the caller falls back to
+    /// [`Status::note_context_from`], which reads the section the trace records.
+    pub fn note_context_request(
+        &mut self,
+        seen: &crate::context::Request,
+        contract: &io_harness::TaskContract,
+        remaining: Option<u64>,
+    ) {
+        let window = crate::context::window(contract, remaining);
+        if window == 0 {
+            return;
+        }
+        let total = crate::context::total(&crate::context::sections(seen, contract));
+        let share = (total as f64 / window as f64 * 100.0).round();
+        self.context = Some(share.clamp(0.0, 100.0) as u8);
+    }
+
     pub fn note_context_from(&mut self, store: &io_harness::Store, event: &io_harness::RunEvent) {
         let io_harness::EventKind::Step { .. } = &event.kind else {
             return;

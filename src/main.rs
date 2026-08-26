@@ -1619,6 +1619,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // steered, so that is not the word for the difference.
                         contained.then_some(containment.as_ref()).flatten(),
                         &capabilities,
+                        &seen,
                         planning,
                         // Taken rather than read: one request, one turn. A queue
                         // of three prompts must not fold three times.
@@ -1806,6 +1807,10 @@ async fn turn<P: Provider>(
     config: &Config,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
+    // The last request this session's provider was handed. `/context` reads it to
+    // say what is in the window, and `ctx N%` reads it so the two say the same
+    // thing — see `note_context`, and the live run that found them disagreeing.
+    seen: &io_cli::context::Seen,
     // Whether this turn proposes a plan before it works. The operator's `/plan`,
     // and nothing else — a caps configuration decided it through 0.11.0, which
     // is how every contained turn ended up stopping for one.
@@ -1986,7 +1991,12 @@ async fn turn<P: Provider>(
                 // every event, for the reason `commit_edits` above it is: the
                 // assembly is written once a step and reading it per event would
                 // be one store query per token.
-                app.status.note_context_from(store, &event);
+                //
+                // The REQUEST first, so the line and `/context` cannot disagree —
+                // a live run caught them saying 0% and 4,363-of-24,000 about the
+                // same turn. The trace is the fallback for the window between a
+                // step landing and the first completion call being seen.
+                note_context(app, store, &event, seen, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
                 paint(screen, app)?;
@@ -2310,7 +2320,7 @@ async fn turn<P: Provider>(
         // And on the drain, for the same race the two lines above it are here
         // for: the last step of a turn is exactly the one whose event the select
         // loop loses to the turn's own return.
-        app.status.note_context_from(store, &event);
+        note_context(app, store, &event, seen, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
         // lose.
@@ -2394,6 +2404,34 @@ async fn turn<P: Provider>(
 /// A read that fails degrades to a line saying so. A run whose work succeeded is
 /// not a run to panic over because the trace could not be re-read, and silence
 /// would say the step changed nothing.
+/// Keep `ctx N%` saying what `/context` would say.
+///
+/// **One quantity, one source, because a live run found two.** The page totals
+/// the request against the window the contract declares; the field divided the
+/// observation section by the same window and read `0%` where the page read
+/// eighteen. Both numbers were defensible and the pair was not: the percentage is
+/// what makes an operator open the page, so it has to be the page's own number.
+///
+/// The trace is the fallback rather than the answer. A step lands before the
+/// completion call that follows it is snapshotted, so on the very first step
+/// there is no request to measure and the section the trace records is the only
+/// number there is — better than a blank field, and it converges the moment a
+/// request has been seen.
+fn note_context(
+    app: &mut App,
+    store: &Store,
+    event: &io_harness::RunEvent,
+    seen: &io_cli::context::Seen,
+    contract: &io_harness::TaskContract,
+) {
+    if let Some(request) = seen.latest() {
+        app.status
+            .note_context_request(&request, contract, contract.max_tokens);
+    } else {
+        app.status.note_context_from(store, event);
+    }
+}
+
 /// Report a fold that was asked for — once, and only from the event that
 /// announces it.
 ///

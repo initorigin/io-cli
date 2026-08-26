@@ -529,12 +529,24 @@ fn the_driver_reads_the_assembly_on_both_event_paths() {
     )
     .expect("the driver");
 
-    let called = driver.matches("note_context_from(").count();
+    // `note_context` and not `note_context_from`: a live run found the field and
+    // `/context` disagreeing about the same turn — 0% against 4,363 of 24,000 —
+    // because one measured the observation section and the other the request. The
+    // driver now goes through one helper that prefers the request and falls back
+    // to the trace, so what this counts is that helper.
+    let called = driver.matches("note_context(app, store,").count();
     let edits = driver.matches("commit_edits(app, store,").count();
     assert!(
         called >= edits && edits > 0,
-        "the assembled share is read on {called} of the {edits} paths that already \
-         read the trace per step; a field filled on one drain half is stale on the \
-         last step of every turn",
+        "the share is read on {called} of the {edits} paths that already read per \
+         step; a field filled on one drain half is stale on the last step of every \
+         turn",
+    );
+    // And the fallback is still reachable, because a step lands before the
+    // completion call after it is snapshotted: on the very first step the trace is
+    // the only number there is.
+    assert!(
+        driver.contains("note_context_from(store, event)"),
+        "the request is preferred, but the trace is what answers before one exists",
     );
 }

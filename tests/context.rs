@@ -492,3 +492,47 @@ fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
         );
     }
 }
+
+/// F7 + F10 — the page and the status line report ONE number.
+///
+/// **The defect a live run found, pinned so it cannot come back.** `/context`
+/// totalled 4,363 tokens of 24,000 while the status line one keystroke away said
+/// `ctx 0%`, because the page measured the whole request and the field measured
+/// the observation section inside it. Each number was defensible on its own; the
+/// pair was not, and the percentage is what makes an operator open the page.
+///
+/// So this asserts the field IS the page's total over the page's window, computed
+/// from the same snapshot by the same calls — not merely that the two are close,
+/// which is a tolerance somebody widens later.
+#[test]
+fn f10_the_status_share_is_the_page_total_over_the_page_window() {
+    let contract = contract();
+    let seen = Request::of(&request());
+
+    let sections = context::sections(&seen, &contract);
+    let total = context::total(&sections);
+    let window = context::window(&contract, contract.max_tokens);
+    assert!(
+        total > 0 && window > 0,
+        "the fixture has to put something in a window for this to mean anything",
+    );
+
+    let mut status = io_cli::status::Status::new("a-model");
+    status.budgets = io_cli::status::Budgets::in_force(&contract);
+    status.note_context_request(&seen, &contract, contract.max_tokens);
+
+    let expected = (total as f64 / window as f64 * 100.0).round() as u8;
+    assert_eq!(
+        status.context,
+        Some(expected),
+        "the line says {:?} where the page says {total} of {window}",
+        status.context,
+    );
+
+    // And it is not the degenerate agreement of two zeroes, which is exactly the
+    // shape the defect wore on screen.
+    assert!(
+        expected > 0,
+        "a fixture where both read zero would pass this test and prove nothing",
+    );
+}
