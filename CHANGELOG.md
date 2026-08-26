@@ -6,6 +6,53 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-26
+
+Tell it to remember something, and it is still remembered tomorrow.
+
+**`/remember` writes a line into a markdown file you can open, read, edit, diff
+and delete.** The scope is chosen at the moment it is written, because the
+difference between the three is whether it gets committed: `AGENTS.md` for what
+the team should share, `AGENTS.local.md` for what only this checkout should know,
+and `~/.io-cli/IO.md` for what is true of every project. Nothing here is a store
+nobody can inspect — these are files, and io-harness has read `AGENTS.md` since
+its 0.45.0.
+
+**A remembered line takes effect on the next turn, with nothing restarted.** The
+configuration is discovered again for every turn rather than once at startup, so
+an edit you make in your own editor counts too. A file that stops parsing no
+longer ends the session: the last configuration that read cleanly stays in force,
+you are told which file refused and why, and the repaired file is picked up with
+nothing further asked.
+
+**`/memory` shows both memories in one place.** The three instruction files with
+what each holds and — the part no other surface can tell you — **which of them is
+actually being read**. Naming files in `[instructions]` replaces the default
+rather than adding to it, and a named file that does not exist is skipped in
+silence, so a project's own table can quietly displace a wider list and nothing
+warns you. Beside the files sits the durable memory the *agent* wrote for itself:
+every entry with its key, its kind, whether it is pinned, the run and step that
+wrote it, and how many runs have since drawn on it, in both the workspace scope
+and the global one, with the caps named per scope because a run drawing on both
+can carry twice the number a single figure suggests.
+
+**Pin what should survive, forget what should not.** A pinned entry is exempt
+from being overwritten and from being evicted when the cap is reached, which is
+the only lever an operator has over a store the agent otherwise manages alone.
+Forgetting leaves a restore point, so an entry removed by accident can be put
+back; an entry that is pinned reports the refusal and names the pin rather than
+quietly doing nothing. Evictions, refusals and recalls are shown too — they emit
+no event at all and have been happening invisibly since the store gained a cap.
+
+**`tui-textarea` is gone, and with it the last thing holding this product on
+ratatui 0.29.** The composer and the wizard now use an editing model io-cli owns.
+Nothing about typing changes: the multi-line keys, prompt-history recall, the
+wrapped rows, the single block cursor, selection, cut and paste, the masked
+credential field, and undo and redo on `Ctrl+U` and `Ctrl+R` all behave exactly as
+they did, one step per character as before. ratatui moves to 0.30 and crossterm
+stays at 0.28. The dependency that carried a security advisory with no fix
+available for the version in reach is no longer in the tree.
+
 ## [0.17.0] - 2026-08-26
 
 Say something while it works, and have it land.

@@ -816,6 +816,229 @@ async fn a_committed_transcript_draws_in_ascii() {
     }
 }
 
+/// The three instruction files and the two notes this sweep renders.
+///
+/// One of each state that has a mark of its own: a file read, a file that is
+/// there and is **not** read, a file not written yet; a note pinned and a note
+/// nothing has pinned. A fixture missing any of them would sweep four marks and
+/// leave the fifth to reach a terminal that cannot draw it — which is exactly how
+/// `TodoWrote` went three releases unswept.
+fn memory_fixture() -> (
+    Vec<io_cli::memory::Instruction>,
+    Vec<io_cli::recall::Remembered>,
+) {
+    use io_cli::memory::Instruction;
+    use io_cli::recall::{Remembered, Scope};
+    use io_harness::config::Scope as FileScope;
+
+    (
+        vec![
+            Instruction {
+                scope: FileScope::Project,
+                path: "/Users/someone/work/io-cli/AGENTS.md".into(),
+                exists: true,
+                lines: 12,
+                read: true,
+            },
+            Instruction {
+                scope: FileScope::Local,
+                path: "/Users/someone/work/io-cli/AGENTS.local.md".into(),
+                exists: true,
+                lines: 3,
+                read: false,
+            },
+            Instruction {
+                scope: FileScope::User,
+                path: "/Users/someone/.io-cli/IO.md".into(),
+                exists: false,
+                lines: 0,
+                read: false,
+            },
+        ],
+        vec![
+            Remembered {
+                scope: Scope::Workspace,
+                key: "build-command".into(),
+                value: "cargo test --lib --tests".into(),
+                kind: "fact",
+                pinned: true,
+                run_id: 41,
+                step: 2,
+                created_at: "2026-08-26 09:00".into(),
+                draws: 6,
+            },
+            Remembered {
+                scope: Scope::Global,
+                key: "an-key-far-longer-than-any-narrow-terminal-can-draw-in-full".into(),
+                value: "keep answers short".into(),
+                kind: "decision",
+                pinned: false,
+                run_id: 9,
+                step: 1,
+                created_at: "2026-08-26 09:01".into(),
+                draws: 0,
+            },
+        ],
+    )
+}
+
+/// **N3 — the memory page draws in ASCII, at eighty columns and at thirty.**
+///
+/// The sabotage arm is a pinned note marked with a glyph outside ASCII: the sweep
+/// below is what fails, and nothing else does — the page still lists the same
+/// rows, still resolves the same indices and still writes the same files.
+///
+/// Both widths, because the narrow form is a claim rather than an accident. The
+/// picker fits a label to what the marker and the mark leave and fits a detail to
+/// what is left after that, dropping it entirely when there is no room — so the
+/// mark, which is the whole of what says *pinned* and *not read*, is the one thing
+/// that cannot be squeezed out.
+#[test]
+fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
+    use io_cli::commands::{memory_page, LOOSE_MARK, PINNED_MARK, READ_MARK, UNREAD_MARK};
+
+    let (files, entries) = memory_fixture();
+    let theme = ascii();
+
+    for width in [80u16, 30] {
+        // Twenty-four rows of terminal and the session's own eight-row viewport,
+        // which is the size every one of these surfaces is actually drawn at.
+        let (mut screen, _recorder) = support::screen_of(width, 24, io_cli::term::VIEWPORT_HEIGHT);
+        let before = screen.rows();
+        let (rows, _held) = memory_page(&files, &entries, true, &ASCII);
+        let mut picker = Picker::new("What io remembers", rows);
+        screen
+            .draw(|frame| picker.render(frame, frame.area(), &theme))
+            .expect("frame");
+        let drawn = screen.viewport_text().to_string();
+
+        assert_ascii(&format!("the memory page at {width} columns"), &drawn);
+        for line in drawn.lines() {
+            assert!(
+                line.chars().count() <= width as usize,
+                "a row overran {width} columns: {line:?}",
+            );
+        }
+        // **No frame grows the viewport.** Rendering is a draw and nothing else;
+        // the palette stopped re-placing the viewport in 0.13.0 and no surface
+        // added since may start again.
+        assert_eq!(
+            screen.rows(),
+            before,
+            "drawing the memory page changed the viewport's height",
+        );
+    }
+
+    // The marks survive the substitution and still mark. A set that mapped every
+    // mark to a space would pass the sweep above and destroy the page.
+    let (rows, _) = memory_page(&files, &entries, false, &ASCII);
+    let marks: Vec<&str> = rows.iter().filter_map(|row| row.mark).collect();
+    for mark in [READ_MARK, UNREAD_MARK, PINNED_MARK, LOOSE_MARK] {
+        assert!(mark.is_ascii(), "{mark:?} is not ASCII");
+        assert_eq!(
+            mark.chars().count(),
+            1,
+            "{mark:?} is not one cell; a mark of an odd width shifts the column",
+        );
+        assert!(
+            marks.contains(&mark),
+            "{mark:?} is on no row of the fixture"
+        );
+    }
+    assert_ne!(
+        PINNED_MARK, LOOSE_MARK,
+        "a pinned note and a loose one have to look different or the mark says nothing",
+    );
+    assert_ne!(READ_MARK, UNREAD_MARK);
+}
+
+/// N3 — the two pickers `/remember` and `/memory` open, and every sentence they
+/// commit, draw in ASCII.
+#[test]
+fn n3_the_memory_prompts_and_sentences_draw_in_ascii() {
+    use io_cli::commands::{
+        forgotten_said, instruction_said, memory_notes, pinned_said, scope_rows, verb_rows,
+    };
+    use io_cli::recall::{Caps, Forgotten, Pinned, Scope, View};
+    use io_harness::config::Scope as FileScope;
+
+    let (files, entries) = memory_fixture();
+    let theme = ascii();
+
+    // The scope picker `/remember` opens, at the session's own viewport.
+    let paths: Vec<(FileScope, std::path::PathBuf)> =
+        [FileScope::Project, FileScope::Local, FileScope::User]
+            .into_iter()
+            .map(|scope| {
+                (
+                    scope,
+                    std::path::PathBuf::from("/Users/someone/work/io-cli")
+                        .join(io_cli::memory::file_name(scope)),
+                )
+            })
+            .collect();
+    for (title, rows) in [
+        ("Remember it where?", scope_rows(&paths, &ASCII)),
+        ("build-command?", verb_rows(true)),
+        ("build-command?", verb_rows(false)),
+    ] {
+        for width in [80u16, 30] {
+            let (mut screen, _recorder) =
+                support::screen_of(width, 24, io_cli::term::VIEWPORT_HEIGHT);
+            let mut picker = Picker::new(title, rows.clone());
+            screen
+                .draw(|frame| picker.render(frame, frame.area(), &theme))
+                .expect("frame");
+            let drawn = screen.viewport_text().to_string();
+            assert_ascii(&format!("{title} at {width} columns"), &drawn);
+            for line in drawn.lines() {
+                assert!(
+                    line.chars().count() <= width as usize,
+                    "{title} overran {width} columns: {line:?}",
+                );
+            }
+        }
+    }
+
+    // And every sentence either surface commits into the scrollback.
+    let view = View {
+        workspace: "/Users/someone/work/io-cli".into(),
+        entries: entries.clone(),
+        caps: [Scope::Workspace, Scope::Global]
+            .map(|scope| Caps {
+                scope,
+                limits: io_harness::MemoryLimits::default(),
+            })
+            .to_vec(),
+        trace: Vec::new(),
+        draws_cut: true,
+    };
+    assert_ascii(
+        "the memory page's notes",
+        &memory_notes(&view, &ASCII).join("\n"),
+    );
+    for file in &files {
+        assert_ascii(
+            "an instruction file's sentence",
+            &instruction_said(file, &ASCII),
+        );
+    }
+    for outcome in [Pinned::Set, Pinned::NoEntry] {
+        for pinned in [true, false] {
+            let (_, said) = pinned_said("build-command", Scope::Workspace, pinned, outcome);
+            assert_ascii("a pin outcome", &said);
+        }
+    }
+    for outcome in [
+        Forgotten::Removed { restore: 12 },
+        Forgotten::Refused,
+        Forgotten::Absent,
+    ] {
+        let (_, said) = forgotten_said("build-command", Scope::Global, outcome, &ASCII);
+        assert_ascii("a withdrawal outcome", &said);
+    }
+}
+
 #[tokio::test]
 async fn the_approval_overlay_draws_in_ascii() {
     use io_cli::approval::{self, Approval};

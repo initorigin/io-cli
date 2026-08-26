@@ -22,7 +22,17 @@ const ALLOWED: &[&str] = &[
     "io-harness",
     "ratatui",
     "crossterm",
-    "tui-textarea",
+    // `tui-textarea` stood here from 0.1.0 and was **removed** in 0.18.0 — the
+    // first name this crate has ever given back. It pinned `ratatui ^0.29.0`
+    // through every feature path it had, 0.29 pinned `lru ^0.12.0`, and `lru`
+    // carried an advisory whose fix landed in 0.16.3 and was never backported to
+    // the 0.12 line. Upstream published nothing after 2024-10-22, so there was no
+    // version to wait for: the composer's editing model became this crate's own
+    // (`src/editor.rs`) and the name went.
+    // `n1_the_composer_is_free_and_no_lru_is_in_the_advisorys_range` below asserts
+    // it is gone from the lockfile — a count on its own would be satisfied by any
+    // replacement — and asserts the `lru` still in the tree is outside the
+    // advisory's range, which is the property that actually mattered.
     "clap",
     "tokio",
     "serde",
@@ -179,6 +189,87 @@ fn f7_n1_the_dependency_set_is_the_one_the_contract_names() {
     assert!(
         missing.is_empty(),
         "these are permitted but no longer used: {missing:?}",
+    );
+}
+
+/// N1: the two crates 0.18.0 gave back are gone from the whole tree, not just
+/// from the manifest.
+///
+/// **The absence of these two names is the property, and the count is not.** A
+/// dependency count stays constant under a substitution, so `ALLOWED` shrinking
+/// by one proves only that something left — it would be equally satisfied by
+/// swapping `tui-textarea` for another editing widget, which is the one outcome
+/// this release exists to avoid.
+///
+/// `lru` is the whole reason, and **it is still in the tree** — which is the
+/// correction this test exists in its present form to record. The advisory was
+/// never about the crate being present; it was about the *version*.
+/// GHSA-rhfx-m35p-ff5j covers `>= 0.9.0, < 0.16.3`, `lru` under `ratatui` 0.29
+/// was 0.12.5, and the 0.12 line ends there with no backport. Under the 0.30
+/// line the layout cache moved down into `ratatui-core`, which takes a current
+/// `lru` — so the name reappears at a version the advisory does not cover. See
+/// `US-IO-CLI-0.18.0-I02`.
+///
+/// So this asserts the property that actually matters: no `lru` in the
+/// vulnerable range. It reads `Cargo.lock` rather than the manifest, because
+/// `lru` is transitive at every point in this story and an advisory does not
+/// care which level of the tree carries the crate.
+///
+/// `ratatui` must still be there, which is what stops this passing on a tree that
+/// has lost the terminal library altogether.
+#[test]
+fn n1_the_composer_is_free_and_no_lru_is_in_the_advisorys_range() {
+    let lock = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"))
+        .expect("Cargo.lock exists; this crate is a binary and commits its lockfile");
+
+    let mut names: Vec<(&str, &str)> = Vec::new();
+    let mut name: Option<&str> = None;
+    for line in lock.lines() {
+        if let Some(found) = line
+            .strip_prefix("name = \"")
+            .and_then(|r| r.strip_suffix('"'))
+        {
+            name = Some(found);
+        } else if let Some(version) = line
+            .strip_prefix("version = \"")
+            .and_then(|r| r.strip_suffix('"'))
+        {
+            if let Some(found) = name.take() {
+                names.push((found, version));
+            }
+        }
+    }
+
+    assert!(
+        !names.iter().any(|(name, _)| *name == "tui-textarea"),
+        "`tui-textarea` is back in Cargo.lock. The editing model it provided is \
+         `src/editor.rs` now, and its `ratatui ^0.29.0` pin is what held this \
+         crate on the vulnerable `lru` line for two years.",
+    );
+
+    for (name, version) in names.iter().filter(|(name, _)| *name == "lru") {
+        // The range is `>= 0.9.0, < 0.16.3`, and every version in it is `0.x`,
+        // so comparing the minor is enough to place it: 0.16 is the first minor
+        // that can be outside, and inside it only 0.16.3 and later are.
+        let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+        let (major, minor, patch) = (
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+        );
+        let vulnerable = major == 0 && (minor < 16 || (minor == 16 && patch < 3)) && minor >= 9;
+        assert!(
+            !vulnerable,
+            "`{name} {version}` is inside GHSA-rhfx-m35p-ff5j (>= 0.9.0, < 0.16.3). \
+             The 0.12 line was never patched, so there is no in-range update — \
+             whatever pulled this in has to move instead.",
+        );
+    }
+
+    assert!(
+        names.iter().any(|(name, _)| *name == "ratatui"),
+        "ratatui is not in the lockfile at all, so this gate is passing \
+         vacuously rather than because the tree is actually clean",
     );
 }
 

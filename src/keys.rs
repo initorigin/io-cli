@@ -348,9 +348,12 @@ impl Action {
             Self::Clear => "ctrl+l",
             Self::Transcript => "ctrl+t",
             Self::Rewind => "esc esc",
-            // It displaces `tui-textarea`'s forward-char, which the right arrow
+            // It displaces the composer's forward-char, which the right arrow
             // already does — the same trade `Ctrl+T` already makes against its
-            // transpose-chars, and the reason both are rebindable.
+            // transpose-chars, and the reason both are rebindable. The keymap it
+            // displaces is `crate::editor`'s own since 0.18.0; it was
+            // `tui-textarea`'s when this note was written, and the trade is
+            // identical because that keymap was reproduced arm for arm.
             Self::Fleet => "ctrl+f",
         }
     }

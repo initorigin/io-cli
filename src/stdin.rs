@@ -9,10 +9,13 @@
 //! - The keyboard reader holds it around every poll, because crossterm's `poll`
 //!   consumes bytes into its own parser: a reader that only locked around `read`
 //!   would still swallow whatever arrived while it was polling.
-//! - A viewport being placed holds it for the placement, because placing an
-//!   inline viewport asks the terminal where its cursor is (`ESC[6n`) and reads
-//!   the answer off stdin. A reader still running takes that answer first, the
-//!   query times out, and the program appears to hang.
+//! - The renderer holds it around anything that asks the terminal where its
+//!   cursor is (`ESC[6n`), because the answer arrives on stdin. A reader still
+//!   running takes that answer first, the query times out after two seconds, and
+//!   the program appears to hang — or, on the path where the query is not
+//!   optional, refuses to start. [`crate::term::Screen`] takes this itself at
+//!   every one of those sites rather than asking its callers to; a caller may
+//!   still hold one around a larger operation, which is why a placement nests.
 //!
 //! **The lock alone is not enough, and 0.13.1 is what that cost.** A reader that
 //! releases the lock at the bottom of its loop and takes it again at the top is
@@ -30,6 +33,7 @@
 //! That is the whole mechanism — one flag, two stores and a load — and it is
 //! here, in the library, because no integration test links a binary.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -67,27 +71,61 @@ static READING: Mutex<()> = Mutex::new(());
 /// placement let go, and the next placement would be behind it.
 static WANTED: AtomicBool = AtomicBool::new(false);
 
+thread_local! {
+    /// Whether *this* thread is the one holding [`READING`] for a placement.
+    ///
+    /// `std::sync::Mutex` is not reentrant, so a thread that took the lock and
+    /// then took it again would wait for itself forever — and the whole session
+    /// with it, because the thread that places viewports is also the thread that
+    /// draws them. Since 0.18.0 that nesting is ordinary rather than exotic:
+    /// `Screen` takes the lock at every site that queries the cursor, and `main`
+    /// still takes one around the larger operations — re-placing the viewport,
+    /// rewinding a turn — that are built out of several of those sites.
+    ///
+    /// A thread-local rather than a stored `ThreadId`, because that is the whole
+    /// question being asked and it needs no comparison to answer it. It cannot be
+    /// read for another thread, which is also correct: [`Placing`] holds a
+    /// [`MutexGuard`] and so cannot leave the thread that made it.
+    ///
+    /// A depth count would be the other spelling and it is the worse one: it is
+    /// only right if guards are dropped in the order they were taken, and nothing
+    /// here can promise that. What is recorded instead is which guard *is* the
+    /// holder, so the bookkeeping is order-independent.
+    static HOLDING: Cell<bool> = const { Cell::new(false) };
+}
+
 /// The reader could not be asked. Its thread has nothing left to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Broken;
 
-/// Take the terminal for a viewport placement, waiting for the reader's current
+/// Take the terminal for a placement — anything that writes a query to the
+/// terminal and reads the answer off stdin — waiting for the reader's current
 /// poll to end.
 ///
 /// A caller must hold this for the whole placement. Ignores a previous holder's
 /// panic: a poisoned lock here means the reader thread died mid-poll, and there
 /// is no state behind this mutex to be left inconsistent — only the terminal, and
 /// a dead reader must not also cost the session its viewport.
+///
+/// **Reentrant.** A thread that already holds it gets a token that does nothing,
+/// so the terminal stays taken for as long as the outermost caller wants it and
+/// nothing waits for itself. The `HOLDING` thread-local below carries why that
+/// is the ordinary case rather than a defensive one — it is named in prose
+/// rather than linked because it is private and this is not.
 pub fn placing() -> Placing {
+    if HOLDING.get() {
+        return Placing(None);
+    }
     WANTED.store(true, Ordering::SeqCst);
-    Placing(
-        READING
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    )
+    let held = READING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    HOLDING.set(true);
+    Placing(Some(held))
 }
 
-/// The terminal, held for a placement.
+/// The terminal, held for a placement — or, when this thread was already holding
+/// it, a token that says so and does nothing.
 ///
 /// The flag is cleared when this is dropped rather than when the lock is taken,
 /// so the reader stays out of the way for the whole placement — the escape
@@ -95,11 +133,18 @@ pub fn placing() -> Placing {
 /// mutex behind it. A reader queued there is a reader holding the terminal again
 /// the moment the placement finishes, which is the thing this module exists to
 /// stop.
-pub struct Placing(#[allow(dead_code)] MutexGuard<'static, ()>);
+pub struct Placing(Option<MutexGuard<'static, ()>>);
 
 impl Drop for Placing {
     fn drop(&mut self) {
-        WANTED.store(false, Ordering::SeqCst);
+        // Only the guard that actually took the lock gives it back. An inner one
+        // dropping must not tell the reader the terminal is free while the outer
+        // one is still using it, and that stays true whichever order the two are
+        // dropped in.
+        if self.0.is_some() {
+            HOLDING.set(false);
+            WANTED.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -129,6 +174,11 @@ pub fn placement_waiting() -> bool {
 ///
 /// This is the seam a test drives: `work` needs no terminal, and the property
 /// under test is who gets the lock rather than what is typed.
+///
+/// Not reentrant, and it does not need to be: the stand-aside above is checked
+/// before the lock is taken, and a thread that is holding a [`Placing`] has
+/// already said so through [`placement_waiting`] — so it declines here rather
+/// than waiting for itself.
 pub fn reading<T>(work: impl FnOnce() -> T) -> Option<T> {
     if placement_waiting() {
         // A short pause rather than a spin: the reader has nothing to do until

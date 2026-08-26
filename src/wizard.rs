@@ -22,11 +22,12 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use io_harness::ProviderSpec;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use tui_textarea::TextArea;
 
+use crate::editor::Editor;
 use crate::keys::Newline;
 use crate::picker::{fit, fit_left, Outcome, Picker, Row};
 use crate::settings::{self, Posture};
@@ -175,7 +176,14 @@ pub struct Wizard {
     posture: Posture,
     picker: Option<Picker>,
     /// The masked field the credential and the base URL are typed into.
-    input: TextArea<'static>,
+    ///
+    /// **The mask comes off the chosen glyph set** rather than being written
+    /// here: a terminal that cannot draw a bullet shows a row of replacement
+    /// boxes, and a credential field whose masking is itself unreadable is the
+    /// one field where a reader cannot tell a rendering fault from having typed
+    /// the wrong thing. The base URL and the typed model id are the same field
+    /// unmasked — see [`Editor::masked`] against [`Editor::new`].
+    input: Editor,
     /// The provider's own message from a failed verification, shown above the
     /// credential field.
     rejection: Option<String>,
@@ -212,7 +220,7 @@ impl Wizard {
                 .to_string(),
             posture: Posture::Workspace,
             picker: None,
-            input: masked(theme.glyphs.mask),
+            input: Editor::masked(theme.glyphs.mask),
             rejection: None,
             env_key_present: false,
             no_color: !theme.coloured,
@@ -335,7 +343,7 @@ impl Wizard {
     /// confirmation screen, which this never reaches.
     pub fn rejected(&mut self, message: impl Into<String>) -> Progress {
         self.rejection = Some(message.into());
-        self.input = masked(self.theme.glyphs.mask);
+        self.input = Editor::masked(self.theme.glyphs.mask);
         self.step = Step::Credential;
         Progress::Idle
     }
@@ -350,7 +358,7 @@ impl Wizard {
         if rows.is_empty() && default.is_empty() {
             // Nothing to pick from and nothing to suggest. Asking the user to
             // type it is the honest answer; offering an empty row is not.
-            self.input = plain();
+            self.input = Editor::new();
             self.picker = None;
             self.step = Step::ModelText;
             return;
@@ -415,9 +423,9 @@ impl Wizard {
                     .map(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
                     .unwrap_or(false);
                 self.picker = None;
-                self.input = masked(self.theme.glyphs.mask);
+                self.input = Editor::masked(self.theme.glyphs.mask);
                 self.step = if kind == Kind::Compatible {
-                    self.input = plain();
+                    self.input = Editor::new();
                     Step::BaseUrl
                 } else {
                     Step::Credential
@@ -439,11 +447,11 @@ impl Wizard {
                 return Progress::Idle;
             }
             self.base_url = Some(typed);
-            self.input = masked(self.theme.glyphs.mask);
+            self.input = Editor::masked(self.theme.glyphs.mask);
             self.step = Step::Credential;
             return Progress::Idle;
         }
-        self.input.input(key);
+        self.input.key(key);
         Progress::Idle
     }
 
@@ -466,12 +474,12 @@ impl Wizard {
                 } else {
                     self.api_key = Some(typed);
                 }
-                self.input = masked(self.theme.glyphs.mask);
+                self.input = Editor::masked(self.theme.glyphs.mask);
                 self.step = Step::Verifying;
                 self.spec().map(Progress::Verify).unwrap_or(Progress::Idle)
             }
             _ => {
-                self.input.input(key);
+                self.input.key(key);
                 Progress::Idle
             }
         }
@@ -505,7 +513,7 @@ impl Wizard {
             self.enter_theme_step();
             return Progress::Idle;
         }
-        self.input.input(key);
+        self.input.key(key);
         Progress::Idle
     }
 
@@ -857,8 +865,17 @@ impl Wizard {
             lines,
         );
         if area.height > used {
+            // **The field scrolls sideways rather than wrapping**, because it is
+            // one row and a credential is one line however long it is. The window
+            // is computed from the caret alone rather than carried between
+            // frames: a stateless rule that always keeps the insertion point on
+            // screen, which is the only thing a remembered scroll position was
+            // ever for here. Both the row and the caret below are placed from the
+            // same two numbers, so they cannot land in different cells.
+            let at = self.input.cursor().1;
+            let from = at.saturating_sub((area.width as usize).saturating_sub(1));
             frame.render_widget(
-                &self.input,
+                Paragraph::new(field(&self.input.shown(), at, from)),
                 Rect {
                     y: area.y + used,
                     height: 1,
@@ -866,7 +883,7 @@ impl Wizard {
                 },
             );
             frame.set_cursor_position(ratatui::layout::Position {
-                x: area.x + self.input.cursor().1 as u16,
+                x: area.x + (at - from) as u16,
                 y: area.y + used,
             });
         }
@@ -975,22 +992,37 @@ fn paragraph(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// A one-line field whose characters are never shown.
+/// The field's one row as it is drawn: `shown` from character `from`, with the
+/// character at `at` painted as an inverted cell.
 ///
-/// The mask comes off the chosen glyph set rather than being written here: a
-/// terminal that cannot draw a bullet shows a row of replacement boxes, and a
-/// credential field whose masking is itself unreadable is the one field where a
-/// reader cannot tell a rendering fault from having typed the wrong thing.
-fn masked(mask: char) -> TextArea<'static> {
-    let mut area = plain();
-    area.set_mask_char(mask);
-    area
-}
-
-fn plain() -> TextArea<'static> {
-    let mut area = TextArea::default();
-    area.set_cursor_line_style(ratatui::style::Style::default());
-    area
+/// `shown` is already masked where the field is masked, and a mask is one
+/// character per character — so `at` indexes the drawn row exactly as it indexes
+/// the typed one, and no part of the credential can reach a `Span` from here.
+///
+/// The inverted cell is the field's block cursor. It is drawn even though the
+/// caller also places the terminal's own caret on the same cell: that is what
+/// this field has always looked like, and the two agree because both are placed
+/// from `at` and `from`.
+fn field(shown: &str, at: usize, from: usize) -> Line<'static> {
+    let mut characters = shown.chars().skip(from);
+    let before: String = characters.by_ref().take(at - from).collect();
+    let under: String = characters.by_ref().take(1).collect();
+    let after: String = characters.collect();
+    Line::from(vec![
+        Span::raw(before),
+        // A space, when the caret is past the last character: a block cursor is a
+        // cell rather than a character, and it has to be somewhere even on an
+        // empty field.
+        Span::styled(
+            if under.is_empty() {
+                " ".to_string()
+            } else {
+                under
+            },
+            Style::default().add_modifier(Modifier::REVERSED),
+        ),
+        Span::raw(after),
+    ])
 }
 
 /// Whether a key event is one the wizard treats as "leave without writing".

@@ -162,6 +162,72 @@ fn a_placement_waits_out_the_reader_turn_already_in_flight() {
 }
 
 #[test]
+fn a_placement_taken_inside_another_holds_the_terminal_until_the_outer_one_ends() {
+    let _serial = serially();
+
+    // **The renderer takes this lock at every site that asks the terminal a
+    // question, and the binary still takes one around the operations built out
+    // of several of those sites** — re-placing the viewport is an erase, an
+    // attach and a frame. So a placement inside a placement is the ordinary
+    // case, and `std::sync::Mutex` is not reentrant: a second `placing` that
+    // queued would wait for the thread that is already holding it, which is the
+    // thread drawing the session. That failure is a hang rather than an
+    // assertion, so what is asserted here is the half that can fail loudly — the
+    // inner one ending must not tell the reader the terminal is free.
+    let answered = Arc::new(AtomicU8::new(RUNNING));
+    let reader = {
+        let outer = io_cli::stdin::placing();
+        let inner = io_cli::stdin::placing();
+        assert!(
+            io_cli::stdin::placement_waiting(),
+            "a nested placement does not say the terminal is taken",
+        );
+        drop(inner);
+        assert!(
+            io_cli::stdin::placement_waiting(),
+            "the inner placement gave the terminal back while the outer one was \
+             still using it — the reader is free to swallow the answer to a \
+             query the outer placement has not asked yet",
+        );
+
+        let told = Arc::clone(&answered);
+        let reader = thread::spawn(move || {
+            let took = io_cli::stdin::reading(|| ());
+            told.store(
+                if took.is_some() { TOOK_IT } else { DECLINED },
+                Ordering::SeqCst,
+            );
+        });
+        for _ in 0..LONG_ENOUGH {
+            if answered.load(Ordering::SeqCst) != RUNNING {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        drop(outer);
+        reader
+    };
+    reader.join().expect("the reader thread does not panic");
+
+    assert_eq!(
+        answered.load(Ordering::SeqCst),
+        DECLINED,
+        "a reader took, or queued for, a terminal a nested placement was using",
+    );
+
+    // And the thread is not left believing it still holds what it gave back. A
+    // record that leaked would make every later placement on this thread a token
+    // that locks nothing, which is the original defect with no way to see it.
+    let again = io_cli::stdin::placing();
+    assert!(
+        io_cli::stdin::placement_waiting(),
+        "a placement taken after a nested one ended did not take the terminal at \
+         all",
+    );
+    drop(again);
+}
+
+#[test]
 fn a_reader_that_stood_aside_gets_the_terminal_back_afterwards() {
     let _serial = serially();
 

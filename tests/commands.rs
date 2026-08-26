@@ -54,6 +54,11 @@ fn the_commands_are_the_commands() {
             "/copy",
             "/copy diff",
             "/config",
+            // 0.18.0 — the other two surfaces that write a file the operator
+            // keeps, and they ask the same scope question `/config` does: three
+            // files, and which one is half of every decision made here.
+            "/remember",
+            "/memory",
             "/mcp",
             "/provider",
             "/profile",
@@ -532,6 +537,423 @@ fn f15_help_is_committed_rather_than_drawn_as_an_overlay() {
         Action::Print(lines) => assert!(!lines.is_empty()),
         other => panic!("`/help` should be committed, not opened: {other:?}"),
     }
+}
+
+// --- 0.18.0: the two commands that reach the memory ---------------------------
+
+/// `/remember` takes the REST of the line, and `/memory` takes nothing.
+///
+/// The first half is the one with a defect behind it. A line of guidance is a
+/// *sentence*, and `split_whitespace().nth(1)` would remember its first word and
+/// drop the rest with nothing said — the reader would see a confirmation naming a
+/// real file and find one word in it. `/config`'s value arm already documents the
+/// same trap for arrays with spaces in them; here what is lost is prose, which
+/// nobody notices missing until a later run behaves as though it had never been
+/// told.
+#[test]
+fn remember_keeps_the_whole_line_and_memory_takes_no_argument() {
+    assert_eq!(
+        commands::parse("remember run the linter before pushing", &defaults(), &DARK),
+        Action::Remember("run the linter before pushing".to_string()),
+    );
+    // Interior spacing is the operator's; only the ends are trimmed.
+    assert_eq!(
+        commands::parse("remember   two  spaces   ", &defaults(), &DARK),
+        Action::Remember("two  spaces".to_string()),
+    );
+    // The word alone is empty rather than a refusal here: the sentence saying
+    // what to type belongs to the driver, which would otherwise open a picker
+    // over three files it is about to write nothing into.
+    assert_eq!(
+        commands::parse("remember", &defaults(), &DARK),
+        Action::Remember(String::new()),
+    );
+    assert_eq!(
+        commands::parse("remember    ", &defaults(), &DARK),
+        Action::Remember(String::new()),
+    );
+
+    assert_eq!(
+        commands::parse("memory", &defaults(), &DARK),
+        Action::Memory
+    );
+    // Arguments are tolerated and the first word decides, as everywhere else.
+    assert_eq!(
+        commands::parse("memory now", &defaults(), &DARK),
+        Action::Memory,
+    );
+
+    // Neither falls through to the print an unknown command lands on, which is
+    // the failure a listed-but-unwired command has: advertised and inert.
+    assert!(!matches!(
+        commands::parse("memory", &defaults(), &DARK),
+        Action::Print(_)
+    ));
+    assert!(!matches!(
+        commands::parse("remember x", &defaults(), &DARK),
+        Action::Print(_)
+    ));
+}
+
+/// Both are listed, both are in the `Configure` group, and both have a palette
+/// row that resolves back to the command whole.
+///
+/// The sabotage arm is listing a command without wiring its row — the one way a
+/// listed command must not fail. `palette_pick` is what the driver resolves a
+/// chosen row through, so asking it is asking the driver.
+#[test]
+fn the_memory_commands_are_configure_commands_with_working_palette_rows() {
+    use io_cli::commands::{group_of, palette, palette_pick, Chosen, Group};
+    use io_harness::{Skills, Templates};
+
+    for name in ["/remember", "/memory"] {
+        assert!(
+            COMMANDS.iter().any(|(command, _)| *command == name),
+            "{name} is not in the inventory, so nobody is told it exists",
+        );
+        // Configure, and not Inspect: both of these write, and Inspect already
+        // holds ten, which is the bound `f13_no_group_is_longer_than_ten` asserts.
+        assert_eq!(
+            group_of(name),
+            Some(Group::Configure),
+            "{name} writes a file the operator keeps, so it belongs with the group that writes",
+        );
+
+        let rows = palette(&Templates::none(), &Skills::none());
+        let bare = name.strip_prefix('/').expect("a command carries its slash");
+        let index = rows
+            .iter()
+            .position(|row| row.label == bare)
+            .unwrap_or_else(|| panic!("{name} has no palette row"));
+        assert_eq!(
+            palette_pick(&Templates::none(), &Skills::none(), index),
+            Some(Chosen::Command(name)),
+            "{name}'s row is advertised and inert",
+        );
+    }
+}
+
+/// `Forgotten::Refused` is reported as a refusal that names why, never as a
+/// removal.
+///
+/// The one outcome of `Store::memory_forget` that must not be collapsed into the
+/// others. The note is pinned, so it is not a run's to withdraw and io-cli asks on
+/// a run's behalf: it stands, unchanged, and goes on being carried into every
+/// later prompt. A surface reporting that as success tells the operator their note
+/// is gone while the model keeps reading it — the same failure the pin flag exists
+/// to prevent one level down.
+#[test]
+fn a_refused_withdrawal_is_a_refusal_and_names_the_pin() {
+    use io_cli::commands::forgotten_said;
+    use io_cli::glyphs::ASCII;
+    use io_cli::recall::{Forgotten, Scope};
+    use io_cli::theme::Tone;
+
+    let (tone, said) = forgotten_said(
+        "build-command",
+        Scope::Workspace,
+        Forgotten::Refused,
+        &ASCII,
+    );
+    assert_eq!(tone, Tone::Refused, "a refusal is not a success: {said}");
+    assert!(
+        said.contains("pinned"),
+        "the reason is what makes it actionable: {said}",
+    );
+    assert!(said.contains("Unpin"), "and the way out is named: {said}",);
+    assert!(
+        !said.contains("withdrawn") && !said.contains("removed"),
+        "nothing was withdrawn, so nothing may say it was: {said}",
+    );
+
+    // The other two are three different things and stay three.
+    let (removed, text) = forgotten_said(
+        "k",
+        Scope::Global,
+        Forgotten::Removed { restore: 9 },
+        &ASCII,
+    );
+    assert_eq!(removed, Tone::Success);
+    assert!(text.contains('9'), "the restore point is named: {text}");
+    let (absent, text) = forgotten_said("k", Scope::Global, Forgotten::Absent, &ASCII);
+    assert_ne!(
+        absent,
+        Tone::Success,
+        "an absent key was not removed: {text}"
+    );
+    assert_ne!(
+        absent,
+        Tone::Refused,
+        "and it was not refused either: {text}"
+    );
+}
+
+/// A note that exists and is not pinned reports "no entry" rather than success.
+///
+/// `Store::memory_pin` answers `false` for *there was no such entry*, which is not
+/// "the pin failed" — and a `bool` at a call site reads as "did it work". A surface
+/// that believed it shows a pin the store does not hold.
+#[test]
+fn pinning_a_key_that_is_not_there_is_not_reported_as_a_pin() {
+    use io_cli::commands::pinned_said;
+    use io_cli::recall::{Pinned, Scope};
+    use io_cli::theme::Tone;
+
+    let (tone, said) = pinned_said("gone", Scope::Workspace, true, Pinned::NoEntry);
+    assert_ne!(tone, Tone::Success, "{said}");
+    assert!(said.contains("nothing was changed"), "{said}");
+
+    let (tone, said) = pinned_said("k", Scope::Workspace, true, Pinned::Set);
+    assert_eq!(tone, Tone::Success);
+    assert!(said.contains("pinned"), "{said}");
+    let (_, unpinned) = pinned_said("k", Scope::Workspace, false, Pinned::Set);
+    assert!(unpinned.contains("unpinned"), "{unpinned}");
+}
+
+/// The scope rows say what committing each file MEANS, not only its name.
+///
+/// That is the entire difference between the three: `IO.md`, `AGENTS.md` and
+/// `AGENTS.local.md` are three filenames, and which of them goes to everybody who
+/// clones the repository is not knowable from any of them. A picker offering three
+/// filenames would be asking a question whose answer lives somewhere else.
+#[test]
+fn the_remember_scope_rows_name_the_file_and_what_committing_it_means() {
+    use io_cli::commands::scope_rows;
+    use io_cli::glyphs::ASCII;
+    use io_harness::config::Scope;
+
+    let paths: Vec<(Scope, std::path::PathBuf)> = [Scope::Project, Scope::Local, Scope::User]
+        .into_iter()
+        .map(|scope| {
+            (
+                scope,
+                std::path::PathBuf::from("/w").join(io_cli::memory::file_name(scope)),
+            )
+        })
+        .collect();
+    let rows = scope_rows(&paths, &ASCII);
+    assert_eq!(rows.len(), 3);
+
+    for (row, (scope, path)) in rows.iter().zip(&paths) {
+        assert_eq!(
+            row.label,
+            io_cli::memory::file_name(*scope),
+            "the label is the file, which is what the operator knows it by",
+        );
+        let detail = row.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains(&path.display().to_string()),
+            "the row names the file it writes: {detail}",
+        );
+    }
+
+    let said = |n: usize| rows[n].detail.clone().unwrap_or_default();
+    assert!(
+        said(0).contains("committed"),
+        "AGENTS.md is the one that goes to everybody who clones: {}",
+        said(0),
+    );
+    assert!(
+        said(1).contains("never committed"),
+        "AGENTS.local.md is the one that goes nowhere: {}",
+        said(1),
+    );
+    assert!(
+        said(2).contains("every project on this machine"),
+        "IO.md is the one that follows the operator: {}",
+        said(2),
+    );
+    // The consequence leads and the path follows, because the picker fits a
+    // detail from the head — so on a narrow terminal the sentence that decides
+    // the answer is what survives and the path is what goes.
+    for row in &rows {
+        let detail = row.detail.clone().unwrap_or_default();
+        assert!(
+            !detail.starts_with('/'),
+            "the path leads, so the consequence is what a narrow terminal drops: {detail}",
+        );
+    }
+}
+
+/// The memory page keeps its two lists distinguishable, and never presents a cut
+/// draw scan as an exact count.
+#[test]
+fn the_memory_page_separates_the_two_memories_and_qualifies_a_cut_draw_count() {
+    use io_cli::commands::{
+        memory_notes, memory_page, Held, LOOSE_MARK, PINNED_MARK, READ_MARK, UNREAD_MARK,
+    };
+    use io_cli::glyphs::ASCII;
+    use io_cli::memory::Instruction;
+    use io_cli::recall::{Caps, Remembered, Scope, View};
+    use io_harness::config::Scope as FileScope;
+
+    let files = vec![
+        Instruction {
+            scope: FileScope::Project,
+            path: "/w/AGENTS.md".into(),
+            exists: true,
+            lines: 12,
+            read: true,
+        },
+        // The case the page exists for: there, and not being read.
+        Instruction {
+            scope: FileScope::Local,
+            path: "/w/AGENTS.local.md".into(),
+            exists: true,
+            lines: 3,
+            read: false,
+        },
+        Instruction {
+            scope: FileScope::User,
+            path: "/home/someone/.io-cli/IO.md".into(),
+            exists: false,
+            lines: 0,
+            read: false,
+        },
+    ];
+    let entries = vec![
+        Remembered {
+            scope: Scope::Workspace,
+            key: "build-command".into(),
+            value: "cargo test".into(),
+            kind: "fact",
+            pinned: true,
+            run_id: 4,
+            step: 2,
+            created_at: "2026-08-26 09:00".into(),
+            draws: 6,
+        },
+        Remembered {
+            scope: Scope::Global,
+            key: "prefers-terse".into(),
+            value: "keep answers short".into(),
+            kind: "decision",
+            pinned: false,
+            run_id: 9,
+            step: 1,
+            created_at: "2026-08-26 09:01".into(),
+            draws: 0,
+        },
+    ];
+
+    let (rows, held) = memory_page(&files, &entries, false, &ASCII);
+    assert_eq!(
+        rows.len(),
+        held.len(),
+        "the rows and what they stand for are built in one pass and cannot differ",
+    );
+    // Two headings, so the two memories are never one list.
+    let headings: Vec<&str> = rows
+        .iter()
+        .filter(|row| row.heading)
+        .map(|row| row.label.as_str())
+        .collect();
+    assert_eq!(headings.len(), 2, "got {headings:?}");
+    for (row, held) in rows.iter().zip(&held) {
+        assert_eq!(row.heading, *held == Held::Nothing);
+    }
+
+    let mark = |label: &str| {
+        rows.iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| panic!("no row for {label}"))
+            .mark
+            .expect("every row but a heading carries a mark")
+    };
+    assert_eq!(mark("AGENTS.md"), READ_MARK);
+    assert_eq!(mark("AGENTS.local.md"), UNREAD_MARK);
+    assert_eq!(mark("build-command"), PINNED_MARK);
+    assert_eq!(mark("prefers-terse"), LOOSE_MARK);
+
+    // A file that exists and is not read SAYS so; nothing else in this product
+    // does, because io-harness skips one without a word.
+    let detail = |label: &str| {
+        rows.iter()
+            .find(|row| row.label == label)
+            .and_then(|row| row.detail.clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        detail("AGENTS.local.md").contains("NOT read"),
+        "{}",
+        detail("AGENTS.local.md")
+    );
+    assert!(
+        detail("IO.md").contains("not written yet"),
+        "{}",
+        detail("IO.md")
+    );
+    assert!(
+        detail("AGENTS.md").starts_with("read"),
+        "{}",
+        detail("AGENTS.md")
+    );
+    // The bucket a note came from leads its detail: "is this true here, or true
+    // everywhere" is the only question the two scopes exist to answer.
+    assert!(detail("build-command").starts_with("workspace"));
+    assert!(detail("prefers-terse").starts_with("global"));
+
+    // An uncut scan states a count.
+    assert!(
+        detail("build-command").contains("6 draws"),
+        "{}",
+        detail("build-command")
+    );
+    assert!(
+        !detail("build-command").contains("or more"),
+        "an uncut scan is a count, not a floor: {}",
+        detail("build-command"),
+    );
+    // A cut one states a floor, in words, on every row.
+    let (cut_rows, _) = memory_page(&files, &entries, true, &ASCII);
+    for label in ["build-command", "prefers-terse"] {
+        let detail = cut_rows
+            .iter()
+            .find(|row| row.label == label)
+            .and_then(|row| row.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail.contains("draws or more"),
+            "a cut scan makes every count a lower bound: {detail}",
+        );
+    }
+
+    // And the caps are stated PER SCOPE, with the real ceiling named. One number
+    // is half the ceiling for a run drawing on both, and half a ceiling makes an
+    // ordinary eviction read as a defect.
+    let view = View {
+        workspace: "/w".into(),
+        entries,
+        caps: [Scope::Workspace, Scope::Global]
+            .map(|scope| Caps {
+                scope,
+                limits: io_harness::MemoryLimits {
+                    max_entries: 32,
+                    max_chars: 8_000,
+                    max_entry_chars: 500,
+                },
+            })
+            .to_vec(),
+        trace: Vec::new(),
+        draws_cut: true,
+    };
+    let notes = memory_notes(&view, &ASCII).join("\n");
+    assert!(notes.contains("per scope"), "{notes}");
+    assert!(notes.contains("workspace 32 entries"), "{notes}");
+    assert!(notes.contains("global 32 entries"), "{notes}");
+    assert!(
+        notes.contains("64 entries"),
+        "the ceiling across both scopes is the honest number: {notes}",
+    );
+    assert!(
+        notes.contains("lower bound"),
+        "a cut scan is disclosed on the page, not only on a row: {notes}",
+    );
+    assert!(
+        notes.contains("/w"),
+        "the bucket that answered is named, so an empty list can be told from the \
+         wrong bucket: {notes}",
+    );
 }
 
 #[test]

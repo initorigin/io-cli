@@ -131,6 +131,12 @@ impl Write for Fixed {
 }
 
 impl Backend for Fixed {
+    /// ratatui 0.30 gave a backend its own failure type. This one delegates to a
+    /// `CrosstermBackend` and `Screen` requires `Backend<Error = io::Error>`, so
+    /// naming anything else here would make the fixture stop being usable where
+    /// the real terminal is.
+    type Error = io::Error;
+
     fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
     where
         I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
