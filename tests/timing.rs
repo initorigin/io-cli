@@ -234,6 +234,20 @@ fn n1_the_driver_is_the_only_thing_that_reads_a_clock() {
         }
         for (needle, why) in &needles {
             for (number, line) in source.lines().enumerate() {
+                // **A comment is not a clock read, and 0.19.0 is why this line
+                // is here.** `clock_reads` already builds its own needles with
+                // `format!` so that *this* file can name them without matching
+                // itself — the same problem, solved for the scanner and not for
+                // the scanned. `src/skills.rs` explains that it decides freshness
+                // by bytes rather than by a clock, which means naming the three
+                // calls it is deliberately not making, and a gate that read prose
+                // would forbid a module from documenting the rule it obeys.
+                //
+                // Line-oriented on purpose: a `//` inside a string literal still
+                // counts as code here, which can only make the gate stricter.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
                 if line.contains(needle.as_str()) {
                     readers.push(format!(
                         "{}:{}: {needle} — {why}",

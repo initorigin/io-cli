@@ -567,6 +567,19 @@ fn f5_the_spawn_is_unreachable_from_the_event_path() {
     );
 }
 
+/// A source file with every comment line taken out.
+///
+/// Line-oriented and deliberately not a parser: a `//` inside a string literal
+/// survives, which is the safe direction for a gate — it can only make the check
+/// stricter, never blinder.
+fn code_of(text: &str) -> String {
+    text.lines()
+        .map(str::trim_start)
+        .filter(|line| !line.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
     // io-harness owns discovery, layering and validation. This crate serializes
@@ -590,16 +603,24 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
     // it is asserted rather than promised in a comment.
     let editor = PathBuf::from("src/edit.rs");
     for (path, text) in sources() {
+        // **Comments stripped for the sweep too, and 0.19.0 is why.** The rule
+        // below already strips them for `src/edit.rs`, for the reason written
+        // there — a gate that reads prose forbids a file from explaining itself.
+        // The same thing is true of every other file, and `src/skills.rs` found
+        // it: it writes a plain-text manifest and says so, and saying so means
+        // naming the call it is deliberately not making. The property is about
+        // what the code does, so the check reads code.
+        let code = code_of(&text);
         let permitted = path.ends_with(&editor);
         if !permitted {
             assert!(
-                !text.contains("toml::from_str"),
+                !code.contains("toml::from_str"),
                 "{} parses TOML itself; configuration is io-harness's",
                 path.display(),
             );
         }
         assert!(
-            !text.contains("toml::de::"),
+            !code.contains("toml::de::"),
             "{} reaches into TOML deserialization",
             path.display(),
         );
@@ -616,12 +637,7 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
     // may not reach for a configuration type, which means naming several of
     // them. A gate that read prose would forbid the file from explaining itself,
     // and the property is about what the code does.
-    let editor_code: String = editor_text
-        .lines()
-        .map(|line| line.trim_start())
-        .filter(|line| !line.starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let editor_code = code_of(&editor_text);
 
     for named in [
         "io_harness::Config",
