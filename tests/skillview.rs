@@ -1,0 +1,469 @@
+//! F6, F7 and N4 — the `/skills` surface: provenance, the two levers, and what
+//! the rows look like on a terminal that can draw nothing but ASCII.
+//!
+//! Every claim about what the *enabled* set holds goes through
+//! [`io_harness::Skills::discover`], for the reason `tests/skills.rs` opens with:
+//! a resolved name comes from frontmatter where there is one, so a test that
+//! counted `io-*.md` files would agree with io-cli and disagree with the run. The
+//! harness's walk is the only oracle whose verdict is the one every turn gets.
+//!
+//! Nothing here touches the environment — [`skillview::view`] takes the home as an
+//! argument — so each test owns a temporary directory and they run in parallel.
+
+mod support;
+
+use std::path::{Path, PathBuf};
+
+use io_cli::skills;
+use io_cli::skillview::{self, Listed, Origin, View};
+
+/// A home with nothing in it.
+fn home() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let home = dir.path().join("home");
+    (dir, home)
+}
+
+fn write(path: &Path, text: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("the parent directory");
+    }
+    std::fs::write(path, text).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+}
+
+fn read(path: &Path) -> Vec<u8> {
+    std::fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// A skill file: the two keys the harness reads, and a line of body.
+fn skill(name: &str, description: &str) -> String {
+    format!("---\nname: {name}\ndescription: {description}\n---\n\nDo the thing.\n")
+}
+
+/// Record the files at `paths` in the manifest as io-cli's own.
+///
+/// Written out here in the format the module documents rather than through an
+/// io-cli helper, so a release that quietly changed where or how provenance is
+/// recorded turns this red instead of passing through an accessor that changed
+/// with it. This is the fixture the whole of F6 turns on: without it every file
+/// on disk is the operator's, which is exactly the direction
+/// [`skills::wrote`] degrades in.
+fn recorded(home: &Path, entries: &[(&str, &Path)]) {
+    let mut text = String::new();
+    for (name, path) in entries {
+        text.push_str(&format!("{name}\t{:016x}\n", skills::digest(&read(path))));
+    }
+    write(&home.join(".skills-manifest"), &text);
+}
+
+/// The row for one name, or a panic naming what was listed instead.
+fn listed<'a>(view: &'a View, name: &str) -> &'a Listed {
+    view.skills
+        .iter()
+        .find(|skill| skill.name == name)
+        .unwrap_or_else(|| {
+            let names: Vec<&str> = view.skills.iter().map(|s| s.name.as_str()).collect();
+            panic!("`{name}` is not listed; the surface shows {names:?}")
+        })
+}
+
+/// The names io-harness resolves out of a directory, sorted as it sorts them.
+///
+/// Panics on a directory that will not discover, which is the point: a criterion
+/// asserting the session still runs is asserting exactly that this returns `Ok`.
+fn discovered(dir: &Path) -> Vec<String> {
+    io_harness::Skills::discover(dir)
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} does not discover, so every turn of that session would fail at run \
+                 start: {error}",
+                dir.display()
+            )
+        })
+        .iter()
+        .map(|skill| skill.name.clone())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// F6 — what it is, whose it is, whether it is on, and where it lives.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f6_origin_is_decided_by_the_manifest_and_never_by_the_io_prefix() {
+    // **The sabotage arm.** `io-thing.md` carries the prefix io-cli ships under and
+    // is the operator's; `mine.md` carries no prefix and is io-cli's, because the
+    // manifest says io-cli wrote those bytes. A surface that read the file name
+    // would get both of them backwards, and it would be telling an operator that a
+    // file they wrote themselves came from io-cli — on the surface whose entire job
+    // is provenance.
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+
+    let ours = dir.join("mine.md");
+    write(
+        &ours,
+        &skill("mine", "A skill io-cli happens to have written."),
+    );
+    let theirs = dir.join("io-thing.md");
+    write(&theirs, &skill("io-thing", "A skill the operator wrote."));
+
+    // Only the un-prefixed one is recorded, so the prefix and the truth disagree.
+    recorded(&home, &[("mine", ours.as_path())]);
+
+    let view = skillview::view(&home);
+    assert_eq!(view.failed, None, "the fixture discovers");
+    assert_eq!(listed(&view, "mine").origin, Origin::IoCli);
+    assert_eq!(listed(&view, "io-thing").origin, Origin::Yours);
+    assert_eq!(listed(&view, "io-thing").origin.word(), "yours");
+
+    // And the second half of the same rule: a shipped skill the operator has since
+    // edited is theirs. The bytes no longer hash to what io-cli recorded, which is
+    // true, and is also what the next upgrade will decide about it.
+    write(&ours, &skill("mine", "Edited by the operator."));
+    let view = skillview::view(&home);
+    assert_eq!(
+        listed(&view, "mine").origin,
+        Origin::Yours,
+        "an edited shipped skill belongs to whoever edited it"
+    );
+}
+
+#[test]
+fn f6_a_skill_carries_its_description_its_state_and_the_file_it_lives_in() {
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    let path = dir.join("alpha.md");
+    write(&path, &skill("alpha", "Does the alpha thing."));
+
+    let view = skillview::view(&home);
+    let row = listed(&view, "alpha");
+    assert_eq!(row.description, "Does the alpha thing.");
+    assert!(row.enabled, "a file in skills/ is offered to the model");
+    assert!(
+        row.path.ends_with("alpha.md"),
+        "the surface says which file, not just which name: {}",
+        row.path.display()
+    );
+}
+
+#[test]
+fn f6_a_disabled_skill_is_listed_as_disabled_with_its_path_inside_disabled() {
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    let path = dir.join("alpha.md");
+    write(&path, &skill("alpha", "Does the alpha thing."));
+
+    let moved = skillview::disable(&path).expect("the move");
+
+    let view = skillview::view(&home);
+    let row = listed(&view, "alpha");
+    assert!(!row.enabled, "a file under disabled/ is not offered");
+    // Canonicalised on both sides: the surface resolves a path the way
+    // `Skills::discover` does, so a row off this list and a row off that one are
+    // comparable — and on macOS a temporary directory is a symlink, which is the
+    // difference that would otherwise make this assertion about the platform.
+    assert_eq!(
+        row.path,
+        std::fs::canonicalize(&moved).expect("the moved file")
+    );
+    assert_eq!(
+        row.path.parent().and_then(Path::file_name),
+        Some(std::ffi::OsStr::new(skills::DISABLED)),
+        "the path says where it went: {}",
+        row.path.display()
+    );
+    // Still named, still described. A disabled skill that lost its description
+    // would be a row an operator cannot decide about.
+    assert_eq!(row.description, "Does the alpha thing.");
+}
+
+#[test]
+fn f6_a_directory_that_will_not_discover_shows_the_harness_sentence() {
+    // Two files resolving to one name: `Error::Config` at run start, and every turn
+    // of that session dead before the first completion. Today the operator sees an
+    // empty palette and no reason, which is the hole F6 names.
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    write(&dir.join("a.md"), &skill("dup", "One of two."));
+    write(&dir.join("b.md"), &skill("dup", "The other of two."));
+    // And one skill already turned off, in the directory discovery never looks at.
+    write(
+        &skills::disabled_dir(&home).join("parked.md"),
+        &skill("parked", "Turned off earlier."),
+    );
+
+    let view = skillview::view(&home);
+
+    let sentence = view
+        .failed
+        .clone()
+        .expect("a failed discovery is a state, not silence");
+    let harness = io_harness::Skills::discover(&dir)
+        .expect_err("the fixture is ambiguous")
+        .to_string();
+    assert_eq!(
+        sentence, harness,
+        "the surface carries the harness's own sentence verbatim; it names both files"
+    );
+    assert!(sentence.contains("dup"), "the sentence names the collision");
+
+    // Not an empty list. The disabled set is read out of a directory discovery
+    // never walks, so it survives the failure — and on this failure in particular
+    // the operator's next move is very likely to be in it.
+    assert_eq!(
+        view.skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["parked"],
+    );
+    assert!(!listed(&view, "parked").enabled);
+}
+
+// ---------------------------------------------------------------------------
+// F7 — enable and disable are renames, and the next turn sees them.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f7_disable_then_enable_returns_the_file_byte_for_byte_and_leaves_one_copy() {
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    let path = dir.join("alpha.md");
+    let before = skill("alpha", "Does the alpha thing.");
+    write(&path, &before);
+
+    // `disabled/` is made by the first disable and never before it, so an operator
+    // who has turned nothing off has no directory to wonder about.
+    assert!(
+        !skills::disabled_dir(&home).exists(),
+        "disabled/ is created on demand"
+    );
+
+    let parked = skillview::disable(&path).expect("the move");
+    assert!(skills::disabled_dir(&home).is_dir());
+    assert_eq!(parked, skills::disabled_dir(&home).join("alpha.md"));
+
+    // **The absence is the assertion.** A copy would leave the file in both
+    // directories, which is one resolved name claimed twice — F2's session-killer
+    // arriving through io-cli's own keystroke.
+    assert!(
+        !path.exists(),
+        "{} is still there, so the skill is in two directories at once",
+        path.display()
+    );
+    assert_eq!(read(&parked), before.as_bytes(), "a move rewrites no byte");
+
+    let back = skillview::enable(&parked).expect("the move back");
+    assert_eq!(back, path);
+    assert!(
+        !parked.exists(),
+        "{} is still there after enabling it",
+        parked.display()
+    );
+    assert_eq!(read(&path), before.as_bytes(), "byte for byte, both ways");
+}
+
+#[test]
+fn f7_a_disabled_skill_is_gone_from_the_harnesss_own_discovery() {
+    // The oracle, not io-cli's opinion: what the run will be offered on the next
+    // turn, since the skills directory is resolved per turn.
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    write(&dir.join("alpha.md"), &skill("alpha", "One."));
+    write(&dir.join("beta.md"), &skill("beta", "Two."));
+
+    assert_eq!(discovered(&dir), vec!["alpha", "beta"]);
+
+    skillview::disable(&dir.join("alpha.md")).expect("the move");
+
+    // Still `Ok` — `disabled/` holds no `SKILL.md`, so the walk skips it rather
+    // than reading the loose file inside as a second `alpha`.
+    assert_eq!(discovered(&dir), vec!["beta"]);
+}
+
+#[test]
+fn f7_neither_lever_writes_to_io_toml() {
+    // There is no `enabled` key in the harness and none in io-cli's configuration.
+    // A flag would be a second list disagreeing with the filesystem.
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    let path = dir.join("alpha.md");
+    write(&path, &skill("alpha", "One."));
+    let config = home.join("io.toml");
+    write(&config, "model = \"a-model\"\n");
+
+    let parked = skillview::disable(&path).expect("the move");
+    skillview::enable(&parked).expect("the move back");
+
+    assert_eq!(
+        std::fs::read_to_string(&config).expect("io.toml"),
+        "model = \"a-model\"\n"
+    );
+}
+
+#[test]
+fn f7_a_move_that_would_overwrite_a_file_is_a_sentence_and_not_a_loss() {
+    // The state Windows reports as an error and unix performs silently: enabling
+    // `alpha` while the operator has written their own `alpha.md` in the meantime.
+    // A rename here would destroy theirs, and this surface's one promise is that
+    // neither lever changes a file's contents.
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    let path = dir.join("alpha.md");
+    write(&path, &skill("alpha", "Theirs."));
+    let parked = skills::disabled_dir(&home).join("alpha.md");
+    write(&parked, &skill("alpha", "Turned off earlier."));
+
+    let error = skillview::enable(&parked).expect_err("it declines");
+    assert!(
+        error.contains("alpha.md"),
+        "the message names the file: {error}"
+    );
+    assert_eq!(
+        read(&path),
+        skill("alpha", "Theirs.").as_bytes(),
+        "the operator's file is untouched"
+    );
+    assert!(
+        parked.exists(),
+        "and nothing was lost from disabled/ either"
+    );
+}
+
+#[test]
+fn f7_a_rename_that_fails_is_a_readable_sentence_and_never_a_panic() {
+    // Windows refuses to rename a file another process holds open, which is how
+    // 0.15.0's post-seal defect was found. A missing file is the portable stand-in
+    // for the same shape: the call answers, the message names the file, and there
+    // is no half-move to clean up.
+    let (_dir, home) = home();
+    let path = skills::dir(&home).join("gone.md");
+    std::fs::create_dir_all(skills::dir(&home)).expect("the directory");
+
+    let error = skillview::disable(&path).expect_err("it fails rather than panicking");
+    assert!(
+        error.contains("gone.md"),
+        "the message names the file: {error}"
+    );
+    assert!(!skills::disabled_dir(&home).join("gone.md").exists());
+}
+
+// ---------------------------------------------------------------------------
+// N4 — ASCII, eighty columns, and the field that gives way.
+// ---------------------------------------------------------------------------
+
+/// A home holding one io-cli skill, one of the operator's, and one turned off.
+///
+/// Every byte of it is ASCII on purpose, so the render below can be asserted whole
+/// rather than field by field: anything non-ASCII on the screen came from this
+/// surface's own marks, which is exactly N4's sabotage.
+fn drawable() -> (tempfile::TempDir, PathBuf) {
+    let (dir, home) = home();
+    let skills_dir = skills::dir(&home);
+
+    let ours = skills_dir.join("io-mcp.md");
+    write(
+        &ours,
+        &skill(
+            "io-mcp",
+            "Add, change or remove an MCP server by proposing an edit to io.toml.",
+        ),
+    );
+    write(
+        &skills_dir.join("mine.md"),
+        &skill("mine", "Something the operator wrote for this machine."),
+    );
+    write(
+        &skills::disabled_dir(&home).join("parked.md"),
+        &skill(
+            "parked",
+            "Turned off by the operator, and still listed here.",
+        ),
+    );
+    recorded(&home, &[("io-mcp", ours.as_path())]);
+    (dir, home)
+}
+
+#[test]
+fn n4_every_row_draws_in_ascii_with_its_meaning_intact_inside_eighty_columns() {
+    let (_dir, home) = drawable();
+    let view = skillview::view(&home);
+    assert_eq!(view.failed, None);
+    assert_eq!(view.skills.len(), 3);
+
+    let theme = io_cli::theme::DARK.with_glyphs(io_cli::glyphs::ASCII);
+    let rows = skillview::rows(&view.skills, 80, &theme.glyphs);
+    let mut picker = io_cli::picker::Picker::new("skills", rows);
+
+    let (mut screen, _recorder) = support::screen(80, 24);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &theme))
+        .expect("frame");
+    let drawn = screen.viewport_text().to_string();
+
+    for line in drawn.lines() {
+        assert!(
+            line.is_ascii(),
+            "a row drew a character the ASCII terminal cannot: {line:?}"
+        );
+        assert!(
+            line.chars().count() <= 80,
+            "a row overflowed eighty columns: {line:?}"
+        );
+    }
+
+    // The meaning, not merely the bytes: the two markers are words, so they say
+    // which origin and which state without a legend and without a glyph set.
+    for word in [
+        "io-mcp", "mine", "parked", "io-cli", "yours", "enabled", "disabled",
+    ] {
+        assert!(
+            drawn.contains(word),
+            "`{word}` is not on the screen:\n{drawn}"
+        );
+    }
+}
+
+#[test]
+fn n4_the_path_is_what_gives_way_and_the_name_and_the_state_never_do() {
+    let (_dir, home) = drawable();
+    let view = skillview::view(&home);
+    let ascii = io_cli::glyphs::ASCII;
+    let glyphs = &ascii;
+
+    // Eighty columns: the description takes what the two markers leave, and the
+    // path is dropped whole rather than shortened past legibility.
+    for row in skillview::rows(&view.skills, 80, glyphs) {
+        let detail = row.detail.expect("every row has a detail");
+        assert!(
+            !detail.contains(".md"),
+            "the path should have given way at eighty columns: {detail:?}"
+        );
+        assert!(
+            detail.contains("enabled") || detail.contains("disabled"),
+            "the state never gives way: {detail:?}"
+        );
+        assert!(
+            detail.starts_with("io-cli") || detail.starts_with("yours"),
+            "the origin never gives way: {detail:?}"
+        );
+        assert!(!row.label.ends_with(glyphs.ellipsis), "the name is not cut");
+    }
+
+    // Widen the terminal and the path arrives, shortened from the LEFT, because
+    // every skill on one machine shares the first segments of its path.
+    let wide = skillview::rows(&view.skills, 240, glyphs);
+    let details: Vec<String> = wide
+        .into_iter()
+        .map(|row| row.detail.expect("a detail"))
+        .collect();
+    assert!(
+        details.iter().all(|detail| detail.contains(".md")),
+        "the path is on a wide terminal: {details:?}"
+    );
+    assert!(
+        details.iter().any(|detail| detail.contains("parked.md")),
+        "and the end of the path is what survives, since the front is shared: {details:?}"
+    );
+}
