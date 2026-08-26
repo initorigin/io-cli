@@ -164,6 +164,17 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/config",
         "every setting, the value in force and the file that decided it",
     ),
+    // Beside `/config` because they are the other two surfaces that write a file
+    // the operator keeps, and because the scope question is the same one: three
+    // files, and *which* one is half of every decision made here.
+    (
+        "/remember",
+        "remember a line of guidance, in the scope you choose",
+    ),
+    (
+        "/memory",
+        "what io remembers: the instruction files, and the agent's own notes",
+    ),
     (
         "/mcp",
         "the MCP servers configured, and what this session has seen of each",
@@ -196,11 +207,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
 ///
 /// **Grouped by the operator's intent rather than by which part of the harness
 /// answers**, because the second is an implementation detail and the first is
-/// the only thing somebody scanning a list of twenty is holding in their head.
+/// the only thing somebody scanning a list of twenty-five is holding in their
+/// head.
 ///
 /// Four groups and none longer than ten, which is the bound `tests/commands.rs`
-/// asserts. A flat list of twenty is a list nobody reads, and this release is the
-/// one that made it twenty.
+/// asserts. A flat list of twenty-five is a list nobody reads; 0.16.0 is the
+/// release that grouped them, at twenty, and every release since has added to a
+/// group rather than to a list. **The count in this paragraph is the one number
+/// here that goes stale on its own** — it said twenty through 0.17.0, which had
+/// twenty-three — so it is written out rather than left as "a few".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
     /// The conversation itself: start one, leave one, come back to one.
@@ -274,7 +289,10 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/copy diff",
         ],
     ),
-    (Group::Configure, &["/config", "/theme"]),
+    (
+        Group::Configure,
+        &["/config", "/theme", "/remember", "/memory"],
+    ),
 ];
 
 /// The group a command belongs to, or `None` for a name that is in none.
@@ -766,6 +784,29 @@ pub enum Action {
     /// where, and a value coerced on the way through would be io-cli inventing a
     /// second opinion about a schema it does not own.
     Config(Option<(String, String)>),
+    /// Append one line of guidance to a memory file.
+    ///
+    /// The line as the operator typed it, and **no scope**: which of the three
+    /// files it goes into is the other half of the decision and it is asked for
+    /// afterwards, in a picker, exactly as [`Action::Config`]'s write is. The
+    /// three differ only in who else reads them — a repository, a checkout, or
+    /// this machine — so guessing one is guessing whether a private note is
+    /// about to be committed.
+    ///
+    /// An empty string is the operator typing the word with nothing after it.
+    /// It is carried rather than refused here so the driver can say what to
+    /// type instead of opening a picker over a file it would write nothing to.
+    Remember(String),
+    /// The memory page: the instruction files, and the agent's own notes.
+    ///
+    /// **Two lists on one page, and they are two different memories.** The
+    /// first is [`crate::memory`] — markdown a person writes, which io-harness
+    /// reads as an instruction at the start of every run. The second is
+    /// [`crate::recall`] — notes the *agent* wrote for itself, which the harness
+    /// carries into every later prompt over the same workspace. One page,
+    /// because "what does it already know" is one question; two lists, because
+    /// the answer has two authors and only one of them is the operator.
+    Memory,
     /// Show the configured MCP servers and what the session has seen of them.
     Mcp,
     /// Show the provider chain, in the order a turn tries it.
@@ -781,6 +822,463 @@ pub enum Copied {
     Answer,
     /// Every change the run made, as one patch.
     Diff,
+}
+
+// ---------------------------------------------------------------------------
+// The memory page, and the scope question `/remember` asks
+// ---------------------------------------------------------------------------
+
+/// What marks a note an operator pinned.
+///
+/// **Four marks on this page and every one of them is ASCII by rule**, the same
+/// rule [`COMMAND_MARK`] and its two neighbours are held to: a mark is text
+/// rather than a colour, so it survives `NO_COLOR`, `--plain` and the ASCII
+/// glyph set unchanged, and `tests/glyphs.rs` sweeps the rendered page for
+/// anything that is not.
+///
+/// They are all one cell wide, so no column shifts between rows, and they are
+/// paired on one axis: `*` and `+` say **yes**, `-` says **no**, and the reader
+/// learns one thing rather than four. A pin is what stops a run overwriting a
+/// correction a person made and what stops the caps dropping it — see
+/// [`crate::recall::pin`] — so it is the state worth the mark column on an
+/// entry row.
+pub const PINNED_MARK: &str = "*";
+
+/// What marks a note nothing has pinned: a run may overwrite it, and the caps
+/// may drop it.
+pub const LOOSE_MARK: &str = "-";
+
+/// What marks an instruction file io-harness is **actually reading**.
+///
+/// Read back from what the harness composed rather than from what was
+/// configured — see [`crate::memory::view`] — so a project `[instructions]
+/// files` that replaced the list shows here as [`UNREAD_MARK`] instead of being
+/// argued away.
+pub const READ_MARK: &str = "+";
+
+/// What marks an instruction file the harness is **not** reading.
+///
+/// The case this page exists for. A file that is there and is not read looks,
+/// from everywhere else in this product, exactly like one that is read: nothing
+/// warns, and a missing or skipped instruction file is passed over in silence
+/// (`io-harness-0.69.0/src/config.rs:1886`, `:1892`).
+pub const UNREAD_MARK: &str = "-";
+
+/// What one row of the memory page stands for.
+///
+/// The parallel vector [`memory_page`] returns beside its rows, in the same
+/// order and of the same length. It exists for the reason every other picker in
+/// this product carries one: [`crate::picker::Outcome::Chosen`] indexes the
+/// **caller's unfiltered rows**, and reading a key back off a rendered label
+/// would be matching on a string the fitter may have shortened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    /// A group heading. Nothing to act on, and nothing the picker can put the
+    /// marker on — see [`Row::heading`].
+    Nothing,
+    /// One of the instruction files, whole, so choosing it can say what it is
+    /// without the page being rebuilt to find out.
+    File(crate::memory::Instruction),
+    /// One of the agent's own notes: which of the two buckets holds it, the key
+    /// it is recalled by, and whether an operator has pinned it.
+    ///
+    /// The bucket is carried because [`crate::recall::pin`] and
+    /// [`crate::recall::forget`] both take one, and a key can exist in both: a
+    /// verb applied to the wrong bucket either does nothing or acts on a
+    /// same-named note the operator was not looking at.
+    Note {
+        scope: crate::recall::Scope,
+        key: String,
+        pinned: bool,
+    },
+}
+
+/// The memory page's rows, and what each of them stands for.
+///
+/// **Built in one pass so the two can never be different lengths.** This is the
+/// shape the palette's own `entries` already uses, and for the same reason it
+/// was given one: a list with headings interleaved makes "the n-th row is the
+/// n-th thing" false, and two functions that walked the same inventories
+/// separately would agree only for as long as somebody kept checking.
+///
+/// The two lists are kept distinguishable by a heading each, and neither is
+/// dropped when it is empty: an operator whose agent has learnt nothing is
+/// entitled to see the heading over the absence rather than a page that quietly
+/// looks like the other list is all there is.
+///
+/// `draws_cut` comes from [`crate::recall::View::draws_cut`]. When it is set the
+/// draw counts are a **lower bound** — the scan stopped at
+/// [`crate::recall::MAX_RUNS_SCANNED`] runs — and the detail says so in words
+/// rather than printing a number that reads as exact.
+pub fn memory_page(
+    files: &[crate::memory::Instruction],
+    entries: &[crate::recall::Remembered],
+    draws_cut: bool,
+    glyphs: &crate::glyphs::Glyphs,
+) -> (Vec<Row>, Vec<Held>) {
+    let mut rows = Vec::new();
+    let mut held = Vec::new();
+    let separator = glyphs.separator;
+
+    rows.push(Row::heading("instruction files"));
+    held.push(Held::Nothing);
+    for file in files {
+        rows.push(Row::marked(
+            if file.read { READ_MARK } else { UNREAD_MARK },
+            // The file's own name, which is what an operator knows it by and
+            // what makes the three tell each other apart. The path rides in the
+            // detail, where a narrow terminal may drop it — the name is the part
+            // that must survive.
+            crate::memory::file_name(file.scope),
+            // **The state leads.** The detail is fitted from the head, so what
+            // is drawn on the narrowest terminal that still has room for one is
+            // the answer to the only question this list is asked.
+            format!(
+                "{}{separator}{}{separator}{}",
+                state_of(file),
+                crate::configure::Decided::File {
+                    scope: file.scope,
+                    path: file.path.clone(),
+                }
+                .word(),
+                file.path.display(),
+            ),
+        ));
+        held.push(Held::File(file.clone()));
+    }
+
+    rows.push(Row::heading("what the agent remembers"));
+    held.push(Held::Nothing);
+    for entry in entries {
+        rows.push(Row::marked(
+            if entry.pinned {
+                PINNED_MARK
+            } else {
+                LOOSE_MARK
+            },
+            entry.key.clone(),
+            format!(
+                "{}{separator}{}{separator}run {} step {}{separator}{}",
+                // The scope leads for the reason the file state does: "is this
+                // true here, or true everywhere" is the only question the two
+                // buckets exist to answer, and it is the first thing to go if
+                // the detail is cut from the tail.
+                entry.scope.label(),
+                entry.kind,
+                entry.run_id,
+                entry.step,
+                draws(entry.draws, draws_cut),
+            ),
+        ));
+        held.push(Held::Note {
+            scope: entry.scope,
+            key: entry.key.clone(),
+            pinned: entry.pinned,
+        });
+    }
+
+    (rows, held)
+}
+
+/// How many runs have drawn on a note, and whether that is a count or a floor.
+///
+/// **Never a bare number when the scan was cut.** `n draws` and `n draws or
+/// more` are different claims, and the second is the true one whenever
+/// [`crate::recall::View::draws_cut`] is set — a store with more than
+/// [`crate::recall::MAX_RUNS_SCANNED`] runs in it has evidence this page did not
+/// look at. Reading a floor as a count is what makes an ordinary eviction look
+/// like a note nothing ever used.
+fn draws(count: usize, cut: bool) -> String {
+    if cut {
+        format!("{count} draws or more")
+    } else {
+        format!("{count} draws")
+    }
+}
+
+/// What one instruction file's row says about itself, in three words or so.
+///
+/// The middle case is the whole reason this page exists, and it is stated rather
+/// than implied: **a file that is there and is not being read**. Nothing else in
+/// this product says so, because io-harness skips a file it will not read
+/// without a word.
+fn state_of(file: &crate::memory::Instruction) -> String {
+    match (file.exists, file.read) {
+        (false, _) => "not written yet".to_string(),
+        (true, true) => format!("read{}", plural(file.lines)),
+        (true, false) => format!("NOT read{}", plural(file.lines)),
+    }
+}
+
+/// `, 12 lines` — or nothing at all for a file with none.
+fn plural(lines: usize) -> String {
+    match lines {
+        0 => String::new(),
+        1 => ", 1 line".to_string(),
+        many => format!(", {many} lines"),
+    }
+}
+
+/// What the memory page commits above its list.
+///
+/// **Committed rather than said, and the caps are why.** The bucket that
+/// answered, the ceilings in force and the note about a cut scan are facts about
+/// the configuration and the store: they outlive the keystroke that asked for
+/// them, and [`crate::app::App::say`] would put each on the footer's one row,
+/// where the next thing typed replaces it — and where only the last of the three
+/// would ever be seen.
+///
+/// **The caps are per scope, and this says so rather than printing one number.**
+/// `src/contract.rs:376-379` states it: each scope holds its own, so a run
+/// drawing on both may carry up to twice `max_entries` and twice `max_chars`.
+/// Quoting the single figure the contract carries tells an operator half the
+/// real ceiling — and the half that makes a legitimate eviction read as a defect.
+pub fn memory_notes(view: &crate::recall::View, glyphs: &crate::glyphs::Glyphs) -> Vec<String> {
+    let dash = glyphs.dash;
+    let each: Vec<String> = view
+        .caps
+        .iter()
+        .map(|caps| {
+            format!(
+                "{} {} entries, {} chars",
+                caps.scope.label(),
+                caps.limits.max_entries,
+                caps.limits.max_chars,
+            )
+        })
+        .collect();
+
+    let mut notes = vec![
+        // Reported rather than assumed. The bucket is the **canonicalised** root
+        // — a checkout reached through a symlink has its notes filed under the
+        // resolved path — so a reader looking at an empty list can tell "the
+        // agent has learnt nothing" from "you are looking at the wrong bucket".
+        format!("workspace memory is keyed on {}", view.workspace),
+        format!(
+            "the caps are per scope {dash} {} {dash} so one run may carry {} entries \
+             and {} chars in all",
+            each.join(glyphs.separator),
+            view.entries_ceiling(),
+            view.chars_ceiling(),
+        ),
+    ];
+    if view.draws_cut {
+        notes.push(format!(
+            "the draw scan stopped at {} runs, so every draw count on this page is a lower bound",
+            crate::recall::MAX_RUNS_SCANNED,
+        ));
+    }
+    notes
+}
+
+/// What choosing one instruction file's row says.
+///
+/// Three sentences for three states, and the middle one is the one worth
+/// writing: a file that exists and is not read. It names what would make it
+/// read rather than only reporting the fact, because `[instructions] files`
+/// **replaces** the default list rather than adding to it
+/// (`io-harness-0.69.0/src/config.rs:1879-1882`) and there is nothing on any
+/// other surface to pull on.
+pub fn instruction_said(
+    file: &crate::memory::Instruction,
+    glyphs: &crate::glyphs::Glyphs,
+) -> String {
+    let dash = glyphs.dash;
+    let at = file.path.display();
+    match (file.exists, file.read) {
+        (false, _) => format!("{at} is not written yet {dash} /remember creates it"),
+        (true, true) => {
+            format!("{at} is read at the start of every run")
+        }
+        (true, false) => format!(
+            "{at} exists and is NOT read {dash} nothing in `[instructions] files` reaches it, or \
+             it holds only whitespace. Writing to any scope with /remember names all three.",
+        ),
+    }
+}
+
+/// The three memory files, as the rows that ask which one a line goes into.
+///
+/// **Each row says what committing it means**, because that is the entire
+/// difference between the three: the file names are `IO.md`, `AGENTS.md` and
+/// `AGENTS.local.md`, and an operator who has not read [`crate::memory`] cannot
+/// tell from those which one goes to everybody who clones the repository. A
+/// picker that offered three filenames would be asking a question whose answer
+/// is only knowable somewhere else.
+///
+/// The consequence leads and the path follows, because the detail is fitted from
+/// the head: on a narrow terminal the sentence that decides the answer is what
+/// survives, and the path — which the confirmation names in full afterwards —
+/// is what goes.
+pub fn scope_rows(
+    paths: &[(io_harness::config::Scope, std::path::PathBuf)],
+    glyphs: &crate::glyphs::Glyphs,
+) -> Vec<Row> {
+    paths
+        .iter()
+        .map(|(scope, path)| {
+            Row::with_detail(
+                crate::memory::file_name(*scope),
+                format!("{} {} {}", committing(*scope), glyphs.dash, path.display()),
+            )
+        })
+        .collect()
+}
+
+/// What writing into one scope commits the operator to.
+///
+/// The same three facts [`crate::memory`] writes into the head of each file it
+/// creates, said before the write rather than after it.
+fn committing(scope: io_harness::config::Scope) -> &'static str {
+    match scope {
+        io_harness::config::Scope::User => {
+            "every project on this machine, and part of no repository"
+        }
+        io_harness::config::Scope::Project => {
+            "committed: everyone who clones this repository reads it"
+        }
+        io_harness::config::Scope::Local => "this checkout only, and never committed",
+    }
+}
+
+/// A verb `/memory` offers on one of the agent's notes.
+///
+/// Two at a time and never three: pinning and unpinning are one switch, and
+/// offering both would put a row on screen that does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    /// Stop a run overwriting it, and stop the caps dropping it.
+    Pin,
+    /// Let both happen again — and the prerequisite for [`Verb::Forget`] on a
+    /// pinned note.
+    Unpin,
+    /// Withdraw it, leaving a restore point.
+    Forget,
+}
+
+impl Verb {
+    /// What is offered on a note, given whether it is already pinned.
+    pub fn of(pinned: bool) -> [Verb; 2] {
+        [if pinned { Verb::Unpin } else { Verb::Pin }, Verb::Forget]
+    }
+
+    /// The word on the row.
+    pub fn label(self) -> &'static str {
+        match self {
+            Verb::Pin => "pin",
+            Verb::Unpin => "unpin",
+            Verb::Forget => "forget",
+        }
+    }
+
+    /// What it does, in the detail column.
+    ///
+    /// The pin row states the cost as well as the effect: a pinned note still
+    /// counts towards both caps (`src/state/memory.rs:736-739`), so pinning
+    /// everything buys writes that fail loudly rather than a bigger memory.
+    /// io-harness made that choice and this surface does not soften it.
+    pub fn detail(self) -> &'static str {
+        match self {
+            Verb::Pin => {
+                "no run may overwrite it and the caps may not drop it; it still counts \
+                          towards both"
+            }
+            Verb::Unpin => "a run may overwrite it again, and the caps may drop it",
+            Verb::Forget => "withdraw it, leaving a restore point; a pinned note is refused",
+        }
+    }
+}
+
+/// The verbs offered on one note, as rows.
+pub fn verb_rows(pinned: bool) -> Vec<Row> {
+    Verb::of(pinned)
+        .into_iter()
+        .map(|verb| Row::with_detail(verb.label(), verb.detail()))
+        .collect()
+}
+
+/// What pinning or unpinning one note is reported as.
+///
+/// **Two outcomes and not a `bool`.** `Store::memory_pin` answers `false` for
+/// *there was no such entry*, which is not "the pin failed" — see
+/// [`crate::recall::Pinned`]. A surface that read it as success would draw a pin
+/// the store does not hold.
+///
+/// It lives here rather than at its one call site in `src/main.rs` because
+/// nothing under `tests/` can link the binary: a sentence written there is one
+/// no test drives and no sabotage can make fail.
+pub fn pinned_said(
+    key: &str,
+    scope: crate::recall::Scope,
+    pinned: bool,
+    outcome: crate::recall::Pinned,
+) -> (Tone, String) {
+    match outcome {
+        crate::recall::Pinned::Set if pinned => (
+            Tone::Success,
+            format!(
+                "{key} is pinned in the {} memory; no run may overwrite it",
+                scope.label()
+            ),
+        ),
+        crate::recall::Pinned::Set => (
+            Tone::Muted,
+            format!(
+                "{key} is unpinned in the {} memory; a run may overwrite it again",
+                scope.label()
+            ),
+        ),
+        crate::recall::Pinned::NoEntry => (
+            Tone::Muted,
+            format!(
+                "there is no {key} in the {} memory, so nothing was changed",
+                scope.label()
+            ),
+        ),
+    }
+}
+
+/// What withdrawing one note is reported as.
+///
+/// **[`crate::recall::Forgotten::Refused`] is a refusal and names why, never a
+/// success.** The note is pinned, so it is not a run's to withdraw and io-cli
+/// asks on a run's behalf; it stands, unchanged, and it will go on being carried
+/// into every later prompt. Reporting that as a removal is the same failure the
+/// pin flag exists to prevent one level down — the operator believes the note is
+/// gone and it is not.
+///
+/// [`crate::recall::Forgotten::Absent`] is a third thing again: not an error and
+/// not a removal.
+pub fn forgotten_said(
+    key: &str,
+    scope: crate::recall::Scope,
+    outcome: crate::recall::Forgotten,
+    glyphs: &crate::glyphs::Glyphs,
+) -> (Tone, String) {
+    match outcome {
+        crate::recall::Forgotten::Removed { restore } => (
+            Tone::Success,
+            format!(
+                "{key} is withdrawn from the {} memory; run {restore} holds the way back",
+                scope.label(),
+            ),
+        ),
+        crate::recall::Forgotten::Refused => (
+            Tone::Refused,
+            format!(
+                "{key} is pinned, so it is not a run's to withdraw {} it is still there, and \
+                 still carried into every later prompt. Unpin it, then forget it.",
+                glyphs.dash,
+            ),
+        ),
+        crate::recall::Forgotten::Absent => (
+            Tone::Muted,
+            format!(
+                "there is no {key} in the {} memory, so nothing was withdrawn",
+                scope.label()
+            ),
+        ),
+    }
 }
 
 /// The key table as this session actually behaves.
@@ -867,6 +1365,28 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // everything after the key rather than the next word, so an array or an
         // inline table can be typed whole — `allowed_domains = ["a", "b"]` is one
         // value with a space in it, and splitting on whitespace would take half.
+        // **The REST of the line, not its second word.** A line of guidance is a
+        // sentence, and `input.split_whitespace().nth(1)` would remember one word
+        // of it and drop the rest without saying so — the same trap `/config`'s
+        // value arm documents, and worse here, because what is lost is prose
+        // rather than a token somebody would notice missing.
+        //
+        // Empty when nothing followed the word. Carried rather than refused,
+        // because the sentence that says what to type instead belongs to the
+        // driver — see [`Action::Remember`].
+        "remember" => Action::Remember(
+            input
+                .split_once(char::is_whitespace)
+                .map(|(_, rest)| rest.trim())
+                .unwrap_or("")
+                .to_string(),
+        ),
+        // **One spelling.** `/remembered`, `/notes` and `/recall` are all words
+        // somebody might reach for and none of them has been typed at this
+        // prompt yet; a second name is a name to keep working forever in
+        // exchange for nothing, which is the rule `/status` and `/compact`
+        // already follow.
+        "memory" => Action::Memory,
         "mcp" | "servers" => Action::Mcp,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile,
@@ -1005,8 +1525,8 @@ pub fn help(keys: &Keys, theme: &Theme, newline: Newline) -> Vec<Line<'static>> 
         "Commands".to_string(),
         theme.style(Tone::Accent),
     )));
-    // **Grouped, and the groups are the palette's own.** Twenty commands in one
-    // column is a list nobody reads, and two surfaces disagreeing about how they
+    // **Grouped, and the groups are the palette's own.** The whole inventory in
+    // one column is a list nobody reads, and two surfaces disagreeing about how they
     // are organised is worse than either arrangement — so both render
     // [`grouped`] and neither holds an order of its own.
     for (group, rows) in grouped() {

@@ -216,6 +216,12 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         config,
         theme,
         cli.model,
+        // **The NAME, not just the overlay it produced.** The configuration above
+        // already carries `--profile`, and from 0.18.0 the session re-reads the
+        // file at every turn boundary — a fresh `Config::discover` with no
+        // overlay on it. Without the name to re-apply, a flag that says *for this
+        // run* would quietly stop meaning anything after the first prompt.
+        cli.profile,
         plain,
         // Taken, not borrowed: from here the session owns the report and `main` has
         // nothing left to say on its behalf.
@@ -239,6 +245,11 @@ async fn drive(
     config: Config,
     theme: Theme,
     model_override: Option<String>,
+    // The `--profile` this run was started with, by name. `config` already
+    // carries its overlay; the name is what re-applies it after the reload at
+    // each turn boundary, which goes back to the file and knows nothing about a
+    // flag. `/profile` replaces it for the rest of the session.
+    profile: Option<String>,
     // Threaded down from `run` rather than read out of `config` again here, the
     // way `diff_style` below is. `--plain` is a flag, the flag outranks the file,
     // and a second read of the file at this depth would be a second answer to a
@@ -353,6 +364,7 @@ async fn drive(
             containment,
             capabilities,
             skills,
+            profile,
         },
     )
     .await?
@@ -404,6 +416,10 @@ struct Interactive<'a, 'b> {
     /// at startup. Empty when nothing is configured and empty when the walk
     /// failed — the notice above is what tells those two apart.
     skills: io_harness::Skills,
+    /// The named profile in force, or `None`. Carried as a name because the
+    /// turn-boundary reload discovers the file afresh and would otherwise drop
+    /// the overlay it produced.
+    profile: Option<String>,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -433,6 +449,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.containment,
             self.capabilities,
             self.skills,
+            self.profile,
             model,
         )
         .await
@@ -469,6 +486,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // the session moved on.
     mut capabilities: io_cli::contract::Capabilities,
     skills: io_harness::Skills,
+    // The named profile in force. `--profile` seeds it and `/profile` replaces
+    // it; it is re-applied after every turn-boundary reload, which goes back to
+    // the file and knows nothing about either.
+    mut profile: Option<String>,
     model: String,
 ) -> Result<(), String> {
     // Every request the session makes goes past this, and it is the only way
@@ -565,6 +586,30 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     let mut planning = false;
     // One `/compact` typed at an idle prompt, spent by the next turn that starts.
     let mut fold_next = false;
+    // **The file, held so it can be read again — which through 0.17.0 it never
+    // was.** io-harness composes the instruction files inside `Config::discover`
+    // and stores the result privately; there is no `Config::reload`, so a
+    // `Config` is exactly as old as the call that made it. A repository whose
+    // `AGENTS.md` changed mid-session therefore reached no turn at all, and
+    // 0.18.0 adds `/remember`, which writes those very files — turning a
+    // papered-over annoyance into a surface that would lie about its own effect.
+    //
+    // Built from the `Config` the driver already holds rather than by
+    // discovering again here, which is [`io_cli::reload::Configuration::new`]'s
+    // own rule: `run` applies `--profile` before anything reads the
+    // configuration, and a fresh discovery inside the constructor would silently
+    // drop that overlay.
+    //
+    // `settings::stored` is a pure function of that same value, so asking it a
+    // second time is the same answer rather than a second one — and the notice
+    // it can carry has already been disclosed by `drive`, which is where that
+    // read is documented as *the read that discloses*.
+    let (settings_in_force, _) = settings::stored(&config);
+    let mut configuration = io_cli::reload::Configuration::new(
+        session.root().to_path_buf(),
+        config.clone(),
+        settings_in_force,
+    );
     if let Some(caps) = &containment {
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
@@ -827,6 +872,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         capabilities =
                                             io_cli::contract::Capabilities::stored(stored.as_ref());
                                         config = overlaid;
+                                        // **The name, kept.** The overlay above
+                                        // is in force until the next turn
+                                        // boundary re-reads the file, which
+                                        // discovers it afresh and knows nothing
+                                        // about a profile. Without this the
+                                        // sentence below would be true for
+                                        // exactly as long as nobody pressed
+                                        // Enter.
+                                        profile = Some(name.clone());
                                         app.record(
                                             Tone::Success,
                                             format!(
@@ -885,6 +939,139 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         // refusal explains a boundary and outlives
                                         // the keystroke that earned it.
                                         Err(refusal) => app.record(Tone::Refused, refusal),
+                                    }
+                                }
+                            }
+                        }
+                        // The line goes into the file the row names, and nothing
+                        // was written until now. An index past the end writes
+                        // nothing, which is the answer every other picker arm
+                        // gives a row it cannot resolve.
+                        Pick::RememberScope { line, paths } => {
+                            if let Some((scope, _)) = paths.get(index) {
+                                let root = session.root().to_path_buf();
+                                match io_cli::memory::remember(&root, *scope, line) {
+                                    Ok(at) => {
+                                        app.record(
+                                            Tone::Success,
+                                            format!("remembered in {}", at.display()),
+                                        );
+                                        // **Writing the file is not enough, and
+                                        // this is where that is settled.**
+                                        // `read_instructions` joins each name in
+                                        // `[instructions] files` to the discovery
+                                        // root and the default list is exactly
+                                        // `["AGENTS.md"]`, so `AGENTS.local.md`
+                                        // is read only where a file names it and
+                                        // `IO.md` — which lives in io-cli's home,
+                                        // not the workspace — is not reachable by
+                                        // a bare name at all. A `/remember` that
+                                        // wrote one of those two and stopped
+                                        // would be a surface reporting a change
+                                        // no run will ever see.
+                                        match io_cli::memory::install(&root) {
+                                            // It changed the configuration, so it
+                                            // is said. A write into `io.toml` on
+                                            // the operator's behalf is not
+                                            // something to do silently.
+                                            Ok(true) => app.record(
+                                                Tone::Muted,
+                                                "`[instructions] files` now names all three, so \
+                                                 the next turn reads them",
+                                            ),
+                                            // Already exactly right. Not one byte
+                                            // written and nothing to report — this
+                                            // is reached from a command an
+                                            // operator types repeatedly.
+                                            Ok(false) => {}
+                                            Err(error) => app.record(Tone::Error, error),
+                                        }
+                                    }
+                                    // The line is the operator's own and the
+                                    // refusal explains a boundary, so it outlives
+                                    // the keystroke that earned it.
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                        }
+                        // The memory page. Every row stands for something the
+                        // parallel `held` vector names — see `commands::Held` —
+                        // rather than for a label read back, which the picker's
+                        // own fitter may have shortened.
+                        Pick::Memory { held } => match held.get(index) {
+                            // An instruction file says what it is. There is
+                            // nothing to open: the file is markdown an operator
+                            // edits in their own editor, and `/remember` is the
+                            // one writer this product gives it.
+                            Some(io_cli::commands::Held::File(file)) => app.record(
+                                Tone::Muted,
+                                io_cli::commands::instruction_said(file, &app.theme.glyphs),
+                            ),
+                            // A note has two verbs on it and a picker has one
+                            // Enter, so the row descends into them — the same
+                            // replace-in-place `Pick::Complete` uses, and the
+                            // same two-step `/config` takes to reach a scope.
+                            Some(io_cli::commands::Held::Note { scope, key, pinned }) => {
+                                descended = Some((
+                                    Picker::new(
+                                        format!("{key}?"),
+                                        io_cli::commands::verb_rows(*pinned),
+                                    ),
+                                    Pick::Remembered {
+                                        scope: *scope,
+                                        key: key.clone(),
+                                        verbs: io_cli::commands::Verb::of(*pinned).to_vec(),
+                                    },
+                                ));
+                            }
+                            // A heading, or an index past the end. A heading
+                            // cannot be under the marker — `Picker::refilter`
+                            // admits one only while nothing is typed and nothing
+                            // can be chosen while one is there — so this is the
+                            // structural answer rather than a case an operator
+                            // reaches.
+                            Some(io_cli::commands::Held::Nothing) | None => {}
+                        },
+                        // The verb, applied. Both wrappers report through
+                        // `io_cli::commands`, so what an outcome is called is a
+                        // decision a test can stand on rather than a string in a
+                        // file nothing links.
+                        Pick::Remembered { scope, key, verbs } => {
+                            if let Some(verb) = verbs.get(index) {
+                                let root = session.root().to_path_buf();
+                                match verb {
+                                    io_cli::commands::Verb::Pin | io_cli::commands::Verb::Unpin => {
+                                        let want = matches!(verb, io_cli::commands::Verb::Pin);
+                                        match io_cli::recall::pin(&store, &root, *scope, key, want)
+                                        {
+                                            Ok(outcome) => {
+                                                let (tone, said) = io_cli::commands::pinned_said(
+                                                    key, *scope, want, outcome,
+                                                );
+                                                app.record(tone, said);
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!("{key} was not changed: {error}"),
+                                            ),
+                                        }
+                                    }
+                                    io_cli::commands::Verb::Forget => {
+                                        match io_cli::recall::forget(&store, &root, *scope, key) {
+                                            Ok(outcome) => {
+                                                let (tone, said) = io_cli::commands::forgotten_said(
+                                                    key,
+                                                    *scope,
+                                                    outcome,
+                                                    &app.theme.glyphs,
+                                                );
+                                                app.record(tone, said);
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!("{key} was not withdrawn: {error}"),
+                                            ),
+                                        }
                                     }
                                 }
                             }
@@ -1172,6 +1359,85 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     picker = Some((
                         Picker::new(format!("Write {key} where?"), rows),
                         Pick::ConfigScope { key, value, paths },
+                    ));
+                }
+                // A line typed with nothing after the word. Answered with what to
+                // type rather than by opening a picker over three files it would
+                // write nothing into — asking which file a blank line goes in is
+                // a question with no useful answer.
+                Action::Remember(line) if line.is_empty() => app.say(
+                    Tone::Muted,
+                    "say what to remember: pick the row, then type the line after it",
+                ),
+                // **Which scope is half the decision, and this product has three
+                // of them** — the same sentence `/config`'s write arm carries, and
+                // a sharper one here: the three files differ only in who else
+                // reads them, so a guess is a guess about whether a private note
+                // is committed. So the same shape: the line waits in the `Pick`
+                // and nothing is written until a row is chosen.
+                Action::Remember(line) => {
+                    let root = session.root().to_path_buf();
+                    // Every scope that has a path on this machine. The user scope
+                    // has none where there is no home to speak of, which is
+                    // `memory::path`'s own answer and not something to invent one
+                    // around.
+                    let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
+                        io_harness::config::Scope::Project,
+                        io_harness::config::Scope::Local,
+                        io_harness::config::Scope::User,
+                    ]
+                    .into_iter()
+                    .filter_map(|scope| io_cli::memory::path(&root, scope).map(|p| (scope, p)))
+                    .collect();
+                    let rows = io_cli::commands::scope_rows(&paths, &app.theme.glyphs);
+                    picker = Some((
+                        Picker::new("Remember it where?", rows),
+                        Pick::RememberScope { line, paths },
+                    ));
+                }
+                // **One page, two lists, and they are two different memories.**
+                // The instruction files a person writes, and the notes the agent
+                // wrote for itself. Every row is built by `io_cli::commands`
+                // rather than here, because nothing under `tests/` links this
+                // file — a mark or a sentence written in the driver is one no
+                // sabotage can reach.
+                Action::Memory => {
+                    let root = session.root().to_path_buf();
+                    // Read off the configuration the session is running on, so a
+                    // `[instructions] files` that replaced the list shows here as
+                    // a file that is not read rather than being argued away.
+                    let files = io_cli::memory::view(&root, &config);
+                    // The caps come off `opening` — the contract built at startup
+                    // from the same builder every turn uses — rather than from a
+                    // fifth `contract::session` call, which `tests/contract.rs`
+                    // counts and fails at five. It is the same reason `/compact`
+                    // reads `opening.compaction`.
+                    let remembered = io_cli::recall::view(&store, &root, &opening, None);
+                    // A store that will not answer loses the second list and
+                    // keeps the first. The two halves have nothing to do with
+                    // each other — one is markdown on disk — and dropping the
+                    // page over the half that failed would hide the instruction
+                    // files from the operator who came to check them.
+                    let (entries, cut) = match &remembered {
+                        Ok(view) => {
+                            for note in io_cli::commands::memory_notes(view, &app.theme.glyphs) {
+                                app.record(Tone::Muted, note);
+                            }
+                            (view.entries.clone(), view.draws_cut)
+                        }
+                        Err(error) => {
+                            app.record(
+                                Tone::Error,
+                                format!("the agent's own memory could not be read: {error}"),
+                            );
+                            (Vec::new(), false)
+                        }
+                    };
+                    let (rows, held) =
+                        io_cli::commands::memory_page(&files, &entries, cut, &app.theme.glyphs);
+                    picker = Some((
+                        Picker::new("What io remembers", rows),
+                        Pick::Memory { held },
                     ));
                 }
                 Action::Theme => {
@@ -1612,6 +1878,59 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // Inside the loop for the same reason it was ever rebuilt: a
                     // queued turn runs under what the operator has allowed by the
                     // time it starts, not by the time they typed it.
+                    //
+                    // **And this is the turn boundary, which is where the file is
+                    // read again.** Here rather than at the keystroke that opened
+                    // a surface, because a turn is the unit a configuration is in
+                    // force *for*: the contract is built inside `turn` from
+                    // `config`, and anything read after that call is read by a
+                    // turn already running under the old one. Inside the queue
+                    // loop for exactly the reason `effective` is — three queued
+                    // prompts are three turns, and each runs under the file as it
+                    // is when it starts.
+                    //
+                    // **A refusal is recorded and not said.** The 0.13.1 rule:
+                    // `App::say` answers a keystroke and is gone at the next one,
+                    // and this answers no keystroke. It says the configuration on
+                    // disk is unreadable and this turn is running on the last one
+                    // that was — which outlives the keystroke and belongs to the
+                    // conversation. `Configuration::refresh` compares against the
+                    // text it last handed back, so a file left broken for six
+                    // prompts says it once rather than six times.
+                    if let Some(refusal) = configuration.refresh() {
+                        app.record(Tone::Refused, refusal);
+                    }
+                    // ponytail: the fresh pair is copied out rather than every
+                    // reader below being moved onto `configuration.config()`.
+                    // One `Config` clone per turn against a dozen call sites and
+                    // two picker arms that assign `config` themselves; move them
+                    // if a turn ever starts often enough for the clone to show.
+                    config = configuration.config().clone();
+                    // **The overlay, put back.** `configure::reload` discovers the
+                    // file and nothing else, so whatever `--profile` or `/profile`
+                    // chose is not in what came back — and a flag that says *for
+                    // this run* would have quietly stopped meaning anything after
+                    // the first prompt. Re-applied by name, with io-harness's own
+                    // refusal if the file no longer declares it; the name is
+                    // dropped at that point, because a profile edited away is a
+                    // thing to say once rather than to fail on every turn.
+                    if let Some(name) = profile.clone() {
+                        match io_cli::configure::with_profile(&config, &name) {
+                            Ok(overlaid) => config = overlaid,
+                            Err(refusal) => {
+                                profile = None;
+                                app.record(Tone::Refused, refusal);
+                            }
+                        }
+                    }
+                    // Both halves, or the turn below runs on every `[app.io-cli]`
+                    // answer as it was at session start while the rest of the
+                    // session has moved on — the asymmetry `configure::reload`'s
+                    // own doc comment exists to stop. Derived from the overlaid
+                    // `config` rather than from `Configuration::settings`, because
+                    // a profile body can carry `[app.io-cli]` keys too.
+                    let (in_force, _) = settings::stored(&config);
+                    capabilities = io_cli::contract::Capabilities::stored(in_force.as_ref());
                     let effective =
                         approval::session_policy(&policy, app.posture(), app.remembered());
                     let stopped = turn(
@@ -2779,6 +3098,37 @@ enum Pick {
         key: String,
         value: String,
         paths: Vec<(io_harness::config::Scope, std::path::PathBuf)>,
+    },
+    /// Which memory file a remembered line goes into, and the line waiting on it.
+    ///
+    /// Two steps for the reason [`Pick::ConfigScope`] has two, and a sharper one:
+    /// the three files differ *only* in who else reads them — a repository, a
+    /// checkout, this machine — so a write that guessed would be a guess about
+    /// whether a private note is committed.
+    RememberScope {
+        line: String,
+        paths: Vec<(io_harness::config::Scope, std::path::PathBuf)>,
+    },
+    /// The memory page, in the order `commands::memory_page` drew it.
+    ///
+    /// The rows are headings, instruction files and notes interleaved, so a
+    /// position in either underlying list addresses neither. `held` is the
+    /// parallel vector that function returns beside the rows — same order, same
+    /// length, built in the same pass — and it is what a chosen index reads back
+    /// against.
+    Memory {
+        held: Vec<io_cli::commands::Held>,
+    },
+    /// One note, and the verbs offered on it.
+    ///
+    /// The bucket is carried rather than re-derived, because a key can exist in
+    /// both and `recall::pin` and `recall::forget` each take one: a verb applied
+    /// to the wrong bucket either does nothing or acts on a same-named note the
+    /// operator was not looking at.
+    Remembered {
+        scope: io_cli::recall::Scope,
+        key: String,
+        verbs: Vec<io_cli::commands::Verb>,
     },
 }
 
