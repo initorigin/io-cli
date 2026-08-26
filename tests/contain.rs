@@ -3,10 +3,12 @@
 //! F7 — `Ctrl+C` ends a contained turn through the observer, and says so.
 //!
 //! The mode is a property of the *turn*, not of the interface, and that is what
-//! these assert. io-harness offers no session entry point that takes a caller's
-//! containment and a steer inbox together, so a session either fans out or is
-//! steerable; every claim below is about which of those this session is in and
-//! what it told the operator about it.
+//! these assert. Since 0.17.0 the switch decides the fan-out and nothing else:
+//! `turn_contained_bounded_steered` and `turn_bounded_steered` both take a
+//! caller's containment-or-not, a contract and a `SteerInbox`, so a contained
+//! turn can be steered exactly as an ordinary one can. Every claim below is about
+//! which of the two turns this session takes and what it told the operator about
+//! it — never about what it gave up to get there, because it gives up nothing.
 
 mod support;
 
@@ -111,9 +113,13 @@ max_total_tokens = 200000
 /// reason the mode has a configuration key at all. The negative half is the two
 /// claims 0.11.0 falsified and this notice went on making for a release: that the
 /// mode is what grants skills, MCP, language servers and a browser, and that it
-/// costs a mid-turn steer. Both turns carry a contract now and neither can be
-/// steered, so the first was selling capabilities the session already had and the
-/// second was charging for something nobody still has.
+/// costs a mid-turn steer. Both turns carry a contract since 0.11.0 and both
+/// carry a `SteerInbox` since 0.17.0, so the first was selling capabilities the
+/// session already had and the second was charging for something a contained turn
+/// keeps. The 0.11.0 phrase about steering stays in the absent list below for
+/// that reason — it was wrong when it was charged for, and it is wrong twice over
+/// now — and it is written there as a literal rather than here in prose, so that
+/// `tests/docs.rs`'s comment sweep reads it as the assertion it is.
 ///
 /// Sabotage: restore the 0.11.0 wording — under which only this test fails, and
 /// it fails on the absences rather than the caps, which is the half that decides
@@ -174,11 +180,11 @@ fn f1_contain_parses_as_a_question_or_an_answer() {
     );
 }
 
-/// F7 — a steered turn is never cancelled through the observer.
+/// F7 — no turn is cancelled through the observer until the flag is set.
 ///
 /// The negative half, and the one the sabotage arm attacks: a bridge that
-/// answered `Cancel` because a turn was running would cancel every steered turn
-/// the moment its first event arrived.
+/// answered `Cancel` because a turn was running would cancel every turn, contained
+/// or not, the moment its first event arrived.
 #[test]
 fn f7_the_bridge_continues_until_it_is_told_to_cancel() {
     let (observer, mut events) = bridge::channel();
@@ -212,10 +218,13 @@ fn f7_the_interrupt_says_where_the_turn_will_stop() {
     // undone now and says nothing at all — see `App::undoable`.
     app.status.steps = Some(1);
     assert_eq!(app.key(ctrl('c')), Command::Interrupt);
-    let steered = said(&mut app);
+    // Both kinds of turn are steered since 0.17.0, so the word for this one is
+    // *uncontained* — the sentence differs on where it can stop, not on whether
+    // the operator can speak to it.
+    let uncontained = said(&mut app);
     assert!(
-        steered.contains("next step"),
-        "a steered turn stops at a step boundary: {steered}"
+        uncontained.contains("next step"),
+        "an uncontained turn stops at a step boundary: {uncontained}"
     );
 
     let mut app = App::new(DARK, "a-model");

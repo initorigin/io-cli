@@ -18,6 +18,16 @@
 //! carries no longer depends on whether it can fan out;
 //! `tests/contract.rs`'s F6 is what keeps that true.
 //!
+//! **0.17.0 — the arms moved again, and nothing here moved with them.** Both are
+//! now `Session::turn_bounded_steered` and
+//! `Session::turn_contained_bounded_steered`, which are the same two calls with a
+//! `SteerInbox` appended, so a contained turn can be steered and containment
+//! decides fan-out and nothing else. The inbox is a parameter of the drive call
+//! rather than a field of [`io_harness::TaskContract`] — it carries the
+//! operator's words for the duration of one turn, and a contract is what that
+//! turn is *for* — which is the whole reason this module needed no change to get
+//! it. `tests/steer.rs`'s F5 asserts both call sites.
+//!
 //! The two seams that are not capabilities of the operator's configuration are
 //! arguments instead: the responder is unconditional, because io-harness resolves
 //! it inside the tool dispatch on any run, and the plan gate is present only when

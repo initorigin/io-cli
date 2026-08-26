@@ -227,6 +227,10 @@ fn the_readme_quotes_the_budget_fields_the_status_line_actually_draws() {
         steps: Some(20),
         tokens: Some(200_000),
         duration: Some(std::time::Duration::from_secs(600)),
+        // The context window is a denominator rather than a remainder, so it
+        // draws no budget row of its own — `ctx N%` is where it shows. `None`
+        // here keeps this fixture about the three that do draw rows.
+        window: None,
     };
     status.steps = Some(3);
     status.run_tokens = Some(187_600);
@@ -310,6 +314,144 @@ fn no_documentation_surface_still_claims_the_old_asymmetry() {
             said.contains("project"),
             "{name} should say where `[browser]` is refused",
         );
+    }
+}
+
+/// Every comment in the crate, read for this release's version of the same
+/// mistake: **a sentence saying a turn cannot be steered.**
+///
+/// The test above catches the 0.14.0 shape of it in two prose files. This one is
+/// the 0.17.0 shape and it reads the *source*, because that is where the claim
+/// lived: through io-harness 0.66 no session entry point took a caller's
+/// containment and a `SteerInbox` on one call, so a dozen comments explained the
+/// arms in terms of what each gave up to get the other. 0.67.0 opened
+/// `turn_bounded_steered` and `turn_contained_bounded_steered`, io-cli took both,
+/// and every one of those sentences became folklore with a typeface — the exact
+/// failure this file exists for. A reviewer reading the release diff sees the two
+/// call sites change and has no reason to open `settings.rs`; this does.
+///
+/// **Comment lines only, and that is the whole of the narrowing.** Two things
+/// must go on saying these words and neither is a claim about today:
+///
+/// - the assertions that hold io-harness's *deaf* entry points to their name —
+///   `turn_bounded_observed` really does take no inbox, and `tests/steer.rs` says
+///   so in a `format!` — and the arm of `tests/contain.rs` that asserts
+///   `"cannot be steered"` is absent from the containment notice. Both are code,
+///   not comments, so neither is read here.
+/// - `CHANGELOG.md`, which is a record of releases rather than a description of
+///   this one: its 0.14.0 and 0.11.0 entries were true when they were written and
+///   rewriting them would be falsifying the history. Its `0.17.0` section is
+///   checked by `the_changelog_has_a_section_for_this_version` instead.
+///
+/// And the sentences explaining why `Ctrl+C` is **not** on the inbox are the
+/// point of the release rather than a violation of it. They say the interrupt
+/// travels as `Flow::Cancel` on the observer; none of them says a turn cannot be
+/// steered, so none of the phrases below can match one.
+///
+/// Sabotage: put any single corrected comment back — `settings.rs`'s "neither
+/// turn takes a `SteerInbox` any more", `main.rs`'s "Neither turn takes a
+/// `SteerInbox`", `commands.rs`'s "fan out, or be steered", `README.md`'s "no
+/// session turn takes a steer inbox". Only this test fails, and it names the file
+/// and the sentence.
+#[test]
+fn no_comment_still_says_a_turn_cannot_be_steered() {
+    // Each of these was a true sentence in some release and is a false one now.
+    // Written as the words that carry the claim rather than as whole sentences,
+    // because the sentence around them is what an author rewrites while leaving
+    // the claim standing.
+    const FALSEHOODS: &[&str] = &[
+        // "no entry point takes a contract and an inbox together"
+        "containment and a steer inbox together",
+        "a contract and a steer inbox together",
+        // "neither arm takes an inbox"
+        "neither takes a steer inbox",
+        "neither turn takes a `SteerInbox`",
+        "Neither turn takes a `SteerInbox`",
+        "takes a `SteerInbox` any more",
+        "no session turn takes a steer inbox",
+        "session turn takes a `SteerInbox`",
+        // "a contained turn takes no inbox"
+        "A contained turn takes no",
+        "contained turn takes no `SteerInbox`",
+        // "containment is what decides whether a turn can be steered"
+        "fan out, or be steered",
+        "be steered and one that can fan out",
+        "either fans out or is steerable",
+        "turned steering off",
+        "cannot be steered",
+    ];
+
+    let mut sources = Vec::new();
+    collect(&repo().join("src"), &mut sources);
+    collect(&repo().join("tests"), &mut sources);
+
+    for path in sources {
+        // This file, and only this file, is allowed to write the sentences down:
+        // the list above is what they are, and the doc comment names four of them
+        // so the sabotage arm can be run without going to find them. A gate that
+        // could not quote what it forbids would have to describe it instead, and
+        // a description is the thing that drifts.
+        if path.file_name().is_some_and(|name| name == "docs.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let shown = path.strip_prefix(repo()).unwrap_or(path.as_path());
+        for (number, line) in text.lines().enumerate() {
+            if !line.trim_start().starts_with("//") {
+                continue;
+            }
+            for claim in FALSEHOODS {
+                assert!(
+                    !line.contains(claim),
+                    "{}:{} still says {claim:?}. A contained turn CAN be steered \
+                     since 0.17.0 — both arms are driven through the `_steered` \
+                     entry points and both hold a `SteerInbox`. Containment \
+                     decides fan-out and nothing else.\n  {}",
+                    shown.display(),
+                    number + 1,
+                    line.trim(),
+                );
+            }
+        }
+    }
+
+    // The README carries the same claim in prose rather than in comments, so the
+    // whole file is read.
+    let readme = read("README.md");
+    for claim in FALSEHOODS {
+        assert!(
+            !readme.contains(claim),
+            "README.md still says {claim:?}, which has not been true since 0.17.0",
+        );
+    }
+
+    // And the positive half, because a gate made only of absences passes on a
+    // file that says nothing at all. Somewhere the README has to state what is
+    // true now, or an operator reading it learns that containment costs a steer
+    // from the silence where the correction should be.
+    let said = readme.to_lowercase();
+    assert!(
+        said.contains("steer inbox") || said.contains("/steer"),
+        "the README should say a turn can be spoken to while it runs",
+    );
+    assert!(
+        said.contains("contained turn can be steered"),
+        "the README should say the containment switch no longer decides it",
+    );
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn collect(dir: &std::path::Path, into: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect(&path, into);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            into.push(path);
+        }
     }
 }
 

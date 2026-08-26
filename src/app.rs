@@ -257,7 +257,8 @@ pub struct App {
     /// Whether the turn now running is a *contained* turn.
     ///
     /// Set by the driver as a turn starts and cleared as it ends. It exists for
-    /// one sentence: `Ctrl+C` stops a steered turn at the next step boundary and
+    /// one sentence: `Ctrl+C` stops an uncontained turn at the next step boundary
+    /// and
     /// a contained one at the next boundary where no child is in flight, and an
     /// interface that promised the first while doing the second would look as
     /// though it had swallowed the key.
@@ -1104,13 +1105,26 @@ impl App {
                 }
                 self.status.steps = Some(*steps);
             }
+            // **A fold is still the better answer at the one moment it happens.**
+            // `Compacted` reports the section's new size the instant it shrinks,
+            // before any step has assembled against it — so this arm survives the
+            // trace read that now fills the same field at every step, and the two
+            // cannot disagree: `after_tokens` and `ContextEvent::est_tokens` are
+            // both the assembler's estimate of the observation section, and this
+            // one is simply earlier.
+            //
+            // What is gone is the denominator this arm used to build for itself.
+            // It asked `ContextBudget::default().effective_tokens(None)` — a flat
+            // `24_000` on every session in existence — under a comment claiming
+            // the denominator was "io-harness's own declared budget, asked of the
+            // harness rather than copied here". It was the *crate's* default
+            // budget, which is a different number from *this contract's* the
+            // moment an operator writes a `[run.context]` table, and it was wrong
+            // for them in silence from the release the field was added in.
+            // `Status::note_context` divides by `Status::budgets`, which the
+            // driver fills from the contract it actually built.
             io_harness::EventKind::Compacted { after_tokens, .. } => {
-                // The denominator is io-harness's own declared budget, asked of the
-                // harness rather than copied here — a `24_000` written into this
-                // file would be wrong after some harness patch, and wrong silently.
-                let budget = io_harness::ContextBudget::default().effective_tokens(None);
-                let share = (*after_tokens as f64 / budget.max(1) as f64 * 100.0).round();
-                self.status.context = Some(share.clamp(0.0, 100.0) as u8);
+                self.status.note_context(*after_tokens);
             }
             // The draw is per step and the ceiling is the tree's. `tokens`
             // accumulates because a field that swings rather than climbs cannot
@@ -1796,11 +1810,14 @@ impl App {
             // left over `COMPOSER_ROWS`, because a prompt nobody can see is a
             // worse trade than a queue nobody can see.
             //
-            // At the viewport height a running turn holds, that leaves nothing:
-            // `composer_rows` is exactly `COMPOSER_ROWS` there, so this draws
-            // nothing until the composer's allowance is bigger than its floor.
-            // That is F2's "on a terminal tall enough to hold them" in one line
-            // of arithmetic rather than a height compared against a number.
+            // At the viewport height a running turn holds that leaves exactly one
+            // row, and only because the blank above the activity line is released
+            // while the queue is open — see `air_rows`. Without it `composer_rows`
+            // is exactly `COMPOSER_ROWS` at eight rows and this would draw nothing
+            // on every real session. Below eight there is no blank to release and
+            // it draws nothing, which is F2's "on a terminal tall enough to hold
+            // them" in one line of arithmetic rather than a height compared
+            // against a number.
             let spare = composer.height.saturating_sub(COMPOSER_ROWS);
             let want = u16::try_from(self.prompts.len()).unwrap_or(u16::MAX);
             let queue_rows = if self.queue_open() {

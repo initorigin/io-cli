@@ -52,6 +52,18 @@
 //! it was typed against off the screen — and the queue is at its longest exactly
 //! when the turn under it is at its most worth reading.
 //!
+//! **Where the spare row comes from, and why there is one.** The composer's
+//! allowance at [`crate::term::VIEWPORT_HEIGHT`] — the eight rows a running turn
+//! actually holds — is exactly `COMPOSER_ROWS`, so a surface taking only what is
+//! left over that floor would draw nothing on every real session. So while the
+//! queue is open the layout releases the **blank row above the activity line**
+//! into the composer's allowance, and takes it back the moment the queue closes:
+//! see `air_rows` in [`crate::app::App::render`] for the argument, and
+//! `n2_the_surface_is_visible_at_the_running_viewport_and_costs_it_no_height` in
+//! `tests/queue_surface.rs` for the assertion. The blank carries nothing and the
+//! queue carries something; the frame is the same height either way, which is
+//! what "never grows the viewport" was always about.
+//!
 //! **It never hides the prompt.** This is the one place it parts company with
 //! the fleet view, which takes the whole composer rect. That view is opened by a
 //! key, so an operator who cannot see the prompt knows why and closes it; this
@@ -60,9 +72,9 @@
 //! the person who caused it. So it draws above the composer or it does not draw
 //! at all.
 //!
-//! What falls out of the last two together is the honest shape of a short
-//! viewport: when the composer's allowance is a single row there is nothing to
-//! spare, and this draws nothing. The notice
+//! What falls out of the last two together is the honest shape of a terminal
+//! too short even for the blank: below eight rows there is no row to release,
+//! nothing is spare over `COMPOSER_ROWS`, and this draws nothing. The notice
 //! [`crate::app::App::queue_prompt`] already wrote is what says the line was
 //! kept — a surface is what keeps it visible *afterwards*, and afterwards is
 //! worth a row only when there is one to give.

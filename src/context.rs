@@ -402,7 +402,7 @@ pub fn window(contract: &TaskContract, remaining: Option<u64>) -> u64 {
 
 /// The page, committed into the scrollback.
 ///
-/// A page and never a modal: the viewport is four rows and cannot grow, and the
+/// A page and never a modal: the viewport does not grow, and the
 /// terminal's own search, selection and copy already work on everything above it
 /// — the same answer `/status` and `/expand` give. `seen` is `None` before the
 /// first turn, and that is said in a sentence rather than drawn as an empty

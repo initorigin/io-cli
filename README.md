@@ -255,6 +255,19 @@ rather than leaving you to press it and watch a half-written prompt go to the
 model. Nothing about the composer changed: `Shift+Enter`, `Alt+Enter`, `Ctrl+J`
 and a trailing `\` all still work wherever the terminal can distinguish them.
 
+**Four more keys exist only while something is queued**, and they are deliberately
+not in the table above: that table is what the session binds all the time, and
+these are borrowed by the queue surface for as long as it is open and handed back
+the moment it shuts. While a prompt is waiting behind a running turn, the arrows
+mark a queued line instead of walking prompt history, `Shift`+the arrows move the
+marked line up and down the queue, `Enter` on an empty prompt takes the marked
+line back into the composer to edit — `Enter` again puts it back where it was —
+and `Esc` abandons an edit in progress, or closes the surface and gives all four
+keys back. Every other key still falls through to the composer, because typing is
+how the next line joins the queue. It is the same trade the fleet view makes with
+the same two arrows, and `/steer` is what sends the queue into the turn rather
+than waiting for it.
+
 ### Moving a key
 
 The keys the session itself owns can be rebound in `[app.io-cli.keys]`, by action
@@ -787,9 +800,10 @@ contained turn was the only session entry point io-harness let a caller hand a
 task contract to, so the responder, the plan gate, MCP servers, language servers,
 the browser and the skills directory all arrived on that one switch. 0.11.0 gave
 the ordinary turn a contract too. Every one of those has been on every turn since,
-contained or not, and no session turn takes a steer inbox — so containment costs
-no steering and grants no capability. It is the caps a fan-out runs under and
-nothing else.
+contained or not — and since 0.17.0 every session turn carries a steer inbox as
+well, so a contained turn can be steered mid-flight exactly as an ordinary one
+can. Containment grants no capability and costs no steering. It is the caps a
+fan-out runs under and nothing else.
 
 **What changes for a file you already have.** No key is added, removed or
 renamed, and a 0.13.1 file is a valid 0.14.0 file. What changes is what it does:

@@ -104,7 +104,8 @@ impl Ask {
     }
 }
 
-/// The approver handed to `Session::turn_steered`.
+/// The approver handed to `Session::turn_bounded_steered` and to
+/// `Session::turn_contained_bounded_steered`.
 pub struct Asker {
     asks: mpsc::UnboundedSender<Ask>,
 }
@@ -515,8 +516,9 @@ impl Approval {
         ])];
 
         // Past the cell's own header, which the row above replaces, and without
-        // the blank line it ends with: an overlay four rows tall cannot spend one
-        // on breathing. Every line is fitted, because this viewport clips.
+        // the blank line it ends with: an overlay bounded by the viewport cannot
+        // spend one on breathing. Every line is fitted, because this viewport
+        // clips.
         lines.extend(
             crate::diff::cell(edit, theme, u16::try_from(width).unwrap_or(u16::MAX))
                 .into_iter()
@@ -554,8 +556,8 @@ impl Approval {
 
     /// `› allow once · allow this session · deny`, on one row.
     ///
-    /// One row rather than a list, because the viewport is four rows and the facts
-    /// above have first claim on them. The marker is the same `›` every other
+    /// One row rather than a list, because the viewport does not grow and the
+    /// facts above have first claim on what it has. The marker is the same `›` every other
     /// selection surface uses, so the answer that `Enter` would take is marked by
     /// more than a colour.
     ///

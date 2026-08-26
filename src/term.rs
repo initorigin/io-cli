@@ -83,7 +83,7 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// The ceiling that buys: a prompt longer than two rows scrolls within them
 /// rather than expanding the viewport. 0.7.0 spends that ceiling rather than
 /// raising it — the palette and path completion are pickers drawn into these
-/// same four rows, a picker's query is drawn in place of its title so it costs
+/// same rows, a picker's query is drawn in place of its title so it costs
 /// no row, and a paste too big for two rows becomes one line naming itself
 /// instead of a prompt that has to grow.
 pub const VIEWPORT_HEIGHT: u16 = 8;

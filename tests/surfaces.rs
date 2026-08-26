@@ -2,7 +2,7 @@
 //! this text", asserted at the boundary each of them actually crosses.
 //!
 //! The three share one premise and it is the reason they are in one file: **the
-//! viewport is four rows and never grows**. Everything that shows more of
+//! viewport never grows**. Everything that shows more of
 //! something is therefore written *upward*, into the terminal's own scrollback,
 //! where the terminal's search, selection and copy-mode already work — and
 //! everything that hands text to the reader's own machine goes out as an escape

@@ -282,7 +282,7 @@ fn f8_escape_cancels_the_picker_rather_than_clearing_the_query() {
 #[test]
 fn f8_the_query_is_drawn_in_place_of_the_title_and_costs_no_row() {
     // The sabotage: give the query a line of its own. The in-session viewport is
-    // four rows fixed at attach, so a query line above the title would leave
+    // a height fixed at attach, so a query line above the title would leave
     // `/resume` two visible rows — and three was already the count a live run
     // found unusable. Both halves are asserted here: the line count, and that the
     // first matched row is drawn immediately under the query.

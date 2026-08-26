@@ -29,7 +29,7 @@
 //! a promise the turn might not keep.
 //!
 //! **Everything that shows more of something commits upward.** The viewport is
-//! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
+//! eight rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
 //! write into the scrollback, where the terminal's own search, selection and
 //! copy-mode already work. That is one answer to "show me more" rather than
 //! three, and it is the same answer the transcript gives.
@@ -679,7 +679,7 @@ pub enum Action {
     ///
     /// **Into the scrollback and never into a pane**, which is the same answer
     /// [`Action::Expand`] and [`Action::Transcript`] give to "show me more": the
-    /// viewport is four rows and cannot grow, and the terminal's own search,
+    /// viewport is eight rows and cannot grow, and the terminal's own search,
     /// selection and copy-mode already work on everything committed above it.
     /// Every field of it is a value io-harness supplied — the policy layers, the
     /// backend that actually answered, the draw against the tree's ceiling, the
@@ -742,9 +742,9 @@ pub enum Action {
     Image(Option<usize>),
     /// Run later turns contained, stop doing so, or say which it is now.
     ///
-    /// `None` is a question and never a toggle: the two modes differ in what a
-    /// turn can do — fan out, or be steered — and a switch that guessed which
-    /// one the operator meant would be wrong half the time.
+    /// `None` is a question and never a toggle: the two modes differ in whether
+    /// a turn can fan out — steering is on both since 0.17.0 — and a switch that
+    /// guessed which one the operator meant would be wrong half the time.
     Contain(Option<bool>),
     /// Make later turns propose a plan before they work, stop doing so, or say
     /// which it is now.
@@ -900,7 +900,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         }
         // `on` / `off` / nothing. Nothing REPORTS rather than toggles, because
         // this switch changes what a turn is — a blind toggle would be a coin
-        // flip between a turn that can be steered and one that can fan out.
+        // flip between a turn that can fan out and one that does the work itself.
         "contain" | "containment" => match input.split_whitespace().nth(1) {
             Some("on") | Some("yes") => Action::Contain(Some(true)),
             Some("off") | Some("no") => Action::Contain(Some(false)),

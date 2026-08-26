@@ -18,6 +18,14 @@
 //! the observer rather than through a steer inbox. 0.14.0 deletes what was left
 //! of the asymmetry: [`contract`] and `contract::session` are both built from
 //! [`crate::contract::configured`], so what the file says reaches either arm.
+//!
+//! **And the trade that started it is gone entirely.** Since io-harness 0.67.0 a
+//! session turn takes a caller's contract *and* a `SteerInbox` on one call, so
+//! nothing is given up for either — an interactive turn is driven through
+//! `Session::turn_bounded_steered` or `Session::turn_contained_bounded_steered`
+//! and can be spoken to while it runs. This module still takes
+//! `turn_bounded_observed`: there is no operator at a keyboard to say anything,
+//! and an inbox nobody can write to is a parameter with no sender.
 
 use std::io::Write;
 use std::sync::Mutex;

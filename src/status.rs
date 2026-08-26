@@ -120,6 +120,16 @@ impl Field {
 /// reading `left 997/1000 steps` on every session would be reporting io-cli's
 /// scaffolding back to the operator as a budget they set, and 0.14.0's F6 is
 /// explicit that a session with no `[run]` table shows no budget field at all.
+///
+/// **A fourth field since 0.17.0, and it is the one that draws no row.**
+/// [`Budgets::window`] is the context window a turn's prompt is assembled inside.
+/// It is here rather than loose on [`Status`] because it arrives from exactly the
+/// same place at exactly the same moment as the other three — off the contract
+/// the driver has just built, in the one assignment that already reads it, so
+/// there is no second driver line that could be forgotten — and because it is a
+/// session fact for the same reason they are: the file does not change while a
+/// session runs. It is an `Option` too, but for a different question; its own doc
+/// says which, and why it draws nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Budgets {
     /// `[run] max_steps`, or `[app.io-cli] max_steps` where that beat it — and
@@ -129,6 +139,33 @@ pub struct Budgets {
     pub tokens: Option<u64>,
     /// `[run] max_duration_secs`, as wall time across the turn.
     pub duration: Option<Duration>,
+    /// The context window one turn's prompt is assembled inside, in tokens:
+    /// `[run.context]`, taking its `share` of `[run] max_tokens` where the
+    /// operator set one.
+    ///
+    /// **An `Option` for a different reason from its three neighbours, and the
+    /// difference is the point.** Those are `Option` because the ceiling itself
+    /// may not exist — a turn with no time budget is not a turn budgeted at zero.
+    /// A context window always exists: `TaskContract::context` is a plain
+    /// `ContextBudget` and not an `Option` of one, so every contract that exists
+    /// declares a window, io-harness's own `24_000` where nobody chose otherwise.
+    /// `None` here therefore does not mean *no window*. It means **io-cli has not
+    /// been handed a contract yet** — the state [`Budgets::default`] carries for
+    /// the moments before the first turn is built.
+    ///
+    /// A sentinel `0` would have been the alternative and would have been worse in
+    /// exactly this product's characteristic way: a number that divides is a
+    /// number somebody eventually divides by. [`Status::note_context`] says
+    /// nothing at all on `None`, so a driver that forgot to fill this in loses the
+    /// `ctx` field outright rather than quietly reporting a share of a window
+    /// nobody set — which is precisely how this field spent two releases wrong.
+    ///
+    /// **It draws no row in [`Status::budgets_left_of`], unlike its three
+    /// neighbours.** Those are remainders an operator watches drain; this one is a
+    /// denominator, and it is already on the line — `ctx N%` is the assembled
+    /// section over exactly this number. A `left 18k/24k ctx` beside it would be
+    /// the same fact twice, in two spellings that round differently.
+    pub window: Option<u64>,
 }
 
 impl Budgets {
@@ -148,6 +185,21 @@ impl Budgets {
             steps: (contract.max_steps != crate::contract::MAX_STEPS).then_some(contract.max_steps),
             tokens: contract.max_tokens,
             duration: contract.max_duration,
+            // **The harness's arithmetic, asked of the harness — which is what
+            // the arm this replaces only claimed to be doing.** Through 0.16.0
+            // the share on the line was taken against
+            // `ContextBudget::default().effective_tokens(None)`, a constant
+            // `24_000` on every session in the world, under a comment asserting
+            // it was io-harness's own declared budget. It was the *crate's*
+            // default budget; this is *this contract's*, which is a different
+            // number the moment an operator writes a `[run.context]` table.
+            //
+            // `max_tokens` is passed and not `None`, because `ContextBudget`
+            // takes its `share` of what the run's own token budget leaves: a
+            // window computed as if there were no run budget is not the window
+            // the assembler had. The expression is io-harness's own — `session.rs`
+            // bounds `entry_cap_chars` with exactly this pair.
+            window: Some(contract.context.effective_tokens(contract.max_tokens)),
         }
     }
 }
@@ -222,16 +274,37 @@ pub struct Status {
     ///
     /// Cleared by `Status::start_run`, which is the one place a run begins.
     pub run_tokens: Option<u64>,
-    /// How full the assembled context was the last time io-harness said so, as a
-    /// share of the budget io-harness itself declares.
+    /// How full the assembled context was at the last step, as a share of the
+    /// window *this session's contract* declares — [`Budgets::window`].
     ///
-    /// `None` until a fold reports one, which is the honest answer: `Compacted` is
-    /// the only event carrying an observation-section size, and between folds
-    /// nothing on the event stream knows it.
+    /// **0.16.0's version of this field was wrong from the release it was added
+    /// in, and it was wrong silently.** It divided by
+    /// `ContextBudget::default().effective_tokens(None)` — a flat `24_000` — so an
+    /// operator who set `[run.context] max_tokens = 8000` was shown a share of a
+    /// window three times the one they had, and nothing on the screen could
+    /// disagree with it. Both halves of the fix are elsewhere:
+    /// [`Budgets::in_force`] is the denominator, and [`Status::note_context_from`]
+    /// is the numerator.
     ///
-    /// ponytail: derived from the last fold. The per-step estimate is durable in
-    /// the harness store as `ContextEvent::est_tokens`, so a live share is one
-    /// store read away if this field turns out too quiet to be useful.
+    /// **And it was blank for exactly the period it would have been useful.** The
+    /// only source was `EventKind::Compacted`, which io-harness emits when a fold
+    /// happens and never otherwise — so a session whose context never filled up
+    /// showed no `ctx` field at all, and the first number an operator ever saw was
+    /// one taken after the section had just been cut down. The per-step estimate
+    /// was durable in the harness store the whole time, which is the ponytail note
+    /// that stood here for two releases and is now cashed in.
+    ///
+    /// `None` before the first step of the first turn, which stays the honest
+    /// answer: nothing has been assembled, and a session that has assembled
+    /// nothing has not assembled zero tokens — the rule `tokens` and `spend` are
+    /// held to. The *window* is known from the moment a contract exists, and
+    /// [`committed`] says it there rather than leaving the page blank.
+    ///
+    /// Cleared by [`Status::forget_run`] and deliberately still so. The share is
+    /// an observation the undone run made about its own ledger; a rewind or a
+    /// `/resume` puts a different conversation on screen, whose section this
+    /// number never measured. The window beside it is not cleared, because the
+    /// file did not change.
     pub context: Option<u8>,
     /// How this run's commands are contained: the mode asked for and the backend
     /// that actually answered on this host.
@@ -488,6 +561,90 @@ impl Status {
     pub fn start_run(&mut self) {
         self.elapsed = Duration::ZERO;
         self.run_tokens = None;
+    }
+
+    /// Set [`Status::context`] from an observation section of `est_tokens`.
+    ///
+    /// **The denominator is [`Budgets::window`] and never a budget built here, and
+    /// that is the whole of F10.** Everything about how the window is arrived at —
+    /// io-harness's default, a `[run.context]` table, the `share` it takes of
+    /// `[run] max_tokens` — is already resolved by the time a `TaskContract`
+    /// exists, and `Budgets::in_force` reads it off that contract. A second
+    /// resolution here would be a second answer to a settled question, and the two
+    /// would disagree the first time a layer moved. That is not a hypothetical:
+    /// the arm this replaces resolved it a second time, got `24_000`, and said so
+    /// under a comment claiming it had asked the harness.
+    ///
+    /// With no window — no contract has reached this `Status` yet, see
+    /// [`Budgets::window`] — the field is left exactly as it was. Losing the `ctx`
+    /// field is the loud failure; a share of an invented denominator is the quiet
+    /// one, and quiet is what this whole method exists to end.
+    ///
+    /// Clamped to `100` because an estimate can exceed the ceiling it is measured
+    /// against: `ContextBudget` bounds what the assembler *aims* for and the fold
+    /// is what enforces it, so a section briefly over its window is ordinary.
+    /// `ctx 137%` would read as a bug in this line rather than as the pressure it
+    /// actually is.
+    pub fn note_context(&mut self, est_tokens: u64) {
+        let Some(window) = self.budgets.window.filter(|window| *window > 0) else {
+            return;
+        };
+        let share = (est_tokens as f64 / window as f64 * 100.0).round();
+        self.context = Some(share.clamp(0.0, 100.0) as u8);
+    }
+
+    /// The same share, taken from the durable trace once a step has landed.
+    ///
+    /// **This is the numerator, and the store is the only place it exists.**
+    /// io-harness records `ContextEvent::assembled` — the assembler's own estimate
+    /// for the section it has just built — as one row per step, and emits no event
+    /// carrying that number. `EventKind::Compacted` says how big the section is
+    /// only on the steps where a fold happened, and `PromptComposed` counts the
+    /// *system* block in bytes, which is a different section measured in a
+    /// different unit. So a share that reads the event stream alone is blank until
+    /// a fold, and no arithmetic anywhere could have fixed that.
+    ///
+    /// `est_tokens` and not `reported_tokens`, though the row carries both.
+    /// `reported_tokens` is what the provider billed for the whole request —
+    /// system block, tools, transcript and all — while `est_tokens` is the
+    /// observation section alone, which is the thing `ContextBudget` bounds and
+    /// the thing `Compacted::after_tokens` reports. `ctx N%` has to mean one
+    /// quantity, and mixing the two would make the number jump at every step
+    /// boundary for no reason a reader could see.
+    ///
+    /// **Anchored on `Step`, for the reason `main.rs`'s `commit_edits` is.**
+    /// io-harness documents `Step` as emitted once the step has been committed to
+    /// the store, so the row is there to be read; a read at `ToolCall` is a read
+    /// of a row that may not exist yet, and the two events are one line apart in a
+    /// transcript, which is what would keep that invisible until it was a bug.
+    /// One read per step, not one per event.
+    ///
+    /// ponytail: `Store::context_events` returns the whole run each call, so a run
+    /// of `n` steps reads `n(n+1)/2` rows across its life — five-column rows
+    /// behind an indexed `run_id`, and a turn is tens of steps rather than
+    /// thousands. The upgrade, if that ever stops being true, is a `LIMIT 1`
+    /// accessor in the harness and not a copy of the number kept here, which could
+    /// disagree with the trace it was taken from.
+    ///
+    /// A read that fails leaves the field as it was and says nothing. This is a
+    /// decoration on a status line: a run whose work succeeded is not one to
+    /// interrupt because a trace could not be re-read, and unlike a diff there is
+    /// nothing here worth spending a scrollback row to apologise for.
+    pub fn note_context_from(&mut self, store: &io_harness::Store, event: &io_harness::RunEvent) {
+        let io_harness::EventKind::Step { .. } = &event.kind else {
+            return;
+        };
+        let Ok(events) = store.context_events(event.run_id) else {
+            return;
+        };
+        if let Some(est) = events
+            .iter()
+            .rev()
+            .find(|recorded| recorded.kind == "assembled")
+            .and_then(|recorded| recorded.est_tokens)
+        {
+            self.note_context(est);
+        }
     }
 
     /// The indicator, if there is anything to indicate and anywhere to show it.
@@ -1359,11 +1516,34 @@ pub fn committed(
         facts.push(("budget".into(), text));
     }
 
+    // **The window comes off the contract handed in, exactly as the budgets above
+    // do, and for the same reason**: this page reports what the *next* turn would
+    // run under, and reading it changes nothing. The share beside it is still the
+    // session's own — what has been assembled is a fact about the turns that ran,
+    // however the ceiling was arrived at — which is the split
+    // `budgets_left_of` is built on.
+    //
+    // The size is said in the empty case too. `not known until the context has
+    // been folded once` was the old text, and it was a true description of a
+    // defect: the number arrived only at a fold. Now the *window* is known from
+    // the moment a contract exists, so a page that said nothing at all would be
+    // withholding the one half it can always answer — and it is the half an
+    // operator checking whether their `[run.context]` table took effect is
+    // actually looking for.
+    //
+    // `Budgets::in_force` always fills the window: it has a contract in hand and
+    // every contract declares one. The arm below is that type's `None` spelled out
+    // rather than an `unwrap` — a committed page is not worth a panic — and it is
+    // unreachable from here.
+    let window = match Budgets::in_force(contract).window {
+        Some(tokens) => format_tokens(tokens),
+        None => "unknown".to_string(),
+    };
     facts.push((
         "context".into(),
         match status.context {
-            Some(fill) => format!("{fill}% of the budget io-harness declares"),
-            None => "not known until the context has been folded once".to_string(),
+            Some(fill) => format!("{fill}% of a {window} window"),
+            None => format!("nothing assembled yet {dash} the window is {window}"),
         },
     ));
 

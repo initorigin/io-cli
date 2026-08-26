@@ -357,11 +357,16 @@ fn the_containment_field_carries_the_backend_and_not_only_the_mode() {
 }
 
 /// Context pressure appears once something has said what it is, and says it as a
-/// share of the budget io-harness itself declares rather than of a number copied
-/// into this repository.
+/// share of the window **this session's contract** declares — not of the crate
+/// default, which is what it divided by until 0.17.0 and is why the field was
+/// silently wrong for every operator who set `[run.context]`.
 #[test]
 fn the_context_field_appears_when_a_fold_reports_one() {
     let mut app = App::new(DARK, "opus-5");
+    // The denominator, handed over the way the driver hands it: from the contract
+    // the turn is running under. Without it there is no window and the field stays
+    // away, which is the honest answer and is asserted in its own test.
+    app.status.budgets = Budgets::in_force(&budgeted());
     assert!(!app.status.line(120, &DARK).to_string().contains("ctx"));
 
     app.event(
@@ -609,6 +614,9 @@ fn f12_a_plan_of_no_items_is_absent_rather_than_zero() {
 #[test]
 fn the_run_fields_do_not_outlive_the_run_that_set_them() {
     let mut app = App::new(DARK, "opus-5");
+    // The window `ctx N%` is a share of. A fold with no contract behind it reports
+    // nothing from 0.17.0 — see `the_context_field_appears_when_a_fold_reports_one`.
+    app.status.budgets = Budgets::in_force(&budgeted());
     app.set_posture(Some(io_cli::settings::Posture::Workspace));
     app.event(&step(1, 12_400), Duration::ZERO);
     app.event(
@@ -637,7 +645,13 @@ fn the_run_fields_do_not_outlive_the_run_that_set_them() {
     app.status.forget_run();
 
     let after = app.status.line(200, &DARK).to_string();
-    for fact in ["tok", "ctx", "seatbelt", "plan"] {
+    // The run's OWN spellings, not any row that happens to hold the same word.
+    // The budgets are the file's rather than the run's and deliberately survive a
+    // forget — they are what the next turn will run under — so a sweep for a bare
+    // `"tok"` now finds `left 0/10.0k tok` and fails on the field working
+    // correctly. What must go is the count this run spent and the share it
+    // reported, and that is what these name.
+    for fact in ["12.4k tok", "ctx ", "seatbelt", "plan 1/3"] {
         assert!(
             !after.contains(fact),
             "{fact:?} outlived the run that reported it: {after:?}",
@@ -1420,6 +1434,12 @@ fn committed_of(
 /// it and through the one function the driver calls.
 fn reported() -> App {
     let mut app = App::new(DARK, "anthropic/claude-sonnet-4.5");
+    // **Before the events, from 0.17.0, and the order is the assertion.** `ctx N%`
+    // is a share of the window the CONTRACT declares, so a `Status` that was never
+    // handed one has no denominator and reports nothing rather than a share of the
+    // crate default — which is the defect F10 exists to remove, and a fixture that
+    // set the budgets afterwards would be asserting the old behaviour.
+    app.status.budgets = Budgets::in_force(&budgeted());
     app.event(
         &event(EventKind::Started {
             goal: "summarise the module".into(),
@@ -1716,8 +1736,15 @@ fn f10_a_fact_no_event_has_reported_reads_as_unknown_rather_than_as_a_default() 
         page.contains("nothing has been drawn against the tree yet"),
         "{page}",
     );
+    // **Half of this fact IS knowable before a turn, and 0.17.0 says the half it
+    // knows.** The share needs an assembly to have happened; the WINDOW is the
+    // contract's, so it is knowable at the idle prompt and is exactly what an
+    // operator checking `[run.context]` came to the page for. The old sentence
+    // said "not known until the context has been folded", which withheld a number
+    // this page was already holding — and named a fold, which is no longer the
+    // only thing that reports one.
     assert!(
-        page.contains("context: not known until the context has been folded"),
+        page.contains("context: nothing assembled yet — the window is"),
         "{page}",
     );
     assert!(page.contains("mcp: 0 of 2 configured connected"), "{page}");

@@ -290,7 +290,7 @@ async fn drive(
         notices.push(complaint);
     }
     // The caps the fleet needs, read once and cloned out of the settings. A
-    // session with none cannot fan out: `turn_contained_bounded_observed` is the only
+    // session with none cannot fan out: `turn_contained_bounded_steered` is the only
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
@@ -1279,11 +1279,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         let where_it_is = if contained {
                             settings::contained_notice(caps, app.theme.glyphs.dash)
                         } else {
-                            // **Not "steered".** Neither turn takes a `SteerInbox`
-                            // since 0.11.0 — the flat arm gave its up for a
-                            // contract and the contained arm never had one — so a
-                            // word promising mid-turn redirection describes
-                            // nothing this product does.
+                            // **Not "steered", and since 0.17.0 for the opposite
+                            // reason.** Both arms hold a `SteerInbox` now, so
+                            // steering is what this turn and a contained one have
+                            // in common — naming it here would offer as a
+                            // consolation something the other mode has too. The
+                            // one difference either way is the fan-out, so that
+                            // is the only thing this sentence names.
                             "not contained — this turn does the work itself and cannot fan out"
                                 .to_string()
                         };
@@ -1393,7 +1395,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 // **Committed upward, exactly as `/expand` and `Ctrl+T` are.**
-                // The viewport is four rows and cannot grow, so everything that
+                // The viewport is eight rows and cannot grow, so everything that
                 // shows more of something writes into the terminal's own
                 // scrollback — one answer to "show me more" rather than three.
                 //
@@ -1613,7 +1615,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // The caps reach the turn only while the session is in
                         // contained mode, so `/contain off` is a real switch and
                         // not a label: with `None` here the turn built below is
-                        // the steered turn, byte for byte.
+                        // the uncontained turn, byte for byte. Both arms are
+                        // steered, so that is not the word for the difference.
                         contained.then_some(containment.as_ref()).flatten(),
                         &capabilities,
                         planning,
@@ -1818,8 +1821,9 @@ async fn turn<P: Provider>(
 ) -> Result<bool, String> {
     let (observer, mut events) = bridge::channel();
     // The one way a turn is stopped from the interface, contained or not. Both
-    // arms take a contract now and neither takes a steer inbox, so `Flow::Cancel`
-    // out of `Bridge::event` is what `Ctrl+C` and `Esc` set.
+    // arms take a contract **and** a steer inbox since 0.17.0, and the stop key
+    // stayed here rather than moving onto `Steer::interrupt`: `Flow::Cancel` out
+    // of `Bridge::event` is what `Ctrl+C` and `Esc` set, on either arm.
     let canceller = observer.canceller();
     // The other seam, and the one that can stop the agent. `DenyAll` stood here
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
@@ -1880,8 +1884,7 @@ async fn turn<P: Provider>(
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
     app.contained = containment.is_some();
-    // Built before the future borrows it, and only for the arm that can take one:
-    // the flat turn is handed `text` itself, exactly as it always was.
+    // Built before the future borrows it, and for both arms alike.
     // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
     // arm was `turn_steered`, which builds `TaskContract::workspace` inside
     // io-harness and takes none from the caller — so its step cap was twelve,
@@ -1979,6 +1982,11 @@ async fn turn<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
+                // The live half of `ctx N%`. Anchored on a step rather than on
+                // every event, for the reason `commit_edits` above it is: the
+                // assembly is written once a step and reading it per event would
+                // be one store query per token.
+                app.status.note_context_from(store, &event);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
                 paint(screen, app)?;
@@ -2299,6 +2307,10 @@ async fn turn<P: Provider>(
         // and the last step of a turn is exactly the one that loses that race,
         // so the edit a reader most wants to see is the one that vanishes.
         commit_edits(app, store, &event, width);
+        // And on the drain, for the same race the two lines above it are here
+        // for: the last step of a turn is exactly the one whose event the select
+        // loop loses to the turn's own return.
+        app.status.note_context_from(store, &event);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
         // lose.
@@ -2416,7 +2428,7 @@ fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, widt
 
 /// Put the whole conversation back into the terminal's own scrollback.
 ///
-/// Upward and never into a pane. The viewport is four rows and cannot grow, and
+/// Upward and never into a pane. The viewport is eight rows and cannot grow, and
 /// there is no alternate screen in this product — so the place a reader reads
 /// something long is the terminal's own buffer, where its search, its selection
 /// and tmux copy-mode already work. A failure to read the store says so and

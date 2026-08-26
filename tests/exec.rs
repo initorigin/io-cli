@@ -251,9 +251,10 @@ impl Provider for Endless {
 
 #[tokio::test]
 async fn f3_a_step_ceiling_exits_three_rather_than_zero() {
-    // The budget arrives through `[run]`, which `Config::apply_to` applies — the
-    // section an interactive turn cannot use, because `turn_steered` builds its
-    // own contract. This is the first path in the product where it has an effect.
+    // The budget arrives through `[run]`, which `Config::apply_to` applies. This
+    // was the first path in the product where it had an effect; since 0.14.0 an
+    // interactive turn is built from the same call, so the section bounds a
+    // session too — see `tests/contract.rs`.
     let (_dir, store, mut session, config) = workspace("[run]\nmax_steps = 2\n");
 
     let result = exec::turn(
