@@ -8,7 +8,7 @@
 //! few lines at the bottom holding the composer and the status line, and it is
 //! the only region that repaints.
 //!
-//! Five properties are structural rather than conventional, and each has a test
+//! Six properties are structural rather than conventional, and each has a test
 //! that fails if it is lost:
 //!
 //! - **No alternate screen and no mouse capture.** There is no code path here
@@ -25,6 +25,18 @@
 //!   orderly exit, a [`Drop`], a panic — pops it again. `tests/keyboard.rs`
 //!   asserts the two balance in the byte stream, panic included: a protocol left
 //!   pushed outlives the process, and what inherits it is the user's shell.
+//! - **Nothing here asks the terminal a question without taking stdin first.**
+//!   Three operations put a query on the wire and read the answer back off
+//!   stdin: placing a viewport ([`Screen::attach_with`], and so
+//!   [`Screen::replace`] and [`Screen::rewind`]), recomputing one
+//!   ([`Screen::resize`], and [`Screen::draw`] on the frame where the size
+//!   moved), and — new in ratatui 0.30 — committing, because `insert_before`
+//!   ends by clearing the viewport and `Terminal::clear` now snapshots the
+//!   cursor to put it back. Each of them takes [`crate::stdin::placing`] itself,
+//!   so the keyboard reader stands aside for the answer; that lock is reentrant,
+//!   so a caller holding one around a larger operation stays correct. A site
+//!   that forgets is a session that dies two seconds later saying the cursor
+//!   position could not be read, which is what 0.18.0's first build did.
 //! - **A frame whose content did not change is not drawn.** Not drawn cheaply:
 //!   not drawn at all, no bytes. [`Screen::draw`] lays every frame out where
 //!   nothing can see it first, and only presents it if it differs from what the
@@ -120,8 +132,14 @@ pub struct Screen<B: Backend<Error = io::Error> + Write> {
     /// whatever it contains, because something outside `draw` — a commit, a
     /// resize — has since erased the viewport.
     last: Option<(Buffer, Option<Position>)>,
-    /// The terminal size the last frame was laid out against, kept only to
-    /// notice that it changed. See [`Screen::draw`].
+    /// The terminal size ratatui has recorded, mirrored here.
+    ///
+    /// Two things read it and both need it to be ratatui's record rather than
+    /// this renderer's own: a frame laid out against a size that has since moved
+    /// cannot be skipped, and — since 0.18.0 — a frame that will make ratatui
+    /// re-place the inline viewport has to take stdin first, because re-placing
+    /// it asks the terminal where its cursor is. `None` until the first frame.
+    /// See [`Screen::draw`] and [`Screen::resize`].
     size: Option<Size>,
     /// What the last frame drew, kept because ratatui's rendered buffer is not
     /// reachable once `draw` has returned. See [`Screen::viewport_text`].
@@ -170,10 +188,13 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     /// above is the terminal's and survives; what is replaced is the viewport and
     /// the buffers behind it.
     ///
-    /// A caller must park whatever is reading stdin first. Placing an inline
-    /// viewport asks the terminal where its cursor is and reads the answer off
-    /// stdin, so a reader still running would take the answer and this would hang
-    /// on a terminal that had in fact replied.
+    /// Placing an inline viewport asks the terminal where its cursor is and reads
+    /// the answer off stdin, so a reader still running would take the answer and
+    /// this would hang on a terminal that had in fact replied. The query itself
+    /// is taken under [`crate::stdin::placing`] by [`Screen::attach_with`]; a
+    /// caller that wants the whole operation — the erase, the re-attach and the
+    /// frame after it — to be one turn at the terminal holds a placement of its
+    /// own around this call, which nests.
     ///
     /// If the new height cannot be placed, the session's own is placed instead
     /// and the error returned: an operator who asked for a taller list and cannot
@@ -229,9 +250,10 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     /// above moved, so the viewport has to move, and re-placing it is the only
     /// way an inline viewport moves at all.
     ///
-    /// A caller must park whatever is reading stdin first, for the reason
-    /// [`Screen::replace`] documents: placing a viewport asks the terminal where
-    /// its cursor is and reads the answer off stdin.
+    /// The cursor query is taken under [`crate::stdin::placing`], for the reason
+    /// [`Screen::replace`] documents; a caller wanting the erase and the
+    /// re-placement to be one turn at the terminal holds a placement of its own
+    /// around this call, which nests.
     pub fn rewind(&mut self, rows: u16) -> io::Result<()> {
         let top = self.terminal.get_frame().area().y;
         let up = rows.min(top);
@@ -257,6 +279,12 @@ impl Screen<CrosstermBackend<io::Stdout>> {
     }
 
     fn attach_raw(height: u16) -> io::Result<Self> {
+        // Placing an inline viewport asks the terminal where its cursor is, and
+        // negotiating the keyboard protocol asks it what it speaks; both answers
+        // arrive on stdin. See the module docs — every site in this file that
+        // asks the terminal anything takes this itself, and a caller that already
+        // holds one gets a token rather than a second lock.
+        let _placing = crate::stdin::placing();
         let mut out = io::stdout();
         crossterm::execute!(out, crossterm::event::EnableBracketedPaste)?;
 
@@ -348,6 +376,12 @@ impl<B: Backend<Error = io::Error> + Write> Screen<B> {
             return Ok(());
         }
 
+        // **A commit asks the terminal where its cursor is, and that is new in
+        // ratatui 0.30.** `insert_before` ends by clearing the viewport off the
+        // screen, and `Terminal::clear` now snapshots the backend cursor so it
+        // can put it back afterwards — `ESC[6n`, answered on stdin, exactly like
+        // a placement. In 0.29 the same clear wrote only the escape.
+        let _placing = crate::stdin::placing();
         self.terminal
             .insert_before(height, |buf| paragraph.render(buf.area, buf))
     }
@@ -374,6 +408,9 @@ impl<B: Backend<Error = io::Error> + Write> Screen<B> {
         // Same reason as `commit`: `insert_before` ends by clearing the viewport,
         // so the next frame is a repaint of an erased region.
         self.last = None;
+        // And the same cursor query `Screen::commit` documents: `insert_before`
+        // clears the viewport at the end, and clearing it reads stdin.
+        let _placing = crate::stdin::placing();
         self.terminal.insert_before(rows, |buf| {
             for cell in &mut buf.content {
                 cell.set_symbol("");
@@ -440,10 +477,22 @@ impl<B: Backend<Error = io::Error> + Write> Screen<B> {
         // whether it fired, and a resize *clears* the viewport: the frame after
         // one can never be skipped, whatever it contains.
         let size = self.terminal.size()?;
-        if self.size.replace(size) != Some(size) {
+        let moved = self.size.replace(size) != Some(size);
+        if moved {
             self.last = None;
         }
-        self.terminal.autoresize()?;
+        {
+            // **Only the frame that can actually resize pays for the terminal.**
+            // `autoresize` re-places the inline viewport — which asks the
+            // terminal where its cursor is — exactly when the size it recorded
+            // has moved, and `self.size` is kept in step with that record by
+            // every path that changes it. So this is the frame where the query
+            // happens and the only one that costs a hand-over; the still screen
+            // that repaints on every keystroke and every token does not take the
+            // terminal away from the keyboard to do it.
+            let _placing = moved.then(crate::stdin::placing);
+            self.terminal.autoresize()?;
+        }
 
         // The probe's viewport is pinned to the real one rather than computed, so
         // `frame.area()` — which every widget lays out against — is the same
@@ -510,6 +559,16 @@ impl<B: Backend<Error = io::Error> + Write> Screen<B> {
         // Recomputing it clears it, so the next frame repaints an erased region
         // rather than a screen that already says what it is about to say.
         self.last = None;
+        // Recorded because this is what ratatui will now call the terminal's
+        // size, and `Screen::draw` decides whether `autoresize` can fire by
+        // comparing the two. Without this the record and ratatui's disagree
+        // after every resize, and a frame drawn against that disagreement
+        // queries the cursor with nothing standing aside for the answer.
+        self.size = Some(Size { width, height });
+        // Recomputing an inline viewport starts by asking the terminal where its
+        // cursor is — the original placement hazard, at the one site that has
+        // always had it.
+        let _placing = crate::stdin::placing();
         self.terminal.resize(Rect::new(0, 0, width, height))
     }
 

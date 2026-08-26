@@ -16,6 +16,10 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+
 use ratatui::layout::Position;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
@@ -166,6 +170,76 @@ fn a_commit_makes_the_next_identical_frame_a_real_repaint() {
     assert!(
         recorder.bytes().len() > after_commit,
         "the frame after a commit was skipped, which leaves the viewport erased",
+    );
+}
+
+/// Enough spinning that a commit which did not wait for the terminal has
+/// certainly finished.
+///
+/// A count rather than a duration, because N1 forbids the clock in every test
+/// here. A commit that does not wait is microseconds of buffer work; this is
+/// three or four orders of magnitude more than that, and it is only ever a
+/// margin — the assertion below can miss a regression on a badly descheduled
+/// machine but cannot fail on a correct one.
+const LONG_ENOUGH: u32 = 10_000_000;
+
+#[test]
+fn a_commit_takes_the_terminal_before_it_asks_the_terminal_anything() {
+    // **This is what 0.18.0's first build died of.** ratatui 0.30 ends
+    // `insert_before` by clearing the viewport, and `Terminal::clear` now
+    // snapshots the backend cursor first so it can put it back — `ESC[6n`, whose
+    // answer arrives on stdin. In 0.29 that same clear wrote only the escape. So
+    // committing became a question put to the terminal, and the keyboard reader
+    // was still holding stdin when it was asked: the splash was drawn, two
+    // seconds passed, and the session gave up saying the cursor position could
+    // not be read.
+    //
+    // Asserted as a decision rather than a duration: a placement is held on
+    // another thread, and the commit must not have finished before that
+    // placement let go.
+    let holding = Arc::new(AtomicBool::new(false));
+    let committing = Arc::new(AtomicBool::new(false));
+    let released = Arc::new(AtomicBool::new(false));
+
+    let holder = {
+        let (held, started, freed) = (
+            Arc::clone(&holding),
+            Arc::clone(&committing),
+            Arc::clone(&released),
+        );
+        thread::spawn(move || {
+            let placement = io_cli::stdin::placing();
+            held.store(true, Ordering::SeqCst);
+            while !started.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            for _ in 0..LONG_ENOUGH {
+                std::hint::spin_loop();
+            }
+            freed.store(true, Ordering::SeqCst);
+            drop(placement);
+        })
+    };
+    while !holding.load(Ordering::SeqCst) {
+        std::hint::spin_loop();
+    }
+
+    // Built after the placement is held, and it must be: `from_terminal` wraps a
+    // terminal that already exists, so nothing here asks the terminal anything
+    // until the commit does.
+    let (mut screen, _recorder) = support::screen(80, 24);
+    committing.store(true, Ordering::SeqCst);
+    screen
+        .commit(&[Line::from("a finished reply")])
+        .expect("commit");
+    let waited = released.load(Ordering::SeqCst);
+
+    holder.join().expect("the placement thread does not panic");
+    assert!(
+        waited,
+        "a commit ran while another thread held the terminal — `insert_before` \
+         asks the terminal where its cursor is, so the keyboard reader is free \
+         to take the answer and the session dies two seconds later",
     );
 }
 
