@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
