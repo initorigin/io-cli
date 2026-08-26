@@ -59,6 +59,9 @@ fn the_commands_are_the_commands() {
             // files, and which one is half of every decision made here.
             "/remember",
             "/memory",
+            // 0.19.0 — the other half of `/memory`'s question: that one is what io
+            // was told, this one is what it was taught.
+            "/skills",
             "/mcp",
             "/provider",
             "/profile",
@@ -611,8 +614,10 @@ fn the_memory_commands_are_configure_commands_with_working_palette_rows() {
             COMMANDS.iter().any(|(command, _)| *command == name),
             "{name} is not in the inventory, so nobody is told it exists",
         );
-        // Configure, and not Inspect: both of these write, and Inspect already
-        // holds ten, which is the bound `f13_no_group_is_longer_than_ten` asserts.
+        // Configure, and not Inspect: both of these write. That was already the
+        // reason in 0.18.0, when Inspect was also full; it is the whole reason
+        // now, because 0.19.0 moved `/mcp` and `/provider` out on the same
+        // argument and left room behind them.
         assert_eq!(
             group_of(name),
             Some(Group::Configure),
@@ -631,6 +636,72 @@ fn the_memory_commands_are_configure_commands_with_working_palette_rows() {
             "{name}'s row is advertised and inert",
         );
     }
+}
+
+// --- 0.19.0: `/skills`, and the two commands that stopped being inspections ----
+
+/// `/mcp` and `/provider` are `Configure` commands, and `/skills` is the
+/// `Inspect` command that took their place.
+///
+/// Two claims, and the first is the one with a decision behind it. Both of those
+/// commands add, edit, disable and remove entries in the configuration file, so
+/// filing them under a group whose documentation says "none of it changes what a
+/// turn does" was a sentence the surface did not keep. The move is asserted by
+/// name rather than by counting, because the count is the *consequence* — a later
+/// release that grew `Inspect` back to ten must not be able to quietly file a
+/// writer under it again to balance the tables.
+///
+/// The sabotage arm for the second claim is listing `/skills` without wiring its
+/// row: `palette_pick` is what the driver resolves a chosen row through, so a row
+/// that comes back as anything but the command whole is advertised and inert.
+#[test]
+fn the_writers_are_configure_commands_and_skills_is_the_inspection() {
+    use io_cli::commands::{group_of, palette, palette_pick, Chosen, Group, GROUPS};
+    use io_harness::{Skills, Templates};
+
+    for name in ["/mcp", "/provider"] {
+        assert_eq!(
+            group_of(name),
+            Some(Group::Configure),
+            "{name} adds, edits, disables and removes entries in the file the \
+             operator keeps, so it belongs with the group that writes",
+        );
+    }
+
+    assert!(
+        COMMANDS.iter().any(|(command, _)| *command == "/skills"),
+        "a surface nobody is told about is a surface nobody uses",
+    );
+    assert_eq!(
+        group_of("/skills"),
+        Some(Group::Inspect),
+        "`/skills` opens a list and writes nothing, which is what Inspect means",
+    );
+
+    // The room the move made is real, not an accounting trick: Inspect is under
+    // the bound with a command to spare. `f13_no_group_is_longer_than_ten` is
+    // still the gate; this only says the release did not spend every seat it
+    // freed.
+    let inspect = GROUPS
+        .iter()
+        .find(|(group, _)| *group == Group::Inspect)
+        .map(|(_, names)| names.len())
+        .expect("Inspect is a group with commands in it");
+    assert!(
+        inspect < 10,
+        "Inspect holds {inspect}; the point of the move was to leave room",
+    );
+
+    let rows = palette(&Templates::none(), &Skills::none());
+    let index = rows
+        .iter()
+        .position(|row| row.label == "skills")
+        .expect("`/skills` has no palette row");
+    assert_eq!(
+        palette_pick(&Templates::none(), &Skills::none(), index),
+        Some(Chosen::Command("/skills")),
+        "`/skills`'s row is advertised and inert",
+    );
 }
 
 /// `Forgotten::Refused` is reported as a refusal that names why, never as a

@@ -175,6 +175,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/memory",
         "what io remembers: the instruction files, and the agent's own notes",
     ),
+    // Beside `/memory` because the two answer the halves of one question: that
+    // one says what io was *told*, this one says what it was *taught*. A skill is
+    // the only thing in either list io-cli did not write and does not parse — the
+    // rows come from io-harness's own discovery — so an operator who cannot see
+    // which ones are on, and out of which file, has no way to account for a turn
+    // that read one.
+    (
+        "/skills",
+        "every skill, shipped or yours: what it is for, whether it is on, and its file",
+    ),
     (
         "/mcp",
         "the MCP servers configured, and what this session has seen of each",
@@ -207,11 +217,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
 ///
 /// **Grouped by the operator's intent rather than by which part of the harness
 /// answers**, because the second is an implementation detail and the first is
-/// the only thing somebody scanning a list of twenty-five is holding in their
+/// the only thing somebody scanning a list of twenty-six is holding in their
 /// head.
 ///
 /// Four groups and none longer than ten, which is the bound `tests/commands.rs`
-/// asserts. A flat list of twenty-five is a list nobody reads; 0.16.0 is the
+/// asserts. A flat list of twenty-six is a list nobody reads; 0.16.0 is the
 /// release that grouped them, at twenty, and every release since has added to a
 /// group rather than to a list. **The count in this paragraph is the one number
 /// here that goes stale on its own** — it said twenty through 0.17.0, which had
@@ -226,6 +236,13 @@ pub enum Group {
     /// opens a list; none of it changes what a turn does.
     Inspect,
     /// Change the configuration file.
+    ///
+    /// **A surface that lists the file before it writes to it is still here**, and
+    /// `/mcp` and `/provider` are the two — they were under `Inspect` through
+    /// 0.18.0 on the strength of their first screen. Both add, edit, disable and
+    /// remove entries, so an operator who opened one to look is one keystroke from
+    /// changing what the next turn talks to; that is the sentence `Inspect`
+    /// promises it will never say.
     Configure,
 }
 
@@ -282,16 +299,32 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/context",
             "/expand",
             "/fleet",
-            "/mcp",
-            "/provider",
+            "/skills",
             "/image",
             "/copy",
             "/copy diff",
         ],
     ),
+    // **`/mcp` and `/provider` moved here in 0.19.0, and it is a correction rather
+    // than a way of making room.** Both were grouped by the screen they open, and
+    // both go on from that screen to add, edit, disable and remove entries in the
+    // configuration file — which is what this group means and what `Inspect`
+    // promises it does not do. It takes `Inspect` to eight and `/skills` puts it
+    // back to nine, and the order of those two sentences is worth keeping: the
+    // room was made by filing two commands where they belong, not by filing one
+    // where there was space. A reader who finds `/mcp` under "configure" should be
+    // able to work out why from the panel it opens, without knowing what the
+    // release before it looked like.
     (
         Group::Configure,
-        &["/config", "/theme", "/remember", "/memory"],
+        &[
+            "/config",
+            "/theme",
+            "/remember",
+            "/memory",
+            "/mcp",
+            "/provider",
+        ],
     ),
 ];
 
