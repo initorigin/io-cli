@@ -211,9 +211,21 @@ fn the_user_path_is_written_literally_and_not_as_a_substitution() {
         "a substitution in this list is a hard parse error wherever the variable \
          is unset, which takes the whole session down rather than one file:\n{text}",
     );
+    // **A quoted entry that opens with a tilde, not a tilde anywhere in the
+    // file.** The first spelling of this assertion was `!text.contains('~')` and
+    // it was red on Windows only: a temporary directory there is handed back in
+    // 8.3 short form, so the path this crate wrote correctly and literally was
+    // `C:\Users\RUNNER~1\AppData\Local\Temp\…`. The tilde was the operating
+    // system's, in a path that resolves, and the test called it a shorthand.
+    //
+    // What the criterion is about is io-cli writing a `~` **as a stand-in for a
+    // home directory it declined to resolve** — and that can only ever appear at
+    // the start of an entry. Every entry in the array is a quoted string, so
+    // `"~` is exactly that and nothing else.
     assert!(
-        !text.contains('~'),
-        "io-harness expands no `~`, so this would name a directory called `~`:\n{text}",
+        !text.contains("\"~"),
+        "io-harness expands no `~`, so an entry beginning with one would name a \
+         directory literally called `~`:\n{text}",
     );
 }
 
