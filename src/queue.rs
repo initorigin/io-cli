@@ -414,11 +414,22 @@ pub fn rows_for(
             )
         })
         .collect();
-    let hidden = waiting.len() - shown;
-    if hidden > 0 {
+    // **What is BELOW the window, not what is outside it.** The row sits under
+    // the last one drawn, so a count of everything unshown reads as a count of
+    // what follows — and once the mark has scrolled the window down, most of what
+    // is unshown is above. Nine queued, four rows, marked on the eighth: the rows
+    // read `6.` `7.` `8.` and the old count said six more, of which five were
+    // behind the operator. It was right on the first draw, when nothing is marked
+    // and the window starts at the top, and wrong from the first arrow — which is
+    // the shape this release has been hunting.
+    //
+    // What is above needs no row of its own: the numbers are absolute, so a
+    // window opening at `6.` says so by saying `6.`.
+    let below = waiting.len() - (first + shown);
+    if below > 0 {
         out.push(fit(
             &format!(
-                "{}{} {hidden} more",
+                "{}{} {below} more",
                 if selected.is_some() { "  " } else { "" },
                 glyphs.elision
             ),

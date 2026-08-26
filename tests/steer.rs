@@ -181,8 +181,12 @@ fn f5_the_queue_is_sent_on_the_operators_word_and_not_before() {
 
     // And that one site reads the queue rather than a line of its own: F5 is
     // about a *queued* line reaching the running turn.
+    // The FIRST WORD, not the whole trimmed line. `/steer do the thing` used to
+    // miss this guard and fall to the mid-turn refusal below it, which told the
+    // operator to interrupt the turn first — the opposite of what the command
+    // does.
     let arm = text
-        .split_once("line.trim() == \"steer\"")
+        .split_once("line.split_whitespace().next() == Some(\"steer\")")
         .expect("the driver answers /steer while a turn is running")
         .1;
     let arm = arm

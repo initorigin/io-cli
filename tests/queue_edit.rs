@@ -417,7 +417,13 @@ fn the_rows_scroll_to_keep_the_marked_line_on_screen() {
         "the numbers are the run order, not the row: a window that renumbered \
          itself from one would say the marked line runs first. {deep:#?}",
     );
-    assert!(deep[3].contains("6 more"), "{deep:#?}");
+    // **One, not six, and this assertion is the defect it was written over.** The
+    // row sits UNDER the window, so it counts what is under it; with the window
+    // scrolled to 6, 7, 8 only line 9 is below, and the five that are above are
+    // announced by the numbering starting at `6.` rather than by a count below
+    // them. The first draft said six — everything unshown — which was right only
+    // while nothing was marked and the window began at the top.
+    assert!(deep[3].contains("1 more"), "{deep:#?}");
 
     // The window never runs past the end.
     let last = queue::rows_for(&waiting, Some(8), 40, 4, &UNICODE);

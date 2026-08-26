@@ -425,3 +425,68 @@ fn notice(app: &App) -> String {
         .map(|(_, text)| text.clone())
         .unwrap_or_default()
 }
+
+/// A `/steer` that emptied the queue into a turn nothing read gives the lines
+/// back.
+///
+/// **The second-use shape, and the review found it behind a green suite.**
+/// `/steer` REMOVES each line from the queue to send it, and the send cannot fail
+/// while the inbox is alive — so a turn that reaches its last step before the next
+/// boundary consumes the queue, delivers nothing, and used to leave the operator
+/// with the work in a sentence. In the release whose headline is that a mid-turn
+/// prompt is no longer destroyed.
+#[test]
+fn a_steer_that_was_never_delivered_goes_back_to_the_front_of_the_queue() {
+    let mut app = App::new(DARK, "a-model");
+    start_turn(&mut app, "do the work");
+    app.queue_prompt("first");
+    app.queue_prompt("second");
+
+    // What `/steer` does: takes them out, one at a time, to hand over.
+    let sent: Vec<String> = std::iter::from_fn(|| app.next_queued_prompt()).collect();
+    assert_eq!(sent, ["first", "second"]);
+    assert!(
+        app.queued_prompts().is_empty(),
+        "the queue was spent sending"
+    );
+
+    // A line queued behind them while the turn was still going.
+    app.queue_prompt("third");
+
+    // The turn ends having read none of them.
+    let waiting = app.requeue_prompts(sent);
+    assert_eq!(waiting, 3);
+    assert_eq!(
+        app.queued_prompts(),
+        ["first", "second", "third"],
+        "the undelivered lines go back AHEAD of what was queued after them — \
+         putting them behind would silently reorder the operator's work",
+    );
+    assert_eq!(
+        app.status.queued_prompts, 3,
+        "and the status line counts them again",
+    );
+}
+
+/// The same lines, on a turn the operator stopped, are not put back.
+///
+/// The driver decides this — a stopped turn drops the queue for the same reason it
+/// drops the rest of it: one press of the stop key must not start another turn.
+/// What this pins is that the two paths are different, so a later release cannot
+/// collapse them into one.
+#[test]
+fn a_stopped_turn_drops_what_it_never_delivered() {
+    let mut app = App::new(DARK, "a-model");
+    start_turn(&mut app, "do the work");
+    app.queue_prompt("first");
+    let sent: Vec<String> = std::iter::from_fn(|| app.next_queued_prompt()).collect();
+    assert_eq!(sent.len(), 1);
+
+    assert_eq!(
+        app.forget_queued_prompts(),
+        0,
+        "the queue is already empty — the stop path drops by NOT putting back",
+    );
+    assert!(app.queued_prompts().is_empty());
+    assert_eq!(app.status.queued_prompts, 0);
+}

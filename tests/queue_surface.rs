@@ -549,3 +549,87 @@ fn a_multi_line_prompt_is_drawn_as_one_row() {
         "{rows:#?}"
     );
 }
+
+/// The `… N more` row counts what is BELOW the window, not what is outside it.
+///
+/// **Right on the first draw and wrong from the first arrow**, which is why the
+/// review found it and the suite did not. The row sits under the last line drawn,
+/// so a count of everything unshown reads as a count of what follows — and once
+/// the mark has scrolled the window down, most of what is unshown is above it.
+/// What is above needs no row: the numbers are absolute, so a window opening at
+/// `6.` says so by saying `6.`.
+#[test]
+fn the_count_under_the_window_is_what_is_under_the_window() {
+    let waiting: Vec<String> = (1..=9).map(|n| format!("line {n}")).collect();
+
+    // Nothing marked: the window is at the top and everything unshown IS below.
+    let top = queue::rows_for(&waiting, None, 80, 4, &UNICODE);
+    assert!(
+        top.last().expect("a row").contains("6 more"),
+        "three drawn of nine leaves six below: {top:#?}",
+    );
+
+    // Marked on the eighth: the window has scrolled to 6, 7, 8 — and only line 9
+    // is below it. The old arithmetic said six, five of which were behind.
+    let scrolled = queue::rows_for(&waiting, Some(7), 80, 4, &UNICODE);
+    assert!(
+        scrolled[0].contains("6. line 6"),
+        "the window follows the mark: {scrolled:#?}",
+    );
+    assert!(
+        scrolled.last().expect("a row").contains("1 more"),
+        "one line is below the window, not six: {scrolled:#?}",
+    );
+
+    // And at the very bottom there is nothing below, so there is no row at all.
+    let bottom = queue::rows_for(&waiting, Some(8), 80, 4, &UNICODE);
+    assert!(
+        !bottom.iter().any(|row| row.contains("more")),
+        "a count of zero is a row that says nothing: {bottom:#?}",
+    );
+}
+
+/// The queue does not take the blank row when the fleet view is drawn in its place.
+///
+/// The fleet is rendered INSTEAD of the queue, in the composer's own rect. Without
+/// this the blank was released for a surface that then did not draw: the row
+/// bought nothing and the fleet quietly grew by one.
+#[test]
+fn a_queue_behind_an_open_fleet_view_takes_no_row_from_the_layout() {
+    let mut app = with_queue(2);
+    let queued = rows_at(&app, TALL);
+
+    app.toggle_fleet();
+    let fleeted = rows_at(&app, TALL);
+    assert_eq!(
+        queued.len(),
+        fleeted.len(),
+        "the frame is the frame either way",
+    );
+    assert!(
+        !fleeted.iter().any(|row| row.contains("queued prompt 0")),
+        "the fleet is drawn in the queue's place, so the queue is not drawn: {fleeted:#?}",
+    );
+}
+
+/// And it does not answer the keyboard from behind the fleet either.
+///
+/// `Enter` at an empty prompt used to reach `Cursor::take` with the fleet open —
+/// a line leaving the queue into a composer the fleet was covering, under a footer
+/// saying it was being edited. A surface acting while invisible.
+#[test]
+fn a_queue_behind_an_open_fleet_view_answers_no_key() {
+    let mut app = with_queue(2);
+    app.toggle_fleet();
+
+    app.key(key(KeyCode::Enter));
+    assert_eq!(
+        app.queued_prompts().len(),
+        2,
+        "no line was taken out of the queue by a surface nobody can see",
+    );
+    assert!(
+        app.composer.is_empty(),
+        "and nothing was put in the composer the fleet is covering",
+    );
+}

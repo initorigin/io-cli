@@ -1514,6 +1514,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // same sentence.
                 Action::Clear => {
                     if app.clear_conversation() {
+                        // **The window belonged to the conversation being
+                        // discarded.** `Seen::forget`'s own doc names `/clear`
+                        // first of the three sites that must call it, and this was
+                        // the one that did not — `/resume`, `/fork` and the rewind
+                        // all do, beside their `forget_run`. Without it `/context`
+                        // draws the whole of a conversation the operator has just
+                        // thrown away, on a session with no turns in it, while the
+                        // `ctx` field beside it is blank because `forget_run` did
+                        // clear that. Two surfaces disagreeing about the same
+                        // fact, which is what this release exists to stop.
+                        seen.forget();
                         let root = session.root().to_path_buf();
                         match Session::open(&store, &root) {
                             Ok(fresh) => {
@@ -2144,7 +2155,12 @@ async fn turn<P: Provider>(
                             // folds nothing, and the request is spent under all
                             // four, so the only thing that may say a fold happened
                             // is `EventKind::Compacted`.
-                            Command::Slash(ref line) if line.trim() == "compact" => {
+                            // The first word, so `/compact …` reaches the arm that answers it
+                            // rather than the mid-turn refusal below, which
+                            // would tell the operator to interrupt the turn
+                            // first — the opposite of what this command does.
+                            Command::Slash(ref line)
+                                if line.split_whitespace().next() == Some("compact") => {
                                 let dash = app.theme.glyphs.dash;
                                 let said = io_cli::compact::Said::asked(contract.compaction, true);
                                 if said == io_cli::compact::Said::Sent {
@@ -2164,7 +2180,12 @@ async fn turn<P: Provider>(
                                     app.say(Tone::Muted, said.line(dash));
                                 }
                             }
-                            Command::Slash(ref line) if line.trim() == "steer" => {
+                            // The first word, so `/steer …` reaches the arm that answers it
+                            // rather than the mid-turn refusal below, which
+                            // would tell the operator to interrupt the turn
+                            // first — the opposite of what this command does.
+                            Command::Slash(ref line)
+                                if line.split_whitespace().next() == Some("steer") => {
                                 let dash = app.theme.glyphs.dash;
                                 let mut sent = 0usize;
                                 // The summary below is skipped when this is set,
@@ -2341,14 +2362,52 @@ async fn turn<P: Provider>(
     // is about a run that has already ended — a footer notice would be gone at
     // the next keystroke, and it would fight with `stopped` below.
     //
-    // Not re-queued. A turn that ended because the operator stopped it must not
-    // start another one, and a turn that ended on its own has a composer waiting
-    // with nothing in the way.
-    for lost in inbox.pending().messages {
+    // **And put back, unless the operator stopped the turn.** `/steer` REMOVES
+    // each line from the queue to send it, and the send cannot fail while the
+    // inbox is alive — so a turn that reaches its last step before the next
+    // boundary consumed the queue, delivered nothing, and left the operator with
+    // three prompts' worth of work in a sentence. In the release whose whole
+    // headline is that a mid-turn prompt is no longer destroyed.
+    //
+    // The window is not narrow either: `/steer` is typed exactly when the agent
+    // looks close to done, which is exactly when there is no boundary left.
+    //
+    // So they go back to the FRONT of the queue, in order, and the driver's drain
+    // runs them as the next turns — which is what the queue promised in the first
+    // place. A turn the operator STOPPED keeps the old behaviour and drops them,
+    // because one press of the stop key must not start another turn; the earlier
+    // comment claimed a composer was waiting to catch them, and nothing ever put
+    // them in it.
+    let lost = inbox.pending().messages;
+    for line in &lost {
         app.record(
             Tone::Muted,
-            format!("[mid-turn, not delivered] {}", lost.trim()),
+            format!("[mid-turn, not delivered] {}", line.trim()),
         );
+    }
+    if !lost.is_empty() {
+        if stopped {
+            app.record(
+                Tone::Muted,
+                format!(
+                    "{} went with the turn you stopped",
+                    if lost.len() == 1 {
+                        "it".to_string()
+                    } else {
+                        format!("all {} of them", lost.len())
+                    }
+                ),
+            );
+        } else {
+            let waiting = app.requeue_prompts(lost);
+            app.record(
+                Tone::Muted,
+                format!(
+                    "back in the queue {} {waiting} waiting",
+                    app.theme.glyphs.dash
+                ),
+            );
+        }
     }
 
     // **The fold that was asked for and never announced.** A conversation shorter
@@ -2425,8 +2484,18 @@ fn note_context(
     contract: &io_harness::TaskContract,
 ) {
     if let Some(request) = seen.latest() {
+        // **What is LEFT of the run budget, not all of it.** io-harness assembles
+        // against the unspent remainder — a run low on budget gets a smaller
+        // window, down to the floor — and `context::window`'s own doc says so.
+        // Passing the flat maximum reports a window the turn can no longer afford
+        // and a share several times too small, which under-reports pressure
+        // exactly when there is pressure. Only moves when `[run] max_tokens` is
+        // set; with none, the harness's own expression is flat too.
+        let remaining = contract
+            .max_tokens
+            .map(|cap| cap.saturating_sub(app.status.run_tokens.unwrap_or(0)));
         app.status
-            .note_context_request(&request, contract, contract.max_tokens);
+            .note_context_request(&request, contract, remaining);
     } else {
         app.status.note_context_from(store, event);
     }

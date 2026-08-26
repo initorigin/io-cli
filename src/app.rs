@@ -743,6 +743,21 @@ impl App {
         self.queue_open && self.mode == Mode::Running && !self.prompts.is_empty()
     }
 
+    /// Whether the queue will actually be drawn on the next frame.
+    ///
+    /// **Open is not drawn, and the difference is one row.** The fleet view is
+    /// rendered in this surface's place, in the composer's own rect, so a queue
+    /// that is open behind it draws nothing — and the layout must not release the
+    /// blank row above the activity line for a surface that will not use it. The
+    /// row bought nothing and the fleet quietly grew by one.
+    ///
+    /// A named predicate rather than the expression inline, because the two
+    /// readings clippy offers for that expression are each shorter and neither
+    /// says which surface wins.
+    pub fn queue_drawn(&self) -> bool {
+        self.queue_open() && !self.fleet_open
+    }
+
     /// Drop everything still waiting, and report how much was dropped.
     ///
     /// An operator stopping a turn is stopping the session, not just the step in
@@ -752,6 +767,27 @@ impl App {
     pub fn forget_queued_prompts(&mut self) -> usize {
         self.status.queued_prompts = 0;
         std::mem::take(&mut self.prompts).len()
+    }
+
+    /// Put lines back at the FRONT of the queue, in order, and say how many wait.
+    ///
+    /// **For a `/steer` that emptied the queue into a turn nothing read.** The
+    /// send takes each line out to hand it over, and a turn that ends before its
+    /// next step boundary hands nothing over — so without this the lines are gone,
+    /// in the release whose promise is that a mid-turn prompt is not destroyed.
+    ///
+    /// The front rather than the back, because they were ahead of whatever was
+    /// queued after them and putting them behind it would silently reorder the
+    /// operator's work. The driver calls this only for a turn that ended on its
+    /// own; one the operator stopped drops them, for the same reason a stopped
+    /// turn drops the rest of the queue.
+    pub fn requeue_prompts(&mut self, lines: Vec<String>) -> usize {
+        for (at, line) in lines.into_iter().enumerate() {
+            self.prompts.insert(at, line);
+        }
+        self.status.queued_prompts = self.prompts.len();
+        self.queue_open = true;
+        self.prompts.len()
     }
 
     /// Remember an attached image and return the number its marker carries.
@@ -1343,7 +1379,12 @@ impl App {
                     self.fleet.move_by(1);
                     return Command::None;
                 }
-                KeyCode::Esc if self.armed.is_none() => {
+                // `armed` and not `self.armed`: this function took the arming out
+                // a few lines above, so the field is always `None` here and the
+                // guard was always true. Pre-existing, and found while writing the
+                // queue's version of the same guard — which gets it right, and
+                // whose comment describes the trap this one was in.
+                KeyCode::Esc if armed.is_none() => {
                     self.fleet_open = false;
                     return Command::None;
                 }
@@ -1384,7 +1425,11 @@ impl App {
         // function emptied a few lines above: `Esc` can be the second key of a
         // rebound chord, and a surface that stole it would be answering a sequence
         // the operator was half way through.
-        if self.queue_open() || self.queue.editing().is_some() {
+        // Not while the fleet view is up: it is drawn in this surface's place and
+        // takes the arrows above, so a queue acting here would be a surface acting
+        // while invisible — `Enter` at an empty prompt would take a line out of the
+        // queue into a composer the fleet is covering.
+        if !self.fleet_open && (self.queue_open() || self.queue.editing().is_some()) {
             let dash = self.theme.glyphs.dash;
             match key.code {
                 KeyCode::Up | KeyCode::Down
@@ -1722,7 +1767,11 @@ impl App {
         // third answer: it carries nothing by its own argument above, the queue
         // carries something, and the frame is the same height either way — which
         // is what N2 is really about. It comes back the moment the queue closes.
-        let air_rows = u16::from(area.height >= 8 && !self.queue_open());
+        // `&& !fleet_open` because the fleet view is drawn INSTEAD of the queue,
+        // in the composer's own rect. Without that clause, queueing a line behind
+        // an open fleet view took the blank row for a surface that then did not
+        // draw — the row bought nothing and the fleet quietly grew by one.
+        let air_rows = u16::from(area.height >= 8 && !self.queue_drawn());
         // **A rule over the composer, matching the one under it.** The footer has
         // opened with one since 0.1.0, and the prompt had a boundary on one side
         // only — so the composer read as part of whatever the turn had last

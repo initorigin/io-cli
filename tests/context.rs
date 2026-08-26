@@ -536,3 +536,56 @@ fn f10_the_status_share_is_the_page_total_over_the_page_window() {
         "a fixture where both read zero would pass this test and prove nothing",
     );
 }
+
+/// The window is forgotten with the conversation it described.
+///
+/// **The review found `/clear` was the one site that did not call this**, and
+/// `Seen::forget`'s own doc names `/clear` first of the three. The consequence is
+/// the release's own headline failure wearing different clothes: `/context` draws
+/// a whole conversation the operator has just discarded, on a session with no
+/// turns in it, while the `ctx` field beside it is blank because `forget_run` did
+/// clear that — two surfaces disagreeing about the same fact.
+///
+/// A source gate, because the sites are in the driver and nothing under tests/
+/// links the binary.
+#[test]
+fn every_site_that_forgets_a_run_forgets_the_window_with_it() {
+    let driver = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("the driver");
+
+    // FOUR sites, and the count is stated rather than derived because the fourth
+    // is why this test exists. Three drop the run's facts here in the driver —
+    // `/resume`, `/fork`, the rewind — and `/clear` drops them one layer down in
+    // `App::clear_conversation`, which is exactly how its missing `seen.forget()`
+    // hid: a reader comparing the two counts in this file would have found them
+    // equal at three and concluded all was well.
+    let forgets_run = driver.matches("forget_run()").count();
+    let forgets_window = driver.matches("seen.forget()").count();
+    assert_eq!(
+        forgets_run, 3,
+        "three sites drop a run's facts in the driver; the fourth is `/clear`, \
+         which does it through `App::clear_conversation`",
+    );
+    assert_eq!(
+        forgets_window, 4,
+        "the window belongs to the conversation, so every one of the four drops \
+         it — a site that keeps it draws a whole page for a conversation the \
+         operator has just discarded, beside a `ctx` field that is blank because \
+         `forget_run` did clear that",
+    );
+
+    // And the fourth by name, since it is the one that was missing and a count
+    // alone would be satisfied by any four.
+    let clear = driver
+        .split("Action::Clear => {")
+        .nth(1)
+        .expect("the clear arm");
+    let clear = &clear[..clear.find("Action::").unwrap_or(clear.len())];
+    assert!(
+        clear.contains("seen.forget()"),
+        "`/clear` is the site `Seen::forget`'s own doc names first, and was the \
+         one that did not call it",
+    );
+}
