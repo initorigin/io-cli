@@ -6,6 +6,99 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-26
+
+Say something while it works, and have it land.
+
+**A prompt typed during a turn is kept.** Until now it was destroyed: the
+composer took the keystrokes and drew them, and the `Enter` that followed reached
+a branch that discarded the text while the composer that held it had already
+cleared. The keystroke looked accepted and the prompt was gone. It now joins a
+queue in the order it was typed, drawn above the composer, and fires when the
+turn ends — one prompt per turn, each its own exchange in the scrollback and each
+interruptible. A turn you stop drops what was waiting, because one press of the
+stop key should not start the next three turns.
+
+**The queue is on screen, and it cost the session no height.** The waiting lines
+are drawn above the prompt, the arrows mark one, the shifted arrows move it, and
+`Enter` on an empty prompt takes it back into the composer to edit. The rows come
+out of the blank row that has sat above the activity line since 0.13.0 — it is
+lent to the queue while the queue is open and taken back the moment it closes. The
+viewport is the eight rows it always was, the composer keeps every row it has, and
+the alternative — a frame that grew by one row per line typed — would have walked
+the conversation off the top of the screen exactly when it was worth reading.
+
+**`/steer` sends what is queued into the turn that is still running.**
+io-harness delivers it at the next step boundary, so the step in flight completes
+whole and the agent reads the correction before it chooses what to do next. That
+is the difference between redirecting an agent and killing it. It is a word you
+type rather than something a queued line does by itself, and that is deliberate: a
+delivered steer emits no event this interface can draw, so a line that went on its
+own would leave the screen with no echo at all. It is not instant and the
+interface says so — a tool call in flight is not a safe place to change the
+conversation out from under.
+
+**A contained turn can be steered now, and that is the last thing containment
+decided.** Through io-harness 0.66 no session entry point took a caller's
+containment and a steer inbox on one call, so `[app.io-cli.containment]` bought a
+fan-out and charged a mid-turn correction for it. 0.67.0 opened
+`turn_bounded_steered` and `turn_contained_bounded_steered` — the same two calls
+with an inbox appended — and io-cli takes both. `/contain` decides fan-out and
+nothing else.
+
+**`Ctrl+C` means exactly what it meant, and this release is where it was decided
+not to move it.** Both arms now hold a `SteerInbox`, so `Steer::interrupt` would
+reach the same `RunOutcome::Cancelled` at the same step boundary — and the stop
+key stays on the observer's cancellation flag, where it has been since 0.1.0. The
+two paths are recorded by different code in io-harness, an operator cannot tell
+them apart from the screen, and this is the one key no configuration file may
+rebind. It still pre-empts an approval, an intent question and a plan gate, and it
+is still refused as a rebindable chord.
+
+**`/context` says what is actually in the model's window.** The system block, the
+tool catalogue, the repository's instructions, each MCP server's tools, the
+recalled memory and the conversation — each with the tokens it costs, summing to
+a total against the window your configuration declares. It is read off the
+request that carried the turn rather than estimated beside it, which is why the
+catalogue includes tools io-cli never registered: it is the catalogue the model
+was handed.
+
+**`/compact` folds the conversation when you know a long thread is finished**,
+rather than when a threshold notices. It has two real triggers rather than one
+word with two meanings: typed at an idle prompt it arms the next turn to fold at
+its first step, and typed while a turn is running it goes down the same channel
+`/steer` does, as `Steer::fold`, and lands at the next step boundary. It reports
+what folded, not what was asked for — a request over a conversation shorter than
+the fold's own floor does nothing, and with compaction turned off it does nothing,
+and in both cases the line says so instead of claiming a fold.
+
+**`/mcp` says how many tools a server offered**, beside how many have been asked
+for. Two different questions, two different numbers. A server that offered
+nothing says zero; a server whose events never carried the count says nothing,
+because reading a missing count as zero would report a server offering no tools
+while you watched it use them. This closes the deferral 0.16.0 recorded.
+
+**`ctx N%` is true for the first time if you configured your own window.** Its
+denominator was the crate default, so it was wrong for anyone who set `[context]`
+or `[run] max_tokens`, and it was blank until the first fold — the whole period
+in which the number was worth having.
+
+**`/status` says "answering N calls" where it said "offering N tools".** That
+number has counted calls since 0.10.0; it was the one site 0.16.0's rename
+missed.
+
+**io-harness 0.67 → 0.69.** 0.67.0 is what made this release possible:
+`Session::turn_bounded_steered` and `Session::turn_contained_bounded_steered` take
+a caller's `TaskContract`, an observer **and** a `SteerInbox` on one call, so
+neither arm has to give one up to get the other. The inbox is a parameter of the
+drive call rather than a field of the contract, which is why `contract.rs` needed
+no change at all. Two breaking changes reach this crate and both land in tests
+rather than in what you run: `EventKind::Mcp` gained the offered-tool count, and
+`SteerInbox::pending` returns a struct rather than a tuple so that the third thing
+an operator can send did not have to grow it. No dependency was added, the feature
+list is unchanged, and every test that existed before this release still passes
+unchanged.
+
 ## [0.16.0] - 2026-08-25
 
 Nobody edits `io.toml` by hand.

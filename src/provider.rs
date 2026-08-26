@@ -17,9 +17,13 @@
 //! a preset that can fail. Making every arm fallible keeps one signature and lets
 //! a failed model switch report itself instead of ending the session.
 
-use io_harness::{Anthropic, Auth, Compatible, OpenAi, OpenRouter, Provider, ProviderSpec};
+use io_harness::{
+    Anthropic, Auth, Compatible, CompletionRequest, CompletionResponse, ModelInfo, OpenAi,
+    OpenRouter, PromptFamily, Provider, ProviderSpec, ToolCall,
+};
 
 use crate::cli::FromEnv;
+use crate::context::Seen;
 
 /// What a caller does once there is a provider to build.
 ///
@@ -116,6 +120,129 @@ pub async fn build<W: WithProvider>(
             "this release cannot drive a {other:?} provider yet"
         )),
     }
+}
+
+/// A provider that keeps a copy of every request on the way past.
+///
+/// **The only way io-cli can say what is in the context window.** io-harness
+/// enumerates none of it — `run::prompts::compose` and `workspace_tools()` are
+/// both `pub(super)`, and `EventKind::PromptComposed` carries a byte count and no
+/// text — so the alternative to reading the wire is io-cli reconstructing a
+/// prompt it did not compose. This does not reconstruct anything: the request
+/// that goes out is the request that is reported, which is why the catalogue on
+/// the page includes tools this crate never registered and could not have named.
+///
+/// **It wraps and never constructs**, which is what keeps it on the right side of
+/// `tests/provider.rs`'s one-construction-site rule: the four constructors are
+/// still written once, in [`build`], and this newtype only decorates whatever
+/// they made. Both entry points reach it through the same maker, so the headless
+/// path cannot drift from the interactive one.
+///
+/// Every method delegates. That is not boilerplate to be trimmed: the trait has
+/// eight defaulted methods and a default that fired here would change behaviour
+/// silently — `name()` would record `"provider"` in the trace instead of the
+/// vendor, `prompt_family()` would re-derive a family from a hint this type does
+/// not have, `accepts_images()` would refuse an attachment the provider accepts,
+/// and `complete_streaming` would deliver a whole answer in one piece. A
+/// decorator that observes must be invisible in every other respect.
+///
+/// The recording is a lock taken and released inside one statement, before the
+/// future is returned — so nothing is held across an await, and the delegating
+/// methods hand back the inner future itself rather than wrapping it in a state
+/// machine of their own.
+pub struct Watched<P> {
+    inner: P,
+    seen: Seen,
+}
+
+impl<P> Watched<P> {
+    /// Wrap `inner`, reporting into `seen`.
+    pub fn new(inner: P, seen: Seen) -> Self {
+        Self { inner, seen }
+    }
+}
+
+impl<P: Provider> Provider for Watched<P> {
+    fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> + Send {
+        self.seen.record(&request);
+        self.inner.complete(request)
+    }
+
+    fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+    ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> {
+        self.seen.record(&request);
+        self.inner.complete_streaming(request, on_token)
+    }
+
+    fn complete_streaming_calls(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+        on_call: &(dyn Fn(usize, &ToolCall) + Send + Sync),
+    ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> {
+        self.seen.record(&request);
+        self.inner
+            .complete_streaming_calls(request, on_token, on_call)
+    }
+
+    fn models(
+        &self,
+    ) -> impl std::future::Future<Output = io_harness::Result<Vec<ModelInfo>>> + Send {
+        self.inner.models()
+    }
+
+    fn reachable(&self) -> impl std::future::Future<Output = io_harness::Result<bool>> + Send {
+        self.inner.reachable()
+    }
+
+    fn model_hint(&self) -> Option<&str> {
+        self.inner.model_hint()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn prompt_family(&self) -> PromptFamily {
+        self.inner.prompt_family()
+    }
+
+    fn accepts_images(&self) -> bool {
+        self.inner.accepts_images()
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        self.inner.endpoint()
+    }
+
+    fn endpoints(&self) -> Vec<&str> {
+        self.inner.endpoints()
+    }
+
+    fn last_served(&self) -> Option<String> {
+        self.inner.last_served()
+    }
+}
+
+/// The same maker, making watched providers.
+///
+/// A maker in and a maker out, rather than a provider in and a provider out,
+/// because a session builds a provider more than once: `/model` calls the maker
+/// again on every switch. Wrapping the *maker* means one line at the top of the
+/// driver covers the switch too, and there is no second place for a session to
+/// end up holding an unwatched provider — which would show as a `/context` page
+/// that quietly stopped updating after the first model change.
+pub fn watching<P: Provider>(
+    make: impl Fn(&str) -> Result<P, String>,
+    seen: Seen,
+) -> impl Fn(&str) -> Result<Watched<P>, String> {
+    move |name| make(name).map(|inner| Watched::new(inner, seen.clone()))
 }
 
 /// A spec built from the environment rather than from a configuration file.

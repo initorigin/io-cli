@@ -120,6 +120,16 @@ impl Field {
 /// reading `left 997/1000 steps` on every session would be reporting io-cli's
 /// scaffolding back to the operator as a budget they set, and 0.14.0's F6 is
 /// explicit that a session with no `[run]` table shows no budget field at all.
+///
+/// **A fourth field since 0.17.0, and it is the one that draws no row.**
+/// [`Budgets::window`] is the context window a turn's prompt is assembled inside.
+/// It is here rather than loose on [`Status`] because it arrives from exactly the
+/// same place at exactly the same moment as the other three — off the contract
+/// the driver has just built, in the one assignment that already reads it, so
+/// there is no second driver line that could be forgotten — and because it is a
+/// session fact for the same reason they are: the file does not change while a
+/// session runs. It is an `Option` too, but for a different question; its own doc
+/// says which, and why it draws nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Budgets {
     /// `[run] max_steps`, or `[app.io-cli] max_steps` where that beat it — and
@@ -129,6 +139,33 @@ pub struct Budgets {
     pub tokens: Option<u64>,
     /// `[run] max_duration_secs`, as wall time across the turn.
     pub duration: Option<Duration>,
+    /// The context window one turn's prompt is assembled inside, in tokens:
+    /// `[run.context]`, taking its `share` of `[run] max_tokens` where the
+    /// operator set one.
+    ///
+    /// **An `Option` for a different reason from its three neighbours, and the
+    /// difference is the point.** Those are `Option` because the ceiling itself
+    /// may not exist — a turn with no time budget is not a turn budgeted at zero.
+    /// A context window always exists: `TaskContract::context` is a plain
+    /// `ContextBudget` and not an `Option` of one, so every contract that exists
+    /// declares a window, io-harness's own `24_000` where nobody chose otherwise.
+    /// `None` here therefore does not mean *no window*. It means **io-cli has not
+    /// been handed a contract yet** — the state [`Budgets::default`] carries for
+    /// the moments before the first turn is built.
+    ///
+    /// A sentinel `0` would have been the alternative and would have been worse in
+    /// exactly this product's characteristic way: a number that divides is a
+    /// number somebody eventually divides by. [`Status::note_context`] says
+    /// nothing at all on `None`, so a driver that forgot to fill this in loses the
+    /// `ctx` field outright rather than quietly reporting a share of a window
+    /// nobody set — which is precisely how this field spent two releases wrong.
+    ///
+    /// **It draws no row in [`Status::budgets_left_of`], unlike its three
+    /// neighbours.** Those are remainders an operator watches drain; this one is a
+    /// denominator, and it is already on the line — `ctx N%` is the assembled
+    /// section over exactly this number. A `left 18k/24k ctx` beside it would be
+    /// the same fact twice, in two spellings that round differently.
+    pub window: Option<u64>,
 }
 
 impl Budgets {
@@ -148,6 +185,21 @@ impl Budgets {
             steps: (contract.max_steps != crate::contract::MAX_STEPS).then_some(contract.max_steps),
             tokens: contract.max_tokens,
             duration: contract.max_duration,
+            // **The harness's arithmetic, asked of the harness — which is what
+            // the arm this replaces only claimed to be doing.** Through 0.16.0
+            // the share on the line was taken against
+            // `ContextBudget::default().effective_tokens(None)`, a constant
+            // `24_000` on every session in the world, under a comment asserting
+            // it was io-harness's own declared budget. It was the *crate's*
+            // default budget; this is *this contract's*, which is a different
+            // number the moment an operator writes a `[run.context]` table.
+            //
+            // `max_tokens` is passed and not `None`, because `ContextBudget`
+            // takes its `share` of what the run's own token budget leaves: a
+            // window computed as if there were no run budget is not the window
+            // the assembler had. The expression is io-harness's own — `session.rs`
+            // bounds `entry_cap_chars` with exactly this pair.
+            window: Some(contract.context.effective_tokens(contract.max_tokens)),
         }
     }
 }
@@ -222,16 +274,37 @@ pub struct Status {
     ///
     /// Cleared by `Status::start_run`, which is the one place a run begins.
     pub run_tokens: Option<u64>,
-    /// How full the assembled context was the last time io-harness said so, as a
-    /// share of the budget io-harness itself declares.
+    /// How full the assembled context was at the last step, as a share of the
+    /// window *this session's contract* declares — [`Budgets::window`].
     ///
-    /// `None` until a fold reports one, which is the honest answer: `Compacted` is
-    /// the only event carrying an observation-section size, and between folds
-    /// nothing on the event stream knows it.
+    /// **0.16.0's version of this field was wrong from the release it was added
+    /// in, and it was wrong silently.** It divided by
+    /// `ContextBudget::default().effective_tokens(None)` — a flat `24_000` — so an
+    /// operator who set `[run.context] max_tokens = 8000` was shown a share of a
+    /// window three times the one they had, and nothing on the screen could
+    /// disagree with it. Both halves of the fix are elsewhere:
+    /// [`Budgets::in_force`] is the denominator, and [`Status::note_context_from`]
+    /// is the numerator.
     ///
-    /// ponytail: derived from the last fold. The per-step estimate is durable in
-    /// the harness store as `ContextEvent::est_tokens`, so a live share is one
-    /// store read away if this field turns out too quiet to be useful.
+    /// **And it was blank for exactly the period it would have been useful.** The
+    /// only source was `EventKind::Compacted`, which io-harness emits when a fold
+    /// happens and never otherwise — so a session whose context never filled up
+    /// showed no `ctx` field at all, and the first number an operator ever saw was
+    /// one taken after the section had just been cut down. The per-step estimate
+    /// was durable in the harness store the whole time, which is the ponytail note
+    /// that stood here for two releases and is now cashed in.
+    ///
+    /// `None` before the first step of the first turn, which stays the honest
+    /// answer: nothing has been assembled, and a session that has assembled
+    /// nothing has not assembled zero tokens — the rule `tokens` and `spend` are
+    /// held to. The *window* is known from the moment a contract exists, and
+    /// [`committed`] says it there rather than leaving the page blank.
+    ///
+    /// Cleared by [`Status::forget_run`] and deliberately still so. The share is
+    /// an observation the undone run made about its own ledger; a rewind or a
+    /// `/resume` puts a different conversation on screen, whose section this
+    /// number never measured. The window beside it is not cleared, because the
+    /// file did not change.
     pub context: Option<u8>,
     /// How this run's commands are contained: the mode asked for and the backend
     /// that actually answered on this host.
@@ -364,6 +437,27 @@ pub struct Status {
     /// every session carries until a contract says otherwise, and it draws
     /// nothing.
     pub budgets: Budgets,
+    /// Prompts the operator finished while a turn had the session, still waiting
+    /// to run.
+    ///
+    /// **A session fact and not a run fact, so [`Status::forget_run`] leaves it
+    /// standing — and the reason is sharper here than it is for `planning` or
+    /// `budgets`.** The queue itself is `App::prompts`; `forget_run` takes
+    /// `&mut Status` and can reach nothing else. Clearing the count here would
+    /// therefore not empty the queue, only stop saying how deep it is — and the
+    /// prompts would still fire, a turn each, out of a session whose line had
+    /// just finished claiming there were none. That is worse than the hole it
+    /// would be closing. `/resume`, `/fork` and a rewind change which
+    /// conversation is on screen and drop nothing the operator typed;
+    /// `App::forget_queued_prompts` is the one thing that drops them, and it
+    /// moves this number by moving the queue rather than by contradicting it.
+    ///
+    /// Zero renders as **nothing at all**, the rule `bg N`, `spend` and `tokens`
+    /// are held to: a session nobody typed ahead of has not queued zero prompts.
+    /// It is what keeps this field off the overwhelming majority of lines — a
+    /// queue exists only between an `Enter` pressed mid-turn and the end of the
+    /// turn after it.
+    pub queued_prompts: usize,
     /// Which frame of the indicator is showing. Advanced by the tick, never by
     /// the clock: an indicator that read the time would be a second timer.
     frame: usize,
@@ -393,6 +487,7 @@ impl Status {
             elapsed: Duration::ZERO,
             plain: false,
             budgets: Budgets::default(),
+            queued_prompts: 0,
             frame: 0,
         }
     }
@@ -423,8 +518,11 @@ impl Status {
     /// read, and absent is the honest answer until the agent writes a list in the
     /// run that is now on screen.
     ///
-    /// The model, the posture, plain mode and the session's age are not run facts
-    /// and are left alone — the session is the same session either way.
+    /// The model, the posture, plain mode, the session's age and the depth of the
+    /// prompt queue are not run facts and are left alone — the session is the
+    /// same session either way, and the queue in particular is not even reachable
+    /// from here: see [`Status::queued_prompts`] for why blanking the count
+    /// would leave the line contradicting prompts that are still going to run.
     pub fn forget_run(&mut self) {
         self.tokens = None;
         // Both new in 0.11.0, and both run facts. The provider is the one that
@@ -463,6 +561,117 @@ impl Status {
     pub fn start_run(&mut self) {
         self.elapsed = Duration::ZERO;
         self.run_tokens = None;
+    }
+
+    /// Set [`Status::context`] from an observation section of `est_tokens`.
+    ///
+    /// **The denominator is [`Budgets::window`] and never a budget built here, and
+    /// that is the whole of F10.** Everything about how the window is arrived at —
+    /// io-harness's default, a `[run.context]` table, the `share` it takes of
+    /// `[run] max_tokens` — is already resolved by the time a `TaskContract`
+    /// exists, and `Budgets::in_force` reads it off that contract. A second
+    /// resolution here would be a second answer to a settled question, and the two
+    /// would disagree the first time a layer moved. That is not a hypothetical:
+    /// the arm this replaces resolved it a second time, got `24_000`, and said so
+    /// under a comment claiming it had asked the harness.
+    ///
+    /// With no window — no contract has reached this `Status` yet, see
+    /// [`Budgets::window`] — the field is left exactly as it was. Losing the `ctx`
+    /// field is the loud failure; a share of an invented denominator is the quiet
+    /// one, and quiet is what this whole method exists to end.
+    ///
+    /// Clamped to `100` because an estimate can exceed the ceiling it is measured
+    /// against: `ContextBudget` bounds what the assembler *aims* for and the fold
+    /// is what enforces it, so a section briefly over its window is ordinary.
+    /// `ctx 137%` would read as a bug in this line rather than as the pressure it
+    /// actually is.
+    pub fn note_context(&mut self, est_tokens: u64) {
+        let Some(window) = self.budgets.window.filter(|window| *window > 0) else {
+            return;
+        };
+        let share = (est_tokens as f64 / window as f64 * 100.0).round();
+        self.context = Some(share.clamp(0.0, 100.0) as u8);
+    }
+
+    /// The same share, taken from the durable trace once a step has landed.
+    ///
+    /// **NOT what `ctx N%` reports, and the reason is a live run.** This reads
+    /// `ContextEvent::assembled` — the observation section alone, which is what
+    /// `ContextBudget` bounds and what `Compacted::after_tokens` reports. It is a
+    /// coherent quantity and it was the field's numerator until the binary was
+    /// driven for real: `/context` totalled **4,363 tokens of 24,000** while the
+    /// status line one keystroke away said **`ctx 0%`**, because the page measures
+    /// the whole request and this measures the ledger inside it. Two surfaces
+    /// disagreeing about a word, on one screen, is worse than either number is
+    /// useful — and the percentage is what makes an operator open the page, so the
+    /// page is the one that must be right.
+    ///
+    /// So the field now reports what the page totals, from the same snapshot, and
+    /// this is kept for the section number the page still shows. It answers "how
+    /// full is the part a fold would shrink"; `ctx N%` answers "how full is the
+    /// window", which is the question an overflow is the answer to.
+    ///
+    /// **Anchored on `Step`, for the reason `main.rs`'s `commit_edits` is.**
+    /// io-harness documents `Step` as emitted once the step has been committed to
+    /// the store, so the row is there to be read; a read at `ToolCall` is a read
+    /// of a row that may not exist yet, and the two events are one line apart in a
+    /// transcript, which is what would keep that invisible until it was a bug.
+    /// One read per step, not one per event.
+    ///
+    /// ponytail: `Store::context_events` returns the whole run each call, so a run
+    /// of `n` steps reads `n(n+1)/2` rows across its life — five-column rows
+    /// behind an indexed `run_id`, and a turn is tens of steps rather than
+    /// thousands. The upgrade, if that ever stops being true, is a `LIMIT 1`
+    /// accessor in the harness and not a copy of the number kept here, which could
+    /// disagree with the trace it was taken from.
+    ///
+    /// A read that fails leaves the field as it was and says nothing. This is a
+    /// decoration on a status line: a run whose work succeeded is not one to
+    /// interrupt because a trace could not be re-read, and unlike a diff there is
+    /// nothing here worth spending a scrollback row to apologise for.
+    /// The share `ctx N%` reports: the whole request, over the window.
+    ///
+    /// **The same numbers `/context` puts on its page, from the same snapshot, so
+    /// the two cannot disagree.** They did, and a live run is what found it: the
+    /// page totalled 4,363 tokens of 24,000 while the line said `ctx 0%`. The
+    /// percentage is what makes an operator open the page; a percentage that
+    /// contradicts the page is worse than no percentage at all.
+    ///
+    /// Taken from the request rather than the trace because that is what the
+    /// window bounds — an overflow is refused on the whole request, not on the
+    /// observations inside it — and because a request is what a page can show.
+    /// Where no request has been seen yet, the caller falls back to
+    /// [`Status::note_context_from`], which reads the section the trace records.
+    pub fn note_context_request(
+        &mut self,
+        seen: &crate::context::Request,
+        contract: &io_harness::TaskContract,
+        remaining: Option<u64>,
+    ) {
+        let window = crate::context::window(contract, remaining);
+        if window == 0 {
+            return;
+        }
+        let total = crate::context::total(&crate::context::sections(seen, contract));
+        let share = (total as f64 / window as f64 * 100.0).round();
+        self.context = Some(share.clamp(0.0, 100.0) as u8);
+    }
+
+    pub fn note_context_from(&mut self, store: &io_harness::Store, event: &io_harness::RunEvent) {
+        let io_harness::EventKind::Step { .. } = &event.kind else {
+            return;
+        };
+        let Ok(events) = store.context_events(event.run_id) else {
+            return;
+        };
+        if let Some(est) = events
+            .iter()
+            .rev()
+            .find(|recorded| recorded.kind == "assembled")
+            .and_then(|recorded| recorded.est_tokens)
+        {
+            self.note_context(est);
+        }
     }
 
     /// The indicator, if there is anything to indicate and anywhere to show it.
@@ -568,6 +777,25 @@ impl Status {
         left
     }
 
+    /// What is waiting behind this turn, or nothing at all when nothing is.
+    ///
+    /// **One method feeding both renderers, for exactly the reason
+    /// [`Status::budgets_left`] is one, and N3 is that lesson a third time.**
+    /// [`Status::render`] takes [`Status::footer`] on any terminal seven rows or
+    /// taller — which is every real terminal — so [`Status::line`] is the
+    /// short-terminal fallback and the footer is what an operator is actually
+    /// looking at. A depth composed separately in each would be two spellings a
+    /// test could satisfy one of; a depth composed in `line` alone would be
+    /// 0.12.0's planning field again, green in a unit test and nowhere on screen
+    /// in a live capture.
+    ///
+    /// `Option` rather than a `String` that is sometimes empty, so the absence at
+    /// zero is decided here and cannot be forgotten by a caller: both renderers
+    /// push whatever this returns, and neither one asks about the count itself.
+    pub fn queued_left(&self) -> Option<String> {
+        (self.queued_prompts > 0).then(|| format!("queued {}", self.queued_prompts))
+    }
+
     /// The fields, most important first.
     pub fn fields(&self, theme: &Theme) -> Vec<Field> {
         // The WORD is the state, and the animation is only beside it. A spinner
@@ -607,6 +835,17 @@ impl Status {
         // asserts it never reaches a terminal again.
         if let Some(provider) = &self.provider {
             fields.push(Field::new(format!("provider:{provider}"), Tone::Muted));
+        }
+        // **Left of the background-job count, and that is a decision about what
+        // survives a narrow terminal rather than a tidy grouping.** `bg N` is
+        // work the agent started and the transcript a row above already names it;
+        // this is a keystroke io-cli took and has not run yet, and the only other
+        // thing that ever said so was a footer notice the next keystroke erases.
+        // Dropped, a prompt the operator watched vanish out of the composer is
+        // evidenced nowhere on screen at all — which is the lost keystroke this
+        // release exists to end, arrived at from the other side.
+        if let Some(text) = self.queued_left() {
+            fields.push(Field::new(text, Tone::Normal));
         }
         // **Immediately right of the clock, and above everything else this line
         // carries.** 0.8.0 drafted the spend field to the right of the containment
@@ -848,6 +1087,14 @@ impl Status {
         if let Some((done, total)) = self.plan {
             counts.push(format!("plan {done}/{total}"));
         }
+        // **Here as well as on `Status::line`, out of the same method, for the
+        // reason the budgets four lines up are here.** This is the row the binary
+        // draws at an ordinary prompt, so a depth added to `line` alone would be
+        // a depth no operator ever saw — 0.12.0's planning field, again. Left of
+        // `bg` here too, so the two forms read the same order as well as the same
+        // words. `extend` over the `Option` because absent contributes nothing,
+        // which is the whole of the zero case.
+        counts.extend(self.queued_left());
         if self.jobs > 0 {
             counts.push(format!("bg {}", self.jobs));
         }
@@ -1296,11 +1543,34 @@ pub fn committed(
         facts.push(("budget".into(), text));
     }
 
+    // **The window comes off the contract handed in, exactly as the budgets above
+    // do, and for the same reason**: this page reports what the *next* turn would
+    // run under, and reading it changes nothing. The share beside it is still the
+    // session's own — what has been assembled is a fact about the turns that ran,
+    // however the ceiling was arrived at — which is the split
+    // `budgets_left_of` is built on.
+    //
+    // The size is said in the empty case too. `not known until the context has
+    // been folded once` was the old text, and it was a true description of a
+    // defect: the number arrived only at a fold. Now the *window* is known from
+    // the moment a contract exists, so a page that said nothing at all would be
+    // withholding the one half it can always answer — and it is the half an
+    // operator checking whether their `[run.context]` table took effect is
+    // actually looking for.
+    //
+    // `Budgets::in_force` always fills the window: it has a contract in hand and
+    // every contract declares one. The arm below is that type's `None` spelled out
+    // rather than an `unwrap` — a committed page is not worth a panic — and it is
+    // unreachable from here.
+    let window = match Budgets::in_force(contract).window {
+        Some(tokens) => format_tokens(tokens),
+        None => "unknown".to_string(),
+    };
     facts.push((
         "context".into(),
         match status.context {
-            Some(fill) => format!("{fill}% of the budget io-harness declares"),
-            None => "not known until the context has been folded once".to_string(),
+            Some(fill) => format!("{fill}% of a {window} window"),
+            None => format!("nothing assembled yet {dash} the window is {window}"),
         },
     ));
 
@@ -1308,10 +1578,15 @@ pub fn committed(
     // half-answer: three configured and none connected is the state an operator
     // is trying to find, and it reads exactly like a session with none configured
     // if only the live count is shown.
+    // `status.mcp.1` counts CALLS, which this sentence called tools offered until
+    // 0.17.0 — the one site 0.16.0's rename missed, while the status line itself
+    // has said `mcp N/M calls` since. It is doubly wrong now that `/mcp` draws a
+    // real offered count from `EventKind::Mcp`'s own `tools` field: two different
+    // numbers under one word is worse than either alone.
     facts.push((
         "mcp".into(),
         format!(
-            "{} of {} configured connected, offering {} tool{}",
+            "{} of {} configured connected, answering {} call{}",
             status.mcp.0,
             contract.mcp.len(),
             status.mcp.1,
@@ -1345,6 +1620,20 @@ pub fn committed(
             None => "not configured".to_string(),
         },
     ));
+
+    // **`Status::queued_prompts` is deliberately not a row here, and the absence
+    // is a decision rather than a renderer somebody missed.** Every fact above
+    // is either a standing configuration — the workspace, the layers, the caps,
+    // the budgets, the rosters — or a session total that only ever climbs, so
+    // each one is still a true account of this session at the moment it was
+    // written. The queue is neither: it exists between an `Enter` pressed
+    // mid-turn and the end of the turn after it, and this page is *committed*,
+    // into a scrollback that keeps it for the rest of the session. A row reading
+    // `queue: 2 waiting` is false a turn later and goes on saying it, which would
+    // make it the one row on a page whose whole argument is that a status surface
+    // a reader cannot trust is worse than none. The line and the footer redraw,
+    // so they are where a depth that changes belongs — which is also why N3 names
+    // those two renderers and not this one.
 
     // Three of whatever the set draws a rule with, at both ends — the same edge
     // `crate::transcript` gives a committed conversation, and for the same

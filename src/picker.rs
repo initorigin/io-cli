@@ -448,7 +448,9 @@ impl Picker {
         // which is a property of one caller and not of the widget.
         let width = area.width as usize;
         // **The query is drawn in place of the title, never above it.** The
-        // in-session viewport is four rows and is fixed at attach, so a query line
+        // in-session viewport is `term::VIEWPORT_HEIGHT` and is fixed at attach —
+        // four rows when this was written and eight since 0.13.0, of which the
+        // status footer, the rule and the activity line take most — so a query line
         // of its own would leave `/resume` two visible rows — and the note on
         // `term::WIZARD_VIEWPORT_HEIGHT` already records that three was the count
         // a live first run found unusable, which is why that constant exists. The
