@@ -563,6 +563,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // fan-out silently made every turn stop and plan first. It is the operator's
     // switch now, and nothing turns it on but `/plan on`.
     let mut planning = false;
+    // One `/compact` typed at an idle prompt, spent by the next turn that starts.
+    let mut fold_next = false;
     if let Some(caps) = &containment {
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
@@ -1449,6 +1451,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     "nothing is running — /steer sends what is queued into a turn that is already \
                      working, and it is read at that turn's next step",
                 ),
+                // Reached at an idle prompt, where `/compact` is not a refusal:
+                // there is no turn to steer, so the request rides the NEXT turn's
+                // contract as `TaskContract::fold_now` and folds at that turn's
+                // first step. While a turn runs, the driver's own key handler
+                // answers the word before `parse` is called, the way `/steer` is.
+                Action::Compact => {
+                    let dash = app.theme.glyphs.dash;
+                    // Read off `opening` — built at startup from the same builder
+                    // every turn uses — rather than from a fifth
+                    // `contract::session` call, which `tests/contract.rs` counts
+                    // and fails at five. Nothing in `[run]` or `[app.io-cli]` can
+                    // move `compaction` between two turns of one session.
+                    let said = io_cli::compact::Said::asked(opening.compaction, false);
+                    fold_next = said == io_cli::compact::Said::Armed;
+                    app.say(Tone::Muted, said.line(dash));
+                }
                 Action::Context => {
                     // `reading` for the same reason the arm above binds it that
                     // way — `tests/plan.rs` reads the plan-gate argument off a
@@ -1599,6 +1617,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         contained.then_some(containment.as_ref()).flatten(),
                         &capabilities,
                         planning,
+                        // Taken rather than read: one request, one turn. A queue
+                        // of three prompts must not fold three times.
+                        std::mem::take(&mut fold_next),
                         text,
                         // **This turn's own clock, not the session's.** What a
                         // reader wants of the row above the prompt is how long the
@@ -1786,6 +1807,12 @@ async fn turn<P: Provider>(
     // and nothing else — a caps configuration decided it through 0.11.0, which
     // is how every contained turn ended up stopping for one.
     planning: bool,
+    // Whether this turn folds its history at its first step — the `/compact` an
+    // operator typed at the idle prompt before it. io-harness reads `fold_now`
+    // once, before the first step assembles its first request, and consumes it
+    // with `mem::take`, so a contract reused for every turn would not fold every
+    // turn; io-cli builds a fresh one anyway.
+    fold: bool,
     text: String,
     started: Instant,
 ) -> Result<bool, String> {
@@ -1878,6 +1905,22 @@ async fn turn<P: Provider>(
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
     );
+    // **The idle half of `/compact`.** Set here rather than as a parameter of the
+    // builder: `contract::session` has three other callers that build a contract
+    // nothing runs — the startup reading and the two reporting pages — and a
+    // seventh parameter would be three `false`s of pure noise plus a signature
+    // break, against one call on the single contract that is actually a turn.
+    // `fold_now: false` is `TaskContract::workspace`'s own default, so the
+    // field-for-field gate is unmoved either way.
+    let contract = if fold {
+        contract.with_fold_now(true)
+    } else {
+        contract
+    };
+    // Set while a fold has been asked for and no `Compacted` event has arrived.
+    // A one-shot: io-harness spends the request whether or not it folds, so what
+    // this guards is the report and never a retry.
+    let mut folding = fold;
     // **Read off the contract that is about to run, and never recomposed from the
     // configuration.** The ceilings on the line have to be the ceilings in force,
     // and the only thing that knows the whole order of precedence — the floor,
@@ -1937,6 +1980,7 @@ async fn turn<P: Provider>(
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
                 commit_viewed(screen, app, &root, policy, &event)?;
+                commit_fold(app, store, &event, &mut folding);
                 paint(screen, app)?;
             }
             Some(ask) = asks.recv() => {
@@ -2071,6 +2115,37 @@ async fn turn<P: Provider>(
                             // sentence says exactly that. What *is* certain is
                             // the negative, and the drain after this loop is
                             // where it gets said.
+                            // **`/compact` mid-turn.** `Steer::fold` lands at the
+                            // turn's next step boundary — the same promise
+                            // `/steer` makes, for the same reason: a tool call in
+                            // flight is not a safe place to change the
+                            // conversation out from under the model.
+                            //
+                            // **Asked, never reported folded.** io-harness names
+                            // four conditions under which an accepted request
+                            // folds nothing, and the request is spent under all
+                            // four, so the only thing that may say a fold happened
+                            // is `EventKind::Compacted`.
+                            Command::Slash(ref line) if line.trim() == "compact" => {
+                                let dash = app.theme.glyphs.dash;
+                                let said = io_cli::compact::Said::asked(contract.compaction, true);
+                                if said == io_cli::compact::Said::Sent {
+                                    match steer.fold() {
+                                        Ok(()) => {
+                                            folding = true;
+                                            app.say(Tone::Muted, said.line(dash));
+                                        }
+                                        // Unreachable while `inbox` is alive, and
+                                        // said rather than swallowed anyway.
+                                        Err(error) => app.say(
+                                            Tone::Warning,
+                                            format!("nothing is listening {dash} {error}"),
+                                        ),
+                                    }
+                                } else {
+                                    app.say(Tone::Muted, said.line(dash));
+                                }
+                            }
                             Command::Slash(ref line) if line.trim() == "steer" => {
                                 let dash = app.theme.glyphs.dash;
                                 let mut sent = 0usize;
@@ -2228,6 +2303,7 @@ async fn turn<P: Provider>(
         // on the turn's last step is exactly the one the drain would otherwise
         // lose.
         commit_viewed(screen, app, &root, policy, &event)?;
+        commit_fold(app, store, &event, &mut folding);
     }
     app.finished();
 
@@ -2250,6 +2326,23 @@ async fn turn<P: Provider>(
         app.record(
             Tone::Muted,
             format!("[mid-turn, not delivered] {}", lost.trim()),
+        );
+    }
+
+    // **The fold that was asked for and never announced.** A conversation shorter
+    // than `Compaction::keep_recent` has no prefix a paragraph could stand in for,
+    // and an interrupt at the same boundary wins — io-harness reports neither,
+    // because there is nothing to report. The request is spent under both, so this
+    // is the end of the story rather than a retry, and it says nothing folded
+    // rather than that a fold happened.
+    //
+    // `record` and not `say`, for the reason the drain above it gives: a footer
+    // notice is gone at the next keystroke and would fight with the stop line.
+    if folding {
+        let dash = app.theme.glyphs.dash;
+        app.record(
+            Tone::Muted,
+            io_cli::compact::Said::unfolded(contract.compaction, stopped).line(dash),
         );
     }
 
@@ -2289,6 +2382,25 @@ async fn turn<P: Provider>(
 /// A read that fails degrades to a line saying so. A run whose work succeeded is
 /// not a run to panic over because the trace could not be re-read, and silence
 /// would say the step changed nothing.
+/// Report a fold that was asked for — once, and only from the event that
+/// announces it.
+///
+/// io-harness emits `Compacted` the moment a fold lands and nothing at all when
+/// one does not, so this is the whole of what may say a fold happened. It runs on
+/// both event paths because the last step of a turn is exactly the one whose
+/// event the select loop loses to the turn's own return.
+fn commit_fold(app: &mut App, store: &Store, event: &io_harness::RunEvent, folding: &mut bool) {
+    if !*folding {
+        return;
+    }
+    let Some(said) = io_cli::compact::Said::folded(store, event) else {
+        return;
+    };
+    *folding = false;
+    let dash = app.theme.glyphs.dash;
+    app.say(Tone::Muted, said.line(dash));
+}
+
 fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, width: u16) {
     let io_harness::EventKind::Step { changed: true, .. } = &event.kind else {
         return;

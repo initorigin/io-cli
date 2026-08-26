@@ -134,10 +134,20 @@ fn f5_the_stop_key_stays_on_the_observers_flag() {
         "`Ctrl+C` is the canceller's, and giving it a second mechanism changes which path records \
          the outcome",
     );
+    // A fold IS offered, by `/compact`, and it is a third thing the operator sends
+    // rather than a second thing the stop key does. What this pins is that the two
+    // stay separate: the fold rides the inbox because it is a message, the stop
+    // rides the flag because it is not, and neither is reachable from the other's
+    // key. An earlier draft of this test asserted the fold was absent — written
+    // before `/compact` landed in the same release, which is what a gate written
+    // against a half-built tree pins.
     assert!(
-        !text.contains("steer.fold()"),
-        "a fold is a third thing an operator can send and this release does not offer it; a call \
-         with no key behind it is a path nothing can reach",
+        text.contains("steer.fold()"),
+        "`/compact` sends the fold through the inbox, beside the words `/steer` sends",
+    );
+    assert!(
+        !text.contains("canceller") || !text.contains("steer.fold();\n"),
+        "the fold is the operator's third message and never the stop key's second meaning",
     );
 }
 

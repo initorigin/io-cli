@@ -148,6 +148,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/steer",
         "send what is queued into the turn that is already running",
     ),
+    // Beside `/steer` because it is the same kind of word: something an operator
+    // says *to* a turn rather than about one, and the only other command whose
+    // effect is decided by whether anything is running.
+    (
+        "/compact",
+        "fold this conversation into a summary, at the next step",
+    ),
     ("/copy", "put the last answer on the system clipboard"),
     (
         "/copy diff",
@@ -248,7 +255,9 @@ pub const GROUPS: &[(Group, &[&str])] = &[
     ),
     (
         Group::Turn,
-        &["/model", "/contain", "/plan", "/profile", "/steer"],
+        &[
+            "/model", "/contain", "/plan", "/profile", "/steer", "/compact",
+        ],
     ),
     (
         Group::Inspect,
@@ -687,6 +696,21 @@ pub enum Action {
     /// undo, which would make every note typed to oneself mid-turn an
     /// instruction to the agent.
     Steer,
+    /// Fold the conversation into a summary and carry on.
+    ///
+    /// **Two triggers behind one word, chosen by whether a turn is running.** A
+    /// running turn is asked through `Steer::fold`, which lands at its next step
+    /// boundary; an idle prompt has no turn to ask, so the request rides the next
+    /// turn's contract as `TaskContract::fold_now` and folds at that turn's first
+    /// step. The driver answers the first case before [`parse`] is ever called —
+    /// the same shape [`Action::Steer`] has — so this action is what an idle
+    /// prompt means.
+    ///
+    /// **What it must never do is report the fold.** io-harness documents four
+    /// conditions under which an accepted request folds nothing, and the request
+    /// is spent under all of them, so the only thing that says a fold happened is
+    /// `EventKind::Compacted`. [`crate::compact`] is where that rule lives.
+    Compact,
     /// Commit what the model's window actually held, section by section.
     ///
     /// Read off the request that carried the last turn and never reconstructed:
@@ -897,6 +921,19 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // not "there is no such command", which is what an unregistered name
         // gets and would be a lie about a command the palette lists.
         "steer" => Action::Steer,
+        // **One spelling, for the reason `/status` has one.** The driver's
+        // mid-turn arm matches the literal word `compact` before `parse` is
+        // reached — the shape `/steer` already has — so a second name here would
+        // be a name that worked at an idle prompt and did nothing mid-turn, which
+        // is the worst kind of alias. `/fold` is deliberately not taken: it is the
+        // word io-harness uses internally, and nobody has typed it at a prompt
+        // yet.
+        //
+        // It reaches this arm at an idle prompt, where the answer is not "there is
+        // no turn". A request made here is honoured at the *next* turn's first
+        // step, through the contract, so the idle case is a real feature rather
+        // than a refusal with a sentence.
+        "compact" => Action::Compact,
         // **`/attach` is gone, and 0.13.1 is where it went.** A picture is
         // attached by dropping it on the prompt or pasting it — which is what an
         // operator already does in every other window they talk to a model in —

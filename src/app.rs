@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_harness::RunEvent;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -220,6 +220,16 @@ pub struct App {
     /// [`App::queue_open`] is the predicate every caller asks, and it is the
     /// three facts together: opened, still queued, and a turn to be queued behind.
     queue_open: bool,
+    /// Where the operator is inside `prompts`, and which line they have taken out
+    /// of it to edit.
+    ///
+    /// **The queue is here and the mark is there, and that split is the point.**
+    /// `prompts` is a fact about the session — the driver drains it, a turn runs
+    /// off it, and it outlives every surface. A mark is a fact about the surface
+    /// drawing it: meaningless with the surface shut, read by nothing but the
+    /// rows. See [`crate::queue::Cursor`], whose verbs take `&mut Vec<String>` so
+    /// that this stays the one owner of the queue itself.
+    queue: crate::queue::Cursor,
     /// Every image attached in this session, by path, oldest first.
     ///
     /// The index into it is the number in `[Image #1]`, and the path is all that
@@ -293,6 +303,7 @@ impl App {
             queued: Vec::new(),
             prompts: Vec::new(),
             queue_open: false,
+            queue: crate::queue::Cursor::default(),
             images: Vec::new(),
             turn_rows: 0,
             echo_rows: 0,
@@ -803,6 +814,13 @@ impl App {
         // still there — `/fleet` reopens it, and every spawn, refusal and report
         // is in the transcript — but the prompt comes back on its own.
         self.fleet_open = false;
+        // An edit lapses with the turn it was made against. The line itself stays
+        // in the composer, where the operator can see it and send it: putting it
+        // back would queue a second copy behind the drain that is about to start,
+        // and both would run. What is dropped is the *position*, which is the part
+        // that goes stale — a slot remembered across a drain points at somebody
+        // else's line.
+        self.queue.lapsed();
         // A question outlives its run only as a stuck overlay over a session that
         // has moved on. Dropping it is the denial — see `Ask` — and the run it
         // belonged to has already ended, so there is nobody left to tell.
@@ -1318,26 +1336,118 @@ impl App {
                 _ => {}
             }
         }
-        // The queue surface owns exactly one key, and only while it is up: `Esc`
-        // shuts it. Everything else falls through to the match below — `Ctrl+C`
-        // still interrupts, the arrows still edit, and the composer still takes
-        // typing, which it has to, because typing is how the *next* line joins
-        // the queue this is drawing.
+        // The queue surface owns four keys, and only while it is up: the arrows
+        // move the mark at an empty prompt, the shifted arrows move the marked
+        // line, `Enter` at an empty prompt takes that line into the composer and
+        // puts it back when it is done, and `Esc` shuts the surface. Everything
+        // else falls through to the match below — `Ctrl+C` still interrupts and
+        // the composer still takes typing, which it has to, because typing is how
+        // the *next* line joins the queue this is drawing.
+        //
+        // **Scoped to the open surface, and that scope is the whole binding.**
+        // `Up` at the first line of the composer is prompt history and has been
+        // since it was documented — `commands::KEYS` carries the row and
+        // `tests/docs.rs` mirrors it into the README. Bound at the bare composer
+        // these arrows would work perfectly for an operator with something queued
+        // and silently cost history to everyone else: a feature nobody asked to
+        // trade, broken by a release about a different one. Two guards keep it
+        // narrow — the surface has to be open and the prompt has to be empty — so
+        // a recall that is *continuing*, and the arrows inside a multi-line prompt
+        // being written, never reach this block at all. `Esc` hands both back.
+        //
+        // An edit in flight keeps these keys live even when the take emptied the
+        // queue and closed the surface: otherwise the `Esc` cancelling an edit of
+        // the last queued line would fall through and interrupt the turn.
         //
         // It costs the turn one extra `Esc`, and that is the right way round.
         // While a turn runs `Esc` stops it, and an operator who has just been
-        // shown a list has a reading of that key which is not "stop the run" —
-        // so the first press answers the surface and the second reaches the turn.
-        // The same trade the fleet view makes, below it for the same reason: the
-        // view that was opened by a key is the one that should close first.
+        // shown a list has a reading of that key which is not "stop the run" — so
+        // the first press answers the surface and the second reaches the turn. The
+        // same trade the fleet view makes, below it for the same reason: the view
+        // that was opened by a key is the one that should close first.
         //
         // Guarded on the *taken* arming rather than on `self.armed`, which this
         // function emptied a few lines above: `Esc` can be the second key of a
-        // rebound chord, and a surface that stole it would be answering a
-        // sequence the operator was half way through.
-        if self.queue_open() && key.code == KeyCode::Esc && armed.is_none() {
-            self.queue_open = false;
-            return Command::None;
+        // rebound chord, and a surface that stole it would be answering a sequence
+        // the operator was half way through.
+        if self.queue_open() || self.queue.editing().is_some() {
+            let dash = self.theme.glyphs.dash;
+            match key.code {
+                KeyCode::Up | KeyCode::Down
+                    if self.queue.editing().is_none() && self.composer.is_empty() =>
+                {
+                    let delta = if key.code == KeyCode::Up { -1 } else { 1 };
+                    // Shifted moves the line, bare moves the mark. `false` means
+                    // the key was never ours — nothing marked, or an end of the
+                    // list — and it falls through to the composer rather than
+                    // being swallowed.
+                    let moved = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        self.queue.reorder(delta, &mut self.prompts)
+                    } else {
+                        self.queue.move_by(delta, self.prompts.len())
+                    };
+                    if moved {
+                        return Command::None;
+                    }
+                }
+                // Finishing an edit is not sending a turn. Above the arm below and
+                // above the match: a `Reply::Submitted` reaching `compose` would
+                // queue the line a second time.
+                KeyCode::Enter if self.queue.editing().is_some() => {
+                    let text = self.composer.text();
+                    self.composer.clear();
+                    let put = self.queue.put_back(&mut self.prompts, &text);
+                    self.status.queued_prompts = self.prompts.len();
+                    let said = match put {
+                        Some(crate::queue::Put::Kept(at)) => {
+                            format!("line {} edited {dash} it runs in its own place", at + 1)
+                        }
+                        Some(crate::queue::Put::Dropped(was)) => format!(
+                            "dropped {}{}{} {dash} {} still queued",
+                            self.theme.glyphs.quote_open,
+                            crate::picker::fit(&was, 32, &self.theme.glyphs),
+                            self.theme.glyphs.quote_close,
+                            self.prompts.len(),
+                        ),
+                        None => unreachable!("the arm is guarded on an edit in flight"),
+                    };
+                    self.say(Tone::Muted, said);
+                    return Command::None;
+                }
+                // Only at an empty prompt, so an edit can never start on top of a
+                // half-typed line: with text in the composer `Enter` goes on
+                // meaning what it has meant all release, which is *queue this*.
+                KeyCode::Enter if self.composer.is_empty() => {
+                    if let Some(text) = self.queue.take(&mut self.prompts) {
+                        self.composer.set(&text);
+                        self.status.queued_prompts = self.prompts.len();
+                        let at = self.queue.editing().unwrap_or(0);
+                        self.say(
+                            Tone::Muted,
+                            format!(
+                                "editing line {} {dash} Enter puts it back where it was, \
+                                 Esc leaves it as it was",
+                                at + 1
+                            ),
+                        );
+                        return Command::None;
+                    }
+                }
+                KeyCode::Esc if armed.is_none() => {
+                    if self.queue.cancel(&mut self.prompts).is_some() {
+                        self.composer.clear();
+                        self.status.queued_prompts = self.prompts.len();
+                        self.say(
+                            Tone::Muted,
+                            format!("edit cancelled {dash} the line is as it was"),
+                        );
+                    } else {
+                        self.queue_open = false;
+                    }
+                    return Command::None;
+                }
+                _ => {}
+            }
         }
         match hit {
             Some(Hit::Fire(Action::Interrupt)) => self.interrupt_or_quit(),
@@ -1701,6 +1811,7 @@ impl App {
             if queue_rows > 0 {
                 crate::queue::render(
                     &self.prompts,
+                    self.queue.selection(self.prompts.len()),
                     frame,
                     Rect {
                         height: queue_rows,

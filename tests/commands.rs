@@ -48,6 +48,9 @@ fn the_commands_are_the_commands() {
             // 0.17.0 — a word rather than a default, because a delivered steer
             // emits no event this interface can draw.
             "/steer",
+            // 0.17.0 — the other word said *to* a turn, and the only other
+            // command whose effect is decided by whether one is running.
+            "/compact",
             "/copy",
             "/copy diff",
             "/config",

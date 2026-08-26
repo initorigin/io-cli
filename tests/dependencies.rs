@@ -80,13 +80,86 @@ fn manifest() -> toml::Value {
     toml::from_str(&text).expect("the manifest parses")
 }
 
+fn names_in(table: Option<&toml::Value>) -> BTreeSet<String> {
+    table
+        .and_then(toml::Value::as_table)
+        .map(|table| table.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Every crate this manifest asks for by name — which is not the same set as
+/// `[dependencies]`, and 0.17.0 is the release that stopped pretending it was.
+///
+/// N1 is about what `cargo tree --depth 1` prints, and `--depth 1` prints more
+/// tables than one. A `[build-dependencies]` entry is a crate compiled and *run*
+/// on the build machine. A `[target.'cfg(unix)'.dependencies] nix` is a direct
+/// dependency on three of the four release artifacts and invisible on the fourth
+/// — and `nix` is in `FORBIDDEN` below precisely because it is the shape a
+/// sandbox arrives in, which is also the shape that arrives `cfg`-guarded. Before
+/// this release either one could have been added and no gate in this file would
+/// have said a word.
+///
+/// So they are folded in here rather than given a test of their own: every
+/// assertion built on this function — the ALLOWED set in both directions, and the
+/// forbidden-subsystem sweep — now covers them for free, and a dependency is a
+/// dependency whichever `cfg` happens to guard it.
 fn direct_dependencies() -> BTreeSet<String> {
     let manifest = manifest();
-    let table = manifest
-        .get("dependencies")
-        .and_then(toml::Value::as_table)
-        .expect("a dependencies table");
-    table.keys().cloned().collect()
+    let mut names = names_in(manifest.get("dependencies"));
+    assert!(
+        !names.is_empty(),
+        "a dependencies table — an empty read here would pass every assertion below \
+         it for the wrong reason",
+    );
+    names.extend(names_in(manifest.get("build-dependencies")));
+
+    // `[target.<cfg>.dependencies]`, for every `<cfg>` the manifest names. The
+    // cfg keys are not enumerated: a gate that listed the platforms it knew about
+    // would stop covering the platform somebody adds.
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for spec in targets.values() {
+            names.extend(names_in(spec.get("dependencies")));
+            names.extend(names_in(spec.get("build-dependencies")));
+        }
+    }
+    names
+}
+
+/// N1 — the other half of `--depth 1`, which is deliberately not in `ALLOWED`.
+///
+/// A dev-dependency never reaches an artifact, so putting `tempfile` on the list
+/// the release record argues over would blur what that list means: `ALLOWED` is
+/// what ships. But `cargo tree --depth 1` prints dev-dependencies, N1 says that
+/// output names exactly what it names today, and a test-only crate is still a
+/// crate somebody has to justify — `tempfile` is here because a run store needs a
+/// directory that cleans itself up, and the next name needs an argument of its
+/// own. Pinning the set costs the same red check as `ALLOWED` does and keeps the
+/// two meanings apart.
+#[test]
+fn n1_the_only_test_only_crate_is_the_one_that_makes_a_temporary_directory() {
+    let manifest = manifest();
+    let dev: Vec<String> = names_in(manifest.get("dev-dependencies"))
+        .into_iter()
+        .collect();
+    assert_eq!(
+        dev,
+        vec!["tempfile".to_string()],
+        "the dev-dependency set changed. `cargo tree --depth 1` prints these too, \
+         so a name added here grows the crate by N1's own measure and is argued in \
+         the release record like any other.",
+    );
+
+    // And no `[target.<cfg>.dev-dependencies]` either, which would be the same
+    // name arriving where the assertion above cannot see it.
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for (spec, table) in targets {
+            assert!(
+                names_in(table.get("dev-dependencies")).is_empty(),
+                "[target.{spec}.dev-dependencies] hides a test-only crate from the \
+                 assertion above",
+            );
+        }
+    }
 }
 
 #[test]
@@ -160,10 +233,23 @@ fn f7_no_source_file_loops_over_provider_responses() {
         .join("src")
         .join("provider.rs");
     let forwarding = std::fs::read_to_string(&delegating).expect("the provider module");
-    let forwards = forwarding.matches("self.inner.complete").count();
+    // Whitespace squashed, because rustfmt decides where a long call breaks and a
+    // count that matched a contiguous string found two of three the first time
+    // this ran — the same reason `tests/contract.rs` squashes before it looks for
+    // the turn entry points. An assertion about where a newline sits is an
+    // assertion about formatting.
+    let squashed: String = forwarding.chars().filter(|c| !c.is_whitespace()).collect();
+    let forwards = squashed.matches("self.inner.complete").count();
+    // Three, and the third is the one that matters: `complete_streaming_calls` is
+    // what io-harness's own loop calls, and its TRAIT DEFAULT drops the tool-call
+    // sink and forwards to `complete_streaming`. A decorator that did not override
+    // it would compile, record the request, and silently take tool-call streaming
+    // away from every run it wrapped.
     assert!(
         forwards >= 3,
-        "the decorator forwards every completion method it implements; found {forwards}",
+        "the decorator forwards every completion method the trait declares — including \
+         `complete_streaming_calls`, whose default would cost the run its tool-call \
+         streaming; found {forwards}",
     );
     // A forward hands the request on and returns what the inner provider
     // returned. If this module ever reads a response — a token, a tool call, a

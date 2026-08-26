@@ -31,6 +31,7 @@ pub mod bridge;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;
+pub mod compact;
 pub mod complete;
 pub mod composer;
 pub mod configure;
