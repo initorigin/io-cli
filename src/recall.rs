@@ -8,10 +8,22 @@
 //! had never used, and had no way to know that the harness had quietly dropped
 //! one to hold a cap.
 //!
-//! This module is the read. It writes nothing: no `memory_put`, no
-//! `memory_write`, no `memory_pin`, no `memory_forget`. Pinning and forgetting
-//! are an operator's actions and belong to their own surface; a reader that could
+//! The module has two halves, and the split is deliberate.
+//!
+//! **The read** — [`view`], [`trace`] — writes nothing at all: no `memory_put`,
+//! no `memory_write`, no `memory_pin`, no `memory_forget`. A reader that could
 //! also mutate is a reader somebody eventually calls from a render pass.
+//!
+//! **The operator's two levers** — [`pin`], [`forget`], [`unforget`] — are the
+//! only writes here, and every one of them is an *act*, reached from a keystroke
+//! and never from a draw. io-harness says so itself: `memory_pin` is documented
+//! as a caller's act and never a run's (`src/state.rs:1764-1767`), because the
+//! whole point of a pin is that it survives what the agent does next. Pinning is
+//! also what makes the caps survivable — an entry an operator pinned is exempt
+//! from being overwritten by a run (`src/state/memory.rs:430`) and from being
+//! dropped to hold a cap (`src/state/memory.rs:736-739`), while still counting
+//! towards both, so pinning everything makes writes fail loudly rather than
+//! quietly raising the ceiling.
 //!
 //! It follows the shape of [`crate::sessions`]: take a `&Store`, return owned
 //! data, let the caller draw it. Nothing here touches a terminal, and nothing
@@ -58,11 +70,40 @@
 //! nothing has ever been evicted, refused or recalled, and a store where none of
 //! that has happened looks identical. So [`trace`] reads
 //! [`Store::context_events`] and `tests/recall.rs` asserts the stream's silence.
+//!
+//! # The one thing that makes a naive *write* wrong
+//!
+//! **There are two removals in io-harness and only one of them can be undone.**
+//! [`Store::memory_delete`] (`src/state/memory.rs:863`) is a bare
+//! `DELETE FROM memory` — the embedder's blunt removal, with no restore point
+//! and no tidying of the evidence the entry accrued. [`Store::memory_forget`]
+//! (`src/state/memory.rs:821`) writes a `memory_snapshots` row *before* it
+//! removes anything and then clears the key's `memory_recalls`
+//! (`src/state/memory.rs:838-855`).
+//!
+//! [`forget`] uses the second, and the difference is not stylistic. io-cli
+//! already reports `memory_restored` / `memory_removed` on its undo path
+//! (`src/rewind.rs:89-92`, `:219-220`, `:294-301`), and that path is
+//! `io_harness::rewind_run`, which puts entries back **only** from
+//! `memory_snapshots` (`src/run.rs:749`, `:761-777`). An entry removed through
+//! `memory_delete` has no row there, so nothing can put it back — and the
+//! operator who forgot the wrong key finds that out at the one moment they
+//! wanted it. The two implementations are indistinguishable from the store's
+//! entry list, which is why `tests/recall.rs` asserts the restore point and the
+//! cleared recall rows rather than the entry's absence.
+//!
+//! The second half of that trap is which `run_id` the restore point is filed
+//! under — see [`forget`], which explains why it starts a run of its own rather
+//! than borrowing one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use io_harness::{Error, MemoryKind, MemoryLimits, Store, TaskContract, GLOBAL_MEMORY_WORKSPACE};
+use io_harness::tools::Workspace;
+use io_harness::{
+    rewind_run, Error, MemoryForget, MemoryKind, MemoryLimits, Store, TaskContract,
+    GLOBAL_MEMORY_WORKSPACE,
+};
 
 /// How many runs the draw-count scan will look at before giving up.
 ///
@@ -381,4 +422,187 @@ fn draws(store: &Store) -> Result<(BTreeMap<(String, String), BTreeSet<i64>>, bo
         }
     }
     Ok((drawn, cut))
+}
+
+// ---------------------------------------------------------------------------
+// The operator's two levers
+// ---------------------------------------------------------------------------
+
+/// The bucket one [`Scope`] names for `root`.
+///
+/// The same pair [`view`] reads, reached by scope rather than by position, so an
+/// operator acting on a row acts on the bucket that row was listed from. Without
+/// it the obvious call site — "pin the selected entry" — silently means "pin the
+/// workspace entry of that key", which for a global note either does nothing or,
+/// worse, pins a same-named workspace note the operator was not looking at.
+fn bucket(root: &Path, scope: Scope) -> String {
+    match scope {
+        Scope::Workspace => workspace_key(root),
+        Scope::Global => GLOBAL_MEMORY_WORKSPACE.to_string(),
+    }
+}
+
+/// The goal recorded against the bookkeeping run a [`forget`] files its restore
+/// point under. See [`forget`] for why that run exists at all.
+const FORGET_GOAL: &str = "an operator withdrew one memory entry";
+
+/// The outcome that run is finished with.
+///
+/// Deliberately **not** [`io_harness::SUCCESS_OUTCOME`]: `Store::finish_run`
+/// (`src/state/runs.rs:145`) hands the string to `write_summary`, which stores
+/// `success = (outcome == "success")` (`src/state/memory.rs:151-180`) — so a
+/// bookkeeping row named `"success"` would quietly inflate every success rate
+/// computed off this store. Any other string still marks the run `completed`,
+/// which is the half that matters: a run left `running` is a *resumable* run,
+/// and io-harness would happily offer to continue a "run" that is one UPDATE.
+const FORGET_OUTCOME: &str = "memory_forget";
+
+/// The step the restore point is attributed to.
+///
+/// Zero because there were no steps: this act happened between runs, not inside
+/// one. The number is only ever read back by `Store::memory_restore`
+/// (`src/state/memory.rs:64-71`) to attribute the row it re-inserts, so an
+/// invented step would put a fictional position into the restored entry.
+const FORGET_STEP: u32 = 0;
+
+/// What pinning or unpinning one entry did.
+///
+/// Two variants and not a `bool`, because `Store::memory_pin` returns
+/// `n > 0` from an `UPDATE` (`src/state/memory.rs:562-569`) and `false` there
+/// means *there was no such entry* — not "the pin failed". io-harness is explicit
+/// that it will not invent one to pin (`src/state/memory.rs:556-558`). A `bool`
+/// at a call site reads as "did it work", and the surface that believes it worked
+/// shows a pin the store does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pinned {
+    /// The entry exists and now carries the pin state that was asked for.
+    Set,
+    /// There is no entry of that key in that scope, so nothing was changed.
+    NoEntry,
+}
+
+/// What withdrawing one entry did.
+///
+/// The three outcomes of [`Store::memory_forget`] (`src/state.rs:1972-1982`),
+/// kept apart because **only one of them is success**. Collapsing them into a
+/// `bool` — or worse, reporting the refusal as a removal — tells an operator
+/// their note is gone while it sits in the store being carried into every later
+/// prompt, which is the same failure the pin flag exists to prevent one level
+/// down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forgotten {
+    /// Gone, and recoverable: `restore` is the run id whose rewind puts it back.
+    /// Hand it to [`unforget`].
+    Removed {
+        /// The run the restore point was filed under. See [`forget`].
+        restore: i64,
+    },
+    /// **Refused.** The entry is pinned, so it is not a run's to withdraw — and
+    /// io-cli asks on a run's behalf. The entry stands, unchanged. The operator
+    /// unpins it first, with [`pin`], and asks again.
+    Refused,
+    /// There was no such key in that scope. Not an error, and not a removal
+    /// either.
+    Absent,
+}
+
+/// Pin or unpin one entry — the operator's only lever over a store the agent
+/// otherwise manages alone.
+///
+/// A pin is what stops a run overwriting a correction a person made
+/// (`src/state/memory.rs:430`) and what stops the caps dropping it
+/// (`src/state/memory.rs:736-739`). It does **not** buy extra room: a pinned
+/// entry still counts towards both caps, so an operator who pins everything gets
+/// writes that fail loudly rather than a bigger memory. That is io-harness's
+/// choice and this wrapper does not soften it.
+///
+/// Unpinning is the same call with `pinned` false, and it is the prerequisite
+/// for [`forget`] on a pinned entry — which is why [`Forgotten::Refused`] names
+/// the reason instead of just failing.
+pub fn pin(
+    store: &Store,
+    root: &Path,
+    scope: Scope,
+    key: &str,
+    pinned: bool,
+) -> Result<Pinned, Error> {
+    Ok(match store.memory_pin(&bucket(root, scope), key, pinned)? {
+        true => Pinned::Set,
+        false => Pinned::NoEntry,
+    })
+}
+
+/// Withdraw one entry, leaving a way back.
+///
+/// **Through [`Store::memory_forget`] and never [`Store::memory_delete`]** — the
+/// module note gives the whole argument. In short: `memory_forget` takes the
+/// restore point and clears the key's recall rows, `memory_delete` does neither,
+/// and the two are indistinguishable from the entry list right up to the moment
+/// somebody wants the entry back.
+///
+/// # Why this starts a run of its own
+///
+/// `memory_forget` files the restore point under a `run_id`, and this caller is
+/// not inside a run: it is a keystroke. Three ids were available and two of them
+/// are wrong.
+///
+/// - **The entry's own `run_id`** — the run that wrote it, which
+///   [`Remembered::run_id`] already carries — is the tempting one and is the
+///   trap. `memory_snapshots` is unique on `(run_id, workspace, key)`
+///   (`src/state/schema.rs:763-764`) and the insert is `INSERT OR IGNORE`
+///   (`src/state/memory.rs:839`), so the restore point that run took when it
+///   *wrote* the entry already owns that slot and this one is silently dropped.
+///   The row that stays says the entry was **absent** before that run, so a
+///   rewind would delete it rather than put it back — the exact opposite of what
+///   was asked for, arrived at without a single error.
+/// - **The session's last turn**, which is what `src/rewind.rs:181` rewinds,
+///   collides in the same way whenever that turn touched the same key, and
+///   otherwise welds the operator's withdrawal onto an undo of the agent's last
+///   turn: pressing undo once would put back a note the operator deliberately
+///   removed several minutes earlier.
+/// - **A run of its own**, which is what this does. It cannot collide, because
+///   the run is new; a rewind of it restores exactly the one entry the operator
+///   withdrew and nothing else; and the act is in the trace as an act, which is
+///   what it was. It costs one `runs` row per withdrawal — visible to
+///   [`MAX_RUNS_SCANNED`] and to [`crate::sessions::MAX_RUNS_SCANNED`], and to
+///   neither's output: `crate::sessions::recent` lists sessions by way of
+///   `turn_for_run`, and this run has no turn.
+///
+/// The run is finished immediately, with an outcome of `"memory_forget"`, so it
+/// is `completed` rather than left `running` and resumable — and, not being
+/// `"success"`, it is not counted among the agent's successful runs.
+pub fn forget(store: &Store, root: &Path, scope: Scope, key: &str) -> Result<Forgotten, Error> {
+    let bucket = bucket(root, scope);
+    // Started before the outcome is known, because the call needs the id. A
+    // refusal therefore leaves an empty completed run behind, and that is the
+    // honest record: the operator asked, and the store said no.
+    let restore = store.start_run(FORGET_GOAL, &bucket)?;
+    let outcome = store.memory_forget(&bucket, key, restore, FORGET_STEP)?;
+    store.finish_run(restore, FORGET_OUTCOME)?;
+    // Exhaustive on purpose. `MemoryForget` is not `#[non_exhaustive]`
+    // (`src/state.rs:1971`), so a fourth outcome in a later io-harness stops this
+    // build rather than being folded into one of the three by a wildcard — and
+    // the one direction that must never be guessed is "unknown, so probably
+    // removed".
+    Ok(match outcome {
+        MemoryForget::Removed => Forgotten::Removed { restore },
+        MemoryForget::Pinned => Forgotten::Refused,
+        MemoryForget::Absent => Forgotten::Absent,
+    })
+}
+
+/// Put back what [`forget`] withdrew. Returns the keys restored.
+///
+/// `restore` is the id out of [`Forgotten::Removed`] and nothing else. This is
+/// `io_harness::rewind_run` — the same call `src/rewind.rs:181` makes to undo a
+/// turn — pointed at a run that has one restore point and no file snapshots, so
+/// the file and queue halves of the rewind find nothing to do and the workspace
+/// is untouched.
+///
+/// An empty `Vec` means the run held no restore point. Against a
+/// [`Forgotten::Removed`] that cannot happen, and if it ever does it is the
+/// symptom of the whole module note: something removed the entry without leaving
+/// a way back.
+pub fn unforget(store: &Store, root: &Path, restore: i64) -> Result<Vec<String>, Error> {
+    Ok(rewind_run(&Workspace::new(root), store, restore)?.memory_restored)
 }
