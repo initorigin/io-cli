@@ -244,6 +244,27 @@ pub fn wrote(home: &Path, name: &str, path: &Path) -> bool {
     std::fs::read(path).is_ok_and(|bytes| digest(&bytes) == hash)
 }
 
+/// Every name the files in `disabled` resolve to.
+///
+/// A directory that is not there is no disabled skills, which is the ordinary
+/// case — `disabled/` is created by the first disable and never before. Resolved
+/// through [`crate::skillview::describe`] rather than from the file stem, because
+/// the stem and the name are exactly the two things this release keeps apart.
+fn disabled_names(disabled: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(disabled) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        })
+        .map(|path| crate::skillview::describe(&path).0)
+        .collect()
+}
+
 /// `n skills`, or `1 skill`.
 fn many(n: usize) -> String {
     if n == 1 {
@@ -314,8 +335,16 @@ pub fn install(home: &Path) -> Vec<String> {
     // reads counts first and exceptions after.
     let mut notes: Vec<String> = Vec::new();
 
+    // **Every name the disabled directory answers to, not every file name in it.**
+    // A disabled file's resolved name comes from its frontmatter like any other,
+    // so testing `disabled/<name>.md` alone would miss an operator's `mine.md`
+    // that declares `name: io-mcp` — and then install its own `io-mcp.md`, which
+    // turns the operator's next "turn it back on" into two files answering to one
+    // name and a session in which every turn dies. Read once, before the loop.
+    let turned_off = disabled_names(&disabled);
+
     for skill in &SHIPPED {
-        if disabled.join(file_name(skill.name)).exists() {
+        if turned_off.iter().any(|name| name == skill.name) {
             continue;
         }
 
@@ -332,6 +361,16 @@ pub fn install(home: &Path) -> Vec<String> {
         };
 
         let Some(bytes) = existing else {
+            // **A name io-cli has written before and whose file is now gone was
+            // deleted on purpose.** `rm ~/.io-cli/skills/io-mcp.md` is the
+            // documented way to be rid of one, and an installer that wrote it back
+            // on the next start would make deletion a thing that undoes itself —
+            // the same failure the disabled check above exists to prevent, through
+            // the other door. A name with no record at all is one this release
+            // never shipped, so a skill added in a later version still installs.
+            if recorded_hash(&manifest, skill.name).is_some() {
+                continue;
+            }
             // Nothing of ours at that path — but the *name* may still be taken,
             // and taking it anyway is `Error::Config` at run start rather than a
             // listing quirk. `target` does not exist, so anything discovery
@@ -368,11 +407,14 @@ pub fn install(home: &Path) -> Vec<String> {
         // forever. No entry at all means io-cli has no record of writing this
         // file, which is the operator's file however it is spelled.
         if recorded_hash(&manifest, skill.name) != Some(digest(&bytes)) {
-            notes.push(format!(
-                "kept {}, which has been edited; io-cli's own `{}` was not written over it",
-                target.display(),
-                skill.name,
-            ));
+            // **Left alone, and said nothing about.** A kept edit is a settled
+            // state, not an event: the operator changed the file deliberately and
+            // it is theirs from then on, so a line here would be printed at every
+            // start for the rest of that file's life — and on stderr at every
+            // `io exec`, which a scripted loop runs a great many times. The
+            // standing place for it is `/skills`, where the row already reads
+            // `yours`. A claimed NAME is different and is still reported below:
+            // that is an unresolved hazard rather than a settled state.
             continue;
         }
         // Untouched and already the current text: no write, so no churned mtime

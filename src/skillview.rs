@@ -157,13 +157,23 @@ pub struct View {
     pub failed: Option<String>,
 }
 
-/// Every skill in `<home>/skills` and `<home>/skills/disabled`.
+/// Every skill in `dir` and in `dir/disabled`.
+///
+/// **`dir` is the directory the RUN reads, and it is not always io-cli's own.**
+/// `[run] skills` and `[app.io-cli] skills` both beat the `~/.io-cli/skills`
+/// default, so a surface that walked the home would list five files the model is
+/// never offered and hide the ones it is — which would make this module's whole
+/// premise false. The caller resolves it through `crate::contract::skills_dir`,
+/// the same call that decides what the turn is handed.
+///
+/// `home` is still needed and is a different question: it is where the manifest
+/// lives, and the manifest is what decides whose a file is.
 #[must_use]
-pub fn view(home: &Path) -> View {
+pub fn view(home: &Path, dir: &Path) -> View {
     let mut listed = Vec::new();
     let mut failed = None;
 
-    match io_harness::Skills::discover(skills::dir(home)) {
+    match io_harness::Skills::discover(dir) {
         Ok(found) => listed.extend(found.iter().map(|skill| Listed {
             origin: origin(home, &skill.name, &skill.path),
             name: skill.name.clone(),
@@ -174,7 +184,7 @@ pub fn view(home: &Path) -> View {
         Err(error) => failed = Some(error.to_string()),
     }
 
-    for path in disabled_files(home) {
+    for path in disabled_files(dir) {
         let (name, description) = describe(&path);
         listed.push(Listed {
             origin: origin(home, &name, &path),
@@ -216,8 +226,8 @@ fn origin(home: &Path, name: &str, path: &Path) -> Origin {
 /// Canonicalised the way `Skills::discover` canonicalises, so a path off this
 /// surface is comparable with a path off that one and neither depends on the
 /// process's working directory.
-fn disabled_files(home: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(skills::disabled_dir(home)) else {
+fn disabled_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir.join(skills::DISABLED)) else {
         return Vec::new();
     };
     let mut files: Vec<PathBuf> = entries
@@ -240,7 +250,12 @@ fn disabled_files(home: &Path) -> Vec<PathBuf> {
 /// The same fallbacks the harness uses, because a file that is disabled today was
 /// enabled yesterday and will be enabled again tomorrow: a skill that changed its
 /// name by being turned off would be a different skill on the way back.
-fn describe(path: &Path) -> (String, String) {
+///
+/// `pub(crate)` because [`crate::skills::install`] asks the same question of the
+/// same directory: it has to know whether a *disabled* file already answers to a
+/// name before it writes its own file under that name, and answering it any other
+/// way would be a second reading of what a skill is called.
+pub(crate) fn describe(path: &Path) -> (String, String) {
     let stem = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
@@ -443,6 +458,31 @@ pub fn enable(path: &Path) -> Result<PathBuf, String> {
             path.display()
         ));
     };
+    // **The destination guard in `relocate` is by FILE NAME, and a skill is
+    // addressed by its RESOLVED name.** That asymmetry is the whole subject of
+    // this release, and it is reachable from here with two keystrokes: disable an
+    // operator's `mine.md` that declares `name: io-mcp`, restart — `install` no
+    // longer sees a claimant, because the claimant is in a directory discovery
+    // cannot look into, so it writes its own `io-mcp.md` — then enable `mine.md`
+    // again. `relocate` would find no `mine.md` in the way and move it, and the
+    // directory would hold two files answering to `io-mcp`. `Skills::discover`
+    // returns `Err` on that, io-harness propagates it at run start, and every turn
+    // of the session is dead before the first completion — with `/skills` itself
+    // unable to help, because its list comes from the call that just failed.
+    //
+    // So the question asked here is the one the run will ask: does anything in
+    // that directory already answer to this file's name?
+    let (name, _) = describe(path);
+    if let Ok(found) = io_harness::Skills::discover(dir) {
+        if let Some(claimant) = found.get(&name) {
+            return Err(format!(
+                "{} already answers to `{name}`, so io-cli did not move {} beside it — \
+                 two skills of one name end every turn of the session",
+                claimant.path.display(),
+                path.display(),
+            ));
+        }
+    }
     relocate(path, dir)
 }
 

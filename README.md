@@ -475,7 +475,14 @@ bodies written into `~/.io-cli/skills`, beside whatever skills you keep there
 yourself. Open one, read it, edit it, copy it into a skill of your own, delete
 it — the same things you would do to any other markdown file in a directory you
 own. There is no registry, no index and no remote source; the five are carried
-in the binary and written out on the first run that finds them missing.
+in the binary and written out the first time io has a home to put them in.
+
+**Delete one and it stays deleted.** `rm ~/.io-cli/skills/io-mcp.md` is the way
+to be rid of a shipped skill for good: io remembers that it wrote that name, so
+it does not put the file back on the next start. A skill added in a *later*
+version has no such record, so upgrading still brings you the new ones. If you
+only want one out of the way for now, turn it off instead — that is reversible
+and `/skills` does it for you.
 
 **Each of them ends in a change you see before it lands.** A skill instructs the
 model in what io can already do and which surface does it, so what comes back is

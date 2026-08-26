@@ -111,7 +111,7 @@ fn f6_origin_is_decided_by_the_manifest_and_never_by_the_io_prefix() {
     // Only the un-prefixed one is recorded, so the prefix and the truth disagree.
     recorded(&home, &[("mine", ours.as_path())]);
 
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
     assert_eq!(view.failed, None, "the fixture discovers");
     assert_eq!(listed(&view, "mine").origin, Origin::IoCli);
     assert_eq!(listed(&view, "io-thing").origin, Origin::Yours);
@@ -121,7 +121,7 @@ fn f6_origin_is_decided_by_the_manifest_and_never_by_the_io_prefix() {
     // edited is theirs. The bytes no longer hash to what io-cli recorded, which is
     // true, and is also what the next upgrade will decide about it.
     write(&ours, &skill("mine", "Edited by the operator."));
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
     assert_eq!(
         listed(&view, "mine").origin,
         Origin::Yours,
@@ -136,7 +136,7 @@ fn f6_a_skill_carries_its_description_its_state_and_the_file_it_lives_in() {
     let path = dir.join("alpha.md");
     write(&path, &skill("alpha", "Does the alpha thing."));
 
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
     let row = listed(&view, "alpha");
     assert_eq!(row.description, "Does the alpha thing.");
     assert!(row.enabled, "a file in skills/ is offered to the model");
@@ -156,7 +156,7 @@ fn f6_a_disabled_skill_is_listed_as_disabled_with_its_path_inside_disabled() {
 
     let moved = skillview::disable(&path).expect("the move");
 
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
     let row = listed(&view, "alpha");
     assert!(!row.enabled, "a file under disabled/ is not offered");
     // Canonicalised on both sides: the surface resolves a path the way
@@ -193,7 +193,7 @@ fn f6_a_directory_that_will_not_discover_shows_the_harness_sentence() {
         &skill("parked", "Turned off earlier."),
     );
 
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
 
     let sentence = view
         .failed
@@ -388,7 +388,7 @@ fn drawable() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn n4_every_row_draws_in_ascii_with_its_meaning_intact_inside_eighty_columns() {
     let (_dir, home) = drawable();
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
     assert_eq!(view.failed, None);
     assert_eq!(view.skills.len(), 3);
 
@@ -428,7 +428,7 @@ fn n4_every_row_draws_in_ascii_with_its_meaning_intact_inside_eighty_columns() {
 #[test]
 fn n4_the_path_is_what_gives_way_and_the_name_and_the_state_never_do() {
     let (_dir, home) = drawable();
-    let view = skillview::view(&home);
+    let view = skillview::view(&home, &skills::dir(&home));
     let ascii = io_cli::glyphs::ASCII;
     let glyphs = &ascii;
 
@@ -466,4 +466,103 @@ fn n4_the_path_is_what_gives_way_and_the_name_and_the_state_never_do() {
         details.iter().any(|detail| detail.contains("parked.md")),
         "and the end of the path is what survives, since the front is shared: {details:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The adversarial review of 0.19.0 found the defect below behind a green suite
+// of 1,020 tests. It is here as its own section because it is the one failure
+// mode this whole release exists to prevent, reached through io-cli's own keys.
+// ---------------------------------------------------------------------------
+
+/// **Enabling may not put a second file under a name already answered to.**
+///
+/// The destination guard in `relocate` is by FILE NAME, and a skill is addressed
+/// by its RESOLVED name — the asymmetry this whole release is built on. So a
+/// file moving back out of `disabled/` can land beside a different file that
+/// already answers to its name, with nothing in the way. `Skills::discover` then
+/// returns `Err`, io-harness propagates it at run start, and every turn of the
+/// session dies before the first completion. `/skills` cannot even report it: its
+/// list comes from the call that just failed.
+///
+/// The review that found this reached it through io-cli's own five — disable a
+/// claimant, let the next start install io-cli's file into the freed name, enable
+/// the claimant again. That route is now closed one step earlier, by
+/// `install_skips_a_name_that_is_disabled_under_a_different_file_name` below, and
+/// this test deliberately does **not** use it: a control that only fails when a
+/// second guard is also removed is not a control. What is left is the route
+/// neither installer guard can ever see, because io-cli never wrote either file.
+///
+/// Sabotage: delete the resolved-name check in `skillview::enable`. Under it only
+/// this test fails, and it fails with `discovered` panicking — which is the exact
+/// sentence an operator would have got on every turn.
+#[test]
+fn enabling_never_puts_a_second_file_under_a_name_already_answered_to() {
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+
+    // Two files of the OPERATOR'S OWN, which is where the hole survives both of
+    // the other guards: `install` only ever withholds files io-cli would write,
+    // so nothing in it looks at a pair like this one. The names are what collide;
+    // the file names never do, which is precisely why the destination check in
+    // `relocate` cannot see it.
+    let enabled = dir.join("a.md");
+    write(&enabled, &skill("alpha", "The one they kept on."));
+    let other = dir.join("b.md");
+    write(&other, &skill("alpha", "The one they turned off."));
+    let parked = skillview::disable(&other).expect("the move out");
+    let kept = read(&parked);
+
+    // One `alpha` in the directory, so the session is fine as it stands.
+    assert_eq!(discovered(&dir), vec!["alpha".to_string()]);
+
+    // And this is the keystroke that used to end it.
+    let back = skillview::enable(&parked);
+    assert!(
+        back.is_err(),
+        "enabling moved a second `alpha` in beside the first; every turn of that \
+         session is now dead at run start",
+    );
+    let why = back.unwrap_err();
+    assert!(
+        why.contains("alpha"),
+        "the refusal does not name the name that is taken: {why}",
+    );
+
+    // The operator's file is where it was, byte for byte. A refusal that also
+    // lost a file would be worse than the defect.
+    assert_eq!(read(&parked), kept, "the refused move touched the file");
+
+    // And the property the whole thing is about: the session still starts.
+    assert_eq!(discovered(&dir), vec!["alpha".to_string()]);
+}
+
+/// **A disabled skill is skipped by the name it answers to, not by its file
+/// name.** This is step 3 above, and closing it is what stops the sequence from
+/// ever reaching step 4.
+///
+/// Sabotage: test `disabled/<name>.md` for existence instead of resolving the
+/// names in that directory. Under it only this test fails, and io-cli writes an
+/// `io-mcp.md` beside a disabled file that already answers to `io-mcp`.
+#[test]
+fn install_skips_a_name_that_is_disabled_under_a_different_file_name() {
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+
+    let theirs = dir.join("mine.md");
+    write(&theirs, &skill("io-mcp", "The operator's own."));
+    skillview::disable(&theirs).expect("the move out");
+
+    skills::install(&home);
+
+    assert!(
+        !dir.join("io-mcp.md").exists(),
+        "io-cli wrote its own `io-mcp` while a disabled file already answers to that name",
+    );
+    let mut expected: Vec<String> = skills::SHIPPED
+        .iter()
+        .map(|skill| skill.name.to_string())
+        .filter(|name| name != "io-mcp")
+        .collect();
+    expected.sort();
+    assert_eq!(discovered(&dir), expected);
 }

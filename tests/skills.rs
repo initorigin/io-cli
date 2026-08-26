@@ -416,11 +416,22 @@ fn f4_an_untouched_skill_is_refreshed_and_an_edited_one_is_left_byte_for_byte() 
         "a file io-cli has no record of writing was overwritten anyway",
     );
 
+    // **And it says nothing about either of them.** A kept edit is a settled
+    // state, not an event: the operator changed the file on purpose and it is
+    // theirs from then on, so a line here would print at every start for the rest
+    // of that file's life — and on stderr at every `io exec`, which a script runs
+    // a great many times. `delivery.observability` in the release contract asks
+    // for silence when nothing changed, and a file that is being left alone did
+    // not change. `/skills` is the standing place for it, where the row reads
+    // `yours`. A claimed NAME is the opposite case and is still reported — see
+    // `f2_...`, which asserts that line — because that is an unresolved hazard
+    // rather than a settled state.
     let said = report.join("\n");
     for kept in ["io-provider.md", "io-remember.md"] {
         assert!(
-            said.contains(kept),
-            "the report does not name {kept} as kept: {report:?}",
+            !said.contains(kept),
+            "the report names {kept} on a run that only left it alone, and will do so \
+             again at every start from now on: {report:?}",
         );
     }
     assert!(
@@ -451,8 +462,32 @@ fn f5_a_disabled_skill_is_not_resurrected_by_the_next_run() {
 
     // Twice: a restart, and then an upgrade that has something else to do.
     skills::install(&home);
-    std::fs::remove_file(dir.join("io-update.md")).expect("something for the second run to do");
+    // **The something else is a stale file, deliberately not a deleted one.** A
+    // deleted shipped skill is not reinstalled — `rm` is the documented way to be
+    // rid of one, and an installer that wrote it back would make deletion undo
+    // itself, which is this very test's complaint about disabling through the
+    // other door. So `io-update` is left on disk with older bytes and a manifest
+    // entry that matches them, which is exactly what an operator who has touched
+    // nothing looks like one release later.
+    let stale = dir.join("io-update.md");
+    std::fs::write(&stale, "stale\n").expect("older bytes");
+    let mut entries = manifest(&home);
+    for entry in &mut entries {
+        if entry.0 == "io-update" {
+            entry.1 = skills::digest(b"stale\n");
+        }
+    }
+    let manifest_text: String = entries
+        .iter()
+        .map(|(name, hash)| format!("{name}\t{hash:016x}\n"))
+        .collect();
+    std::fs::write(home.join(".skills-manifest"), manifest_text).expect("the manifest");
     skills::install(&home);
+    assert_ne!(
+        read(&stale),
+        "stale\n",
+        "the second run had nothing to do, so this test proves nothing about an upgrade",
+    );
 
     assert!(
         !was.exists(),
@@ -587,5 +622,66 @@ fn provenance_comes_from_the_manifest_and_never_from_the_name() {
     assert!(
         !skills::wrote(&home, "io-mcp", &mcp),
         "a shipped skill the operator has edited still reads as io-cli's",
+    );
+}
+
+/// **A shipped skill the operator deleted is not written back.**
+///
+/// `rm ~/.io-cli/skills/io-mcp.md` is the documented way to be rid of one — the
+/// release record says so in `delivery.migrations` and again in
+/// `delivery.rollback`, and the README says it to the operator. An installer that
+/// wrote the file back on the next start would make deletion a thing that undoes
+/// itself, which is the same failure the disabled check prevents through the
+/// other door, and the operator's only recourse would be to delete it again after
+/// every launch.
+///
+/// The record is the manifest: io-cli knows it wrote that name, and the file is
+/// gone, so it was taken away on purpose. **A name with no record at all is a
+/// skill this version ships and an earlier one did not**, which is what keeps an
+/// upgrade able to deliver new skills — asserted here too, because a fix that
+/// stopped installing anything would also pass the first half.
+///
+/// Sabotage: drop the manifest check from the absent-file branch of `install`.
+/// Under it only this test fails, on the second start rather than the first.
+#[test]
+fn a_deleted_shipped_skill_is_not_written_back_on_the_next_run() {
+    let (_dir, home) = home();
+    let dir = skills::dir(&home);
+    skills::install(&home);
+
+    let gone = dir.join("io-mcp.md");
+    std::fs::remove_file(&gone).expect("the operator deletes one");
+
+    let report = skills::install(&home);
+    assert!(
+        !gone.exists(),
+        "io-cli wrote back a skill the operator deleted; deleting it is now a thing \
+         they have to do at every start",
+    );
+    assert!(
+        report.is_empty(),
+        "and it said something about a run in which it did nothing: {report:?}",
+    );
+
+    // The other half: a name io-cli has no record of is a skill a later version
+    // added, and it still installs. Simulated by taking `io-remember` out of the
+    // manifest while leaving no file — which is exactly the state an upgrade that
+    // ships a sixth skill is in for that sixth name.
+    let entries: Vec<(String, u64)> = manifest(&home)
+        .into_iter()
+        .filter(|(name, _)| name != "io-remember")
+        .collect();
+    let text: String = entries
+        .iter()
+        .map(|(name, hash)| format!("{name}\t{hash:016x}\n"))
+        .collect();
+    std::fs::write(home.join(".skills-manifest"), text).expect("the manifest");
+    std::fs::remove_file(dir.join("io-remember.md")).expect("no file for that name either");
+
+    skills::install(&home);
+    assert!(
+        dir.join("io-remember.md").is_file(),
+        "a name io-cli has never recorded is one a later version added, and it must \
+         still install — otherwise an upgrade can never deliver a new skill",
     );
 }
