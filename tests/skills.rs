@@ -123,8 +123,20 @@ fn every_shipped_file_declares_the_name_it_is_installed_under() {
             declared, skill.name,
             "the file's frontmatter and SHIPPED disagree about what this skill is called",
         );
+        // **Either line ending, because the property is what io-harness will
+        // read.** `split_front_matter` strips `---\n` and `---\r\n` alike and
+        // trims `\r` off every key, and the first form of this assertion took
+        // only the first — which is green on macOS and Linux and red on Windows,
+        // where the checkout is CRLF and `include_str!` gets it. That was a test
+        // stricter than the thing it protects, and only the matrix could see it.
+        //
+        // The bytes are also pinned to LF in `.gitattributes`, so one release
+        // ships one artifact rather than a different one per build host. That is
+        // a separate concern from this assertion and neither stands in for the
+        // other: remove the attribute and this still passes, which is correct,
+        // because the skill still works.
         assert!(
-            skill.text.starts_with("---\n"),
+            skill.text.starts_with("---\n") || skill.text.starts_with("---\r\n"),
             "{}'s frontmatter is not a fence io-harness will read; without one the name \
              falls back to the file stem and the description to the first prose line",
             skill.name,
