@@ -106,11 +106,29 @@ pub struct Server {
 /// field answers "is anything connected" for a one-row status line, and this
 /// answers "what happened to each of them" for a panel. One is not derivable from
 /// the other — the pair has no server names in it at all.
+/// What this session has seen one server do.
+///
+/// **A struct rather than the tuple this was, and clippy is right about when.**
+/// Two facts read fine positionally; the third — the offered count 0.68.0 put on
+/// the event — is where `entry.2` stops saying what it holds at the call site. The
+/// names are the documentation now that there is more than one kind of number
+/// here, and `asked` and `offered` are exactly the pair a reader must not confuse.
+#[derive(Debug, Clone, Default)]
+struct Seen {
+    /// Distinct tool names this session has called on the server. A lower bound
+    /// on what it offers, and counted here because no event states it.
+    asked: BTreeSet<String>,
+    /// The tool of the last call that failed, if one did.
+    failed: Option<String>,
+    /// How many tools the server announced, if an event ever said. `None` is not
+    /// zero — see [`Observed::event`].
+    offered: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Observed {
-    /// Distinct tool names seen per server, the last failure if there was one,
-    /// and the offered count if an event ever stated it.
-    seen: BTreeMap<String, (BTreeSet<String>, Option<String>, Option<u32>)>,
+    /// What each server has been seen to do, by the id it was configured under.
+    seen: BTreeMap<String, Seen>,
 }
 
 impl Observed {
@@ -137,15 +155,15 @@ impl Observed {
         // say about the count, not a statement that there are none — so it must
         // neither write a zero nor erase a count an earlier event stated.
         if let Some(offered) = tools {
-            entry.2 = Some(*offered);
+            entry.offered = Some(*offered);
         }
         if let Some(tool) = tool {
-            entry.0.insert(tool.clone());
+            entry.asked.insert(tool.clone());
             // `ok` is an `Option<bool>`: `Some(false)` is a failure, and `None`
             // is a call whose outcome the event did not carry, which is not the
             // same thing and must not be drawn as one.
             if *ok == Some(false) {
-                entry.1 = Some(tool.clone());
+                entry.failed = Some(tool.clone());
             }
         }
     }
@@ -163,11 +181,11 @@ impl Observed {
     pub fn of(&self, id: &str) -> Reached {
         match self.seen.get(id) {
             None => Reached::NotYet,
-            Some((tools, failure, offered)) => match failure {
+            Some(seen) => match &seen.failed {
                 Some(tool) => Reached::Failed { tool: tool.clone() },
                 None => Reached::Answered {
-                    tools: tools.len(),
-                    offered: *offered,
+                    tools: seen.asked.len(),
+                    offered: seen.offered,
                 },
             },
         }
