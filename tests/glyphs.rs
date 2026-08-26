@@ -446,6 +446,7 @@ fn every_event_this_release_renders_draws_in_ascii() {
             tool: Some("search".into()),
             ok: Some(true),
             millis: Some(42),
+            tools: None,
         },
         // The plan block, which 0.7.0 added and which this list did not have. Two
         // items on purpose: one short enough to draw whole, and one longer than

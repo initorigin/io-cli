@@ -22,23 +22,32 @@ command = \"mcp-search\"
     .expect("the fixture parses")
 }
 
-/// The server reaching the run: an `Mcp` event with no `tool`.
+/// The server reaching the run: an `Mcp` event with no `tool`. Since io-harness
+/// 0.68.0 that event states how many tools the server offered, which is the one
+/// form carrying the count.
 fn reached(server: &str) -> EventKind {
+    reached_offering(server, 3)
+}
+
+/// The same event with the offered count named.
+fn reached_offering(server: &str, tools: u32) -> EventKind {
     EventKind::Mcp {
         server: server.into(),
         tool: None,
         ok: None,
         millis: None,
+        tools: Some(tools),
     }
 }
 
-/// One call, and whether it worked.
+/// One call, and whether it worked. A call carries no count.
 fn called(server: &str, tool: &str, ok: Option<bool>) -> EventKind {
     EventKind::Mcp {
         server: server.into(),
         tool: Some(tool.into()),
         ok,
         millis: Some(12),
+        tools: None,
     }
 }
 

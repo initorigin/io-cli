@@ -62,9 +62,19 @@ fn f6_ctrl_c_during_a_turn_interrupts_it_and_keeps_the_partial_output() {
     assert_eq!(app.key(control('c')), Command::Interrupt);
     steer.interrupt().expect("the turn is still listening");
 
-    let (messages, interrupted) = inbox.pending();
-    assert!(interrupted, "Steer::interrupt never reached the inbox");
-    assert!(messages.is_empty(), "an interrupt is not a message");
+    // io-harness 0.69.0 replaced the `(Vec<String>, bool)` tuple with `Steering`,
+    // which is `#[non_exhaustive]` so the fourth thing an operator can send costs
+    // this caller nothing.
+    let steering = inbox.pending();
+    assert!(
+        steering.interrupted,
+        "Steer::interrupt never reached the inbox"
+    );
+    assert!(
+        steering.messages.is_empty(),
+        "an interrupt is not a message"
+    );
+    assert!(!steering.fold, "an interrupt is not a fold");
 
     // The turn ends. The partial output is committed rather than lost with it.
     app.finished();

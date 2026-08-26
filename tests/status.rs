@@ -797,6 +797,7 @@ fn f6_a_server_that_answered_is_named_with_the_tools_it_offered() {
             tool: None,
             ok: None,
             millis: None,
+            tools: Some(2),
         }),
         Duration::ZERO,
     );
@@ -808,6 +809,7 @@ fn f6_a_server_that_answered_is_named_with_the_tools_it_offered() {
                 tool: Some(tool.into()),
                 ok: Some(true),
                 millis: Some(12),
+                tools: None,
             }),
             Duration::ZERO,
         );
@@ -1458,6 +1460,7 @@ fn reported() -> App {
             tool: None,
             ok: None,
             millis: None,
+            tools: Some(1),
         }),
         Duration::ZERO,
     );
@@ -1467,6 +1470,7 @@ fn reported() -> App {
             tool: Some("search".into()),
             ok: Some(true),
             millis: Some(12),
+            tools: None,
         }),
         Duration::ZERO,
     );
