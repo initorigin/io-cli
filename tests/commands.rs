@@ -83,6 +83,39 @@ fn the_commands_are_the_commands() {
     }
 }
 
+/// **A listed command that `parse` has no arm for is advertised and inert**, and
+/// until 0.19.0 nothing in this file could see that: every gate here derives from
+/// `COMMANDS` and `GROUPS`, which a row satisfies merely by existing. `/skills`
+/// was added to the table and to the palette and resolved, silently, to the help
+/// listing — the same answer `/models` gets, which is the arm that exists to tell
+/// somebody they typed a command that is not real.
+///
+/// So the property is stated once, over the whole inventory, rather than one
+/// `assert_eq!` per command in `each_command_resolves` below — a list like that
+/// stops covering the next row the moment somebody forgets to extend it, which is
+/// exactly the failure this test exists for. Exactly ONE listed command may
+/// resolve to the help listing, and it is `/help`.
+#[test]
+fn no_listed_command_falls_through_to_the_help_listing() {
+    let listing = commands::parse("help", &defaults(), &DARK);
+    let inert: Vec<&str> = commands::COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| {
+            let typed = name.strip_prefix('/').unwrap_or(name);
+            commands::parse(typed, &defaults(), &DARK) == listing
+        })
+        .collect();
+    assert_eq!(
+        inert,
+        vec!["/help"],
+        "these commands are listed but resolve to the help listing, which is what \
+         an unknown command resolves to — they are advertised and inert. Give each \
+         one an arm in `commands::parse` and an arm in the driver, or take the row \
+         out of `COMMANDS`."
+    );
+}
+
 #[test]
 fn each_command_resolves() {
     assert!(matches!(

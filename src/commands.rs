@@ -842,6 +842,16 @@ pub enum Action {
     Memory,
     /// Show the configured MCP servers and what the session has seen of them.
     Mcp,
+    /// List every skill — the five io-cli ships and the operator's own — with
+    /// what it is for, whose it is, whether it is on, and the file it lives in.
+    ///
+    /// **The enabled set is read through `io_harness::Skills::discover`**, the
+    /// same call the run makes, so what this lists is what the model is actually
+    /// offered rather than io-cli's account of a directory. The disabled set is
+    /// read by io-cli itself, because `skills/disabled/` holds no `SKILL.md` and
+    /// is therefore invisible to that call by design — which is the whole
+    /// mechanism, not a gap in it.
+    Skills,
     /// Show the provider chain, in the order a turn tries it.
     Provider,
     /// List the named profiles, and switch to one for this session.
@@ -1421,6 +1431,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // already follow.
         "memory" => Action::Memory,
         "mcp" | "servers" => Action::Mcp,
+        "skills" => Action::Skills,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile,
         // **An alias earns no row of its own.** `/usage` is what an operator

@@ -68,6 +68,8 @@ pub mod servers;
 pub mod sessions;
 pub mod settings;
 pub mod shell;
+pub mod skills;
+pub mod skillview;
 pub mod splash;
 pub mod status;
 pub mod stdin;
