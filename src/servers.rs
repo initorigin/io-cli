@@ -15,17 +15,26 @@
 //! start, and drawing it as a failure would tell an operator their configuration
 //! is broken at the exact moment it is most likely to be fine.
 //!
-//! # What the count is, and what it is not
+//! # Two counts, and they are not the same question
 //!
-//! `EventKind::Mcp` carries `server`, `tool`, `ok` and `millis` and **no count of
-//! the tools a server offers** — and `io_harness::mcp` exposes no catalogue
-//! accessor, so there is no other channel. What this module can count is the
-//! number of DISTINCT TOOLS the session has asked a server for, which is a lower
-//! bound on what it offers and is never larger than the truth.
+//! **Offered** is how many tools a server announced. It arrives on `EventKind::Mcp`
+//! as `tools: Option<u32>`, added by io-harness 0.68.0 and set **only** on the
+//! event announcing a server reaching the run — over the server's full listed
+//! catalogue. Every other form of the event, each `discovered` and every call,
+//! carries `None`. Until 0.68.0 the fact was not on the wire at all and this
+//! module said so; that sentence is now false, and the field it said did not
+//! exist is what closes `US-IO-CLI-0.16.0-I01` / `US-IO-HARNESS-0.68.0-I01`.
 //!
-//! The panel says so. The true count is io-cli 0.17.0's, behind the io-harness
-//! release that puts it on the event — recorded as `US-IO-CLI-0.16.0-I01` here
-//! and `US-IO-HARNESS-0.68.0-I01` there.
+//! **`Some(0)` and `None` are different facts and this module must not collapse
+//! them.** `Some(0)` is a server that stated it offers nothing; `None` is an
+//! event with nothing to say about the count. Reading a missing count as zero
+//! would make a server that has only ever answered CALLS — every one of whose
+//! events carries `None` — report offering no tools while visibly using them.
+//!
+//! **Asked for** is the number of DISTINCT TOOLS this session has called, which
+//! this module still counts itself because no event states it. It is a lower
+//! bound on what is offered, and the two numbers are drawn as two numbers: one
+//! replacing the other would answer a question nobody asked.
 //!
 //! # Two verbs this panel does not offer
 //!
@@ -49,9 +58,14 @@ use crate::configure::Decided;
 /// What this session has seen of one configured server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reached {
-    /// It answered. The count is how many **distinct tools it has been asked
-    /// for**, which is a lower bound on what it offers — see the module docs.
-    Answered { tools: usize },
+    /// It answered.
+    ///
+    /// `tools` is how many **distinct tools it has been asked for**. `offered`
+    /// is how many it **announced**, when an event said so — `Some(0)` is a
+    /// server that offers nothing and `None` is a server whose count this
+    /// session never saw, which is the state of one that has answered calls
+    /// without the announcing event ever being folded in. See the module docs.
+    Answered { tools: usize, offered: Option<u32> },
     /// A call to it failed, and this is the last one that did.
     Failed { tool: String },
     /// Nothing has been heard from it this session.
@@ -92,10 +106,29 @@ pub struct Server {
 /// field answers "is anything connected" for a one-row status line, and this
 /// answers "what happened to each of them" for a panel. One is not derivable from
 /// the other — the pair has no server names in it at all.
+/// What this session has seen one server do.
+///
+/// **A struct rather than the tuple this was, and clippy is right about when.**
+/// Two facts read fine positionally; the third — the offered count 0.68.0 put on
+/// the event — is where `entry.2` stops saying what it holds at the call site. The
+/// names are the documentation now that there is more than one kind of number
+/// here, and `asked` and `offered` are exactly the pair a reader must not confuse.
+#[derive(Debug, Clone, Default)]
+struct Seen {
+    /// Distinct tool names this session has called on the server. A lower bound
+    /// on what it offers, and counted here because no event states it.
+    asked: BTreeSet<String>,
+    /// The tool of the last call that failed, if one did.
+    failed: Option<String>,
+    /// How many tools the server announced, if an event ever said. `None` is not
+    /// zero — see [`Observed::event`].
+    offered: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Observed {
-    /// Distinct tool names seen per server, and the last failure if there was one.
-    seen: BTreeMap<String, (BTreeSet<String>, Option<String>)>,
+    /// What each server has been seen to do, by the id it was configured under.
+    seen: BTreeMap<String, Seen>,
 }
 
 impl Observed {
@@ -104,23 +137,33 @@ impl Observed {
     /// `EventKind::Mcp` means two things and the difference is whether `tool` is
     /// present: with none it is the server itself reaching the run, and with one
     /// it is a call. Both mark the server as reached; only the second can name a
-    /// tool or a failure.
+    /// tool or a failure, and only the first states an offered count.
     pub fn event(&mut self, kind: &EventKind) {
         let EventKind::Mcp {
-            server, tool, ok, ..
+            server,
+            tool,
+            ok,
+            tools,
+            ..
         } = kind
         else {
             return;
         };
 
         let entry = self.seen.entry(server.clone()).or_default();
+        // Only ever ASSIGNED from a `Some`. A `None` is an event with nothing to
+        // say about the count, not a statement that there are none — so it must
+        // neither write a zero nor erase a count an earlier event stated.
+        if let Some(offered) = tools {
+            entry.offered = Some(*offered);
+        }
         if let Some(tool) = tool {
-            entry.0.insert(tool.clone());
+            entry.asked.insert(tool.clone());
             // `ok` is an `Option<bool>`: `Some(false)` is a failure, and `None`
             // is a call whose outcome the event did not carry, which is not the
             // same thing and must not be drawn as one.
             if *ok == Some(false) {
-                entry.1 = Some(tool.clone());
+                entry.failed = Some(tool.clone());
             }
         }
     }
@@ -138,9 +181,12 @@ impl Observed {
     pub fn of(&self, id: &str) -> Reached {
         match self.seen.get(id) {
             None => Reached::NotYet,
-            Some((tools, failure)) => match failure {
+            Some(seen) => match &seen.failed {
                 Some(tool) => Reached::Failed { tool: tool.clone() },
-                None => Reached::Answered { tools: tools.len() },
+                None => Reached::Answered {
+                    tools: seen.asked.len(),
+                    offered: seen.offered,
+                },
             },
         }
     }
@@ -195,7 +241,19 @@ pub fn rows(servers: &[Server]) -> Vec<crate::picker::Row> {
         .iter()
         .map(|server| {
             let state = match &server.state {
-                Reached::Answered { tools } => format!("answered · {tools} tools used"),
+                // Two numbers, drawn as two numbers. The offered count does not
+                // replace the asked-for one: "10 offered · 2 used" is the answer
+                // to a question either number alone gets wrong.
+                Reached::Answered {
+                    tools,
+                    offered: Some(offered),
+                } => format!("answered · {offered} offered · {tools} used"),
+                // No count stated. The panel says what it knows and stays silent
+                // about the rest rather than drawing a zero it did not hear.
+                Reached::Answered {
+                    tools,
+                    offered: None,
+                } => format!("answered · {tools} tools used"),
                 Reached::Failed { tool } => format!("failed · {tool}"),
                 Reached::NotYet => "not reached this session".to_string(),
             };

@@ -357,11 +357,16 @@ fn the_containment_field_carries_the_backend_and_not_only_the_mode() {
 }
 
 /// Context pressure appears once something has said what it is, and says it as a
-/// share of the budget io-harness itself declares rather than of a number copied
-/// into this repository.
+/// share of the window **this session's contract** declares — not of the crate
+/// default, which is what it divided by until 0.17.0 and is why the field was
+/// silently wrong for every operator who set `[run.context]`.
 #[test]
 fn the_context_field_appears_when_a_fold_reports_one() {
     let mut app = App::new(DARK, "opus-5");
+    // The denominator, handed over the way the driver hands it: from the contract
+    // the turn is running under. Without it there is no window and the field stays
+    // away, which is the honest answer and is asserted in its own test.
+    app.status.budgets = Budgets::in_force(&budgeted());
     assert!(!app.status.line(120, &DARK).to_string().contains("ctx"));
 
     app.event(
@@ -609,6 +614,9 @@ fn f12_a_plan_of_no_items_is_absent_rather_than_zero() {
 #[test]
 fn the_run_fields_do_not_outlive_the_run_that_set_them() {
     let mut app = App::new(DARK, "opus-5");
+    // The window `ctx N%` is a share of. A fold with no contract behind it reports
+    // nothing from 0.17.0 — see `the_context_field_appears_when_a_fold_reports_one`.
+    app.status.budgets = Budgets::in_force(&budgeted());
     app.set_posture(Some(io_cli::settings::Posture::Workspace));
     app.event(&step(1, 12_400), Duration::ZERO);
     app.event(
@@ -637,7 +645,13 @@ fn the_run_fields_do_not_outlive_the_run_that_set_them() {
     app.status.forget_run();
 
     let after = app.status.line(200, &DARK).to_string();
-    for fact in ["tok", "ctx", "seatbelt", "plan"] {
+    // The run's OWN spellings, not any row that happens to hold the same word.
+    // The budgets are the file's rather than the run's and deliberately survive a
+    // forget — they are what the next turn will run under — so a sweep for a bare
+    // `"tok"` now finds `left 0/10.0k tok` and fails on the field working
+    // correctly. What must go is the count this run spent and the share it
+    // reported, and that is what these name.
+    for fact in ["12.4k tok", "ctx ", "seatbelt", "plan 1/3"] {
         assert!(
             !after.contains(fact),
             "{fact:?} outlived the run that reported it: {after:?}",
@@ -797,6 +811,7 @@ fn f6_a_server_that_answered_is_named_with_the_tools_it_offered() {
             tool: None,
             ok: None,
             millis: None,
+            tools: Some(2),
         }),
         Duration::ZERO,
     );
@@ -808,6 +823,7 @@ fn f6_a_server_that_answered_is_named_with_the_tools_it_offered() {
                 tool: Some(tool.into()),
                 ok: Some(true),
                 millis: Some(12),
+                tools: None,
             }),
             Duration::ZERO,
         );
@@ -1418,6 +1434,12 @@ fn committed_of(
 /// it and through the one function the driver calls.
 fn reported() -> App {
     let mut app = App::new(DARK, "anthropic/claude-sonnet-4.5");
+    // **Before the events, from 0.17.0, and the order is the assertion.** `ctx N%`
+    // is a share of the window the CONTRACT declares, so a `Status` that was never
+    // handed one has no denominator and reports nothing rather than a share of the
+    // crate default — which is the defect F10 exists to remove, and a fixture that
+    // set the budgets afterwards would be asserting the old behaviour.
+    app.status.budgets = Budgets::in_force(&budgeted());
     app.event(
         &event(EventKind::Started {
             goal: "summarise the module".into(),
@@ -1458,6 +1480,7 @@ fn reported() -> App {
             tool: None,
             ok: None,
             millis: None,
+            tools: Some(1),
         }),
         Duration::ZERO,
     );
@@ -1467,6 +1490,7 @@ fn reported() -> App {
             tool: Some("search".into()),
             ok: Some(true),
             millis: Some(12),
+            tools: None,
         }),
         Duration::ZERO,
     );
@@ -1585,7 +1609,12 @@ fn f10_status_commits_every_field_from_the_value_io_harness_supplied() {
 
     // What is connected, beside what was configured.
     assert!(
-        page.contains("mcp: 1 of 2 configured connected, offering 1 tool"),
+        // `answering N calls` and not `offering N tools`: the second number has
+        // counted calls since 0.10.0 and this was the one site 0.16.0's rename
+        // missed. `/mcp` draws the real offered count from the event's own
+        // `tools` field from 0.17.0, so two different numbers under one word
+        // would now contradict each other on two surfaces.
+        page.contains("mcp: 1 of 2 configured connected, answering 1 call"),
         "a server that answered and a server that is named in the file are \
          different facts, and both are on the page: {page}",
     );
@@ -1707,8 +1736,15 @@ fn f10_a_fact_no_event_has_reported_reads_as_unknown_rather_than_as_a_default() 
         page.contains("nothing has been drawn against the tree yet"),
         "{page}",
     );
+    // **Half of this fact IS knowable before a turn, and 0.17.0 says the half it
+    // knows.** The share needs an assembly to have happened; the WINDOW is the
+    // contract's, so it is knowable at the idle prompt and is exactly what an
+    // operator checking `[run.context]` came to the page for. The old sentence
+    // said "not known until the context has been folded", which withheld a number
+    // this page was already holding — and named a fold, which is no longer the
+    // only thing that reports one.
     assert!(
-        page.contains("context: not known until the context has been folded"),
+        page.contains("context: nothing assembled yet — the window is"),
         "{page}",
     );
     assert!(page.contains("mcp: 0 of 2 configured connected"), "{page}");
@@ -1883,4 +1919,99 @@ fn f8_status_names_the_home_in_force_and_the_word_that_decided_it() {
     // this one set.
     std::env::remove_var("IO_CONFIG");
     std::env::remove_var("IO_CONFIG_HOME");
+}
+
+/// **N3 — the queue depth is on every renderer that draws the status.**
+///
+/// `Status` has three renderers that do not share a body: `fields` feeds `line`
+/// and nothing else, `footer` is hand-built beside it, and `Status::render`
+/// takes the **footer** on any terminal seven rows or taller — which is to say
+/// on every terminal an operator actually has. So a field is not "on the status
+/// line" because `fields` composes it; it is on the status line when both forms
+/// draw it, in the same words, and the only way to know that is to read both.
+///
+/// **This is the test that kills the sabotage.** Add the depth to `fields` alone
+/// and the `Status::line` arm below stays green while the `Status::footer` arm
+/// goes red — on the renderer the binary draws, which is precisely how 0.12.0
+/// shipped a planning mode that was nowhere on screen in a live capture.
+///
+/// The spelling is asserted against `Status::queued_left` rather than against a
+/// literal repeated three times, so the one place that composes it is the one
+/// place a rename has to touch: a renderer that grew its own `format!` would
+/// fail here even if both forms happened to say something.
+#[test]
+fn n3_the_queue_depth_is_drawn_by_the_line_and_by_the_footer_alike() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+
+    // Nothing typed ahead, so nothing said. Both forms, because "absent at zero"
+    // is a claim about what reaches a terminal and not about one code path.
+    assert_eq!(
+        status.queued_left(),
+        None,
+        "a session nobody typed ahead of composed a depth",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("queued"),
+            "{renderer} drew a queue on a session with none: {text:?}",
+        );
+    }
+
+    status.queued_prompts = 3;
+    let spelling = status
+        .queued_left()
+        .expect("three waiting prompts are a queue");
+    assert_eq!(spelling, "queued 3", "the depth is spelled once, plainly");
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains(&spelling),
+            "{renderer} does not say what is waiting behind this turn: {text:?}",
+        );
+    }
+
+    // And back down to nothing when the queue drains, on both forms — a count
+    // that never returns to absent would leave every session that ever queued a
+    // prompt carrying the field for the rest of its life.
+    status.queued_prompts = 0;
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("queued"),
+            "{renderer} kept a drained queue on screen: {text:?}",
+        );
+    }
+}
+
+/// **N3 — the queue belongs to the session and outlives the run.**
+///
+/// `Status::forget_run` clears the per-run facts when the conversation under the
+/// line changes, and the depth is deliberately not one of them. The queue itself
+/// is `App::prompts` and `forget_run` cannot reach it — so a count blanked here
+/// would not drop a single prompt, it would only stop reporting them, and they
+/// would still fire a turn each under a line that had just said there were none.
+///
+/// Sabotage: clear `queued_prompts` in `forget_run` beside `jobs` — under which only
+/// this test fails, and it fails in the one state where the operator has typed
+/// ahead and then moved the conversation, which is exactly when a prompt firing
+/// unannounced is least welcome.
+#[test]
+fn n3_the_queue_depth_survives_forgetting_the_run() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.queued_prompts = 2;
+    // A run-scoped neighbour, so this test states the difference rather than
+    // just the half it is about.
+    status.jobs = 1;
+
+    status.forget_run();
+
+    assert_eq!(status.jobs, 0, "a background job belongs to its run");
+    assert_eq!(
+        status.queued_prompts, 2,
+        "the prompts the operator typed are still going to run",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("queued 2"),
+            "{renderer} stopped saying what is still waiting: {text:?}",
+        );
+    }
 }

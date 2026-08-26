@@ -17,18 +17,26 @@ use std::sync::Arc;
 use io_harness::{Flow, Observer, RunEvent};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-/// The observer handed to `Session::turn_steered` and to
-/// `Session::turn_contained_bounded_observed`.
+/// The observer handed to `Session::turn_bounded_steered` and to
+/// `Session::turn_contained_bounded_steered`.
 pub struct Bridge {
     events: UnboundedSender<RunEvent>,
-    /// Set to end a *contained* turn, and never set for a steered one.
+    /// Set to end a turn, contained or not. **The whole of how `Ctrl+C` stops a
+    /// run**, and the only mechanism this product will use for it.
     ///
-    /// A contained turn takes no `SteerInbox` — the entry point that reaches the
-    /// spawn loop has no parameter for one — so the only way an interface can
-    /// stop it is the return value of this method. io-harness honours
-    /// [`Flow::Cancel`] at the next step boundary at which no child is in flight,
-    /// which is a real wait and is disclosed as one rather than presented as an
-    /// immediate stop.
+    /// Since 0.17.0 both turn shapes also carry a `SteerInbox`, so
+    /// `Steer::interrupt` is a second way to reach the same
+    /// `RunOutcome::Cancelled` at the same step boundary — and the stop key is
+    /// deliberately not moved onto it. The two are recorded by different code in
+    /// io-harness, an operator cannot tell them apart from the screen, and this
+    /// is the one key no configuration file may rebind: a mechanism swap here
+    /// costs a rewrite of `tests/interrupt.rs` and buys nothing anybody can see.
+    /// The inbox carries the operator's *words*; this flag carries their stop.
+    ///
+    /// io-harness honours [`Flow::Cancel`] at the next step boundary — on a
+    /// contained turn, the next one at which no child is in flight, which is a
+    /// real wait and is disclosed as one rather than presented as an immediate
+    /// stop.
     ///
     /// Shared rather than checked through a channel because `event` must not
     /// block: it runs on the run's own task, in order, for every event.
@@ -48,11 +56,11 @@ pub fn channel() -> (Bridge, UnboundedReceiver<RunEvent>) {
 }
 
 impl Bridge {
-    /// The switch that ends a contained turn, for the driver to hold.
+    /// The switch that ends a turn, for the driver to hold.
     ///
-    /// Handed out only where a contained turn is started. A steered turn leaves
-    /// it untouched for its whole life, which is what keeps `Ctrl+C` on the path
-    /// it has had since 0.1.0 for every session that configures no caps.
+    /// Taken once per turn, contained or not, and set by the stop key and by
+    /// nothing else — which is what keeps `Ctrl+C` on the path it has had since
+    /// 0.1.0 now that a turn can also be spoken to.
     pub fn canceller(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancel)
     }
@@ -63,12 +71,11 @@ impl Observer for Bridge {
         // A send error means the interface is gone — the process is exiting, or
         // the receiver was dropped. Nothing to do about it here.
         let _ = self.events.send(event.clone());
-        // A steered turn is stopped through `Steer::interrupt`, which ends it at
-        // a step boundary and leaves it resumable, and nothing sets this flag on
-        // that path. A contained turn has no inbox to interrupt, so this is the
-        // one place it can be stopped from — and it is read, never assumed: a
-        // bridge that answered `Cancel` unconditionally would cancel every
-        // steered turn the moment its first event arrived.
+        // Read, never assumed: a bridge that answered `Cancel` because a turn was
+        // running would cancel every turn the moment its first event arrived.
+        // This is the one place either kind of turn is stopped from — the steer
+        // inbox both of them now carry is for the operator's words, not their
+        // stop key.
         if self.cancel.load(Ordering::Relaxed) {
             return Flow::Cancel;
         }

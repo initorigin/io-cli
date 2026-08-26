@@ -29,7 +29,7 @@
 //! a promise the turn might not keep.
 //!
 //! **Everything that shows more of something commits upward.** The viewport is
-//! four rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
+//! eight rows and cannot grow, so `/expand` and `Ctrl+T` do not open a pane — they
 //! write into the scrollback, where the terminal's own search, selection and
 //! copy-mode already work. That is one answer to "show me more" rather than
 //! three, and it is the same answer the transcript gives.
@@ -137,6 +137,24 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/status",
         "commit the whole session state into the scrollback",
     ),
+    // `/status` says how full the window is; this says what is in it. The two are
+    // one keystroke apart on purpose — the percentage is what makes an operator
+    // ask the question this answers.
+    (
+        "/context",
+        "what is in the model's window, read from the request that carried the turn",
+    ),
+    (
+        "/steer",
+        "send what is queued into the turn that is already running",
+    ),
+    // Beside `/steer` because it is the same kind of word: something an operator
+    // says *to* a turn rather than about one, and the only other command whose
+    // effect is decided by whether anything is running.
+    (
+        "/compact",
+        "fold this conversation into a summary, at the next step",
+    ),
     ("/copy", "put the last answer on the system clipboard"),
     (
         "/copy diff",
@@ -235,12 +253,18 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Session,
         &["/clear", "/resume", "/fork", "/setup", "/exit"],
     ),
-    (Group::Turn, &["/model", "/contain", "/plan", "/profile"]),
+    (
+        Group::Turn,
+        &[
+            "/model", "/contain", "/plan", "/profile", "/steer", "/compact",
+        ],
+    ),
     (
         Group::Inspect,
         &[
             "/help",
             "/status",
+            "/context",
             "/expand",
             "/fleet",
             "/mcp",
@@ -655,13 +679,48 @@ pub enum Action {
     ///
     /// **Into the scrollback and never into a pane**, which is the same answer
     /// [`Action::Expand`] and [`Action::Transcript`] give to "show me more": the
-    /// viewport is four rows and cannot grow, and the terminal's own search,
+    /// viewport is eight rows and cannot grow, and the terminal's own search,
     /// selection and copy-mode already work on everything committed above it.
     /// Every field of it is a value io-harness supplied — the policy layers, the
     /// backend that actually answered, the draw against the tree's ceiling, the
     /// budgets in force, the context fill, the servers that came up — so what is
     /// committed is the state io-harness is in and not io-cli's account of it.
     Status,
+    /// Send what is queued into the turn that is already running.
+    ///
+    /// io-harness delivers it at the next step boundary, so the step in flight
+    /// finishes whole and the agent reads the correction before it chooses what
+    /// to do next. Deliberately a word rather than a default: a delivered steer
+    /// emits no event this interface can render, so a line sent automatically
+    /// would leave the screen with no echo at all — and `Steer::say` has no
+    /// undo, which would make every note typed to oneself mid-turn an
+    /// instruction to the agent.
+    Steer,
+    /// Fold the conversation into a summary and carry on.
+    ///
+    /// **Two triggers behind one word, chosen by whether a turn is running.** A
+    /// running turn is asked through `Steer::fold`, which lands at its next step
+    /// boundary; an idle prompt has no turn to ask, so the request rides the next
+    /// turn's contract as `TaskContract::fold_now` and folds at that turn's first
+    /// step. The driver answers the first case before [`parse`] is ever called —
+    /// the same shape [`Action::Steer`] has — so this action is what an idle
+    /// prompt means.
+    ///
+    /// **What it must never do is report the fold.** io-harness documents four
+    /// conditions under which an accepted request folds nothing, and the request
+    /// is spent under all of them, so the only thing that says a fold happened is
+    /// `EventKind::Compacted`. [`crate::compact`] is where that rule lives.
+    Compact,
+    /// Commit what the model's window actually held, section by section.
+    ///
+    /// Read off the request that carried the last turn and never reconstructed:
+    /// io-harness enumerates no context window, its prompt composer is private
+    /// and the event announcing a composed prompt carries a byte count with no
+    /// text. What it does hand the caller is the `CompletionRequest` itself, so
+    /// the catalogue on this page includes tools io-cli never registered —
+    /// because it is the catalogue the model was given rather than the one this
+    /// crate believes it asked for.
+    Context,
     /// Put something on the system clipboard over OSC 52.
     Copy(Copied),
     /// Put the whole conversation back into the scrollback.
@@ -683,9 +742,9 @@ pub enum Action {
     Image(Option<usize>),
     /// Run later turns contained, stop doing so, or say which it is now.
     ///
-    /// `None` is a question and never a toggle: the two modes differ in what a
-    /// turn can do — fan out, or be steered — and a switch that guessed which
-    /// one the operator meant would be wrong half the time.
+    /// `None` is a question and never a toggle: the two modes differ in whether
+    /// a turn can fan out — steering is on both since 0.17.0 — and a switch that
+    /// guessed which one the operator meant would be wrong half the time.
     Contain(Option<bool>),
     /// Make later turns propose a plan before they work, stop doing so, or say
     /// which it is now.
@@ -841,7 +900,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         }
         // `on` / `off` / nothing. Nothing REPORTS rather than toggles, because
         // this switch changes what a turn is — a blind toggle would be a coin
-        // flip between a turn that can be steered and one that can fan out.
+        // flip between a turn that can fan out and one that does the work itself.
         "contain" | "containment" => match input.split_whitespace().nth(1) {
             Some("on") | Some("yes") => Action::Contain(Some(true)),
             Some("off") | Some("no") => Action::Contain(Some(false)),
@@ -856,6 +915,25 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             _ => Action::Plan(None),
         },
         "fleet" | "agents" => Action::Fleet,
+        // Answered by the driver while a turn is running, which is the only time
+        // there is a turn to steer. It reaches this arm only at an idle prompt,
+        // where the honest answer is what it would have done and why it cannot —
+        // not "there is no such command", which is what an unregistered name
+        // gets and would be a lie about a command the palette lists.
+        "steer" => Action::Steer,
+        // **One spelling, for the reason `/status` has one.** The driver's
+        // mid-turn arm matches the literal word `compact` before `parse` is
+        // reached — the shape `/steer` already has — so a second name here would
+        // be a name that worked at an idle prompt and did nothing mid-turn, which
+        // is the worst kind of alias. `/fold` is deliberately not taken: it is the
+        // word io-harness uses internally, and nobody has typed it at a prompt
+        // yet.
+        //
+        // It reaches this arm at an idle prompt, where the answer is not "there is
+        // no turn". A request made here is honoured at the *next* turn's first
+        // step, through the contract, so the idle case is a real feature rather
+        // than a refusal with a sentence.
+        "compact" => Action::Compact,
         // **`/attach` is gone, and 0.13.1 is where it went.** A picture is
         // attached by dropping it on the prompt or pasting it — which is what an
         // operator already does in every other window they talk to a model in —
@@ -883,6 +961,7 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // name for a surface nobody has typed yet is a name to keep working
         // forever in exchange for nothing.
         "status" => Action::Status,
+        "context" => Action::Context,
         // `/clear` and `/new` mean the same thing, for the reason `/resume` and
         // `/continue` do: both words are in the field's vocabulary and a reader
         // arrives having been taught one of them by another agent.

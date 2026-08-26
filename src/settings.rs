@@ -63,7 +63,7 @@ pub struct CliSettings {
     /// The caps a fan-out runs under: `[app.io-cli.containment]`.
     ///
     /// **This key is what turns the fleet on, and it is not a preference.**
-    /// `Session::turn_contained_bounded_observed` is the only session entry point
+    /// `Session::turn_contained_bounded_steered` is the only session entry point
     /// that passes a containment into the driver, and therefore the only one that
     /// reaches the loop owning the spawn tool — so a session with no caps
     /// configured cannot decompose anything, and one with them runs a materially
@@ -143,11 +143,13 @@ pub fn containment(stored: Option<&CliSettings>) -> Option<&io_harness::Containm
 /// wrong. It offered a responder, a plan gate, MCP servers, language servers, a
 /// browser and skills as things this mode grants, and named a lost mid-turn steer
 /// as the price. Both stopped being true: 0.11.0 gave the flat turn a contract
-/// too, so every one of those capabilities is on both turns, and neither turn
-/// takes a `SteerInbox` any more — `Ctrl+C` is the observer's cancel on both.
+/// too, so every one of those capabilities is on both turns, and since 0.17.0
+/// both turns take a `SteerInbox` as well — a contained turn can be steered, so
+/// there is no price to name. `Ctrl+C` is the observer's cancel on both, which
+/// is the half of that old sentence that was right all along.
 ///
 /// What is left is one difference, and it is the one the caps are for:
-/// `turn_contained_bounded_observed` is the only session entry point that reaches
+/// `turn_contained_bounded_steered` is the only session entry point that reaches
 /// io-harness's spawn loop, so this is the only turn that can fan out. A notice
 /// that sold the mode on anything else was talking an operator into a fan-out to
 /// get capabilities their session already had.
@@ -427,7 +429,8 @@ pub fn render(
                 // Left out with the most force of all: this key changes what a
                 // turn *is*, not how it looks. The wizard asks nothing about
                 // fan-out, and a file that arrived with caps already in it would
-                // have turned steering off for somebody who never chose to.
+                // have put every turn through io-harness's spawn loop for
+                // somebody who never chose to.
                 containment: None,
                 // The capability keys are left out because the wizard asks about
                 // none of them and a file that arrived with an MCP server, a

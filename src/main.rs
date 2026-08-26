@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
-use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Store, Templates};
+use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use io_cli::app::{App, Command};
@@ -290,7 +290,7 @@ async fn drive(
         notices.push(complaint);
     }
     // The caps the fleet needs, read once and cloned out of the settings. A
-    // session with none cannot fan out: `turn_contained_bounded_observed` is the only
+    // session with none cannot fan out: `turn_contained_bounded_steered` is the only
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
@@ -471,6 +471,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     skills: io_harness::Skills,
     model: String,
 ) -> Result<(), String> {
+    // Every request the session makes goes past this, and it is the only way
+    // io-cli can say what is in the model's window: io-harness enumerates none
+    // of it — the composer is private and the event announcing a composed prompt
+    // carries a byte count with no text — while the request it hands the caller
+    // carries the system block, the tool catalogue and the messages as public
+    // fields. The MAKER is wrapped rather than the provider it makes, so a
+    // `/model` switch keeps reporting rather than quietly reverting to a
+    // provider nothing is watching.
+    let seen = io_cli::context::Seen::default();
+    let make = io_cli::provider::watching(make, seen.clone());
     // Built here rather than handed in, so there is one place a provider comes
     // from and `/model` cannot drift from startup.
     let mut provider = make(&model)?;
@@ -553,6 +563,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // fan-out silently made every turn stop and plan first. It is the operator's
     // switch now, and nothing turns it on but `/plan on`.
     let mut planning = false;
+    // One `/compact` typed at an idle prompt, spent by the next turn that starts.
+    let mut fold_next = false;
     if let Some(caps) = &containment {
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
@@ -677,6 +689,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     // longer on screen.
                                     app.status.forget_run();
                                     app.forget_fleet();
+                                    // A window that outlives its conversation
+                                    // describes a turn the operator has left.
+                                    seen.forget();
                                     // Where they were, in the terminal's own
                                     // buffer rather than in a four-row viewport.
                                     commit_transcript(screen, &session, &store, &app.theme)?;
@@ -713,6 +728,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 Ok(()) => {
                                     app.status.forget_run();
                                     app.forget_fleet();
+                                    // A window that outlives its conversation
+                                    // describes a turn the operator has left.
+                                    seen.forget();
                                     app.say(
                                         Tone::Success,
                                         format!(
@@ -1041,6 +1059,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // The undone turn is where those numbers came from.
                     app.status.forget_run();
                     app.forget_fleet();
+                    // As above: the last request belonged to the undone turn.
+                    seen.forget();
                     for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                         app.say(tone, line);
                     }
@@ -1259,11 +1279,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         let where_it_is = if contained {
                             settings::contained_notice(caps, app.theme.glyphs.dash)
                         } else {
-                            // **Not "steered".** Neither turn takes a `SteerInbox`
-                            // since 0.11.0 — the flat arm gave its up for a
-                            // contract and the contained arm never had one — so a
-                            // word promising mid-turn redirection describes
-                            // nothing this product does.
+                            // **Not "steered", and since 0.17.0 for the opposite
+                            // reason.** Both arms hold a `SteerInbox` now, so
+                            // steering is what this turn and a contained one have
+                            // in common — naming it here would offer as a
+                            // consolation something the other mode has too. The
+                            // one difference either way is the fan-out, so that
+                            // is the only thing this sentence names.
                             "not contained — this turn does the work itself and cannot fan out"
                                 .to_string()
                         };
@@ -1373,7 +1395,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 // **Committed upward, exactly as `/expand` and `Ctrl+T` are.**
-                // The viewport is four rows and cannot grow, so everything that
+                // The viewport is eight rows and cannot grow, so everything that
                 // shows more of something writes into the terminal's own
                 // scrollback — one answer to "show me more" rather than three.
                 //
@@ -1420,6 +1442,55 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // Reached only at an idle prompt: while a turn runs the driver's
+                // own key handler answers `/steer` before `parse` is ever called,
+                // because that is where the inbox lives. So this arm is the
+                // honest "nothing to steer" and it says what the command would
+                // have done, rather than leaving a registered command looking
+                // broken to the operator who just found it in the palette.
+                Action::Steer => app.say(
+                    Tone::Muted,
+                    "nothing is running — /steer sends what is queued into a turn that is already \
+                     working, and it is read at that turn's next step",
+                ),
+                // Reached at an idle prompt, where `/compact` is not a refusal:
+                // there is no turn to steer, so the request rides the NEXT turn's
+                // contract as `TaskContract::fold_now` and folds at that turn's
+                // first step. While a turn runs, the driver's own key handler
+                // answers the word before `parse` is called, the way `/steer` is.
+                Action::Compact => {
+                    let dash = app.theme.glyphs.dash;
+                    // Read off `opening` — built at startup from the same builder
+                    // every turn uses — rather than from a fifth
+                    // `contract::session` call, which `tests/contract.rs` counts
+                    // and fails at five. Nothing in `[run]` or `[app.io-cli]` can
+                    // move `compaction` between two turns of one session.
+                    let said = io_cli::compact::Said::asked(opening.compaction, false);
+                    fold_next = said == io_cli::compact::Said::Armed;
+                    app.say(Tone::Muted, said.line(dash));
+                }
+                Action::Context => {
+                    // `reading` for the same reason the arm above binds it that
+                    // way — `tests/plan.rs` reads the plan-gate argument off a
+                    // binding called `contract`, and this is not a turn's.
+                    let (answerer, _questions) = io_cli::intent::channel();
+                    let reading = io_cli::contract::session(
+                        String::new(),
+                        session.root().to_path_buf(),
+                        &config,
+                        &capabilities,
+                        std::sync::Arc::new(answerer),
+                        None,
+                    );
+                    let lines = io_cli::context::committed(
+                        seen.latest().as_ref(),
+                        &reading,
+                        reading.max_tokens,
+                        &app.theme,
+                        screen.width(),
+                    );
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
                 Action::Copy(what) => {
                     let (payload, said) = to_copy(&session, &store, what);
                     match payload {
@@ -1443,6 +1514,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // same sentence.
                 Action::Clear => {
                     if app.clear_conversation() {
+                        // **The window belonged to the conversation being
+                        // discarded.** `Seen::forget`'s own doc names `/clear`
+                        // first of the three sites that must call it, and this was
+                        // the one that did not — `/resume`, `/fork` and the rewind
+                        // all do, beside their `forget_run`. Without it `/context`
+                        // draws the whole of a conversation the operator has just
+                        // thrown away, on a session with no turns in it, while the
+                        // `ctx` field beside it is blank because `forget_run` did
+                        // clear that. Two surfaces disagreeing about the same
+                        // fact, which is what this release exists to stop.
+                        seen.forget();
                         let root = session.root().to_path_buf();
                         match Session::open(&store, &root) {
                             Ok(fresh) => {
@@ -1508,43 +1590,86 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 let lines = shell::lines(&line, &ran, &app.theme);
                 screen.commit(&lines).map_err(|error| error.to_string())?;
             }
+            // **A prompt, and then whatever queued behind it while it ran.** The
+            // loop is what makes three queued lines three turns: each goes
+            // through `turn` on its own, so each gets its own echo, its own
+            // answer under it, its own clock and its own `Ctrl+C`. Joining them
+            // into one prompt would be one run answering everything in one
+            // breath, with no boundary an operator could stop it at — which is
+            // the shape queueing them was meant to avoid.
+            //
+            // Prompts typed *during* a queued turn queue behind the rest, because
+            // `App::next_queued_prompt` is asked again at the bottom of every
+            // pass rather than the queue being drained into a list up front.
             Command::Submit(text) => {
-                // Rebuilt every turn rather than kept, because `remembered` grows
-                // as the operator answers and the harness's own `remember` dies
-                // with the turn it was given in. With nothing remembered this is
-                // the session's policy unchanged.
-                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
-                turn(
-                    screen,
-                    inputs,
-                    &mut app,
-                    &provider,
-                    &store,
-                    &mut session,
-                    &effective,
-                    &config,
-                    // The caps reach the turn only while the session is in
-                    // contained mode, so `/contain off` is a real switch and not
-                    // a label: with `None` here the turn built below is the
-                    // steered turn, byte for byte.
-                    contained.then_some(containment.as_ref()).flatten(),
-                    &capabilities,
-                    planning,
-                    text,
-                    // **This turn's own clock, not the session's.** What a reader
-                    // wants of the row above the prompt is how long the thing in
-                    // front of them has been going; a clock that had been counting
-                    // since the terminal opened said `22m12s` about a turn six
-                    // seconds old. Every event age inside the turn is measured
-                    // from here too, which is what a tool cell's duration is a
-                    // difference of.
-                    Instant::now(),
-                )
-                .await?;
-                // Anything dropped onto the prompt while the turn held the
-                // session is staged now that it has let go.
-                for path in app.take_queued_pictures() {
-                    paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                let mut next = Some(text);
+                while let Some(text) = next.take() {
+                    // Rebuilt every turn rather than kept, because `remembered`
+                    // grows as the operator answers and the harness's own
+                    // `remember` dies with the turn it was given in. With nothing
+                    // remembered this is the session's policy unchanged.
+                    //
+                    // Inside the loop for the same reason it was ever rebuilt: a
+                    // queued turn runs under what the operator has allowed by the
+                    // time it starts, not by the time they typed it.
+                    let effective =
+                        approval::session_policy(&policy, app.posture(), app.remembered());
+                    let stopped = turn(
+                        screen,
+                        inputs,
+                        &mut app,
+                        &provider,
+                        &store,
+                        &mut session,
+                        &effective,
+                        &config,
+                        // The caps reach the turn only while the session is in
+                        // contained mode, so `/contain off` is a real switch and
+                        // not a label: with `None` here the turn built below is
+                        // the uncontained turn, byte for byte. Both arms are
+                        // steered, so that is not the word for the difference.
+                        contained.then_some(containment.as_ref()).flatten(),
+                        &capabilities,
+                        &seen,
+                        planning,
+                        // Taken rather than read: one request, one turn. A queue
+                        // of three prompts must not fold three times.
+                        std::mem::take(&mut fold_next),
+                        text,
+                        // **This turn's own clock, not the session's.** What a
+                        // reader wants of the row above the prompt is how long the
+                        // thing in front of them has been going; a clock that had
+                        // been counting since the terminal opened said `22m12s`
+                        // about a turn six seconds old. Every event age inside the
+                        // turn is measured from here too, which is what a tool
+                        // cell's duration is a difference of.
+                        //
+                        // Read once per pass, so a queued turn is timed from the
+                        // moment it starts rather than from the prompt that ran
+                        // ahead of it.
+                        Instant::now(),
+                    )
+                    .await?;
+                    // Anything dropped onto the prompt while the turn held the
+                    // session is staged now that it has let go.
+                    for path in app.take_queued_pictures() {
+                        paste_picture(&mut app, &mut session, &provider, &policy, &path);
+                    }
+                    // The stop key stops the session, not just the step in front
+                    // of the operator. Firing the queue here would turn one press
+                    // into three more turns against a conversation they had just
+                    // decided to steer somewhere else.
+                    if stopped {
+                        let dropped = app.forget_queued_prompts();
+                        if dropped > 0 {
+                            let dash = app.theme.glyphs.dash;
+                            app.say(
+                                Tone::Muted,
+                                format!("{dropped} queued {dash} dropped with the stopped turn"),
+                            );
+                        }
+                    }
+                    next = app.next_queued_prompt();
                 }
             }
         }
@@ -1672,6 +1797,11 @@ fn commit_viewed(
 }
 
 /// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
+///
+/// Returns whether the operator asked this turn to stop — the one thing about a
+/// turn the caller cannot see from outside it, and the thing the caller now has
+/// to decide about, because a prompt queue that fired after a stop would make the
+/// stop key start three more turns.
 #[allow(clippy::too_many_arguments)]
 async fn turn<P: Provider>(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -1688,17 +1818,28 @@ async fn turn<P: Provider>(
     config: &Config,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
+    // The last request this session's provider was handed. `/context` reads it to
+    // say what is in the window, and `ctx N%` reads it so the two say the same
+    // thing — see `note_context`, and the live run that found them disagreeing.
+    seen: &io_cli::context::Seen,
     // Whether this turn proposes a plan before it works. The operator's `/plan`,
     // and nothing else — a caps configuration decided it through 0.11.0, which
     // is how every contained turn ended up stopping for one.
     planning: bool,
+    // Whether this turn folds its history at its first step — the `/compact` an
+    // operator typed at the idle prompt before it. io-harness reads `fold_now`
+    // once, before the first step assembles its first request, and consumes it
+    // with `mem::take`, so a contract reused for every turn would not fold every
+    // turn; io-cli builds a fresh one anyway.
+    fold: bool,
     text: String,
     started: Instant,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let (observer, mut events) = bridge::channel();
     // The one way a turn is stopped from the interface, contained or not. Both
-    // arms take a contract now and neither takes a steer inbox, so `Flow::Cancel`
-    // out of `Bridge::event` is what `Ctrl+C` and `Esc` set.
+    // arms take a contract **and** a steer inbox since 0.17.0, and the stop key
+    // stayed here rather than moving onto `Steer::interrupt`: `Flow::Cancel` out
+    // of `Bridge::event` is what `Ctrl+C` and `Esc` set, on either arm.
     let canceller = observer.canceller();
     // The other seam, and the one that can stop the agent. `DenyAll` stood here
     // through 0.1.0 and 0.1.1, which is why the *ask before writes* posture
@@ -1716,38 +1857,58 @@ async fn turn<P: Provider>(
     app.started();
     paint(screen, app)?;
 
+    // **The fifth seam, and the only one that speaks to a turn already in
+    // flight.** Every other channel above is something the run asks *this*
+    // interface for — an approval, a plan, an answer. This one goes the other
+    // way: `Steer::say` puts the operator's words into the run's own ledger at
+    // the next step boundary, so the step after it is composed with them present.
+    //
+    // Three things about it that decide the code below:
+    //
+    // - `SteerInbox` is not `Clone` and holds a `RefCell`, so it is `!Sync` and a
+    //   future borrowing it is not `Send`. That costs nothing here — the boxed
+    //   future below has never had a `Send` bound and is driven on this task —
+    //   but it is why the inbox stays a local and only the `Steer` half could
+    //   ever be handed anywhere else.
+    // - A delivered steer emits **no observer event**. There is no
+    //   `EventKind::Steered`; io-harness records a `steered` row in the run's
+    //   context trace instead. So nothing that arrives through `bridge` can
+    //   confirm delivery, and nothing this interface says may claim it — see the
+    //   `/steer` arm in the loop, which says *sent*, and the drain after the loop,
+    //   which is the one thing here that can honestly say *not* delivered.
+    // - Only the root is steered. `extras_for` in io-harness returns no extras
+    //   below depth zero, so on the contained arm a spawned child never hears the
+    //   operator; the agent that reads the message is the one that spawned it.
+    let (steer, inbox) = Steer::channel();
+
     // **The two turns this product can take, and one loop over both.** They are
     // genuinely different turns rather than one turn with a flag: only the
     // contained entry point passes a containment into io-harness's driver, so
-    // only it reaches the loop that owns the spawn tool — and it takes no
-    // `SteerInbox`, because no session entry point takes a caller's containment
-    // and a steer inbox together. Boxed to one type so the `select!` below is
-    // written once; a second loop would be a second place `Ctrl+C`, the ticker
-    // and the event drain could drift.
+    // only it reaches the loop that owns the spawn tool. Boxed to one type so the
+    // `select!` below is written once; a second loop would be a second place
+    // `Ctrl+C`, the ticker and the event drain could drift.
     //
-    // 0.10.0 — the contained arm is `turn_contained_bounded_observed` and carries
-    // a contract io-cli built, which is what a responder, a plan gate, MCP, LSP,
-    // a browser and skills are fields of. The flat arm is untouched: it is still
-    // `turn_steered`, still `default_contract`, and still the only one that can
-    // be steered mid-turn.
+    // 0.17.0 — both arms take a contract **and** an inbox, which through 0.66 was
+    // a choice. `turn_bounded_observed` and `turn_contained_bounded_observed` had
+    // no parameter for a steer inbox, so a session that wanted its own contract
+    // gave up steering to get one; io-cli made that trade in 0.11.0 and paid for
+    // it with a turn nobody could correct. io-harness 0.67.0 opened both, and
+    // `turn_bounded_steered` / `turn_contained_bounded_steered` are positionally
+    // the same two calls with `&inbox` appended — which is why the change that
+    // gives an operator their voice back mid-turn is one argument on each arm.
     // Taken before the future borrows the session, because it is needed inside the
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
     app.contained = containment.is_some();
-    // Built before the future borrows it, and only for the arm that can take one:
-    // the flat turn is handed `text` itself, exactly as it always was.
+    // Built before the future borrows it, and for both arms alike.
     // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
     // arm was `turn_steered`, which builds `TaskContract::workspace` inside
     // io-harness and takes none from the caller — so its step cap was twelve,
     // fixed, and a turn that read a repository and wrote a file ended on
     // `error: step_cap_reached` with the work half done.
     //
-    // `turn_bounded_observed` takes a contract, streams the model's text, and is
-    // not contained. What it does not take is a steer inbox, and that costs
-    // nothing this interface offered: the only thing io-cli ever sent through
-    // one was an interrupt, and the observer's `Flow::Cancel` — the path a
-    // contained turn has always been stopped by — ends a turn at the same step
-    // boundary.
+    // `turn_bounded_steered` takes a contract, streams the model's text, is not
+    // contained, and reads the inbox above at every step boundary.
     // **Neither of the two seams rides containment any more.** The responder is
     // unconditional: io-harness resolves it inside the tool dispatch on any run,
     // so a question asked on an ordinary turn reaches the person watching instead
@@ -1763,6 +1924,22 @@ async fn turn<P: Provider>(
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
     );
+    // **The idle half of `/compact`.** Set here rather than as a parameter of the
+    // builder: `contract::session` has three other callers that build a contract
+    // nothing runs — the startup reading and the two reporting pages — and a
+    // seventh parameter would be three `false`s of pure noise plus a signature
+    // break, against one call on the single contract that is actually a turn.
+    // `fold_now: false` is `TaskContract::workspace`'s own default, so the
+    // field-for-field gate is unmoved either way.
+    let contract = if fold {
+        contract.with_fold_now(true)
+    } else {
+        contract
+    };
+    // Set while a fold has been asked for and no `Compacted` event has arrived.
+    // A one-shot: io-harness spends the request whether or not it folds, so what
+    // this guards is the report and never a retry.
+    let mut folding = fold;
     // **Read off the contract that is about to run, and never recomposed from the
     // configuration.** The ceilings on the line have to be the ceilings in force,
     // and the only thing that knows the whole order of precedence — the floor,
@@ -1779,12 +1956,12 @@ async fn turn<P: Provider>(
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {
-        Some(caps) => Box::pin(session.turn_contained_bounded_observed(
-            &contract, provider, store, policy, &approver, caps, &observer,
+        Some(caps) => Box::pin(session.turn_contained_bounded_steered(
+            &contract, provider, store, policy, &approver, caps, &observer, &inbox,
         )),
-        None => Box::pin(
-            session.turn_bounded_observed(&contract, provider, store, policy, &approver, &observer),
-        ),
+        None => Box::pin(session.turn_bounded_steered(
+            &contract, provider, store, policy, &approver, &observer, &inbox,
+        )),
     };
 
     // Lives for the turn and no longer, which is half of why an idle session
@@ -1795,6 +1972,11 @@ async fn turn<P: Provider>(
     // Set when a turn was taken back off the screen rather than stopped: there
     // is nothing to report about a turn the session no longer shows.
     let mut undone = false;
+    // Set by either stop key, and read by the caller. Both arms below are the
+    // operator asking for this turn to end: the first press cancels at a step
+    // boundary and the second drops the future, and neither is visible in what
+    // io-harness returns — a cancelled run comes back as an ordinary result.
+    let mut stopped = false;
     let mut ticker = tokio::time::interval(io_cli::app::TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1816,7 +1998,18 @@ async fn turn<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
+                // The live half of `ctx N%`. Anchored on a step rather than on
+                // every event, for the reason `commit_edits` above it is: the
+                // assembly is written once a step and reading it per event would
+                // be one store query per token.
+                //
+                // The REQUEST first, so the line and `/context` cannot disagree —
+                // a live run caught them saying 0% and 4,363-of-24,000 about the
+                // same turn. The trace is the fallback for the window between a
+                // step landing and the first completion call being seen.
+                note_context(app, store, &event, seen, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
+                commit_fold(app, store, &event, &mut folding);
                 paint(screen, app)?;
             }
             Some(ask) = asks.recv() => {
@@ -1855,15 +2048,21 @@ async fn turn<P: Provider>(
                         let command = app.key(key);
                         match command {
                             Command::Interrupt => {
-                                // **One path for both kinds of turn.** Neither
-                                // takes a steer inbox any more — a contained turn
-                                // never did, and the flat one gave its up for a
-                                // contract — so the observer is what io-harness
-                                // reads from the interface while a run goes, and
-                                // it honours `Flow::Cancel` at the next step
-                                // boundary. That is the sentence
+                                // **One path for both kinds of turn, and it is
+                                // the observer's.** Both arms now hold a
+                                // `SteerInbox` and `Steer::interrupt` would also
+                                // end the turn at a step boundary — and this key
+                                // is deliberately not routed through it. The two
+                                // paths end in the same `RunOutcome::Cancelled`
+                                // but they are recorded by different code in
+                                // io-harness, and moving the one key this product
+                                // refuses to let a configuration file rebind onto
+                                // a different mechanism buys an operator nothing
+                                // they can see. `Flow::Cancel` is honoured at the
+                                // next step boundary, which is the sentence
                                 // `App::interrupt_or_quit` has just put on screen.
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                stopped = true;
                             }
                             // **The second press, and it does not wait.** A
                             // cancel is honoured at a step boundary, and a step
@@ -1879,6 +2078,7 @@ async fn turn<P: Provider>(
                             // commits whatever streamed before it.
                             Command::Abandon => {
                                 canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                                stopped = true;
                                 // **A turn that had done nothing is taken back
                                 // whole.** `App::undoable` is what decides that
                                 // — no step, nothing streamed, nothing on screen
@@ -1911,6 +2111,141 @@ async fn turn<P: Provider>(
                                 // interface reporting a run it did not observe.
                                 break None;
                             }
+                            // **`/steer` — what is queued goes to the turn that is
+                            // still running, and only because the operator asked.**
+                            //
+                            // The open question this release had to answer was
+                            // whether a line typed mid-turn should reach the
+                            // agent by itself. It must not, and the reason is the
+                            // second note where the inbox is built: a delivered
+                            // steer emits no event, so an interface cannot show
+                            // that the agent heard it. A
+                            // line sent by default would leave the screen with no
+                            // echo, no cell and no confirmation — the same shape
+                            // as the keystroke 0.16.0 lost, which `App::compose`
+                            // has just been fixed to stop losing. A queue is
+                            // visible state a surface can draw; a steer is not.
+                            // And `Steer::say` has no undo: an operator writing a
+                            // note to themselves while an agent works would be
+                            // changing what it does, once per stray sentence.
+                            //
+                            // So the queue keeps its promise — three lines are
+                            // three turns — and this is the one word that spends
+                            // it differently. It is a slash command rather than a
+                            // key because `App::compose` already lets `/` through
+                            // mid-turn on purpose, so nothing in the library had
+                            // to learn a new mode for it.
+                            //
+                            // **Said, never claimed delivered.** io-harness takes
+                            // the message at the next step boundary and records a
+                            // `steered` row in the run's own trace; no
+                            // `RunEvent` carries it, so `Ok` here means the
+                            // channel accepted the words and nothing more. The
+                            // sentence says exactly that. What *is* certain is
+                            // the negative, and the drain after this loop is
+                            // where it gets said.
+                            // **`/compact` mid-turn.** `Steer::fold` lands at the
+                            // turn's next step boundary — the same promise
+                            // `/steer` makes, for the same reason: a tool call in
+                            // flight is not a safe place to change the
+                            // conversation out from under the model.
+                            //
+                            // **Asked, never reported folded.** io-harness names
+                            // four conditions under which an accepted request
+                            // folds nothing, and the request is spent under all
+                            // four, so the only thing that may say a fold happened
+                            // is `EventKind::Compacted`.
+                            // The first word, so `/compact …` reaches the arm that answers it
+                            // rather than the mid-turn refusal below, which
+                            // would tell the operator to interrupt the turn
+                            // first — the opposite of what this command does.
+                            Command::Slash(ref line)
+                                if line.split_whitespace().next() == Some("compact") => {
+                                let dash = app.theme.glyphs.dash;
+                                let said = io_cli::compact::Said::asked(contract.compaction, true);
+                                if said == io_cli::compact::Said::Sent {
+                                    match steer.fold() {
+                                        Ok(()) => {
+                                            folding = true;
+                                            app.say(Tone::Muted, said.line(dash));
+                                        }
+                                        // Unreachable while `inbox` is alive, and
+                                        // said rather than swallowed anyway.
+                                        Err(error) => app.say(
+                                            Tone::Warning,
+                                            format!("nothing is listening {dash} {error}"),
+                                        ),
+                                    }
+                                } else {
+                                    app.say(Tone::Muted, said.line(dash));
+                                }
+                            }
+                            // The first word, so `/steer …` reaches the arm that answers it
+                            // rather than the mid-turn refusal below, which
+                            // would tell the operator to interrupt the turn
+                            // first — the opposite of what this command does.
+                            Command::Slash(ref line)
+                                if line.split_whitespace().next() == Some("steer") => {
+                                let dash = app.theme.glyphs.dash;
+                                let mut sent = 0usize;
+                                // The summary below is skipped when this is set,
+                                // because a count is not the answer to a refusal
+                                // — and `App::say` keeps one notice, so a
+                                // summary written over the error would be the
+                                // interface reporting success on the one path
+                                // where there was none.
+                                let mut refused = false;
+                                // Each on its own, in the order they were typed:
+                                // io-harness pushes one `Observation` per message
+                                // and the model reads them in that order. Joining
+                                // them would be one paragraph the operator never
+                                // wrote.
+                                while let Some(waiting) = app.next_queued_prompt() {
+                                    if let Err(error) = steer.say(waiting.clone()) {
+                                        // Unreachable while `inbox` is alive —
+                                        // and said rather than swallowed anyway,
+                                        // because the one thing worse than a
+                                        // correction that arrives late is one
+                                        // that reports success and goes nowhere.
+                                        app.queue_prompt(waiting);
+                                        app.say(
+                                            Tone::Warning,
+                                            format!("nothing is listening {dash} {error}"),
+                                        );
+                                        refused = true;
+                                        break;
+                                    }
+                                    // Into the transcript, not the footer. A
+                                    // steered line becomes an observation in the
+                                    // run's ledger, so it is part of the
+                                    // conversation rather than about it — and it
+                                    // is the only part that will never get an
+                                    // echo of its own, because it is not a turn.
+                                    app.record(
+                                        Tone::Muted,
+                                        format!("[mid-turn] {}", waiting.trim()),
+                                    );
+                                    sent += 1;
+                                }
+                                if !refused {
+                                    app.say(
+                                        Tone::Muted,
+                                        match sent {
+                                            0 => format!(
+                                                "nothing queued {dash} type a line first, then \
+                                                 /steer"
+                                            ),
+                                            1 => format!(
+                                                "sent {dash} the turn reads it at its next step"
+                                            ),
+                                            many => format!(
+                                                "{many} sent {dash} the turn reads them at its \
+                                                 next step"
+                                            ),
+                                        },
+                                    );
+                                }
+                            }
                             // Refused with a sentence rather than dropped in
                             // silence. `/resume`, `/fork` and the rewind each move
                             // the session head this turn is about to write, and
@@ -1937,6 +2272,20 @@ async fn turn<P: Provider>(
                                     ),
                                 )
                             }
+                            // **`Command::Submit` no longer arrives here, and
+                            // that is the fix.** Through 0.16.0 a prompt typed
+                            // mid-turn reached this arm and was dropped without a
+                            // word — the worst shape a lost keystroke can take,
+                            // because the composer had already emptied and there
+                            // was nothing left to press `Enter` on again.
+                            // `App::compose` now queues it instead, so what falls
+                            // through here is only what this loop has always
+                            // ignored. The guard is in the library rather than in
+                            // this arm on purpose: nothing in `src/main.rs` is
+                            // linked by an integration test, so a branch written
+                            // here could not be sabotaged and would not be
+                            // covered — `tests/queue.rs` asserts the queueing
+                            // where a test can reach it.
                             _ => {}
                         }
                     }
@@ -1989,12 +2338,94 @@ async fn turn<P: Provider>(
         // and the last step of a turn is exactly the one that loses that race,
         // so the edit a reader most wants to see is the one that vanishes.
         commit_edits(app, store, &event, width);
+        // And on the drain, for the same race the two lines above it are here
+        // for: the last step of a turn is exactly the one whose event the select
+        // loop loses to the turn's own return.
+        note_context(app, store, &event, seen, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
         // lose.
         commit_viewed(screen, app, &root, policy, &event)?;
+        commit_fold(app, store, &event, &mut folding);
     }
     app.finished();
+
+    // **The one delivery fact this interface can state, and it is the negative
+    // one.** io-harness emits no event for a message it delivered, so there is
+    // nothing to read on the way in; what is left in the inbox after the turn has
+    // returned, though, is exactly what no step got to. `SteerInbox::pending` is
+    // public for this — a caller draining an inbox it is no longer handing to a
+    // turn, rather than discovering later that the operator's last words went
+    // with the channel.
+    //
+    // Into the transcript, because the words are the operator's and the sentence
+    // is about a run that has already ended — a footer notice would be gone at
+    // the next keystroke, and it would fight with `stopped` below.
+    //
+    // **And put back, unless the operator stopped the turn.** `/steer` REMOVES
+    // each line from the queue to send it, and the send cannot fail while the
+    // inbox is alive — so a turn that reaches its last step before the next
+    // boundary consumed the queue, delivered nothing, and left the operator with
+    // three prompts' worth of work in a sentence. In the release whose whole
+    // headline is that a mid-turn prompt is no longer destroyed.
+    //
+    // The window is not narrow either: `/steer` is typed exactly when the agent
+    // looks close to done, which is exactly when there is no boundary left.
+    //
+    // So they go back to the FRONT of the queue, in order, and the driver's drain
+    // runs them as the next turns — which is what the queue promised in the first
+    // place. A turn the operator STOPPED keeps the old behaviour and drops them,
+    // because one press of the stop key must not start another turn; the earlier
+    // comment claimed a composer was waiting to catch them, and nothing ever put
+    // them in it.
+    let lost = inbox.pending().messages;
+    for line in &lost {
+        app.record(
+            Tone::Muted,
+            format!("[mid-turn, not delivered] {}", line.trim()),
+        );
+    }
+    if !lost.is_empty() {
+        if stopped {
+            app.record(
+                Tone::Muted,
+                format!(
+                    "{} went with the turn you stopped",
+                    if lost.len() == 1 {
+                        "it".to_string()
+                    } else {
+                        format!("all {} of them", lost.len())
+                    }
+                ),
+            );
+        } else {
+            let waiting = app.requeue_prompts(lost);
+            app.record(
+                Tone::Muted,
+                format!(
+                    "back in the queue {} {waiting} waiting",
+                    app.theme.glyphs.dash
+                ),
+            );
+        }
+    }
+
+    // **The fold that was asked for and never announced.** A conversation shorter
+    // than `Compaction::keep_recent` has no prefix a paragraph could stand in for,
+    // and an interrupt at the same boundary wins — io-harness reports neither,
+    // because there is nothing to report. The request is spent under both, so this
+    // is the end of the story rather than a retry, and it says nothing folded
+    // rather than that a fold happened.
+    //
+    // `record` and not `say`, for the reason the drain above it gives: a footer
+    // notice is gone at the next keystroke and would fight with the stop line.
+    if folding {
+        let dash = app.theme.glyphs.dash;
+        app.record(
+            Tone::Muted,
+            io_cli::compact::Said::unfolded(contract.compaction, stopped).line(dash),
+        );
+    }
 
     match outcome {
         // The operator's sentence in front of the harness's own line — see
@@ -2010,7 +2441,8 @@ async fn turn<P: Provider>(
         Some(Ok(_)) => {}
     }
     app.status.elapsed = started.elapsed();
-    paint(screen, app)
+    paint(screen, app)?;
+    Ok(stopped)
 }
 
 /// Draw what a step changed, by asking the store what it recorded.
@@ -2031,6 +2463,63 @@ async fn turn<P: Provider>(
 /// A read that fails degrades to a line saying so. A run whose work succeeded is
 /// not a run to panic over because the trace could not be re-read, and silence
 /// would say the step changed nothing.
+/// Keep `ctx N%` saying what `/context` would say.
+///
+/// **One quantity, one source, because a live run found two.** The page totals
+/// the request against the window the contract declares; the field divided the
+/// observation section by the same window and read `0%` where the page read
+/// eighteen. Both numbers were defensible and the pair was not: the percentage is
+/// what makes an operator open the page, so it has to be the page's own number.
+///
+/// The trace is the fallback rather than the answer. A step lands before the
+/// completion call that follows it is snapshotted, so on the very first step
+/// there is no request to measure and the section the trace records is the only
+/// number there is — better than a blank field, and it converges the moment a
+/// request has been seen.
+fn note_context(
+    app: &mut App,
+    store: &Store,
+    event: &io_harness::RunEvent,
+    seen: &io_cli::context::Seen,
+    contract: &io_harness::TaskContract,
+) {
+    if let Some(request) = seen.latest() {
+        // **What is LEFT of the run budget, not all of it.** io-harness assembles
+        // against the unspent remainder — a run low on budget gets a smaller
+        // window, down to the floor — and `context::window`'s own doc says so.
+        // Passing the flat maximum reports a window the turn can no longer afford
+        // and a share several times too small, which under-reports pressure
+        // exactly when there is pressure. Only moves when `[run] max_tokens` is
+        // set; with none, the harness's own expression is flat too.
+        let remaining = contract
+            .max_tokens
+            .map(|cap| cap.saturating_sub(app.status.run_tokens.unwrap_or(0)));
+        app.status
+            .note_context_request(&request, contract, remaining);
+    } else {
+        app.status.note_context_from(store, event);
+    }
+}
+
+/// Report a fold that was asked for — once, and only from the event that
+/// announces it.
+///
+/// io-harness emits `Compacted` the moment a fold lands and nothing at all when
+/// one does not, so this is the whole of what may say a fold happened. It runs on
+/// both event paths because the last step of a turn is exactly the one whose
+/// event the select loop loses to the turn's own return.
+fn commit_fold(app: &mut App, store: &Store, event: &io_harness::RunEvent, folding: &mut bool) {
+    if !*folding {
+        return;
+    }
+    let Some(said) = io_cli::compact::Said::folded(store, event) else {
+        return;
+    };
+    *folding = false;
+    let dash = app.theme.glyphs.dash;
+    app.say(Tone::Muted, said.line(dash));
+}
+
 fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, width: u16) {
     let io_harness::EventKind::Step { changed: true, .. } = &event.kind else {
         return;
@@ -2046,7 +2535,7 @@ fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, widt
 
 /// Put the whole conversation back into the terminal's own scrollback.
 ///
-/// Upward and never into a pane. The viewport is four rows and cannot grow, and
+/// Upward and never into a pane. The viewport is eight rows and cannot grow, and
 /// there is no alternate screen in this product — so the place a reader reads
 /// something long is the terminal's own buffer, where its search, its selection
 /// and tmux copy-mode already work. A failure to read the store says so and

@@ -1368,8 +1368,9 @@ impl Events {
             // the copy here is the poorer one, carrying the word and nothing
             // else where the dial itself carries the host, the port and the
             // verdict. `gate_phase_failed` and `gate_output` are the other two:
-            // they belong to an execution gate, and a steerable turn is built on
-            // `TaskContract::workspace`, which carries `Verification::None`. So
+            // they belong to an execution gate, and every contract this crate
+            // builds — see `crate::contract` — leaves `Verification::None` on it,
+            // because nothing here ever calls `with_verification`. So
             // neither can arrive in a session before 0.24.0 gives one a gate,
             // and neither is given a sentence written in advance of the release
             // that could check it.
@@ -1746,8 +1747,9 @@ fn format_millis(duration: Duration) -> String {
 /// The vocabulary is io-harness's, and the distinction that matters here is
 /// between `success` and `finished`: `success` means a verification criterion
 /// passed, and `finished` means a run with no criterion ended on its own terms.
-/// **Every io-cli turn ends `finished`**, because a steerable turn is built on
-/// `TaskContract::workspace`, which carries `Verification::None`.
+/// **Every io-cli turn ends `finished`**, because every contract this crate
+/// builds — see [`crate::contract`] — leaves `Verification::None` on it: nothing
+/// here calls `with_verification`, on either arm.
 ///
 /// Found in a live run, not in the suite: treating anything that was not
 /// `success` as a warning meant every ordinary, completely successful turn ended

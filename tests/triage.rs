@@ -178,6 +178,7 @@ fn a_status_or_silent_kind_commits_nothing() {
             tool: None,
             ok: None,
             millis: None,
+            tools: Some(4),
         },
         EventKind::HandlePolled {
             handle: 3,

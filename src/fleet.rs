@@ -270,7 +270,7 @@ impl Fleet {
     ///
     /// **It takes the composer's rows rather than the whole viewport**, so the
     /// status line — where the spend is — stays on screen underneath it, and the
-    /// streaming tail above it goes on moving. The viewport is four rows and
+    /// streaming tail above it goes on moving. The viewport is eight rows and
     /// cannot grow: a taller view would mean tearing down the `Screen` and
     /// rebuilding it, which is what the wizard does before a session starts and
     /// is not something to do while a run is committing into scrollback.

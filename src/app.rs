@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_harness::RunEvent;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -187,6 +187,49 @@ pub struct App {
     /// over rather than being dropped or half-attached. The operator is told it
     /// is waiting, and a moment later it is `[Image #1]` like any other.
     queued: Vec<String>,
+    /// Prompts finished while a turn was running, waiting for turns of their own.
+    ///
+    /// **A third thing, and neither of the two it sits between.** `queued` above
+    /// holds pictures, which are staged onto whatever prompt comes next;
+    /// `submitted` below is the one prompt *this* turn is about, kept single so
+    /// [`App::undo_turn`] has exactly one line to put back. This is a line the
+    /// operator finished while the session was busy: it is not part of the
+    /// running turn, it is not an attachment to it, and there can be several of
+    /// it. Overloading either neighbour would lose one of those three facts.
+    ///
+    /// Position in the vector is the whole of the ordering, and nothing here
+    /// carries a time — which is what lets a session that reads no clock still
+    /// fire these in the order they were typed.
+    ///
+    /// In memory for the length of the session and written nowhere. A prompt
+    /// that outlived the terminal it was typed into would come back as a turn
+    /// nobody asked for, against a conversation that had moved on without it.
+    prompts: Vec<String>,
+    /// Whether the surface that draws `prompts` has been shut by the operator.
+    ///
+    /// **Held rather than derived, and it is `Esc` that makes it a field.** The
+    /// surface opens on its own — see [`App::queue_prompt`] — so "is it open" is
+    /// almost the same question as "is anything queued", and it would be exactly
+    /// the same question if it could not be dismissed. It can: F2 asks that `Esc`
+    /// close the surface rather than the turn, and a dismissal that was inferred
+    /// from the queue could only be honoured by dropping the queue. This is the
+    /// one bit that says *the operator has seen it*, and it is set true again the
+    /// moment something new is queued, because a new line is a new thing to have
+    /// seen.
+    ///
+    /// [`App::queue_open`] is the predicate every caller asks, and it is the
+    /// three facts together: opened, still queued, and a turn to be queued behind.
+    queue_open: bool,
+    /// Where the operator is inside `prompts`, and which line they have taken out
+    /// of it to edit.
+    ///
+    /// **The queue is here and the mark is there, and that split is the point.**
+    /// `prompts` is a fact about the session — the driver drains it, a turn runs
+    /// off it, and it outlives every surface. A mark is a fact about the surface
+    /// drawing it: meaningless with the surface shut, read by nothing but the
+    /// rows. See [`crate::queue::Cursor`], whose verbs take `&mut Vec<String>` so
+    /// that this stays the one owner of the queue itself.
+    queue: crate::queue::Cursor,
     /// Every image attached in this session, by path, oldest first.
     ///
     /// The index into it is the number in `[Image #1]`, and the path is all that
@@ -214,7 +257,8 @@ pub struct App {
     /// Whether the turn now running is a *contained* turn.
     ///
     /// Set by the driver as a turn starts and cleared as it ends. It exists for
-    /// one sentence: `Ctrl+C` stops a steered turn at the next step boundary and
+    /// one sentence: `Ctrl+C` stops an uncontained turn at the next step boundary
+    /// and
     /// a contained one at the next boundary where no child is in flight, and an
     /// interface that promised the first while doing the second would look as
     /// though it had swallowed the key.
@@ -258,6 +302,9 @@ impl App {
             armed: None,
             contained: false,
             queued: Vec::new(),
+            prompts: Vec::new(),
+            queue_open: false,
+            queue: crate::queue::Cursor::default(),
             images: Vec::new(),
             turn_rows: 0,
             echo_rows: 0,
@@ -600,6 +647,149 @@ impl App {
         std::mem::take(&mut self.queued)
     }
 
+    /// Hold a prompt the operator finished while a turn had the session.
+    ///
+    /// **Kept, rather than sent or dropped.** Up to 0.16.0 this keystroke looked
+    /// accepted and was not: the composer empties on `Enter` whatever happens
+    /// next, so the line disappeared from the prompt exactly as a sent one does,
+    /// and then fell through the driver's catch-all and was gone. That is the
+    /// worst shape a lost keystroke can take — there is no error, no refusal and
+    /// no text left to press `Enter` on again. Holding it is the smallest honest
+    /// answer: the session cannot take it now, so it takes it next.
+    ///
+    /// The notice is the footer's rather than the scrollback's, because a queued
+    /// prompt is not yet part of the record. It becomes part of it when it runs,
+    /// as its own exchange with its own echo, and a line here would be a second
+    /// entry for one prompt. What keeps it visible in between is the queue
+    /// itself — state, which a surface can draw and a notice cannot.
+    pub fn queue_prompt(&mut self, text: impl Into<String>) {
+        self.prompts.push(text.into());
+        // **The surface opens itself, and that is a decision rather than a
+        // convenience.** Every other surface in this product is opened by a key:
+        // the fleet view has one, the pickers have commands, and each of them is
+        // something an operator went looking for. This one is not — the operator
+        // went looking for a *turn*, and what they got instead was a line held
+        // back. The queue is the whole of the explanation for that, so it appears
+        // at the moment there is something to explain and leaves when there is
+        // not. The key it does not have is the one it would have had to buy: an
+        // `Action` of its own is an entry in `keys::Action::ALL` — which is
+        // index-sensitive and asserted as such — plus a name, a default binding,
+        // a rebindable flag, a row in `commands::KEYS` and two in the README, all
+        // for a surface whose whole content is already known to the session.
+        self.queue_open = true;
+        // The status line's depth is assigned at each of the three sites that
+        // move the queue rather than synced from a tick: `App::tick` returns
+        // early unless a turn is running, and the queue drains precisely when one
+        // ends, so a sync there would leave a stale depth on the line at the idle
+        // prompt — which is the one moment the number is a lie an operator can
+        // act on.
+        self.status.queued_prompts = self.prompts.len();
+        let waiting = self.prompts.len();
+        let dash = self.theme.glyphs.dash;
+        // Muted, like the picture held one line over: nothing has gone wrong and
+        // nothing was refused. The count is in the sentence because the second
+        // and third prompt otherwise produce a notice identical to the first,
+        // which reads as a keystroke that did nothing.
+        self.say(
+            Tone::Muted,
+            if waiting == 1 {
+                format!("queued {dash} it runs when this turn ends")
+            } else {
+                format!("{waiting} queued {dash} they run in order when this turn ends")
+            },
+        );
+    }
+
+    /// The prompt that has waited longest, taken off the front.
+    ///
+    /// **One at a time, and the driver runs a whole turn between two calls.**
+    /// That is what makes three queued lines three turns rather than one turn
+    /// carrying three questions: each gets its own echo, its own answer under it
+    /// and its own `Ctrl+C`. Joined into one prompt they would be a run that
+    /// answers everything in one breath and cannot be stopped part-way through,
+    /// which is the opposite of what queueing them was for.
+    pub fn next_queued_prompt(&mut self) -> Option<String> {
+        if self.prompts.is_empty() {
+            return None;
+        }
+        let next = self.prompts.remove(0);
+        self.status.queued_prompts = self.prompts.len();
+        Some(next)
+    }
+
+    /// What is waiting, oldest first.
+    ///
+    /// For a surface that draws the queue and for the tests. The driver takes
+    /// them one at a time through [`App::next_queued_prompt`] instead, so there
+    /// is no path that reads the whole queue in order to run it.
+    pub fn queued_prompts(&self) -> &[String] {
+        &self.prompts
+    }
+
+    /// Whether the queue surface is on screen.
+    ///
+    /// **Three facts, and none of them is a fourth field.** It has been opened
+    /// and not dismissed; there is something waiting to draw; and a turn is
+    /// running to be waiting behind. The last is what closes it when the turn
+    /// ends, for the same reason [`App::finished`] closes the fleet view — a
+    /// surface left standing over an idle session describes a state that is no
+    /// longer true — and it is `mode` that says so rather than a line in
+    /// `finished`, which is why it comes *back* for the second queued turn. A
+    /// flag cleared there would have shut the queue for the whole of the drain,
+    /// which is the run in which the two lines still waiting most want a row.
+    ///
+    /// The middle fact is why nothing has to close it when the queue empties.
+    pub fn queue_open(&self) -> bool {
+        self.queue_open && self.mode == Mode::Running && !self.prompts.is_empty()
+    }
+
+    /// Whether the queue will actually be drawn on the next frame.
+    ///
+    /// **Open is not drawn, and the difference is one row.** The fleet view is
+    /// rendered in this surface's place, in the composer's own rect, so a queue
+    /// that is open behind it draws nothing — and the layout must not release the
+    /// blank row above the activity line for a surface that will not use it. The
+    /// row bought nothing and the fleet quietly grew by one.
+    ///
+    /// A named predicate rather than the expression inline, because the two
+    /// readings clippy offers for that expression are each shorter and neither
+    /// says which surface wins.
+    pub fn queue_drawn(&self) -> bool {
+        self.queue_open() && !self.fleet_open
+    }
+
+    /// Drop everything still waiting, and report how much was dropped.
+    ///
+    /// An operator stopping a turn is stopping the session, not just the step in
+    /// front of them. A queue that fired anyway would make the stop key start
+    /// three more turns, which is a key that reads as broken — and the prompts
+    /// were typed against a conversation that was going somewhere else.
+    pub fn forget_queued_prompts(&mut self) -> usize {
+        self.status.queued_prompts = 0;
+        std::mem::take(&mut self.prompts).len()
+    }
+
+    /// Put lines back at the FRONT of the queue, in order, and say how many wait.
+    ///
+    /// **For a `/steer` that emptied the queue into a turn nothing read.** The
+    /// send takes each line out to hand it over, and a turn that ends before its
+    /// next step boundary hands nothing over — so without this the lines are gone,
+    /// in the release whose promise is that a mid-turn prompt is not destroyed.
+    ///
+    /// The front rather than the back, because they were ahead of whatever was
+    /// queued after them and putting them behind it would silently reorder the
+    /// operator's work. The driver calls this only for a turn that ended on its
+    /// own; one the operator stopped drops them, for the same reason a stopped
+    /// turn drops the rest of the queue.
+    pub fn requeue_prompts(&mut self, lines: Vec<String>) -> usize {
+        for (at, line) in lines.into_iter().enumerate() {
+            self.prompts.insert(at, line);
+        }
+        self.status.queued_prompts = self.prompts.len();
+        self.queue_open = true;
+        self.prompts.len()
+    }
+
     /// Remember an attached image and return the number its marker carries.
     ///
     /// One-based, because the marker is read by a person: `[Image #1]` is the
@@ -661,6 +851,13 @@ impl App {
         // still there — `/fleet` reopens it, and every spawn, refusal and report
         // is in the transcript — but the prompt comes back on its own.
         self.fleet_open = false;
+        // An edit lapses with the turn it was made against. The line itself stays
+        // in the composer, where the operator can see it and send it: putting it
+        // back would queue a second copy behind the drain that is about to start,
+        // and both would run. What is dropped is the *position*, which is the part
+        // that goes stale — a slot remembered across a drain points at somebody
+        // else's line.
+        self.queue.lapsed();
         // A question outlives its run only as a stuck overlay over a session that
         // has moved on. Dropping it is the denial — see `Ask` — and the run it
         // belonged to has already ended, so there is nobody left to tell.
@@ -944,13 +1141,26 @@ impl App {
                 }
                 self.status.steps = Some(*steps);
             }
+            // **A fold is still the better answer at the one moment it happens.**
+            // `Compacted` reports the section's new size the instant it shrinks,
+            // before any step has assembled against it — so this arm survives the
+            // trace read that now fills the same field at every step, and the two
+            // cannot disagree: `after_tokens` and `ContextEvent::est_tokens` are
+            // both the assembler's estimate of the observation section, and this
+            // one is simply earlier.
+            //
+            // What is gone is the denominator this arm used to build for itself.
+            // It asked `ContextBudget::default().effective_tokens(None)` — a flat
+            // `24_000` on every session in existence — under a comment claiming
+            // the denominator was "io-harness's own declared budget, asked of the
+            // harness rather than copied here". It was the *crate's* default
+            // budget, which is a different number from *this contract's* the
+            // moment an operator writes a `[run.context]` table, and it was wrong
+            // for them in silence from the release the field was added in.
+            // `Status::note_context` divides by `Status::budgets`, which the
+            // driver fills from the contract it actually built.
             io_harness::EventKind::Compacted { after_tokens, .. } => {
-                // The denominator is io-harness's own declared budget, asked of the
-                // harness rather than copied here — a `24_000` written into this
-                // file would be wrong after some harness patch, and wrong silently.
-                let budget = io_harness::ContextBudget::default().effective_tokens(None);
-                let share = (*after_tokens as f64 / budget.max(1) as f64 * 100.0).round();
-                self.status.context = Some(share.clamp(0.0, 100.0) as u8);
+                self.status.note_context(*after_tokens);
             }
             // The draw is per step and the ceiling is the tree's. `tokens`
             // accumulates because a field that swings rather than climbs cannot
@@ -1169,8 +1379,130 @@ impl App {
                     self.fleet.move_by(1);
                     return Command::None;
                 }
-                KeyCode::Esc if self.armed.is_none() => {
+                // `armed` and not `self.armed`: this function took the arming out
+                // a few lines above, so the field is always `None` here and the
+                // guard was always true. Pre-existing, and found while writing the
+                // queue's version of the same guard — which gets it right, and
+                // whose comment describes the trap this one was in.
+                KeyCode::Esc if armed.is_none() => {
                     self.fleet_open = false;
+                    return Command::None;
+                }
+                _ => {}
+            }
+        }
+        // The queue surface owns four keys, and only while it is up: the arrows
+        // move the mark at an empty prompt, the shifted arrows move the marked
+        // line, `Enter` at an empty prompt takes that line into the composer and
+        // puts it back when it is done, and `Esc` shuts the surface. Everything
+        // else falls through to the match below — `Ctrl+C` still interrupts and
+        // the composer still takes typing, which it has to, because typing is how
+        // the *next* line joins the queue this is drawing.
+        //
+        // **Scoped to the open surface, and that scope is the whole binding.**
+        // `Up` at the first line of the composer is prompt history and has been
+        // since it was documented — `commands::KEYS` carries the row and
+        // `tests/docs.rs` mirrors it into the README. Bound at the bare composer
+        // these arrows would work perfectly for an operator with something queued
+        // and silently cost history to everyone else: a feature nobody asked to
+        // trade, broken by a release about a different one. Two guards keep it
+        // narrow — the surface has to be open and the prompt has to be empty — so
+        // a recall that is *continuing*, and the arrows inside a multi-line prompt
+        // being written, never reach this block at all. `Esc` hands both back.
+        //
+        // An edit in flight keeps these keys live even when the take emptied the
+        // queue and closed the surface: otherwise the `Esc` cancelling an edit of
+        // the last queued line would fall through and interrupt the turn.
+        //
+        // It costs the turn one extra `Esc`, and that is the right way round.
+        // While a turn runs `Esc` stops it, and an operator who has just been
+        // shown a list has a reading of that key which is not "stop the run" — so
+        // the first press answers the surface and the second reaches the turn. The
+        // same trade the fleet view makes, below it for the same reason: the view
+        // that was opened by a key is the one that should close first.
+        //
+        // Guarded on the *taken* arming rather than on `self.armed`, which this
+        // function emptied a few lines above: `Esc` can be the second key of a
+        // rebound chord, and a surface that stole it would be answering a sequence
+        // the operator was half way through.
+        // Not while the fleet view is up: it is drawn in this surface's place and
+        // takes the arrows above, so a queue acting here would be a surface acting
+        // while invisible — `Enter` at an empty prompt would take a line out of the
+        // queue into a composer the fleet is covering.
+        if !self.fleet_open && (self.queue_open() || self.queue.editing().is_some()) {
+            let dash = self.theme.glyphs.dash;
+            match key.code {
+                KeyCode::Up | KeyCode::Down
+                    if self.queue.editing().is_none() && self.composer.is_empty() =>
+                {
+                    let delta = if key.code == KeyCode::Up { -1 } else { 1 };
+                    // Shifted moves the line, bare moves the mark. `false` means
+                    // the key was never ours — nothing marked, or an end of the
+                    // list — and it falls through to the composer rather than
+                    // being swallowed.
+                    let moved = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        self.queue.reorder(delta, &mut self.prompts)
+                    } else {
+                        self.queue.move_by(delta, self.prompts.len())
+                    };
+                    if moved {
+                        return Command::None;
+                    }
+                }
+                // Finishing an edit is not sending a turn. Above the arm below and
+                // above the match: a `Reply::Submitted` reaching `compose` would
+                // queue the line a second time.
+                KeyCode::Enter if self.queue.editing().is_some() => {
+                    let text = self.composer.text();
+                    self.composer.clear();
+                    let put = self.queue.put_back(&mut self.prompts, &text);
+                    self.status.queued_prompts = self.prompts.len();
+                    let said = match put {
+                        Some(crate::queue::Put::Kept(at)) => {
+                            format!("line {} edited {dash} it runs in its own place", at + 1)
+                        }
+                        Some(crate::queue::Put::Dropped(was)) => format!(
+                            "dropped {}{}{} {dash} {} still queued",
+                            self.theme.glyphs.quote_open,
+                            crate::picker::fit(&was, 32, &self.theme.glyphs),
+                            self.theme.glyphs.quote_close,
+                            self.prompts.len(),
+                        ),
+                        None => unreachable!("the arm is guarded on an edit in flight"),
+                    };
+                    self.say(Tone::Muted, said);
+                    return Command::None;
+                }
+                // Only at an empty prompt, so an edit can never start on top of a
+                // half-typed line: with text in the composer `Enter` goes on
+                // meaning what it has meant all release, which is *queue this*.
+                KeyCode::Enter if self.composer.is_empty() => {
+                    if let Some(text) = self.queue.take(&mut self.prompts) {
+                        self.composer.set(&text);
+                        self.status.queued_prompts = self.prompts.len();
+                        let at = self.queue.editing().unwrap_or(0);
+                        self.say(
+                            Tone::Muted,
+                            format!(
+                                "editing line {} {dash} Enter puts it back where it was, \
+                                 Esc leaves it as it was",
+                                at + 1
+                            ),
+                        );
+                        return Command::None;
+                    }
+                }
+                KeyCode::Esc if armed.is_none() => {
+                    if self.queue.cancel(&mut self.prompts).is_some() {
+                        self.composer.clear();
+                        self.status.queued_prompts = self.prompts.len();
+                        self.say(
+                            Tone::Muted,
+                            format!("edit cancelled {dash} the line is as it was"),
+                        );
+                    } else {
+                        self.queue_open = false;
+                    }
                     return Command::None;
                 }
                 _ => {}
@@ -1262,6 +1594,10 @@ impl App {
     /// `!` with nothing after it is nothing to run, and does nothing. It is not
     /// treated as a prompt, because a bare `!` submitted to a model is a
     /// keystroke that missed rather than a question.
+    ///
+    /// The first character decides *what* the line is; the mode decides whether a
+    /// prompt can be sent at all. A prompt finished while a turn holds the
+    /// session is queued rather than returned — see [`App::queue_prompt`].
     fn compose(&mut self, key: KeyEvent) -> Command {
         self.quits = 0;
         match self.composer.key(key) {
@@ -1271,6 +1607,26 @@ impl App {
                 None => match text.strip_prefix('!').map(str::trim) {
                     Some("") => Command::None,
                     Some(line) => Command::Shell(line.to_string()),
+                    // **The guard is here and not in the driver.** A
+                    // `Command::Submit` handed out mid-turn is an instruction
+                    // nobody can carry out: there is one session, one turn may
+                    // hold it, and every caller of [`App::key`] would otherwise
+                    // have to know that separately — which is how the driver's
+                    // turn loop came to drop this line in its catch-all while the
+                    // idle loop ran it. One session-wide fact, asked once, where
+                    // the mode is already known.
+                    //
+                    // The two arms above deliberately keep falling through. A
+                    // slash command and a `!` line are *refused* mid-turn with a
+                    // sentence, and refusing is right for them: `/model` or
+                    // `/fork` held for later would take effect at a moment nobody
+                    // could predict, and a shell line is the operator's own,
+                    // wanted now or not at all. Only a prompt is the kind of
+                    // thing that keeps its meaning after the turn in front of it.
+                    None if self.mode == Mode::Running => {
+                        self.queue_prompt(text);
+                        Command::None
+                    }
                     None => Command::Submit(text),
                 },
             },
@@ -1398,7 +1754,24 @@ impl App {
         // first given up, because it carries nothing — but what it buys is the
         // sticky row reading as a header over the work rather than as the last
         // line of it.
-        let air_rows = u16::from(area.height >= 8);
+        //
+        // **The queue takes it while it is open, and this is the whole reason
+        // the surface is visible at all (0.17.0).** At the viewport a running
+        // turn actually asks for — `term::VIEWPORT_HEIGHT`, eight rows — the
+        // composer's allowance works out to exactly `COMPOSER_ROWS`, so there is
+        // no spare row above it and a surface drawn there would draw nothing on
+        // every real session. The alternatives were to grow the viewport, which
+        // costs every session a row of scrollback for a surface that is empty
+        // almost always, or to take the composer's own row, which is the one
+        // thing this layout has refused since 0.1.0. The blank is the honest
+        // third answer: it carries nothing by its own argument above, the queue
+        // carries something, and the frame is the same height either way — which
+        // is what N2 is really about. It comes back the moment the queue closes.
+        // `&& !fleet_open` because the fleet view is drawn INSTEAD of the queue,
+        // in the composer's own rect. Without that clause, queueing a line behind
+        // an open fleet view took the blank row for a surface that then did not
+        // draw — the row bought nothing and the fleet quietly grew by one.
+        let air_rows = u16::from(area.height >= 8 && !self.queue_drawn());
         // **A rule over the composer, matching the one under it.** The footer has
         // opened with one since 0.1.0, and the prompt had a boundary on one side
         // only — so the composer read as part of whatever the turn had last
@@ -1476,7 +1849,55 @@ impl App {
         if self.fleet_open {
             self.fleet.render(frame, composer, &self.theme);
         } else {
-            self.composer.render(frame, composer, &self.theme);
+            // **The queue takes what the composer can spare, and the subtraction
+            // above is untouched.** Every term in `composer_rows` is a row the
+            // frame already had; a term for the queue would be a frame that grew
+            // with the queue, which is a session whose own scrollback is walked
+            // upward one row per line typed into it. So the rows come out of the
+            // composer's allowance the way the fleet view's do — the difference
+            // being that the fleet takes all of them and this takes only what is
+            // left over `COMPOSER_ROWS`, because a prompt nobody can see is a
+            // worse trade than a queue nobody can see.
+            //
+            // At the viewport height a running turn holds that leaves exactly one
+            // row, and only because the blank above the activity line is released
+            // while the queue is open — see `air_rows`. Without it `composer_rows`
+            // is exactly `COMPOSER_ROWS` at eight rows and this would draw nothing
+            // on every real session. Below eight there is no blank to release and
+            // it draws nothing, which is F2's "on a terminal tall enough to hold
+            // them" in one line of arithmetic rather than a height compared
+            // against a number.
+            let spare = composer.height.saturating_sub(COMPOSER_ROWS);
+            let want = u16::try_from(self.prompts.len()).unwrap_or(u16::MAX);
+            let queue_rows = if self.queue_open() {
+                spare.min(want)
+            } else {
+                0
+            };
+            if queue_rows > 0 {
+                crate::queue::render(
+                    &self.prompts,
+                    self.queue.selection(self.prompts.len()),
+                    frame,
+                    Rect {
+                        height: queue_rows,
+                        ..composer
+                    },
+                    &self.theme,
+                );
+            }
+            // Under the queue and never over it: the rows go in send order, and
+            // the row the operator is typing into is the one that has not been
+            // sent at all, so it belongs at the bottom of that order.
+            self.composer.render(
+                frame,
+                Rect {
+                    y: composer.y + queue_rows,
+                    height: composer.height - queue_rows,
+                    ..composer
+                },
+                &self.theme,
+            );
         }
 
         if status_rows > 0 {

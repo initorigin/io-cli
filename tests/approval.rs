@@ -259,7 +259,7 @@ async fn f2_an_unnamed_action_says_the_tier_default_decided() {
 ///
 /// **Restated in 0.3.0.** Until then the overlay showed the proposed content as
 /// plain lines, so this asserted the first of them was on screen. Now a write
-/// whose target can be read is shown as a change, and at a session's four rows
+/// whose target can be read is shown as a change, and at a session's few rows
 /// the one row available carries `+40 -855` rather than the first line of the
 /// file — which is the more useful row, and the one this test now pins. What has
 /// not changed is the part that mattered: whatever is not shown is counted out
