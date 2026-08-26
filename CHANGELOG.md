@@ -6,6 +6,50 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-27
+
+Ask for a thing io can do, in your own words, and have it happen.
+
+**Five skills ship with io and answer the asks nobody should have to learn a
+command for.** "Stop asking me before every write in this repository" is
+`io-permissions`; "add the GitHub MCP server" is `io-mcp`; "point this at a
+local model instead" is `io-provider`; "remember that we use pnpm here" is
+`io-remember`; "update io" is `io-update`, which checks the published Release
+and proposes the exact `install.sh` line rather than replacing the binary behind
+you. Every one of them ends in a change you see before it lands — a proposed
+edit, shown as a diff, gated by the same policy as anything else.
+
+**They are ordinary files in `~/.io-cli/skills`, beside your own.** `SKILL.md`
+bodies and nothing more clever than that: open one, edit it, fork it, delete it.
+The model is offered each skill's name and description on every turn and reads
+the body through io-harness's own `read_skill` tool, under this session's
+policy. An upgrade brings forward the ones nobody has touched, leaves a file you
+edited exactly as it is and says so, and never resurrects one you turned off.
+
+**`/skills` is where all of it is visible**, and turning a skill off is moving
+its file into `skills/disabled/` — a directory io-harness's discovery walks past
+because it holds no `SKILL.md`. `/skills` does the move with a keystroke, it
+takes effect on the next turn, and it works on your own skills too. There is no
+`enabled` flag anywhere, because a second list disagreeing with the filesystem
+is how a product grows two sources of truth.
+
+**`/mcp` and `/provider` moved from the inspect group to the configure group**,
+which matters to anyone who finds a command by scanning `/help` rather than by
+typing it. Both open with a list and both go on to add, edit, disable and remove
+entries in the configuration file, which is what configure means and what
+inspect promises it does not do. The commands, their keys and their screens are
+unchanged; only where they are listed is. Inspect goes to nine and configure to
+six, with `/skills` the twenty-sixth command.
+
+**Two guards you can watch work.** A skill of yours already answering to a
+shipped name is never overwritten: io-cli installs four files instead of five
+and names the one it withheld and the file that claimed the name — because
+io-harness addresses a skill by name and two of one name ends every turn of the
+session before the first completion. And io-harness accepts at most 64 skills in
+a directory, rejecting the whole set rather than trimming it, so io-cli counts
+before it writes, stops short of the ceiling and says how many it withheld. An
+install that cannot write at all is reported and the session runs anyway.
+
 ## [0.18.0] - 2026-08-26
 
 Tell it to remember something, and it is still remembered tomorrow.

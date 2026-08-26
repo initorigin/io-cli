@@ -125,6 +125,78 @@ fn the_readme_command_table_is_the_command_table() {
     assert_eq!(rows, COMMANDS.len());
 }
 
+/// The README's account of the skills this crate ships.
+///
+/// The names are read out of `skills/` rather than listed here, so a sixth
+/// shipped skill fails this test instead of arriving undocumented — which is the
+/// shape of drift the command table already has a gate for and this section did
+/// not. The resolved name is the frontmatter `name:` and not the filename,
+/// because that is the name io-harness addresses a skill by and therefore the
+/// name an operator has to avoid claiming.
+///
+/// The two rules asserted under it are the ones an operator can only learn from
+/// prose: a duplicate name is fatal at the harness level, and there is a ceiling
+/// that rejects the whole set rather than the excess. Both are asserted on a
+/// short distinctive phrase rather than on a sentence, because a sentence gets
+/// reworded and a gate that fails on an improvement teaches people to delete
+/// gates.
+#[test]
+fn the_readme_documents_every_skill_this_crate_ships() {
+    let readme = read("README.md");
+    let (_, section) = readme
+        .split_once("## Skills")
+        .expect("the README should have a section about the shipped skills");
+    let section = section.split("\n## ").next().unwrap_or(section);
+
+    let mut shipped = 0;
+    for entry in std::fs::read_dir(repo().join("skills")).expect("the shipped skills directory") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().and_then(|end| end.to_str()) != Some("md") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("a skill body");
+        let name = body
+            .lines()
+            .find_map(|line| line.strip_prefix("name:"))
+            .unwrap_or_else(|| panic!("{} declares no name in its frontmatter", path.display()))
+            .trim();
+        assert!(
+            section.contains(&format!("`{name}`")),
+            "the README should name the {name} skill and say what it is for",
+        );
+        shipped += 1;
+    }
+    assert!(shipped > 0, "there should be skills to document");
+
+    // The collision rule, in both halves: what it costs, and what io-cli does
+    // about it. Half of it is worse than none — "io-cli withholds a colliding
+    // skill" without the consequence reads as tidiness rather than as the
+    // session-killer it avoids.
+    assert!(
+        section.contains("every turn of that session"),
+        "the README should say what a duplicate skill name costs",
+    );
+    assert!(
+        section.contains("frontmatter"),
+        "the README should say the claimed name is the frontmatter name, not the filename",
+    );
+    assert!(
+        section.contains("withheld"),
+        "the README should say io-cli withholds rather than overwrites a claimed name",
+    );
+
+    // And the ceiling, with the number, because "a limit on skills" is not
+    // actionable and 64 is.
+    assert!(
+        section.contains("64 skills"),
+        "the README should name the 64-skill ceiling",
+    );
+    assert!(
+        section.contains("rejects the whole set"),
+        "the README should say the ceiling rejects the set rather than trimming it",
+    );
+}
+
 /// The `[app.io-cli]` table in the README, sliced by the prose either side of it.
 ///
 /// It has no `<!-- -->` markers because it is not generated — the descriptions are
@@ -523,6 +595,40 @@ fn the_changelog_has_a_section_for_this_version() {
     );
 }
 
+/// The 0.19.0 section, and the one thing in it a reader cannot find out any
+/// other way.
+///
+/// A command that changes group changes where an operator finds it: nothing
+/// about `/mcp` or `/provider` was rewritten, so the only trace of the move is
+/// that `/help` lists them somewhere else than it did yesterday. A release note
+/// that leaves that out has documented the features and hidden the one change
+/// that will make somebody think a command was removed. Pinned to `0.19.0`
+/// rather than to `CARGO_PKG_VERSION`, because this is a fact about one release
+/// and not a rule about every one.
+#[test]
+fn the_changelog_says_which_commands_changed_group() {
+    let changelog = read("CHANGELOG.md");
+    let start = changelog
+        .find("## [0.19.0]")
+        .expect("CHANGELOG.md should have a 0.19.0 section");
+    let rest = &changelog[start..];
+    let body = rest
+        .split_once("\n## [")
+        .map(|(body, _)| body)
+        .unwrap_or(rest);
+
+    for moved in ["`/mcp`", "`/provider`"] {
+        assert!(
+            body.contains(moved),
+            "the 0.19.0 section should say {moved} changed group",
+        );
+    }
+    assert!(
+        body.contains("configure"),
+        "the 0.19.0 section should say which group they moved to",
+    );
+}
+
 #[test]
 fn the_readme_states_what_the_checksum_does_not_defend_against() {
     // N7's own words: the README says this rather than implying more. A `curl |
@@ -558,10 +664,17 @@ fn the_readme_says_where_io_keeps_its_files() {
         .expect("the home is a directory under the operator's own")
         .to_string_lossy()
         .into_owned();
+    // The last two arrived with 0.19.0, and they are here rather than in the
+    // skills section's own gate because this is the paragraph an operator reads
+    // when they are asking what io put on their disk. `disabled/` is a directory
+    // that changes behaviour, and the manifest is a dotfile they did not create;
+    // both are things to find named somewhere before finding them by accident.
     for named in [
         format!("`~/{dir}`"),
         format!("`%USERPROFILE%\\{dir}`"),
         format!("`~/{dir}/skills`"),
+        format!("`~/{dir}/skills/disabled/`"),
+        format!("`~/{dir}/.skills-manifest`"),
     ] {
         assert!(
             section.contains(&named),

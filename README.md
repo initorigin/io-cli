@@ -363,6 +363,8 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/profile` | switch to a named profile from the configuration, for this session |
+| `/steer` | send what is queued into the turn that is already running |
+| `/compact` | fold this conversation into a summary, at the next step |
 
 **inspect**
 
@@ -371,12 +373,9 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/help` | this table |
 | `/status` | commit the whole session state into the scrollback |
 | `/context` | what is in the model's window, read from the request that carried the turn |
-| `/steer` | send what is queued into the turn that is already running |
-| `/compact` | fold this conversation into a summary, at the next step |
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/fleet` | show the children this turn has spawned |
-| `/mcp` | the MCP servers configured, and what this session has seen of each |
-| `/provider` | the providers configured, in the order a turn tries them |
+| `/skills` | every skill, shipped or yours: what it is for, whether it is on, and its file |
 | `/image` | draw an attached image again: /image 1 |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
@@ -389,6 +388,16 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/theme` | change the theme for this session |
 | `/remember` | remember a line of guidance, in the scope you choose |
 | `/memory` | what io remembers: the instruction files, and the agent's own notes |
+| `/mcp` | the MCP servers configured, and what this session has seen of each |
+| `/provider` | the providers configured, in the order a turn tries them |
+
+`/mcp` and `/provider` sit under **configure** from 0.19.0, and it is a
+correction rather than a promotion: both open with a list, and both go on from
+that list to add, edit, disable and remove entries in the configuration file,
+which is the one thing **inspect** promises it never does. `/steer` and
+`/compact` are listed under **this turn**, which is the group the code has
+always filed them in — the table above said otherwise until this release, and
+nothing but a reader was misled by it.
 
 `/usage` answers what `/status` answers and is deliberately not listed above: an
 alias earns no row of its own, because a second row for one screen reads as a
@@ -444,6 +453,81 @@ refuse a large payload without saying so.
 
 `/theme` and `/model` change this session only and say so. Making a choice
 permanent is `io setup`.
+
+## Skills
+
+**Five of the things io can do have a plain-language door.** Say what you want
+in your own words — "stop asking me before every write in this repository", "add
+the GitHub MCP server", "point this at a local model instead", "remember that we
+use pnpm here", "update io" — and the model reaches for the skill that answers
+it, instead of you reaching for the command that does.
+
+| Skill | For |
+| --- | --- |
+| `io-permissions` | changing what io asks about before it acts |
+| `io-mcp` | adding, changing or removing an MCP server |
+| `io-provider` | switching provider, or pointing the session at a local model |
+| `io-remember` | writing something down where the next session reads it |
+| `io-update` | finding out whether a newer io has been released, and proposing the installer line for it |
+
+**They are files, and nothing more clever than that.** Five ordinary `SKILL.md`
+bodies written into `~/.io-cli/skills`, beside whatever skills you keep there
+yourself. Open one, read it, edit it, copy it into a skill of your own, delete
+it — the same things you would do to any other markdown file in a directory you
+own. There is no registry, no index and no remote source; the five are carried
+in the binary and written out on the first run that finds them missing.
+
+**Each of them ends in a change you see before it lands.** A skill instructs the
+model in what io can already do and which surface does it, so what comes back is
+a proposed edit to `io.toml`, or to a memory file, or a command to run — shown
+as a diff or as a command, gated by exactly the policy everything else is gated
+by, and refusable. A skill can no more move the permission boundary behind your
+back than the agent can, because moving it *is* a write, and a write is a thing
+you approve.
+
+**The model is offered a name and a description, and reads the rest only when it
+matters.** Every turn's system prompt carries the catalogue — five names and
+five short descriptions — and the body of a skill reaches the model through
+io-harness's own `read_skill` tool, under this session's policy, like any other
+read. So a skill costs the prompt one line until it is relevant, and it is
+subject to the same boundary as everything else in the session.
+
+**An upgrade refreshes what nobody touched and leaves the rest alone.** io-cli
+records the bytes it last wrote for each shipped skill; a file that still
+matches gets the new text, and a file you have edited is kept exactly as it is
+and named on screen as kept. A skill with no record at all is treated as yours.
+The bias is deliberate: there is no restore point behind these files, so the
+failure mode of a lost or unreadable record is that io-cli stops refreshing,
+never that it writes over something you wrote.
+
+**Turning a skill off is moving its file into `~/.io-cli/skills/disabled/`.**
+io-harness admits a subdirectory only when it holds a `SKILL.md`, so a folder of
+loose `.md` files is invisible to discovery, to the catalogue and to
+`read_skill` — which makes a directory the whole mechanism, with no second list
+to disagree with the filesystem. It works on your own skills too, and it
+survives an upgrade: a shipped skill sitting in `disabled/` is not written back
+into `skills/` on the next launch, because a switch that turns itself on again
+every morning is not a switch. `/skills` does the move for you and shows, for
+every skill in both directories, what it is for, whether it came from io-cli or
+from you, whether it is on, and the file it lives in.
+
+**Two names resolving to one skill is fatal, which is why io-cli withholds
+rather than overwrites.** io-harness addresses a skill by name, and a directory
+holding two of the same name fails discovery outright — not as a listing quirk,
+but as an error raised at the start of a run, so *every turn of that session*
+dies before the first completion. The resolved name is the `name:` in a file's
+frontmatter where there is one, not the filename, so a file of yours called
+anything at all can claim `io-mcp`. io-cli therefore reads the directory before
+it writes to it, and never installs a shipped skill over a name your own files
+already claim: it installs four instead of five, and says which one it withheld
+and which file claimed the name. Rename yours, or leave it — the choice stays
+with the file you wrote.
+
+**And there is a ceiling: io-harness accepts at most 64 skills in a directory.**
+It rejects the whole set rather than trimming it, so an operator sitting near
+the limit who gains five more would otherwise get no skills at all as their
+upgrade. io-cli counts first, installs up to the ceiling and stops, and says how
+many it installed and how many it withheld.
 
 ## The fleet
 
@@ -774,6 +858,14 @@ and the skills directory, which is `~/.io-cli/skills` when `skills` names none.
 `/remember` writes when you pick that scope. That is one directory to copy to a
 new machine, and one path to put in a bug report.
 
+Two more paths arrive with the shipped skills. `~/.io-cli/skills/disabled/` holds
+the ones that are turned off, which is a directory rather than a setting — see
+[Skills](#skills). And `~/.io-cli/.skills-manifest` is where io-cli records the
+bytes it last wrote for each shipped skill, so an upgrade can tell an untouched
+file from one you edited. It sits in the home and deliberately *not* in the
+skills directory, because every markdown file in there is offered to the model
+and a state file is not a skill.
+
 The file is found in this order, which is io-harness's and is unchanged:
 `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`, else `$XDG_CONFIG_HOME/io/io.toml`
 or `~/.config/io/io.toml`, and `%APPDATA%\io\io.toml` on Windows. What 0.15.0
@@ -917,7 +1009,9 @@ nothing reaches this program to draw.
 into prompt text, so nothing but this program is involved; a skill is read by the
 *model*, through a tool, under the run's own policy. Choosing one from the
 palette puts `use the <name> skill: ` in your prompt and stops there. io-cli
-parses no skill file and keeps no copy of one.
+parses no skill file: the five it ships from 0.19.0 are bodies it carries and
+writes to disk, and after that they are read the same way yours are — by the
+model, through the tool, under the policy.
 
 **`io exec` runs one goal and stops, and a run that pauses stays paused.** An
 agent that asks a question about what you meant, or proposes a plan, ends the run
