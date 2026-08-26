@@ -478,7 +478,7 @@ fn ctrl_a_and_ctrl_e_go_to_the_ends_of_the_row() {
 #[test]
 fn a_masked_field_shows_the_mask_and_nothing_of_what_was_typed() {
     let mut editor = Editor::masked('•');
-    typed(&mut editor, "sk-or-v1-secret");
+    typed(&mut editor, "aa-bb-v1-secret");
 
     assert_eq!(editor.shown(), "•".repeat(15));
     assert!(
@@ -488,7 +488,7 @@ fn a_masked_field_shows_the_mask_and_nothing_of_what_was_typed() {
     );
     assert_eq!(
         editor.lines(),
-        ["sk-or-v1-secret"],
+        ["aa-bb-v1-secret"],
         "the buffer still holds it, because the wizard has to read it",
     );
 }
@@ -745,12 +745,12 @@ fn undo_in_a_masked_field_comes_back_masked() {
     // `Ctrl+U` after the key was typed would put the credential on the screen,
     // which is the same defect F9's sabotage arm exists to catch.
     let mut editor = Editor::masked('•');
-    typed(&mut editor, "sk-or-v1-secret");
+    typed(&mut editor, "aa-bb-v1-secret");
     editor.key(chord(KeyCode::Char('w'), KeyModifiers::CONTROL));
-    assert_eq!(editor.lines(), ["sk-or-v1-"]);
+    assert_eq!(editor.lines(), ["aa-bb-v1-"]);
 
     undo(&mut editor);
-    assert_eq!(editor.lines(), ["sk-or-v1-secret"], "the key came back");
+    assert_eq!(editor.lines(), ["aa-bb-v1-secret"], "the key came back");
     assert_eq!(editor.shown(), "•".repeat(15), "and came back masked");
     assert!(
         !editor.shown().contains("sk-"),
