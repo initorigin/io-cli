@@ -9,10 +9,10 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind};
 use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -111,7 +111,22 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
             report.extend(io_cli::skills::install(&home));
         }
     }
-    let config = Config::discover(&root).map_err(|error| error.to_string())?;
+    // **A refusal is not a crash, and until 0.20.0 this line made every refusal
+    // look like one.** io-harness refuses a whole `Config::discover` when the
+    // project-scoped file — the one a `git clone` delivers — declares `[[hook]]`,
+    // because a hook runs a command on this machine. That refusal is correct and
+    // io-cli does not soften it: there is no `Config` to be had, so the program
+    // genuinely cannot start.
+    //
+    // What it can do is say so in words the operator can act on. io-harness's own
+    // sentence names the key, the reason and the two files that may carry it, and
+    // it is worth more than anything written here — so it is passed through
+    // unreworded, with only a line above it saying which file was being read.
+    // Before this, the whole thing arrived as a bare error string from a program
+    // that had already exited, against a repository the operator had just cloned,
+    // with nothing connecting one table in one file to the failure.
+    let config =
+        Config::discover(&root).map_err(|error| io_cli::configure::refusal(&root, &error))?;
     // **A profile, if one was asked for, before anything reads the configuration.**
     // Applied here rather than per arm so a session and an `io exec` run get the
     // same overlay from the same decision, and refused with io-harness's own
@@ -913,6 +928,69 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // the row being drawn and this keystroke the operator may
                         // have moved the file themselves, and a carried row would
                         // then name a path that is no longer there.
+                        // Read and closed. `Esc` and `Enter` do the same thing,
+                        // which is the honest behaviour for a pane with nothing
+                        // to choose.
+                        Pick::Nothing => {}
+                        Pick::Plugins(view) => {
+                            // **Answered from the reading the rows were drawn
+                            // from, and `/skills` does the opposite on purpose.**
+                            // There, a row names a file the operator may have
+                            // moved between two keystrokes, so the directory is
+                            // read again and a row that moved is refused. Here the
+                            // rows describe what is *loaded in this session* — the
+                            // bundle a turn taken right now would actually use —
+                            // and re-reading would answer a different question
+                            // than the one the operator asked by choosing a row.
+                            //
+                            // The split is `pluginview::rows`'s own: loaded first,
+                            // refused after, no headings, so the index is direct.
+                            if let Some(plugin) = view.plugins.get(index) {
+                                // `descended`, not `picker`: the assignment at the
+                                // end of this match installs it, while `kind`
+                                // still borrows the one being replaced.
+                                //
+                                // **A pane rather than a line in the scrollback,
+                                // and `/mcp` above does the opposite for a good
+                                // reason that does not hold here.** A server is
+                                // one row of facts, so a sentence says all of it.
+                                // A bundle is several *lists* — its agents, its
+                                // servers, its policy layers — and a sentence
+                                // holding three lists is a sentence nobody reads.
+                                descended = Some((
+                                    Picker::new(
+                                        plugin.id.clone(),
+                                        io_cli::pluginview::detail(
+                                            plugin,
+                                            screen.width(),
+                                            &app.theme.glyphs,
+                                        ),
+                                    ),
+                                    Pick::Nothing,
+                                ));
+                            } else if let Some(refused) =
+                                view.refused.get(index - view.plugins.len())
+                            {
+                                // **`Tone::Refused` and io-harness's own sentence,
+                                // re-worded by nobody.** This is the one an
+                                // operator will actually hit — a bundle declared
+                                // in the project file that contributes hooks or
+                                // servers is refused whole — and the harness's
+                                // message is the only text that names both files
+                                // it could move to instead. `record` rather than
+                                // `say`: a refusal explains a boundary and outlives
+                                // the keystroke that earned it.
+                                app.record(
+                                    Tone::Refused,
+                                    format!(
+                                        "{} ({}): {}",
+                                        refused.id,
+                                        refused.path.display(),
+                                        refused.error,
+                                    ),
+                                );
+                            }
+                        }
                         Pick::Skills(drawn) => {
                             // **Located by what the row said, not by where it
                             // sat.** The list is read again — the operator may
@@ -1421,6 +1499,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 paint(screen, &mut app)?;
             }
             Command::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
+            Command::Attach(run_id) => {
+                watch_child(screen, &mut app, &store, inputs, run_id).await?;
+            }
             // The first `Esc`. Nothing has changed yet; this says what the second
             // one would change, in the turn's own words, so a confirmation is a
             // confirmation of something specific rather than of a keystroke.
@@ -1526,6 +1607,39 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     .map(|skill| (skill.name.clone(), skill.path.clone()))
                                     .collect(),
                             ),
+                        ));
+                    }
+                }
+                Action::Plugin => {
+                    // **Read fresh, every time, and that is io-harness's design
+                    // rather than a choice made here.** `Config::plugins()`
+                    // re-walks every declared directory on each call, so a bundle
+                    // the operator has just edited on disk is reflected without a
+                    // reload — and a bundle they have just broken shows up as a
+                    // refusal in the same breath.
+                    let view = io_cli::pluginview::view(&config);
+                    if view.is_empty() {
+                        // Naming the file rather than the concept: an operator who
+                        // has never declared a bundle needs to know where the
+                        // entry goes, and one who has needs to know io-cli read
+                        // the file they meant.
+                        app.record(
+                            Tone::Muted,
+                            "no capability bundles are declared; add one with a \
+                             `[[plugin]]` entry naming its directory"
+                                .to_string(),
+                        );
+                    } else {
+                        picker = Some((
+                            Picker::new(
+                                "Plugins",
+                                io_cli::pluginview::rows(
+                                    &view,
+                                    screen.width(),
+                                    &app.theme.glyphs,
+                                ),
+                            ),
+                            Pick::Plugins(view),
                         ));
                     }
                 }
@@ -2519,14 +2633,61 @@ async fn turn<P: Provider>(
     // to read them from. They then persist, because `Status::forget_run` does not
     // clear them — the file does not change while a session runs.
     app.status.budgets = io_cli::status::Budgets::in_force(&contract);
+    // **The observer composition, and it is the spine of 0.20.0.** Through 0.19.0
+    // this was one value — `Bridge`, the channel the interface draws from. Three
+    // things this release wants are all downstream of that single seam, so the
+    // seam is where they arrive:
+    //
+    // 1. `[[hook]]` tables run, because io-harness's `Hooks` *is* an `Observer`
+    //    and running the operator's hooks is nothing more than putting it here.
+    //    io-cli spawns no process of its own for this — the subprocess, its
+    //    timeout, its kill and its drained stdout are all io-harness's, which is
+    //    what keeps the one-spawning-module rule in `tests/dependencies.rs` true.
+    // 2. `Fanout` exists because io-harness has no combinator to do it with.
+    //    `Broadcast` is *not* a tee — it is a store-writing decorator over exactly
+    //    one inner observer — and the only three `impl Observer` in the whole
+    //    crate are `Hooks`, `Ignore` and `Broadcast`. So io-cli folds `Flow`
+    //    itself, and folds it so `Cancel` wins over `Continue` whatever the order.
+    // 3. `Broadcast` wraps the result for a different reason than the fan-out
+    //    exists: it is the **only** writer of the `run_events` table, and that
+    //    table is what `Attach` reads. Without this wrapper a detached child can
+    //    be selected and attached to and will show nothing, forever, and look
+    //    like a quiet child rather than a missing write.
+    //
+    // The order is deliberate: `Broadcast` outermost, so an event is durable
+    // before either the interface or a hook is told about it, and a hook that
+    // cancels the turn cannot leave a gap in the sequence a reader is following.
+    let hooks = io_cli::contract::hooks(config, session.root());
+    let mut observers: Vec<&dyn io_harness::Observer> = vec![&observer];
+    if let Some(hooks) = &hooks {
+        observers.push(hooks);
+    }
+    let fanout = io_cli::fanout::Fanout::new(observers);
+    // A second connection to the same file, which is what io-harness's own
+    // documentation asks for rather than tolerates: `Observer` is `Send + Sync`,
+    // `rusqlite::Connection` is `Send` and not `Sync`, so the run's borrowed
+    // `&Store` cannot live inside one. `Store::open` has set `journal_mode = WAL`
+    // and a busy timeout since 0.12.0 precisely so a second handle works. It is a
+    // spectator — it writes events and never takes a run lease — so it is not the
+    // two-drivers-over-one-file shape that has produced `DatabaseBusy` here.
+    //
+    // `None` where the store cannot be opened a second time: attach is the thing
+    // that stops working, and a turn that runs without a durable event stream is
+    // strictly better than a turn that refuses to start.
+    let durable = io_cli::settings::store_path().and_then(|path| Store::open(&path).ok());
+    let broadcast = durable.map(|store| io_harness::Broadcast::new(store, &fanout));
+    let watcher: &dyn io_harness::Observer = match &broadcast {
+        Some(broadcast) => broadcast,
+        None => &fanout,
+    };
     let mut running: std::pin::Pin<
         Box<dyn std::future::Future<Output = io_harness::Result<io_harness::TurnResult>> + '_>,
     > = match containment {
         Some(caps) => Box::pin(session.turn_contained_bounded_steered(
-            &contract, provider, store, policy, &approver, caps, &observer, &inbox,
+            &contract, provider, store, policy, &approver, caps, watcher, &inbox,
         )),
         None => Box::pin(session.turn_bounded_steered(
-            &contract, provider, store, policy, &approver, &observer, &inbox,
+            &contract, provider, store, policy, &approver, watcher, &inbox,
         )),
     };
 
@@ -2574,6 +2735,7 @@ async fn turn<P: Provider>(
                 // same turn. The trace is the fallback for the window between a
                 // step landing and the first completion call being seen.
                 note_context(app, store, &event, seen, &contract);
+                note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
                 paint(screen, app)?;
@@ -2908,6 +3070,7 @@ async fn turn<P: Provider>(
         // for: the last step of a turn is exactly the one whose event the select
         // loop loses to the turn's own return.
         note_context(app, store, &event, seen, &contract);
+        note_fleet(app, store, &event, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
         // lose.
@@ -3042,6 +3205,74 @@ async fn turn<P: Provider>(
 /// there is no request to measure and the section the trace records is the only
 /// number there is — better than a blank field, and it converges the moment a
 /// request has been seen.
+/// Give the fleet the two facts the event stream does not carry.
+///
+/// **On `Step` and on nothing else, and the reason is a race rather than a
+/// preference.** io-harness documents `Step` as emitted once the step has been
+/// committed to the store, so the spawn row is there to be read. The obvious
+/// place — `Spawned`, the event that announces the child — is a read of a row
+/// that may not exist yet, and it fails the way races fail: green on a quiet
+/// laptop, intermittent on a loaded CI machine. `src/status.rs` already records
+/// this rule for the context read; this is the same rule applied to addresses.
+///
+/// **Naming is cheap and unconditional; traffic is not and is conditional.**
+/// `tree_addresses` costs one query returning one row per agent — a number that
+/// grows with the size of the fleet and not with the length of the run — and it
+/// is what makes a child draw as `reviewer` rather than `run 41`, which is worth
+/// having on screen whether or not the fleet pane is open, because the scrollback
+/// keeps it.
+///
+/// The mailbox is the opposite shape. `Store::messages_for` returns a
+/// recipient's **whole** mailbox every call, so polling it once a step would
+/// re-read every message already read — `n(n+1)/2` reads over an `n`-message
+/// run, which is exactly the trap `src/status.rs` names for `context_events`.
+/// So it is read only while the pane that shows it is open. That is not a
+/// half-measure: a message an operator cannot see has nowhere to arrive, and the
+/// pane is refreshed by the next step the moment they open it.
+fn note_fleet(
+    app: &mut App,
+    store: &Store,
+    event: &io_harness::RunEvent,
+    contract: &io_harness::TaskContract,
+) {
+    if !matches!(event.kind, io_harness::EventKind::Step { .. }) {
+        return;
+    }
+    // A run with no children has an empty tree and nothing to name. Asking the
+    // store anyway would be one query per step of every ordinary turn, which is
+    // the overwhelming majority of them.
+    if app.fleet.is_empty() {
+        return;
+    }
+    let Ok(root) = store.run_root(event.run_id) else {
+        return;
+    };
+    if let Ok(addresses) = store.tree_addresses(root) {
+        app.fleet.name(&addresses, &contract.agents);
+    }
+    if !app.fleet_open() {
+        return;
+    }
+    // One mailbox per child that has an address, and a child without one has no
+    // name to show a message under yet. Bounded by the fleet, and re-read whole
+    // because `Fleet::traffic` replaces rather than appends — `messages_for` is
+    // the non-consuming reader, so this never takes delivery of a sibling's mail.
+    let mut traffic: Vec<io_cli::fleet::Message> = Vec::new();
+    for child in app.fleet.children() {
+        let Some(address) = child.address.as_deref() else {
+            continue;
+        };
+        if let Ok(messages) = store.messages_for(child.run_id) {
+            traffic.extend(
+                messages
+                    .iter()
+                    .map(|message| io_cli::fleet::Message::received(message, address)),
+            );
+        }
+    }
+    app.fleet.traffic(traffic);
+}
+
 fn note_context(
     app: &mut App,
     store: &Store,
@@ -3354,6 +3585,28 @@ enum Pick {
         path: std::path::PathBuf,
         enabled: bool,
     },
+    /// The capability bundles this configuration declared, loaded and refused.
+    ///
+    /// **The whole view rather than a list of ids, and for the same reason
+    /// [`Pick::Skills`] carries pairs**: descending into a bundle has to show
+    /// what that bundle contributed, and re-reading `Config::plugins()` to answer
+    /// a keystroke would be a second reading of directories that can change
+    /// between two of them — so the rows an operator chose from and the detail
+    /// they descend into come from one reading.
+    ///
+    /// A refused bundle is in here too, and choosing one shows io-harness's
+    /// sentence rather than a detail pane: there is nothing to descend into,
+    /// because the bundle contributed nothing at all.
+    Plugins(io_cli::pluginview::View),
+    /// A pane that is read and closed, and answers no keystroke.
+    ///
+    /// **The absence of a choice, made representable.** Every other variant here
+    /// names what choosing a row means; this one exists for a pane where choosing
+    /// a row means nothing — a bundle's contributions, which are facts to read
+    /// rather than levers to pull. Without it the alternative is a pane that
+    /// silently does something arbitrary on `Enter`, which is how a display turns
+    /// into an accident.
+    Nothing,
     /// The named profiles a file declares, in the order `configure::profiles`
     /// sorted them.
     Profile(Vec<String>),
@@ -3428,6 +3681,109 @@ fn completion(
         Picker::new(complete::title(dir, glyphs), rows),
         Pick::Complete(found),
     )))
+}
+
+/// How often an attached child's events are asked for.
+///
+/// io-harness is explicit that `Attach` is a poll and that there is no push, so
+/// this number is the whole of the latency an operator sees. A tenth of a second
+/// is under the threshold at which a terminal reads as live, and the query behind
+/// it is one indexed read of rows after a cursor — not a scan — so the cost of
+/// asking and finding nothing is close to nothing.
+const ATTACH_POLL: Duration = Duration::from_millis(100);
+
+/// Watch a child that is already running, until it stops or the operator leaves.
+///
+/// **A mode rather than a background poll, and the idle loop's own shape is the
+/// argument.** That loop blocks on `inputs.recv()` and has no tick — there is
+/// nowhere for a periodic read to live without giving every idle session a timer
+/// it does not need. Watching a child is also inherently something an operator is
+/// *doing*: they picked a row and asked to see it. So this borrows the loop for
+/// as long as they want it and gives it back on `Esc`.
+///
+/// **`from_now`, not from the beginning.** A detached child may have been running
+/// for minutes and its earlier steps are in the trace already; replaying them
+/// into the scrollback would bury the thing the operator opened this to see. The
+/// cursor starts where they asked.
+///
+/// The events are fed to the same `App::event` the live stream uses, so a child's
+/// step draws exactly as it would have if its parent had waited for it. That is
+/// the property worth having: attaching changes when an operator sees a run, not
+/// what it looks like.
+async fn watch_child(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    store: &Store,
+    inputs: &mut UnboundedReceiver<Event>,
+    run_id: i64,
+) -> Result<(), String> {
+    // **The watch's own clock, and the alternative would be a worse lie.** The
+    // `at` an event carries into `App::event` is an age, used to say how long a
+    // tool call took. A detached child has been running since before this watch
+    // began — possibly for minutes — so no clock this session holds gives its
+    // steps their true ages. Timing from the moment of attaching at least
+    // measures something real: how long the operator has been watching. The
+    // driver's own `Instant` is not in scope here and reaching for it would put
+    // the same wrong number behind a more convincing name.
+    let watching = Instant::now();
+    let mut attach = match io_harness::Attach::to(store, run_id).from_now() {
+        Ok(attach) => attach,
+        Err(error) => {
+            // The store is readable — the session is running out of it — so this
+            // is the run being unknown to it, which is a fact worth saying rather
+            // than a silence to interpret.
+            app.record(Tone::Refused, format!("cannot watch run {run_id}: {error}"));
+            return Ok(());
+        }
+    };
+    app.record(
+        Tone::Muted,
+        format!("watching run {run_id} — Esc to stop watching"),
+    );
+    paint(screen, app)?;
+    loop {
+        match attach.poll() {
+            Ok(events) => {
+                for event in &events {
+                    app.event(event, watching.elapsed());
+                    // The child is finished when it says so. Leaving on its own
+                    // `Finished` rather than on a status query keeps this reading
+                    // one stream instead of two sources that can disagree.
+                    if matches!(event.kind, io_harness::EventKind::Finished { .. })
+                        && event.run_id == run_id
+                    {
+                        app.record(Tone::Muted, format!("run {run_id} finished"));
+                        paint(screen, app)?;
+                        return Ok(());
+                    }
+                }
+                if !events.is_empty() {
+                    paint(screen, app)?;
+                }
+            }
+            Err(error) => {
+                app.record(Tone::Refused, format!("stopped watching: {error}"));
+                paint(screen, app)?;
+                return Ok(());
+            }
+        }
+        // `Esc` leaves and everything else is ignored, deliberately: this is a
+        // window onto a run the operator is not driving, so a key that did
+        // something here would be a key that did it to the wrong run.
+        match tokio::time::timeout(ATTACH_POLL, inputs.recv()).await {
+            Ok(Some(Event::Key(key)))
+                if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc =>
+            {
+                app.record(Tone::Muted, format!("stopped watching run {run_id}"));
+                paint(screen, app)?;
+                return Ok(());
+            }
+            // The channel closing is the terminal going away, which the caller
+            // handles by returning; there is nothing to watch for any more.
+            Ok(None) => return Ok(()),
+            Ok(Some(_)) | Err(_) => {}
+        }
+    }
 }
 
 fn paint(

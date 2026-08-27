@@ -93,6 +93,21 @@ pub enum Command {
     /// A command rather than something this type does, because the transcript
     /// lives in the harness's store and the store belongs to the driver.
     Transcript,
+    /// Watch a child that is already running, by the run id the fleet is holding.
+    ///
+    /// **A command for exactly the reason [`Command::Transcript`] is one**: what
+    /// this asks for lives in the harness's store, and the store belongs to the
+    /// driver. `io_harness::Attach` reads the `run_events` table over a second
+    /// connection, and nothing in this type has ever held one.
+    ///
+    /// Asked for on a **detached** child, which is the case that means anything: a
+    /// detached child is still running and its parent has merely stopped waiting
+    /// for it, so it is the one with events still to come and nobody watching
+    /// them. Attaching to a child that is still being waited for is legal and
+    /// io-harness does not care, but its events are already arriving on the
+    /// stream this interface is drawing, so it would be a second copy of what is
+    /// already on screen.
+    Attach(i64),
     /// The first `Esc` at an empty prompt: say what undoing the last turn would
     /// undo, and wait for the second.
     ///
@@ -1377,6 +1392,23 @@ impl App {
                 }
                 KeyCode::Down => {
                     self.fleet.move_by(1);
+                    return Command::None;
+                }
+                // **`Enter` on a detached child, and nothing on any other row.**
+                // The pane has had a selection since 0.8.0 that drove only the
+                // highlight; this is what it was for. A detached child is the one
+                // an operator can usefully go and look at — it is still running
+                // and nothing is watching it — so it is the one row where `Enter`
+                // means something. On any other row it is deliberately inert
+                // rather than helpfully doing the nearest thing: a working child's
+                // events are already arriving in the scrollback, and re-showing
+                // them from the store would be two copies of one run.
+                KeyCode::Enter => {
+                    if let Some(child) = self.fleet.selected_child() {
+                        if child.state == crate::fleet::State::Detached {
+                            return Command::Attach(child.run_id);
+                        }
+                    }
                     return Command::None;
                 }
                 // `armed` and not `self.armed`: this function took the arming out
