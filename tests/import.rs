@@ -349,6 +349,70 @@ fn a_codex_mcp_table_round_trips_into_an_mcp_server() {
     assert!(env.is_empty());
 }
 
+/// **A codex server whose name has a dot in it can only be spelled quoted, and
+/// io-cli used to drop it in silence.**
+///
+/// `[mcp_servers."github.com/x"]` is how every marketplace-style server id is
+/// written, and `crate::edit::sections` reported it as THREE segments because the
+/// header was split on every `.`. The `section.len() == 2` filter here then threw
+/// it away — no item, no refusal, no line in the report. The two `value_at` paths
+/// built from the name have the mirror problem: a decoded name spliced raw into a
+/// dotted path names a table nobody has.
+///
+/// Sabotage: put `path.split('.')` back in `edit::split_path` or `edit::regions`,
+/// or drop `edit::spell` from the paths `codex_config` and `env_names` build.
+#[test]
+fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
+    let home_root = tempfile::tempdir().expect("a fake home");
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let home = tempfile::tempdir().expect("io's home");
+
+    put(
+        &home_root.path().join(".codex/config.toml"),
+        &format!(
+            "[mcp_servers.\"docs.v2\"]\n\
+             command = \"docs-mcp\"\n\
+             args = [\"--port\", \"8080\"]\n\
+             \n\
+             [mcp_servers.\"docs.v2\".env]\n\
+             {UNSET} = \"{SECRET}\"\n"
+        ),
+    );
+
+    let found = detect(home_root.path(), workspace.path());
+    let items: Vec<_> = plan(&found, home.path(), Scope::Project)
+        .into_iter()
+        .filter(|item| item.kind == Kind::Mcp)
+        .collect();
+    assert_eq!(
+        items.len(),
+        1,
+        "a server whose name needed quoting was dropped without a word: {items:?}",
+    );
+
+    let report = apply(&items, workspace.path());
+    assert!(report.refused.is_empty(), "{report:?}");
+
+    let servers = written_servers(&workspace.path().join("io.toml"));
+    assert_eq!(servers.len(), 1);
+    assert_eq!(
+        servers[0].id, "docs.v2",
+        "the id arrived with quotes still on it or split in half",
+    );
+    let (command, args, env) = stdio(&servers[0]);
+    assert_eq!(command, "docs-mcp");
+    assert_eq!(args, vec!["--port", "8080"]);
+    assert_eq!(
+        env,
+        vec![UNSET],
+        "the env table of a quoted server was looked for under an unquoted header",
+    );
+    assert!(
+        holds(workspace.path(), SECRET).is_none(),
+        "the secret was copied",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // D. Credentials
 // ---------------------------------------------------------------------------
@@ -737,6 +801,94 @@ fn a_skill_name_that_is_already_taken_is_refused_rather_than_overwritten() {
         std::fs::read_to_string(&mine).expect("still there"),
         "# mine\n\nThe operator's own.\n",
         "the operator's skill was overwritten",
+    );
+}
+
+/// **A loose file in a skills root is a skill, whatever it happens to be called.**
+///
+/// `skill_files` counts any loose `*.md` at the top of `~/.claude/skills` and
+/// `~/.claude/plugins`, so a `CONVENTIONS.md` sitting there is produced as a
+/// `Source::Claude` path. `plan`'s first arm matched on the BASENAME with `_` for
+/// the source, so it was planned as `Kind::Instructions` — the whole body appended
+/// into the standing instructions file that is loaded on every turn, forever,
+/// rather than a named skill copied under `<home>/skills` and read on demand.
+/// `~/.claude/skills/CLAUDE.md` is the case that proves pairing each anchor name
+/// with its owning source would not have closed this: that file genuinely IS
+/// `Source::Claude` and genuinely IS named `CLAUDE.md`, and it is still a skill.
+///
+/// Sabotage: delete the skills-root guard at the top of `plan`'s loop.
+#[test]
+fn a_loose_file_in_a_skills_root_is_a_skill_and_never_standing_instructions() {
+    let home_root = tempfile::tempdir().expect("a fake home");
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let home = tempfile::tempdir().expect("io's home");
+    std::fs::create_dir_all(home.path().join("skills")).expect("a skills directory");
+
+    // Three loose skills wearing three anchor-file names, and the one real anchor
+    // file a directory above them.
+    put(
+        &home_root.path().join(".claude/skills/CONVENTIONS.md"),
+        "# conventions\n\nA skill about conventions.\n",
+    );
+    put(
+        &home_root.path().join(".claude/skills/CLAUDE.md"),
+        "# claude\n\nA skill that happens to be named like the anchor file.\n",
+    );
+    put(
+        &home_root.path().join(".claude/plugins/MEMORY.md"),
+        "# memory\n\nA plugin's loose skill.\n",
+    );
+    put(
+        &home_root.path().join(".claude/CLAUDE.md"),
+        "# standing\n\nThe operator's own standing guidance.\n",
+    );
+
+    let found = detect(home_root.path(), workspace.path());
+    let items = plan(&found, home.path(), Scope::Project);
+
+    let instructions: Vec<_> = items
+        .iter()
+        .filter(|item| item.kind == Kind::Instructions)
+        .collect();
+    assert_eq!(
+        instructions.len(),
+        1,
+        "a skill was planned as standing instructions: {instructions:?}",
+    );
+    assert_eq!(
+        instructions[0].from,
+        home_root.path().join(".claude/CLAUDE.md"),
+        "the anchor file that is instructions is the one OUTSIDE the skills roots",
+    );
+
+    let mut names: Vec<String> = items
+        .iter()
+        .filter(|item| item.kind == Kind::Skill)
+        .map(|item| match &item.to {
+            Destination::File(path) => path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            other => panic!("a loose skill file has nowhere to go: {other:?}"),
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["CLAUDE", "CONVENTIONS", "MEMORY"]);
+
+    let report = apply(&items, workspace.path());
+    assert!(report.refused.is_empty(), "{report:?}");
+    let landed = home.path().join("skills/CONVENTIONS/SKILL.md");
+    assert_eq!(
+        std::fs::read_to_string(&landed).expect("the skill was copied"),
+        "# conventions\n\nA skill about conventions.\n",
+    );
+    assert!(
+        io_harness::Skills::discover(home.path().join("skills"))
+            .expect("it discovers")
+            .get("CONVENTIONS")
+            .is_some(),
+        "the loose file did not become a skill io-harness can find on demand",
     );
 }
 
