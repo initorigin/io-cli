@@ -158,7 +158,7 @@ pub struct Owner {
     /// The workspace the holder is working in.
     ///
     /// **Recorded, not keyed on.** The lock is the session's ([`paths`]); this
-    /// field is here because "another `io` is working in <root>" is the clause
+    /// field is here because "another `io` is working in `<root>`" is the clause
     /// that tells an operator with several terminals open which one to go to.
     ///
     /// Written through `to_string_lossy`, so a root that is not valid UTF-8

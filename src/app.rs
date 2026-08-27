@@ -436,9 +436,7 @@ impl App {
     /// swallowed as it was before 0.23.0.
     #[must_use = "a resumed question's answer is delivered by the caller, not by the overlay"]
     pub fn answer_intent(&mut self, answer: Option<String>) -> Option<Option<String>> {
-        let Some(intent) = self.intent.take() else {
-            return None;
-        };
+        let intent = self.intent.take()?;
         match &answer {
             Some(text) => self.record(
                 Tone::Muted,
@@ -482,9 +480,7 @@ impl App {
         &mut self,
         verdict: io_harness::PlanVerdict,
     ) -> Option<Option<io_harness::PlanVerdict>> {
-        let Some(plan) = self.plan.take() else {
-            return None;
-        };
+        let plan = self.plan.take()?;
         let dash = self.theme.glyphs.dash;
         let (tone, said) = match &verdict {
             io_harness::PlanVerdict::Approve => (
