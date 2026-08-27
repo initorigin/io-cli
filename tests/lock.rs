@@ -1,4 +1,13 @@
-//! F9 — one `io` at a time on one workspace, and a refusal that says who has it.
+//! F9 — one `io` at a time on one session, and a refusal that says who has it.
+//!
+//! **The lock is keyed on the session id, and the test that matters most here is
+//! the one that says what does *not* contend.** `Session::open` creates a new
+//! row on every call, so two terminals started in one repository hold two
+//! different ids and are two conversations sharing a directory name. A lock
+//! keyed on the workspace root refused the second of them — a hard regression
+//! that every other assertion in this file passed happily. The contention that
+//! is real is the same id reached twice, which is what `/resume` and `io resume`
+//! do, and which is the only way two processes ever advance one head.
 //!
 //! **Every test here runs in one process, and that is not a compromise.** On
 //! unix `flock` is held per open file description and on Windows `LockFileEx` is
@@ -29,6 +38,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use io_cli::lock::{self, Guard, Owner, Taken, LEASE};
+
+/// The session every test works on unless it is about two of them.
+const SESSION: i64 = 7;
 
 /// An io home that does not exist yet, so `acquire` is made to create it — which
 /// is the same `home::create` the `0700` assertion at the bottom of this file
@@ -66,20 +78,20 @@ fn refusal(taken: Taken) -> Owner {
     }
 }
 
-/// **F9.** A second `io` in the same workspace is refused while the first is
+/// **F9.** A second `io` on the same session is refused while the first is
 /// alive, and let in the moment it is not.
 ///
 /// Both halves in one test on purpose: an implementation that refuses everything
 /// passes the first assertion and is useless, and one that refuses nothing
 /// passes the second and is the defect.
 #[test]
-fn f9_a_second_io_in_one_workspace_is_refused_while_the_first_holds_the_lock() {
+fn f9_a_second_io_on_one_session_is_refused_while_the_first_holds_the_lock() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let home = home(dir.path());
     let root = dir.path().join("repository");
 
-    let first = guard(lock::acquire(&home, &root, started()).expect("the lock is free"));
-    let second = lock::acquire(&home, &root, started()).expect("asking is not an error");
+    let first = guard(lock::acquire(&home, SESSION, &root, started()).expect("the lock is free"));
+    let second = lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error");
     let owner = refusal(second);
     assert!(
         owner.sentence().contains("another `io` holds this session"),
@@ -89,8 +101,9 @@ fn f9_a_second_io_in_one_workspace_is_refused_while_the_first_holds_the_lock() {
 
     drop(first);
 
-    let third = guard(lock::acquire(&home, &root, started()).expect("the lock is free again"));
-    let (lock_path, owner_path) = lock::paths(&home, &root);
+    let third =
+        guard(lock::acquire(&home, SESSION, &root, started()).expect("the lock is free again"));
+    let (lock_path, owner_path) = lock::paths(&home, SESSION);
     assert!(
         lock_path.is_file(),
         "the lock file itself is never removed; unlinking one another process holds \
@@ -105,6 +118,72 @@ fn f9_a_second_io_in_one_workspace_is_refused_while_the_first_holds_the_lock() {
          about a process that has gone",
     );
     assert!(lock_path.is_file(), "and the lock file is still there");
+}
+
+/// **F9, and the case a workspace-keyed lock got wrong.** Two sessions in one
+/// repository do not contend; one session does, wherever it is entered from.
+///
+/// `Session::open` creates a new row every time it is called, so two terminals
+/// started in one repository hold two different ids and share nothing but a
+/// directory name. Refusing the second is refusing work that was never in
+/// conflict — which is what keying the lock on the workspace root did, and what
+/// the first half here would have failed on. The second half is the collision
+/// that is real: the same id, which is what `/resume` and `io resume` hand in.
+///
+/// The last assertion is the inverse property, and it is the sabotage: the root
+/// must not enter the name at all. A holder is refused on its own id from a
+/// *different* workspace, and the refusal reports the workspace the holder
+/// recorded rather than the one the refused process was handed.
+#[test]
+fn f9_two_sessions_in_one_workspace_do_not_contend_but_one_session_does() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let home = home(dir.path());
+    let root = dir.path().join("repository");
+
+    let first = guard(lock::acquire(&home, 1, &root, started()).expect("the lock is free"));
+    let second = guard(lock::acquire(&home, 2, &root, started()).expect(
+        "a second terminal in one repository is a second conversation, not a conflict; \
+         this is the acquisition a workspace-keyed lock refused",
+    ));
+
+    assert_ne!(
+        lock::paths(&home, 1),
+        lock::paths(&home, 2),
+        "two sessions are two names, or they are one lock wearing two",
+    );
+    let (lock_path, _) = lock::paths(&home, 1);
+    assert!(
+        lock_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("session-1.")),
+        "the id is the name, legibly, so an operator can see which conversation a file \
+         belongs to: {}",
+        lock_path.display(),
+    );
+
+    let resumed =
+        refusal(lock::acquire(&home, 1, &root, started()).expect("asking is not an error"));
+    assert!(
+        resumed.sentence().contains("another `io` holds this session"),
+        "the same id twice is two processes on one head: {}",
+        resumed.sentence(),
+    );
+
+    // The same id from another workspace. It is still that conversation, so it is
+    // still refused, and the sentence names where the holder actually is.
+    let elsewhere = dir.path().join("another-repository");
+    let away =
+        refusal(lock::acquire(&home, 1, &elsewhere, started()).expect("asking is not an error"));
+    assert_eq!(
+        away.root.as_deref(),
+        Some(root.as_path()),
+        "the refusal names the workspace the HOLDER recorded, never the one the refused \
+         process was handed, and the root is no part of the key",
+    );
+
+    drop(first);
+    drop(second);
 }
 
 /// **F9, and the sabotage.** The refusal carries what the *holder* wrote, and
@@ -123,11 +202,17 @@ fn f9_the_refusal_names_the_holder_that_wrote_the_record_and_never_the_reader() 
     let home = home(dir.path());
     let root = dir.path().join("repository");
 
-    let held = guard(lock::acquire(&home, &root, started()).expect("the lock is free"));
-    let mine = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let held = guard(lock::acquire(&home, SESSION, &root, started()).expect("the lock is free"));
+    let mine =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
 
     assert_eq!(mine.pid, Some(std::process::id()));
-    assert_eq!(mine.root.as_deref(), Some(root.as_path()));
+    assert_eq!(
+        mine.root.as_deref(),
+        Some(root.as_path()),
+        "the root is still recorded even though it is not the key; it is the clause that \
+         tells an operator which terminal to go to",
+    );
     assert_eq!(mine.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     assert_eq!(
         mine.started,
@@ -143,10 +228,11 @@ fn f9_the_refusal_names_the_holder_that_wrote_the_record_and_never_the_reader() 
         version: Some("0.0.1-not-this-binary".to_string()),
         started: Some(at(1_234_567_890)),
     };
-    let (_, owner_path) = lock::paths(&home, &root);
+    let (_, owner_path) = lock::paths(&home, SESSION);
     std::fs::write(&owner_path, planted.render()).expect("the record is a plain file");
 
-    let read = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let read =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_ne!(
         planted.pid,
         Some(std::process::id()),
@@ -188,14 +274,15 @@ fn f9_a_record_it_cannot_read_produces_a_refusal_that_claims_nothing_it_does_not
     let dir = tempfile::tempdir().expect("a temporary directory");
     let home = home(dir.path());
     let root = dir.path().join("repository");
-    let (_, owner_path) = lock::paths(&home, &root);
+    let (_, owner_path) = lock::paths(&home, SESSION);
 
-    let held = guard(lock::acquire(&home, &root, started()).expect("the lock is free"));
+    let held = guard(lock::acquire(&home, SESSION, &root, started()).expect("the lock is free"));
 
     // Missing: removed out from under the holder, which is what a `tmpwatch` or
     // an operator tidying their home directory does.
     std::fs::remove_file(&owner_path).expect("the record is an ordinary file");
-    let bare = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let bare =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(
         bare,
         Owner::default(),
@@ -217,7 +304,8 @@ fn f9_a_record_it_cannot_read_produces_a_refusal_that_claims_nothing_it_does_not
     // Truncated: the write was cut off mid-line. What landed is kept and the
     // half-line is not guessed at.
     std::fs::write(&owner_path, "pid = 4242\nroot = /half/a/pa").expect("the record");
-    let cut = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let cut =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(cut.pid, Some(4242), "the line that landed whole is read");
     assert_eq!(
         cut.root.as_deref(),
@@ -230,7 +318,8 @@ fn f9_a_record_it_cannot_read_produces_a_refusal_that_claims_nothing_it_does_not
 
     // Truncated inside a name, so the last line has no `=` at all.
     std::fs::write(&owner_path, "pid = 4242\nver").expect("the record");
-    let mid = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let mid =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(mid.pid, Some(4242));
     assert_eq!(mid.version, None, "half a field name is not a version");
 
@@ -241,7 +330,8 @@ fn f9_a_record_it_cannot_read_produces_a_refusal_that_claims_nothing_it_does_not
         "pid = not-a-number\nhostname = build-07\nlease_seconds = 900\nversion = 0.99.0\n",
     )
     .expect("the record");
-    let other = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let other =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(
         other.version.as_deref(),
         Some("0.99.0"),
@@ -261,7 +351,8 @@ fn f9_a_record_it_cannot_read_produces_a_refusal_that_claims_nothing_it_does_not
 
     // Not text at all.
     std::fs::write(&owner_path, [0xff, 0xfe, 0x00, 0x80]).expect("the record");
-    let binary = refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+    let binary =
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(
         binary,
         Owner::default(),
@@ -284,15 +375,17 @@ fn f9_a_guard_that_could_not_write_a_record_removes_nothing_when_it_goes() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let home = home(dir.path());
     let root = dir.path().join("repository");
-    let (_, owner_path) = lock::paths(&home, &root);
+    let (_, owner_path) = lock::paths(&home, SESSION);
 
     std::fs::create_dir_all(&owner_path).expect("something else is at the record's path");
     let marker = owner_path.join("not-ours");
     std::fs::write(&marker, "somebody else's").expect("the marker");
 
-    let held = guard(lock::acquire(&home, &root, started()).expect("the record is not the lock"));
+    let held = guard(
+        lock::acquire(&home, SESSION, &root, started()).expect("the record is not the lock"),
+    );
     let unreadable =
-        refusal(lock::acquire(&home, &root, started()).expect("asking is not an error"));
+        refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(
         unreadable,
         Owner::default(),
@@ -365,43 +458,6 @@ fn f9_the_lease_lapses_against_a_now_that_is_handed_in_and_never_read() {
     );
 }
 
-/// **F9.** Two different workspaces do not contend.
-///
-/// The lock is scoped by the workspace root, so a second terminal in another
-/// repository is not a second `io` on this session. A single global lock would
-/// pass every other test in this file and make the product unusable for anyone
-/// with two checkouts.
-#[test]
-fn f9_two_different_workspaces_do_not_contend() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let home = home(dir.path());
-    let one = dir.path().join("repository-one");
-    let two = dir.path().join("repository-two");
-
-    let first = guard(lock::acquire(&home, &one, started()).expect("the lock is free"));
-    let second = guard(lock::acquire(&home, &two, started()).expect("another workspace is free"));
-
-    assert_ne!(
-        lock::paths(&home, &one),
-        lock::paths(&home, &two),
-        "two workspaces are two names, or they are one lock wearing two",
-    );
-    // The same root, spelled again rather than the same binding read twice: the
-    // claim is that the name is a function of the path's bytes, which is what two
-    // separately-built `io` binaries have to agree on before either can see the
-    // other at all.
-    let again = dir.path().join("repository-one");
-    assert_eq!(
-        lock::paths(&home, &one),
-        lock::paths(&home, &again),
-        "one workspace is always one name, or two `io` would take two locks and \
-         neither would ever notice the other",
-    );
-
-    drop(first);
-    drop(second);
-}
-
 /// The record survives its own text, which is what makes the refusal readable by
 /// a version of `io` that is not the one that wrote it.
 #[test]
@@ -450,8 +506,8 @@ fn n3_the_lock_and_its_record_are_readable_by_their_owner_alone() {
     let home = home(dir.path());
     let root = dir.path().join("repository");
 
-    let held = guard(lock::acquire(&home, &root, started()).expect("the lock is free"));
-    let (lock_path, owner_path) = lock::paths(&home, &root);
+    let held = guard(lock::acquire(&home, SESSION, &root, started()).expect("the lock is free"));
+    let (lock_path, owner_path) = lock::paths(&home, SESSION);
 
     for path in [&lock_path, &owner_path] {
         let mode = std::fs::metadata(path)

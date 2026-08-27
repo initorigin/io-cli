@@ -633,20 +633,27 @@ crate, and that is reported upstream rather than worked around here.
 **A turn that ends parked now says so.** Through 0.22.0 the prompt came back with
 no sign that a run was sitting in the store waiting for a sentence from you.
 
-### One `io` at a time in one workspace
+### One `io` at a time on one conversation
 
 One store serves this whole machine, so two terminals in one repository is the
-ordinary case rather than the exotic one. Until 0.23.0 nothing guarded it: both
-sessions advanced the same conversation head, and the loser of that race had paid
-for a turn that was then orphaned off the head path — still in the store,
-correctly parented, and never shown again by a history that walks back from the
-head.
+ordinary case rather than the exotic one — and they are **not** in conflict.
+Starting `io` creates a new session every time, so each terminal gets its own
+conversation and neither is refused.
 
-An interactive session takes an advisory whole-file lock on the workspace, and a
-second one in the same workspace is refused rather than started. The lock is the
-kernel's — `flock` on unix, `LockFileEx` on Windows — so it is released on exit,
-on a panic and on `kill -9`: there is no stale lock to reap and no pid file to
-sweep.
+What two of them can genuinely contend over is a single *session*, and that
+happens in one place: `/resume`, when one process enters a session another
+already has open. Until 0.23.0 nothing guarded it — both advanced the same
+conversation head, and the loser of that race had paid for a turn that was then
+orphaned off the head path: still in the store, correctly parented, and never
+shown again by a history that walks back from the head.
+
+Each session is held under an advisory whole-file lock, and `/resume` into one
+another `io` is holding is refused rather than taken. The lock is the kernel's —
+`flock` on unix, `LockFileEx` on Windows — so it is released on exit, on a panic
+and on `kill -9`: there is no stale lock to reap and no pid file to sweep. The
+lock a session takes when it starts never contests anything, because that session
+did not exist a moment earlier; what it does is write down who owns it, so the
+next process to reach for it can be told.
 
 **What the refusal can say about the holder is what io-cli itself wrote beside
 the lock**, and no more: the process id, the workspace root, the `io` version and
@@ -655,15 +662,22 @@ that process. Asking the operating system means `/proc` on one platform, `ps` on
 another and `tasklist` on a third, or a dependency this crate does not carry — so
 the pid you are shown is a number `io` wrote down, and on a machine that has
 since reused it, it names something that is not `io`. The lease exists only for
-the case the kernel cannot cover, a workspace on a network filesystem, where an
+the case the kernel cannot cover, a home on a network filesystem, where an
 advisory lock is not this program's business; there the record's own timestamp is
-all the evidence there is, and a workspace whose lock is gone and whose lease has
-run out is taken over with a line saying so.
+all the evidence there is.
 
 A lock that cannot be taken for an ordinary filesystem reason does not stop the
-session — you are told, and it starts. The guard exists to prevent one specific
+session — you are told, and it opens. The guard exists to prevent one specific
 corruption, and trading it for "io will not start on this machine" would be the
 worse failure.
+
+**What it does not cover.** Two `io` in one repository on two different sessions
+are not in conflict and are not stopped. `io exec` and `io resume` take no lock
+at all, so an `io resume` run beside a terminal holding the same session is not
+refused by this. For everything the lock does not see, the guard of last resort
+is io-harness's own compare-and-swap on the conversation head: the second writer
+is refused, told, and its turn is not silently orphaned — which is the defect
+`/undo` carried until this release.
 
 ## What it costs
 

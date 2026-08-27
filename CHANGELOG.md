@@ -80,18 +80,29 @@ resuming against an empty goal would spend a budget on a task nobody set. A
 `--goal` supplied for a run that has one wins, because that is an operator
 re-aiming their own run.
 
-**One `io` at a time on one workspace.** One store serves the whole machine, so
-two terminals in one repository is the ordinary case, and nothing guarded it:
-both processes advanced the same session head, and the loser of that race had
-paid for a turn that was then orphaned off the head path — still in the store,
-correctly parented, never shown again by a history that walks back from the head.
-An interactive session now takes an advisory whole-file lock through
+**One `io` at a time on one conversation.** One store serves the whole machine,
+so two terminals in one repository is the ordinary case — and they are not in
+conflict, because starting `io` creates a new session every time and each gets
+its own. What two processes can genuinely contend over is a single *session*,
+and that happens in one place: `/resume`, when one enters a session another
+already has open. Nothing guarded it, so both advanced the same head and the
+loser of that race had paid for a turn that was then orphaned off the head path
+— still in the store, correctly parented, never shown again by a history that
+walks back from the head.
+
+Each session is now held under an advisory whole-file lock through
 `std::fs::File::try_lock`, which is stable on this crate's MSRV and needs no
 dependency: `flock` on unix, `LockFileEx` on Windows, released by the kernel on
 exit, on panic and on `kill -9`. There is no stale lock to reap and no pid file
 to sweep, and a lock that cannot be taken for an ordinary filesystem reason
 warns rather than refusing to start — trading the guard for "io will not run on
-this machine" would be the worse failure.
+this machine" would be the worse failure. The lock a session takes when it opens
+contests nothing, since that session did not exist a moment earlier; what it
+does is write down who owns it, so the next process to reach for it can be told.
+`/resume` into a session another `io` holds is refused. Two `io` on two
+different sessions are not, `io exec` and `io resume` take no lock at all, and
+for everything the lock does not see the guard of last resort is io-harness's
+own compare-and-swap on the head.
 
 **What the refusal can say about the holder is what io-cli itself wrote beside
 the lock**: the pid, the workspace root, the `io` version and the instant that
@@ -102,7 +113,7 @@ dependency that would abstract them is one this crate's own gate forbids — so 
 pid shown here is a number io wrote down. The record is a second file beside the
 lock rather than the lock's contents, because a Windows byte-range lock is
 mandatory and the refused process could not read the file it is being refused on.
-The twelve-hour lease exists only for a workspace on a network filesystem, where
+The twelve-hour lease exists only for a home on a network filesystem, where
 an advisory lock is not this program's business and the record's own timestamp is
 the only evidence there is.
 

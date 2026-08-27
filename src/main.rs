@@ -425,51 +425,40 @@ async fn drive(
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
 
-    // **One `io` at a time on one workspace, from here on.** This product keeps
-    // one store for the whole machine and `Session::open` answers the *same*
-    // session for two terminals in one repository — so until 0.23.0 two of them
-    // advanced one conversation head, the loser of the race paid for a turn that
-    // was then orphaned off the head path, and what it saw was an error calling
-    // its session a run. See `io_cli::lock` for why this is a kernel lock rather
-    // than a pid file, and why the holder can only be named from what io-cli
-    // itself wrote.
+    // **One `io` at a time on one conversation, from here on — and a
+    // conversation is not a directory.** This product keeps one store for the
+    // whole machine, so two `io` in one repository is ordinary; they are not in
+    // conflict, because `Session::open` creates a new session row on every call
+    // and each terminal gets its own. What two processes can genuinely contend
+    // over is a single *session*, which happens only when one of them enters a
+    // session the other already has open — by `/resume`. See `io_cli::lock`.
     //
-    // The record is read **before** the lock is taken, because acquiring
-    // overwrites it — and a record left behind by a process the kernel has
-    // already forgotten is the one case worth saying out loud.
+    // So this acquisition never fails: the id was created one line above and
+    // nobody else can be holding it. What it does is **publish the owner
+    // record**, so that a later process trying to enter this session can be
+    // refused and can say who has it.
+    // **Bound and never read**, which is the point: the guard is held for its
+    // `Drop`, and it must outlive every turn this process takes. `let _ = …`
+    // would release it on the next line, and a plain name would be a warning
+    // about the one thing that is deliberate here.
     let _session_lock = match io_cli::home::path() {
         Some(home) => {
-            let (_, owner_path) = io_cli::lock::paths(&home, root);
-            let previous = std::fs::read_to_string(&owner_path)
-                .ok()
-                .map(|text| io_cli::lock::Owner::parse(&text));
-            // The only clock read in this whole path, and it is here because
+            // The only clock read on this path, and it is here because
             // `src/main.rs` is the one file `tests/timing.rs` permits one in.
             let now = std::time::SystemTime::now();
-            match io_cli::lock::acquire(&home, root, now) {
-                Ok(io_cli::lock::Taken::Held(guard)) => {
-                    if let Some(true) = previous.as_ref().and_then(|owner| {
-                        owner.lapsed(now, io_cli::lock::LEASE)
-                    }) {
-                        report.push(format!(
-                            "took this workspace over from {} — its lock was gone and its \
-                             lease had run out",
-                            previous.as_ref().map(io_cli::lock::Owner::sentence).unwrap_or_default()
-                        ));
-                    }
-                    Some(guard)
-                }
-                // Returned as an error rather than as an exit code, because the
-                // codes in `io_cli::exec` describe how a *run* ended and no run
-                // has started here. What the operator gets is the sentence and a
-                // non-zero exit, which is what a refusal to start owes them.
+            match io_cli::lock::acquire(&home, session.id(), root, now) {
+                Ok(io_cli::lock::Taken::Held(guard)) => Some(guard),
+                // Not reachable for a session created a line ago, and said
+                // rather than swallowed precisely because it should not happen:
+                // it would mean the id was not fresh, which is a fact about the
+                // store worth putting in front of somebody.
                 Ok(io_cli::lock::Taken::Refused(owner)) => {
-                    return Err(format!(
-                        "another io is already working in this workspace — {}. Close it, or \
-                         start this one somewhere else; two of them would advance one \
-                         conversation and orphan a turn you paid for.",
+                    report.push(format!(
+                        "this session was already locked by {} — that should not be possible \
+                         for a session just created",
                         owner.sentence()
                     ));
+                    None
                 }
                 // A lock that cannot be taken for an ordinary filesystem reason is
                 // **not** a reason to refuse the session. The guard exists to stop
@@ -477,16 +466,16 @@ async fn drive(
                 // this machine" is a worse failure than the one it prevents.
                 Err(error) => {
                     report.push(format!(
-                        "this workspace could not be locked ({error}); if another io is \
-                         running here, do not use both"
+                        "this session could not be locked ({error}); if another io opens it \
+                         too, do not advance both"
                     ));
                     None
                 }
             }
         }
-        // No home means no io home to keep a lock in, which `home::adopt` has
-        // already said something about. Answered defensively rather than by
-        // refusing to start.
+        // No home means nowhere to keep a lock, which `home::adopt` has already
+        // said something about. Answered defensively rather than by refusing to
+        // start.
         None => None,
     };
 
@@ -522,6 +511,7 @@ async fn drive(
             capabilities,
             skills,
             profile,
+            home: io_cli::home::path(),
         },
     )
     .await?
@@ -779,6 +769,14 @@ struct Interactive<'a, 'b> {
     /// turn-boundary reload discovers the file afresh and would otherwise drop
     /// the overlay it produced.
     profile: Option<String>,
+    /// The io home, or `None` where the operator has none.
+    ///
+    /// Carried only so `/resume` can take the lock on the session it is entering
+    /// — the one moment two `io` can genuinely contend, since every session this
+    /// process opens for itself is new and uncontested. `None` disables the check
+    /// rather than refusing the switch: a machine with nowhere to keep a lock is
+    /// not a machine to lock an operator out of.
+    home: Option<std::path::PathBuf>,
 }
 
 impl provider::WithProvider for Interactive<'_, '_> {
@@ -809,6 +807,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.capabilities,
             self.skills,
             self.profile,
+            self.home,
             model,
         )
         .await
@@ -855,6 +854,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // it; it is re-applied after every turn-boundary reload, which goes back to
     // the file and knows nothing about either.
     mut profile: Option<String>,
+    // See `Interactive::home`. Read only by the `/resume` arm.
+    home: Option<std::path::PathBuf>,
     model: String,
 ) -> Result<(), String> {
     // Every request the session makes goes past this, and it is the only way
@@ -984,6 +985,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // stops where it stopped — so the reading a session-long `Instant` gave was
     // `22m12s` beside a turn six seconds old. Each turn is handed its own.
     let mut picker: Option<(Picker, Pick)> = None;
+    // The lock on a session this process entered by `/resume`, held until it
+    // enters another. `None` until the operator resumes for the first time — the
+    // session opened at startup is locked by `drive`, which holds that guard for
+    // the life of the process.
+    let mut entered: Option<io_cli::lock::Guard> = None;
 
     // **The import offer, made once to everybody and never twice.**
     //
@@ -1149,6 +1155,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // sabotage could reach — `sessions::pick` is the same
                         // line where a test can stand on it.
                         Pick::Resume(ids) => match io_cli::sessions::pick(ids, index) {
+                            // **The one moment two `io` can contend, and the only
+                            // place the session lock ever refuses anything.**
+                            // Every session this process opens for itself is new
+                            // and uncontested; entering somebody else's is not.
+                            // Taken before the session is swapped, so a refusal
+                            // leaves the operator exactly where they were.
+                            Some(id)
+                                if !entering(&home, id, &mut entered, &session, &mut app) => {}
                             Some(id) => match io_cli::sessions::resume(&store, id) {
                                 Ok(reopened) => {
                                     session = reopened;
@@ -5058,6 +5072,70 @@ const ATTACH_POLL: Duration = Duration::from_millis(100);
 /// step draws exactly as it would have if its parent had waited for it. That is
 /// the property worth having: attaching changes when an operator sees a run, not
 /// what it looks like.
+/// Take the lock on a session this process is about to enter, and say so when
+/// somebody else has it.
+///
+/// **This is the only place the session lock ever refuses anything**, and it is
+/// the only place it could: every session `io` opens for itself is created by
+/// that call and cannot be held by anybody, so the acquisition at startup is a
+/// publication rather than a contest. Entering a session that already exists is
+/// the contest.
+///
+/// Returns whether the switch may go ahead. On success the new guard replaces the
+/// one held for the session being left — dropped in the same statement, which is
+/// what releases it for anybody waiting.
+///
+/// **A refusal naming this very process is not a refusal.** The startup guard is
+/// still holding the session this process opened, and an advisory lock is held per
+/// open file description, so resuming *back* into it would be refused by our own
+/// handle. The owner record says whose it is, so a pid equal to this one is read
+/// as "already ours" and the switch proceeds.
+///
+/// No home, or a lock that cannot be taken for an ordinary filesystem reason,
+/// both allow the switch: a machine with nowhere to keep a lock is not a machine
+/// to lock an operator out of their own work.
+fn entering(
+    home: &Option<std::path::PathBuf>,
+    id: i64,
+    held: &mut Option<io_cli::lock::Guard>,
+    session: &Session,
+    app: &mut App,
+) -> bool {
+    let Some(home) = home else {
+        return true;
+    };
+    // `src/main.rs` is the one file permitted a clock read; the lock module takes
+    // every instant as an argument for exactly that reason.
+    let now = std::time::SystemTime::now();
+    match io_cli::lock::acquire(home, id, session.root(), now) {
+        Ok(io_cli::lock::Taken::Held(guard)) => {
+            *held = Some(guard);
+            true
+        }
+        Ok(io_cli::lock::Taken::Refused(owner)) => {
+            if owner.pid == Some(std::process::id()) {
+                return true;
+            }
+            app.say(
+                Tone::Refused,
+                format!(
+                    "another io has that session open — {}. Two of them would advance one \
+                     conversation and orphan a turn somebody paid for.",
+                    owner.sentence()
+                ),
+            );
+            false
+        }
+        Err(error) => {
+            app.say(
+                Tone::Muted,
+                format!("that session could not be locked ({error}); opening it anyway"),
+            );
+            true
+        }
+    }
+}
+
 /// What the operator decided about a parked run, before anything is driven.
 ///
 /// Separate from the driving so the decision can be taken with the store's own

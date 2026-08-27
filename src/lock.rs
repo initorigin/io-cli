@@ -1,12 +1,30 @@
 //! One `io` at a time on one session, and a sentence when there are two.
 //!
-//! This product keeps one store for the whole machine, so two terminals in one
-//! repository is the ordinary case rather than the exotic one. Through 0.22.0
-//! nothing guarded it: both processes opened the same `runs.db`, both advanced
-//! the same session head, and the loser of that race paid for a completed turn
-//! and was shown `run 7 is held by another owner until` — in which 7 is a
-//! *session* id, "run" is the wrong noun, and the expiry is empty, because a
-//! head conflict populates neither field.
+//! **The lock is keyed on the session id, because a conversation is the only
+//! thing two processes can collide over.** `Session::open` creates a new row
+//! every time it is called, so two terminals started in one repository are two
+//! separate conversations that share a directory name and nothing else; a lock
+//! keyed on the workspace would refuse the second one for a conflict that does
+//! not exist. The real collision is narrower and arrives from one place:
+//! `/resume` and `io resume` take an id that already exists, and two processes
+//! holding one id advance one head. Through 0.22.0 nothing guarded that — both
+//! opened the same `runs.db`, both advanced the same head, and the loser of the
+//! race paid for a completed turn and was shown `run 7 is held by another owner
+//! until`, in which 7 is a *session* id, "run" is the wrong noun, and the expiry
+//! is empty, because a head conflict populates neither field.
+//!
+//! **So the acquisition at startup is not a contention at all — it is a
+//! publication.** A freshly opened session is unique to the process that opened
+//! it, and taking its lock always succeeds. What the acquisition buys is the
+//! owner record written beside it, so that a later process asked to enter *that*
+//! conversation can be refused and can name who holds it.
+//!
+//! **What this does not cover, said plainly.** Two `io` in one workspace on two
+//! different sessions are not in conflict and are not refused. Nothing here sees
+//! a process that reaches the store without coming through this module either.
+//! The head compare-and-swap in the harness stays the guard of last resort for
+//! everything the lock misses; this module exists so the ordinary case is
+//! answered with a sentence instead of a paid-for turn lost to a race.
 //!
 //! The guard is an advisory whole-file lock and nothing else.
 //! [`std::fs::File::try_lock`] is stable on this crate's MSRV; it is `flock` on
@@ -16,7 +34,7 @@
 //! probe, a timestamp, a staleness threshold — is needed for the ordinary case.
 //!
 //! Both of those are held per open file description or per handle rather than
-//! per process, which is what makes two `io` in one repository contend and what
+//! per process, which is what makes two `io` on one session contend and what
 //! lets `tests/lock.rs` prove it without a second process. Solaris is the one
 //! target where the standard library reaches for `fcntl(F_SETLK)` instead, whose
 //! record locks are per process; io-cli ships no Solaris artifact, and the day
@@ -69,7 +87,7 @@ const STEM: &str = "session-";
 /// **It holds no bytes and is never removed.** Unlinking a file another process
 /// holds a lock on does not release anything: the next opener creates a fresh
 /// inode, locks that, and two processes are then holding two different locks
-/// while both believe they are alone. So the file stays, one per workspace, and
+/// while both believe they are alone. So the file stays, one per session, and
 /// the emptiness is the point — a lock file with a payload is a lock file
 /// somebody eventually parses, and on Windows the holder's own mandatory lock
 /// would stop them.
@@ -103,43 +121,21 @@ const OWNER: &str = "owner";
 // ever wanted, rewrite it per turn rather than shortening this number.
 pub const LEASE: Duration = Duration::from_secs(12 * 60 * 60);
 
-/// A stable name for one workspace root.
+/// The lock file and the owner record for one session, in that order.
 ///
-/// FNV-1a over the root's bytes, written out rather than taken from
-/// [`std::collections::hash_map::DefaultHasher`], whose output is explicitly not
-/// guaranteed to be the same between Rust releases. Two `io` binaries built by
-/// different toolchains have to agree about this name or they would take two
-/// different locks and neither would notice the other — which is the whole
-/// failure this module exists to prevent, arriving through the back door.
-///
-/// The root is compared by bytes. Two checkouts reached through different
-/// symlinks are two workspaces by this measure.
-///
-// ponytail: byte equality on the root; canonicalize if symlinked checkouts of
-// one repository ever turn out to be a real way people work.
-fn key(root: &Path) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in root.as_os_str().as_encoded_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
-}
-
-/// The lock file and the owner record for one workspace, in that order.
-///
-/// **Scoped by the workspace root, not by the session id**, and the difference
-/// is not filing. The lock is taken at startup, before a session exists to have
-/// an id — `Session::open` takes the root and answers the same session for two
-/// terminals in one repository, which is exactly the collision this guards. The
-/// root is what both processes know at the moment they need to contend, and it
-/// is what makes them contend on the same name.
+/// **Named after the session id, and there is nothing to hash.** A
+/// `Session::id()` is an `i64` the store issued, already unique and already
+/// stable across processes and across toolchains — which is what a name two
+/// separately-built `io` binaries have to agree on needs to be, and what the
+/// workspace root was never able to be without inventing a hash to stand in for
+/// it. The id is also the thing both processes know at the moment they can
+/// actually contend, because contending means one of them resumed the other's
+/// conversation.
 #[must_use]
-pub fn paths(home: &Path, root: &Path) -> (PathBuf, PathBuf) {
-    let key = key(root);
+pub fn paths(home: &Path, session: i64) -> (PathBuf, PathBuf) {
     (
-        home.join(format!("{STEM}{key}.{LOCK}")),
-        home.join(format!("{STEM}{key}.{OWNER}")),
+        home.join(format!("{STEM}{session}.{LOCK}")),
+        home.join(format!("{STEM}{session}.{OWNER}")),
     )
 }
 
@@ -160,6 +156,10 @@ pub struct Owner {
     /// and kill themselves.
     pub pid: Option<u32>,
     /// The workspace the holder is working in.
+    ///
+    /// **Recorded, not keyed on.** The lock is the session's ([`paths`]); this
+    /// field is here because "another `io` is working in <root>" is the clause
+    /// that tells an operator with several terminals open which one to go to.
     ///
     /// Written through `to_string_lossy`, so a root that is not valid UTF-8
     /// arrives with the unrepresentable parts replaced. It is a sentence's
@@ -385,10 +385,16 @@ fn open(path: &Path, truncate: bool) -> io::Result<File> {
     options.open(path)
 }
 
-/// Take the lock for one workspace, or say who has it.
+/// Take the lock for one session, or say who has it.
 ///
-/// `started` is the instant to record, handed in by the driver — the only thing
-/// in this crate permitted to read a clock.
+/// `session` is what the lock is named after; `root` is only written into the
+/// record, for the refusal to name. `started` is the instant to record, handed
+/// in by the driver — the only thing in this crate permitted to read a clock.
+///
+/// **On a session this process just opened it always succeeds**, because that id
+/// has never existed anywhere else. The call is worth making anyway: succeeding
+/// is what publishes the owner record, and the record is the whole of what a
+/// later `io resume` of this id gets to say when it is refused.
 ///
 /// **`Err` means the attempt could not be made, and never that the lock is
 /// held.** [`std::fs::File::try_lock`] answers with
@@ -400,9 +406,14 @@ fn open(path: &Path, truncate: bool) -> io::Result<File> {
 /// sentence about a process that was never there, and a held lock reported as an
 /// error lets two `io` processes into one session, which is the whole thing this
 /// module exists to stop.
-pub fn acquire(home: &Path, root: &Path, started: SystemTime) -> io::Result<Taken> {
+pub fn acquire(
+    home: &Path,
+    session: i64,
+    root: &Path,
+    started: SystemTime,
+) -> io::Result<Taken> {
     crate::home::create(home)?;
-    let (lock, owner) = paths(home, root);
+    let (lock, owner) = paths(home, session);
 
     // Not truncated: the file's contents are never read, and truncating one that
     // another process holds a lock on would be a write for no reason.
