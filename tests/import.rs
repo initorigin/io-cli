@@ -561,6 +561,103 @@ fn a_skill_nested_five_deep_arrives_flat_and_is_found_by_discovery() {
     );
 }
 
+/// **A skill's declared name becomes a directory here, and it is somebody else's
+/// text.**
+///
+/// `skill_name` answers with the frontmatter `name:` because that is the name a
+/// skill is addressed by — and `Path::join` treats `../..` as an escape and an
+/// absolute path as a replacement for everything to its left. A third-party
+/// marketplace plugin declaring either one could put a file anywhere the process
+/// can reach, and the collision guard would not stop it: that asks whether the
+/// TARGET exists, and creating a new file somewhere else answers happily.
+///
+/// The destination was also the one fact the review surface never drew, so this
+/// could not have been caught by reading the screen either.
+#[test]
+fn a_skill_whose_declared_name_is_not_a_path_component_is_refused() {
+    let home_root = tempfile::tempdir().expect("a fake home");
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let home = tempfile::tempdir().expect("io's home");
+    std::fs::create_dir_all(home.path().join("skills")).expect("a skills directory");
+
+    // The escape, and the absolute replacement, and a plain innocent one beside
+    // them so the refusal is shown to be about the name rather than about there
+    // being a skill at all.
+    put(
+        &home_root.path().join(".claude/skills/escape/SKILL.md"),
+        "---\nname: ../../../pwned\ndescription: climbs out\n---\n\nbody\n",
+    );
+    // A name nothing else on the machine will have, so the assertion below is
+    // about this test and can never be satisfied or spoiled by another process.
+    let absolute = std::env::temp_dir().join("io-cli-0210-traversal-probe");
+    let _ = std::fs::remove_dir_all(&absolute);
+    put(
+        &home_root.path().join(".claude/skills/absolute/SKILL.md"),
+        &format!(
+            "---\nname: {}\ndescription: starts again\n---\n\nbody\n",
+            absolute.display()
+        ),
+    );
+    put(
+        &home_root.path().join(".claude/skills/ordinary/SKILL.md"),
+        "---\nname: ordinary\ndescription: behaves\n---\n\nbody\n",
+    );
+
+    let found = detect(home_root.path(), workspace.path());
+    let items = plan(&found, home.path(), Scope::Project);
+
+    let skills: Vec<_> = items.iter().filter(|i| i.kind == Kind::Skill).collect();
+    assert_eq!(skills.len(), 3, "{skills:?}");
+
+    for item in &skills {
+        let ordinary = item.says.contains("`ordinary`");
+        if ordinary {
+            assert_eq!(
+                item.to,
+                Destination::File(home.path().join("skills/ordinary/SKILL.md")),
+                "the well-behaved skill still imports",
+            );
+        } else {
+            assert_eq!(
+                item.to,
+                Destination::Nowhere,
+                "a name that is not one path component has nowhere to go: {item:?}",
+            );
+            assert!(item.form.is_none(), "and nothing to write: {item:?}");
+        }
+    }
+
+    let before = fingerprint(home.path());
+    let report = apply(&items, workspace.path());
+
+    // The absolute name's target, which `Path::join` would have made the whole
+    // destination — asserted by the exact path this fixture named, so nothing
+    // else on the machine can satisfy or spoil it.
+    assert!(
+        !absolute.exists(),
+        "an absolute declared name replaced the join and wrote outside io's home",
+    );
+    // And the escape was refused rather than quietly flattened into the skills
+    // directory, which would install a skill under a name the operator's other
+    // tool does not use.
+    assert!(
+        !home.path().join("skills/pwned").exists(),
+        "the escaping name was sanitised into the directory instead of refused",
+    );
+
+    // Exactly one skill landed, and the home changed only by that much.
+    let discovered =
+        io_harness::Skills::discover(home.path().join("skills")).expect("the directory discovers");
+    assert_eq!(discovered.len(), 1, "only the ordinary skill is installed");
+    assert!(discovered.get("ordinary").is_some());
+    assert_ne!(before, fingerprint(home.path()), "the ordinary one wrote");
+    assert_eq!(
+        report.written.len(),
+        1,
+        "one write, and it is the ordinary skill: {report:?}",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_symlinked_skill_arrives_as_a_real_file() {

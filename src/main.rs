@@ -472,23 +472,6 @@ fn skills_view(
     }
 }
 
-/// The `(id, directory)` pair for every loaded bundle that declares skills.
-///
-/// **Read off `pluginview` rather than off `Plugins`, and that is not a
-/// shortcut.** `Plugins::skill_dirs` is `pub(crate)` in io-harness, but
-/// `Plugin::id` and `Plugin::skills_dir` are both public and `pluginview::view`
-/// already folds them into exactly this pair for the `/plugin` surface. Building
-/// it a second time from the plugin list would be a second answer to one
-/// question, and the two could drift — which is the whole reason `/plugin` and
-/// `/skills` must agree about which bundle contributed what.
-///
-/// **The order is the declaration order, and it matters.** It is the order
-/// `TaskContract::discover_skills` folds the directories in, so a surface listing
-/// them in this order lists them the way the model will be offered them.
-///
-/// A bundle that declares no skills directory is absent rather than present and
-/// empty: it contributed nothing here, and a row saying so would be a row about
-/// the absence of a thing the operator never asked for.
 /// The import plan as picker rows: one per item, then the row that writes.
 ///
 /// **The accepted mark rides the LABEL, never the detail.** A narrow terminal
@@ -543,10 +526,20 @@ fn import_written(
             // provider and the servers it will talk to do not end up in two files
             // with different lifetimes.
             match io_cli::configure::write(root, io_harness::config::Scope::User, &[edit]) {
+                // **A fallback, and the sentence says so.** `providers::add`
+                // appends, and the front of a `[[provider]]` array is the entry a
+                // run uses — so on any configuration that already had a provider,
+                // which is every operator this feature was written for, the
+                // imported model is the LAST link and does not answer anything
+                // until the ones before it fail. Saying "in force" would be true
+                // only on an empty chain, which is the one case the fixtures
+                // build. The operator is told where it landed and what makes it
+                // answer.
                 Ok(()) => lines.push((
                     Tone::Success,
                     format!(
-                        "{} is now the provider in force; the model answers from the next turn",
+                        "{} joined the provider chain as its last fallback; `/provider` promotes \
+                         it if you want it to answer",
                         item.model().unwrap_or("the imported model"),
                     ),
                 )),
@@ -559,19 +552,60 @@ fn import_written(
     lines
 }
 
-fn import_rows(items: &[io_cli::import::Item], accepted: &[bool]) -> Vec<io_cli::picker::Row> {
+/// Whether accepting this item causes anything to be written.
+///
+/// **Not `Kind::writes`, and the difference is a real one.** That answers for
+/// `import::apply`, which reports a model as carried because a foreign
+/// configuration names a model and never a vendor. The driver goes on to ask for
+/// the vendor and write the entry, so from this surface's seat a model item does
+/// write. Everything else that writes nothing has `Destination::Nowhere` — an
+/// allowlist, a name already claimed, a set over the ceiling — and those are
+/// findings io is reporting rather than choices it is offering.
+fn import_writes(item: &io_cli::import::Item) -> bool {
+    item.kind == io_cli::import::Kind::Model
+        || !matches!(item.to, io_cli::import::Destination::Nowhere)
+}
+
+fn import_rows(
+    items: &[io_cli::import::Item],
+    accepted: &[bool],
+    root: &std::path::Path,
+) -> Vec<io_cli::picker::Row> {
     let mut rows: Vec<io_cli::picker::Row> = items
         .iter()
         .zip(accepted)
         .map(|(item, on)| {
             io_cli::picker::Row::marked(
-                if *on { "[x]" } else { "[ ]" },
+                // **A row that can never write is not drawn as a checkbox.** An
+                // allowlist io cannot express, a skill whose name is already
+                // claimed, a set over the ceiling — these are things io found and
+                // is telling the operator about. Giving them a box to tick invites
+                // ticking one and being told "write the 1 item switched on above"
+                // by a surface that then writes nothing.
+                if !import_writes(item) {
+                    "(i)"
+                } else if *on {
+                    "[x]"
+                } else {
+                    "[ ]"
+                },
                 format!("{} · {}", item.kind.word(), item.says),
-                item.from.display().to_string(),
+                // **Both ends, because this surface promises both.** The source
+                // alone left the destination the one fact never on screen — on the
+                // one surface whose whole safety property is that nothing is
+                // written the operator has not read first.
+                match item.to.path(root) {
+                    Some(to) => format!("{} → {}", item.from.display(), to.display()),
+                    None => item.from.display().to_string(),
+                },
             )
         })
         .collect();
-    let count = accepted.iter().filter(|on| **on).count();
+    let count = items
+        .iter()
+        .zip(accepted)
+        .filter(|(item, on)| **on && import_writes(item))
+        .count();
     rows.push(io_cli::picker::Row::new(match count {
         0 => "write nothing and close".to_string(),
         1 => "write the 1 item switched on above".to_string(),
@@ -580,6 +614,23 @@ fn import_rows(items: &[io_cli::import::Item], accepted: &[bool]) -> Vec<io_cli:
     rows
 }
 
+/// The `(id, directory)` pair for every loaded bundle that declares skills.
+///
+/// **Read off `pluginview` rather than off `Plugins`, and that is not a
+/// shortcut.** `Plugins::skill_dirs` is `pub(crate)` in io-harness, but
+/// `Plugin::id` and `Plugin::skills_dir` are both public and `pluginview::view`
+/// already folds them into exactly this pair for the `/plugin` surface. Building
+/// it a second time from the plugin list would be a second answer to one
+/// question, and the two could drift — which is the whole reason `/plugin` and
+/// `/skills` must agree about which bundle contributed what.
+///
+/// **The order is the declaration order, and it matters.** It is the order
+/// `TaskContract::discover_skills` folds the directories in, so a surface listing
+/// them in this order lists them the way the model will be offered them.
+///
+/// A bundle that declares no skills directory is absent rather than present and
+/// empty: it contributed nothing here, and a row saying so would be a row about
+/// the absence of a thing the operator never asked for.
 fn bundle_skills(config: &Config) -> Vec<(String, std::path::PathBuf)> {
     io_cli::pluginview::view(config)
         .plugins
@@ -868,6 +919,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // Nothing is drawn when nothing was found, because a surface that opens to say
     // "no other agent is installed" is a surface charging every first run for a
     // question that had no answer.
+    // **Painted first, and this ordering is load-bearing rather than tidy.**
+    // Detection reads and decodes `~/.claude.json`, which is tens of megabytes on
+    // a real install, and walks `~/.claude/plugins` to depth eight following
+    // symlinks. Doing that above the first paint would hold a blank terminal for
+    // the length of that work on every operator's first launch after upgrading —
+    // the one launch where a session that looks hung is least explicable.
+    paint(screen, &mut app)?;
+
     if !io_cli::home::import_offered() {
         if let Some(home) = io_cli::home::path() {
             let found = io_cli::import::detect(
@@ -888,7 +947,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 );
                 let accepted = vec![false; items.len()];
                 picker = Some((
-                    Picker::new("Import", import_rows(&items, &accepted)),
+                    Picker::new("Import", import_rows(&items, &accepted, session.root())),
                     Pick::Import { items, accepted },
                 ));
             }
@@ -1097,10 +1156,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // about to change, types the value themselves, and
                         // presses Enter. A picker that wrote on a keystroke would
                         // change a file on the way past.
-                        // Choosing a server says what it is, in the scrollback.
-                        // There is nothing to open: the write verbs go through
-                        // `/config`, and a panel that opened a second editor
-                        // here would be a third way to write one file.
                         // **Choosing an item switches it on; only the last row
                         // writes.** That separation is the release's central
                         // promise and it is enforced here rather than in
@@ -1117,10 +1172,20 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // switched on without hunting for the place each time.
                         Pick::Import { items, accepted } => {
                             if index < items.len() {
-                                accepted[index] = !accepted[index];
+                                // A row that can never write is a finding io is
+                                // reporting, not a choice it is offering, so a
+                                // press on it changes nothing rather than arming a
+                                // box that means nothing. The surface draws those
+                                // rows with `(i)` instead of a checkbox.
+                                if import_writes(&items[index]) {
+                                    accepted[index] = !accepted[index];
+                                }
                                 descended = Some((
-                                    Picker::new("Import", import_rows(items, accepted))
-                                        .selecting(index),
+                                    Picker::new(
+                                        "Import",
+                                        import_rows(items, accepted, session.root()),
+                                    )
+                                    .selecting(index),
                                     Pick::Import {
                                         items: items.clone(),
                                         accepted: accepted.clone(),
@@ -2322,7 +2387,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         } else {
                             let accepted = vec![false; items.len()];
                             picker = Some((
-                                Picker::new("Import", import_rows(&items, &accepted)),
+                                Picker::new(
+                                    "Import",
+                                    import_rows(&items, &accepted, session.root()),
+                                ),
                                 Pick::Import { items, accepted },
                             ));
                         }
@@ -2977,6 +3045,37 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // a profile body can carry `[app.io-cli]` keys too.
                     let (in_force, _) = settings::stored(&config);
                     capabilities = io_cli::contract::Capabilities::stored(in_force.as_ref());
+                    // **The palette's inventory is re-walked here, and before
+                    // 0.21.0 nothing needed it to be.** The list was read once at
+                    // startup and reassigned in exactly one place, the `/skills`
+                    // toggle — which was complete while the only skills in it came
+                    // from one directory the operator changed only through that
+                    // toggle. Bundles broke that: `/plugin` can stop loading a
+                    // bundle and `/import` can add skills, both mid-session, and
+                    // neither goes anywhere near that arm. Left alone, `/` went on
+                    // offering a name whose file the turn's catalogue no longer
+                    // has, and the model is asked for a skill it will be refused.
+                    //
+                    // Done at the turn boundary rather than at each writer,
+                    // because this is where `config` is already fresh and it
+                    // bounds the staleness for every way the set can change,
+                    // including an operator editing `io.toml` in another window.
+                    // The sentence is dropped on purpose: it was said once at
+                    // startup and both `/skills` and `/plugin` say it on demand.
+                    // Committing it again every turn is the shape 0.19.0 already
+                    // rejected once — a line that repeats for the life of the
+                    // file it is about stops being read.
+                    skills = commands::skills(
+                        &io_cli::home::path().unwrap_or_default(),
+                        io_cli::contract::skills_dir(
+                            &config,
+                            &capabilities,
+                            session.root().to_path_buf(),
+                        )
+                        .as_deref(),
+                        &bundle_skills(&config),
+                    )
+                    .0;
                     let effective =
                         approval::session_policy(&policy, app.posture(), app.remembered());
                     let stopped = turn(

@@ -429,7 +429,27 @@ pub fn declared_at(config: &Config, entry: &Entry) -> Option<At> {
         return None;
     };
     let text = std::fs::read_to_string(path).ok()?;
-    At::of(scope, &text, entry.index)
+    let at = At::of(scope, &text, entry.index)?;
+    // **The position is confirmed against the entry's own content, and without
+    // this the newtype is a wrapper rather than a guard.**
+    //
+    // `At::of` counts `provider[n].kind` in the file's TOP-LEVEL array and
+    // bounds-checks the number it was handed. [`chain`] builds its rows from the
+    // RESOLVED configuration. Those are the same list right up until a profile is
+    // in force: `provider` is not an appending key, so `[[profile.fast.provider]]`
+    // *replaces* the top-level array, and io-harness then rewrites the origins to
+    // `provider.*` — so `decided` still names this file and every positional check
+    // still passes while the rows on screen describe entries that are not at those
+    // positions. Removing "the only link" would have deleted the operator's real
+    // primary provider, which was never on screen.
+    //
+    // So the row and the file have to agree about *what is there*, not merely that
+    // something is. Disagreement means the array being counted is not the array
+    // being looked at, and the honest answer is that no file in force declares
+    // this link — which the caller already renders as a refusal.
+    let model = crate::edit::value_at(&text, &format!("provider[{}].model", entry.index))?;
+    let kind = crate::edit::value_at(&text, &format!("provider[{}].kind", entry.index))?;
+    (unquoted(&model) == entry.model && unquoted(&kind) == entry.kind).then_some(at)
 }
 
 /// What a new `[[provider]]` entry reaches.

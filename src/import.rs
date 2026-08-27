@@ -939,6 +939,37 @@ fn skill_plan(candidates: &[(Source, PathBuf)], home: &Path) -> Vec<Item> {
 
     for (source, path) in candidates {
         let name = skill_name(path);
+        // **A frontmatter `name:` is somebody else's text and it is about to
+        // become a path component.** `skill_name` answers with the declared name
+        // because that is the name a skill is *addressed* by — but `Path::join`
+        // treats `../../../x` as an escape and an absolute path as a replacement
+        // for everything to its left, so the declared name reaching `join`
+        // unchecked lets a third-party bundle write a file anywhere the process
+        // can reach. Nothing else on the path catches it: the collision guard
+        // asks whether the target exists, and creating a *new* file somewhere
+        // else answers that happily.
+        //
+        // Refused rather than sanitised. A name is how the model addresses a
+        // skill, so quietly rewriting it would install a skill under a name the
+        // operator's other tool does not use — and a skill whose name cannot be a
+        // directory is a skill io-harness could not have discovered in the source
+        // tree either. Saying so names the file, which is the thing worth knowing.
+        if !one_path_component(&name) {
+            items.push(Item {
+                source: *source,
+                kind: Kind::Skill,
+                from: path.clone(),
+                says: format!(
+                    "skill `{name}` is not imported: a skill's name becomes a directory here, \
+                     and that one is not a single path component. Rename it in {} and import \
+                     again.",
+                    path.display()
+                ),
+                to: Destination::Nowhere,
+                form: None,
+            });
+            continue;
+        }
         let target = dir.join(&name);
         let claimed = existing
             .as_ref()
@@ -1010,6 +1041,27 @@ fn skill_plan(candidates: &[(Source, PathBuf)], home: &Path) -> Vec<Item> {
 /// `default_name` special-cases exactly that (`skills.rs:345-356`), so this does
 /// too; a plan that named three imported skills `SKILL` would collide all three
 /// against each other.
+/// Whether `name` is exactly one ordinary path component.
+///
+/// The question is asked of a name that came out of somebody else's file and is
+/// about to be joined onto io's own skills directory. It is answered by asking
+/// `Path` itself rather than by scanning for `/` and `..`, because the separators
+/// and the meaning of a prefix are the platform's business — `C:` and a backslash
+/// are components on Windows and are not here, and a hand-rolled check would be
+/// right on the machine it was written on.
+///
+/// Empty is refused, `.` and `..` are refused, an absolute or prefixed path is
+/// refused, and anything with more than one component is refused. A NUL is
+/// refused too: it cannot reach the filesystem and would otherwise fail far from
+/// here with an error naming neither the skill nor the file it came from.
+fn one_path_component(name: &str) -> bool {
+    if name.is_empty() || name.contains('\0') {
+        return false;
+    }
+    let mut parts = Path::new(name).components();
+    matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none()
+}
+
 fn skill_name(path: &Path) -> String {
     let (name, _) = crate::skillview::describe(path);
     if name.eq_ignore_ascii_case("SKILL") {
@@ -1121,6 +1173,30 @@ pub fn apply(plan: &[Item], root: &Path) -> Report {
                     report.refused.push(nothing_to_write(item));
                     continue;
                 };
+                // **Asked of the file, once per server, immediately before the
+                // append.** The dedupe inside the readers is per-source, so the
+                // same server declared by two tools — `context7` and `playwright`
+                // are in both Claude's and Gemini's files on a real machine —
+                // arrived twice; and nothing at all compared the plan against what
+                // `io.toml` already declared, so a second `/import`, or the
+                // first-run offer followed by `/import` later, appended a second
+                // entry under an id that was already there. io-harness validates
+                // no such thing, so `configure::write`'s round trip accepts it and
+                // rolls nothing back.
+                //
+                // Checking here rather than at plan time is what makes it cover
+                // both: writes happen one server at a time, so the first of a
+                // within-plan pair is on disk by the time the second is asked
+                // about. `servers::declared_in` was written for this caller.
+                let id = crate::edit::value_at(form, "id")
+                    .map(|value| value.trim().trim_matches('"').to_string());
+                if let Some(id) = id.filter(|id| crate::servers::declared_in(root, id).is_some()) {
+                    report.refused.push(format!(
+                        "MCP server `{id}` is not imported: a server of that id is already \
+                         declared. Nothing was changed — `/mcp` shows the one in force."
+                    ));
+                    continue;
+                }
                 // One write per server, deliberately. A batch would put every
                 // entry behind one `Config::discover`, so a single server naming
                 // an unset variable would take the whole import down with it.

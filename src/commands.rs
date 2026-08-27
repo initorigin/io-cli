@@ -757,9 +757,27 @@ pub fn skills(
         // bundle.
         None => crate::skillview::view_of_bundles(bundles),
     };
-    let sentence = view
-        .failed
-        .map(|error| format!("{error}; this session lists no skills until that is fixed"));
+    // **Both failures, not just the operator's own directory.**
+    //
+    // A bundle whose declared skills directory is not on disk ends every turn of
+    // the session before the first completion, and this is the only call made at
+    // startup — so dropping `bundles_failed` here meant the one class of failure
+    // that kills the session said nothing at the one moment it was cheapest to
+    // say it, leaving the operator to guess that `/skills` or `/plugin` is where
+    // the reason lives.
+    let mut sentences: Vec<String> = Vec::new();
+    if let Some(error) = view.failed {
+        sentences.push(format!(
+            "{error}; this session lists no skills until that is fixed"
+        ));
+    }
+    for (id, error) in view.bundles_failed {
+        sentences.push(format!(
+            "the {id} bundle contributes no skills: {error}. Every turn of this session ends on \
+             that error until the directory exists or the bundle is removed with `/plugin`."
+        ));
+    }
+    let sentence = (!sentences.is_empty()).then(|| sentences.join(" "));
     (
         view.skills.into_iter().filter(|row| row.enabled).collect(),
         sentence,

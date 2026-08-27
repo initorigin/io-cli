@@ -471,3 +471,70 @@ fn f9_the_verifier_is_the_wizard_s_and_there_is_only_one() {
         );
     }
 }
+
+/// A file whose top-level chain and whose profile's chain are DIFFERENT lists.
+///
+/// The profile declares one entry; the top level declares three. io-harness does
+/// not append a profile's `provider` onto the top-level array, it replaces it —
+/// and then rewrites the origins so the overlaid config still names this file.
+const PROFILE_REPLACES_THE_CHAIN: &str = r#"
+[[provider]]
+kind = "openrouter"
+model = "the-operators-real-primary"
+
+[[provider]]
+kind = "anthropic"
+model = "the-operators-first-fallback"
+
+[[provider]]
+kind = "openai"
+model = "the-operators-second-fallback"
+
+[[profile.fast.provider]]
+kind = "openrouter"
+model = "something-small-and-quick"
+"#;
+
+/// **A position is confirmed against the entry it is supposed to name.**
+///
+/// Under a profile the rows on screen come from the resolved chain while the
+/// array a write would splice is the file's top-level one, and those are not the
+/// same list. Every positional check still passes — `decided` names this file,
+/// the index is in bounds — so nothing but the content can tell the two apart.
+///
+/// Without the check this is a silent wrong delete: the profile shows one link,
+/// `remove` is aimed at `provider[0]`, and `provider[0]` is the operator's real
+/// primary provider, which was never on screen.
+#[test]
+fn f7_a_profiles_link_is_never_addressed_by_a_position_in_the_top_level_array() {
+    let fixture = config(PROFILE_REPLACES_THE_CHAIN);
+    let overlaid = io_cli::configure::with_profile(&fixture.config, "fast")
+        .expect("the fixture declares the profile");
+
+    let chain = providers::chain(&overlaid);
+    assert_eq!(
+        chain.len(),
+        1,
+        "the profile replaces the chain rather than extending it; if this is 4 the \
+         premise of this test is gone and the guard below is testing nothing",
+    );
+    assert_eq!(chain[0].model, "something-small-and-quick");
+
+    assert!(
+        providers::declared_at(&overlaid, &chain[0]).is_none(),
+        "the profile's link is not the entry at that position in the top-level array, \
+         so there is no position to hand a writer — answering with one would aim a \
+         removal at `the-operators-real-primary`, which is not on screen",
+    );
+
+    // The control: with no profile in force the two lists ARE the same list, and
+    // every link still answers with its own position. A guard that refused
+    // everything would pass the assertion above and break the surface.
+    let plain = providers::chain(&fixture.config);
+    assert_eq!(plain.len(), 3);
+    for entry in &plain {
+        let at = providers::declared_at(&fixture.config, entry)
+            .expect("a top-level link is addressable");
+        assert_eq!(at.index(), entry.index);
+    }
+}
