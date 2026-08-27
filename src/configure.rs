@@ -152,10 +152,23 @@ fn is_credential(path: &str) -> bool {
 /// A value as it is safe to show.
 ///
 /// A `${env:VAR}` or `${file:PATH}` reference is shown **as written**: the
-/// variable's name is the information an operator needs and its contents are not,
-/// and io-harness substitutes those two forms and nothing else. Anything else in
-/// a credential key is reduced to its last four characters, which is enough to
-/// tell two keys apart and not enough to use.
+/// variable's name is the information an operator needs and its contents are not.
+///
+/// **There are three substitution forms and not two.** io-harness resolves
+/// `${env:...}`, `${file:...}` **and** `${cmd:...}`
+/// (`io-harness-0.69.0/src/config.rs:1909`); this comment claimed two until
+/// 0.21.0, and the sentence it claimed it in was the argument for which forms
+/// pass through here. The third is deliberately not one of them: a `${env:}` or
+/// `${file:}` reference is a *name*, and the name is the whole of what an
+/// operator needs to identify the credential. `${cmd:}` is a program and its
+/// arguments — the arguments are values rather than names, and printing them
+/// whole under a key this function was called on precisely because it holds a
+/// secret is the one thing it exists to avoid. So it is reduced like any other
+/// value. Separately, io-harness refuses `${cmd:}` outright in a project-scoped
+/// file, so the form reaches this function only from a file the operator owns.
+///
+/// Anything else in a credential key is reduced to its last four characters,
+/// which is enough to tell two keys apart and not enough to use.
 pub fn redact(path: &str, value: &str) -> String {
     if !is_credential(path) {
         return value.to_string();

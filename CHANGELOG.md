@@ -6,6 +6,114 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-08-27
+
+What you already told another agent tool, brought across once — and two surfaces
+that finally do what they have been described as doing.
+
+**`/import` brings your setup over from the tool you were using before.** io looks
+for `~/.claude` and `~/.claude.json`, `~/.codex`, `~/.gemini`, and a `.cursorrules`
+or `CONVENTIONS.md` in the repository, and offers four things out of whatever it
+finds: the standing instructions you wrote, which are appended whole to the memory
+file for the scope you pick rather than shredded into a bullet per line; the MCP
+servers you configured, translated into io-harness's `[[mcp]]` spelling; the skills
+you collected, written into your skills directory; and the model you settled on. It
+is offered once on a first run — io records that it asked, so it never asks twice —
+and one key declines and carries straight on into the session. `/import` opens the
+same thing whenever you want it. **The whole plan is on screen before a single byte
+is written**, one row per thing found with where it came from and where it would go,
+and you accept item by item. Declining writes nothing, and a cancelled import is not
+a partial one. A tool whose files are all empty is a distinct row and says so, which
+matters more than it sounds: on a good many machines every Gemini file exists and
+every one is zero bytes, and an import of nothing that then reports success is the
+failure you cannot see.
+
+**No credential is read or copied, and the code is what enforces that rather than
+the intention behind it.** `~/.codex/auth.json` is not in the list of files this
+program can open, so no path through it reaches one. A server's environment values
+are parsed and discarded without ever being assembled into a string — only the
+variable *name* is held — and what gets written is `${env:NAME}`, the name pointing
+at itself, which io-harness resolves from your own environment when a run needs it.
+`~/.claude.json` is a whole application's state with OAuth material in it and is
+read through narrow structs, so every field io does not name is skipped by the
+parser instead of being loaded and then politely ignored.
+
+**An allowlist is read, shown, and deliberately not translated.** Codex spells a
+permission as `prefix_rule(pattern=["bun","install"], …)` and Claude as
+`Bash(cargo yank *)`; both match a command line, and io-harness's `Act::Exec`
+matches a binary name and nothing else. The nearest faithful import of `bun install`
+is therefore a blanket allow on `bun` — a wider permission than you ever granted,
+written by a tool you were trusting to be careful. io says what it found and says it
+cannot express it, and produces no rule, no `[policy]` table and no policy layer. A
+boundary half imported is worse than one left alone. A model id is carried rather
+than written for a smaller version of the same reason: `[[provider]]` needs a vendor
+and `gpt-5` does not name one, so the entry is built once you have chosen.
+
+**Skills are counted before any are written.** A name your directory already answers
+to is refused on its own row and the rest of the import goes through; a set that
+would cross io-harness's 64-skill ceiling refuses **every** skill instead, because
+the harness rejects a whole directory rather than the excess and the alternative is
+a session in which every turn dies at run start with nothing visible to blame.
+
+**A capability bundle's skills are on a surface at last.** 0.20.0 let a bundle
+contribute skills and every one of them reached the model, under no row in `/skills`
+and no entry in the `/` palette — a list that disagreed with the catalogue the turn
+was handed. Both now carry them, spelled `<bundle>__<name>`, which is io-harness's
+own namespacing and the string a refusal or a tool call will name, with the bundle
+shown as the origin. Enabling or disabling one is **refused**: turning a skill off
+is moving its file into a `disabled/` directory, and for a bundle skill that means
+io-cli creating a directory inside somebody else's bundle and moving their file into
+it. Stop the bundle with `/plugin` instead.
+
+**And 0.20.0 shipped a session-killer behind that omission.** `Plugin::skills_dir`
+is the manifest's word joined onto the bundle root with no existence check, and the
+walk that discovers skills fails the run with `?` before the first completion — so a
+bundle declaring a skills directory that is not on disk ended **every turn of that
+session**, with nothing anywhere naming the cause. `/skills` and `/plugin` now name
+the bundle and say what it costs, one row per bundle, so a second broken bundle does
+not hide behind the first and a broken one does not take down the surface that
+explains it.
+
+**`/mcp` and `/provider` write.** Both could only list. The writer functions existed
+and were tested and were called from nothing, while three places in the code and the
+documentation said the two panels "add, edit, disable and remove entries" — a
+sentence that has been describing an intention since 0.19.0. They now genuinely add,
+edit and remove through the same staged write `/config` uses, read back by io-harness
+and rolled back whole on a refusal. `/provider` also arranges the chain: promote,
+demote, or add an entry, which is the fallback order io-harness has read since its
+0.27.0 and that this interface has drawn an event for without ever being able to
+cause one. Reordering moves an entry with its own comments and its own keys rather
+than rebuilding the array. *Disable* is gone from that sentence rather than
+implemented: `McpServer` has no key for it, and an `enabled = false` invented here
+would be accepted by the file and ignored by the harness, so the server would start
+anyway.
+
+**Seven defects were fixed in those writers on the way**, and one of them is the
+reason `[[mcp]]` is the section to be careful in: it is one of only two io-harness
+exempts from `deny_unknown_fields`, so a misspelled key spliced into an entry was
+accepted by the parser, reported as written, and ignored by every turn afterwards —
+the server running with the setting the operator thought they had changed still at
+its default. `/mcp` refuses a key it does not know instead of writing it, and the
+round-trip assertions deserialise into `McpServer` rather than looking for a string
+in a file. Neither panel takes a row number either: an entry is addressed by finding
+it in the file's own bytes, because a row on screen and a position in a file's array
+stop agreeing the moment anything sorts or filters, and that failure is silent — it
+removes a server nobody named, or bills the next turn to a vendor nobody chose.
+
+**`/import` is the twenty-eighth command**, and it joins the **configure** group
+because it writes files, which is what that group means and what **inspect**
+promises it never does. It is last in the group because it is the one command there
+an operator uses once; the others are returned to for the life of the install.
+Configure goes to eight.
+
+**One documentation correction that had nothing to do with any of the above.**
+`src/configure.rs` said io-harness substitutes `${env:...}` and `${file:...}` "and
+nothing else". There are three: `${cmd:...}` is the third, and it is refused in a
+project-scoped file. The README's `skills` row said the same thing and has been
+corrected too. `${cmd:}` is still not passed through by the credential redaction —
+it is a command line rather than a name — but that is now written down as a choice
+instead of resting on a false premise.
+
 ## [0.20.0] - 2026-08-27
 
 A directory somebody else wrote can add to your session, and you can see exactly

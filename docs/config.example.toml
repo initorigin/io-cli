@@ -164,6 +164,49 @@ net = "deny"
 # max_chars = 200000         # the total size of them
 # max_entry_chars = 4000     # the size of any one of them
 
+# --- MCP servers ------------------------------------------------------------
+#
+# The shape `/mcp` writes, and the shape `/import` translates another tool's
+# servers into. io-cli defines no schema for one — this is io-harness's own, with
+# the TRANSPORT AS A TAG beside the other fields rather than as a nested table.
+#
+#   id           what the server is called
+#   transport    "stdio" for a program on this machine, "http" for a URL
+#   command      the program, for a stdio server
+#   args         its arguments, as an ARRAY — never a shell string
+#   env          variables handed to that program
+#
+# A CREDENTIAL IS A REFERENCE AND NOT A LITERAL. io-harness resolves ${env:NAME}
+# from the environment at the moment it reads this file, so the secret stays in
+# your shell and never lands here. A substitution RESOLVES OR FAILS and never
+# empties: a variable that is not set is an error naming the key, rather than a
+# server that starts holding an empty token and fails somewhere less obvious.
+# `/import` writes exactly this form — it reads the NAMES of another tool's
+# environment variables and never their values — and tells you which variables
+# your shell has to have.
+#
+# ${file:PATH} and ${cmd:PROGRAM ARGS} are the other two forms. ${cmd:} is
+# REFUSED in a project-scoped io.toml, because that file arrives with a
+# `git clone`.
+#
+# NO TILDE, HERE OR ANYWHERE IN THIS FILE. io-harness expands none: those three
+# substitutions are the whole of what it rewrites, so a leading `~` in a value is
+# a directory literally named `~`. Write the path out, or use ${env:HOME}. The
+# one exception is io-cli's own `skills` key further down, which io-cli expands
+# itself before io-harness ever sees it.
+#
+# [[mcp]]
+# id = "github"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-github"]
+# env = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
+#
+# [[mcp]]
+# id = "issues"
+# transport = "http"
+# url = "https://mcp.example.com/v1"
+
 # --- Capability bundles (0.20.0) --------------------------------------------
 #
 # A bundle is a directory with a `plugin.toml` in it, and it is loaded because
@@ -386,9 +429,18 @@ fleet = "ctrl+f"
 #
 # Absent, this is `~/.io-cli/skills`, so writing the key is how you point at a
 # directory somewhere else rather than how you turn skills on. A leading `~` is
-# your home directory: io-harness substitutes `${env:...}` and `${file:...}` and
-# nothing else, so io-cli expands the tilde itself before handing the path over.
-# A `~` anywhere but the front is a directory literally named `~`.
+# your home directory: io-harness substitutes `${env:...}`, `${file:...}` and
+# `${cmd:...}`, and a tilde is none of the three — so io-cli expands it itself
+# before handing the path over. A `~` anywhere but the front is a directory
+# literally named `~`.
+#
+# THE CEILING IS PER DIRECTORY. io-harness accepts at most 64 skills in one and
+# rejects the whole directory rather than the excess — but every capability
+# bundle a [[plugin]] entry declares brings a skills directory of its own, and
+# the totals are not bounded together.
+# Six bundles can put far more than 64 names in front of the model with nothing
+# failing anywhere. `/skills` lists every one of them, bundle skills included,
+# under the `<bundle>__<name>` the model actually addresses.
 #
 # skills = "~/.io-cli/skills"
 

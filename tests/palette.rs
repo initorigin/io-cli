@@ -47,10 +47,7 @@ fn palette() -> Picker {
 
 /// The palette as the driver opens it over a set of templates.
 fn palette_over(templates: &Templates) -> Picker {
-    Picker::new(
-        "Which command?",
-        commands::palette(templates, &io_harness::Skills::none()),
-    )
+    Picker::new("Which command?", commands::palette(templates, &[]))
 }
 
 /// A templates directory with two templates in it: one that renders as it
@@ -166,7 +163,7 @@ fn choosable(rows: &[io_cli::picker::Row]) -> usize {
 /// Where a command's row sits, by name, since the order is now grouped.
 fn row_of(name: &str) -> usize {
     let bare = name.strip_prefix('/').unwrap_or(name);
-    commands::palette(&Templates::none(), &io_harness::Skills::none())
+    commands::palette(&Templates::none(), &[])
         .iter()
         .position(|row| row.label == bare)
         .unwrap_or_else(|| panic!("{name} has no row"))
@@ -174,7 +171,7 @@ fn row_of(name: &str) -> usize {
 
 #[test]
 fn f1_the_palette_opens_on_the_rows_the_viewport_has() {
-    let rows = commands::palette(&Templates::none(), &io_harness::Skills::none());
+    let rows = commands::palette(&Templates::none(), &[]);
     assert_eq!(choosable(&rows), COMMANDS.len());
     let picks: Vec<&io_cli::picker::Row> = rows.iter().filter(|row| !row.heading).collect();
     // Zipped against the GROUPED order rather than `COMMANDS`' own, because the
@@ -279,7 +276,7 @@ fn f1_fk_selects_fork_though_no_command_begins_with_it() {
         panic!("Enter on the one matched row must choose it");
     };
     assert_eq!(
-        commands::palette_pick(&Templates::none(), &io_harness::Skills::none(), index),
+        commands::palette_pick(&Templates::none(), &[], index),
         Some(Chosen::Command("/fork")),
     );
 }
@@ -377,8 +374,7 @@ fn f1_enter_puts_the_chosen_command_in_the_composer_rather_than_running_it() {
     let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter must choose");
     };
-    let Some(Chosen::Command(command)) =
-        commands::palette_pick(&Templates::none(), &io_harness::Skills::none(), index)
+    let Some(Chosen::Command(command)) = commands::palette_pick(&Templates::none(), &[], index)
     else {
         panic!("a chosen row in the command half is a command");
     };
@@ -402,20 +398,16 @@ fn f1_a_palette_row_addresses_the_command_it_was_built_from() {
     for (name, _) in COMMANDS.iter() {
         let index = row_of(name);
         assert_eq!(
-            commands::palette_pick(&none, &io_harness::Skills::none(), index),
+            commands::palette_pick(&none, &[], index),
             Some(Chosen::Command(name))
         );
         assert_eq!(
-            commands::palette(&none, &io_harness::Skills::none())[index].label,
+            commands::palette(&none, &[])[index].label,
             name.strip_prefix('/').expect("a command"),
         );
     }
     assert_eq!(
-        commands::palette_pick(
-            &none,
-            &io_harness::Skills::none(),
-            commands::palette(&none, &io_harness::Skills::none()).len(),
-        ),
+        commands::palette_pick(&none, &[], commands::palette(&none, &[]).len()),
         None
     );
 }
@@ -439,7 +431,7 @@ fn f2_no_templates_configured_is_an_empty_section_and_not_an_error() {
         "a configuration that never mentioned templates has nothing to complain about",
     );
     assert_eq!(
-        choosable(&commands::palette(&found, &io_harness::Skills::none())),
+        choosable(&commands::palette(&found, &[])),
         COMMANDS.len(),
         "an empty section contributes no rows",
     );
@@ -452,7 +444,7 @@ fn f2_every_template_is_a_row_carrying_its_name_and_its_description() {
     assert_eq!(complaint, None, "this directory is exactly what it says");
     assert_eq!(found.len(), 2);
 
-    let rows = commands::palette(&found, &io_harness::Skills::none());
+    let rows = commands::palette(&found, &[]);
     assert_eq!(choosable(&rows), COMMANDS.len() + found.len());
     for template in found.iter() {
         let row = rows
@@ -518,7 +510,7 @@ fn f2_a_configured_directory_that_cannot_be_walked_is_disclosed_with_the_harness
     let (found, complaint) = commands::templates(&configured(&missing));
     assert!(found.is_empty(), "nothing was discovered, which is true");
     assert_eq!(
-        choosable(&commands::palette(&found, &io_harness::Skills::none())),
+        choosable(&commands::palette(&found, &[])),
         COMMANDS.len(),
         "and the palette therefore looks exactly like the unconfigured one",
     );
@@ -559,9 +551,7 @@ fn f2_choosing_a_template_puts_the_rendered_text_in_the_composer_rather_than_sen
     let Outcome::Chosen(index) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter must choose");
     };
-    let Some(Chosen::Template(name)) =
-        commands::palette_pick(&found, &io_harness::Skills::none(), index)
-    else {
+    let Some(Chosen::Template(name)) = commands::palette_pick(&found, &[], index) else {
         panic!("the row under the marker is a template");
     };
     assert_eq!(name, "review");
@@ -622,7 +612,7 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
     // one under the marker, and nothing on screen would say so.
     let dir = written();
     let (found, _) = commands::templates(&configured(dir.path()));
-    let rows = commands::palette(&found, &io_harness::Skills::none());
+    let rows = commands::palette(&found, &[]);
 
     for (name, _) in COMMANDS.iter() {
         let index = rows
@@ -630,7 +620,7 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
             .position(|row| row.label == name.strip_prefix('/').expect("a command"))
             .expect("every command has a row");
         assert_eq!(
-            commands::palette_pick(&found, &io_harness::Skills::none(), index),
+            commands::palette_pick(&found, &[], index),
             Some(Chosen::Command(name)),
         );
     }
@@ -642,14 +632,11 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
         let _ = offset;
         assert_eq!(rows[index].label, template.name);
         assert_eq!(
-            commands::palette_pick(&found, &io_harness::Skills::none(), index),
+            commands::palette_pick(&found, &[], index),
             Some(Chosen::Template(template.name.clone())),
         );
     }
-    assert_eq!(
-        commands::palette_pick(&found, &io_harness::Skills::none(), rows.len()),
-        None
-    );
+    assert_eq!(commands::palette_pick(&found, &[], rows.len()), None);
 }
 
 /// **F5 — the palette lists what the workspace actually taught the agent.**
@@ -667,6 +654,11 @@ fn f2_a_row_addresses_the_command_or_the_template_it_was_built_from() {
 #[test]
 fn f5_every_discovered_skill_is_a_row_after_the_templates() {
     let dir = tempfile::tempdir().expect("a directory");
+    // The home is where the manifest lives, and it is a different question from
+    // the directory the run reads — so it is a directory of its own here, empty,
+    // which makes every row the operator's own. What this test is about is the
+    // rows, not whose they are; `tests/skillview.rs` owns provenance.
+    let home = tempfile::tempdir().expect("a home");
     std::fs::write(
         dir.path().join("migrations.md"),
         "---\nname: migrations\ndescription: how this repo changes a schema\n---\nbody\n",
@@ -679,7 +671,7 @@ fn f5_every_discovered_skill_is_a_row_after_the_templates() {
     )
     .expect("write");
 
-    let (skills, complaint) = commands::skills(Some(dir.path()));
+    let (skills, complaint) = commands::skills(home.path(), Some(dir.path()), &[]);
     assert_eq!(complaint, None, "this directory is exactly what it says");
     assert_eq!(skills.len(), 2, "both layouts are discovered");
 
@@ -730,21 +722,215 @@ fn f5_choosing_a_skill_puts_its_name_in_the_prompt_and_not_its_body() {
 /// product has already paid for twice.
 #[test]
 fn f5_a_skills_directory_that_will_not_walk_says_so() {
+    let home = tempfile::tempdir().expect("a home");
     assert_eq!(
-        commands::skills(None).1,
+        commands::skills(home.path(), None, &[]).1,
         None,
         "a session that configured none has nothing to complain about",
     );
-    assert!(commands::skills(None).0.is_empty());
+    assert!(commands::skills(home.path(), None, &[]).0.is_empty());
 
     let missing = std::path::Path::new("/tmp/io-cli-no-such-skills-dir");
-    let (skills, complaint) = commands::skills(Some(missing));
+    let (skills, complaint) = commands::skills(home.path(), Some(missing), &[]);
     assert!(skills.is_empty());
     let complaint = complaint.expect("a path that is not there is a sentence, not silence");
     assert!(
         complaint.contains("io-cli-no-such-skills-dir"),
         "the harness's own message names the path: {complaint}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// 0.21.0 — a capability bundle's skills are in the palette, and a disabled one
+// is in nothing.
+//
+// The gap 0.20.0 shipped with: a bundle's skills are folded into the turn's
+// catalogue and namespaced, and no surface in io-cli offered one — so an
+// operator scanning the palette was reading a list that disagreed with what the
+// model had. `tests/skillview.rs` owns the walk; what is asserted here is the
+// half that is the palette's, which is what an operator can choose and what
+// choosing it stands for.
+// ---------------------------------------------------------------------------
+
+/// A skill file, in the two keys io-harness reads.
+fn skill_file(name: &str, description: &str) -> String {
+    format!("---\nname: {name}\ndescription: {description}\n---\n\nDo the thing.\n")
+}
+
+/// The namespaced name io-harness itself builds, out of the harness's own
+/// constant rather than a `"__"` literal. The separator is io-harness's to
+/// change, and a literal here would go on passing while the palette offered a
+/// name the model cannot address — which is the whole defect these tests are for.
+fn namespaced(id: &str, name: &str) -> String {
+    format!("{id}{}{name}", io_harness::NAMESPACE)
+}
+
+/// The heading a skill row sits under, by index.
+fn skills_heading(rows: &[io_cli::picker::Row]) -> usize {
+    rows.iter()
+        .position(|row| row.heading && row.label == "skills")
+        .expect("the palette drew no skills heading")
+}
+
+#[test]
+fn f5_a_bundle_skill_is_offered_under_the_name_the_model_addresses() {
+    let root = tempfile::tempdir().expect("a directory");
+    let home = root.path().join("home");
+    let dir = io_cli::skills::dir(&home);
+    std::fs::create_dir_all(&dir).expect("the skills directory");
+    std::fs::write(
+        dir.join("mine.md"),
+        skill_file("mine", "The operator's own."),
+    )
+    .expect("write");
+
+    let contributed = root.path().join("acme").join("skills");
+    std::fs::create_dir_all(&contributed).expect("the bundle's skills directory");
+    std::fs::write(
+        contributed.join("helper.md"),
+        skill_file("helper", "Something contributed."),
+    )
+    .expect("write");
+    let bundles = [("acme".to_string(), contributed)];
+
+    let (skills, complaint) = commands::skills(&home, Some(dir.as_path()), &bundles);
+    assert_eq!(
+        complaint, None,
+        "both directories are what they say they are"
+    );
+
+    let none = Templates::none();
+    let rows = commands::palette(&none, &skills);
+    assert_eq!(
+        choosable(&rows),
+        COMMANDS.len() + 2,
+        "the operator's own skill and the bundle's are both choosable",
+    );
+
+    let label = namespaced("acme", "helper");
+    let index = rows
+        .iter()
+        .position(|row| row.label == label)
+        .unwrap_or_else(|| {
+            let offered: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+            panic!("`{label}` is not offered; the palette holds {offered:?}")
+        });
+    assert!(
+        !rows[index].heading,
+        "a bundle's skill is a row an operator can land on, not furniture",
+    );
+    assert!(
+        index > skills_heading(&rows),
+        "the row sits under the skills heading, not among the commands",
+    );
+    assert_eq!(
+        rows[index].mark,
+        Some(commands::SKILL_MARK),
+        "it is marked a skill, in the column the narrow terminal keeps",
+    );
+
+    // **The absence that is the point.** The bare name is what `Skills::discover`
+    // resolved out of the bundle's directory and it is NOT what the model
+    // addresses — offering it would put a name in the prompt that resolves to
+    // nothing, on the surface that exists to say what the model is offered.
+    assert!(
+        !rows.iter().any(|row| row.label == "helper"),
+        "the bare name is offered, and the model cannot address it",
+    );
+
+    // The provenance is in the label AND in the detail, because the detail is the
+    // column a narrow terminal drops first.
+    let detail = rows[index]
+        .detail
+        .as_deref()
+        .expect("a skill row carries its description");
+    assert!(
+        detail.starts_with(SKILL)
+            && detail.contains("Something contributed.")
+            && detail.contains("acme"),
+        "the detail says what it is and whose it is: {detail:?}",
+    );
+
+    assert_eq!(
+        commands::palette_pick(&none, &skills, index),
+        Some(Chosen::Skill(label.clone())),
+        "choosing it stands for the namespaced name and not the bare one",
+    );
+
+    // And through the picker, as the driver reaches it: typed for by the name the
+    // model uses, chosen with `Enter`, resolved back through `palette_pick`.
+    let mut picker = Picker::new("Which command?", rows.clone());
+    type_at(&mut picker, &label);
+    assert_eq!(
+        marked(&picker),
+        label,
+        "typing the namespaced name finds it"
+    );
+    let Outcome::Chosen(chosen) = picker.key(key(KeyCode::Enter)) else {
+        panic!("Enter on the marked row must choose it");
+    };
+    assert_eq!(
+        commands::palette_pick(&none, &skills, chosen),
+        Some(Chosen::Skill(label)),
+    );
+}
+
+/// **A disabled skill is offered nowhere.** `commands::skills` drops it, so the
+/// palette never draws it and no index resolves to it — which is the property
+/// that keeps `/skills` and the palette from disagreeing: a disabled skill is
+/// precisely one the model is not offered.
+///
+/// Sabotage: drop the `.filter(|row| row.enabled)` in `commands::skills`. Under
+/// it only this fails, and it fails by putting a row in the palette whose choice
+/// names a skill the turn was never handed.
+#[test]
+fn f5_a_disabled_skill_is_not_offered_in_the_palette_at_all() {
+    let root = tempfile::tempdir().expect("a directory");
+    let home = root.path().join("home");
+    let dir = io_cli::skills::dir(&home);
+    std::fs::create_dir_all(io_cli::skills::disabled_dir(&home)).expect("the disabled directory");
+    std::fs::write(dir.join("on.md"), skill_file("on", "Offered.")).expect("write");
+    std::fs::write(
+        io_cli::skills::disabled_dir(&home).join("off.md"),
+        skill_file("off", "Turned off."),
+    )
+    .expect("write");
+
+    // The premise, so this cannot pass because the fixture was never read: the
+    // walk DOES see the disabled file and classifies it as disabled.
+    let view = io_cli::skillview::view(&home, &dir, &[]);
+    assert!(
+        view.skills
+            .iter()
+            .any(|row| row.name == "off" && !row.enabled),
+        "the fixture is not a disabled skill, so the absence below proves nothing",
+    );
+
+    let (skills, complaint) = commands::skills(&home, Some(dir.as_path()), &[]);
+    assert_eq!(complaint, None, "this directory is exactly what it says");
+    assert_eq!(
+        skills.len(),
+        1,
+        "the palette's inventory is what the model was offered",
+    );
+
+    let none = Templates::none();
+    let rows = commands::palette(&none, &skills);
+    assert_eq!(choosable(&rows), COMMANDS.len() + 1);
+    assert!(rows.iter().any(|row| row.label == "on"));
+    assert!(
+        !rows.iter().any(|row| row.label == "off"),
+        "a disabled skill has a row, and choosing it would name a skill the turn \
+         was never handed",
+    );
+
+    // And no index anywhere in the list resolves to it, including past the end.
+    for index in 0..=rows.len() {
+        assert_ne!(
+            commands::palette_pick(&none, &skills, index),
+            Some(Chosen::Skill("off".to_string())),
+        );
+    }
 }
 
 /// **0.13.0 F6 — opening the palette re-places no viewport.**
@@ -809,7 +995,7 @@ fn f6_the_palette_path_in_the_driver_replaces_no_viewport() {
 fn f7_every_row_below_the_fold_is_still_reachable() {
     let dir = written();
     let (templates, _) = commands::templates(&configured(dir.path()));
-    let rows = commands::palette(&templates, &io_harness::Skills::none());
+    let rows = commands::palette(&templates, &[]);
     let height = io_cli::term::VIEWPORT_HEIGHT;
     assert!(
         rows.len() > usize::from(height),
@@ -961,7 +1147,7 @@ fn f14_a_heading_can_never_be_chosen() {
 fn f16_every_kind_of_row_carries_a_mark_and_it_is_not_in_the_detail() {
     let dir = written();
     let (templates, _) = commands::templates(&configured(dir.path()));
-    let rows = commands::palette(&templates, &io_harness::Skills::none());
+    let rows = commands::palette(&templates, &[]);
 
     let marks: std::collections::BTreeSet<&str> = rows
         .iter()
@@ -994,10 +1180,8 @@ fn f16_the_mark_survives_the_width_that_drops_the_detail() {
     // width where a row is hardest to read, and a command carried no mark at all.
     let dir = written();
     let (templates, _) = commands::templates(&configured(dir.path()));
-    let mut picker = io_cli::picker::Picker::new(
-        "Which command?",
-        commands::palette(&templates, &io_harness::Skills::none()),
-    );
+    let mut picker =
+        io_cli::picker::Picker::new("Which command?", commands::palette(&templates, &[]));
 
     let (mut screen, _recorder) = support::screen(28, 24);
     screen
