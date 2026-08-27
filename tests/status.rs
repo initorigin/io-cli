@@ -2015,3 +2015,320 @@ fn n3_the_queue_depth_survives_forgetting_the_run() {
         );
     }
 }
+
+/// A session at the width and in the state the 0.21.0 live capture caught.
+///
+/// Nothing here is invented for the test. The posture and the containment word
+/// are the pair `Status::fields` names in its own comment as the real thing —
+/// `workspace-write/macos-sandbox-exec`, thirty-four characters — and the
+/// counters are the ones the footer had when the last turn ended: six steps,
+/// twenty-six point nine thousand tokens, twenty-three percent of the window,
+/// and the idle key hint. That row is forty-six characters, the right-hand
+/// group is fifty-seven, and a hundred columns cannot hold both.
+fn full_row() -> Status {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.policy = Some("read-only".into());
+    status.containment = Some("workspace-write/macos-sandbox-exec".into());
+    status.planning = true;
+    status.steps = Some(6);
+    status.tokens = Some(26_900);
+    status.context = Some(23);
+    status
+}
+
+/// **F4 — a counts row that will not fit costs a counter, never the mode.**
+///
+/// `row` fits the footer's right-hand group all or nothing, and the counts row
+/// used to be handed to it whole: one character over and the posture, the
+/// containment word and the planning phase all left the screen together while
+/// every counter stayed. In the 0.21.0 live capture that is exactly what
+/// happened — the working frame drew the group at column forty-four and the
+/// finished frame, five characters wider because `esc stops` had become `/ for
+/// commands`, drew no group at all. The operator finished a turn under `/plan
+/// on` with nothing on screen saying io-harness would refuse the next write.
+///
+/// It is the failure F4 was written against, reached from the other direction,
+/// and it is a regression with a date: the same capture passes on 0.12.0 and
+/// 0.13.1, whose row was `4 steps · 14.2k tok · / for commands` and left room.
+/// Adding `ctx N%` to the counts row spent the last ten columns.
+///
+/// Which side gives is settled by the module rather than by this test: a
+/// standing mode that stops the agent writing outranks what the last turn
+/// spent. So the assertion is not merely that `planning` survives — it is that
+/// a counter went instead, and that the counters left are the leftmost ones.
+///
+/// Sabotage: hand `counts` to `row` unnarrowed, which is the 0.21.0 code — under
+/// which only this pair of tests fails, and it fails at the one width an
+/// eighty-to-a-hundred-and-twenty-column terminal is most likely to be.
+#[test]
+fn f4_a_full_counts_row_drops_a_counter_and_not_the_planning_phase() {
+    let text = footed(&full_row(), 100);
+
+    assert!(
+        text.contains("planning"),
+        "the mode that stops the agent writing left the row: {text:?}",
+    );
+    assert!(
+        text.contains("workspace-write/macos-sandbox-exec") && text.contains("read-only"),
+        "the phase took the rest of its group with it: {text:?}",
+    );
+    // What paid for it, and which end it was taken off. `ctx 23%` is the
+    // rightmost *counter* and is what a crowded row gives up first.
+    assert!(
+        !text.contains("ctx 23%"),
+        "nothing was dropped, so the row cannot have fitted: {text:?}",
+    );
+    assert!(
+        text.contains("6 steps") && text.contains("26.9k tok"),
+        "counters came off the wrong end: {text:?}",
+    );
+    // **And the key hint is not a counter and is not droppable.** It was the
+    // rightmost item on the row and the narrowing took it first, which meant a
+    // full row lost `esc stops` mid-turn — the only place the footer says how to
+    // interrupt what is running. It is held out of the narrowing and appended
+    // after it, so it survives every width the row is drawn at.
+    assert!(
+        text.contains("/ for commands"),
+        "the interrupt hint was dropped to make room for a counter: {text:?}",
+    );
+}
+
+/// **F4 — and it holds with one more counter on the row, at every width the
+/// group can be drawn at.**
+///
+/// The companion above pins the geometry that actually failed; this one pins
+/// the property, because the geometry is about to move. The counts row grows
+/// every release — `ctx N%` is what tipped 0.21.0 over, and the cost counter
+/// this release adds sits in the same group and makes the row wider still — so
+/// a test that asserted one magic width would go green on the arithmetic of the
+/// week it was written and say nothing about the week after.
+///
+/// `plan 2/5` stands in for that next counter: it is a real member of the same
+/// row, it is eight characters plus a separator, and with it the row no longer
+/// fits at any width in the sweep on the first trim.
+///
+/// **The sweep starts at seventy-four, and the number is the whole of what the
+/// key hint being undroppable costs.** The right-hand group is fifty-seven
+/// columns; `/ for commands` is fourteen and its separator three; fifty-seven
+/// plus seventeen is seventy-four, and that is the narrowest row that can carry
+/// the standing mode at all now that the hint is not a counter and cannot be
+/// taken to make room. Below it the group goes and the hint stays — which is the
+/// right way round: a mode an operator cannot see is bad, and a running turn an
+/// operator cannot find the key to stop is worse.
+///
+/// Sabotage: pop from the front of `counts` instead of the back — under which
+/// this test still passes at every width and the one above fails on `6 steps`,
+/// which is why both are here.
+#[test]
+fn f4_the_planning_phase_holds_at_every_width_that_can_hold_the_group() {
+    let mut status = full_row();
+    status.plan = Some((2, 5));
+
+    for width in 74..=160u16 {
+        let text = footed(&status, width);
+        assert!(
+            text.contains("planning"),
+            "the planning phase is off the footer at {width} columns: {text:?}",
+        );
+        // The row it was fitted into is still a row. A trim that undercounted
+        // would put the group past the edge instead of dropping a counter.
+        for line in status.footer(width, &DARK) {
+            let drawn: usize = line
+                .spans
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum();
+            assert!(
+                drawn <= width as usize,
+                "a footer row overflowed {width} columns: {line:?}",
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0.22.0 — the cost field
+// ---------------------------------------------------------------------------
+
+/// A store with one run, and one provider call per model named.
+///
+/// Real rows through io-harness's own recorder rather than a `Total` built here,
+/// because `Status::note_cost_from` reads the store: the split a price needs —
+/// fresh prompt against cache read against cache write against completion — lives
+/// only on the `provider_calls` row, and `EventKind::Step` carries a scalar token
+/// count that cannot be priced at all. A fixture that handed the figure in would
+/// be asserting the format string.
+fn run_calling(models: &[&str]) -> (io_harness::Store, i64) {
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let run = store
+        .start_run("summarise the module", "/repo")
+        .expect("a run");
+    for model in models {
+        store
+            .record_provider_call(
+                run,
+                &io_harness::ProviderCall {
+                    step: 1,
+                    provider: "anthropic".into(),
+                    model: Some((*model).to_string()),
+                    usage: Some(io_harness::Usage {
+                        prompt_tokens: 10_000,
+                        completion_tokens: 2_000,
+                        total_tokens: 12_000,
+                        ..Default::default()
+                    }),
+                    latency_ms: 1_200,
+                    ..Default::default()
+                },
+            )
+            .expect("the call is recorded");
+    }
+    (store, run)
+}
+
+/// The rates in force, pricing exactly one model.
+fn rates() -> io_harness::pricing::PriceTable {
+    io_harness::pricing::PriceTable::new("2026-08-27").with(
+        "anthropic/claude-sonnet-4.5",
+        io_harness::pricing::Price {
+            input: 3_000_000,
+            output: 15_000_000,
+            ..io_harness::pricing::Price::ZERO
+        },
+    )
+}
+
+/// **The cost field is absent rather than zero in all three ways of having no
+/// answer, and they are three different states of an install.**
+///
+/// An operator with no `[prices]` section, an operator whose table does not price
+/// the model this run is using, and a session that has not called anything yet.
+/// The status line has no room to tell them apart and does not try — `/cost` is
+/// one keystroke away and tells all three — but it must not answer any of them
+/// with `$0`, because `$0` is a measured figure and none of these is measured.
+///
+/// This is the same rule the rest of the line already keeps: every counter is
+/// absent until there is something to count, so a session that has run nothing
+/// carries an almost empty row rather than a row of zeroes. The money field is the
+/// one where getting it wrong is not merely untidy — a run whose models are all
+/// outside the table has a real cost this program cannot state, and stating it as
+/// nothing is the invented number the whole of `/cost` is built to avoid.
+///
+/// Sabotage: `self.cost = Some(total.micros)` — three characters, reads as a
+/// simplification of a `then_some`, and under it every unpriced session reports
+/// `$0` for a turn that cost real money. Nothing else in the repository fails.
+#[test]
+fn the_cost_field_is_absent_rather_than_zero_when_nothing_can_be_priced() {
+    // 1. No prices configured at all. An empty table is what `cost::table` hands
+    //    back for a file with no `[prices]`, so this is the ordinary state of a
+    //    fresh install rather than an edge case.
+    let (store, run) = run_calling(&["anthropic/claude-sonnet-4.5"]);
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.note_cost_from(&store, run, &io_harness::pricing::PriceTable::new(""));
+    assert_eq!(status.cost, None, "an empty table produced a figure");
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains('$'),
+            "{renderer} drew money with no prices configured: {text:?}",
+        );
+    }
+
+    // 2. Prices configured, and none of them for the model this run used. The
+    //    table is real, the date is real, and the answer is still unavailable.
+    let (store, run) = run_calling(&["some-lab/experimental-preview"]);
+    let mut status = Status::new("some-lab/experimental-preview");
+    status.note_cost_from(&store, run, &rates());
+    assert_eq!(
+        status.cost, None,
+        "a model outside the table was priced at nothing",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains('$'),
+            "{renderer} priced a model the table does not price: {text:?}",
+        );
+    }
+
+    // 3. A run that has called nothing. Not zero: nothing.
+    let (store, run) = run_calling(&[]);
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.note_cost_from(&store, run, &rates());
+    assert_eq!(status.cost, None, "a run with no calls reported a cost");
+    for (renderer, text) in both_renderers(&status) {
+        assert!(!text.contains('$'), "{renderer}: {text:?}");
+    }
+
+    // And a run id nothing ever recorded reads back as no calls at all — which
+    // is no figure, not a zero one, and is not an error either: a notice about a
+    // failed read of a decorative field would be worse than the field's absence,
+    // which is why `note_cost_from` is silent on every failure.
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.note_cost_from(&store, 9_999, &rates());
+    assert_eq!(
+        status.cost, None,
+        "a run id that does not exist invented a figure"
+    );
+}
+
+/// **When there is a figure it is on BOTH renderers, out of one method.**
+///
+/// `Status` renders two ways: `line` is the one-row form, which has exactly one
+/// production caller — the fallback for a terminal under seven rows — and `footer`
+/// is the three-row form `Status::render` takes on everything taller, which is to
+/// say on every real terminal anybody uses. **This file has shipped a field into
+/// one of them twice**: 0.8.0's spend field and 0.12.0's planning phase were each
+/// added to `line`, asserted against `line`, went green, and were nowhere on
+/// screen in a live capture of the running binary.
+///
+/// So the assertion is over the pair, and the money is one method — `cost_field`
+/// — that both renderers extend from, exactly as `budgets_left` and `queued_left`
+/// already are. A test that read one renderer is a test that can pass while the
+/// operator has an invisible field, which is the whole of what this test is
+/// against.
+///
+/// The figure itself is checked against `cost::money` of what io-harness says the
+/// call cost, rather than against a string, so the two surfaces are proved to be
+/// drawing the same number and not merely both drawing a dollar sign.
+///
+/// Sabotage: push `self.cost_field()` into `Status::fields` alone and drop the
+/// `counts.extend(self.cost_field())` from the footer — under which the one-row
+/// arm of this test passes and the binary shows nothing.
+#[test]
+fn the_cost_field_is_drawn_by_the_line_and_by_the_footer_alike() {
+    let (store, run) = run_calling(&["anthropic/claude-sonnet-4.5"]);
+    let table = rates();
+
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.note_cost_from(&store, run, &table);
+
+    // What the harness says the run cost, from the rows the harness stored.
+    let calls = store.provider_calls(run).expect("the calls are readable");
+    let expected = io_cli::cost::Total::of(&calls, &table).micros;
+    assert!(expected > 0, "a fixture that costs nothing proves nothing");
+    assert_eq!(status.cost, Some(expected));
+
+    let drawn = io_cli::cost::money(expected);
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains(&drawn),
+            "{renderer} does not carry the cost {drawn}: {text:?}",
+        );
+    }
+
+    // **Run-scoped, and forgotten with the run.** A cost that outlived its turn
+    // would be a figure that stopped moving while a new turn spent money beside
+    // it — the same argument the module makes for clearing the step count and the
+    // provider, and the opposite of the one it makes for keeping the planning
+    // phase.
+    status.forget_run();
+    assert_eq!(
+        status.cost, None,
+        "the cost outlived the run that incurred it"
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains('$'),
+            "{renderer} still shows the last run's bill: {text:?}",
+        );
+    }
+}

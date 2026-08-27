@@ -240,6 +240,11 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         max_parallel_reads: Some(16),
         spawn_background_after_secs: Some(120),
         detached_spawns: Some(true),
+        prices: Some(io_cli::settings::PriceSettings {
+            source_url: Some("https://example.invalid/models".into()),
+            source: Some("the reference catalogue".into()),
+            models: Some(417),
+        }),
     };
     let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");

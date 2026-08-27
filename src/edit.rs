@@ -70,6 +70,8 @@ enum Kind {
     Set,
     /// Append a whole `[[path]]` entry to the end of the document.
     Append,
+    /// Create the `[path]` section with a whole body, refusing if it exists.
+    Section,
     /// Remove a whole `[[path]]` entry, or a `[path]` section, bytes and all.
     Remove,
     /// Move one `[[path]]` entry to another position in its array.
@@ -105,6 +107,32 @@ impl Edit {
             path: path.into(),
             value: body.into(),
             kind: Kind::Append,
+        }
+    }
+
+    /// Create the `[path]` section with `body` as its whole contents.
+    ///
+    /// **The shape neither [`Edit::set`] nor [`Edit::append`] can express, and the
+    /// gap is not academic.** `append` writes `[[path]]`, an array-of-tables
+    /// entry. `set` writes one key, and when the section it names does not exist
+    /// it appends a whole new header to carry that one key — which is correct for
+    /// one key and catastrophic for many: sixty `set`s into a file with no
+    /// `[prices.models]` each append their own `[prices.models]` header, because
+    /// every edit in a batch is resolved against the document as it was *before*
+    /// the batch. The result is sixty duplicate table definitions, and the whole
+    /// write is refused by the read-back — so the very first fill of a price table
+    /// could never succeed.
+    ///
+    /// `body` is the section's own `key = value` lines without the header; this
+    /// writes the header. **It refuses when the section already exists**, rather
+    /// than replacing it: a caller with an existing section wants `set` per key,
+    /// which preserves every row this one does not name, and silently discarding
+    /// an operator's hand-added rows is not a thing to do by accident.
+    pub fn section(path: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            value: body.into(),
+            kind: Kind::Section,
         }
     }
 
@@ -203,6 +231,36 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 splices.push((text.len()..text.len(), block));
                 continue;
             }
+            Kind::Section => {
+                // **Refused rather than replaced when it already exists**, and the
+                // refusal is the point: a caller holding an existing section wants
+                // `set` per key, which leaves every row it does not name alone.
+                // Replacing here would silently discard whatever the operator had
+                // added by hand, from a call site whose author believed they were
+                // adding rows.
+                let names = segments(&edit.path)?;
+                if regions.iter().any(|r| r.path == names) {
+                    return Err(format!(
+                        "`[{}]` is already in this file, so it was not written whole — \
+                         a section that exists is edited key by key, which is what keeps \
+                         the rows nobody named",
+                        edit.path
+                    ));
+                }
+                let header = names
+                    .iter()
+                    .map(|name| spell(name))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let mut block = String::new();
+                if !text.is_empty() && !text.ends_with('\n') {
+                    block.push('\n');
+                }
+                let body = edit.value.trim_end();
+                block.push_str(&format!("\n[{header}]\n{body}\n"));
+                splices.push((text.len()..text.len(), block));
+                continue;
+            }
             Kind::Move => {
                 let (from, to) = edit
                     .value
@@ -210,7 +268,7 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                     .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
                     .ok_or_else(|| format!("`{}` has no positions to move between", edit.path))?;
 
-                let names = vec![edit.path.clone()];
+                let names = segments(&edit.path)?;
                 let at = |index: usize| {
                     regions
                         .iter()
@@ -221,7 +279,9 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                     continue;
                 }
                 let source = at(from)?;
-                let block = text[source.start..source.body.end].to_string();
+                // Stops before any comment run trailing the entry, which belongs
+                // to the section below it. See [`removal_end`].
+                let taken = source.start..removal_end(text, &source.body);
 
                 // Both splices are computed against the ORIGINAL text and applied
                 // right to left, which is what makes a move one pass rather than
@@ -234,7 +294,25 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                     // Moving up: land where that entry's header begins.
                     destination.start
                 };
-                splices.push((source.start..source.body.end, String::new()));
+
+                // **The guard [`Kind::Append`] has, in both directions.** The
+                // last region's `body.end` is the length of the file, so a move
+                // into last place against a file that does not end in a newline
+                // splices the header onto whatever the final line was — and when
+                // that line is a comment, the comment swallows the header, the
+                // moved entry's keys join the table above it, and the result
+                // parses cleanly as a different configuration. The mirror is a
+                // moved block that ends without a newline, which swallows the
+                // destination's header the same way.
+                let mut block = text[taken.clone()].to_string();
+                if !block.ends_with('\n') {
+                    block.push('\n');
+                }
+                if insert > 0 && !text[..insert].ends_with('\n') {
+                    block.insert(0, '\n');
+                }
+
+                splices.push((taken, String::new()));
                 splices.push((insert..insert, block));
                 continue;
             }
@@ -263,7 +341,10 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                     .iter()
                     .find(|r| r.path == names && r.index == index)
                     .ok_or_else(|| format!("there is no `{}` to remove in this file", edit.path))?;
-                splices.push((region.start..region.body.end, String::new()));
+                // Not `region.body.end`: that is the first byte of the next
+                // header, and the lines just above it document the next section
+                // rather than this one. See [`removal_end`].
+                splices.push((region.start..removal_end(text, &region.body), String::new()));
                 continue;
             }
             Kind::Set => {}
@@ -300,7 +381,11 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                         // end of this section rather than the end of the file,
                         // where it would silently join whatever section is last.
                         let at = insertion_point(text, &region.body);
-                        splices.push((at..at, format!("{key} = {}\n", edit.value)));
+                        // `key` is DECODED, so it is spelled back rather than
+                        // pasted: a name with a dot or a space in it written bare
+                        // is a dotted key or a parse error, never the key asked
+                        // for.
+                        splices.push((at..at, format!("{} = {}\n", spell(&key), edit.value)));
                     }
                 }
             }
@@ -313,12 +398,17 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 if resolve(&parsed, &table_path.names, &key).is_some() {
                     return Err(dotted_refusal(&edit.path));
                 }
-                let header = table_path.names.join(".");
+                let header = table_path
+                    .names
+                    .iter()
+                    .map(|name| spell(name))
+                    .collect::<Vec<_>>()
+                    .join(".");
                 let mut block = String::new();
                 if !text.is_empty() && !text.ends_with('\n') {
                     block.push('\n');
                 }
-                block.push_str(&format!("\n[{header}]\n{key} = {}\n", edit.value));
+                block.push_str(&format!("\n[{header}]\n{} = {}\n", spell(&key), edit.value));
                 splices.push((text.len()..text.len(), block));
             }
         }
@@ -494,8 +584,8 @@ fn split_path(path: &str) -> Result<(TablePath, String), String> {
     let mut names: Vec<String> = Vec::new();
     let mut index = 0usize;
 
-    let segments: Vec<&str> = path.split('.').collect();
-    let (key, table) = segments
+    let parts = segments(path)?;
+    let (key, table) = parts
         .split_last()
         .ok_or_else(|| format!("`{path}` names no key"))?;
 
@@ -511,14 +601,123 @@ fn split_path(path: &str) -> Result<(TablePath, String), String> {
                 .map_err(|_| format!("`{path}` has an index that is not a number"))?;
             names.push(name.to_string());
         } else {
-            names.push(segment.to_string());
+            names.push(segment.clone());
         }
     }
 
     if key.is_empty() {
         return Err(format!("`{path}` names no key"));
     }
-    Ok((TablePath { names, index }, (*key).to_string()))
+    Ok((TablePath { names, index }, key.clone()))
+}
+
+/// Cut a dotted TOML path into its segments, **decoded**.
+///
+/// The one splitter, used by both halves of this module, and that is the point
+/// of it. A dot inside a quoted key is not a separator — TOML spells a bare key
+/// out of `A-Za-z0-9_-` and nothing else, so a key carrying a dot can only ever
+/// be written quoted (`"gpt-4.1"`, `"github.com/x"`) and `path.split('.')` cuts
+/// it in half. [`split_path`] and [`regions`] each did exactly that and then
+/// normalised what came out DIFFERENTLY, so a caller's path and the file's own
+/// header never matched: the read half answered `None` for any dotted key and
+/// the write half fell through to the append arm and emitted a second copy of a
+/// table that was already there, caught only by the read-back in [`apply`] and
+/// only as "would have produced a file that does not parse".
+///
+/// The segments come back decoded, which is the half `trim_matches('"')` cannot
+/// do: a basic string takes the full escape set, so `"a\"b"` is a legal key
+/// whose name is `a"b`, and trimming strips repeated quotes off both ends and
+/// resolves no escape at all. A literal string `'...'` takes no escapes, so a
+/// `'` can never appear inside one and finding its end is a search. The decoding
+/// is `toml`'s own for the reason [`array()`] spells through `toml` rather than a
+/// format string — the escape rules belong to the format, not to this file.
+/// [`spell`] is the inverse, for the two places a segment goes back into a
+/// document.
+///
+/// Whitespace around a dot is legal (`[ a . b ]`), so an unquoted segment is
+/// trimmed and a quoted one is taken exactly as the quotes deliver it.
+fn segments(path: &str) -> Result<Vec<String>, String> {
+    let bytes = path.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+
+    loop {
+        while matches!(bytes.get(i), Some(b' ' | b'\t')) {
+            i += 1;
+        }
+        match bytes.get(i).copied() {
+            Some(quote) if quote == b'"' || quote == b'\'' => {
+                // Find the closing quote. A backslash in a basic string escapes
+                // whatever follows it, including the quote itself; a literal
+                // string has no escapes, so the first `'` ends it.
+                let mut j = i + 1;
+                let end = loop {
+                    match bytes.get(j).copied() {
+                        None => {
+                            return Err(format!(
+                                "`{path}` has a quoted segment that is never closed"
+                            ))
+                        }
+                        Some(b'\\') if quote == b'"' => j += 2,
+                        Some(c) if c == quote => break j,
+                        Some(_) => j += 1,
+                    }
+                };
+                // `toml` decodes it, because `toml` is what wrote the rules.
+                let literal = &path[i..=end];
+                let decoded = toml::from_str::<toml::value::Table>(&format!("probe = {literal}"))
+                    .ok()
+                    .and_then(|table| Some(table.get("probe")?.as_str()?.to_string()))
+                    .ok_or_else(|| {
+                        format!("`{path}` has a quoted segment that is not a TOML string")
+                    })?;
+                out.push(decoded);
+                i = end + 1;
+                while matches!(bytes.get(i), Some(b' ' | b'\t')) {
+                    i += 1;
+                }
+                if !matches!(bytes.get(i), None | Some(b'.')) {
+                    return Err(format!(
+                        "`{path}` has more than a quoted string in one of its segments"
+                    ));
+                }
+            }
+            _ => {
+                let end = path[i..].find('.').map_or(bytes.len(), |n| i + n);
+                out.push(path[i..end].trim().to_string());
+                i = end;
+            }
+        }
+        if i >= bytes.len() {
+            return Ok(out);
+        }
+        i += 1; // The dot.
+    }
+}
+
+/// Spell one decoded segment the way a document has to carry it.
+///
+/// The inverse of the decoding `segments` does, and it exists because that
+/// decoding created the need: a segment in hand is now a NAME, and a name is not
+/// always spellable as itself. A bare key is `A-Za-z0-9_-` and nothing else, so
+/// anything holding a dot, a space, a slash or a quote has to go back into the
+/// file quoted — and writing `[prices.models.gpt-4.1]` instead of
+/// `[prices.models."gpt-4.1"]` names a different table two levels deeper, which
+/// still parses.
+///
+/// The quoting goes through `toml`'s own serializer for the same reason
+/// [`array()`] does: a format string cannot escape a `"` or a backslash correctly
+/// and would produce either a parse error or a different name.
+#[must_use]
+pub fn spell(segment: &str) -> String {
+    let bare = !segment.is_empty()
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if bare {
+        return segment.to_string();
+    }
+    toml::Value::String(segment.to_string()).to_string()
 }
 
 /// Whether the parsed document already holds this path, in any shape.
@@ -548,6 +747,43 @@ fn insertion_point(text: &str, body: &Range<usize>) -> usize {
         }
         None => body.start,
     }
+}
+
+/// Where a region's bytes end, for the purpose of taking the region away.
+///
+/// **A region's `body.end` is the first byte of the NEXT header**, which is what
+/// makes it right for parsing the section and wrong for deleting it: everything
+/// between this section's last key and that header is inside the range, and what
+/// sits there is almost always the comment block an operator wrote to explain the
+/// section BELOW. Splicing `region.start..region.body.end` away took somebody
+/// else's sentence with it, and a moved entry carried it to a place it was no
+/// longer true.
+///
+/// So the trailing lines are walked backwards over blank and comment lines, and
+/// the answer is the first line of that trailing comment run — `body.end` when
+/// there is no comment in it. The blank lines ABOVE the run stay inside the range
+/// on purpose: they belonged to the section being taken away, and leaving them
+/// would make every removal add an empty line to the file.
+fn removal_end(text: &str, body: &Range<usize>) -> usize {
+    let slice = &text[body.clone()];
+    let mut starts: Vec<usize> = vec![0];
+    starts.extend(slice.match_indices('\n').map(|(at, _)| at + 1));
+    let mut answer = body.end;
+    for &start in starts.iter().rev() {
+        // The empty remainder after a final newline is not a line.
+        if start >= slice.len() {
+            continue;
+        }
+        let line = slice[start..].split('\n').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with('#') {
+            break;
+        }
+        answer = body.start + start;
+    }
+    answer
 }
 
 /// Cut the document into regions at every table header.
@@ -663,10 +899,10 @@ fn regions(text: &str) -> Result<Vec<Region>, String> {
             .or_else(|| header.strip_prefix('[').and_then(|h| h.strip_suffix(']')))
             .ok_or_else(|| format!("`{header}` is not a section header this editor understands"))?;
 
-        let path: Vec<String> = inner
-            .split('.')
-            .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
-            .collect();
+        // The same splitter the caller's path goes through, which is the whole
+        // reason there is only one: two scans that agree about what a segment is
+        // are the only way a header and a path can ever be compared.
+        let path = segments(inner)?;
 
         let index = seen.entry(path.clone()).or_insert(0);
         let body_end = header_starts.get(n + 1).copied().unwrap_or(bytes.len());

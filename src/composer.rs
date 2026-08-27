@@ -227,7 +227,7 @@ pub fn pasted_path(text: &str) -> Option<String> {
 ///
 /// The mark is chosen rather than escaped into: a path carrying a double quote is
 /// wrapped in single quotes, one carrying both is left bare. That keeps this the
-/// exact inverse of [`crate::attach::unquote`], which takes off one matching pair
+/// exact inverse of `crate::attach`'s own `unquote`, which takes off one matching pair
 /// and knows nothing about escapes — two halves that agree because neither of
 /// them has anything to agree about.
 fn quoted(path: &str) -> String {

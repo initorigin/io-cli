@@ -494,6 +494,30 @@ pub fn plan(found: &[Found], home: &Path, scope: Scope) -> Vec<Item> {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
+
+            // **Where a file came from decides what it is, and the basename
+            // match below cannot see that.** [`skill_files`] counts any loose
+            // `*.md` at the top of a skills root, so `~/.claude/skills/
+            // CONVENTIONS.md` — or `CLAUDE.md`, or `MEMORY.md` — arrives here as
+            // a `Source::Claude` path wearing an anchor file's name, and the arm
+            // below matched it as standing instructions: the whole body appended
+            // into the file that is loaded on EVERY turn, forever, instead of a
+            // named skill read on demand.
+            //
+            // Pairing each anchor name with its owning `Source` is the smaller
+            // diff and it does not close this: `~/.claude/skills/CLAUDE.md` is
+            // genuinely `Source::Claude` and genuinely named `CLAUDE.md`, and it
+            // is still a skill. So the guard asks where the file is, ahead of
+            // asking what it is called.
+            let rooted = path.parent().and_then(Path::file_name).is_some_and(|dir| {
+                dir.to_str()
+                    .is_some_and(|dir| dir == "skills" || dir == "plugins")
+            });
+            if name == SKILL_FILE || rooted {
+                skills.push((one.source, path.clone()));
+                continue;
+            }
+
             match (one.source, name.as_str()) {
                 (
                     _,
@@ -509,10 +533,13 @@ pub fn plan(found: &[Found], home: &Path, scope: Scope) -> Vec<Item> {
                 (Source::Gemini, "mcp_config.json") => {
                     items.extend(foreign_mcp(one.source, path, scope));
                 }
-                // Everything [`files`] can produce is named above except the
-                // skill files, so this arm is exactly those. Keep it that way:
-                // a new anchor file added to `files` without a case here would
-                // silently arrive as a skill.
+                // Every skill file has already been taken by the guard above, so
+                // what reaches here is a file [`files`] produces and no arm
+                // claims. It is treated as a skill, which is the safe end of the
+                // mistake — a skill is read on demand and an instructions file is
+                // read on every turn. Keep the guard ahead of this: a new anchor
+                // file added to `files` without a case above still arrives as a
+                // skill, and that is a plan an operator can see and decline.
                 _ => skills.push((one.source, path.clone())),
             }
         }
@@ -669,17 +696,25 @@ fn codex_config(path: &Path, scope: Scope) -> Vec<Item> {
         items.push(model_item(Source::Codex, path, &model));
     }
 
+    // **Two segments exactly**, which is the server's own table and not its
+    // `[mcp_servers.<name>.env]` child. That was already the right filter and it
+    // was throwing servers away, because `sections` split `[mcp_servers.
+    // "github.com/x"]` on the dot inside the quoted name and reported three
+    // segments — a name that can ONLY be spelled quoted was the one shape it
+    // could not see. `edit::segments` decides that now, and the name arrives
+    // decoded, so every path built back out of it goes through `edit::spell`.
     for name in crate::edit::sections(&text)
         .into_iter()
         .filter(|section| section.len() == 2 && section[0] == "mcp_servers")
         .map(|section| section[1].clone())
     {
-        let Some(command) = crate::edit::value_at(&text, &format!("mcp_servers.{name}.command"))
+        let quoted = crate::edit::spell(&name);
+        let Some(command) = crate::edit::value_at(&text, &format!("mcp_servers.{quoted}.command"))
             .map(|v| unquoted(&v))
         else {
             continue;
         };
-        let args = crate::edit::value_at(&text, &format!("mcp_servers.{name}.args"))
+        let args = crate::edit::value_at(&text, &format!("mcp_servers.{quoted}.args"))
             .map(|value| strings(&value))
             .unwrap_or_default();
         let names = env_names(&text, &name);
@@ -710,7 +745,10 @@ fn codex_config(path: &Path, scope: Scope) -> Vec<Item> {
 // config.toml with a `"""` block above its env table is not a thing that exists;
 // if one turns up, expose `regions` from `edit` and use it here.
 fn env_names(text: &str, server: &str) -> Vec<String> {
-    let header = format!("[mcp_servers.{server}.env]");
+    // `server` is a decoded name, so it is spelled back before it is compared
+    // against a line of the file — a name with a dot in it is written quoted in
+    // the header and matching the raw name would find no table at all.
+    let header = format!("[mcp_servers.{}.env]", crate::edit::spell(server));
     let mut names = Vec::new();
     let mut inside = false;
     for line in text.lines() {
