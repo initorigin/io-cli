@@ -476,7 +476,7 @@ fn f2_the_composer_frame_sets_a_cursor_even_when_it_is_too_narrow_to_draw() {
 fn palette() -> Picker {
     Picker::new(
         "Which command?",
-        io_cli::commands::palette(&io_harness::Templates::none(), &io_harness::Skills::none()),
+        io_cli::commands::palette(&io_harness::Templates::none(), &[]),
     )
 }
 

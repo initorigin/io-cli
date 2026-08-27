@@ -25,12 +25,42 @@
 //! the real one back out of that error, so a gate can prove the two agree. **A
 //! list nothing has to agree with is decoration**, and this one would drift into
 //! an operator selecting a vendor and being told "unknown provider preset".
+//!
+//! # Arranging the chain, and the two numbers that must not be confused
+//!
+//! [`add`], [`promote`], [`demote`] and [`remove`] are the verbs, and three of
+//! them address an entry by **position in a file's `[[provider]]` array**. That
+//! is a different number from a row on screen the moment anything filters or
+//! reorders the view, and getting it wrong here does not fail loudly: it moves a
+//! provider an operator did not name to the front of the chain, and the next turn
+//! bills to a vendor they did not choose. So those three take an [`At`], which
+//! only [`At::of`] builds — by counting entries in the file's own bytes.
+//!
+//! `[[provider]]` is deliberately **not** one of io-harness's appending keys
+//! (`config.rs:2052`): the winning scope replaces the chain whole, "because a
+//! half-appended fallback chain is not a chain". So exactly one file decides the
+//! whole array, and [`declared_at`] finds that file through [`decided`] — the
+//! same origin [`chain`] already reads the credentials out of, so the position
+//! and the text cannot come from two different files.
+//!
+//! # Exactly one of `preset` and `base_url`
+//!
+//! io-harness refuses a `compatible` entry that names both or neither, by index,
+//! at load (`config.rs:456`). [`crate::configure::write`] would catch it on the
+//! round trip and roll back, which is a good failure — but [`add`] takes an
+//! [`Endpoint`] whose two `compatible` shapes are separate variants, so the entry
+//! that fails cannot be constructed at all.
 
-use io_harness::config::Config;
+use io_harness::config::{Config, Scope};
 use io_harness::{Compatible, ProviderSpec};
 
 use crate::configure::Decided;
 use crate::edit::Edit;
+// **The twin this module used to keep its own copy of.** Both spelled a value
+// the same way and neither escaped a control character; a model id is tame, but
+// an `api_key` and a `base_url` are pasted text, and a raw newline inside a
+// basic string is a parse error rather than a value. One copy, fixed once.
+use crate::servers::quoted;
 
 /// Every vendor preset io-harness reaches through `Compatible`.
 ///
@@ -332,32 +362,170 @@ pub fn rows(chain: &[Entry]) -> Vec<crate::picker::Row> {
         .collect()
 }
 
+/// One entry's position in one file's `[[provider]]` array, and how long that
+/// array is.
+///
+/// **The length is carried rather than passed.** [`demote`] used to take it as a
+/// second argument, which meant the bound on "is there anywhere to move to" came
+/// from whatever the caller happened to be counting — a filtered view, a chain
+/// rendered from a different `Config`, or the same number typed twice. Here both
+/// numbers are read from the same file in the same pass, so they cannot disagree
+/// about the array they describe.
+///
+/// It carries the scope too, because a caller needs it and it comes from the
+/// same lookup: [`crate::configure::write`] takes a scope, and an index means
+/// nothing without the file it counts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct At {
+    /// The scope whose file carries the chain — the scope a write must go to.
+    pub scope: Scope,
+    /// Private so nothing outside this module can spell one from a row number.
+    index: usize,
+    /// How many `[[provider]]` entries that file declares.
+    len: usize,
+}
+
+impl At {
+    /// The `index`-th `[[provider]]` entry of `text`.
+    ///
+    /// `text` must be the bytes of the file `scope` names. Entries are counted by
+    /// walking `provider[n].kind` — the one key `#[serde(tag = "kind")]` makes
+    /// required on every variant — until the first gap, which is the end of a
+    /// contiguous array of tables.
+    ///
+    /// `None` when the file declares no entry at that position, so a move or a
+    /// removal aimed past the end is refused here rather than turning into
+    /// io-harness's "there is no `provider[n]` in this file" further down.
+    pub fn of(scope: Scope, text: &str, index: usize) -> Option<At> {
+        let mut len = 0usize;
+        while crate::edit::value_at(text, &format!("provider[{len}].kind")).is_some() {
+            len += 1;
+        }
+        (index < len).then_some(At { scope, index, len })
+    }
+
+    /// The position, for a caller that has a sentence to write about it.
+    ///
+    /// ponytail: no accessor for the length beside it. Nothing needs to draw
+    /// "3 of 4" yet, and the one thing the length is *for* — the bound on
+    /// [`demote`] — is answered inside this module. Add one when a row wants it.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+}
+
+/// Where the file that decided the chain declares `entry`.
+///
+/// It takes the [`Entry`] rather than a number so there is nothing for a caller
+/// to get wrong, and it reads the file [`decided`] names — which is the file
+/// [`chain`] itself read, so the position it returns is a position in the array
+/// the operator is looking at.
+///
+/// `None` where no file declares a chain at all, and where the deciding file no
+/// longer carries that position — an operator editing `io.toml` under the
+/// session is exactly what the second looks like.
+pub fn declared_at(config: &Config, entry: &Entry) -> Option<At> {
+    let Decided::File { scope, path } = decided(config) else {
+        return None;
+    };
+    let text = std::fs::read_to_string(path).ok()?;
+    At::of(scope, &text, entry.index)
+}
+
+/// What a new `[[provider]]` entry reaches.
+///
+/// **The two `compatible` shapes are two variants and not two `Option`s.**
+/// io-harness takes exactly one of `preset` and `base_url` and refuses both and
+/// neither by index at load; a pair of options is a signature in which three of
+/// four combinations are wrong. The `kind` string is derived here rather than
+/// taken, for the same reason: `deny_unknown_fields` is on the `[[provider]]`
+/// variants, so `kind = "openai"` beside a `preset` is refused too, and a free
+/// string is a way to ask for that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endpoint<'a> {
+    /// `kind = "openrouter"`. An absent key means `OPENROUTER_API_KEY`.
+    OpenRouter,
+    /// `kind = "anthropic"`. An absent key means `ANTHROPIC_API_KEY`.
+    Anthropic,
+    /// `kind = "openai"`. An absent key means `OPENAI_API_KEY`.
+    OpenAi,
+    /// A `compatible` entry reached through one of [`PRESETS`].
+    ///
+    /// A name io-harness does not know is refused on the round trip, naming every
+    /// preset that exists — which is a better sentence than io-cli would write,
+    /// so this does not check the name itself.
+    Preset(&'a str),
+    /// A `compatible` entry reached at a base URL the operator gives, with
+    /// `/chat/completions` appended to it by the harness.
+    BaseUrl(&'a str),
+}
+
+impl Endpoint<'_> {
+    /// The `kind` this writes, which is the tag io-harness dispatches on.
+    fn kind(&self) -> &'static str {
+        match self {
+            Endpoint::OpenRouter => "openrouter",
+            Endpoint::Anthropic => "anthropic",
+            Endpoint::OpenAi => "openai",
+            Endpoint::Preset(_) | Endpoint::BaseUrl(_) => "compatible",
+        }
+    }
+}
+
 /// The edit that appends a provider to the end of the chain.
-pub fn add(kind: &str, model: &str, preset: Option<&str>) -> Edit {
-    let mut body = format!("kind = {}\nmodel = {}", quoted(kind), quoted(model));
-    if let Some(preset) = preset {
-        body.push_str(&format!("\npreset = {}", quoted(preset)));
+///
+/// Last, because the end of an array of tables is the end of the chain and the
+/// front of it is the provider a run uses: an entry inserted anywhere else would
+/// change which vendor the next turn bills to, which is not what "add" says.
+///
+/// `api_key` is written as given, so `Some("${env:GROQ_API_KEY}")` is how a
+/// credential is named without being copied into the file. **io-harness resolves
+/// that at parse time and fails outright when the variable is unset**, so a
+/// reference to a name that does not exist is refused by
+/// [`crate::configure::write`]'s round trip and rolled back — the file is never
+/// left naming a variable that stops the session from starting.
+pub fn add(endpoint: Endpoint<'_>, model: &str, api_key: Option<&str>) -> Edit {
+    let mut body = format!("kind = {}", quoted(endpoint.kind()));
+    // Exhaustive, with no wildcard: a variant added later must be given its own
+    // second line here rather than falling through to a `compatible` entry that
+    // names neither base and is refused at load.
+    match endpoint {
+        Endpoint::OpenRouter | Endpoint::Anthropic | Endpoint::OpenAi => {}
+        Endpoint::Preset(name) => body.push_str(&format!("\npreset = {}", quoted(name))),
+        Endpoint::BaseUrl(url) => body.push_str(&format!("\nbase_url = {}", quoted(url))),
+    }
+    body.push_str(&format!("\nmodel = {}", quoted(model)));
+    if let Some(key) = api_key {
+        body.push_str(&format!("\napi_key = {}", quoted(key)));
     }
     Edit::append("provider", body)
 }
 
-/// The edit that moves an entry one place towards the front.
-pub fn promote(index: usize) -> Option<Edit> {
-    (index > 0).then(|| Edit::move_entry("provider", index, index - 1))
+/// The edit that moves an entry one place towards the front of the chain.
+///
+/// **Which is a change to what the next turn runs on, not a cosmetic one**: the
+/// first entry is the provider in force. Promoting the second entry makes it the
+/// provider and demotes the one that was.
+///
+/// `None` for the entry that is already first, so a caller cannot draw a control
+/// that does nothing.
+pub fn promote(at: &At) -> Option<Edit> {
+    (at.index > 0).then(|| Edit::move_entry("provider", at.index, at.index - 1))
 }
 
-/// The edit that moves an entry one place towards the back.
-pub fn demote(index: usize, len: usize) -> Option<Edit> {
-    (index + 1 < len).then(|| Edit::move_entry("provider", index, index + 1))
+/// The edit that moves an entry one place towards the back of the chain.
+///
+/// `None` for the last entry, bounded by the length [`At`] read from the file
+/// rather than by a count the caller supplied.
+pub fn demote(at: &At) -> Option<Edit> {
+    (at.index + 1 < at.len).then(|| Edit::move_entry("provider", at.index, at.index + 1))
 }
 
 /// The edit that removes an entry.
-pub fn remove(index: usize) -> Edit {
-    Edit::remove(format!("provider[{index}]"))
-}
-
-/// A TOML basic string, escaped.
-fn quoted(text: &str) -> String {
-    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
+///
+/// Removing the first one promotes the second, because the chain is the array's
+/// order and nothing else — worth saying out loud, since it is the one removal
+/// on this surface that changes which provider a run uses.
+pub fn remove(at: &At) -> Edit {
+    Edit::remove(format!("provider[{}]", at.index))
 }

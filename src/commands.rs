@@ -211,6 +211,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "the capability bundles loaded, what each contributed, and the ones that failed",
     ),
     (
+        "/import",
+        "bring instructions, MCP servers, skills and a model across from another agent",
+    ),
+    (
         "/profile",
         "switch to a named profile from the configuration, for this session",
     ),
@@ -324,7 +328,7 @@ pub const GROUPS: &[(Group, &[&str])] = &[
     ),
     // **`/mcp` and `/provider` moved here in 0.19.0, and it is a correction rather
     // than a way of making room.** Both were grouped by the screen they open, and
-    // both go on from that screen to add, edit, disable and remove entries in the
+    // both go on from that screen to add, edit and remove entries in the
     // configuration file — which is what this group means and what `Inspect`
     // promises it does not do. It takes `Inspect` to eight and `/skills` puts it
     // back to nine, and the order of those two sentences is worth keeping: the
@@ -342,6 +346,11 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/mcp",
             "/provider",
             "/plugin",
+            // **`/import` writes files, so `Configure` is the only group it can
+            // be in** — and `Inspect` is full at nine besides. It is last because
+            // it is the one command here an operator uses once: the others are
+            // returned to for the life of the install.
+            "/import",
         ],
     ),
 ];
@@ -492,7 +501,7 @@ pub const SKILL: &str = "skill: ";
 /// A skill's rows come last, after the commands and the templates, and a session
 /// that configured no skills directory contributes none — the same "not
 /// configured" shape the templates have.
-pub fn palette(templates: &Templates, skills: &io_harness::Skills) -> Vec<Row> {
+pub fn palette(templates: &Templates, skills: &[crate::skillview::Listed]) -> Vec<Row> {
     entries(templates, skills)
         .into_iter()
         .map(|entry| entry.row)
@@ -515,7 +524,7 @@ struct Entry {
 /// written next to each other; a grouped list with headings in it makes that
 /// agreement impossible to keep by inspection, because the rows and the things
 /// they stand for are no longer the same length.
-fn entries(templates: &Templates, skills: &io_harness::Skills) -> Vec<Entry> {
+fn entries(templates: &Templates, skills: &[crate::skillview::Listed]) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
 
     // Commands, under their group headings. The headings are drawn while the
@@ -570,7 +579,20 @@ fn entries(templates: &Templates, skills: &io_harness::Skills) -> Vec<Entry> {
                 row: Row::marked(
                     SKILL_MARK,
                     skill.name.clone(),
-                    format!("{SKILL}{}", skill.description),
+                    // **The bundle is named in the detail, and the name carries
+                    // the real signal.** A narrow terminal drops the detail column
+                    // first, which is the 0.16.0 lesson about marks — so the
+                    // origin must never be the only place the provenance lives.
+                    // It is not: a bundle's skill is listed under the namespaced
+                    // `<id>__<name>` the model actually addresses, and that prefix
+                    // is in the label, which is the column that survives and the
+                    // one `crate::fuzzy` ranks.
+                    match &skill.origin {
+                        crate::skillview::Origin::Bundle(id) => {
+                            format!("{SKILL}{} · from the {id} bundle", skill.description)
+                        }
+                        _ => format!("{SKILL}{}", skill.description),
+                    },
                 ),
                 chosen: Some(Chosen::Skill(skill.name.clone())),
             });
@@ -609,7 +631,7 @@ fn entries(templates: &Templates, skills: &io_harness::Skills) -> Vec<Entry> {
 /// in the prompt rather than something it guessed at.
 pub fn palette_pick(
     templates: &Templates,
-    skills: &io_harness::Skills,
+    skills: &[crate::skillview::Listed],
     index: usize,
 ) -> Option<Chosen> {
     entries(templates, skills)
@@ -709,19 +731,39 @@ pub fn templates(config: &Config) -> (Templates, Option<String>) {
 /// Discovered once, when the session starts — the same walk the contract's
 /// `skills` field will do for the run, done here so the palette can list what the
 /// agent will be told about without walking the directory on every keystroke.
-pub fn skills(dir: Option<&std::path::Path>) -> (io_harness::Skills, Option<String>) {
-    let Some(dir) = dir else {
-        return (io_harness::Skills::none(), None);
+/// **Bundles are why this is no longer an `io_harness::Skills`.** A capability
+/// bundle contributes its own directory, the harness merges every one of them
+/// before the model sees the catalogue, and `Skills` has a private field with no
+/// public constructor and a `pub(crate)` `merged` — so io-cli cannot build the
+/// value that would describe what the run is actually offered. It carries the
+/// rows instead, which it can build, and which carry the origin the palette needs
+/// anyway.
+///
+/// The walk itself belongs to [`crate::skillview`] and is not repeated here.
+/// `/skills` and the palette must never disagree about what the model was
+/// offered, and the cheapest way to guarantee that is for both to come out of one
+/// function. This one drops the disabled rows, because a disabled skill is
+/// precisely one the model is not offered and the palette exists to say what it
+/// is.
+pub fn skills(
+    home: &std::path::Path,
+    dir: Option<&std::path::Path>,
+    bundles: &[(String, std::path::PathBuf)],
+) -> (Vec<crate::skillview::Listed>, Option<String>) {
+    let view = match dir {
+        Some(dir) => crate::skillview::view(home, dir, bundles),
+        // Still the bundles. A home with no `skills/` of its own is the ordinary
+        // fresh install, and it is exactly when everything on offer came from a
+        // bundle.
+        None => crate::skillview::view_of_bundles(bundles),
     };
-    match io_harness::Skills::discover(dir) {
-        Ok(found) => (found, None),
-        Err(error) => (
-            io_harness::Skills::none(),
-            Some(format!(
-                "{error}; this session lists no skills until that is fixed"
-            )),
-        ),
-    }
+    let sentence = view
+        .failed
+        .map(|error| format!("{error}; this session lists no skills until that is fixed"));
+    (
+        view.skills.into_iter().filter(|row| row.enabled).collect(),
+        sentence,
+    )
 }
 
 /// What the driver should do about a slash command.
@@ -891,6 +933,25 @@ pub enum Action {
     /// refused **whole**, and the sentence is what names the two files it could
     /// move to instead.
     Plugin,
+    /// Bring an operator's work across from another agent they already use.
+    ///
+    /// **Everything is shown before anything is written, and declining is the
+    /// default.** The surface lists one item per thing found — an instructions
+    /// file, an MCP server, a skill, a model — with where it came from and where
+    /// it would go, and writes only what the operator accepted. A cancelled
+    /// import is not a partial one.
+    ///
+    /// **An allowlist is read and deliberately not translated.** Another tool
+    /// spells a permission as a command and its arguments; io-harness's
+    /// `Act::Exec` matches a binary name and nothing else. What can be said
+    /// honestly is what was found and that it does not carry over, so that is
+    /// what is said — a boundary half imported is worse than one left alone.
+    ///
+    /// **No credential is read, at any point.** A server's environment values are
+    /// discarded without being constructed and the variable *name* is what gets
+    /// recorded. A key that was never on disk must not reach disk as a side
+    /// effect of trying a new program.
+    Import,
 }
 
 /// What `/copy` was asked for.
@@ -1473,6 +1534,11 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // are: the thing being listed is plural, so the plural is what a hand
         // reaches for, and refusing it teaches nothing.
         "plugin" | "plugins" => Action::Plugin,
+        // `/migrate` is admitted because it is the other word for this act, and
+        // an operator arriving from another tool is by definition someone with no
+        // idea what this one calls things. Neither spelling is an alias for a
+        // second screen: both open the one surface.
+        "import" | "migrate" => Action::Import,
         // **An alias earns no row of its own.** `/usage` is what an operator
         // coming from another agent types for "what is this costing me", and the
         // answer is `/status` — which already commits the spend, the budgets and

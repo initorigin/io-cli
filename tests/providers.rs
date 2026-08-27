@@ -2,8 +2,8 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use io_cli::providers::{self, Credential};
-use io_harness::config::Config;
+use io_cli::providers::{self, At, Credential, Endpoint};
+use io_harness::config::{Config, Scope};
 
 const THREE: &str = "\
 [[provider]]
@@ -80,7 +80,8 @@ fn f7_the_chain_is_the_file_s_order_head_and_tail_together() {
 
 #[test]
 fn f7_reordering_the_panel_reorders_the_file_and_therefore_the_chain() {
-    let edit = providers::promote(1).expect("an entry that is not already first can be promoted");
+    let at = At::of(Scope::User, THREE, 1).expect("the file declares three entries");
+    let edit = providers::promote(&at).expect("an entry that is not already first can be promoted");
     let after = io_cli::edit::apply(THREE, &[edit]).unwrap();
 
     let moved = config(&after);
@@ -115,17 +116,30 @@ fn f7_reordering_the_panel_reorders_the_file_and_therefore_the_chain() {
 fn f7_the_first_entry_cannot_be_promoted_and_the_last_cannot_be_demoted() {
     // Expressed as `None` rather than as a no-op edit, so a caller cannot draw a
     // control that does nothing.
-    assert!(providers::promote(0).is_none());
-    assert!(providers::demote(2, 3).is_none());
-    assert!(providers::promote(2).is_some());
-    assert!(providers::demote(0, 3).is_some());
+    let at = |index| At::of(Scope::User, THREE, index).expect("a declared position");
+    assert!(providers::promote(&at(0)).is_none());
+    assert!(providers::demote(&at(2)).is_none());
+    assert!(providers::promote(&at(2)).is_some());
+    assert!(providers::demote(&at(0)).is_some());
+
+    // **The bound is read from the file, not passed in.** `demote` used to take
+    // the length as a second argument, so the answer to "is there anywhere to
+    // move to" came from whatever the caller happened to be counting — a
+    // filtered view, or a chain rendered from a different `Config`. A position
+    // past the end is now refused where it is built, once, rather than becoming
+    // an `Edit` that fails somewhere further down.
+    assert!(
+        At::of(Scope::User, THREE, 3).is_none(),
+        "a position past the end of the array was accepted",
+    );
+    assert!(At::of(Scope::User, "", 0).is_none());
 }
 
 #[test]
 fn f7_an_added_provider_goes_last_because_that_is_the_end_of_the_chain() {
     let after = io_cli::edit::apply(
         THREE,
-        &[providers::add("compatible", "qwen-max", Some("qwen"))],
+        &[providers::add(Endpoint::Preset("qwen"), "qwen-max", None)],
     )
     .unwrap();
     let chain = providers::chain(&config(&after).config);
@@ -141,11 +155,189 @@ fn f7_an_added_provider_goes_last_because_that_is_the_end_of_the_chain() {
 
 #[test]
 fn f7_removing_an_entry_leaves_the_rest_in_order() {
-    let after = io_cli::edit::apply(THREE, &[providers::remove(1)]).unwrap();
+    let at = At::of(Scope::User, THREE, 1).expect("the middle link");
+    let after = io_cli::edit::apply(THREE, &[providers::remove(&at)]).unwrap();
     let chain = providers::chain(&config(&after).config);
 
     let kinds: Vec<&str> = chain.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(kinds, vec!["openrouter", "ollama"]);
+}
+
+#[test]
+fn f7_demoting_the_head_hands_the_run_to_the_next_link() {
+    // The other direction of the same claim, and it is the one with something at
+    // stake: the FIRST entry is the provider in force, so demoting it changes
+    // which vendor the next turn bills to. Asserted by reading back which entry
+    // is first — through io-harness's own `provider_spec`, not by looking at
+    // where the text moved to.
+    let at = At::of(Scope::User, THREE, 0).expect("the head");
+    let edit = providers::demote(&at).expect("a head with a chain behind it can be demoted");
+    let after = io_cli::edit::apply(THREE, &[edit]).unwrap();
+
+    let moved = config(&after);
+    let chain = providers::chain(&moved.config);
+    assert_eq!(chain.len(), 3, "a link was lost in the move");
+    assert_eq!(
+        chain[0].kind, "groq",
+        "the provider in force did not change"
+    );
+    assert_eq!(chain[1].kind, "openrouter");
+    assert_eq!(chain[2].kind, "ollama");
+
+    let head = moved.config.provider_spec().expect("a head");
+    assert!(
+        matches!(head, io_harness::ProviderSpec::Compatible { preset, .. }
+            if preset.as_deref() == Some("groq")),
+        "io-harness does not agree about which provider a run would use",
+    );
+}
+
+#[test]
+fn f7_removing_the_head_promotes_the_next_link_and_removing_the_only_one_leaves_none() {
+    // Removing the first entry is the removal that changes what a run uses, and
+    // it is not spelled differently from any other — the chain IS the array's
+    // order, so the second link becomes the provider by arithmetic.
+    let at = At::of(Scope::User, THREE, 0).expect("the head");
+    let after = io_cli::edit::apply(THREE, &[providers::remove(&at)]).unwrap();
+    let chain = providers::chain(&config(&after).config);
+    assert_eq!(chain[0].kind, "groq");
+    assert_eq!(chain.len(), 2);
+    assert!(
+        !after.contains("openrouter"),
+        "the removed entry left bytes behind",
+    );
+
+    // The last of several: the tail comes out and the head is untouched.
+    let at = At::of(Scope::User, THREE, 2).expect("the tail");
+    let after = io_cli::edit::apply(THREE, &[providers::remove(&at)]).unwrap();
+    let chain = providers::chain(&config(&after).config);
+    let kinds: Vec<&str> = chain.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, vec!["openrouter", "groq"]);
+
+    // The only one: a configuration with no `[[provider]]` has NO head, rather
+    // than a defaulted vendor the operator never named — io-harness says so and
+    // this surface must not paper over it.
+    const ONLY: &str = "[[provider]]\nkind = \"openai\"\nmodel = \"gpt-4o\"\n";
+    let at = At::of(Scope::User, ONLY, 0).expect("the only entry");
+    assert!(
+        At::of(Scope::User, ONLY, 1).is_none(),
+        "a second position was invented for a one-entry chain",
+    );
+    let after = io_cli::edit::apply(ONLY, &[providers::remove(&at)]).unwrap();
+    assert_eq!(after, "", "the last entry left bytes behind");
+    assert!(Config::from_toml(&after)
+        .expect("a file with nothing in it is a configuration")
+        .provider_spec()
+        .is_none());
+}
+
+#[test]
+fn f7_a_compatible_entry_naming_both_bases_or_neither_cannot_be_written() {
+    // io-harness takes EXACTLY ONE of `preset` and `base_url` and refuses both
+    // and neither, by index, at load (`config.rs:456`). `configure::write`'s
+    // round trip would catch it and roll back, which is a good failure — but the
+    // pair of `Option`s that made it expressible is gone: `Endpoint` has one
+    // variant per shape, so three of the four combinations cannot be spelled.
+    //
+    // The refusals are written by hand here, because that is the only way left
+    // to produce them — and without them this test would be asserting that a
+    // constraint io-harness might have dropped is still being satisfied.
+    let neither = "[[provider]]\nkind = \"compatible\"\nmodel = \"m\"\n";
+    let both = "[[provider]]\nkind = \"compatible\"\nmodel = \"m\"\n\
+                preset = \"groq\"\nbase_url = \"https://example.com/v1\"\n";
+    for bad in [neither, both] {
+        assert!(
+            Config::from_toml(bad).is_err(),
+            "io-harness accepted a `compatible` entry that names both bases or \
+             neither, so `Endpoint`'s split is no longer load-bearing: {bad}",
+        );
+    }
+
+    // And every shape `Endpoint` CAN build is one io-harness loads.
+    for endpoint in [
+        Endpoint::OpenRouter,
+        Endpoint::Anthropic,
+        Endpoint::OpenAi,
+        Endpoint::Preset("groq"),
+        Endpoint::BaseUrl("https://example.com/v1"),
+    ] {
+        let written =
+            io_cli::edit::apply("", &[providers::add(endpoint, "a-model", None)]).unwrap();
+        assert!(
+            Config::from_toml(&written).is_ok(),
+            "{endpoint:?} produced an entry io-harness refuses:\n{written}",
+        );
+    }
+}
+
+#[test]
+fn f7_an_added_provider_can_name_its_credential_without_carrying_it() {
+    // The gap that made `add` unusable for every hosted vendor: there was no way
+    // to write `api_key` at all, so an operator adding one had to open the file
+    // by hand — which is the thing this surface exists not to make them do.
+    //
+    // Written as the indirection rather than the key, which is the form the
+    // panel then shows back: the variable's NAME is the information.
+    let after = io_cli::edit::apply(
+        "",
+        &[providers::add(
+            Endpoint::Preset("groq"),
+            "llama-3.3-70b-versatile",
+            Some("${env:IO_CLI_TEST_GROQ_KEY}"),
+        )],
+    )
+    .unwrap();
+
+    let chain = providers::chain(&config(&after).config);
+    assert_eq!(
+        chain[0].credential,
+        Credential::Indirect("${env:IO_CLI_TEST_GROQ_KEY}".into()),
+    );
+    assert_eq!(chain[0].kind, "groq");
+    assert_eq!(chain[0].model, "llama-3.3-70b-versatile");
+
+    // And an entry with no key states none, rather than an empty one — which is
+    // a different configuration: for `compatible` there is no environment
+    // variable to fall back to, and `api_key = ""` is a key that is set.
+    let bare = io_cli::edit::apply(
+        "",
+        &[providers::add(Endpoint::Preset("ollama"), "llama3.2", None)],
+    )
+    .unwrap();
+    assert!(
+        !bare.contains("api_key"),
+        "an empty credential was written: {bare}"
+    );
+    assert_eq!(
+        providers::chain(&config(&bare).config)[0].credential,
+        Credential::NotNeeded,
+    );
+}
+
+#[test]
+fn f7_a_pasted_credential_is_escaped_rather_than_breaking_the_file() {
+    // `api_key` and `base_url` are pasted text. A `format!("\"{}\"")` would turn
+    // a backslash into an escape and a quote into the end of the value — the
+    // second is a way to write keys the operator did not ask for.
+    let after = io_cli::edit::apply(
+        "",
+        &[providers::add(
+            Endpoint::OpenAi,
+            "gpt-4o",
+            Some("sk-a\\b\"c\nmodel = \"smuggled\""),
+        )],
+    )
+    .unwrap();
+
+    let config = Config::from_toml(&after).expect("the written file still parses");
+    let Some(io_harness::ProviderSpec::OpenAi { model, api_key }) = config.provider_spec() else {
+        panic!("the file named an openai provider");
+    };
+    assert_eq!(
+        model, "gpt-4o",
+        "a second `model` was smuggled into the entry"
+    );
+    assert_eq!(api_key.as_deref(), Some("sk-a\\b\"c\nmodel = \"smuggled\""));
 }
 
 #[test]

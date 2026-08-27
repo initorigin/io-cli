@@ -361,7 +361,19 @@ async fn drive(
     // directory the turn hands the agent, or a skill the model can use is one the
     // operator cannot see in `/`.
     let skills_dir = io_cli::contract::skills_dir(&config, &capabilities, root.to_path_buf());
-    let (skills, complaint) = commands::skills(skills_dir.as_deref());
+    // **The bundles are part of the inventory, not an addition to it.** io-harness
+    // merges every declared bundle's skills into the catalogue the model is given,
+    // so a palette listing only the operator's own directory lists less than the
+    // model was offered — which is the gap 0.20.0 shipped.
+    //
+    // A home io-cli cannot locate costs provenance and nothing else: `home` is
+    // only ever asked whether io-cli's own manifest wrote a file, so an empty one
+    // makes every row read as the operator's, which is the safe direction. It
+    // never reaches a path that is joined to, so this cannot resolve anything
+    // against the working directory.
+    let home = io_cli::home::path().unwrap_or_default();
+    let bundles = bundle_skills(&config);
+    let (skills, complaint) = commands::skills(&home, skills_dir.as_deref(), &bundles);
     if let Some(complaint) = complaint {
         notices.push(complaint);
     }
@@ -448,10 +460,132 @@ fn skills_view(
     let Some(home) = io_cli::home::path() else {
         return io_cli::skillview::View::default();
     };
+    let bundles = bundle_skills(config);
     match io_cli::contract::skills_dir(config, capabilities, root.to_path_buf()) {
-        Some(dir) => io_cli::skillview::view(&home, &dir),
-        None => io_cli::skillview::View::default(),
+        Some(dir) => io_cli::skillview::view(&home, &dir, &bundles),
+        // **Still the bundles, with no directory of the operator's own.** A home
+        // that has never made `skills/` is the ordinary case, and it is exactly
+        // the case where every skill in front of the model came from a bundle —
+        // so returning an empty view here would blank the surface precisely when
+        // it is the only listing there is.
+        None => io_cli::skillview::view_of_bundles(&bundles),
     }
+}
+
+/// The `(id, directory)` pair for every loaded bundle that declares skills.
+///
+/// **Read off `pluginview` rather than off `Plugins`, and that is not a
+/// shortcut.** `Plugins::skill_dirs` is `pub(crate)` in io-harness, but
+/// `Plugin::id` and `Plugin::skills_dir` are both public and `pluginview::view`
+/// already folds them into exactly this pair for the `/plugin` surface. Building
+/// it a second time from the plugin list would be a second answer to one
+/// question, and the two could drift — which is the whole reason `/plugin` and
+/// `/skills` must agree about which bundle contributed what.
+///
+/// **The order is the declaration order, and it matters.** It is the order
+/// `TaskContract::discover_skills` folds the directories in, so a surface listing
+/// them in this order lists them the way the model will be offered them.
+///
+/// A bundle that declares no skills directory is absent rather than present and
+/// empty: it contributed nothing here, and a row saying so would be a row about
+/// the absence of a thing the operator never asked for.
+/// The import plan as picker rows: one per item, then the row that writes.
+///
+/// **The accepted mark rides the LABEL, never the detail.** A narrow terminal
+/// drops the detail column first — the 0.16.0 lesson — and an operator who cannot
+/// see which items are switched on is an operator about to write something they
+/// did not choose. On this surface that is the whole safety property, so it goes
+/// in the column that survives.
+///
+/// The last row is the only one that writes anything, and it says how many items
+/// it will write. At zero accepted it still reads honestly rather than being
+/// hidden: a row that says it will write nothing is how an operator confirms they
+/// meant to decline everything.
+/// Write an accepted import plan, and the model with it when an endpoint was
+/// chosen. Answers with the lines the surface should commit, in order.
+///
+/// **A free function returning lines, rather than an arm that records as it
+/// goes.** The write happens from two places — straight off the review surface,
+/// and after the endpoint question a model item forces — and the one thing that
+/// must not differ between them is what gets written. Returning the lines instead
+/// of holding `App` keeps both callers on one implementation.
+///
+/// The model is written last and separately because it is the only item whose
+/// destination the plan could not resolve: `[[provider]]` names a vendor and a
+/// model, a foreign configuration names only the model, so the vendor is a
+/// question and never an inference.
+fn import_written(
+    chosen: &[io_cli::import::Item],
+    root: &std::path::Path,
+    endpoint: Option<io_cli::providers::Endpoint<'_>>,
+) -> Vec<(Tone, String)> {
+    let mut lines: Vec<(Tone, String)> = io_cli::import::apply(chosen, root)
+        .lines()
+        .into_iter()
+        .map(|line| (Tone::Muted, line))
+        .collect();
+    let Some(endpoint) = endpoint else {
+        return lines;
+    };
+    let Some(item) = chosen
+        .iter()
+        .find(|item| item.kind == io_cli::import::Kind::Model)
+    else {
+        return lines;
+    };
+    match item.provider_edit(endpoint) {
+        None => lines.push((
+            Tone::Refused,
+            "the model could not be written: the item names none".to_string(),
+        )),
+        Some(edit) => {
+            // The user scope, the same file the rest of the import wrote to, so a
+            // provider and the servers it will talk to do not end up in two files
+            // with different lifetimes.
+            match io_cli::configure::write(root, io_harness::config::Scope::User, &[edit]) {
+                Ok(()) => lines.push((
+                    Tone::Success,
+                    format!(
+                        "{} is now the provider in force; the model answers from the next turn",
+                        item.model().unwrap_or("the imported model"),
+                    ),
+                )),
+                Err(error) => {
+                    lines.push((Tone::Refused, format!("the model was not written: {error}")))
+                }
+            }
+        }
+    }
+    lines
+}
+
+fn import_rows(items: &[io_cli::import::Item], accepted: &[bool]) -> Vec<io_cli::picker::Row> {
+    let mut rows: Vec<io_cli::picker::Row> = items
+        .iter()
+        .zip(accepted)
+        .map(|(item, on)| {
+            io_cli::picker::Row::marked(
+                if *on { "[x]" } else { "[ ]" },
+                format!("{} · {}", item.kind.word(), item.says),
+                item.from.display().to_string(),
+            )
+        })
+        .collect();
+    let count = accepted.iter().filter(|on| **on).count();
+    rows.push(io_cli::picker::Row::new(match count {
+        0 => "write nothing and close".to_string(),
+        1 => "write the 1 item switched on above".to_string(),
+        many => format!("write the {many} items switched on above"),
+    }));
+    rows
+}
+
+fn bundle_skills(config: &Config) -> Vec<(String, std::path::PathBuf)> {
+    io_cli::pluginview::view(config)
+        .plugins
+        .into_iter()
+        .filter_map(|listed| listed.skills.map(|dir| (listed.id, dir)))
+        .collect()
 }
 
 /// The interactive session, as something [`provider::build`] can run.
@@ -499,7 +633,14 @@ struct Interactive<'a, 'b> {
     /// What io-harness discovered in the configured skills directory, walked once
     /// at startup. Empty when nothing is configured and empty when the walk
     /// failed — the notice above is what tells those two apart.
-    skills: io_harness::Skills,
+    ///
+    /// **Rows rather than an `io_harness::Skills`, because bundles.** The harness
+    /// merges every declared bundle's directory into the catalogue the model gets,
+    /// and `Skills` has a private field, no public constructor and a `pub(crate)`
+    /// `merged` — so the value describing what the run is actually offered is one
+    /// io-cli cannot build. It carries the rows it can build instead, which also
+    /// carry the origin the palette draws.
+    skills: Vec<io_cli::skillview::Listed>,
     /// The named profile in force, or `None`. Carried as a name because the
     /// turn-boundary reload discovers the file afresh and would otherwise drop
     /// the overlay it produced.
@@ -575,7 +716,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // now turns one off and on from inside the session, so a list that stayed put
     // would go on offering a skill the model's catalogue no longer has — and
     // `read_skill` would refuse it by name.
-    mut skills: io_harness::Skills,
+    mut skills: Vec<io_cli::skillview::Listed>,
     // The named profile in force. `--profile` seeds it and `/profile` replaces
     // it; it is re-applied after every turn-boundary reload, which goes back to
     // the file and knows nothing about either.
@@ -709,6 +850,59 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // stops where it stopped — so the reading a session-long `Instant` gave was
     // `22m12s` beside a turn six seconds old. Each turn is handed its own.
     let mut picker: Option<(Picker, Pick)> = None;
+
+    // **The import offer, made once to everybody and never twice.**
+    //
+    // The gate is a marker in io's own home and NOT `provider_spec().is_none()`,
+    // which is what the wizard uses: that condition is only ever true for an
+    // operator who has configured nothing, so an offer behind it would reach
+    // nobody who upgraded into this release — every existing operator would be
+    // excluded from the one feature written for them.
+    //
+    // The marker is written here, as the offer is *made*, so declining costs one
+    // keystroke and is remembered. `Esc` closes the picker into the session rather
+    // than out of the program, which is the other half of the same promise: the
+    // wizard's cancel returns `None` and `main` turns that into an exit, and an
+    // operator who did not want to import has not said they did not want to run.
+    //
+    // Nothing is drawn when nothing was found, because a surface that opens to say
+    // "no other agent is installed" is a surface charging every first run for a
+    // question that had no answer.
+    if !io_cli::home::import_offered() {
+        if let Some(home) = io_cli::home::path() {
+            let found = io_cli::import::detect(
+                &io_cli::home::expand(std::path::Path::new("~")),
+                session.root(),
+            );
+            let items = io_cli::import::plan(&found, &home, io_harness::config::Scope::User);
+            if !items.is_empty() {
+                for source in &found {
+                    app.record(Tone::Muted, source.says());
+                }
+                app.record(
+                    Tone::Muted,
+                    "io found work you have already done in another agent. Nothing is written \
+                     until you switch an item on and choose the last row; `Esc` leaves it all \
+                     alone and `/import` opens this again."
+                        .to_string(),
+                );
+                let accepted = vec![false; items.len()];
+                picker = Some((
+                    Picker::new("Import", import_rows(&items, &accepted)),
+                    Pick::Import { items, accepted },
+                ));
+            }
+            // Written whatever happened above, including when nothing was found:
+            // the question has been asked and answered, and a machine that grows a
+            // `~/.claude` next week should not be interrupted for it mid-session.
+            if let Err(error) = io_cli::home::mark_import_offered() {
+                app.record(
+                    Tone::Muted,
+                    format!("io could not record that it offered to import: {error}"),
+                );
+            }
+        }
+    }
 
     paint(screen, &mut app)?;
 
@@ -907,6 +1101,147 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // There is nothing to open: the write verbs go through
                         // `/config`, and a panel that opened a second editor
                         // here would be a third way to write one file.
+                        // **Choosing an item switches it on; only the last row
+                        // writes.** That separation is the release's central
+                        // promise and it is enforced here rather than in
+                        // `import::apply`: an operator who backs out with `Esc`
+                        // at any point has changed no file, and one who reaches
+                        // the write row has seen every destination first.
+                        //
+                        // Rebuilt through `descended` rather than `picker`, for
+                        // the reason the `Pick::SkillToggle` note above gives —
+                        // the end of this match closes the surface
+                        // unconditionally, so a picker assigned here would be
+                        // built and thrown away. `selecting` puts the cursor back
+                        // on the row just toggled, so a run of items can be
+                        // switched on without hunting for the place each time.
+                        Pick::Import { items, accepted } => {
+                            if index < items.len() {
+                                accepted[index] = !accepted[index];
+                                descended = Some((
+                                    Picker::new("Import", import_rows(items, accepted))
+                                        .selecting(index),
+                                    Pick::Import {
+                                        items: items.clone(),
+                                        accepted: accepted.clone(),
+                                    },
+                                ));
+                            } else {
+                                let chosen: Vec<io_cli::import::Item> = items
+                                    .iter()
+                                    .zip(accepted.iter())
+                                    .filter(|(_, on)| **on)
+                                    .map(|(item, _)| item.clone())
+                                    .collect();
+                                match (chosen.is_empty(), io_cli::home::path()) {
+                                    (true, _) => app.record(
+                                        Tone::Muted,
+                                        "nothing was imported and nothing was written; \
+                                         `/import` offers the same list again"
+                                            .to_string(),
+                                    ),
+                                    (false, None) => app.record(
+                                        Tone::Refused,
+                                        "io has no home directory of its own, so there is \
+                                         nowhere to import into"
+                                            .to_string(),
+                                    ),
+                                    (false, Some(_)) => {
+                                        // **A model forces one more question
+                                        // before anything is written.** A foreign
+                                        // configuration names a model and never a
+                                        // vendor, and `[[provider]]` needs both —
+                                        // so which endpoint answers for it is the
+                                        // operator's to say, not io-cli's to
+                                        // guess. Guessing would write a provider
+                                        // that resolves, authenticates against the
+                                        // wrong account and fails on the first
+                                        // turn.
+                                        if chosen
+                                            .iter()
+                                            .any(|item| item.kind == io_cli::import::Kind::Model)
+                                        {
+                                            descended = Some((
+                                                Picker::new(
+                                                    "Which provider answers for that model?",
+                                                    vec![
+                                                        Row::new("OpenRouter"),
+                                                        Row::new("Anthropic"),
+                                                        Row::new("OpenAI"),
+                                                        Row::new(
+                                                            "write everything else and leave \
+                                                             the model alone",
+                                                        ),
+                                                    ],
+                                                ),
+                                                Pick::ImportModel(chosen),
+                                            ));
+                                        } else {
+                                            // Every destination, named. That list
+                                            // is what makes an import undoable by
+                                            // hand, which is the only undo there
+                                            // is.
+                                            for (tone, line) in
+                                                import_written(&chosen, session.root(), None)
+                                            {
+                                                app.record(tone, line);
+                                            }
+                                        }
+                                        // The file on disk has moved under the
+                                        // session, so the session reads it again
+                                        // rather than trusting what it just wrote
+                                        // — the same round trip every other writer
+                                        // here makes, and the place a refusal by
+                                        // io-harness would finally show.
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!(
+                                                    "the import was written but the \
+                                                     configuration would not read back: {error}"
+                                                ),
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // The endpoint question, answered. The last row declines
+                        // it, and declining writes everything else rather than
+                        // abandoning the import — the model was one item among
+                        // several and the operator already accepted the others.
+                        Pick::ImportModel(chosen) => {
+                            let endpoint = match index {
+                                0 => Some(io_cli::providers::Endpoint::OpenRouter),
+                                1 => Some(io_cli::providers::Endpoint::Anthropic),
+                                2 => Some(io_cli::providers::Endpoint::OpenAi),
+                                _ => None,
+                            };
+                            for (tone, line) in import_written(chosen, session.root(), endpoint) {
+                                app.record(tone, line);
+                            }
+                            match io_cli::configure::reload(session.root()) {
+                                Ok((fresh, stored)) => {
+                                    capabilities =
+                                        io_cli::contract::Capabilities::stored(stored.as_ref());
+                                    config = fresh;
+                                }
+                                Err(error) => app.record(
+                                    Tone::Error,
+                                    format!(
+                                        "the import was written but the configuration would \
+                                         not read back: {error}"
+                                    ),
+                                ),
+                            }
+                        }
                         Pick::Mcp => {
                             let list = io_cli::servers::servers(&config, &app.servers);
                             if let Some(server) = list.get(index) {
@@ -921,6 +1256,72 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         server.decided.word(),
                                     ),
                                 );
+                                // **The position is read out of the file's own
+                                // bytes, never from this row's index.** A row here
+                                // is a merged, filtered view across three scopes;
+                                // the `[[mcp]]` array it would be spliced into is
+                                // a different list entirely. Handing one list's
+                                // index to the other is precisely the silent wrong
+                                // delete 0.20.0 shipped in `pluginview::rows`, and
+                                // `servers::At` exists so it cannot be spelled.
+                                match io_cli::servers::declared_at(server) {
+                                    None => app.record(
+                                        Tone::Muted,
+                                        "no configuration file in force declares this server, \
+                                         so there is nothing here to change"
+                                            .to_string(),
+                                    ),
+                                    Some(at) => {
+                                        descended = Some((
+                                            Picker::new(
+                                                format!("{}?", server.id),
+                                                vec![
+                                                    Row::new("leave it as it is"),
+                                                    Row::new("remove this server"),
+                                                ],
+                                            ),
+                                            Pick::McpRemove {
+                                                id: server.id.clone(),
+                                                at,
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        // Row 0 is "leave it", the default that does nothing —
+                        // the shape `/skills` and `/plugin` both already use.
+                        Pick::McpRemove { id, at } => {
+                            if index == 1 {
+                                let edit = io_cli::servers::remove(at);
+                                match io_cli::configure::write(session.root(), at.scope, &[edit]) {
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!(
+                                                    "{id} was removed but the configuration \
+                                                     would not read back: {error}"
+                                                ),
+                                            ),
+                                        }
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{id} is no longer configured; the next turn \
+                                                 talks to it no more",
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
                             }
                         }
                         // Says what the skill is and offers the one change there
@@ -1157,10 +1558,20 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             if index != 0 {
                                 app.record(Tone::Muted, format!("{name} is unchanged"));
                             } else {
+                                // **The bundle list goes to the move, not just to
+                                // the listing.** A row drawn from a bundle is
+                                // refused inside `disable`/`enable` rather than
+                                // being filtered out here, because a guard at the
+                                // call site only guards the call site: the
+                                // destination is computed from the file's own
+                                // parent, so a bundle path reaching the move
+                                // creates `disabled/` inside somebody else's
+                                // bundle and takes their file into it.
+                                let bundles = bundle_skills(&config);
                                 let moved = if *enabled {
-                                    io_cli::skillview::disable(path)
+                                    io_cli::skillview::disable(path, &bundles)
                                 } else {
-                                    io_cli::skillview::enable(path)
+                                    io_cli::skillview::enable(path, &bundles)
                                 };
                                 match moved {
                                     Ok(to) => {
@@ -1173,12 +1584,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         // harness refuses by name — or hides one
                                         // that has just come back.
                                         skills = io_cli::commands::skills(
+                                            &io_cli::home::path().unwrap_or_default(),
                                             io_cli::contract::skills_dir(
                                                 &config,
                                                 &capabilities,
                                                 session.root().to_path_buf(),
                                             )
                                             .as_deref(),
+                                            // Re-read rather than carried: the
+                                            // operator may have added or removed a
+                                            // `[[plugin]]` entry through `/plugin`
+                                            // since this session started, and a
+                                            // carried list would go on offering a
+                                            // bundle's skills after the bundle was
+                                            // removed.
+                                            &bundle_skills(&config),
                                         )
                                         .0;
                                         app.record(
@@ -1222,6 +1642,90 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             .unwrap_or_default(),
                                     ),
                                 );
+                                // The chain's order IS which model answers — the
+                                // first `[[provider]]` entry is the provider and
+                                // the rest are its fallbacks — so promoting is not
+                                // cosmetic reordering, it is the switch. Read from
+                                // the file rather than from `entry.index`, which
+                                // counts the merged chain.
+                                match io_cli::providers::declared_at(&config, entry) {
+                                    None => app.record(
+                                        Tone::Muted,
+                                        "no configuration file in force declares this link, so \
+                                         there is nothing here to change"
+                                            .to_string(),
+                                    ),
+                                    Some(at) => {
+                                        let first = entry.index == 0;
+                                        let mut rows = vec![Row::new("leave it as it is")];
+                                        if !first {
+                                            rows.push(Row::new("make this the provider in force"));
+                                        }
+                                        rows.push(Row::new("remove this link from the chain"));
+                                        descended = Some((
+                                            Picker::new(format!("{}?", entry.model), rows),
+                                            Pick::ProviderVerb {
+                                                label: entry.model.clone(),
+                                                at,
+                                                first,
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        // Rows are "leave it", then promote where it is offered,
+                        // then remove — so the index of `remove` moves with
+                        // `first`. Computed from the same flag the rows were built
+                        // from rather than hard-coded, because those two drifting
+                        // apart is how a list removes the thing it offered to
+                        // promote.
+                        Pick::ProviderVerb { label, at, first } => {
+                            let promote = if *first { usize::MAX } else { 1 };
+                            let remove = if *first { 1 } else { 2 };
+                            let edit = if index == promote {
+                                io_cli::providers::promote(at)
+                            } else if index == remove {
+                                Some(io_cli::providers::remove(at))
+                            } else {
+                                None
+                            };
+                            if let Some(edit) = edit {
+                                match io_cli::configure::write(session.root(), at.scope, &[edit]) {
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!(
+                                                    "the chain was written but the configuration \
+                                                     would not read back: {error}"
+                                                ),
+                                            ),
+                                        }
+                                        app.record(
+                                            Tone::Success,
+                                            if index == promote {
+                                                format!(
+                                                    "{label} answers from the next turn; what \
+                                                     was in force is now its fallback"
+                                                )
+                                            } else {
+                                                format!(
+                                                    "{label} is out of the chain from the next \
+                                                     turn"
+                                                )
+                                            },
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
                             }
                         }
                         Pick::Profile(names) => {
@@ -1662,6 +2166,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     if let Some(sentence) = &view.failed {
                         app.record(Tone::Refused, sentence.clone());
                     }
+                    // **This is the loudest thing this surface says, and it is
+                    // the only place it can be said.** A bundle that declares a
+                    // skills directory which is not on disk is not a cosmetic
+                    // problem: `Plugin::skills_dir` does no existence check, the
+                    // harness's `discover_skills` walks it with `?` before the
+                    // first completion, and every turn of the session therefore
+                    // ends with an error naming a path the operator never chose
+                    // and never typed. Nothing else in io-cli connects that error
+                    // to the bundle that caused it. So the sentence names the
+                    // bundle, carries the harness's own words for the failure,
+                    // and says plainly what it costs — and it is drawn even when
+                    // the rows below it are fine, because the rows being fine is
+                    // exactly what makes the dead session baffling.
+                    for (id, sentence) in &view.bundles_failed {
+                        app.record(
+                            Tone::Refused,
+                            format!(
+                                "the {id} bundle contributes no skills: {sentence}. Every turn of \
+                                 this session ends on that error until the directory exists or the \
+                                 bundle's `[[plugin]]` entry is removed — `/plugin` removes it.",
+                            ),
+                        );
+                    }
                     if view.skills.is_empty() {
                         if view.failed.is_none() {
                             // **Not "on the next start".** `install` already ran
@@ -1712,6 +2239,27 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // reload — and a bundle they have just broken shows up as a
                     // refusal in the same breath.
                     let view = io_cli::pluginview::view(&config);
+                    // **The same call `/skills` makes, deliberately.** A bundle
+                    // whose declared skills directory is absent ends every turn of
+                    // the session, and both surfaces have to say so — but saying
+                    // it twice from two implementations is how two surfaces come
+                    // to disagree about one bundle. `skillview` owns the question
+                    // "what did this bundle actually contribute", so `/plugin`
+                    // asks it rather than answering it, and the two can only ever
+                    // agree. `Plugins::dropped` cannot cover this: the bundle
+                    // loaded fine, and it is the directory it names that is gone.
+                    for (id, sentence) in
+                        io_cli::skillview::view_of_bundles(&bundle_skills(&config)).bundles_failed
+                    {
+                        app.record(
+                            Tone::Refused,
+                            format!(
+                                "the {id} bundle contributes no skills: {sentence}. Every turn of \
+                                 this session ends on that error until the directory exists or \
+                                 this bundle is removed below.",
+                            ),
+                        );
+                    }
                     if view.is_empty() {
                         // Naming the file rather than the concept: an operator who
                         // has never declared a bundle needs to know where the
@@ -1733,6 +2281,53 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         ));
                     }
                 }
+                // **Everything is shown before anything is written, and the
+                // default for every item is no.** The plan is built whole here —
+                // detection, translation and destination — and drawn into the
+                // scrollback before the picker opens, so an operator who presses
+                // `Esc` has still *seen* what io found. The picker then turns
+                // items on one at a time; nothing is written until the last row is
+                // chosen, which is why a cancelled import is never a partial one.
+                Action::Import => match io_cli::home::path() {
+                    None => app.record(
+                        Tone::Refused,
+                        "io has no home directory of its own, so there is nowhere to import into"
+                            .to_string(),
+                    ),
+                    Some(home) => {
+                        // The operator's home, not io's: `~/.claude` and
+                        // `~/.codex` sit beside `~/.io-cli`, not inside it.
+                        let found = io_cli::import::detect(
+                            &io_cli::home::expand(std::path::Path::new("~")),
+                            session.root(),
+                        );
+                        for source in &found {
+                            app.record(Tone::Muted, source.says());
+                        }
+                        // **The user scope, and it is not a default chosen for
+                        // convenience.** It is the one configuration file that is
+                        // never committed, and an import writes absolute paths and
+                        // an operator's accumulated instructions — neither of
+                        // which belongs in a checkout somebody else clones.
+                        let items =
+                            io_cli::import::plan(&found, &home, io_harness::config::Scope::User);
+                        if items.is_empty() {
+                            app.record(
+                                Tone::Muted,
+                                "nothing to import: no other agent's configuration was found. \
+                                 `AGENTS.md` in a repository needs no import — io-harness has \
+                                 discovered it with no configuration at all since its 0.45.0."
+                                    .to_string(),
+                            );
+                        } else {
+                            let accepted = vec![false; items.len()];
+                            picker = Some((
+                                Picker::new("Import", import_rows(&items, &accepted)),
+                                Pick::Import { items, accepted },
+                            ));
+                        }
+                    }
+                },
                 Action::Provider => {
                     let chain = io_cli::providers::chain(&config);
                     if chain.is_empty() {
@@ -3637,6 +4232,44 @@ enum Pick {
     /// index reads straight back through `commands::palette_pick` — no list is
     /// carried here because the rows already address the thing they stand for.
     Palette,
+    /// The import plan, and which of its items are switched on.
+    ///
+    /// **The two vectors are the same length and are indexed together**, which is
+    /// the arrangement this codebase has already been bitten by once: in 0.20.0 an
+    /// index from one list was handed to a function expecting another's and
+    /// removed the wrong entry. They are safe here for a reason that must hold
+    /// whenever this arm is edited — `import_rows` builds one row per item in
+    /// order and appends exactly one row after them, so a chosen index below
+    /// `items.len()` addresses the item at that index and the single index equal
+    /// to it is the write row. Nothing filters, so no row index is ever a
+    /// different list's position.
+    ///
+    /// Carried rather than recomputed between keystrokes, because recomputing the
+    /// plan would re-read the filesystem underneath the operator and could change
+    /// the row count while they are choosing.
+    Import {
+        items: Vec<io_cli::import::Item>,
+        accepted: Vec<bool>,
+    },
+    /// The accepted items, held while the operator says which endpoint answers
+    /// for an imported model. Nothing has been written when this is open: the
+    /// question comes before the write, so declining it still writes the rest.
+    ImportModel(Vec<io_cli::import::Item>),
+    /// One MCP server, and where in which file it is declared. The position is a
+    /// `servers::At`, read from that file's own bytes — never this surface's row
+    /// index, which addresses a merged view across three scopes.
+    McpRemove {
+        id: String,
+        at: io_cli::servers::At,
+    },
+    /// One link of the provider chain, and where it is declared. `first` decides
+    /// whether promoting it is offered at all: a control that is drawn and does
+    /// nothing is worse than one that is absent.
+    ProviderVerb {
+        label: String,
+        at: io_cli::providers::At,
+        first: bool,
+    },
     /// One directory of the workspace, in the order `list_dir` sorted it, so a
     /// chosen index reads straight back through `complete::pick`. The rows are
     /// last components rather than paths — see `complete::rows` for why — which
