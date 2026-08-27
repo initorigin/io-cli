@@ -684,7 +684,9 @@ fn f1_a_whole_section_is_written_once_and_refused_when_it_is_already_there() {
     assert_eq!(parsed["prices"]["as_of"].as_str(), Some("2026-08-27"));
     for model in ["gpt-4.1", "gpt-4o", "o3"] {
         assert!(
-            parsed["prices"]["models"][model]["input"].as_integer().is_some(),
+            parsed["prices"]["models"][model]["input"]
+                .as_integer()
+                .is_some(),
             "`{model}` did not land as a key of the section:\n{after}"
         );
     }

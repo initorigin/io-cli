@@ -629,7 +629,7 @@ fn split_path(path: &str) -> Result<(TablePath, String), String> {
 /// whose name is `a"b`, and trimming strips repeated quotes off both ends and
 /// resolves no escape at all. A literal string `'...'` takes no escapes, so a
 /// `'` can never appear inside one and finding its end is a search. The decoding
-/// is `toml`'s own for the reason [`array`] spells through `toml` rather than a
+/// is `toml`'s own for the reason [`array()`] spells through `toml` rather than a
 /// format string — the escape rules belong to the format, not to this file.
 /// [`spell`] is the inverse, for the two places a segment goes back into a
 /// document.
@@ -697,7 +697,7 @@ fn segments(path: &str) -> Result<Vec<String>, String> {
 
 /// Spell one decoded segment the way a document has to carry it.
 ///
-/// The inverse of the decoding [`segments`] does, and it exists because that
+/// The inverse of the decoding `segments` does, and it exists because that
 /// decoding created the need: a segment in hand is now a NAME, and a name is not
 /// always spellable as itself. A bare key is `A-Za-z0-9_-` and nothing else, so
 /// anything holding a dot, a space, a slash or a quote has to go back into the
@@ -706,7 +706,7 @@ fn segments(path: &str) -> Result<Vec<String>, String> {
 /// still parses.
 ///
 /// The quoting goes through `toml`'s own serializer for the same reason
-/// [`array`] does: a format string cannot escape a `"` or a backslash correctly
+/// [`array()`] does: a format string cannot escape a `"` or a backslash correctly
 /// and would produce either a parse error or a different name.
 #[must_use]
 pub fn spell(segment: &str) -> String {

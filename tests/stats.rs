@@ -72,7 +72,9 @@ fn history() -> Store {
     // 2 first try — three different numbers, which is what makes a page that
     // picked the wrong one visible.
     for outcome in ["success", "success", "stalled", "step_cap_reached"] {
-        let run = store.start_run("summarise the module", "/repo").expect("a run");
+        let run = store
+            .start_run("summarise the module", "/repo")
+            .expect("a run");
         store.finish_run(run, outcome).expect("the run finishes");
     }
 
@@ -427,9 +429,7 @@ fn an_unmeasured_time_to_first_token_is_counted_apart_and_never_averaged_as_zero
     // value that happens to end in a zero: `300 ms` and `100 ms` both contain it.
     // The claim is that no *figure* is zero, so the test is on the value of a row.
     assert!(
-        !ttft
-            .iter()
-            .any(|row| row.trim_end().ends_with(": 0 ms")),
+        !ttft.iter().any(|row| row.trim_end().ends_with(": 0 ms")),
         "an unmeasured first token reached the figures as an instant one:\n{}",
         text(ttft),
     );
@@ -612,7 +612,11 @@ fn an_empty_store_says_nothing_is_recorded_rather_than_drawing_zeroes() {
 
     for heading in ["runs by outcome", "runs by day"] {
         let empty = section(&rows, heading);
-        assert_eq!(empty.len(), 1, "`{heading}` drew more than a note: {empty:?}");
+        assert_eq!(
+            empty.len(),
+            1,
+            "`{heading}` drew more than a note: {empty:?}"
+        );
         assert_eq!(
             empty[0], "  no runs recorded",
             "`{heading}` drew a zero where it has nothing to report",

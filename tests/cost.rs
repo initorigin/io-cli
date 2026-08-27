@@ -105,7 +105,9 @@ struct Seeded {
 
 fn seeded(calls: &[ProviderCall]) -> Seeded {
     let store = Store::memory().expect("an in-memory store");
-    let run = store.start_run("summarise the module", "/repo").expect("a run");
+    let run = store
+        .start_run("summarise the module", "/repo")
+        .expect("a run");
     let session = store.create_session("/repo").expect("a session");
     store
         .record_turn(session, None, run, "summarise the module")
@@ -258,7 +260,10 @@ fn the_total_is_the_rates_times_the_split_and_not_a_figure_typed_here() {
     assert_eq!(three.micros, expected * 3);
     assert_eq!(three.usage.prompt_tokens, usage.prompt_tokens * 3);
     assert_eq!(three.usage.cache_read_tokens, usage.cache_read_tokens * 3);
-    assert_eq!(three.usage.server_tool_requests, usage.server_tool_requests * 3);
+    assert_eq!(
+        three.usage.server_tool_requests,
+        usage.server_tool_requests * 3
+    );
 }
 
 /// **A call the provider said nothing about is unknown, and unknown is not
@@ -289,7 +294,10 @@ fn a_call_the_provider_said_nothing_about_is_unknown_and_never_free() {
     ];
     let total = Total::of(&calls, &table());
 
-    assert_eq!(total.calls, 3, "a call that reported nothing still happened");
+    assert_eq!(
+        total.calls, 3,
+        "a call that reported nothing still happened"
+    );
     assert_eq!(total.unknown, 2);
     assert_eq!(
         total.unpriced, 0,
@@ -352,7 +360,10 @@ fn a_model_the_table_does_not_price_is_a_floor_and_says_so() {
     assert_eq!(total.calls, 3);
     assert_eq!(total.unknown, 0, "all three reported their usage");
     assert_eq!(total.unpriced, 2, "two of the three cannot be priced");
-    assert!(total.is_floor(), "a total missing two calls' money is a floor");
+    assert!(
+        total.is_floor(),
+        "a total missing two calls' money is a floor"
+    );
     assert_eq!(
         total.usage.prompt_tokens,
         split().prompt_tokens * 3,
@@ -360,7 +371,9 @@ fn a_model_the_table_does_not_price_is_a_floor_and_says_so() {
     );
     assert_eq!(
         total.micros,
-        table().cost_micros(PRICED, &split()).expect("the priced one"),
+        table()
+            .cost_micros(PRICED, &split())
+            .expect("the priced one"),
         "the money is exactly the one call the table can price",
     );
 
@@ -522,7 +535,7 @@ fn money_is_integer_arithmetic_at_every_magnitude() {
     // floor: a figure that rounded to `$2.00` from `$1.999999` would report more
     // than the store can account for.
     assert_eq!(cost::money(1_999_999), "$1.99");
-    assert_eq!(cost::money(999_99), "$0.0999");
+    assert_eq!(cost::money(99_999), "$0.0999");
 
     // The rendering never loses a digit or gains one: every sub-dollar figure it
     // can express has four decimals, at every magnitude in the sweep. The
@@ -605,7 +618,10 @@ fn an_empty_price_table_draws_tokens_and_no_money() {
         spelled(split().prompt_tokens * 2),
         "the token figures went missing with the prices:\n{drawn}",
     );
-    assert_eq!(field(&rows, "completion"), spelled(split().completion_tokens * 2));
+    assert_eq!(
+        field(&rows, "completion"),
+        spelled(split().completion_tokens * 2)
+    );
 
     // And no currency anywhere. Not a zero, not a floor of zero, not a dollar
     // sign on a grouped row: there is no rate on this install and every figure
@@ -633,16 +649,8 @@ fn an_empty_price_table_draws_tokens_and_no_money() {
 #[test]
 fn a_session_that_has_run_nothing_says_so_rather_than_drawing_zeroes() {
     let store = Store::memory().expect("an in-memory store");
-    let lines = cost::committed(
-        &store,
-        &table(),
-        &provenance(),
-        None,
-        None,
-        &ascii(),
-        ROOMY,
-    )
-    .expect("the page draws with nothing in the store");
+    let lines = cost::committed(&store, &table(), &provenance(), None, None, &ascii(), ROOMY)
+        .expect("the page draws with nothing in the store");
     let drawn: String = lines
         .iter()
         .map(|line| {
@@ -701,7 +709,9 @@ fn the_session_total_is_every_turn_and_not_the_run_in_flight() {
     }
 
     let table = table();
-    let one = table.cost_micros(PRICED, &split()).expect("one call's cost");
+    let one = table
+        .cost_micros(PRICED, &split())
+        .expect("one call's cost");
     let lines = cost::committed(
         &store,
         &table,
@@ -792,7 +802,11 @@ fn the_footer_names_the_catalogue_and_the_date_or_admits_it_cannot() {
         "a table with no recorded source got one invented for it:\n{hand_written}",
     );
 
-    let none = text(&page(&fixture, &PriceTable::new(""), &Provenance::default()));
+    let none = text(&page(
+        &fixture,
+        &PriceTable::new(""),
+        &Provenance::default(),
+    ));
     assert!(
         none.contains("prices: none configured"),
         "an install with no prices does not say so at the foot of the page:\n{none}",

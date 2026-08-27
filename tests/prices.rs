@@ -60,7 +60,9 @@ fn local() -> Config {
 }
 
 fn spec(config: &Config) -> &ProviderSpec {
-    config.provider_spec().expect("the fixture names a provider")
+    config
+        .provider_spec()
+        .expect("the fixture names a provider")
 }
 
 /// One catalogue row the vendor put a rate on.
@@ -397,13 +399,10 @@ fn a_model_the_catalogue_priced_at_nothing_is_absent_rather_than_zero() {
     );
     // And the proof that absence is what the table sees: the row that is missing
     // is missing from the `PriceTable` a write of these rows would produce.
-    let table = catalogue
-        .rows
-        .iter()
-        .fold(
-            PriceTable::new(catalogue.as_of.clone()),
-            |table, (id, price)| table.with(id.clone(), *price),
-        );
+    let table = catalogue.rows.iter().fold(
+        PriceTable::new(catalogue.as_of.clone()),
+        |table, (id, price)| table.with(id.clone(), *price),
+    );
     assert_eq!(table.price("some-lab/experimental-preview"), None);
     assert!(table.price("anthropic/claude-sonnet-4.5").is_some());
 }
@@ -459,14 +458,23 @@ fn a_first_fill_is_never_refused_and_a_truncated_answer_always_is() {
     // Drastically shorter: refused. Similar: not. The line sits at half, and
     // both sides of it are asserted so that moving it fails this rather than
     // passing quietly in whichever direction it moved.
-    assert!(of(4).too_short(400), "a truncated read replaced a full table");
+    assert!(
+        of(4).too_short(400),
+        "a truncated read replaced a full table"
+    );
     assert!(of(199).too_short(400), "under half is a truncation");
     assert!(
         !of(200).too_short(400),
         "exactly half is allowed: vendors do retire models",
     );
-    assert!(!of(380).too_short(400), "a slightly smaller answer is a normal one");
-    assert!(!of(420).too_short(400), "a larger answer is never a truncation");
+    assert!(
+        !of(380).too_short(400),
+        "a slightly smaller answer is a normal one"
+    );
+    assert!(
+        !of(420).too_short(400),
+        "a larger answer is never a truncation"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -536,8 +544,11 @@ fn a_dotted_model_id_survives_the_write_and_prices_a_call() {
         prices::has_models_section(EXISTING),
         "the fixture is meant to be the refresh case",
     );
-    let written = edit::apply(EXISTING, &catalogue.edits(prices::has_models_section(EXISTING)))
-        .expect("the edits produce a configuration file that parses");
+    let written = edit::apply(
+        EXISTING,
+        &catalogue.edits(prices::has_models_section(EXISTING)),
+    )
+    .expect("the edits produce a configuration file that parses");
 
     // The spelling, so a failure here names the cause rather than the symptom.
     assert!(
@@ -895,9 +906,14 @@ fn changes_lists_only_what_moved_and_calls_an_unpriced_model_new() {
     // Nothing moved: nothing listed. Including the case an operator hits most
     // often, which is running `/config` twice in a day.
     assert!(
-        prices::changes(Some(&existing), &Catalogue::of(spec(&config), vec![
-            priced("a/steady", 1_000_000, 2_000_000)
-        ], "2026-08-27"))
+        prices::changes(
+            Some(&existing),
+            &Catalogue::of(
+                spec(&config),
+                vec![priced("a/steady", 1_000_000, 2_000_000)],
+                "2026-08-27"
+            )
+        )
         .is_empty(),
         "an unchanged table reported a change",
     );
@@ -942,9 +958,7 @@ fn source_word_names_the_catalogue_and_never_the_connected_provider() {
         "the vendor form points at a URL the operator did not need",
     );
 
-    let reference = prices::source_word(&PriceSource::Reference(
-        DEFAULT_REFERENCE_URL.to_string(),
-    ));
+    let reference = prices::source_word(&PriceSource::Reference(DEFAULT_REFERENCE_URL.to_string()));
     assert!(
         reference.contains(DEFAULT_REFERENCE_URL),
         "the reference form does not say which reference: {reference}",
@@ -1045,7 +1059,10 @@ fn the_catalogue_filter_is_applied_exactly_once_because_it_is_not_idempotent() {
 #[test]
 fn a_model_id_is_spelled_by_the_toml_crate_and_not_by_a_format_string() {
     assert_eq!(prices::quoted("gpt-4.1"), "\"gpt-4.1\"");
-    assert_eq!(prices::quoted("anthropic/claude-sonnet-4.5"), "\"anthropic/claude-sonnet-4.5\"");
+    assert_eq!(
+        prices::quoted("anthropic/claude-sonnet-4.5"),
+        "\"anthropic/claude-sonnet-4.5\""
+    );
 
     // The two a hand-written pair of quotes gets wrong. Both round-trip through
     // the parser rather than being compared to a spelling typed here, because the

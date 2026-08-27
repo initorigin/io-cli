@@ -2160,7 +2160,9 @@ fn f4_the_planning_phase_holds_at_every_width_that_can_hold_the_group() {
 /// be asserting the format string.
 fn run_calling(models: &[&str]) -> (io_harness::Store, i64) {
     let store = io_harness::Store::memory().expect("an in-memory store");
-    let run = store.start_run("summarise the module", "/repo").expect("a run");
+    let run = store
+        .start_run("summarise the module", "/repo")
+        .expect("a run");
     for model in models {
         store
             .record_provider_call(
@@ -2262,7 +2264,10 @@ fn the_cost_field_is_absent_rather_than_zero_when_nothing_can_be_priced() {
     // which is why `note_cost_from` is silent on every failure.
     let mut status = Status::new("anthropic/claude-sonnet-4.5");
     status.note_cost_from(&store, 9_999, &rates());
-    assert_eq!(status.cost, None, "a run id that does not exist invented a figure");
+    assert_eq!(
+        status.cost, None,
+        "a run id that does not exist invented a figure"
+    );
 }
 
 /// **When there is a figure it is on BOTH renderers, out of one method.**
@@ -2316,7 +2321,10 @@ fn the_cost_field_is_drawn_by_the_line_and_by_the_footer_alike() {
     // provider, and the opposite of the one it makes for keeping the planning
     // phase.
     status.forget_run();
-    assert_eq!(status.cost, None, "the cost outlived the run that incurred it");
+    assert_eq!(
+        status.cost, None,
+        "the cost outlived the run that incurred it"
+    );
     for (renderer, text) in both_renderers(&status) {
         assert!(
             !text.contains('$'),

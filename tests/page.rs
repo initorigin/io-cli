@@ -173,7 +173,10 @@ fn a_word_longer_than_its_room_is_split_and_one_that_merely_does_not_fit_is_not(
     let rows = page::folded(sentence, 80, 2, 4);
     assert!(rows.len() > 1, "the fixture has to fold to say anything");
     let words: Vec<&str> = sentence.split_whitespace().collect();
-    let folded_words: Vec<&str> = rows.iter().flat_map(|line| line.split_whitespace()).collect();
+    let folded_words: Vec<&str> = rows
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect();
     assert_eq!(
         words, folded_words,
         "a word was broken across two rows when a fresh row would have held it: {rows:?}",
@@ -222,7 +225,10 @@ fn the_hanging_indent_marks_a_continuation_from_the_second_row() {
     // what a reader under `NO_COLOR` or `--plain` has to go on.
     let heading = page::folded("slowest calls, of the last two hundred runs", 20, 0, 2);
     assert!(heading.len() > 1);
-    assert!(!heading[0].starts_with(' '), "a heading is indented to zero");
+    assert!(
+        !heading[0].starts_with(' '),
+        "a heading is indented to zero"
+    );
     assert!(heading[1].starts_with("  "));
 }
 
@@ -352,7 +358,10 @@ fn no_row_of_a_committed_page_runs_past_the_terminal() {
             "anthropic/claude-sonnet-4.5-with-an-absurdly-long-deployment-suffix",
             "4213 ms",
         ),
-        Row::fact("workspace", "/Users/somebody/Documents/work/monorepo/services/billing"),
+        Row::fact(
+            "workspace",
+            "/Users/somebody/Documents/work/monorepo/services/billing",
+        ),
         Row::caveat(
             "four calls used a model with no rate in the price table, so the cost above \
              is a floor and not a total",

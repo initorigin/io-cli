@@ -101,10 +101,10 @@ pub fn committed(
     // io-harness gives three counts and refuses to pick one for exactly this
     // reason; a bare `73%` would be a number whose meaning the reader has to
     // reconstruct, and two readers would reconstruct it differently.
-    if first.succeeded > 0 {
+    if let Some(share) = (first.first_try * 100).checked_div(first.succeeded) {
         rows.push(Row::fact(
             "first-try share of successful runs",
-            format!("{}%", first.first_try * 100 / first.succeeded),
+            format!("{share}%"),
         ));
     }
 
@@ -154,7 +154,8 @@ pub fn committed(
             )
         })
         .collect();
-    slow.sort_by(|a, b| b.0.cmp(&a.0));
+    // Descending, so `take(SLOWEST)` below is the slowest and not the fastest.
+    slow.sort_by_key(|(latency, _)| std::cmp::Reverse(*latency));
     if slow.is_empty() {
         rows.push(Row::note("no provider calls in those runs"));
     } else {

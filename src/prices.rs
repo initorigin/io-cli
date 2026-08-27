@@ -1,7 +1,7 @@
 //! Where a price comes from, what it claims, and when it was read.
 //!
 //! **io-cli compiles no prices in, and this module is the reason it does not have
-//! to.** io-harness prices a call from a [`PriceTable`] the operator's
+//! to.** io-harness prices a call from a [`io_harness::pricing::PriceTable`] the operator's
 //! configuration carries, and that table has to be filled from somewhere. Filling
 //! it from a list baked into the binary would be a promise the binary cannot keep:
 //! providers move prices without announcing it, a release cadence is not a pricing
@@ -589,7 +589,7 @@ pub fn date(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64;
+    let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let year = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
