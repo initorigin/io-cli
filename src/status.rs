@@ -341,10 +341,33 @@ pub struct Status {
     /// None`, and rendering that as `0` would report a full ceiling as an
     /// exhausted one.
     ///
-    /// Tokens, never money. `Containment::max_total_cost` is documented inert
-    /// because the crate has no price telemetry, so a figure with a currency in
-    /// front of it would be one this interface invented.
+    /// Tokens, never money — and the money is [`Status::cost`], one field down.
+    ///
+    /// This one is the tree's draw against the tree's ceiling, which io-harness
+    /// expresses in tokens and enforces in tokens. A currency figure here would be
+    /// a conversion of a ceiling nobody set in currency.
+    ///
+    /// **The sentence that stood here until 0.22.0 said something stronger and it
+    /// had stopped being true.** It read: a figure with a currency in front of it
+    /// would be one this interface invented, because the crate has no price
+    /// telemetry. The crate has had price telemetry since io-harness 0.18.0 —
+    /// `provider_calls` records the whole token split per call and `pricing`
+    /// derives money from it — and io-cli read none of it for four releases while
+    /// this comment explained why it could not.
     pub spend: Option<(u64, Option<u64>)>,
+    /// What this run has cost, in micro-units, or `None` for no answer.
+    ///
+    /// **Absent rather than zero, and there are three different ways to have no
+    /// answer** — no price table configured, a table that prices none of the
+    /// models this run used, or a run that has made no provider call yet. All
+    /// three draw nothing, because a `$0` on this line would say the run was free,
+    /// and none of the three means that. `/cost` is where the three are told
+    /// apart, because there is room there to say which.
+    ///
+    /// The run's own, not the session's, unlike [`Status::tokens`] beside it. What
+    /// an operator watches while a turn runs is what the turn is costing; the
+    /// session total is a keystroke away on `/cost`, which carries both.
+    pub cost: Option<u64>,
     /// How many background shells this run has started and not yet finished.
     ///
     /// A `shell_start` outlives the step that launched it, which is the whole
@@ -473,6 +496,7 @@ impl Status {
             policy: None,
             tokens: None,
             run_tokens: None,
+            cost: None,
             context: None,
             containment: None,
             spend: None,
@@ -525,6 +549,14 @@ impl Status {
     /// would leave the line contradicting prompts that are still going to run.
     pub fn forget_run(&mut self) {
         self.tokens = None;
+        // **The money goes with the tokens it was derived from.** `start_run`
+        // clears this too, and clearing it there alone is not enough: `/clear`,
+        // `/resume`, `/fork` and a rewind all reach here *without* starting a run,
+        // so a session cleared at an idle prompt would have gone on drawing the
+        // previous conversation's cost beside a blank token count — a figure with
+        // a currency in front of it attributed to a session that has spent
+        // nothing, which is the invented number this field exists not to print.
+        self.cost = None;
         // Both new in 0.11.0, and both run facts. The provider is the one that
         // reads as a session fact and is not: a resumed conversation may have
         // been served by another provider entirely, and `Started` sets it again
@@ -561,6 +593,46 @@ impl Status {
     pub fn start_run(&mut self) {
         self.elapsed = Duration::ZERO;
         self.run_tokens = None;
+        // Back to "no answer" rather than to zero, and it is the same distinction
+        // `run_tokens` above is held to: a turn that has not called a provider yet
+        // has not cost zero, it has not cost anything anybody can report.
+        self.cost = None;
+    }
+
+    /// Set [`Status::cost`] from what this run has actually called, priced by
+    /// `table`.
+    ///
+    /// **Read from the store rather than accumulated off the event stream, and
+    /// that is forced rather than chosen.** `EventKind::Step` carries a scalar
+    /// token count, and a price needs the split — fresh prompt against cache read
+    /// against cache write against completion — which lives only on the
+    /// `provider_calls` row. Counting the scalar at an input rate would over-report
+    /// every cached turn and every reasoning turn, which is to say most of them.
+    ///
+    /// The cost shape, stated: one indexed read of one run's calls, on the events
+    /// that can change the answer and no others — the same place and the same
+    /// cadence as [`Status::note_context_from`], which has read the store per step
+    /// since 0.16.0.
+    ///
+    /// Silent on every failure. A store that cannot be read is a status line with
+    /// no cost field, which is what an operator with no prices already sees; a
+    /// notice about a failed read of a decorative field would be worse than the
+    /// field's absence.
+    pub fn note_cost_from(
+        &mut self,
+        store: &io_harness::Store,
+        run_id: i64,
+        table: &io_harness::pricing::PriceTable,
+    ) {
+        let Ok(calls) = store.provider_calls(run_id) else {
+            return;
+        };
+        let total = crate::cost::Total::of(&calls, table);
+        // **Nothing priced is not zero priced.** A run whose models are all
+        // outside the table has a real cost that this program cannot state, and
+        // stating it as `$0` would be the invented number the whole of `/cost` is
+        // built to avoid.
+        self.cost = (total.micros > 0).then_some(total.micros);
     }
 
     /// Set [`Status::context`] from an observation section of `est_tokens`.
@@ -796,6 +868,22 @@ impl Status {
         (self.queued_prompts > 0).then(|| format!("queued {}", self.queued_prompts))
     }
 
+    /// This run's cost, drawn, or nothing at all.
+    ///
+    /// **One method, reached by both renderers**, which is the shape
+    /// [`Status::budgets_left`] and [`Status::queued_left`] above already have and
+    /// for the reason written where they are: this file has shipped a field into
+    /// one renderer twice — 0.8.0's spend, 0.12.0's planning — and both times the
+    /// field was invisible on the row the binary actually draws.
+    ///
+    /// `None` covers all three ways of having no answer and does not distinguish
+    /// them, because this line has no room to. `/cost` is the surface that tells
+    /// an empty price table from an unpriced model from a run that has called
+    /// nothing, and it is one keystroke away.
+    pub fn cost_field(&self) -> Option<String> {
+        self.cost.map(crate::cost::money)
+    }
+
     /// The fields, most important first.
     pub fn fields(&self, theme: &Theme) -> Vec<Field> {
         // The WORD is the state, and the animation is only beside it. A spinner
@@ -882,6 +970,32 @@ impl Status {
             };
             fields.push(Field::new(text, tone));
         }
+        // **Left of the containment word, which is where the design put it and
+        // where a live run proved it has to be.** Drafted to the right of it, the
+        // field never appeared: a real containment word is `workspace-write/
+        // macos-sandbox-exec`, thirty-three characters, and at a hundred columns
+        // beside the model, the posture, the state, the clock and the token count
+        // there was nothing left — so the one field this release exists to fill
+        // was the first one dropped, on the first terminal it was run in.
+        //
+        // **Left of the numbers, because it is not one** — and as of 0.22.0 the
+        // code is finally where this sentence has always said it was. A standing
+        // mode that stops the agent writing outranks what the last turn spent: if
+        // a narrow terminal can hold one of them, it should hold the one that
+        // explains why nothing is happening. It was pushed *after* `steps`, `tok`
+        // and `ctx` for four releases, and since `fits` drops from the right that
+        // meant `line` gave up the planning phase before it gave up the token
+        // count — the exact inversion of the rule written directly above it. The
+        // footer had the same inversion by a different mechanism, dropping its
+        // whole right-hand group to keep every counter, and both are corrected in
+        // the release that adds another counter to that row.
+        //
+        // `Normal` rather than `Muted` for the same reason the background-job
+        // count is — it is a fact about what the agent may do, not a footnote
+        // about what it did.
+        if self.planning {
+            fields.push(Field::new("planning".to_string(), Tone::Normal));
+        }
         // Beside the token count rather than anywhere else, because the two are
         // the same kind of fact — what this run has spent — and they used to sit
         // together in the `Finished` row this release removed.
@@ -900,26 +1014,18 @@ impl Status {
         if let Some(context) = self.context {
             fields.push(Field::new(format!("ctx {context}%"), Tone::Muted));
         }
-        // **Left of the containment word, which is where the design put it and
-        // where a live run proved it has to be.** Drafted to the right of it, the
-        // field never appeared: a real containment word is `workspace-write/
-        // macos-sandbox-exec`, thirty-three characters, and at a hundred columns
-        // beside the model, the posture, the state, the clock and the token count
-        // there was nothing left — so the one field this release exists to fill
-        // was the first one dropped, on the first terminal it was run in.
+        // **Right of the token count it is derived from**, so the two read in the
+        // order they are computed in: the tokens are what happened and the money
+        // is what they came to. `Muted` like the counters beside it, because it is
+        // one — a fact about what the last turn spent, which is exactly the class
+        // this row's own priority rule says yields to a standing mode.
         //
-        // What it outranks is the honest ordering too: the containment word says
-        // how commands are sandboxed and does not change during a turn; this says
-        // what the fan-out is spending, and changes every step.
-        // **Left of the numbers, because it is not one.** A standing mode that
-        // stops the agent writing outranks what the last turn spent: if a narrow
-        // terminal can hold one of them, it should hold the one that explains why
-        // nothing is happening. `Normal` rather than `Muted` for the same reason
-        // the background-job count is — it is a fact about what the agent may do,
-        // not a footnote about what it did.
-        if self.planning {
-            fields.push(Field::new("planning".to_string(), Tone::Normal));
-        }
+        // From the same method as the footer's, four lines of which are the whole
+        // lesson of 0.8.0's spend field and 0.12.0's planning field: a field
+        // rendered in one of the two renderers is a field the operator never sees,
+        // because the binary draws the footer on every terminal seven rows or
+        // taller.
+        fields.extend(self.cost_field().map(|text| Field::new(text, Tone::Muted)));
         // **Right of the counters they bound and left of the tree's own spend.**
         // A budget is read against the number beside it — `3 steps` and `left
         // 17/20 steps` are one fact split in two — so the two travel together and
@@ -1075,6 +1181,12 @@ impl Status {
         if let Some(context) = self.context {
             counts.push(format!("ctx {context}%"));
         }
+        // Here as well as on `Status::line`, out of the same method, for the
+        // reason the budgets below are — this is the row the binary draws at an
+        // ordinary prompt, so a cost added to `line` alone would be a cost no
+        // operator ever saw. 0.12.0's planning field, again, and 0.8.0's spend
+        // field before it.
+        counts.extend(self.cost_field());
         // **Here as well as on `Status::line`, from the same method, and that is
         // deliberate rather than tidy.** This is the row the binary draws at an
         // ordinary prompt — `Status::render` takes the footer on any terminal
@@ -1110,14 +1222,21 @@ impl Status {
         // The keys that mean something at this exact moment, and only those. A
         // footer that listed every binding would be a help screen; `/help` is
         // the help screen.
-        counts.push(
-            if self.working {
-                "esc stops"
-            } else {
-                "/ for commands"
-            }
-            .to_string(),
-        );
+        //
+        // **Held out of `counts` until after the narrowing below, because it is
+        // not a counter.** It used to be pushed here, which put it last — and the
+        // narrowing pops from the end, so the first thing a crowded row gave up
+        // was `esc stops`: the only place the footer tells an operator how to
+        // interrupt a turn, dropped exactly when the row is full because a turn is
+        // running. It is appended after the loop instead, and its width is counted
+        // during the loop so the arithmetic still describes the row that gets
+        // drawn.
+        let hint = if self.working {
+            "esc stops"
+        } else {
+            "/ for commands"
+        }
+        .to_string();
 
         // What the agent is allowed to do, on the right, because that is the
         // question a reader asks of a footer when they ask anything of it.
@@ -1149,6 +1268,35 @@ impl Status {
             }
             allowed.push(Span::styled("planning", muted));
         }
+        // **When the two groups cannot both fit, the counters yield — not the
+        // group.** `row` fits its right-hand group all or nothing, so a counts
+        // row one character too wide took the posture, the containment word AND
+        // the planning phase off the screen together and kept every counter.
+        // That is the failure the comment directly above records, arriving from
+        // the other direction: 0.13.1's row was `4 steps · 14.2k tok · / for
+        // commands` and the group fit beside it at a hundred columns; `ctx N%`
+        // made the row ten characters wider, and in the 0.21.0 live capture the
+        // finished turn's row carries no right group at all.
+        //
+        // Which side gives is not a judgement call — this module states it
+        // where `planning` is ordered on `Status::fields`: a standing mode that
+        // stops the agent writing outranks what the last turn spent. So
+        // counters come off the right of `counts`, rightmost first, which is
+        // the order `fits` drops fields in and the order they are pushed in
+        // — least load-bearing last — until the group fits. The
+        // leftmost counter is never dropped: a row that had given up every
+        // number would be reporting the mode by erasing the session.
+        let wanted: usize = allowed.iter().map(|s| s.content.chars().count()).sum();
+        // The hint is not in `counts` and is not droppable, so its width is added
+        // here rather than being carried by the join.
+        let hinted = hint.chars().count() + separator.chars().count();
+        while !allowed.is_empty()
+            && !counts.is_empty()
+            && counts.join(separator).chars().count() + hinted + wanted >= room
+        {
+            counts.pop();
+        }
+        counts.push(hint);
         let counted = row(
             vec![Span::styled(counts.join(separator), muted)],
             allowed,
@@ -1275,6 +1423,11 @@ fn fits(fields: &[Field], width: usize, theme: &Theme) -> usize {
 /// reader can find elsewhere: the posture is on the wizard's own screen and in
 /// the configuration, and the clock is beside the word `working` on the row that
 /// says a turn is running at all.
+///
+/// **That last-resort rule is not the counts row's policy**, and a caller who
+/// has a droppable left group is expected to narrow it before calling: the
+/// counts row trims counters off its own right until the group fits, because
+/// the group it would otherwise lose carries the planning phase.
 fn row(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
     let measure = |spans: &[Span<'static>]| -> usize {
         spans.iter().map(|span| span.content.chars().count()).sum()
@@ -1658,62 +1811,10 @@ pub fn committed(
 
 /// `text` as rows no wider than `width`, indented `first` and then `rest`.
 ///
-/// **Folded and never fitted**, which is the one thing this differs in from every
-/// other width-aware helper in this crate. `crate::picker::fit` and
-/// [`Status::line`] shorten, because a picker row and a status line each own
-/// exactly one row of a viewport that cannot grow. A committed surface owns as
-/// many rows as it needs, so there is no reason left to lose a character — and
-/// the characters most likely to be lost here are the tail of a workspace path
-/// and the tail of a policy layer's act list, which is to say the answer.
-///
-/// Broken at spaces, with a hanging indent that says a row is a continuation
-/// without aligning anything into a column. A word longer than the room it has —
-/// a deep path, an absurd model name — is **split** rather than allowed to
-/// overflow: eighty columns is a supported size, and a row that runs past it gets
-/// wrapped by the terminal at a place nothing here chose.
-fn folded(text: &str, width: usize, first: usize, rest: usize) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    let mut indent = first;
-    let mut row = " ".repeat(indent);
-    // Content characters on this row, which is its width less the indent. Counted
-    // rather than measured off `row` so the arithmetic is in one unit — the same
-    // reason `fits` counts characters and not bytes.
-    let mut used = 0usize;
-    for word in text.split_whitespace() {
-        let mut word = word;
-        loop {
-            // At least one cell, so a terminal narrower than the indent still
-            // makes progress instead of looping forever.
-            let room = width.saturating_sub(indent).max(1);
-            let space = usize::from(used > 0);
-            let length = word.chars().count();
-            if used + space + length <= room {
-                if space == 1 {
-                    row.push(' ');
-                }
-                row.push_str(word);
-                used += space + length;
-                break;
-            }
-            if used > 0 {
-                rows.push(std::mem::take(&mut row));
-                indent = rest;
-                row = " ".repeat(indent);
-                used = 0;
-                // Retried whole on the fresh row: a word is only ever split when
-                // a row of its own cannot hold it.
-                continue;
-            }
-            let head: String = word.chars().take(room).collect();
-            word = &word[head.len()..];
-            row.push_str(&head);
-            rows.push(std::mem::take(&mut row));
-            indent = rest;
-            row = " ".repeat(indent);
-        }
-    }
-    if used > 0 || rows.is_empty() {
-        rows.push(row);
-    }
-    rows
-}
+/// **The body moved to [`crate::page::folded`] in 0.22.0 and this is the name it
+/// answered to here.** `crate::context` carried the same twenty lines under the
+/// name `wrapped`, differing only in hard-coding the two indents this signature
+/// takes as arguments, and `/cost` and `/stats` would have been the third and
+/// fourth copies. The argument for folding rather than fitting is written out
+/// where the code now lives.
+use crate::page::folded;

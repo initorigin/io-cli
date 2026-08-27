@@ -483,48 +483,11 @@ pub fn committed(
 
 /// `text` as rows no wider than `width`, indented two then four.
 ///
-/// **Folded and never fitted**, for the reason `crate::status`'s own helper is: a
-/// committed surface owns as many rows as it needs, and the characters a fitter
-/// would drop here are tool names — which is to say the answer. A word longer
-/// than its row is split rather than allowed to overflow, so eighty columns holds.
+/// **The body moved to [`crate::page::folded`] in 0.22.0.** This was the second of
+/// two copies of the same twenty lines — `crate::status` had the other, under the
+/// name `folded`, taking as arguments the two indents this hard-coded — and
+/// `/cost` and `/stats` would have made four. The two numbers stay here because
+/// they are this surface's decision; the folding is not.
 fn wrapped(text: &str, width: usize) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    let mut indent = 2usize;
-    let mut row = " ".repeat(indent);
-    let mut used = 0usize;
-    for word in text.split_whitespace() {
-        let mut word = word;
-        loop {
-            // At least one cell, so a terminal narrower than the indent still
-            // makes progress instead of looping forever.
-            let room = width.saturating_sub(indent).max(1);
-            let space = usize::from(used > 0);
-            let length = word.chars().count();
-            if used + space + length <= room {
-                if space == 1 {
-                    row.push(' ');
-                }
-                row.push_str(word);
-                used += space + length;
-                break;
-            }
-            if used > 0 {
-                rows.push(std::mem::take(&mut row));
-                indent = 4;
-                row = " ".repeat(indent);
-                used = 0;
-                continue;
-            }
-            let head: String = word.chars().take(room).collect();
-            word = &word[head.len()..];
-            row.push_str(&head);
-            rows.push(std::mem::take(&mut row));
-            indent = 4;
-            row = " ".repeat(indent);
-        }
-    }
-    if used > 0 || rows.is_empty() {
-        rows.push(row);
-    }
-    rows
+    crate::page::folded(text, width, 2, 4)
 }

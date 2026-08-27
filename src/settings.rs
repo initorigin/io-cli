@@ -126,6 +126,53 @@ pub struct CliSettings {
     /// child's whole life in it, which is what a detached child gives up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_spawns: Option<bool>,
+
+    /// What io-cli remembers about prices: `[app.io-cli.prices]`.
+    ///
+    /// **The table itself is not here, and that is not a filing decision.** The
+    /// prices live under `[prices]`, which io-harness owns and reads through
+    /// `Config::prices`. That section is `deny_unknown_fields` and carries exactly
+    /// `as_of` and `models`, so a key of io-cli's own put beside them would not be
+    /// ignored — it would make the operator's whole configuration file fail to
+    /// parse, taking the policy, the providers and the run budgets down with it.
+    /// `[app.io-cli]` is the one section io-harness deliberately does not
+    /// validate, so anything io-cli needs to remember that the harness does not
+    /// model belongs here and nowhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prices: Option<PriceSettings>,
+}
+
+/// Where prices come from, and what the last read was.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriceSettings {
+    /// The catalogue to read: `source_url = "..."`.
+    ///
+    /// Absent means io-harness's own default. This key is the only way an
+    /// operator on a self-hosted or `compatible` endpoint gets prices at all: the
+    /// reference catalogue cannot speak for a server it has never heard of, and
+    /// `Reference::at` takes any URL serving the shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    /// What the last read was, in words, for the surfaces that draw money.
+    ///
+    /// Written by a fetch rather than by hand. It records whether the rates came
+    /// from the provider speaking for itself or from a third party's catalogue,
+    /// which for two of the three vendors io-cli can connect to is the second —
+    /// OpenAI and Anthropic publish no prices on any endpoint. A page that drew a
+    /// figure without saying which would be attributing a number to a vendor that
+    /// never published one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// How many models the last read priced.
+    ///
+    /// **Bookkeeping io-harness does not model, which is what this section is
+    /// for.** `PriceTable` has no length and no iterator — it answers `price(model)`
+    /// and nothing else — so io-cli cannot count what it holds by asking it. The
+    /// count is needed twice: to say on `/cost` how many models the rates cover,
+    /// and to refuse a refetch that comes back far shorter than what it would
+    /// replace, which is the one failure in this area that loses money quietly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<usize>,
 }
 
 /// The caps this session runs its turns under, if any.
@@ -447,6 +494,13 @@ pub fn render(
                 max_parallel_reads: None,
                 spawn_background_after_secs: None,
                 detached_spawns: None,
+                // Left out because the wizard has not read a catalogue yet when
+                // it renders this. Prices arrive from the read that follows the
+                // credential check, as their own edits against the file this
+                // wrote — which is also what keeps the shape identical for an
+                // operator who runs the wizard and one who adds a provider from
+                // `/provider` later.
+                prices: None,
             },
         },
     };

@@ -78,6 +78,20 @@ impl Decided {
             Decided::Default => None,
         }
     }
+
+    /// The scope that decided it, where a file did.
+    ///
+    /// **What a rewrite of an existing value has to be aimed at.** Writing into a
+    /// higher-precedence scope than the one that holds a key shadows it rather
+    /// than updating it: the value in force changes, and the file the operator
+    /// opens still shows the old one. `None` is io-harness's own default, which no
+    /// file holds and which a caller therefore has to choose a scope for.
+    pub fn scope(&self) -> Option<Scope> {
+        match self {
+            Decided::File { scope, .. } => Some(*scope),
+            Decided::Default => None,
+        }
+    }
 }
 
 /// One row of the surface.
@@ -137,7 +151,38 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.max_parallel_reads",
     "app.io-cli.spawn_background_after_secs",
     "app.io-cli.detached_spawns",
+    // What a turn costs, split across two sections because one of them is not
+    // ours. `prices.as_of` is io-harness's and dates the whole table; it is
+    // written by a fetch rather than typed, and it is listed here because a date
+    // an operator cannot see is a claim with no expiry they cannot check.
+    // `[prices.models]` is deliberately **not** a row: it is a list rather than a
+    // setting, and it is reached the way `/provider` and `/mcp` reach a list.
+    "prices.as_of",
+    "app.io-cli.prices.source_url",
 ];
+
+/// The `/config` row that re-reads the price catalogue.
+///
+/// **A row rather than a key, because it is an act and not a setting.** Every
+/// other row on that surface names something in a file and puts it in the
+/// composer for the operator to type a value after; this one does something. It
+/// is a sentinel and not a path so that `settings` and `setting` never see it —
+/// a key that is not in any file and never will be would show as "not set"
+/// forever on a surface whose whole job is saying what is in force.
+///
+/// It lives here rather than in the driver so a test can reach it: nothing under
+/// `tests/` can link `src/main.rs`, and a row spelled in the driver is a row no
+/// test can assert on.
+pub const REFRESH_PRICES: &str = "!refresh-prices";
+
+/// The label that sentinel wears on the picker.
+pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
+    let detail = match &setting.value {
+        Some(as_of) => format!("last read {as_of}"),
+        None => "no prices are configured".to_string(),
+    };
+    crate::picker::Row::with_detail("prices: re-read the catalogue", detail)
+}
 
 /// Whether a key's value is a credential and must never be shown in full.
 ///
@@ -208,11 +253,26 @@ pub fn settings(config: &Config) -> Vec<Setting> {
         rows.push(setting(config, key));
     }
 
-    // Anything a file named that the catalogue does not carry.
+    // Anything a file named that the catalogue does not carry — **except the
+    // price table, which is a list and not a set of settings.**
+    //
+    // io-harness's origin index records *leaf* keys, so a filled `[prices.models]`
+    // contributes two to five of them per model: `prices.models.<id>.input`,
+    // `.output`, `.cache_read`, and so on. On an OpenRouter install that is well
+    // over a thousand rows, and `/config` — a picker an operator opens to change
+    // one setting — becomes a list of rates with every real setting buried above
+    // them. The `CATALOGUE` comment already says `[prices.models]` is deliberately
+    // not a row; this is what makes that true, because the sweep below was putting
+    // every one of them back.
+    //
+    // They would not even render: `record_origins` joins the path with `.` and
+    // does not quote, so a model id containing a dot arrives as a key that
+    // `edit::value_at` cannot resolve, and the row draws with no value at all.
     let mut extra: Vec<String> = config
         .origins()
         .map(|(key, _)| key.to_string())
         .filter(|key| !seen.contains(key))
+        .filter(|key| !key.starts_with("prices.models."))
         .collect();
     extra.sort();
     for key in extra {

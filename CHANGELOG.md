@@ -6,6 +6,147 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-27
+
+What the work cost and whether it worked — two questions this interface has been
+carrying the answers to since io-harness 0.18.0 and has never asked.
+
+**`/cost` commits what has been spent: this run, this session, by model, by day.**
+Tokens and money, four sections, every figure a row already in `runs.db`. The
+harness has recorded one row per provider call for four releases — the model, the
+prompt, completion, cache-read, cache-write and reasoning split, the latency and
+the time to first token — and io-cli reported token counts and treated the money
+question as unanswerable. It was answerable then.
+
+**Nothing on that page is estimated, and three rules follow from it.** Cache reads
+and cache writes are shown as the breakdown of the prompt they already are, never
+added on top: they live inside `prompt_tokens`, and adding them would over-report
+every cached turn, which is most of them. A call the provider reported no usage
+for is **unknown**, never free — io-harness stores it as SQL `NULL` for exactly
+that reason, and summing it as zero would report a turn that cost something as a
+turn that cost nothing. And a model with no rate in the table makes the total a
+**floor** rather than a total, which the page says in that word, with the number
+of calls it applies to, and on the row itself in the grouped sections — a reader
+scanning for the largest figure has to see which of them is incomplete without
+reading past the list. io-harness's own pricing documentation calls a renderer
+that hides that count "lying by omission", and it is right.
+
+**`/stats` commits how the runs have gone**: runs by outcome, runs by day, the
+first-try counts, gate failures by phase, recovery, the slowest calls and the time
+to first token over the last 200 runs, and what the store holds on disk. **First-try
+is io-harness's own definition** — finished *and* successful *and* carrying no
+gate failure — and it arrives as three counts rather than as a rate, because the
+denominator is a choice: first-try over every run counts runs that are still
+going. Where a share is drawn, the row names what it is a share *of*, instead of
+printing a percentage whose meaning two readers would reconstruct differently. The
+sandbox gate's phases and the review, command and contains gates are two
+vocabularies that do not overlap, so they stay two lists; merging them would
+produce a chart whose categories mean two things. Nothing here compacts anything —
+`Store::compact` is a full `VACUUM` needing free disk roughly equal to the file,
+and a page that reported free space and then reclaimed it would be a page that
+surprised somebody mid-session.
+
+**They are two commands rather than one because they are two questions.** Every
+agent that has both keeps them apart, and a single screen carrying thirteen
+sections is one nobody reads to the end. `/usage` is an alias for `/cost` and
+earns no row in any table — it resolved to `/status` until now, which was the
+closest thing there was to an answer and was not one.
+
+**io-cli compiles no prices in, and this is the part worth reading twice.** A rate
+baked into a binary is a promise the binary cannot keep: providers move prices
+without announcing it, a release cadence is not a pricing cadence, and an operator
+reading a confident wrong number is worse off than one reading no number at all.
+So the table ships **empty**, and an install that has connected nothing sees
+tokens and no currency. It is filled from the model catalogue the operator's own
+provider serves — the same fetch `io setup` has made since 0.1.0 to offer a list
+of models, whose `price`, `price_tiers` and `price_source` it read off the same
+row and threw away. No JSON is parsed here and no dependency is added: io-harness
+did the parsing and the unit conversion. The rates are written into `[prices]`,
+which is io-harness's own section — `as_of` for the date, one line per model under
+`[prices.models]`, a row per line so that correcting one by hand is a one-line
+change you can find again.
+
+**Refreshing shows every rate that would move before it writes anything**, with
+what each was and what it would become, and declining writes nothing — the shape
+`/import` established in 0.21.0. That is not courtesy. io-cli records what a rate
+*is* and never where it came from, so it cannot tell a correction you made by hand
+from a value an older catalogue served; it does not guess, it shows you and lets
+you refuse the lot. **A refetch that comes back empty, or far shorter than the
+table it would replace, is refused and the old table kept** — the one failure in
+this area that loses money quietly, because a truncated response replacing a full
+table with a handful of rows would turn most of an operator's spending into
+"unpriced" and shrink their reported bill with nothing failing anywhere. A first
+fill has nothing to compare against and is never refused. Rows for models the
+catalogue no longer serves are left alone rather than pruned: io-harness prices a
+call by the model name on it, so an old row is what prices an old run correctly.
+
+**Whose price it is gets said, on every surface that draws money.** OpenAI and
+Anthropic publish no prices on any endpoint — their model endpoints
+carry capabilities and limits and no cost field, and their cost APIs report what
+was *spent* rather than what a token *costs*. So for those two the rates
+necessarily come from the reference catalogue rather than from the vendor, and the
+page names which and on what date. io-harness models the distinction already, and
+io-cli carries it through instead of flattening it into the connected provider's
+name. On OpenRouter the two coincide, because the reference catalogue is
+OpenRouter's own.
+
+**The status line carries a cost field**, right of the token count it is derived
+from, so the two read in the order they are computed in. It is **absent — not
+`$0`** — where there is no price table, where the table prices none of the models
+this run called, or where nothing has run. Those are three different things and
+none of them means free.
+
+**Three new keys and one new section for a file you already have.**
+`[app.io-cli.prices]` carries `source_url`, which names a catalogue to read
+instead of io-harness's default and is the only way an operator on a self-hosted
+or `compatible` endpoint gets prices at all; and `source` and `models`, which
+record what the last read was and how many models it priced and are written by a
+fetch rather than by hand. They are in io-cli's own section rather than beside the
+rates because `[prices]` is `deny_unknown_fields` and carries exactly `as_of` and
+`models` — a key of io-cli's own put next to them would not be ignored, it would
+make the operator's whole configuration file unreadable. `/config` gains
+`prices.as_of` and `app.io-cli.prices.source_url` as rows; `[prices.models]` is
+deliberately not one, because it is a list rather than a setting.
+
+**`/image`, `/copy` and `/copy diff` move from inspect to this turn**, and it is a
+correction rather than a way of making room — the same sentence 0.19.0 wrote about
+`/mcp` and `/provider`, and it is worth being able to say twice. All three act on
+the turn that just finished; none of them asks the store a question, which is what
+**inspect** means. They were filed there because they *show* something, and
+showing is not the same as inspecting. `/cost` and `/stats` are what made it worth
+correcting: no group may hold more than ten, **inspect** stood at nine, and the
+choice was between re-filing three commands that were in the wrong group and
+filing two more that would have been. Weakening the bound would have given up the
+thing it protects — the grouped menu not turning back into the flat list of thirty
+it replaced.
+
+**Two status-line priority inversions, both corrected here because this release
+adds another counter to that row.** The footer dropped its whole right-hand group
+— the policy layer, the containment mode, the planning phase — to keep every
+counter, so a narrow terminal gave up the standing modes that explain why nothing
+is happening in order to keep a number about what already happened; the counters
+yield now. And `fields` pushed `planning` right of the counters, so the narrow
+line dropped it before the token count — the exact inversion of the rule written
+five lines above it in the same file, standing for four releases.
+
+**Four defects carried over from 0.21.0 are fixed.** `edit::split_path` is
+quote-aware: a dot inside a quoted key is not a separator, TOML spells a bare key
+out of `A-Za-z0-9_-` and nothing else, and a model id or MCP server name carrying
+a dot was cut in half — the read half answered nothing and the write half appended
+a second copy of a table that was already there, surfacing as an unexplainable
+"the edit would have produced a file that does not parse". Removing or moving a
+TOML entry no longer carries the *next* section's comment block away with it.
+`move_entry` into the last position of a file with no trailing newline no longer
+concatenates onto the final value. And a loose `CONVENTIONS.md` or `CLAUDE.md`
+inside a `skills/` or `plugins/` directory is imported as a **skill**: it matched
+on its basename before, and its whole body was appended into the instructions file
+loaded on every turn, forever, instead of a named skill read on demand. Where a
+file is decides what it is, ahead of what it is called.
+
+**crossterm moves to 0.29**, taken together with ratatui's `crossterm_0_29`
+feature so the two agree on one version of the terminal backend. The dependabot
+ignore that held it back is gone.
+
 ## [0.21.0] - 2026-08-27
 
 What you already told another agent tool, brought across once — and two surfaces

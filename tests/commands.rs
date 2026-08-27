@@ -82,6 +82,13 @@ fn the_commands_are_the_commands() {
             "/fleet",
             "/image",
             "/clear",
+            // 0.22.0 — the two halves of one question, and two commands because
+            // they are two questions. `/cost` says what the work cost and
+            // `/stats` says whether it worked; every agent that has both keeps
+            // them apart. `/usage` is an alias for the first and is absent from
+            // this list, which is the rule every alias here follows.
+            "/cost",
+            "/stats",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",
@@ -1073,8 +1080,17 @@ fn the_memory_page_separates_the_two_memories_and_qualifies_a_cut_draw_count() {
 fn f17_usage_answers_and_is_never_listed() {
     use io_cli::commands::{group_of, palette, GROUPS};
 
-    // It answers, with what `/status` answers.
-    assert_eq!(commands::parse("usage", &defaults(), &DARK), Action::Status);
+    // **It answers `/cost`, and until 0.22.0 it answered `/status`.** The
+    // argument for that was that `/status` was the closest thing this program had
+    // to a spending surface — it commits the token draw, the budgets and what is
+    // left of them. It stopped holding the moment a page existed whose whole
+    // subject is what has been spent: an operator typing the field's own word for
+    // that page and landing on the session's configuration is being answered a
+    // question they did not ask.
+    assert_eq!(commands::parse("usage", &defaults(), &DARK), Action::Cost);
+    assert_eq!(commands::parse("cost", &defaults(), &DARK), Action::Cost);
+    // And `/status` still answers itself, which is the half of this that did not
+    // change and the half a careless repoint would have taken with it.
     assert_eq!(
         commands::parse("status", &defaults(), &DARK),
         Action::Status

@@ -21,7 +21,9 @@ updates:
       # so a patch bump moves Cargo.lock and nothing anybody resolves against.
       patch-updates:
         update-types: ["patch"]
-    ignore:
+    # **There is no `ignore` list any more, and the two entries that were here are
+    # worth their notes.**
+    #
       # The `ratatui` entry that stood here is GONE as of 0.18.0, and the note it
       # carried is worth keeping because of how it ended. It said the composer was
       # `tui-textarea` 0.7 built against exactly ratatui 0.29 and crossterm 0.28,
@@ -61,16 +63,19 @@ updates:
       # `tests/dependencies.rs::n1_the_composer_is_free_and_no_lru_is_in_the_advisorys_range`
       # fails the build if any `lru` in the lockfile falls inside the range.
       #
-      # `crossterm` stays pinned, and now for a reason of our own choosing rather
-      # than a dependency's: ratatui 0.30 is taken with the `crossterm_0_28`
-      # feature, so a Dependabot bump of the direct `crossterm` to 0.29 would put
-      # two versions in the tree again. Moving to crossterm 0.29 is a deliberate
-      # change of that feature flag and this entry together, not a bot's to make.
-      # It is pre-1.0, so the minor bump is the breaking one — patches still come
-      # through.
-      - dependency-name: crossterm
-        update-types:
-          ["version-update:semver-minor", "version-update:semver-major"]
+      # **The `crossterm` entry that stood here is GONE as of 0.22.0**, and it went
+      # the way it said it would. It held the direct `crossterm` at 0.28 because
+      # ratatui 0.30 was taken with the `crossterm_0_28` feature and a bot bumping
+      # one without the other would put two versions in the tree — and it named the
+      # exit: "moving to crossterm 0.29 is a deliberate change of that feature flag
+      # and this entry together, not a bot's to make." 0.22.0 made it. `Cargo.toml`
+      # now carries `crossterm_0_29` and `crossterm = "0.29"`, changed in one
+      # commit, and there is nothing left for this entry to hold back.
+      #
+      # Nothing replaces it. The property that entry was protecting — one crossterm
+      # in the tree — is not a judgement a list of ignores can keep: it is the two
+      # lines in `Cargo.toml` agreeing, and a future bot PR that moves the direct
+      # crate alone fails to build rather than passing quietly.
 
   - package-ecosystem: github-actions
     directory: "/"

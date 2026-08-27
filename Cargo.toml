@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
@@ -75,12 +75,15 @@ io-harness = { version = "0.69", features = ["media", "browser", "documents"] }
 # go. io-cli owns its editing model now (`src/editor.rs`), and `lru` is out of the
 # tree entirely.
 #
-# `default-features = false` with `crossterm_0_28` rather than the default
-# `crossterm`, which resolves to 0.29: that bump is a separate decision from this
-# one, and taking both at once would put two crossterm versions in the tree for as
-# long as anything disagreed. Of the remaining defaults, `all-widgets` is only the
-# calendar and `macros` is only the declarative builders — this crate uses
-# neither, and the base widgets are not behind either flag.
+# `default-features = false` with `crossterm_0_29` rather than the bare default
+# `crossterm`, and the two crates move together or not at all. ratatui chooses the
+# crossterm it re-exports by feature, so the direct `crossterm` line below and this
+# flag name the same version by construction; the release that let them disagree
+# would build two crossterm versions whose key events are different types. 0.18.0
+# held this at 0.28 and said so here and in `.github/dependabot.yml`; 0.22.0 is the
+# deliberate change both notes were waiting for. Of the remaining defaults,
+# `all-widgets` is only the calendar and `macros` is only the declarative builders
+# — this crate uses neither, and the base widgets are not behind either flag.
 #
 # `unstable-rendered-line-info` is enabled for one method: `Paragraph::line_count`,
 # which answers how many rows a wrapped paragraph will occupy. `insert_before`
@@ -88,12 +91,12 @@ io-harness = { version = "0.69", features = ["media", "browser", "documents"] }
 # exactly the content this product exists to keep. It is a feature of a dependency
 # already taken, not a dependency.
 ratatui = { version = "0.30", default-features = false, features = [
-    "crossterm_0_28",
+    "crossterm_0_29",
     "layout-cache",
     "underline-color",
     "unstable-rendered-line-info",
 ] }
-crossterm = "0.28"
+crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }

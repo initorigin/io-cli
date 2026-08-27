@@ -385,3 +385,326 @@ max_steps = 30
         "a move is not reversible"
     );
 }
+
+/// **A dot inside a quoted key is not a path separator, and the two sides of this
+/// module used to disagree about that.**
+///
+/// `split_path` split the caller's path on every `.` and normalised nothing;
+/// `regions` split the file's header on every `.` and then stripped quotes with
+/// `trim_matches`. Two different wrong answers, so `prices.models."gpt-4.1"` never
+/// matched itself: the read half answered `None` and the write half fell through
+/// to the append arm and emitted a SECOND `[prices.models."gpt-4.1"]` table, which
+/// only the read-back caught, and only as "the edit would have produced a file
+/// that does not parse" — for a perfectly legal TOML key.
+///
+/// Sabotage: put `path.split('.')` back in `split_path`, or
+/// `.trim_matches('"').trim_matches('\'')` back in `regions`, or drop either
+/// `spell` call from the two spelling sites, and this test fails.
+#[test]
+fn f1_a_dot_inside_a_quoted_key_is_one_segment_on_both_sides() {
+    // Two quoted keys, and the second is the one `trim_matches` cannot ever get
+    // right: a basic string takes the full escape set, so `"a\"b"` is a legal key
+    // whose NAME is `a"b`. Trimming quotes off both ends of that yields `a\"b`,
+    // which is a key no file holds.
+    const QUOTED: &str = "\
+[prices.models.\"gpt-4.1\"]
+input = 3.0
+output = 12.0
+
+[prices.models.\"a\\\"b\"]
+input = 1.0
+";
+
+    // 1. The header is cut into segments, decoded, and the escape is resolved.
+    let sections = edit::sections(QUOTED);
+    assert!(
+        sections.contains(&vec![
+            "prices".to_string(),
+            "models".to_string(),
+            "gpt-4.1".to_string()
+        ]),
+        "the quoted header was split on the dot inside it: {sections:?}"
+    );
+    assert!(
+        sections.contains(&vec![
+            "prices".to_string(),
+            "models".to_string(),
+            "a\"b".to_string()
+        ]),
+        "the escaped quote was not decoded: {sections:?}"
+    );
+
+    // 2. A caller's path is cut the same way, so the two sides meet.
+    assert_eq!(
+        edit::value_at(QUOTED, "prices.models.\"gpt-4.1\".input").as_deref(),
+        Some("3.0"),
+        "a dotted key showed a file with no value in it"
+    );
+    // A literal string spells the same key and takes no escapes at all.
+    assert_eq!(
+        edit::value_at(QUOTED, "prices.models.'gpt-4.1'.output").as_deref(),
+        Some("12.0"),
+        "a literal-string segment did not reach the key a basic string reaches"
+    );
+    assert_eq!(
+        edit::value_at(QUOTED, "prices.models.\"a\\\"b\".input").as_deref(),
+        Some("1.0"),
+        "the escape was not resolved on the caller's side"
+    );
+    // Whitespace around a dot is legal TOML and an unquoted segment is trimmed.
+    assert_eq!(
+        edit::value_at(QUOTED, "prices . models . \"gpt-4.1\" . input").as_deref(),
+        Some("3.0"),
+        "whitespace around a dot became part of a segment name"
+    );
+
+    // 3. The write half reaches the same section, and reaches it exactly once.
+    // `4.5` rather than `4.0`, and the digit after the point is the point.
+    // `assert_only_span_changed` reports the span between the longest common
+    // prefix and the longest common suffix, so replacing `3.0` with `4.0` reports
+    // `3` -> `4`: the shared `.0` is swallowed by the suffix scan. That would be a
+    // test asserting against its own helper's arithmetic rather than against the
+    // writer, and it would go on passing if the writer started truncating floats.
+    let after = edit::apply(
+        QUOTED,
+        &[Edit::set("prices.models.\"gpt-4.1\".input", "4.5")],
+    )
+    .unwrap();
+    assert_eq!(
+        assert_only_span_changed(QUOTED, &after, "prices.models.\"gpt-4.1\".input"),
+        "4.5"
+    );
+    assert_eq!(
+        after.matches("[prices.models.\"gpt-4.1\"]").count(),
+        1,
+        "the write fell through to the append arm and duplicated the table:\n{after}"
+    );
+
+    // 4. Because a segment is DECODED now, the two sites that spell one back into
+    // a document have to re-quote anything that is not a bare key. A bare key is
+    // `A-Za-z0-9_-` and nothing else, so both of these need quotes.
+    let key = edit::apply(
+        QUOTED,
+        &[Edit::set(
+            "prices.models.\"gpt-4.1\".\"cached input\"",
+            "1.5",
+        )],
+    )
+    .unwrap();
+    assert!(
+        key.contains("\"cached input\" = 1.5"),
+        "the new key was spelled bare and the space in it would not parse:\n{key}"
+    );
+
+    let header = edit::apply(
+        QUOTED,
+        &[Edit::set("prices.models.\"gpt-4.5\".input", "5.0")],
+    )
+    .unwrap();
+    assert!(
+        header.contains("[prices.models.\"gpt-4.5\"]"),
+        "the new header was spelled bare and the dot in it would name a third table:\n{header}"
+    );
+    // And the proof that both spellings are right is that the document still says
+    // what it was asked to say when it is read back as TOML.
+    let parsed: toml::Value = toml::from_str(&header).expect("the appended header parses");
+    assert_eq!(
+        parsed["prices"]["models"]["gpt-4.5"]["input"].as_float(),
+        Some(5.0),
+        "the appended section landed under a different key than the one asked for"
+    );
+}
+
+/// **A section's trailing comment run belongs to the section BELOW it.**
+///
+/// A region's `body.end` is the first byte of the NEXT header, so splicing
+/// `region.start..region.body.end` away deletes everything between this entry's
+/// last key and that header — including the comment block an operator wrote to
+/// document the next section. `Kind::Move` carried the same bytes away with it.
+///
+/// Sabotage: use `region.body.end` at either splice instead of `removal_end`, and
+/// the comment naming the entry that survives is deleted along with the one that
+/// was asked for.
+#[test]
+fn f1_removing_or_moving_an_entry_leaves_the_next_one_s_comment_behind() {
+    const DOCUMENTED: &str = "\
+[[mcp]]
+id = \"docs\"
+
+# search is the one the team actually uses; do not remove it
+[[mcp]]
+id = \"search\"
+";
+
+    let removed = edit::apply(DOCUMENTED, &[Edit::remove("mcp[0]")]).unwrap();
+    assert!(
+        removed.contains("# search is the one the team actually uses"),
+        "removing the first entry deleted the second entry's comment:\n{removed}"
+    );
+    assert!(!removed.contains("docs"), "the wrong entry survived");
+    // The blank line that separated the removed entry from that comment goes with
+    // it, so repeated removals do not leave a growing stack of empty lines.
+    assert!(
+        removed.starts_with("# search"),
+        "removal accumulated whitespace above the comment:\n{removed:?}"
+    );
+
+    // The same bytes, carried away by a move rather than a removal.
+    let moved = edit::apply(DOCUMENTED, &[Edit::move_entry("mcp", 0, 1)]).unwrap();
+    assert!(
+        moved.contains("# search is the one the team actually uses"),
+        "the moved entry took the next entry's comment with it:\n{moved}"
+    );
+    let comment = moved.find("# search").unwrap();
+    let docs = moved.find("docs").unwrap();
+    assert!(
+        comment < docs,
+        "the comment moved down with the entry it does not describe:\n{moved}"
+    );
+}
+
+/// **A move has no newline guard, and `Kind::Append` right beside it does.**
+///
+/// The last region's `body.end` is the length of the file, so moving an entry
+/// into last place splices its header straight onto whatever the final line was.
+/// Usually that is a parse refusal; when the final line is a COMMENT with no
+/// newline after it the comment swallows the header, the moved entry's keys land
+/// inside the previous table, and the file still parses — as something else.
+///
+/// Sabotage: delete either half of the guard in `Kind::Move`. The down arm loses
+/// the `\n` in front of the block and the up arm loses the one behind it.
+#[test]
+fn f1_a_move_against_a_file_with_no_trailing_newline_still_parses() {
+    // No newline after the last line, and the last line is a comment.
+    const COMMENTED: &str = "\
+[[provider]]
+kind = \"openrouter\"
+model = \"a\"
+
+[[provider]]
+kind = \"compatible\"
+preset = \"groq\"
+model = \"b\"
+# groq answers last, and there is no newline after this line";
+
+    let down = edit::apply(COMMENTED, &[Edit::move_entry("provider", 0, 1)]).unwrap();
+    let config = io_harness::Config::from_toml(&down).expect("the moved file loads");
+    assert_eq!(
+        config.fallback_specs().len(),
+        1,
+        "the moved entry's keys were absorbed by the entry above it:\n{down}"
+    );
+    assert!(
+        down.find("groq").unwrap() < down.find("openrouter").unwrap(),
+        "the move did not reorder the chain:\n{down}"
+    );
+    assert!(
+        down.contains("# groq answers last"),
+        "the trailing comment was overwritten:\n{down}"
+    );
+
+    // The mirror: the block itself ends without a newline, and the destination's
+    // header is spliced onto the end of it.
+    const TAIL: &str = "\
+[[provider]]
+kind = \"openrouter\"
+model = \"a\"
+
+[[provider]]
+kind = \"compatible\"
+preset = \"groq\"
+model = \"b\"";
+
+    let up = edit::apply(TAIL, &[Edit::move_entry("provider", 1, 0)]).unwrap();
+    let config = io_harness::Config::from_toml(&up).expect("the moved file loads");
+    assert_eq!(config.fallback_specs().len(), 1, "{up}");
+    assert!(
+        up.find("groq").unwrap() < up.find("openrouter").unwrap(),
+        "the move did not reorder the chain:\n{up}"
+    );
+}
+
+/// **A whole new section, once — the shape `set` cannot express and the one the
+/// price fill could not do without.**
+///
+/// Every edit in a batch is resolved against the document as it was *before* the
+/// batch: [`edit::apply`] walks the headers once and answers every `set` from that
+/// walk. So N `set`s addressing keys of a section that does not exist yet each
+/// fall through to the append arm, and each emits its own copy of the header. The
+/// file gains N definitions of one table and the read-back refuses the lot — which
+/// is what happened to the first price fill, at four hundred models, before this
+/// existed. Nothing about the failure named the cause: the operator was told "the
+/// edit would have produced a file that does not parse".
+///
+/// `Kind::Section` is the answer, and the constraint on it is as important as the
+/// capability. It **refuses** a section that is already there rather than replacing
+/// it, because a caller holding an existing section wants `set` per key — that
+/// leaves every row it did not name alone, which for `[prices.models]` is every
+/// model the catalogue stopped serving and every rate the operator corrected by
+/// hand. A replace here would delete both from a call site whose author believed
+/// they were adding rows.
+///
+/// Sabotage: drop the existence check and splice unconditionally, under which the
+/// second half of this test passes by writing a file with two `[app.io-cli]`
+/// headers in it. Or emit the header per key rather than once, which is the shape
+/// that made the failure this exists to remove.
+#[test]
+fn f1_a_whole_section_is_written_once_and_refused_when_it_is_already_there() {
+    let body = "\"gpt-4.1\" = { input = 2000000, output = 8000000 }\n\
+                \"gpt-4o\" = { input = 2500000, output = 10000000 }\n\
+                \"o3\" = { input = 2000000, output = 8000000 }";
+    let after = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::set("prices.as_of", "\"2026-08-27\""),
+            Edit::section("prices.models", body),
+        ],
+    )
+    .expect("a section the file does not have is written whole");
+
+    // One header, whatever the row count. The count is asserted rather than left
+    // to the parse, because a duplicate is only usually a parse error.
+    assert_eq!(
+        after.matches("[prices.models]").count(),
+        1,
+        "the section was written more than once:\n{after}"
+    );
+
+    // The operator's own file is still their file, byte for byte, with the new
+    // sections after it — the same preservation property every other edit here
+    // keeps.
+    assert!(
+        after.starts_with(OPERATORS_FILE),
+        "writing a new section rewrote the document above it:\n{after}"
+    );
+
+    // And it says what it was asked to say. Three dotted ids, each a key rather
+    // than a path, read back through a parser that has no opinion about io-cli.
+    let parsed: toml::Value = toml::from_str(&after).expect("the result parses");
+    assert_eq!(parsed["prices"]["as_of"].as_str(), Some("2026-08-27"));
+    for model in ["gpt-4.1", "gpt-4o", "o3"] {
+        assert!(
+            parsed["prices"]["models"][model]["input"]
+                .as_integer()
+                .is_some(),
+            "`{model}` did not land as a key of the section:\n{after}"
+        );
+    }
+
+    // The refusal. `[app.io-cli]` is in the fixture, so writing it whole would
+    // discard the theme — and the message says which section and why rather than
+    // reporting a parse failure the caller cannot act on.
+    let error = edit::apply(
+        OPERATORS_FILE,
+        &[Edit::section("app.io-cli", "theme = \"light\"")],
+    )
+    .expect_err("a section that already exists must not be written whole");
+    assert!(
+        error.contains("app.io-cli") && error.contains("already in this file"),
+        "the refusal does not name the section it refused: {error}"
+    );
+    assert!(
+        error.contains("key by key"),
+        "the refusal does not say what to do instead: {error}"
+    );
+}
