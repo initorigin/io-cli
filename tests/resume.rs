@@ -741,3 +741,102 @@ async fn a_plan_belonging_to_another_run_is_refused_and_names_both_runs() {
         "and the plan that was named still has no verdict on it",
     );
 }
+
+/// The driver read as text, because nothing here can link it.
+fn driver() -> String {
+    std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("the driver")
+}
+
+/// The four properties of `resume_pending` that the adversarial review found
+/// broken, asserted the only way this crate can assert anything about the driver.
+///
+/// **Every one of these shipped green.** `src/main.rs` is not linked by any
+/// integration test — the crate says so in five places — so a defect in the
+/// resume loop is invisible to the 1,215 tests around it. What is checkable is
+/// the driver's *text*, which is how `tests/context_share.rs`,
+/// `tests/contract.rs` and `tests/compact.rs` already hold it to account. These
+/// are weak assertions by construction; they are also the only ones available,
+/// and each names a defect that was real.
+#[test]
+fn the_resume_loop_keeps_the_four_properties_the_review_found_missing() {
+    let driver = driver();
+    let from = driver
+        .find("async fn resume_pending")
+        .expect("the driver resumes");
+    let loop_body = &driver[from..];
+
+    // **A named binding lives; only `_` drops.** Written `_parked`, the
+    // responder's receiver stayed open, so a resumed run that asked a second
+    // question sent into a channel nobody drains and awaited a reply nobody
+    // would send — the session froze with nothing on screen and no way out.
+    assert!(
+        loop_body.contains("let (answerer, _) = io_cli::intent::channel();"),
+        "the resumed run's responder receiver must be dropped at once, or a second \
+         question hangs the process",
+    );
+
+    // Without this the mode stays `Idle`, and at Idle `App::compose` does not
+    // queue: a prompt typed during a resumed run was taken out of the composer
+    // and destroyed, and `Ctrl+C` took the quit branch and did nothing.
+    assert!(
+        loop_body.contains("app.started();"),
+        "a resumed run must tell the interface a run is in flight, or a typed prompt \
+         is destroyed and the stop key lies",
+    );
+
+    // The stop key has to reach the observer's flag, exactly as a live turn's does.
+    assert!(
+        loop_body.contains("canceller.store(true"),
+        "the stop key must reach the run, or a resumed run cannot be stopped at all",
+    );
+
+    // A `Some(Event::Key(_))` arm consumes a `Resize` and drops it, leaving the
+    // `Screen` believing in a width the terminal no longer has.
+    assert!(
+        loop_body.contains("Event::Resize(width, height)"),
+        "the resume loop must handle a resize, as both sibling loops in the driver do",
+    );
+}
+
+/// The `/resume` lock is released on **every** path that stops holding it.
+///
+/// The leak the review found: entering a session, then resuming back into the one
+/// this process opened at startup, returned early on "that pid is ours" without
+/// clearing the guard — so the process went on holding a lock and an owner record
+/// for a conversation it had left, and a second `io` was refused and sent to a
+/// terminal showing something else.
+#[test]
+fn entering_a_session_releases_the_lock_on_the_one_being_left() {
+    let driver = driver();
+    let from = driver.find("fn entering(").expect("the driver takes the lock");
+    let body = &driver[from..];
+    let end = body.find("\n}\n").expect("the function ends");
+    let body = &body[..end];
+
+    // Three paths leave this function without acquiring: ours-already, an
+    // ordinary filesystem failure, and the refusal. The first two must clear the
+    // guard; the refusal keeps it, because the switch does not happen.
+    let cleared = body.matches("*held = None;").count();
+    assert_eq!(
+        cleared, 2,
+        "both non-acquiring paths that still switch session must drop the guard for \
+         the session being left; found {cleared}",
+    );
+    assert!(
+        body.contains("*held = Some(guard);"),
+        "and the acquiring path replaces it, which drops the old one in the same statement",
+    );
+    // The owner record must name the session being entered, not the one being
+    // left — otherwise a second `io`'s refusal points at the wrong directory.
+    // `.session_root(id)` and not `store.session_root(id)`: rustfmt breaks the
+    // receiver onto its own line, so the joined-up spelling matches nothing. A
+    // needle is re-pointed at the shape the code actually has, never widened
+    // until it matches something.
+    assert!(
+        body.contains(".session_root(id)"),
+        "the root written into the owner record must be read for the session being entered",
+    );
+}

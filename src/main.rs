@@ -1162,7 +1162,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // Taken before the session is swapped, so a refusal
                             // leaves the operator exactly where they were.
                             Some(id)
-                                if !entering(&home, id, &mut entered, &session, &mut app) => {}
+                                if !entering(
+                                    &home,
+                                    id,
+                                    &mut entered,
+                                    &store,
+                                    &session,
+                                    &mut app,
+                                ) => {}
                             Some(id) => match io_cli::sessions::resume(&store, id) {
                                 Ok(reopened) => {
                                     session = reopened;
@@ -5098,6 +5105,7 @@ fn entering(
     home: &Option<std::path::PathBuf>,
     id: i64,
     held: &mut Option<io_cli::lock::Guard>,
+    store: &Store,
     session: &Session,
     app: &mut App,
 ) -> bool {
@@ -5107,26 +5115,62 @@ fn entering(
     // `src/main.rs` is the one file permitted a clock read; the lock module takes
     // every instant as an argument for exactly that reason.
     let now = std::time::SystemTime::now();
-    match io_cli::lock::acquire(home, id, session.root(), now) {
+    // **The root of the session being entered, not the one being left.** Read
+    // from the store rather than from the `Session` in hand, because the switch
+    // has not happened yet — `session.root()` here is the *previous*
+    // conversation's workspace, and writing that into the owner record would
+    // point a second `io`'s refusal at the wrong directory, which is the one
+    // thing that clause exists to get right. A store that cannot answer falls
+    // back to the current root rather than refusing the switch.
+    let root = store
+        .session_root(id)
+        .ok()
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| session.root().to_path_buf());
+    match io_cli::lock::acquire(home, id, &root, now) {
         Ok(io_cli::lock::Taken::Held(guard)) => {
+            // Assigning drops whatever was held for the session being left, in
+            // this statement, which is what releases it for anyone waiting.
             *held = Some(guard);
             true
         }
         Ok(io_cli::lock::Taken::Refused(owner)) => {
             if owner.pid == Some(std::process::id()) {
+                // **Ours already — and the guard for the session being left must
+                // still go.** Returning here without clearing it leaked a lock:
+                // resuming A → B → A left this process holding B's lock and B's
+                // owner record while working in A, so a second `io` asking for B
+                // was refused and sent to a terminal showing something else.
+                //
+                // The session this refusal names is held by `drive` for the whole
+                // process, so there is nothing to take — only the stale one to
+                // release, which this does.
+                *held = None;
                 return true;
             }
+            let lapsed = owner.lapsed(now, io_cli::lock::LEASE) == Some(true);
             app.say(
                 Tone::Refused,
                 format!(
-                    "another io has that session open — {}. Two of them would advance one \
+                    "another io has that session open — {}.{} Two of them would advance one \
                      conversation and orphan a turn somebody paid for.",
-                    owner.sentence()
+                    owner.sentence(),
+                    if lapsed {
+                        " Its lease has run out, so if that process is gone, close this one \
+                         and reopen — the lock goes with the process."
+                    } else {
+                        ""
+                    }
                 ),
             );
             false
         }
         Err(error) => {
+            // Opened anyway, for the reason the startup acquisition gives — but
+            // the guard for the session being left is still dropped, or this
+            // process would hold a lock on a conversation it is no longer in.
+            *held = None;
             app.say(
                 Tone::Muted,
                 format!("that session could not be locked ({error}); opening it anyway"),
@@ -5331,12 +5375,13 @@ async fn resume_pending<P: Provider>(
         // The one pause that cannot be answered, and the sentence is the whole
         // of this arm's job. See `crate::resume` for why a cancelled run is
         // terminal to every resume entry point in the pinned harness.
+        // The sentence is `sessions::note`'s and not a second copy of it: the
+        // picker row and this line describe the same state, and two spellings of
+        // one fact are two things to keep in step.
         Pending::Interrupted => {
-            app.say(
-                Tone::Refused,
-                "you stopped that turn, so it is finished rather than parked — /fork from the \
-                 turn before it to take another run at the same work",
-            );
+            if let Some(note) = io_cli::sessions::note(&pending) {
+                app.say(Tone::Refused, note);
+            }
             return Ok(());
         }
         Pending::Finished => {
@@ -5383,7 +5428,15 @@ async fn resume_pending<P: Provider>(
     // site — it takes a run, so it is not one of the two reading sites either —
     // and it gets its own name and its own assertion rather than widening a
     // count that would then admit a genuine second arm.
-    let (answerer, _parked) = io_cli::intent::channel();
+    // **`_` and never `_parked`.** A named binding, underscore-prefixed or not,
+    // lives to the end of the scope; only the bare wildcard drops here and now.
+    // Written as `_parked` this froze the session outright: the receiver stayed
+    // open, `Answerer::answer` sent into it and awaited a reply nobody would ever
+    // send, and a resumed run that asked a second question hung forever with
+    // nothing on screen. Dropped, the send fails, the `oneshot` goes with it, and
+    // `answer` resolves `None` — which is io-harness's own "nobody can answer",
+    // so the run parks again and `/resume` finds it.
+    let (answerer, _) = io_cli::intent::channel();
     let continuing = io_cli::contract::session(
         goal,
         session.root().to_path_buf(),
@@ -5396,12 +5449,21 @@ async fn resume_pending<P: Provider>(
         None,
     );
     let (observer, mut events) = bridge::channel();
+    let canceller = observer.canceller();
     let (approver, mut asks) = approval::channel();
     // Read before anything is driven, and handed down so the head write is a
     // compare-and-swap against the head this process believed in.
     let expected_head = session.head();
     let started = Instant::now();
     app.say(Tone::Muted, format!("resuming run {run_id}"));
+    // **The interface must know a run is in flight, and it did not.** Left at
+    // `Mode::Idle` this loop was a trap: `App::compose` only queues a prompt
+    // while a run is going, so a line typed during a resume was taken out of the
+    // composer and thrown away; and `interrupt_or_quit` took its *quit* branch,
+    // so `Ctrl+C` printed "press again to exit" and then did nothing at all,
+    // twice over. Saying a run has started fixes both — the prompt is queued and
+    // the key becomes an interrupt — and it is what a live turn says here too.
+    app.started();
     paint(screen, app)?;
     let driving = async {
         match decided {
@@ -5471,14 +5533,63 @@ async fn resume_pending<P: Provider>(
                 app.open_approval(ask);
                 paint(screen, app)?;
             }
-            Some(Event::Key(key)) = inputs.recv() => {
-                if key.kind == KeyEventKind::Press {
-                    let _ = app.key(key);
-                    paint(screen, app)?;
+            // **`Event::Key(_)` alone silently swallowed every resize**, because
+            // a `Resize` fails the pattern and `select!` consumes the event
+            // anyway — leaving the `Screen` believing in a width the terminal no
+            // longer has for the rest of the run. Both sibling loops in this file
+            // handle it; this one did not.
+            Some(input) = inputs.recv() => {
+                match input {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        match app.key(key) {
+                            // Honoured at the next step boundary, through the
+                            // observer's flag — the same mechanism a live turn's
+                            // stop key uses, and the same sentence
+                            // `interrupt_or_quit` has just put on screen.
+                            //
+                            // **Both presses cancel and neither drops the
+                            // future**, which is where this differs from a live
+                            // turn deliberately: the resume drivers close the
+                            // session's turn and move its head *after* the loop
+                            // returns, so abandoning the future mid-flight would
+                            // leave the turn open and the head unmoved — the
+                            // silent half-finished state this release exists to
+                            // stop producing.
+                            Command::Interrupt | Command::Abandon => {
+                                canceller.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            // Neither can arrive from a resumed overlay: the
+                            // decision was taken before anything was driven, and
+                            // an approval resolves through its own channel.
+                            Command::Answered(_) | Command::Decided(_) => {}
+                            _ => {}
+                        }
+                        paint(screen, app)?;
+                    }
+                    Event::Resize(width, height) => {
+                        screen
+                            .resize(width, height)
+                            .map_err(|error| error.to_string())?;
+                        paint(screen, app)?;
+                    }
+                    _ => {}
                 }
             }
         }
     };
+    // Anything typed while the run was carrying on. `App::compose` queued it
+    // rather than destroying it — which is what `App::started` above bought —
+    // and the queue belongs to the turn that is now over, so it is dropped here
+    // **and said**, exactly as a stopped turn's queue is. Silently is the one way
+    // it must not go.
+    let queued = app.forget_queued_prompts();
+    if queued > 0 {
+        let dash = app.theme.glyphs.dash;
+        app.say(
+            Tone::Muted,
+            format!("{queued} typed while the run carried on {dash} not sent; type them again"),
+        );
+    }
     app.finished();
     match resumed {
         Ok(done) => {

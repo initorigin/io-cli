@@ -514,7 +514,14 @@ impl App {
     /// approval belongs to a run that is still running and blocked on it, so
     /// there is no parked state to leave it in.
     pub fn leave_resumed(&mut self) {
-        if self.intent.take().is_some() || self.plan.take().is_some() {
+        // **Both takes run.** Written with `||` this short-circuited: with a
+        // question open the plan was never taken, so a state where both were set
+        // would leave one of them on screen with nothing driving it. Nothing
+        // opens two today, and this must not be the line that makes that
+        // assumption load-bearing.
+        let had_intent = self.intent.take().is_some();
+        let had_plan = self.plan.take().is_some();
+        if had_intent || had_plan {
             self.record(
                 Tone::Muted,
                 format!(

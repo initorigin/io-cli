@@ -54,6 +54,15 @@
 //! started. That record is a separate file, because a Windows byte-range lock
 //! is mandatory and a refused reader could not open the locked file to read it.
 //!
+//! **The record carries no host, and on a shared home that matters.** The pid is
+//! compared against this process's own to recognise a lock this process already
+//! holds, which is sound wherever the home is local: a live holder on this
+//! machine cannot have our pid. With `~/.io-cli` on a network filesystem shared
+//! between machines, two hosts can carry the same pid, and a genuine second
+//! process would then be admitted to a session another `io` is holding. That is
+//! the same configuration the lease below exists for, and the same one where an
+//! advisory lock is not this program's business either.
+//!
 //! The lease and its lapse exist only for the case the kernel cannot cover — a
 //! network filesystem, where an advisory lock is the kernel's business and not
 //! this program's. There the owner record's own timestamp is all there is, and

@@ -33,10 +33,19 @@ use crate::resume::{pending_for, Pending};
 
 /// How many run ids the walk will look at before giving up.
 ///
-/// The only bound left, and it bounds *cost* rather than the length of the list:
-/// a session's runs are contiguous only if nothing else ran in between, so a
-/// hundred sessions can sit behind far more than a hundred runs. Five hundred
-/// point queries on an indexed column is the ceiling this release accepts.
+/// The only bound left, and it bounds the **scan** rather than the length of the
+/// list: a session's runs are contiguous only if nothing else ran in between, so
+/// a hundred sessions can sit behind far more than a hundred runs.
+///
+/// **What it costs is no longer five hundred queries, and this said so until
+/// 0.23.0.** The walk itself is two point queries per run scanned. Every distinct
+/// session it finds then costs three more to describe it, and since 0.23.0 a
+/// further handful for [`crate::resume::pending_for`] to say what its last run
+/// stopped on — the run's status and outcome, and its pending questions, plans
+/// and open attempts. So a store whose newest five hundred runs belong to five
+/// hundred *different* sessions issues thousands of point queries on one
+/// keystroke, not five hundred. They are all indexed and all synchronous, and the
+/// honest statement of the ceiling is the scan, which is what this bounds.
 ///
 /// There was a second bound until 0.7.0 — twenty sessions, and its own comment
 /// said it existed because a picker that could not be typed at was a list nobody

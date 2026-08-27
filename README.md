@@ -612,10 +612,13 @@ all, so the list is ragged by construction and there is no column to read down.
 while it was live**, and what you say carries *that* run on from the step it
 stopped at: the observation ledger, the token budget and the elapsed clock are
 the run's own rather than a new run's. A plan is approved, sent back with a
-correction, or cancelled outright. An interrupted call is retried, abandoned, or
-asserted to have landed — and what you say it returned is filed against the step
-the call was made on, not the step the run has now reached, so the resumed run
-reads a transcript in which the tool answered where it was asked. A run whose
+correction, or cancelled outright. An interrupted call is retried or abandoned
+here — `r` and `a` — and can also be **asserted to have landed**, which takes an
+account of what it returned and is therefore offered by `io resume --recovery
+completed --account "…"` rather than by a keystroke. What you say it returned is
+filed against the step the call was made on, not the step the run has now
+reached, so the resumed run reads a transcript in which the tool answered where
+it was asked. A run whose
 process merely died carries on from its last committed step plus one. `Esc`
 leaves any of them parked exactly as it was found.
 

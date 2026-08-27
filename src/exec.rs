@@ -1093,9 +1093,15 @@ impl WithProvider for Resuming {
             let _ = writeln!(out, "{reply}");
             let _ = out.flush();
         }
+        // **`+ 1`, and the interactive arm has always had it.** `resumed_after`
+        // is the last step that had *committed* before anything was driven, so
+        // the step this resume carried on from is the one after it. Printed bare,
+        // this told the operator it resumed at 12 when it resumed at 13, and
+        // disagreed with what the session said about the same run.
         eprintln!(
             "io: carried run {} on from step {}",
-            resumed.run_id, resumed.resumed_after
+            resumed.run_id,
+            resumed.resumed_after + 1
         );
         eprintln!("io: {}", describe(&resumed.outcome));
         // A resumed run can pause again, on a second question or on a plan the
