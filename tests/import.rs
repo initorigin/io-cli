@@ -21,6 +21,17 @@ const SECRET: &str = "sk-live-this-must-never-be-copied";
 /// A variable no machine sets, so `${env:…}` for it is unresolvable.
 const UNSET: &str = "IO_CLI_IMPORT_TEST_TOKEN";
 
+/// A variable that is always exported, for the tests whose subject is something
+/// other than an unresolvable reference.
+///
+/// **[`UNSET`] is a premise, not a default.** io-harness treats an unset
+/// `${env:…}` as a hard parse error and `configure::write` rolls the whole file
+/// back when it hits one, so a test that uses `UNSET` while asserting a server
+/// *arrives* is asserting two incompatible things and fails on the rollback —
+/// which is correct behaviour reported as a broken test. A test about a quoted
+/// server header wants an env reference that resolves.
+const ALWAYS_SET: &str = "PATH";
+
 fn put(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("a fixture directory");
@@ -375,7 +386,7 @@ fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
              args = [\"--port\", \"8080\"]\n\
              \n\
              [mcp_servers.\"docs.v2\".env]\n\
-             {UNSET} = \"{SECRET}\"\n"
+             {ALWAYS_SET} = \"{SECRET}\"\n"
         ),
     );
 
@@ -404,7 +415,7 @@ fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
     assert_eq!(args, vec!["--port", "8080"]);
     assert_eq!(
         env,
-        vec![UNSET],
+        vec![ALWAYS_SET],
         "the env table of a quoted server was looked for under an unquoted header",
     );
     assert!(

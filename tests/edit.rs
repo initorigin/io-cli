@@ -459,14 +459,20 @@ input = 1.0
     );
 
     // 3. The write half reaches the same section, and reaches it exactly once.
+    // `4.5` rather than `4.0`, and the digit after the point is the point.
+    // `assert_only_span_changed` reports the span between the longest common
+    // prefix and the longest common suffix, so replacing `3.0` with `4.0` reports
+    // `3` -> `4`: the shared `.0` is swallowed by the suffix scan. That would be a
+    // test asserting against its own helper's arithmetic rather than against the
+    // writer, and it would go on passing if the writer started truncating floats.
     let after = edit::apply(
         QUOTED,
-        &[Edit::set("prices.models.\"gpt-4.1\".input", "4.0")],
+        &[Edit::set("prices.models.\"gpt-4.1\".input", "4.5")],
     )
     .unwrap();
     assert_eq!(
         assert_only_span_changed(QUOTED, &after, "prices.models.\"gpt-4.1\".input"),
-        "4.0"
+        "4.5"
     );
     assert_eq!(
         after.matches("[prices.models.\"gpt-4.1\"]").count(),

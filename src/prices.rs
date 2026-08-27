@@ -199,6 +199,90 @@ pub fn changes(existing: Option<&io_harness::pricing::PriceTable>, fresh: &Catal
         .collect()
 }
 
+/// What a refresh found, committed before anything is written.
+///
+/// **Everything shown before a byte moves, and the reason is sharper than
+/// courtesy.** io-cli cannot tell a rate the operator corrected by hand from one
+/// an older catalogue served: the file records a number, not where it came from.
+/// So it does not guess. It lists every rate that would move, with what it was
+/// and what it would become, and an operator who finds their own correction in
+/// that list can decline the whole refresh — which is the same answer `/import`
+/// gives to the same problem, and the only honest one available.
+///
+/// A refusal is reported here too rather than by the caller, so the sentence that
+/// explains a short catalogue lives beside the rule that refuses it.
+pub fn report(
+    catalogue: &Catalogue,
+    moved: &[Change],
+    existing: usize,
+    theme: &crate::theme::Theme,
+    width: u16,
+) -> Vec<ratatui::text::Line<'static>> {
+    let mut rows: Vec<crate::page::Row> = Vec::new();
+    let source = source_word(&catalogue.source);
+    rows.push(crate::page::Row::note(format!(
+        "{source}, read {}: {} model{} served, {} priced",
+        catalogue.as_of,
+        catalogue.served,
+        if catalogue.served == 1 { "" } else { "s" },
+        catalogue.rows.len(),
+    )));
+
+    if catalogue.too_short(existing) {
+        rows.push(crate::page::Row::caveat(format!(
+            "that is short enough against the {existing} model{} you already have to be a \
+             truncated read rather than a price change, so nothing was written and the prices \
+             you have were kept",
+            if existing == 1 { "" } else { "s" }
+        )));
+        return crate::page::commit("prices", &rows, theme, width);
+    }
+
+    if moved.is_empty() {
+        rows.push(crate::page::Row::note(
+            "no rate has moved since the last read, so nothing was written",
+        ));
+        return crate::page::commit("prices", &rows, theme, width);
+    }
+
+    rows.push(crate::page::Row::Blank);
+    rows.push(crate::page::Row::heading(format!(
+        "{} rate{} would change",
+        moved.len(),
+        if moved.len() == 1 { "" } else { "s" }
+    )));
+    for change in moved {
+        let value = match change.was {
+            Some(was) => format!("{} -> {}", rate(&was), rate(&change.now)),
+            // A model the table has never priced. Said as "new" rather than shown
+            // as a change from nothing, because an operator scanning for what
+            // moved is asking a different question from one asking what arrived.
+            None => format!("new, {}", rate(&change.now)),
+        };
+        rows.push(crate::page::Row::fact(change.model.clone(), value));
+    }
+    rows.push(crate::page::Row::Blank);
+    rows.push(crate::page::Row::caveat(
+        "if one of these is a rate you corrected by hand, it is about to be replaced: \
+         io-cli records what a rate is and not where it came from, so it cannot tell yours \
+         from an older catalogue's. Decline and edit the file if so.",
+    ));
+    crate::page::commit("prices", &rows, theme, width)
+}
+
+/// One rate, as input and output per million tokens.
+///
+/// The two dimensions that move a bill, and not the other three: a refresh report
+/// is read to answer "did this get more expensive", and five numbers per row is a
+/// table nobody scans. The whole rate is in the file for anyone who wants it.
+fn rate(price: &Price) -> String {
+    format!(
+        "{} in / {} out",
+        crate::cost::money(price.input),
+        crate::cost::money(price.output)
+    )
+}
+
 /// A `Price` as a one-line TOML inline table, naming only what is charged for.
 ///
 /// A dimension the vendor does not charge for is left out rather than written as

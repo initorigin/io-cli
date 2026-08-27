@@ -291,9 +291,61 @@ net = "deny"
 # on_failure = "refuse"
 # timeout_ms = 5000
 
+# --- What a token costs (0.22.0) --------------------------------------------
+#
+# io-harness's own section, and the only place a price comes from. NOTHING IS
+# COMPILED IN: a rate baked into a binary is a promise the binary cannot keep,
+# because providers move prices without announcing it and a release cadence is
+# not a pricing cadence. So this table ships EMPTY, and `/cost` reports tokens
+# and no currency until it is filled.
+#
+# Filling it is a row on `/config`: io-cli reads the model catalogue your
+# connected provider already serves — the same fetch that offers the wizard its
+# model list, whose prices it used to throw away — and writes what it found here.
+# EVERY RATE THAT WOULD MOVE IS SHOWN BEFORE A BYTE IS WRITTEN, with what it was
+# and what it would become, and declining writes nothing. That is not courtesy:
+# this file records what a rate IS and never where it came from, so io-cli cannot
+# tell a correction you made by hand from a value an older catalogue served. It
+# does not guess; it shows you and lets you refuse the lot.
+#
+# A refetch that comes back EMPTY, or far shorter than the table it would
+# replace, is refused and the old table kept — a truncated response that replaced
+# a full table with a handful of rows would turn most of your spending into
+# "unpriced" and shrink your reported bill with nothing failing anywhere. A first
+# fill has nothing to compare against and is never refused.
+#
+# WHOSE PRICE IT IS. OpenAI, Anthropic and Google publish no prices on any
+# endpoint — their model endpoints carry capabilities and limits and no cost
+# field. So for those three the rates necessarily come from the reference
+# catalogue rather than from the vendor, and every surface that draws money says
+# which and on what date. On OpenRouter the two coincide, because the reference
+# catalogue is OpenRouter's own.
+#
+# THIS SECTION IS deny_unknown_fields AND CARRIES EXACTLY `as_of` AND `models`. A
+# key of io-cli's own put beside them would not be ignored — it would make this
+# whole file unreadable. io-cli's bookkeeping lives in [app.io-cli.prices] below.
+#
+#   as_of    the date the rates were read. REQUIRED: a price list with no date is
+#            a claim with no expiry. Written by a fetch rather than typed.
+#   models   one entry per model, in micro-units PER MILLION TOKENS
+#
+# Rows for models the catalogue no longer serves are left alone rather than
+# pruned. They are not stale: io-harness prices a call by the model name on it, so
+# an old row is what prices an old run correctly, and `/cost` reports history as
+# well as today.
+#
+# [prices]
+# as_of = "2026-08-27"
+#
+# [prices.models."anthropic/claude-sonnet-4.5"]
+# input = 3000000
+# output = 15000000
+# cache_read = 300000
+# cache_write = 3750000
+
 # --- io-cli's own section ---------------------------------------------------
 #
-# Eight keys and five tables. io-harness does not validate any of it, so an
+# Eight keys and six tables. io-harness does not validate any of it, so an
 # unrecognised VALUE reads as the default rather than stopping a session. A
 # table io-harness cannot parse at all is different: the session starts on the
 # defaults and says so, carrying the harness's own message.
@@ -374,10 +426,10 @@ fleet = "ctrl+f"
 # task at all**, and it is absent by default: io-harness has one session entry
 # point that reaches its spawn loop, and these caps are what selects it.
 #
-# What it costs is smaller than it was, and it is not a mode. No session turn
-# takes a steer inbox — none has since 0.11.0 — so a contained turn gives up no
-# steering an ordinary one has. `Ctrl+C` still ends it, at the next point where no
-# child is in flight, and `/contain off` gives the next turn back.
+# What it costs is smaller than it was, and it is not a mode. Every session turn
+# carries a steer inbox — every one has since 0.17.0 — so a contained turn gives
+# up no steering an ordinary one has. `Ctrl+C` still ends it, at the next point
+# where no child is in flight, and `/contain off` gives the next turn back.
 #
 # THROUGH 0.11.0 THIS TABLE DECIDED EVERY KEY BELOW IT, AND IT NO LONGER DOES.
 # io-harness's contained turn was then the only session entry point that took a
@@ -475,3 +527,25 @@ fleet = "ctrl+f"
 # [app.io-cli.browser]
 # binary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # headless = true
+
+# Where the prices above came from (0.22.0). The rates themselves are io-harness's
+# and live in [prices]; this is the bookkeeping io-harness does not model, in the
+# one section that will not refuse a key it has never heard of.
+#
+#   source_url   the catalogue to read. ABSENT MEANS io-harness's own default,
+#                which is the reference catalogue. Write this when you are on a
+#                self-hosted or `compatible` endpoint: the reference catalogue
+#                cannot speak for a server it has never heard of, and this key is
+#                the only way such an operator gets prices at all.
+#   source       what the last read was, IN WORDS — the vendor speaking for
+#                itself, or a named third-party catalogue. WRITTEN BY A FETCH
+#                RATHER THAN BY HAND: it is what the surfaces that draw money
+#                cite, and a number attributed to a vendor that never published
+#                one is the thing it exists to prevent.
+#   models       how many models the last read priced. `PriceTable` has no length
+#                and no iterator — it answers `price(model)` and nothing else — so
+#                this is the only count there is, and it is what refuses a refetch
+#                that comes back far shorter than the table it would replace.
+#
+# [app.io-cli.prices]
+# source_url = "https://openrouter.ai/api/v1/models"

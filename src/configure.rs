@@ -78,6 +78,20 @@ impl Decided {
             Decided::Default => None,
         }
     }
+
+    /// The scope that decided it, where a file did.
+    ///
+    /// **What a rewrite of an existing value has to be aimed at.** Writing into a
+    /// higher-precedence scope than the one that holds a key shadows it rather
+    /// than updating it: the value in force changes, and the file the operator
+    /// opens still shows the old one. `None` is io-harness's own default, which no
+    /// file holds and which a caller therefore has to choose a scope for.
+    pub fn scope(&self) -> Option<Scope> {
+        match self {
+            Decided::File { scope, .. } => Some(*scope),
+            Decided::Default => None,
+        }
+    }
 }
 
 /// One row of the surface.
@@ -146,6 +160,29 @@ pub const CATALOGUE: &[&str] = &[
     "prices.as_of",
     "app.io-cli.prices.source_url",
 ];
+
+/// The `/config` row that re-reads the price catalogue.
+///
+/// **A row rather than a key, because it is an act and not a setting.** Every
+/// other row on that surface names something in a file and puts it in the
+/// composer for the operator to type a value after; this one does something. It
+/// is a sentinel and not a path so that `settings` and `setting` never see it —
+/// a key that is not in any file and never will be would show as "not set"
+/// forever on a surface whose whole job is saying what is in force.
+///
+/// It lives here rather than in the driver so a test can reach it: nothing under
+/// `tests/` can link `src/main.rs`, and a row spelled in the driver is a row no
+/// test can assert on.
+pub const REFRESH_PRICES: &str = "!refresh-prices";
+
+/// The label that sentinel wears on the picker.
+pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
+    let detail = match &setting.value {
+        Some(as_of) => format!("last read {as_of}"),
+        None => "no prices are configured".to_string(),
+    };
+    crate::picker::Row::with_detail("prices: re-read the catalogue", detail)
+}
 
 /// Whether a key's value is a credential and must never be shown in full.
 ///
