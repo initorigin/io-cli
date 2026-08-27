@@ -68,7 +68,7 @@ pub struct Row {
     /// **A heading is drawn while the list is being browsed and disappears the
     /// moment a character is typed**, which is not decoration: a ranked list with
     /// headings interleaved puts a heading above a row that ranked there for
-    /// reasons having nothing to do with it. So [`Picker::refilter`] admits
+    /// reasons having nothing to do with it. So `Picker::refilter` admits
     /// headings only for an empty query, and nothing can be chosen while one is
     /// under the marker.
     pub heading: bool,

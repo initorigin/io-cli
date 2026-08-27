@@ -18,7 +18,7 @@ permission boundary and the session store are all
 reimplemented here. A test asserts that: `tests/dependencies.rs` fails the build
 if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 
-- [Install](#install) · [First run](#first-run) · [While it works](#while-it-works)
+- [Install](#install) · [First run](#first-run) · [Bringing your setup across](#bringing-your-setup-across) · [While it works](#while-it-works)
 - [Keys](#keys) · [Commands](#commands) · [Configuration](#configuration)
 - [Capability bundles](#capability-bundles) · [Hooks](#hooks) · [The fleet](#the-fleet)
 - [Pictures](#pictures) · [Documents](#documents) · [Background jobs](#background-jobs)
@@ -46,6 +46,7 @@ on one row and the keys and the posture on the next.](docs/screenshot.png)
 | **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
 | **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
 | **Documents, read and written** | Spreadsheets, Word, slide decks, PDFs and barcodes through io-harness's own tools — twelve of them, six of which write, every one under the same gate as any other read or write |
+| **Your setup, brought across** | `/import` finds the agent tools already on this machine and offers their instructions, MCP servers, skills and model, item by item, with the whole plan shown before a byte is written and no credential read at any point |
 
 ## It never takes your terminal
 
@@ -114,6 +115,76 @@ Run it again at any time with `io setup`.
 Your key never appears on screen, in the scrollback, or in a log line. If the
 provider's environment variable is already set, the wizard offers to use it and
 writes no key to disk at all.
+
+## Bringing your setup across
+
+**You have almost certainly used another agent tool first, and `/import` brings
+what you told it.** Four things carry over: the standing instructions you wrote,
+the MCP servers you configured, the skills you collected, and the model you
+settled on. Nothing else, and nothing without you saying so.
+
+It is offered **once**, on a first run, and io records that it asked so it never
+asks again. One key declines and the session carries straight on — declining
+writes nothing at all, and there is no reminder later. `/import` opens the same
+thing at any time.
+
+**What it looks at:**
+
+| Where | What is read |
+| --- | --- |
+| `~/.claude/` | `CLAUDE.md`, `settings.json`, and the skills under `skills/` and `plugins/` |
+| `~/.claude.json` | the MCP servers, which live here and not beside `settings.json` |
+| `~/.codex/` | `AGENTS.md`, `memories/MEMORY.md`, `config.toml`, `rules/default.rules` |
+| `~/.gemini/` | `GEMINI.md` and `antigravity/mcp_config.json` |
+| the repository | `.cursorrules` or `CONVENTIONS.md`, if either is there |
+
+A tool that is not installed simply is not offered. A tool whose files are all
+**empty** is a different row and says so — on a good many machines all three
+Gemini files exist and every one is zero bytes, and an import of nothing that
+then reports success is the failure you cannot see.
+
+**Where it writes:** instructions are appended to the memory file for the scope
+you pick — one block per source file, with a line of provenance above the
+original text, kept whole rather than shredded into a bullet per line. MCP
+servers become `[[mcp]]` entries in io-harness's own spelling. Skills become
+directories under `~/.io-cli/skills`. The model is *carried*, not written: a
+`[[provider]]` entry needs a vendor and a foreign tool's model string does not
+name one — `gpt-5` could be OpenAI or any of the twenty-one presets pointed at a
+compatible endpoint — so io hands you the id and the entry is built once you have
+chosen the vendor.
+
+**The whole plan is on screen before a single byte is written.** One row per
+thing found, saying where it came from and where it would go, and you accept them
+item by item. What you did not accept is not written. A cancelled import is not a
+partial one.
+
+**No credential is ever read or copied, and that is enforced by the code rather
+than promised by it.** `~/.codex/auth.json` is not in the list of files this
+program can open, so no path through it reaches one. A server's `env` values are
+parsed and thrown away without ever being assembled into a string — only the
+variable *name* is ever held — and what gets written is `${env:NAME}`, the name
+pointing at itself, which io-harness resolves out of your own environment at the
+moment a run needs it. Your shell has to have those variables set, and the import
+says which. `~/.claude.json` is an entire application's state with OAuth material
+in it and is read through narrow structs, so every field io does not name is
+skipped by the parser instead of being loaded and then politely ignored.
+
+**An allowlist is read, shown, and deliberately not translated.** Codex's
+`prefix_rule(pattern=["bun","install"], …)` and Claude's `Bash(cargo yank *)` both
+match a *command line*. io-harness's `Act::Exec` matches a **binary name and
+nothing else** — it has no argument matching at all. So the closest faithful
+import of `bun install` is a blanket allow on `bun`, which is a wider permission
+than you ever granted, written by a tool you were trusting to be careful. io says
+what it found and says it cannot express it, and produces no rule, no `[policy]`
+table and no policy layer. A boundary half imported is worse than one left alone.
+
+**Two skills of one name kills a session, so an import counts before it writes.**
+A name already answered to in your skills directory is refused on its own row and
+the rest of the import still goes through. Going over io-harness's ceiling refuses
+**every** skill instead: the harness rejects a whole directory rather than the
+excess, so an operator at 63 skills who imported three more would get a session in
+which every turn dies at run start with nothing visible to blame. See
+[Skills](#skills).
 
 ## While it works
 
@@ -393,16 +464,24 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
 | `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
+| `/import` | bring instructions, MCP servers, skills and a model across from another agent |
 
 `/plugin` is new in 0.20.0 and sits beside those two because it is the third
 surface of the same kind: something a configuration file declares by name, whose
 effect on the session is otherwise invisible. See [Capability
 bundles](#capability-bundles).
 
+`/import` is new in 0.21.0 and is last in the group because it is the one command
+here you use once: the others are returned to for the life of the install. It
+writes files, which is the whole reason it is under **configure**. See [Bringing
+your setup across](#bringing-your-setup-across).
+
 `/mcp` and `/provider` sit under **configure** from 0.19.0, and it is a
 correction rather than a promotion: both open with a list, and both go on from
-that list to add, edit, disable and remove entries in the configuration file,
-which is the one thing **inspect** promises it never does. `/steer` and
+that list to add, edit and remove entries in the configuration file, which is the
+one thing **inspect** promises it never does. That second half was a promise
+rather than a fact until 0.21.0 — the writers existed and nothing called them, so
+both panels could only read. They write now. `/steer` and
 `/compact` are listed under **this turn**, which is the group the code has
 always filed them in — the table above said otherwise until this release, and
 nothing but a reader was misled by it.
@@ -542,7 +621,40 @@ with the file you wrote.
 It rejects the whole set rather than trimming it, so an operator sitting near
 the limit who gains five more would otherwise get no skills at all as their
 upgrade. io-cli counts first, installs up to the ceiling and stops, and says how
-many it installed and how many it withheld.
+many it installed and how many it withheld. `/import` counts against the same
+ceiling before it writes a byte, and refuses the whole import rather than leave
+you over it.
+
+**That ceiling is per directory, and the directories are not bounded together.**
+Every skills directory is discovered on its own — yours, and one more for each
+capability bundle that declares any — so six bundles can put far more than 64
+names in front of the model with nothing failing anywhere and nothing said about
+it. What the limit protects is one directory's discovery, not the size of the
+catalogue a turn is handed. If the palette has grown longer than you can read,
+that is why, and `/skills` is where you see which directory each name came from.
+
+**A bundle's skills are listed too, under the name the model actually uses.**
+Until 0.21.0 they reached the model and appeared on no surface that lists a skill,
+so `/skills` and the `/` palette were lists that disagreed with the catalogue the
+turn was handed. They are in both now, spelled `<bundle>__<name>` — io-harness's
+own namespacing, and the string a refusal or a tool call will name — with the
+bundle named as where the row came from.
+
+**Turning a bundle's skill on or off is refused, and the refusal is the honest
+answer.** Turning a skill off is moving its file into a `disabled/` directory
+beside it. For a bundle skill that would mean io-cli creating a directory inside
+somebody else's bundle and moving their file into it — a directory io-cli did not
+install, does not own and cannot put back. Stop the bundle instead: `/plugin`
+removes its `[[plugin]]` entry and everything it contributed goes with it.
+
+**And a bundle naming a skills directory that is not on disk killed every turn of
+that session, silently, in 0.20.0.** io-harness joins the manifest's word onto the
+bundle root with no existence check at all, and the walk that discovers skills
+fails the run before the first completion — so a typo in a `plugin.toml` somebody
+else wrote reads as io being broken. `/skills` and `/plugin` name the bundle and
+say what it costs, one row per bundle: a second broken bundle does not hide behind
+the first, and a broken one no longer takes the surface that could explain it down
+as well.
 
 ## Capability bundles
 
@@ -1034,13 +1146,36 @@ rules: it writes, asks io-harness to read the file back, and restores it exactly
 when the answer is no.
 
 **`/mcp`** shows what is configured, which servers answered this session, how
-many distinct tools each answered, and the last failure. A server the session has
-not reached says so and is not shown as broken.
+many tools each announced, how many distinct ones this session has asked for, and
+the last failure. A server the session has not reached says so and is not shown as
+broken. From 0.21.0 it also **adds, edits and removes** `[[mcp]]` entries, through
+the same write `/config` uses: staged, read back by io-harness, and rolled back
+whole when the answer is no. It offers no *disable*, because `McpServer` has no
+key for one — an `enabled = false` invented here would be accepted by the file and
+ignored by the harness, and a panel saying "disabled" over a running server is
+worse than a panel with one fewer verb. Nor a *reconnect*: servers are attached
+per turn, so the next turn is what picks up your edit.
 
 **`/provider`** shows the `[[provider]]` array as what it is: the order a turn
-tries them. Reorder it and you have arranged the fallback chain io-harness has
-supported since its 0.27.0. The twenty-one presets it reaches through one
+tries them. From 0.21.0 you can **arrange** it — add an entry, promote one,
+demote one, remove one — which is the fallback chain io-harness has supported
+since its 0.27.0 and that this interface has drawn an event for without ever
+being able to cause one. The twenty-one presets it reaches through one
 `Compatible` provider are offered by name with the endpoint each resolves to.
+Reordering moves an entry with its own comments and its own keys rather than
+rebuilding the array, because a chain rebuilt from io-cli's model would silently
+drop whatever io-cli does not model.
+
+**Both of those panels could only list until 0.21.0.** The writers were there and
+tested and called from nothing, while three places in this documentation said they
+"add, edit, disable and remove". They genuinely write now, and the word *disable*
+is gone from that sentence because `/mcp` does not offer it.
+
+Neither verb takes a row number. An entry is addressed by finding its id in the
+file's own bytes, because a row on screen and a position in a file's array are
+different numbers the moment anything sorts or filters, and getting that wrong
+does not fail loudly — it removes a server you never named, or bills the next turn
+to a vendor you did not choose.
 
 **`/plugin`** shows the capability bundles a `[[plugin]]` entry declared: what
 each one contributed, by name, and every bundle that was declared and dropped
@@ -1058,7 +1193,7 @@ Eight keys live there, and five tables:
 | `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
-| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `~/.io-cli/skills`. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}` and `${file:…}` and nothing else. |
+| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `~/.io-cli/skills`. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}`, and a tilde is none of the three. |
 | `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
 | `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |
 | `detached_spawns` | whether a spawn may detach at all. Absent, it may. `false` buys a trace with every child's whole life in it, which a detached child gives up. |
@@ -1093,6 +1228,11 @@ bytes it last wrote for each shipped skill, so an upgrade can tell an untouched
 file from one you edited. It sits in the home and deliberately *not* in the
 skills directory, because every markdown file in there is offered to the model
 and a state file is not a skill.
+
+io also records in the home that it has offered to bring your setup across from
+another agent tool, so that offer is made once on a first run and never again
+however many times you start a session. Opening it deliberately is `/import` —
+see [Bringing your setup across](#bringing-your-setup-across).
 
 The file is found in this order, which is io-harness's and is unchanged:
 `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`, else `$XDG_CONFIG_HOME/io/io.toml`
@@ -1198,6 +1338,14 @@ that reads the provider-call rows; there is no `[verify]` section to apply, and
 giving a session verification gates needs its own surface; and `run.templates` is
 the thirteenth `[run]` key, reachable only through its own accessor. None of them
 is a silent omission — this is where they are named.
+
+**`/import` does not bring a permission boundary across, and never will.** Another
+tool spells a permission as a command line; io-harness matches a binary name. The
+nearest honest translation is wider than what you granted, so io reports the
+allowlist it found and writes no rule at all. Setting the boundary here is
+`Shift+Tab`, `/config`, or the `io-permissions` skill — three surfaces where you
+can see what you are granting. See [Bringing your setup
+across](#bringing-your-setup-across).
 
 **Sixel is still absent**, because encoding it means palette quantisation and
 another dependency, for terminals that either speak one of the two protocols

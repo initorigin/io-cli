@@ -25,7 +25,7 @@
 //! nothing an operator can act on: the repository's instructions are *inside* the
 //! system block (`compose` frames them as a `repository_guidance` section), the
 //! MCP tools are *inside* the tool catalogue (they are the members of
-//! `request.tools` carrying [`MCP_TOOL_PREFIX`](io_harness::MCP_TOOL_PREFIX)),
+//! `request.tools` carrying [`io_harness::MCP_TOOL_PREFIX`]),
 //! and the recalled memory is *inside* the conversation (`assemble` pushes the
 //! `[memory]` block onto the front of the assembled text, which the user turn
 //! carries). Reporting each whole would count some bytes three times and produce
@@ -56,7 +56,7 @@
 //! measured in different units — the page would be arithmetically consistent with
 //! itself and wrong about the only comparison it exists to make.
 //!
-//! The denominator is [`ContextBudget::effective_tokens`], read off the
+//! The denominator is `ContextBudget::effective_tokens`, read off the
 //! *contract* rather than off `ContextBudget::default()`, because the operator's
 //! `[context]` configuration is already resolved onto the contract io-cli builds
 //! and reading the file a second time here would be a second answer to a settled

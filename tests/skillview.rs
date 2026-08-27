@@ -9,6 +9,9 @@
 //!
 //! Nothing here touches the environment — [`skillview::view`] takes the home as an
 //! argument — so each test owns a temporary directory and they run in parallel.
+//! The bundles are the same shape: plain `(id, directory)` pairs, so a question
+//! about a `[[plugin]]` bundle's skills is still asked of a fixture directory and
+//! never of a loaded configuration.
 
 mod support;
 
@@ -111,7 +114,7 @@ fn f6_origin_is_decided_by_the_manifest_and_never_by_the_io_prefix() {
     // Only the un-prefixed one is recorded, so the prefix and the truth disagree.
     recorded(&home, &[("mine", ours.as_path())]);
 
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
     assert_eq!(view.failed, None, "the fixture discovers");
     assert_eq!(listed(&view, "mine").origin, Origin::IoCli);
     assert_eq!(listed(&view, "io-thing").origin, Origin::Yours);
@@ -121,7 +124,7 @@ fn f6_origin_is_decided_by_the_manifest_and_never_by_the_io_prefix() {
     // edited is theirs. The bytes no longer hash to what io-cli recorded, which is
     // true, and is also what the next upgrade will decide about it.
     write(&ours, &skill("mine", "Edited by the operator."));
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
     assert_eq!(
         listed(&view, "mine").origin,
         Origin::Yours,
@@ -136,7 +139,7 @@ fn f6_a_skill_carries_its_description_its_state_and_the_file_it_lives_in() {
     let path = dir.join("alpha.md");
     write(&path, &skill("alpha", "Does the alpha thing."));
 
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
     let row = listed(&view, "alpha");
     assert_eq!(row.description, "Does the alpha thing.");
     assert!(row.enabled, "a file in skills/ is offered to the model");
@@ -154,9 +157,9 @@ fn f6_a_disabled_skill_is_listed_as_disabled_with_its_path_inside_disabled() {
     let path = dir.join("alpha.md");
     write(&path, &skill("alpha", "Does the alpha thing."));
 
-    let moved = skillview::disable(&path).expect("the move");
+    let moved = skillview::disable(&path, &[]).expect("the move");
 
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
     let row = listed(&view, "alpha");
     assert!(!row.enabled, "a file under disabled/ is not offered");
     // Canonicalised on both sides: the surface resolves a path the way
@@ -193,7 +196,7 @@ fn f6_a_directory_that_will_not_discover_shows_the_harness_sentence() {
         &skill("parked", "Turned off earlier."),
     );
 
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
 
     let sentence = view
         .failed
@@ -240,7 +243,7 @@ fn f7_disable_then_enable_returns_the_file_byte_for_byte_and_leaves_one_copy() {
         "disabled/ is created on demand"
     );
 
-    let parked = skillview::disable(&path).expect("the move");
+    let parked = skillview::disable(&path, &[]).expect("the move");
     assert!(skills::disabled_dir(&home).is_dir());
     assert_eq!(parked, skills::disabled_dir(&home).join("alpha.md"));
 
@@ -254,7 +257,7 @@ fn f7_disable_then_enable_returns_the_file_byte_for_byte_and_leaves_one_copy() {
     );
     assert_eq!(read(&parked), before.as_bytes(), "a move rewrites no byte");
 
-    let back = skillview::enable(&parked).expect("the move back");
+    let back = skillview::enable(&parked, &[]).expect("the move back");
     assert_eq!(back, path);
     assert!(
         !parked.exists(),
@@ -275,7 +278,7 @@ fn f7_a_disabled_skill_is_gone_from_the_harnesss_own_discovery() {
 
     assert_eq!(discovered(&dir), vec!["alpha", "beta"]);
 
-    skillview::disable(&dir.join("alpha.md")).expect("the move");
+    skillview::disable(&dir.join("alpha.md"), &[]).expect("the move");
 
     // Still `Ok` — `disabled/` holds no `SKILL.md`, so the walk skips it rather
     // than reading the loose file inside as a second `alpha`.
@@ -293,8 +296,8 @@ fn f7_neither_lever_writes_to_io_toml() {
     let config = home.join("io.toml");
     write(&config, "model = \"a-model\"\n");
 
-    let parked = skillview::disable(&path).expect("the move");
-    skillview::enable(&parked).expect("the move back");
+    let parked = skillview::disable(&path, &[]).expect("the move");
+    skillview::enable(&parked, &[]).expect("the move back");
 
     assert_eq!(
         std::fs::read_to_string(&config).expect("io.toml"),
@@ -315,7 +318,7 @@ fn f7_a_move_that_would_overwrite_a_file_is_a_sentence_and_not_a_loss() {
     let parked = skills::disabled_dir(&home).join("alpha.md");
     write(&parked, &skill("alpha", "Turned off earlier."));
 
-    let error = skillview::enable(&parked).expect_err("it declines");
+    let error = skillview::enable(&parked, &[]).expect_err("it declines");
     assert!(
         error.contains("alpha.md"),
         "the message names the file: {error}"
@@ -341,7 +344,7 @@ fn f7_a_rename_that_fails_is_a_readable_sentence_and_never_a_panic() {
     let path = skills::dir(&home).join("gone.md");
     std::fs::create_dir_all(skills::dir(&home)).expect("the directory");
 
-    let error = skillview::disable(&path).expect_err("it fails rather than panicking");
+    let error = skillview::disable(&path, &[]).expect_err("it fails rather than panicking");
     assert!(
         error.contains("gone.md"),
         "the message names the file: {error}"
@@ -388,7 +391,7 @@ fn drawable() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn n4_every_row_draws_in_ascii_with_its_meaning_intact_inside_eighty_columns() {
     let (_dir, home) = drawable();
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
     assert_eq!(view.failed, None);
     assert_eq!(view.skills.len(), 3);
 
@@ -428,7 +431,7 @@ fn n4_every_row_draws_in_ascii_with_its_meaning_intact_inside_eighty_columns() {
 #[test]
 fn n4_the_path_is_what_gives_way_and_the_name_and_the_state_never_do() {
     let (_dir, home) = drawable();
-    let view = skillview::view(&home, &skills::dir(&home));
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
     let ascii = io_cli::glyphs::ASCII;
     let glyphs = &ascii;
 
@@ -509,14 +512,14 @@ fn enabling_never_puts_a_second_file_under_a_name_already_answered_to() {
     write(&enabled, &skill("alpha", "The one they kept on."));
     let other = dir.join("b.md");
     write(&other, &skill("alpha", "The one they turned off."));
-    let parked = skillview::disable(&other).expect("the move out");
+    let parked = skillview::disable(&other, &[]).expect("the move out");
     let kept = read(&parked);
 
     // One `alpha` in the directory, so the session is fine as it stands.
     assert_eq!(discovered(&dir), vec!["alpha".to_string()]);
 
     // And this is the keystroke that used to end it.
-    let back = skillview::enable(&parked);
+    let back = skillview::enable(&parked, &[]);
     assert!(
         back.is_err(),
         "enabling moved a second `alpha` in beside the first; every turn of that \
@@ -550,7 +553,7 @@ fn install_skips_a_name_that_is_disabled_under_a_different_file_name() {
 
     let theirs = dir.join("mine.md");
     write(&theirs, &skill("io-mcp", "The operator's own."));
-    skillview::disable(&theirs).expect("the move out");
+    skillview::disable(&theirs, &[]).expect("the move out");
 
     skills::install(&home);
 
@@ -565,4 +568,307 @@ fn install_skips_a_name_that_is_disabled_under_a_different_file_name() {
         .collect();
     expected.sort();
     assert_eq!(discovered(&dir), expected);
+}
+
+// ---------------------------------------------------------------------------
+// 0.21.0 — a `[[plugin]]` bundle's skills reach the model, so they belong on the
+// surface that says what the model is offered; and the two levers may not touch
+// a file in a directory io-cli does not own.
+// ---------------------------------------------------------------------------
+
+/// A bundle's skills directory, and the `(id, dir)` pair [`skillview::view`] takes.
+///
+/// Plain pairs rather than a configuration with `[[plugin]]` entries in it, which
+/// is the whole point of the signature: this surface is answerable from a fixture
+/// directory, and a test that had to write a manifest to ask about a directory
+/// would be testing the loader instead.
+fn bundle(root: &Path, id: &str, files: &[(&str, &str)]) -> (String, PathBuf) {
+    let dir = root.join(id).join("skills");
+    for (name, description) in files {
+        write(&dir.join(format!("{name}.md")), &skill(name, description));
+    }
+    (id.to_string(), dir)
+}
+
+/// Every file under `dir`, with its bytes.
+///
+/// Sorted, so two snapshots compare as values. Used to assert an **absence**: a
+/// refused lever left the bundle exactly as it found it — no file moved, no file
+/// rewritten, and no `disabled/` directory conjured inside somebody else's bundle.
+fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(snapshot(&path));
+        } else {
+            let bytes = read(&path);
+            found.push((path, bytes));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The namespaced name io-harness itself builds, spelled here the way the module
+/// spells it, out of the harness's own constant rather than a literal `"__"`.
+fn namespaced(id: &str, name: &str) -> String {
+    format!("{id}{}{name}", io_harness::NAMESPACE)
+}
+
+#[test]
+fn a_bundle_skill_is_listed_under_the_name_the_model_addresses() {
+    // The gap 0.20.0 shipped with: a bundle's skills are folded into the turn's
+    // catalogue, namespaced, and no surface in io-cli listed one. An operator
+    // reading `/skills` was reading a list that disagreed with what the model had.
+    let (dir, home) = home();
+    let ours = skills::dir(&home).join("mine.md");
+    write(&ours, &skill("mine", "The operator's own."));
+    let plug = bundle(dir.path(), "acme", &[("helper", "Something contributed.")]);
+
+    let view = skillview::view(&home, &skills::dir(&home), std::slice::from_ref(&plug));
+    assert_eq!(view.failed, None);
+    assert!(view.bundles_failed.is_empty());
+
+    let row = listed(&view, &namespaced("acme", "helper"));
+    assert_eq!(row.description, "Something contributed.");
+    assert!(row.enabled, "a bundle's skill has no state but on");
+    assert_eq!(row.origin, Origin::Bundle("acme".to_string()));
+    assert_eq!(
+        row.origin.word(),
+        "acme",
+        "the origin column names the bundle, which is where the operator has to go"
+    );
+    assert!(
+        row.path.ends_with("helper.md"),
+        "the row says which file: {}",
+        row.path.display()
+    );
+
+    // **The absences.** A row under the bare name would be a row under a name the
+    // model cannot address; and the bundle's file is not the operator's, whatever
+    // the manifest does or does not say about it.
+    let names: Vec<&str> = view.skills.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        !names.contains(&"helper"),
+        "listed un-namespaced, which is a name no turn resolves: {names:?}"
+    );
+    assert_eq!(listed(&view, "mine").origin, Origin::Yours);
+}
+
+#[test]
+fn two_bundles_each_contributing_one_name_do_not_collide() {
+    // The reason io-harness namespaces at all, asserted from this side: two
+    // bundles may both ship a `helper`, and the surface has to draw two rows an
+    // operator can tell apart — including two different origin words.
+    let (dir, home) = home();
+    std::fs::create_dir_all(skills::dir(&home)).expect("the skills directory");
+    let bundles = [
+        bundle(dir.path(), "acme", &[("helper", "Acme's.")]),
+        bundle(dir.path(), "widget", &[("helper", "Widget's.")]),
+    ];
+
+    let view = skillview::view(&home, &skills::dir(&home), &bundles);
+
+    let acme = namespaced("acme", "helper");
+    let widget = namespaced("widget", "helper");
+    assert_eq!(
+        view.skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![acme.clone(), widget.clone()],
+        "two bundles, two rows, sorted by the names the model uses"
+    );
+    assert_eq!(listed(&view, &acme).description, "Acme's.");
+    assert_eq!(listed(&view, &widget).description, "Widget's.");
+    assert_eq!(listed(&view, &acme).origin.word(), "acme");
+    assert_eq!(listed(&view, &widget).origin.word(), "widget");
+    assert_ne!(
+        listed(&view, &acme).path,
+        listed(&view, &widget).path,
+        "two rows standing for one file would be a surface that lost one of them"
+    );
+}
+
+#[test]
+fn a_bundle_whose_directory_is_missing_is_named_and_costs_only_itself() {
+    // **The session-killer.** `Plugin::skills_dir` does no existence check, and
+    // `TaskContract::discover_skills` walks every declared directory with `?` at
+    // run start — so a bundle naming a `skills` directory that is not on disk is a
+    // session where every turn dies before the first completion. This surface is
+    // the only place in io-cli that can say so, which is why the error is neither
+    // swallowed nor propagated.
+    let (dir, home) = home();
+    let ours = skills::dir(&home).join("mine.md");
+    write(&ours, &skill("mine", "The operator's own."));
+    write(
+        &skills::disabled_dir(&home).join("parked.md"),
+        &skill("parked", "Turned off earlier."),
+    );
+    let missing = dir.path().join("broken").join("skills");
+    let bundles = [
+        ("broken".to_string(), missing.clone()),
+        bundle(dir.path(), "acme", &[("helper", "Acme's.")]),
+    ];
+
+    let view = skillview::view(&home, &skills::dir(&home), &bundles);
+
+    let (id, sentence) = view
+        .bundles_failed
+        .first()
+        .expect("a bundle that would end every turn is a state, not silence");
+    assert_eq!(id, "broken", "the report names which bundle to go and fix");
+    let harness = io_harness::Skills::discover(&missing)
+        .expect_err("the fixture directory is not there")
+        .to_string();
+    assert_eq!(
+        sentence, &harness,
+        "the surface carries the harness's own sentence verbatim; it names the directory"
+    );
+    assert_eq!(view.bundles_failed.len(), 1, "one broken bundle, one entry");
+
+    // **And it cost exactly itself.** The operator's directory discovered, so
+    // `failed` stays empty — one field holding either failure could not say which
+    // of the two happened, on the question where the difference is everything.
+    assert_eq!(view.failed, None);
+    assert_eq!(
+        view.skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            namespaced("acme", "helper"),
+            "mine".to_string(),
+            "parked".to_string()
+        ],
+        "every other row still draws"
+    );
+}
+
+#[test]
+fn the_operators_own_skills_survive_a_bundle_that_will_not_discover() {
+    // The same rule from the other side, and the one that would be lost to a `?`:
+    // a broken bundle must not take away the rows the operator came to read. The
+    // enabled set, the disabled set and their provenance are all still here.
+    let (dir, home) = home();
+    let ours = skills::dir(&home).join("mine.md");
+    write(
+        &ours,
+        &skill("mine", "A skill io-cli happens to have written."),
+    );
+    write(
+        &skills::disabled_dir(&home).join("parked.md"),
+        &skill("parked", "Turned off earlier."),
+    );
+    recorded(&home, &[("mine", ours.as_path())]);
+    let bundles = [("broken".to_string(), dir.path().join("nowhere"))];
+
+    let view = skillview::view(&home, &skills::dir(&home), &bundles);
+
+    assert_eq!(view.bundles_failed.len(), 1);
+    assert_eq!(listed(&view, "mine").origin, Origin::IoCli);
+    assert!(listed(&view, "mine").enabled);
+    assert!(!listed(&view, "parked").enabled);
+    assert!(
+        view.skills
+            .iter()
+            .all(|s| !matches!(s.origin, Origin::Bundle(_))),
+        "a bundle that did not discover contributed no row"
+    );
+}
+
+#[test]
+fn disable_is_refused_on_a_bundle_skill_and_leaves_the_bundle_untouched() {
+    // **`disable` computes its destination as the file's own parent joined to
+    // `disabled/`.** For a bundle's skill that parent is the bundle's directory,
+    // so without this guard io-cli would create a `disabled/` inside somebody
+    // else's bundle and move their file into it — where the bundle's next update
+    // will not find it and no surface will list it. `is_bundle` cannot see this:
+    // it decides a `SKILL.md` folder shape and knows nothing about whose directory
+    // a path is in.
+    //
+    // Sabotage: delete the `refuse_bundle` call in `skillview::disable`. Under it
+    // this test fails on the snapshot, with the bundle holding a `disabled/` it
+    // never had.
+    let (dir, home) = home();
+    std::fs::create_dir_all(skills::dir(&home)).expect("the skills directory");
+    let plug = bundle(dir.path(), "acme", &[("helper", "Acme's.")]);
+    let before = snapshot(&plug.1);
+    let names = discovered(&plug.1);
+
+    let view = skillview::view(&home, &skills::dir(&home), std::slice::from_ref(&plug));
+    let row = listed(&view, &namespaced("acme", "helper"));
+
+    let error = skillview::disable(&row.path, std::slice::from_ref(&plug))
+        .expect_err("io-cli does not move another product's files");
+    assert!(
+        error.contains("acme"),
+        "the refusal names the bundle: {error}"
+    );
+    assert!(
+        error.contains(&plug.1.display().to_string()),
+        "and names the directory the operator has to change it in: {error}"
+    );
+
+    // The absences, and they are the assertion: nothing moved, nothing was
+    // rewritten, and no `disabled/` appeared inside the bundle.
+    assert_eq!(
+        snapshot(&plug.1),
+        before,
+        "the refused lever touched the bundle"
+    );
+    assert!(
+        !plug.1.join(skills::DISABLED).exists(),
+        "io-cli made a disabled/ inside a bundle it does not own"
+    );
+    assert_eq!(discovered(&plug.1), names, "and the bundle still discovers");
+}
+
+#[test]
+fn enable_is_refused_on_a_bundle_skill_and_leaves_the_bundle_untouched() {
+    // The same refusal in the other direction. No bundle file can be in a
+    // `disabled/` this surface made — that is the point of the test above — so
+    // this asserts the pair is symmetric rather than a second route to the same
+    // hole: a lever that refuses one way and not the other is a lever whose rule
+    // a reader has to look up.
+    //
+    // Sabotage: delete the `refuse_bundle` call in `skillview::enable`. Under it
+    // this test fails, and the file lands two levels up, outside the bundle's
+    // skills directory entirely.
+    let (dir, home) = home();
+    std::fs::create_dir_all(skills::dir(&home)).expect("the skills directory");
+    let plug = bundle(dir.path(), "acme", &[("helper", "Acme's.")]);
+    let before = snapshot(&plug.1);
+
+    let view = skillview::view(&home, &skills::dir(&home), std::slice::from_ref(&plug));
+    let row = listed(&view, &namespaced("acme", "helper"));
+
+    let error = skillview::enable(&row.path, std::slice::from_ref(&plug))
+        .expect_err("io-cli does not move another product's files");
+    assert!(
+        error.contains("acme"),
+        "the refusal names the bundle: {error}"
+    );
+
+    assert_eq!(
+        snapshot(&plug.1),
+        before,
+        "the refused lever touched the bundle"
+    );
+    assert!(
+        row.path.exists(),
+        "{} is gone, so the refusal lost the file it was protecting",
+        row.path.display()
+    );
+    // And the guard did not spill over onto the operator's own directory: their
+    // levers still work while a bundle is in the list.
+    let ours = skills::dir(&home).join("mine.md");
+    write(&ours, &skill("mine", "The operator's own."));
+    let parked = skillview::disable(&ours, std::slice::from_ref(&plug)).expect("their own move");
+    skillview::enable(&parked, std::slice::from_ref(&plug)).expect("and back again");
+    assert!(ours.exists());
 }

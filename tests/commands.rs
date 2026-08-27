@@ -69,6 +69,10 @@ fn the_commands_are_the_commands() {
             // can hand over skills, templates, agents, servers, hooks and policy
             // at once. That breadth is the argument for it being visible at all.
             "/plugin",
+            // 0.21.0 — the operator's own work, carried across from whatever
+            // agent they were using before this one. It is the only command here
+            // whose subject is a tool that is not io.
+            "/import",
             "/profile",
             "/contain",
             // 0.12.0 — the planning phase stopped being something
@@ -425,13 +429,13 @@ fn f9_exit_is_listed_and_its_palette_row_leaves() {
     // Found by name rather than by the inventory's own index: since 0.16.0 the
     // palette is grouped, so its rows are the commands in GROUP order with a
     // heading before each group, and a position in `COMMANDS` addresses neither.
-    let rows = palette(&Templates::none(), &io_harness::Skills::none());
+    let rows = palette(&Templates::none(), &[]);
     let index = rows
         .iter()
         .position(|row| row.label == "exit")
         .expect("`/exit` has a row");
     assert_eq!(
-        palette_pick(&Templates::none(), &io_harness::Skills::none(), index),
+        palette_pick(&Templates::none(), &[], index),
         Some(Chosen::Command("/exit")),
         "the row is advertised and inert",
     );
@@ -645,7 +649,7 @@ fn remember_keeps_the_whole_line_and_memory_takes_no_argument() {
 #[test]
 fn the_memory_commands_are_configure_commands_with_working_palette_rows() {
     use io_cli::commands::{group_of, palette, palette_pick, Chosen, Group};
-    use io_harness::{Skills, Templates};
+    use io_harness::Templates;
 
     for name in ["/remember", "/memory"] {
         assert!(
@@ -662,14 +666,14 @@ fn the_memory_commands_are_configure_commands_with_working_palette_rows() {
             "{name} writes a file the operator keeps, so it belongs with the group that writes",
         );
 
-        let rows = palette(&Templates::none(), &Skills::none());
+        let rows = palette(&Templates::none(), &[]);
         let bare = name.strip_prefix('/').expect("a command carries its slash");
         let index = rows
             .iter()
             .position(|row| row.label == bare)
             .unwrap_or_else(|| panic!("{name} has no palette row"));
         assert_eq!(
-            palette_pick(&Templates::none(), &Skills::none(), index),
+            palette_pick(&Templates::none(), &[], index),
             Some(Chosen::Command(name)),
             "{name}'s row is advertised and inert",
         );
@@ -695,7 +699,7 @@ fn the_memory_commands_are_configure_commands_with_working_palette_rows() {
 #[test]
 fn the_writers_are_configure_commands_and_skills_is_the_inspection() {
     use io_cli::commands::{group_of, palette, palette_pick, Chosen, Group, GROUPS};
-    use io_harness::{Skills, Templates};
+    use io_harness::Templates;
 
     for name in ["/mcp", "/provider"] {
         assert_eq!(
@@ -730,13 +734,13 @@ fn the_writers_are_configure_commands_and_skills_is_the_inspection() {
         "Inspect holds {inspect}; the point of the move was to leave room",
     );
 
-    let rows = palette(&Templates::none(), &Skills::none());
+    let rows = palette(&Templates::none(), &[]);
     let index = rows
         .iter()
         .position(|row| row.label == "skills")
         .expect("`/skills` has no palette row");
     assert_eq!(
-        palette_pick(&Templates::none(), &Skills::none(), index),
+        palette_pick(&Templates::none(), &[], index),
         Some(Chosen::Command("/skills")),
         "`/skills`'s row is advertised and inert",
     );
@@ -1085,7 +1089,7 @@ fn f17_usage_answers_and_is_never_listed() {
     for (_, names) in GROUPS {
         assert!(!names.contains(&"/usage"));
     }
-    let rows = palette(&io_harness::Templates::none(), &io_harness::Skills::none());
+    let rows = palette(&io_harness::Templates::none(), &[]);
     assert!(
         !rows.iter().any(|row| row.label == "usage"),
         "a second row for one screen reads as a second screen",

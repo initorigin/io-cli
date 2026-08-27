@@ -191,7 +191,7 @@ fn chosen() -> Option<Origin> {
 
 /// What decided the directory in force, without changing anything.
 ///
-/// This cannot simply be [`chosen`], and the difference is the whole point: after
+/// This cannot simply be `chosen`, and the difference is the whole point: after
 /// [`adopt`] runs there **is** an `IO_CONFIG_HOME` in the environment, because
 /// io-cli put it there — so a status row reading the raw variable would credit the
 /// operator for this crate's own default. The rule instead is that a variable
@@ -341,6 +341,44 @@ pub fn adopt() -> Option<Report> {
 /// two answers to what mode io-cli's home has, one of them from a module that
 /// has no business deciding. The mode applies only to directories this call
 /// actually creates, so passing an existing one changes nothing.
+/// The file recording that the import offer has been made.
+///
+/// **A file rather than a key in `io.toml`.** Declining an import is not a
+/// configuration choice the operator should find in their own file later; it is
+/// io-cli's bookkeeping about a question it has already asked. Putting it in the
+/// configuration would also mean the offer could not be made to an operator whose
+/// file will not parse — which is exactly the operator most likely to want it.
+const OFFERED: &str = ".import-offered";
+
+/// Whether the import offer has already been made.
+///
+/// **Absent means "not yet offered", which is the right reading for every install
+/// that predates 0.21.0.** That is what makes this need no migration: an existing
+/// operator has no marker, so they are offered once, which is the whole intent.
+/// A home io-cli cannot locate answers `true` — there is nowhere to record the
+/// answer, and an offer that cannot be remembered would be made on every launch.
+#[must_use]
+pub fn import_offered() -> bool {
+    match path() {
+        Some(home) => home.join(OFFERED).exists(),
+        None => true,
+    }
+}
+
+/// Record that the import offer has been made, whatever the operator said to it.
+///
+/// **Written when the offer is *made*, not when it is accepted.** An operator who
+/// declines has answered the question, and asking again on the next launch would
+/// make declining meaningless. `/import` ignores this entirely, so the choice is
+/// never lost — it is only stopped from being asked unprompted a second time.
+pub fn mark_import_offered() -> std::io::Result<()> {
+    let Some(home) = path() else {
+        return Ok(());
+    };
+    create(&home)?;
+    std::fs::write(home.join(OFFERED), [])
+}
+
 pub(crate) fn create(home: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
