@@ -203,6 +203,10 @@ refer to earlier output by where it is on the screen — it has scrolled.";
 /// `[app.io-cli]` is the fifth and strongest layer, and it belongs to [`session`]
 /// alone: it is io-cli's own table and `io exec` does not read it.
 pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> TaskContract {
+    // Kept before `root` is moved into the contract: both the plugin hook merge
+    // and nothing else needs it, and cloning a `PathBuf` once per turn is not a
+    // cost worth threading an argument to avoid.
+    let dir = root.clone();
     let contract = config.apply_to(TaskContract::workspace(text, root).with_max_steps(MAX_STEPS));
     let contract = match config.sandbox() {
         Some(sandbox) => contract.with_contained_exec(sandbox),
@@ -217,10 +221,87 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
     // would bound a terminal and leave CI running with the defaults, which is
     // the 0.14.0 asymmetry this product deleted once already.
     let contract = crate::settings::ceilings(config).apply(contract);
+    // **The bundles, applied here and in no other function, which is what makes
+    // one call cover both arms.** `Config::plugins()` re-reads every directory a
+    // `[[plugin]]` entry names; `Plugins::apply_to` merges their `[[agent]]`
+    // definitions into the roster, extends `[[mcp]]` rather than assigning over
+    // it, and sets `contract.plugins` — which is the field
+    // `TaskContract::discover_skills` reads at run start to fold a bundle's
+    // skills in, and the field `emit_plugins` iterates at step 0 to report what
+    // loaded. Applied *after* `config.apply_to` on purpose: the merge has to see
+    // the operator's own roster to merge into it.
+    //
+    // Nothing here can fail. A bundle that will not load is not an error, it is
+    // a row in `Plugins::dropped()` — which is what stops one bad directory in a
+    // shared configuration file from costing a whole team their session, and
+    // which is why `/plugin` is the surface that reads it rather than this
+    // function returning a `Result`.
+    let plugins = config.plugins();
+    let contract = plugins.apply_to(contract);
+    // **The hooks, and the `is_empty` guard is not an optimisation.** io-harness
+    // disables read speculation on any run carrying a `Hooks` at all — even one
+    // holding no hooks — so attaching it unconditionally would quietly make every
+    // session slower for the overwhelming majority of operators who have never
+    // written a hook, with nothing failing and nothing on screen to connect the
+    // loss to this release.
+    //
+    // `with_tool_hooks` is the *lifecycle* half — the `at = "before_tool"` tables
+    // that can turn a tool call back. The `on = [...]` event tables arrive by a
+    // different road entirely: the `Hooks` value is also an `Observer`, and the
+    // driver puts it in the fan-out beside the interface's own. Both installs, or
+    // one half of the file is accepted and silently never runs.
+    //
+    // **And not at all where the caller has no root, which is not a nicety.**
+    // `io_harness::Hooks::new` **creates every `append` path it is given, empty,
+    // as it is built** — so building one against `PathBuf::new()` resolves a
+    // relative `append = "audit.jsonl"` against the *process working directory*
+    // and leaves a stray empty file wherever `io` happened to be launched from.
+    // [`server_notices`] calls this function with exactly that empty root, at
+    // startup, purely to read the merged `[[mcp]]` and `[[lsp]]` lists back off a
+    // throwaway contract — so before 0.20.0 the empty root cost nothing and now it
+    // would cost a file in the operator's home. A contract with no root cannot run
+    // a turn, so it has no use for hooks either.
+    let hooks = if dir.as_os_str().is_empty() {
+        None
+    } else {
+        let hooks = plugins.apply_to_hooks(config.hooks(), &dir);
+        (!hooks.is_empty()).then_some(hooks)
+    };
+    let contract = match hooks {
+        Some(hooks) => contract.with_tool_hooks(std::sync::Arc::new(hooks)),
+        None => contract,
+    };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.
     resolve_skills(contract)
+}
+
+/// The hooks a run should be observed by, for the caller that installs the
+/// fan-out.
+///
+/// **The same value [`configured`] puts on the contract, built the same way and
+/// deliberately built twice rather than threaded.** A `Hooks` is cheap — it is a
+/// parsed `Vec<Hook>` and a directory — and the two installs happen at different
+/// points in different functions with different lifetimes: the lifecycle half
+/// goes onto the contract behind an `Arc` before the turn, the event half is
+/// borrowed by the fan-out for exactly the turn's duration. Returning one value
+/// for both would mean handing an `Arc` to a `&dyn Observer` site and keeping the
+/// contract's copy alive across a `/config` reload that rebuilt the `Config` it
+/// came from.
+///
+/// `None` where the file declares no hook, so the caller can leave the fan-out at
+/// one observer and keep read speculation — the same guard [`configured`] makes,
+/// made once here so the two cannot drift apart.
+pub fn hooks(config: &Config, root: &std::path::Path) -> Option<io_harness::Hooks> {
+    // The same empty-root guard [`configured`] makes, and for the same reason:
+    // building a `Hooks` creates its `append` files, so a rootless caller would
+    // leave them in the process working directory.
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    let hooks = config.plugins().apply_to_hooks(config.hooks(), root);
+    (!hooks.is_empty()).then_some(hooks)
 }
 
 /// The skills directory this session will really hand the agent, for the one

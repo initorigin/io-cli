@@ -20,7 +20,8 @@ if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 
 - [Install](#install) · [First run](#first-run) · [While it works](#while-it-works)
 - [Keys](#keys) · [Commands](#commands) · [Configuration](#configuration)
-- [The fleet](#the-fleet) · [Pictures](#pictures) · [Background jobs](#background-jobs)
+- [Capability bundles](#capability-bundles) · [Hooks](#hooks) · [The fleet](#the-fleet)
+- [Pictures](#pictures) · [Documents](#documents) · [Background jobs](#background-jobs)
 - [Reading it without seeing it](#reading-it-without-seeing-it) · [Headless](#headless)
 - [What this release is not](#what-this-release-is-not) · [Platform support](#platform-support) · [Stability](#stability)
 
@@ -44,6 +45,7 @@ on one row and the keys and the posture on the next.](docs/screenshot.png)
 | **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json` |
 | **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
 | **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
+| **Documents, read and written** | Spreadsheets, Word, slide decks, PDFs and barcodes through io-harness's own tools — twelve of them, six of which write, every one under the same gate as any other read or write |
 
 ## It never takes your terminal
 
@@ -390,6 +392,12 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/memory` | what io remembers: the instruction files, and the agent's own notes |
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
+| `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
+
+`/plugin` is new in 0.20.0 and sits beside those two because it is the third
+surface of the same kind: something a configuration file declares by name, whose
+effect on the session is otherwise invisible. See [Capability
+bundles](#capability-bundles).
 
 `/mcp` and `/provider` sit under **configure** from 0.19.0, and it is a
 correction rather than a promotion: both open with a list, and both go on from
@@ -536,6 +544,146 @@ the limit who gains five more would otherwise get no skills at all as their
 upgrade. io-cli counts first, installs up to the ceiling and stops, and says how
 many it installed and how many it withheld.
 
+## Capability bundles
+
+**A bundle is a directory with a `plugin.toml`, and it is in your session because
+a file of yours named it.** One `[[plugin]]` entry, and nothing else:
+
+```toml
+[[plugin]]
+path = "~/bundles/rust-review"
+```
+
+That is a declaration and never a scan. There is no directory io walks looking
+for bundles, no registry it fetches from, and nothing that loads by being present
+on disk — declaring one is the whole of installing one, and deleting the line is
+the whole of removing one.
+
+One directory can hand over six kinds of thing at once: skills, prompt templates,
+`[[agent]]` definitions for a fan-out to draw children from, `[[mcp]]` servers,
+`[[hook]]` tables, and policy layers. That breadth is why `/plugin` exists.
+Every other capability in a session is one you put there — a skill file is yours
+or io-cli's, an `[[mcp]]` entry is a line you wrote, a policy layer came from a
+posture you chose. A bundle is a directory somebody else wrote that adds names to
+four subsystems on one line, and *what did that directory put in my session* is a
+question whose only previous answer was to open the manifest.
+
+**`/plugin` answers it, and it answers the dropped ones too.** One row per bundle
+with its id, its root and what it contributed; choosing one opens what it brought,
+by name. Under those, one row per bundle that was *declared and did not load*,
+carrying io-harness's own sentence whole. That second list is what the surface is
+really for: io-harness's plugin loader has no error path, so a bundle with no
+manifest, unparseable TOML, an unusable id or a contribution its scope may not
+make is dropped, recorded, and otherwise silently absent while every other bundle
+loads. A bundle you believe is running can be gone for a week. This is where that
+week ends.
+
+**And a bundle can be stopped from the same list.** The last row under a bundle's
+contributions removes its `[[plugin]]` entry, after a confirmation that names the
+scope and the entry it will take out. io finds that entry by matching the
+directory across all three scope files rather than by counting rows on screen —
+the two lists have no relation to the order entries appear in any file, and a row
+number read against the wrong list removes a bundle you never mentioned. Where no
+file names the directory, io says so and removes nothing.
+
+The directory itself is never touched. This surface edits a configuration file,
+and deleting somebody's work because they stopped loading it is not a thing a list
+should do. Declaring a bundle is still a line you write yourself: a path is
+something you type more comfortably into your own file than into a picker.
+
+**Which file declared a bundle decides what it may contribute.** A bundle named
+in the project-scoped `io.toml` — the file a `git clone` delivers — may
+contribute skills, templates, agents and policy, and may **not** contribute
+hooks or MCP servers, because both of those run a program on this machine. A
+project-scoped bundle that tries is refused **whole**: it contributes nothing at
+all, not the half that would have been safe. Move the `[[plugin]]` line into
+`io.local.toml` or into your user file and the same directory loads completely.
+The rule is about which file names it, exactly as it is for `[browser]`.
+
+**A bundle's policy may only narrow.** Its layers may deny and may never allow: a
+`[policy] defaults` table in a manifest is refused by name, and a single rule
+whose effect is anything but `deny` drops the bundle. So the worst a bundle you
+misjudged can do to your permission boundary is take something out of it.
+
+**A bundle id must match `[a-z0-9][a-z0-9-]{0,31}`**, and every name it
+contributes is rewritten by io-harness to `<bundle>__<name>` at load — an agent's
+name, an MCP server's id, a policy layer's name. `/plugin` draws that namespaced
+string unchanged rather than a prettier short form, because it is what a refusal
+will name, what a tool call will name, and what you will type to spawn the agent.
+A shorter name here would be a third spelling of the same thing.
+
+**Hooks are the one contribution io cannot itemise, and the row says so.**
+io-harness applies a bundle's hooks and keeps its `Hook` type private, so there
+is no API by which this program can count them or say what any of them runs.
+`/plugin` therefore draws a row saying the bundle contributed hooks and that io
+cannot say what they do. The alternative was to leave the row out, which reads as
+a bundle with no hooks — the one reading that is false, on the contribution kind
+that runs programs.
+
+## Hooks
+
+**`[[hook]]` tables run from 0.20.0.** They were parsed before this release and
+then installed on nothing, so a file asking for every event to be written to
+`audit.jsonl` produced an empty file and no error. They now run in a session turn
+and in `io exec` alike, from the same call that builds everything else.
+
+A hook either writes events down or runs a program:
+
+```toml
+[[hook]]
+on = []                       # the events to observe; empty means every one
+append = "audit.jsonl"        # one JSON line per event, appended
+
+[[hook]]
+at = "before_tool"            # the only `at` there is
+tools = ["shell"]             # which calls this one sees
+run = ["./scripts/gate.sh"]   # argv, never a shell string
+on_failure = "refuse"
+timeout_ms = 5000             # the default
+```
+
+`on` and `at` are mutually exclusive, because the first is an observer of events
+and the second is a gate in front of a tool call. An `at` hook must have a `run`.
+Exactly one of `append` and `run`: a hook that did both would be a hook whose
+failure meant two things.
+
+**`on_failure` is where a hook's power actually is.** `continue` lets the turn go
+on, which is what an audit hook wants. `cancel` ends the turn at the next step
+boundary and **the run stays resumable** — it is a stop, not a crash. `refuse`
+turns that single tool call back and leaves the turn running, which makes a
+`before_tool` hook a rule of your own standing beside the policy engine's.
+
+**`run` is an argv array and never a shell string.** Nothing is word-split and
+nothing is expanded: the program you named is the program that runs, with the
+arguments you wrote.
+
+**A `run` hook runs on the turn's own critical path, and `timeout_ms` is the only
+thing bounding it.** An observer is called synchronously by the run, and the run
+shares a task with the loop that reads your keyboard — so while a hook's program
+is running, the interface is not repainting and not answering keys. A script that
+takes a tenth of a second, on a hook matching every event, costs that tenth of a
+second per event. Keep a `run` hook fast, match it to the events you actually
+want with `on`, and lower `timeout_ms` from its five-second default if the program
+can hang. An `append` hook has none of this cost: it is a line written to a file.
+
+**A hook that fails is quiet.** io-harness reports a failed hook through a log
+this binary installs no subscriber for, so an `append` path that cannot be written
+and a `run` program that does not exist both leave the session looking normal —
+and a hook with `on_failure = "cancel"` ends the turn without saying which hook
+did it. Verify a new hook by checking that it did something: read the file, or
+give the program a visible side effect. This is a real limitation of 0.20.0 rather
+than a subtlety.
+
+**A project-scoped file may not declare `[[hook]]` at all.** io-harness refuses
+the whole configuration rather than dropping the table — a hook runs a command on
+this machine and `io.toml` is the file a `git clone` delivers. There is no
+`Config` to be had, so `io` genuinely cannot start, and 0.20.0 does not soften
+that. What it changes is the words: io-harness's own sentence, which names the
+key, the reason and the two files that may carry it, under a line saying which
+file was being read. Before this it arrived as a bare error string from a program
+that had already exited, against a repository you had just cloned. Write the
+table in `io.local.toml` or in your user file.
+
 ## The fleet
 
 An agent can break a task into sub-agents and run them over the same workspace.
@@ -560,9 +708,28 @@ tree's remaining budget on the status line beside everything else. A refused
 spawn says which cap refused it and that the agent carries on with what it has. A
 report collected from a child lands in the transcript where it arrives.
 
+**From 0.20.0 a child is shown by the name it was spawned under.** io-harness
+gives every admitted child an address — the `as` argument the parent chose, or
+one derived from the agent it drew, like `reviewer#42` — and that is what the row
+carries, with its roster role beside it, instead of a run number nobody picked. A
+run id identifies a row in the store; an address is what the parent used to reach
+the child, what a message between two of them names, and what you type to attach
+to one.
+
+**A message one agent sent a named sibling is drawn in the tree, with its body.**
+Children talking to each other is the case a run number told you nothing about:
+one addressed line with the text under it, landing where it happened.
+
+**A child that detached can be selected and attached to.** A parent that stops
+waiting is not a parent that stops the work — a detached child is still running,
+and until now it was a row you could read and could not reach.
+
 **A waiting child is a number and not a row**, because until a concurrency slot
-frees it has no run of its own to name. A fleet that is queueing and a fleet that
-is stuck look identical without that count, which is why it is there.
+frees it has no run of its own to name. It has no address either, for the same
+reason: io-harness names a child when it admits one, so there is nothing to call
+a queued child even now that the admitted ones have names. A fleet that is
+queueing and a fleet that is stuck look identical without that count, which is
+why it is there.
 
 **And from 0.12.0 that is all it costs you.** `Ctrl+C` still ends the turn, at the
 next point where no child is in flight, and the interface tells you that is what
@@ -623,11 +790,16 @@ are refused **by name**, because a refusal that says which format it was is one
 you can act on. A provider that does not accept images at all is refused at the
 door rather than after you have typed the prompt.
 
-**The agent can look at images in the workspace from this release**, using
-io-harness's own `view_image` tool, which enabling its `media` feature switches
-on. It is bounded by the same policy as any other read. When it looks, the same
-picture goes into your scrollback at that point in the conversation, so you are
-reading what it read rather than a path you would have to open yourself.
+**The agent can look at images in the workspace**, using io-harness's own
+`view_image` tool, which enabling its `media` feature switches on. It is bounded
+by the same policy as any other read. When it looks, the same picture goes into
+your scrollback at that point in the conversation, so you are reading what it
+read rather than a path you would have to open yourself.
+
+That is the shape every capability of this kind arrives in, and 0.20.0 adds
+twelve more of them: **io-cli cannot take a tool out of io-harness's workspace
+tool set**, so a feature this crate turns on is a tool the agent has, and the
+only honest thing to do with that is say so. See [Documents](#documents).
 
 A picture is drawn from half blocks — `▀` splits a cell into two halves that are
 each about square — fitted to your terminal's width and bounded in height. On
@@ -642,6 +814,50 @@ Under `--plain`, under `NO_COLOR`, and with the ASCII glyph set there is no
 picture at all — one line naming the file, its format and its size. A half-block
 picture is colour carrying the entire meaning, which is the one thing this
 interface will not do.
+
+## Documents
+
+**The agent can read and write spreadsheets, Word files, slide decks, PDFs and
+barcodes from 0.20.0**, because io-cli turns on io-harness's `documents` feature
+— `xlsx`, `docx`, `pptx`, `pdf` and `barcode`. That is twelve tools in its
+workspace tool set, and **six of them write**:
+
+| Format | Reads with | Writes with |
+| --- | --- | --- |
+| Spreadsheets | `xlsx_sheets`, `xlsx_read` | `xlsx_write`, `xlsx_set_cell` |
+| Word | `docx_read` | `docx_write` |
+| PowerPoint | `pptx_read` | — |
+| PDF | `pdf_read` | `pdf_write`, `pdf_watermark`, `pdf_fill_form` |
+| Barcodes | `barcode_decode` | — |
+
+Every one of them is a read or a write like any other: the same policy gate, the
+same approval prompt answered where it was asked, and the same refusal naming the
+act, the target, the rule and the layer. **`xlsx_write` replaces a file that
+already exists** — under the write gate, so it is proposed to you before it
+happens rather than reported afterwards.
+
+**Which reader runs is decided by the tool the model called, not by the file's
+extension.** A `.docx` handed to `pdf_read` is a failed read rather than a guess,
+and renaming a file changes nothing about what can be done to it.
+
+**What they do not do**, because a document tool that half-works is worse than
+one that is absent:
+
+- **Word is generate-and-read, with no edit in place.** A read followed by a
+  write produces a new document out of the text that came back, so comments,
+  content controls, fields and vendor extensions that were in the original are
+  not in the result. It is the right tool for producing a document and the wrong
+  one for touching up somebody else's contract.
+- **PowerPoint is read-only.** There is no `pptx_write`, and the table above is
+  the whole of it.
+- **PDF text extraction is best-effort about reading order**, which is what
+  extracting text from a page-description format means. **A scanned page comes
+  back with empty text rather than an error**, because there is nothing in it to
+  extract — there is no OCR anywhere in this.
+- **`xlsx_set_cell` preserves the rest of a workbook in practice rather than by
+  guarantee.** It is the tool for changing a value in a sheet of data, and not
+  the tool for a workbook heavy with charts, pivot tables or macros.
+- **There is no barcode generation**, only decoding.
 
 ## Background jobs
 
@@ -826,6 +1042,11 @@ tries them. Reorder it and you have arranged the fallback chain io-harness has
 supported since its 0.27.0. The twenty-one presets it reaches through one
 `Compatible` provider are offered by name with the endpoint each resolves to.
 
+**`/plugin`** shows the capability bundles a `[[plugin]]` entry declared: what
+each one contributed, by name, and every bundle that was declared and dropped
+with io-harness's own reason beside it. See [Capability
+bundles](#capability-bundles).
+
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.
 
@@ -908,7 +1129,9 @@ rewrites a permission boundary on disk is the opposite of what that key is for.
 from the same call.** `[sandbox]` limits, `[run]` budgets, `[run.commit_identity]`,
 `[[agent]]`, `[web]`, `[memory]`, `[instructions]`, `[[mcp]]`, `[[lsp]]` and
 `[browser]` are all applied to a turn's contract, in your terminal exactly as in
-CI. There is no longer a section of this file that a session reads past.
+CI — and from 0.20.0 so are `[[plugin]]` and `[[hook]]`, which are the last two
+that reached nothing. There is no longer a section of this file that a session
+reads past.
 
 The layers run weakest to strongest, and that order is asserted rather than
 described: io-harness's own defaults, then io-cli's step floor, then everything
@@ -961,24 +1184,20 @@ it](#reading-it-without-seeing-it).
 
 ## What this release is not
 
-0.14.0 is the release where the configuration file reaches your terminal: every
-section of it bounds a session turn as it already bounded `io exec`, `/status`
-commits the whole picture into the scrollback, and the ceilings in force are on
-the status line beside what has been drawn against them.
+The configuration file has reached your terminal since 0.14.0: every section of
+it bounds a session turn as it already bounded `io exec`, `/status` commits the
+whole picture into the scrollback, and the ceilings in force are on the status
+line beside what has been drawn against them.
 
-**Four sections of the file are still not applied, and each has a reason.**
-`[[hook]]` and capability bundles reach a contract through their own builders and
-need a surface that reports what loaded and what was dropped; `[prices]` is not
-part of a contract at all and belongs with the release that reads the
-provider-call rows; there is no `[verify]` section to apply, and giving a session
-verification gates needs its own surface; and `run.templates` is the thirteenth
-`[run]` key, reachable only through its own accessor. None of them is a silent
-omission any more — this is where they are named.
-
-**There is no way to change a key from inside the session.** `/status` reads the
-state and never writes it, and editing configuration is 0.16.0 — a surface for
-changing a key is worth building once changing the key does something, which is
-what this release is.
+**`[[hook]]` and capability bundles are applied from 0.20.0**, each with the
+surface the omission was waiting on: `/plugin` for what a bundle brought and what
+was dropped, and io-harness's own refusal sentence for a hook a project file may
+not declare. That leaves two sections and one key still unapplied, and each has a
+reason. `[prices]` is not part of a contract at all and belongs with the release
+that reads the provider-call rows; there is no `[verify]` section to apply, and
+giving a session verification gates needs its own surface; and `run.templates` is
+the thirteenth `[run]` key, reachable only through its own accessor. None of them
+is a silent omission — this is where they are named.
 
 **Sixel is still absent**, because encoding it means palette quantisation and
 another dependency, for terminals that either speak one of the two protocols
@@ -1006,6 +1225,12 @@ take a tool out of io-harness's own workspace tool set. Checking the model rathe
 than the provider would mean reading the live catalogue on every attach, and it
 would still not close the door the agent opens. **If you work with images, choose
 a model that accepts them.**
+
+**The twelve document tools cannot be taken out of that tool set either**, and
+six of them write. A model that reaches for `docx_write` in a session where you
+never meant a document to be written is stopped by the write gate rather than by
+the absence of the tool — which is what the gate is for, and why the writers are
+named one by one in [Documents](#documents) rather than counted.
 
 **An image the agent was *given* rather than asked for is not shown.** A picture
 returned by an MCP tool, and a browser screenshot, both become images inside

@@ -193,6 +193,23 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/provider",
         "the providers configured, in the order a turn tries them",
     ),
+    // Beside `/mcp` and `/provider` because it is the third of the same kind: a
+    // surface that reads a declaration out of the configuration file and can
+    // take one back out of it. A bundle is the widest of the three — it can hand
+    // over skills, templates, agents, servers, hooks and policy in one directory —
+    // which is the argument for it being visible at all, and the argument for it
+    // being under "configure" rather than "inspect".
+    //
+    // **What it does not do is add one, and the description says "loaded" rather
+    // than implying otherwise.** Declaring a bundle means naming a directory,
+    // which is a path an operator types far more comfortably into their own file
+    // than into a picker; removing one means finding the right entry among three
+    // scope files, which is exactly the part a surface can do better than a
+    // person. So this does the second and not the first.
+    (
+        "/plugin",
+        "the capability bundles loaded, what each contributed, and the ones that failed",
+    ),
     (
         "/profile",
         "switch to a named profile from the configuration, for this session",
@@ -324,6 +341,7 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/memory",
             "/mcp",
             "/provider",
+            "/plugin",
         ],
     ),
 ];
@@ -856,6 +874,23 @@ pub enum Action {
     Provider,
     /// List the named profiles, and switch to one for this session.
     Profile,
+    /// List the capability bundles a `[[plugin]]` entry declared: what each one
+    /// contributed, and what each dropped bundle failed on.
+    ///
+    /// **What can honestly be shown is bounded by what io-harness makes public,
+    /// and the surface says so rather than implying more.** A bundle's agents,
+    /// MCP servers and policy layers are all readable and are listed by the names
+    /// io-harness namespaced them to. Its **hooks are not**: there is no
+    /// `Plugin::hooks()` and `Hook` is `pub(crate)`, so the word `hooks` from
+    /// `Plugin::contributions()` is the entire signal available — the bundle
+    /// declared some, and io-cli cannot say how many or what they run.
+    ///
+    /// A dropped bundle carries io-harness's own sentence, re-worded by nobody.
+    /// That matters most for the one an operator will actually hit: a bundle
+    /// declared in the project file that contributes `[[hook]]` or `[[mcp]]` is
+    /// refused **whole**, and the sentence is what names the two files it could
+    /// move to instead.
+    Plugin,
 }
 
 /// What `/copy` was asked for.
@@ -1434,6 +1469,10 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         "skills" => Action::Skills,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile,
+        // `/plugins` is admitted for the same reason `/servers` and `/providers`
+        // are: the thing being listed is plural, so the plural is what a hand
+        // reaches for, and refusing it teaches nothing.
+        "plugin" | "plugins" => Action::Plugin,
         // **An alias earns no row of its own.** `/usage` is what an operator
         // coming from another agent types for "what is this costing me", and the
         // answer is `/status` — which already commits the spend, the budgets and

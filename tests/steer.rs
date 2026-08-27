@@ -75,6 +75,14 @@ fn squashed(text: &str) -> String {
 /// reads. Only this test fails — and it is the one failure an operator cannot
 /// detect from the screen, because the send still returns `Ok` and no event ever
 /// said otherwise.
+///
+/// **The observer argument is spelled `watcher` from 0.20.0, and the change is
+/// the point rather than a rename.** Through 0.19.0 the driver passed `&observer`
+/// — the `Bridge` itself, one value, the only observer there was. It now passes
+/// `Broadcast` over a `Fanout` over the bridge and the operator's `Hooks`, and
+/// the local holding that composition is named for what it is. What this test
+/// asserts is unchanged: both arms take the caller's contract **and** the inbox,
+/// in that positional order.
 #[test]
 fn f5_both_arms_are_handed_a_steer_inbox() {
     let text = driver();
@@ -82,7 +90,7 @@ fn f5_both_arms_are_handed_a_steer_inbox() {
 
     assert!(
         flat.contains(
-            "session.turn_bounded_steered(&contract,provider,store,policy,&approver,&observer,\
+            "session.turn_bounded_steered(&contract,provider,store,policy,&approver,watcher,\
              &inbox"
         ),
         "the flat arm takes the contract and the inbox",
@@ -90,7 +98,7 @@ fn f5_both_arms_are_handed_a_steer_inbox() {
     assert!(
         flat.contains(
             "session.turn_contained_bounded_steered(&contract,provider,store,policy,&approver,\
-             caps,&observer,&inbox"
+             caps,watcher,&inbox"
         ),
         "and so does the contained one, which is the arm that could not have one at all before \
          io-harness 0.67.0",

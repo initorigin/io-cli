@@ -6,6 +6,112 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-27
+
+A directory somebody else wrote can add to your session, and you can see exactly
+what it added.
+
+**Capability bundles load, and `/plugin` says what each one brought.** A bundle
+is a directory with a `plugin.toml`, named by a `[[plugin]] path = "..."` entry
+in a configuration file — a declaration and never a scan, so nothing loads by
+being present on disk. One can contribute six kinds of thing at once: skills,
+prompt templates, `[[agent]]` definitions, `[[mcp]]` servers, `[[hook]]` tables
+and policy layers. `/plugin` lists what loaded and what each bundle contributed,
+and under that the row it really exists for: every bundle that was declared and
+dropped, carrying io-harness's own sentence for why. That loader has no error
+path — a dropped bundle is recorded and otherwise silently absent while every
+other one loads, which is how a bundle you believe is running stays gone for a
+week. A bundle can also be stopped from that list: the last row under its
+contributions removes its `[[plugin]]` entry after a confirmation naming the scope
+it will edit. The entry is found by matching the directory across all three scope
+files rather than by counting rows on screen, and where no file names it, io says
+so and removes nothing. The directory itself is never touched.
+
+**Which file declared a bundle decides what it may contribute.** A bundle named
+in the project-scoped `io.toml` — the file a `git clone` delivers — may
+contribute skills, templates, agents and policy, and may not contribute hooks or
+MCP servers, because both run a program on this machine. One that tries is
+refused **whole**: it contributes nothing, not the half that would have been
+safe. The same directory named from `io.local.toml` or the user file loads
+completely, so the rule is about which file, not about the bundle. Its policy may
+only **deny** as well: a `[policy] defaults` table is refused by name and any rule
+whose effect is not `deny` drops the bundle, so the worst a bundle can do to your
+boundary is narrow it. An id matches `[a-z0-9][a-z0-9-]{0,31}`, and every agent
+name, server id and layer name it contributes is namespaced to `<bundle>__<name>`
+by io-harness — which is the string `/plugin` draws, because it is the one a
+refusal, a call and a spawn all use.
+
+**A bundle's hooks are the one contribution io-cli cannot itemise, and the row
+says so rather than being left out.** io-harness's `Hook` type is private and
+there is no accessor, so `/plugin` can report that a bundle contributed hooks and
+nothing about what they run. An omitted row would read as a bundle with no hooks,
+which is the false reading, on the contribution kind that runs programs.
+
+**`[[hook]]` tables run.** They were parsed and inert before this — a file asking
+for every event to be appended to `audit.jsonl` produced an empty file and no
+error — and they now run in a session turn and in `io exec` from the same call. A
+hook either appends one JSON line per event to a file or runs an argv array,
+never a shell string. `on` names the events to observe and empty means all of
+them; `at = "before_tool"` puts it in front of a tool call, with `tools` to
+filter which calls it sees; the two are mutually exclusive and an `at` hook must
+have a `run`. `on_failure` decides what a failure costs: `continue` carries on,
+`cancel` ends the turn at the next step boundary and leaves the run resumable,
+`refuse` turns that one tool call back. `timeout_ms` is 5000 when absent.
+
+**A project-scoped file may not declare `[[hook]]`, and that refusal is now
+readable.** io-harness refuses the whole configuration rather than dropping the
+table, because a hook runs a command on this machine and `io.toml` arrives with a
+`git clone`. There is no `Config` to be had and `io` genuinely cannot start —
+what changed is the words. io-harness's own sentence names the key, the reason
+and the two files that may carry it, and it is printed whole under a line saying
+which file was being read. Before this it arrived as a bare error string from a
+program that had already exited, against a repository the operator had just
+cloned.
+
+**The fleet has names.** A child is drawn by the address it was spawned under —
+the `as` argument, or a derived one like `reviewer#42` — with its roster role
+beside it, instead of by a run number nobody chose. A message one agent sent a
+named sibling is shown in the tree with its body, which is the case a run number
+told you nothing about. And a child that detached rather than being waited for
+can be selected and attached to: a parent that stops waiting is not a parent that
+stops the work, and that child was a row you could read and could not reach. A
+queued child is still a count and still has no address, because io-harness names
+a child when it admits one.
+
+**Documents: twelve tools, and six of them write.** io-cli turns on io-harness's
+`documents` feature — `xlsx`, `docx`, `pptx`, `pdf`, `barcode` — so the agent
+gains `xlsx_sheets`, `xlsx_read`, `docx_read`, `pptx_read`, `pdf_read` and
+`barcode_decode` to read with, and `xlsx_write`, `xlsx_set_cell`, `docx_write`,
+`pdf_write`, `pdf_watermark` and `pdf_fill_form` to write with. `xlsx_write`
+replaces a file that already exists. Every one of them passes the policy gate,
+the approval prompt and the refusal rendering any other read or write passes —
+and io-cli cannot take a tool out of io-harness's workspace tool set, which is
+the ground `view_image` was disclosed on and the reason the six writers are named
+here one by one rather than counted. The reader is chosen by the tool the model
+called and not by the file's extension.
+
+**What the document tools do not do is in the README**, and is worth reading
+before pointing one at a file that matters. Word is generate-and-read with no
+edit in place, so a read-then-write drops comments, content controls, fields and
+vendor extensions; PowerPoint is read-only; PDF text extraction is best-effort
+about reading order, and a scanned page comes back with empty text rather than an
+error; `xlsx_set_cell` preserves the rest of a workbook in practice rather than
+by guarantee, and not for chart-, pivot- or macro-heavy files. There is no OCR
+and no barcode generation.
+
+**`documents` costs 159 transitive crates and pins `image` down a patch.**
+`barcode` is `rxing`, and every published `rxing 0.9.x` requires `image` at
+exactly `=0.25.8`; this crate asks for `^0.25` and the lockfile stood at 0.25.10,
+which cargo cannot reconcile, so the lock is pinned to 0.25.8 — the one version
+both requirements accept. A `cargo update` that lifts `image` again will fail to
+resolve until `rxing` relaxes. It is written here because an operator otherwise
+meets it in a red resolve rather than in a release note.
+
+**`/plugin` is the twenty-seventh command**, and it is in the **configure**
+group beside `/mcp` and `/provider` because it is the third surface of that kind:
+something a configuration file declares by name whose effect on the session is
+otherwise invisible. Configure goes to seven.
+
 ## [0.19.0] - 2026-08-27
 
 Ask for a thing io can do, in your own words, and have it happen.

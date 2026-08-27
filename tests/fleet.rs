@@ -406,3 +406,152 @@ fn f5_forgetting_a_run_forgets_the_fleet_and_shuts_the_view() {
     assert!(!app.fleet_open());
     assert!(app.fleet.is_empty());
 }
+
+/// A fleet belongs to one turn, and the turn that clears it is the turn that
+/// starts.
+///
+/// **Not the turn that ends, and the difference is the whole of it.** Clearing on
+/// `finished` would throw away the tree at the exact moment the operator is most
+/// likely to open `/fleet` and read what their fan-out did — which is why
+/// `f5_the_view_closes_when_the_turn_ends_and_the_model_survives` above asserts the
+/// opposite for `App::finished`, and why the two tests have to sit beside each
+/// other. Clearing at the start keeps the record readable for as long as it is the
+/// record of the last thing that happened, and no longer.
+///
+/// Sabotage: drop `self.fleet.forget()` from `App::started`. **Nothing else in
+/// this suite fails.** Every test above builds its fleet inside one turn, so a
+/// model that never clears agrees with all of them. What ships instead is a
+/// session where one fan-out anywhere poisons the rest of the conversation: turn
+/// two's `/fleet` draws turn one's agents and their mail as though they were
+/// current — rows for children that finished minutes ago, under a pane whose whole
+/// claim is that it shows what is running now — and `note_fleet`'s `is_empty`
+/// early return is defeated for good, so every ordinary step of every later turn
+/// pays a `run_root` and a `tree_addresses` query for a tree that is not there.
+/// One of those is a lie on screen and the other is a cost with nothing to show
+/// for it, and neither leaves a mark anyone would trace back here.
+#[test]
+fn f5_a_turn_starting_clears_the_previous_turns_fleet() {
+    let mut app = App::new(DARK, "a-model");
+
+    // Turn one fans out.
+    app.started();
+    app.event(
+        &spawned(1, 0, 7, "read every file under src/"),
+        Duration::ZERO,
+    );
+    app.event(&tier(1, 1, 0, 0), Duration::ZERO);
+    app.finished();
+    assert_eq!(
+        app.fleet.children().len(),
+        1,
+        "the tree survives the turn it belonged to, which is the other half of \
+         this rule",
+    );
+
+    // Turn two starts, and it starts with nothing.
+    app.started();
+    assert!(
+        app.fleet.is_empty(),
+        "turn one's agents are still in the model, so `/fleet` will draw them as \
+         this turn's: {:?}",
+        app.fleet.children(),
+    );
+    assert!(
+        app.fleet.children().is_empty(),
+        "the rows in particular, which are what reaches the screen",
+    );
+    assert!(
+        app.fleet.tiers().is_empty(),
+        "and the counts, which are what the summary line is built from",
+    );
+    assert_eq!(
+        app.fleet.selection(),
+        None,
+        "nothing is marked, rather than a row zero that no longer exists",
+    );
+}
+
+/// F5 — `Enter` with something typed is still `queue this`, with the pane open.
+///
+/// The pane is drawn *over the prompt*, not in front of the keyboard: `Ctrl+C`
+/// still interrupts through it and the composer still takes typing, because the
+/// moment this view is worth opening is mid-turn. `Enter` on a fleet row means
+/// something only at an empty prompt — there is one row it can act on and nothing
+/// half-written to lose — so with text in the composer it has to fall through.
+///
+/// Sabotage: drop the `if self.composer.is_empty()` guard from the `KeyCode::Enter`
+/// arm of the fleet block in `App::key`, which is what this arm actually shipped
+/// with. **The return value does not change** — a prompt queued mid-turn is
+/// `Command::None` and a swallowed key is `Command::None` — so nothing a caller can
+/// see distinguishes the two, and the assertion that bites is the queue's contents.
+/// What the operator gets is a line they typed against a running turn, pressed
+/// `Enter` on, and that is simply gone: no message, no change on screen, and the
+/// pane is open at precisely the moment queueing a line is most likely.
+#[test]
+fn f5_enter_with_a_written_prompt_reaches_the_queue_through_the_open_view() {
+    let mut app = App::new(DARK, "a-model");
+    app.started();
+    app.event(
+        &spawned(1, 0, 7, "read every file under src/"),
+        Duration::ZERO,
+    );
+    app.toggle_fleet();
+    assert!(app.fleet_open());
+
+    for character in "and then run the tests".chars() {
+        app.key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(
+        app.composer.text(),
+        "and then run the tests",
+        "the pane is over the prompt, not in front of the keyboard",
+    );
+
+    app.key(key(KeyCode::Enter));
+
+    assert_eq!(
+        app.queued_prompts(),
+        ["and then run the tests"],
+        "the line was swallowed by a pane that had nothing to do with it",
+    );
+    assert!(
+        app.composer.is_empty(),
+        "and the prompt is clear for the next one, the way every other submit \
+         leaves it",
+    );
+    assert!(
+        app.fleet_open(),
+        "queueing a line is not a reason to close the view that was being read",
+    );
+}
+
+/// F5 — `Shift+Enter` writes a newline through the open view.
+///
+/// The same guard, on the key that has no other road at all. `Enter` at least had
+/// a reading while the pane was up; a shifted `Enter` never means "act on a fleet
+/// row" under any circumstances, so an arm that matched `KeyCode::Enter` without
+/// looking at the modifiers took a key it could not possibly want.
+///
+/// Sabotage: the same missing `composer.is_empty()`. Under it a multi-line prompt
+/// cannot be *written* while the pane is open — the second line never starts, the
+/// cursor does not move, and the operator concludes the key is broken rather than
+/// that a view they opened is eating it.
+#[test]
+fn f5_shift_enter_still_writes_a_newline_through_the_open_view() {
+    let mut app = App::new(DARK, "a-model");
+    app.toggle_fleet();
+    for character in "first line".chars() {
+        app.key(key(KeyCode::Char(character)));
+    }
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    for character in "second line".chars() {
+        app.key(key(KeyCode::Char(character)));
+    }
+
+    assert_eq!(
+        app.composer.text(),
+        "first line\nsecond line",
+        "the shifted Enter never reached the composer, so a multi-line prompt \
+         cannot be written while the view is open",
+    );
+}
