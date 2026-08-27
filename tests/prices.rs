@@ -359,6 +359,87 @@ fn a_provider_the_reference_cannot_speak_for_yields_no_rows() {
     );
 }
 
+/// **The same endpoint, with a catalogue the operator named — and this is the
+/// half that was inert.**
+///
+/// `app.io-cli.prices.source_url` is documented in `src/settings.rs` and in the
+/// README as the only way an operator on a self-hosted or `compatible` endpoint
+/// gets prices at all. It could not work: the read fetched the operator's own
+/// catalogue and then put it through the same narrowing as the default one, whose
+/// `_` arm discards every row for a `compatible` provider. So io-cli fetched the
+/// right list and threw all of it away, and the test above — asserting the empty
+/// result — was the only coverage either path had.
+///
+/// The narrowing exists to cut one vendor's view of the whole field down to the
+/// provider in force. An operator who set `source_url` has already answered that
+/// question: they pointed io-cli at the list their own endpoint publishes, so
+/// every row of it is theirs and the ids are already spelled the way their
+/// provider names them. A named catalogue is therefore taken whole.
+///
+/// The source is still recorded as the URL and not as the vendor, because it is
+/// still not the vendor speaking — it is a list the operator chose.
+///
+/// Sabotage: route `Catalogue::named` through the same filter as
+/// `Catalogue::of` — under which only this test fails, and it fails by returning
+/// the release to the state where the key exists, is documented, and does nothing.
+#[test]
+fn a_catalogue_the_operator_named_is_taken_whole_and_attributed_to_its_url() {
+    const MINE: &str = "http://localhost:11434/v1/models";
+    let config = local();
+    let catalogue = Catalogue::named(
+        spec(&config),
+        vec![
+            priced("llama3.2", 20_000, 20_000),
+            priced("qwen3-coder", 30_000, 30_000),
+            unpriced("nomic-embed-text"),
+        ],
+        "2026-08-27",
+        MINE,
+    );
+
+    let ids: Vec<&str> = catalogue
+        .rows
+        .iter()
+        .map(|(model, _)| model.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["llama3.2", "qwen3-coder"],
+        "the operator's own catalogue was narrowed by a filter built for somebody else's",
+    );
+    // Served counts what the endpoint offers, priced or not — the third row is a
+    // model it serves and put no rate on, which is a different fact from a model
+    // it does not serve.
+    assert_eq!(catalogue.served, 3);
+    assert_eq!(
+        catalogue.source,
+        PriceSource::Reference(MINE.to_string()),
+        "a list the operator chose was attributed to the vendor",
+    );
+    assert!(
+        prices::source_word(&catalogue.source).contains(MINE),
+        "the page would not say which catalogue these rates came from",
+    );
+
+    // And it survives the write, which is the only thing that makes any of it
+    // reach a `/cost` page.
+    let written = edit::apply(FRESH, &catalogue.edits(prices::has_models_section(FRESH)))
+        .expect("the edits produce a file that parses");
+    let table = Config::from_toml(&written)
+        .expect("io-harness accepts it")
+        .prices()
+        .expect("the file carries a table");
+    assert_eq!(
+        table.price("llama3.2").map(|price| price.input),
+        Some(20_000)
+    );
+    assert_eq!(
+        table.price("nomic-embed-text"),
+        None,
+        "a model served with no rate was entered at zero",
+    );
+}
+
 /// **A model the catalogue served with no price is ABSENT, never entered at
 /// zero.**
 ///
