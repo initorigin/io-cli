@@ -471,6 +471,31 @@ impl WithProvider for Headless {
         let json = Ndjson::new(std::io::stdout());
         let observer: &dyn Observer = if self.args.json { &json } else { &Ignore };
 
+        // **The same composition the session arm builds, and it is here for the
+        // reason the asymmetry this product deleted in 0.14.0 was a defect.** A
+        // hook is configuration, and configuration that reaches a terminal and
+        // not CI is worse than configuration that reaches neither: an audit log
+        // set up for unattended runs would record nothing in exactly the place
+        // nobody is watching a screen to notice. So `[[hook]]` runs under
+        // `io exec` on the same terms.
+        //
+        // `Broadcast` is here too, and for `io exec` it is the more useful half:
+        // a headless run is the one somebody else's process is most likely to
+        // want to attach to.
+        let hooks = crate::contract::hooks(&self.config, self.session.root());
+        let mut observers: Vec<&dyn Observer> = vec![observer];
+        if let Some(hooks) = &hooks {
+            observers.push(hooks);
+        }
+        let fanout = crate::fanout::Fanout::new(observers);
+        let durable =
+            crate::settings::store_path().and_then(|path| io_harness::Store::open(&path).ok());
+        let broadcast = durable.map(|store| io_harness::Broadcast::new(store, &fanout));
+        let watcher: &dyn Observer = match &broadcast {
+            Some(broadcast) => broadcast,
+            None => &fanout,
+        };
+
         let result = turn(
             &provider,
             &self.store,
@@ -479,7 +504,7 @@ impl WithProvider for Headless {
             &self.policy,
             self.args.goal.clone(),
             self.args.sandbox.map(crate::cli::Sandbox::mode),
-            observer,
+            watcher,
         )
         .await?;
 

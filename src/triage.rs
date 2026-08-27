@@ -41,7 +41,7 @@ pub enum Disposition {
     Silent,
 }
 
-/// Every kind io-harness 0.66 declares, in its own declaration order.
+/// Every kind io-harness 0.69 declares, in its own declaration order.
 ///
 /// The order is the enum's rather than alphabetical so that this table can be
 /// read down the side of `observe.rs` when the pin moves.
@@ -165,8 +165,10 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     (
         "plugin_loaded",
         Disposition::Silent,
-        "`io exec --json` and the durable trace; a bundle that loaded changed nothing an operator \
-         asked about mid-session",
+        "`/plugin`, which lists it and what it contributed; also `io exec --json` and the durable \
+         trace. Silent on the stream because it fires at step 0 of every turn — a bundle that \
+         loaded changed nothing an operator asked about mid-session, and a line each time would be \
+         a line about a directory that has not moved since the session started",
     ),
     ("lsp_started", Disposition::Status, "the lsp field"),
     ("browser_started", Disposition::Status, "the web field"),
@@ -183,7 +185,13 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     (
         "plugin_dropped",
         Disposition::Silent,
-        "`io exec --json` and the durable trace",
+        "`/plugin`, which lists it with io-harness's own sentence for why; also `io exec --json` \
+         and the durable trace. **Silent is a close call and it is recorded as one.** A bundle \
+         that failed to load is exactly the kind of fact this interface argues should be visible — \
+         but it is a standing misconfiguration rather than an event, it fires at step 0 of every \
+         turn for as long as it goes unfixed, and a refusal repeated once a turn teaches an \
+         operator to stop reading refusals. So it goes to the surface that holds standing facts, \
+         and `/plugin` exists from this release for that",
     ),
     (
         "rewound",

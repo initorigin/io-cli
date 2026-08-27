@@ -251,6 +251,32 @@ pub fn scope_path(root: &std::path::Path, scope: Scope) -> Option<PathBuf> {
     }
 }
 
+/// What to print when the configuration cannot be read at all.
+///
+/// **The whole of io-harness's sentence, and one line of io-cli's own.** A
+/// `Config::discover` that fails is not always a broken file: since io-harness
+/// refuses a project-scoped `[[hook]]` outright — a hook runs a command, and
+/// `io.toml` is the file a `git clone` delivers — the commonest way for a
+/// perfectly well-formed repository to stop io from starting is a table somebody
+/// added in good faith to the wrong one of three files.
+///
+/// io-harness's own message names the key, says why, and names the two files that
+/// may carry it. Nothing io-cli could write would be better, so it is passed
+/// through whole. What io-cli adds is the one thing the harness cannot know: which
+/// directory was being read, because an operator who ran `io` in the wrong place
+/// is looking at a message about a file they have never opened.
+///
+/// **This lives here and not in `main.rs`.** Nothing under `tests/` links the
+/// binary, so a sentence composed in that file is one no test drives and no
+/// sabotage can make fail — the same reasoning that put plain-mode resolution in
+/// the library.
+pub fn refusal(root: &std::path::Path, error: &io_harness::Error) -> String {
+    format!(
+        "the configuration in {} could not be read:\n{error}",
+        root.display()
+    )
+}
+
 /// Write one change into the scope the operator picked, and prove it landed.
 ///
 /// **The write is verified by io-harness reading it back, and rolled back when it

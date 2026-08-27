@@ -93,6 +93,21 @@ pub enum Command {
     /// A command rather than something this type does, because the transcript
     /// lives in the harness's store and the store belongs to the driver.
     Transcript,
+    /// Watch a child that is already running, by the run id the fleet is holding.
+    ///
+    /// **A command for exactly the reason [`Command::Transcript`] is one**: what
+    /// this asks for lives in the harness's store, and the store belongs to the
+    /// driver. `io_harness::Attach` reads the `run_events` table over a second
+    /// connection, and nothing in this type has ever held one.
+    ///
+    /// Asked for on a **detached** child, which is the case that means anything: a
+    /// detached child is still running and its parent has merely stopped waiting
+    /// for it, so it is the one with events still to come and nobody watching
+    /// them. Attaching to a child that is still being waited for is legal and
+    /// io-harness does not care, but its events are already arriving on the
+    /// stream this interface is drawing, so it would be a second copy of what is
+    /// already on screen.
+    Attach(i64),
     /// The first `Esc` at an empty prompt: say what undoing the last turn would
     /// undo, and wait for the second.
     ///
@@ -614,6 +629,23 @@ impl App {
         // wants of the row above the prompt is how long THIS turn has been going
         // and what it is costing — not how long the terminal has been open.
         self.status.start_run();
+        // **The fleet belongs to one turn, and it is cleared here rather than
+        // when a turn ends.** `Fleet::forget` was reachable only from `/resume`,
+        // `/fork`, a rewind and `/clear`, so a turn that fanned out left its
+        // children in the model for the rest of the conversation. 0.19.0 could
+        // afford that — the rows were stale and that was all. 0.20.0 cannot: the
+        // model now also holds mail, and `note_fleet`'s cheap early return is
+        // `Fleet::is_empty`, so a single fan-out anywhere in a session would (a)
+        // draw the *previous* turn's agents and their messages as though they were
+        // this turn's, and (b) put a `run_root` and a `tree_addresses` query on
+        // every step of every ordinary turn afterwards — the exact cost that guard
+        // exists to avoid.
+        //
+        // **At the start of a turn and not at the end of one**, so a fleet stays
+        // readable after the turn that produced it. An operator whose agents have
+        // just finished can still open the pane and see what happened; it is the
+        // *next* prompt that means those rows are no longer about anything.
+        self.fleet.forget();
         self.quits = 0;
         self.announce();
     }
@@ -967,6 +999,30 @@ impl App {
         // that count is reachable. Read back rather than incremented here, so
         // there is one counter and not two that can disagree.
         self.status.unknown = self.events.unknown();
+        self.pending.extend(lines);
+    }
+
+    /// Take an event from a run this session is **watching** rather than driving.
+    ///
+    /// **The same lines as [`App::event`] and none of the bookkeeping**, and the
+    /// difference is the whole reason this exists. `App::event` also folds the
+    /// event into `status_from` and into the fleet — both of which describe *this
+    /// conversation*. A detached child is somebody else's run: its tokens are not
+    /// this session's spend, its provider is not the one this session is talking
+    /// to, its `Fleet` tier is not this turn's fan-out shape, and its own children
+    /// are not this turn's children.
+    ///
+    /// Routing a watched run through `App::event` therefore corrupts the footer
+    /// permanently — `Status::start_run` resets the clock and the run's tokens and
+    /// nothing else, so a session total inflated by a watched child never comes
+    /// back down — and it grafts that child's tree into the pane the operator
+    /// opened to look at it. Neither is recoverable without ending the session,
+    /// and neither is visible as a bug: the numbers are simply wrong afterwards.
+    ///
+    /// So a watched event draws and does nothing else. What the operator asked for
+    /// is to see the run; they did not ask for it to be counted as theirs.
+    pub fn watched(&mut self, event: &RunEvent, at: Duration) {
+        let lines = self.events.event(event, at);
         self.pending.extend(lines);
     }
 
@@ -1377,6 +1433,35 @@ impl App {
                 }
                 KeyCode::Down => {
                     self.fleet.move_by(1);
+                    return Command::None;
+                }
+                // **`Enter` on a detached child, at an empty prompt, and nothing
+                // on any other row.** The pane has had a selection since 0.8.0
+                // that drove only the highlight; this is what it was for. A
+                // detached child is the one an operator can usefully go and look
+                // at — it is still running and nothing is watching it — so it is
+                // the one row where `Enter` means something.
+                //
+                // **`self.composer.is_empty()` is the whole guard, and leaving it
+                // out is a real defect this arm shipped without for one adversarial
+                // review.** This pane is drawn *over the prompt*, not in front of
+                // the keyboard — the module comment above says so — and the queue
+                // surface below gets it right for exactly this reason. Without the
+                // guard, every `Enter` while the pane is open returns here: a line
+                // typed to be queued behind a running turn is silently dropped, and
+                // `Shift+Enter` never reaches the composer, so a multi-line prompt
+                // cannot even be written. Both are invisible — no message, no
+                // change on screen — and the pane is open precisely when a turn is
+                // running, which is when queueing a line is most likely.
+                //
+                // With text in the composer `Enter` goes on meaning what it means
+                // everywhere else, which is *queue this*.
+                KeyCode::Enter if self.composer.is_empty() => {
+                    if let Some(child) = self.fleet.selected_child() {
+                        if child.state == crate::fleet::State::Detached {
+                            return Command::Attach(child.run_id);
+                        }
+                    }
                     return Command::None;
                 }
                 // `armed` and not `self.armed`: this function took the arming out
