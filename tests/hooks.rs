@@ -64,9 +64,8 @@ const EVENT_HOOK: &str = "[[hook]]\non = [\"finished\"]\nrun = [\"true\"]\n";
 fn f8_a_project_scoped_hook_is_refused_and_io_cli_names_the_rule_and_the_root() {
     let (_dir, root) = written(PROJECT_FILE, EVENT_HOOK);
 
-    let error = Config::discover(&root)
-        .err()
-        .expect("a hook in the file a `git clone` delivers is refused");
+    let error =
+        Config::discover(&root).expect_err("a hook in the file a `git clone` delivers is refused");
     let said = io_cli::configure::refusal(&root, &error);
 
     // io-harness's own words, not a paraphrase of them.
@@ -306,12 +305,16 @@ fn a_malformed_hook_is_refused_by_io_harness_and_io_cli_adds_no_check_of_its_own
 /// lists, that io-cli attaches to the fan-out, and that never runs once.
 #[test]
 fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed() {
-    let (_dir, root) = written(LOCAL_FILE, "[[hook]]\non = [\"finsihed\"]\nrun = [\"true\"]\n");
+    let (_dir, root) = written(
+        LOCAL_FILE,
+        "[[hook]]\non = [\"finsihed\"]\nrun = [\"true\"]\n",
+    );
     let error = Config::discover(&root)
-        .err()
-        .expect("a misspelled event name is a hook that would never fire");
+        .expect_err("a misspelled event name is a hook that would never fire");
     assert!(
-        error.to_string().contains("is not an event this crate emits"),
+        error
+            .to_string()
+            .contains("is not an event this crate emits"),
         "{error}",
     );
 

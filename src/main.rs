@@ -1633,11 +1633,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         picker = Some((
                             Picker::new(
                                 "Plugins",
-                                io_cli::pluginview::rows(
-                                    &view,
-                                    screen.width(),
-                                    &app.theme.glyphs,
-                                ),
+                                io_cli::pluginview::rows(&view, screen.width(), &app.theme.glyphs),
                             ),
                             Pick::Plugins(view),
                         ));

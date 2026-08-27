@@ -477,8 +477,9 @@ impl Fleet {
     /// One row per admitted child, then one per message, all fitted to `width`.
     ///
     /// **The children come first and stay index-aligned with
-    /// [`Fleet::children`]**, because [`Fleet::selected`] is an index into that
-    /// vector and [`Fleet::render`] marks a row by comparing it. Messages are
+    /// [`Fleet::children`]**, because the selection this type holds is an index
+    /// into that vector — see [`Fleet::selection`] — and [`Fleet::render`] marks a
+    /// row by comparing it. Messages are
     /// appended after the last child rather than interleaved under their
     /// recipients: interleaving would put rows in front of children and silently
     /// shift every index the marker uses, and a marker that lands on the wrong row
@@ -831,10 +832,7 @@ mod tests {
         let ascii = fleet.rows(80, &ASCII).remove(0);
         assert!(unicode.contains("a → b"), "{unicode:?}");
         assert!(ascii.contains("a -> b"), "{ascii:?}");
-        assert!(
-            !ascii.chars().any(|c| !c.is_ascii()),
-            "the ASCII row is ASCII: {ascii:?}",
-        );
+        assert!(ascii.is_ascii(), "the ASCII row is ASCII: {ascii:?}");
         // And the row is still assembled out of the set it was handed, separator
         // included, rather than out of literals typed here.
         assert!(ascii.contains(ASCII.separator.trim()), "{ascii:?}");
@@ -850,7 +848,7 @@ mod tests {
             &Agents::new().with(AgentDef::new("reviewer")),
         );
         let row = fleet.rows(80, &ASCII).remove(0);
-        assert!(!row.chars().any(|c| !c.is_ascii()), "{row:?}");
+        assert!(row.is_ascii(), "{row:?}");
         assert!(row.contains("reviewer#7 (reviewer)"), "{row:?}");
     }
 

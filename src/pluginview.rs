@@ -196,11 +196,7 @@ pub fn view(config: &io_harness::Config) -> View {
                 contributions: plugin.contributions(),
                 skills: plugin.skills_dir(),
                 templates: plugin.templates_dir(),
-                agents: plugin
-                    .agents()
-                    .iter()
-                    .map(|def| def.name.clone())
-                    .collect(),
+                agents: plugin.agents().iter().map(|def| def.name.clone()).collect(),
                 servers: plugin
                     .mcp_servers()
                     .iter()
@@ -243,8 +239,9 @@ pub fn view(config: &io_harness::Config) -> View {
 /// answer to what the bundle *did to this session* and are the only field here
 /// with no other home. The version follows when there is one, the description
 /// takes what is left, and **the root path is the field that gives way** — below
-/// [`ROOT_FLOOR`] it is dropped whole rather than drawn as an ellipsis and an
-/// extension. At eighty columns a row is therefore the id, what it contributed and
+/// a floor this module keeps privately it is dropped whole rather than drawn as an
+/// ellipsis and an extension. At eighty columns a row is therefore the id, what it
+/// contributed and
 /// as much description as fits; widen the terminal and the path arrives.
 ///
 /// A refused row never carries the root, and not because it did not fit:

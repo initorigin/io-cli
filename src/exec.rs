@@ -488,8 +488,8 @@ impl WithProvider for Headless {
             observers.push(hooks);
         }
         let fanout = crate::fanout::Fanout::new(observers);
-        let durable = crate::settings::store_path()
-            .and_then(|path| io_harness::Store::open(&path).ok());
+        let durable =
+            crate::settings::store_path().and_then(|path| io_harness::Store::open(&path).ok());
         let broadcast = durable.map(|store| io_harness::Broadcast::new(store, &fanout));
         let watcher: &dyn Observer = match &broadcast {
             Some(broadcast) => broadcast,

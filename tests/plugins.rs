@@ -330,7 +330,9 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
         );
         let dropped = dropped_at(&plugins, "runner");
         assert!(
-            dropped.error.contains(&format!("may not contribute `[[{kind}]]`")),
+            dropped
+                .error
+                .contains(&format!("may not contribute `[[{kind}]]`")),
             "{kind}: dropped for something else: {}",
             dropped.error,
         );
@@ -348,7 +350,10 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
              is folded in at run start",
         );
         assert!(
-            !contract.mcp.iter().any(|server| server.id.contains("runner")),
+            !contract
+                .mcp
+                .iter()
+                .any(|server| server.id.contains("runner")),
             "{kind}: the refused bundle's server reached the turn",
         );
         assert!(
