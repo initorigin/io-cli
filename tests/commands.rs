@@ -64,6 +64,11 @@ fn the_commands_are_the_commands() {
             "/skills",
             "/mcp",
             "/provider",
+            // 0.20.0 — the third surface that lists what the file declared and
+            // goes on to change it, and the widest of the three: one directory
+            // can hand over skills, templates, agents, servers, hooks and policy
+            // at once. That breadth is the argument for it being visible at all.
+            "/plugin",
             "/profile",
             "/contain",
             // 0.12.0 — the planning phase stopped being something
