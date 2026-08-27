@@ -173,6 +173,20 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         return io_cli::exec::main(args, config, root, cli.model).await;
     }
 
+    // `io resume` leaves by the same door, for the same two reasons: it is
+    // headless, and `io resume --list` in CI has no terminal to be refused for.
+    // It answers a missing provider with a sentence of its own, so it must pass
+    // the wizard as well as the terminal check.
+    //
+    // A second `if let` on `cli.command` compiles because the arm above moves it
+    // only conditionally and returns; nothing reads it after this point.
+    if let Some(Subcommand::Resume(args)) = cli.command {
+        for line in report.drain(..) {
+            eprintln!("{line}");
+        }
+        return io_cli::exec::resume_main(args, config, root, cli.model).await;
+    }
+
     // A session draws, so it needs a terminal to draw on, and saying so is better
     // than half-working. The check sits AFTER the subcommand is known rather than
     // before it, because `io exec` is the answer to a non-TTY stdout rather than a
@@ -307,7 +321,11 @@ async fn drive(
     // here: `adopt` moves files, so a second call would be a second migration, and
     // by the time there is an `App` to say this in the environment already names
     // the home — there would be nothing left to report.
-    report: Vec<String>,
+    //
+    // **Mutable since 0.23.0**, because the session lock taken below has one
+    // thing worth saying that is the same kind of fact: what this process found
+    // when it arrived, said once, before the session it describes is running.
+    mut report: Vec<String>,
     root: &std::path::Path,
 ) -> Result<(), String> {
     let Some(spec) = config.provider_spec().cloned() else {
@@ -406,6 +424,71 @@ async fn drive(
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
+
+    // **One `io` at a time on one workspace, from here on.** This product keeps
+    // one store for the whole machine and `Session::open` answers the *same*
+    // session for two terminals in one repository — so until 0.23.0 two of them
+    // advanced one conversation head, the loser of the race paid for a turn that
+    // was then orphaned off the head path, and what it saw was an error calling
+    // its session a run. See `io_cli::lock` for why this is a kernel lock rather
+    // than a pid file, and why the holder can only be named from what io-cli
+    // itself wrote.
+    //
+    // The record is read **before** the lock is taken, because acquiring
+    // overwrites it — and a record left behind by a process the kernel has
+    // already forgotten is the one case worth saying out loud.
+    let _session_lock = match io_cli::home::path() {
+        Some(home) => {
+            let (_, owner_path) = io_cli::lock::paths(&home, root);
+            let previous = std::fs::read_to_string(&owner_path)
+                .ok()
+                .map(|text| io_cli::lock::Owner::parse(&text));
+            // The only clock read in this whole path, and it is here because
+            // `src/main.rs` is the one file `tests/timing.rs` permits one in.
+            let now = std::time::SystemTime::now();
+            match io_cli::lock::acquire(&home, root, now) {
+                Ok(io_cli::lock::Taken::Held(guard)) => {
+                    if let Some(true) = previous.as_ref().and_then(|owner| {
+                        owner.lapsed(now, io_cli::lock::LEASE)
+                    }) {
+                        report.push(format!(
+                            "took this workspace over from {} — its lock was gone and its \
+                             lease had run out",
+                            previous.as_ref().map(io_cli::lock::Owner::sentence).unwrap_or_default()
+                        ));
+                    }
+                    Some(guard)
+                }
+                // Returned as an error rather than as an exit code, because the
+                // codes in `io_cli::exec` describe how a *run* ended and no run
+                // has started here. What the operator gets is the sentence and a
+                // non-zero exit, which is what a refusal to start owes them.
+                Ok(io_cli::lock::Taken::Refused(owner)) => {
+                    return Err(format!(
+                        "another io is already working in this workspace — {}. Close it, or \
+                         start this one somewhere else; two of them would advance one \
+                         conversation and orphan a turn you paid for.",
+                        owner.sentence()
+                    ));
+                }
+                // A lock that cannot be taken for an ordinary filesystem reason is
+                // **not** a reason to refuse the session. The guard exists to stop
+                // a specific corruption, and trading it for "io will not start on
+                // this machine" is a worse failure than the one it prevents.
+                Err(error) => {
+                    report.push(format!(
+                        "this workspace could not be locked ({error}); if another io is \
+                         running here, do not use both"
+                    ));
+                    None
+                }
+            }
+        }
+        // No home means no io home to keep a lock in, which `home::adopt` has
+        // already said something about. Answered defensively rather than by
+        // refusing to start.
+        None => None,
+    };
 
     // Kept whole before the match consumes it, because `/model` needs a
     // `ProviderSpec` to ask `verify::catalogue` what this endpoint serves — the
@@ -1087,6 +1170,63 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         Tone::Success,
                                         format!("resumed {}", session.root().display()),
                                     );
+                                    // **And now the part that was missing until
+                                    // 0.23.0.** Reopening a session has never
+                                    // asked what its last run was waiting on, so
+                                    // a question the agent asked, a plan it
+                                    // proposed, or a call that never finished sat
+                                    // in the store while the interface offered a
+                                    // fresh prompt. The run is found from the
+                                    // head rather than from a second scan — the
+                                    // session's own head names the turn, and the
+                                    // turn names the run. `last_run` is the same
+                                    // walk `/expand` already uses, and it reads
+                                    // the on-path turn rather than the newest
+                                    // row, which is what makes it right after a
+                                    // fork or an undo.
+                                    let effective = approval::session_policy(
+                                        &policy,
+                                        app.posture(),
+                                        app.remembered(),
+                                    );
+                                    if let Some(run_id) =
+                                        last_run(&session, &store).map(|turn| turn.run_id)
+                                    {
+                                        match io_cli::resume::pending_for(&store, run_id) {
+                                            // Nothing waiting is the ordinary
+                                            // case and says nothing: an operator
+                                            // reopening a finished session has
+                                            // asked for a prompt, not a report.
+                                            Ok(io_cli::resume::Pending::Finished) => {}
+                                            Ok(pending) => {
+                                                resume_pending(
+                                                    screen,
+                                                    inputs,
+                                                    &mut app,
+                                                    &provider,
+                                                    &store,
+                                                    &mut session,
+                                                    &effective,
+                                                    &config,
+                                                    contained
+                                                        .then_some(containment.as_ref())
+                                                        .flatten(),
+                                                    &capabilities,
+                                                    &seen,
+                                                    run_id,
+                                                    pending,
+                                                )
+                                                .await?;
+                                            }
+                                            Err(error) => app.say(
+                                                Tone::Muted,
+                                                format!(
+                                                    "that session's last run could not be \
+                                                     read: {error}"
+                                                ),
+                                            ),
+                                        }
+                                    }
                                 }
                                 Err(error) => app.say(
                                     Tone::Error,
@@ -2181,6 +2321,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             Command::Attach(run_id) => {
                 watch_child(screen, &mut app, &store, inputs, run_id).await?;
             }
+            // **Neither can arrive here, and the arms exist so that stays true
+            // by construction rather than by memory.** Both are produced only by
+            // an overlay opened from the store, and the only thing that opens
+            // one is `resume_pending`, which reads its own keys and consumes the
+            // answer before returning. If either ever reaches the idle loop, an
+            // operator's decision has been taken with nothing waiting for it —
+            // so it is said rather than dropped, which is the failure the
+            // `#[must_use]` on `App::answer_intent` is also there to prevent.
+            Command::Answered(_) | Command::Decided(_) => app.say(
+                Tone::Error,
+                "that decision arrived with no parked run waiting for it and was not delivered",
+            ),
             // The first `Esc`. Nothing has changed yet; this says what the second
             // one would change, in the turn's own words, so a confirmation is a
             // confirmation of something specific rather than of a keystroke.
@@ -2204,7 +2356,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
-                Err(error) => app.say(Tone::Error, format!("nothing was undone: {error}")),
+                // **`failure::said`, and not the raw `Display`.** Since 0.23.0
+                // the undo can lose a head race with another `io`, and
+                // `Error::Conflict`'s own text calls the session id a run id and
+                // renders an expiry that a head conflict never populates. That
+                // sentence is exactly what `failure::advice` exists to replace,
+                // and this arm was the one path in the product still going
+                // around it.
+                //
+                // **And the old line said "nothing was undone", which is false.**
+                // `rewind::last_turn` restores the files before it attempts the
+                // head write, so a conflict leaves the operator's files back as
+                // they were with the conversation head where the other process
+                // put it. Saying nothing happened would send them looking for
+                // changes that are already gone.
+                Err(error) => app.say(
+                    Tone::Error,
+                    format!("the undo did not finish: {}", io_cli::failure::said(&error)),
+                ),
             },
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 Action::Print(lines) => {
@@ -4010,7 +4179,25 @@ async fn turn<P: Provider>(
         // work above is real and the turn did not finish.
         None if undone => {}
         None => app.say(Tone::Muted, "stopped"),
-        Some(Ok(_)) => {}
+        // **A turn that ended parked said nothing at all until 0.23.0.** The
+        // harness returns `AwaitingAnswer`, `AwaitingPlan` or `AwaitingRecovery`
+        // as an ordinary `Ok`, so this arm matched and dropped it — and the
+        // operator got their prompt back with no sign that a run was sitting in
+        // the store waiting for a sentence from them. Every other way a turn can
+        // end has a line; this is the one that pays for itself, because the work
+        // is still there to be finished.
+        Some(Ok(result)) => {
+            if io_cli::exec::code(&result.outcome) == io_cli::exec::PAUSED {
+                app.record(
+                    Tone::Warning,
+                    format!(
+                        "this turn {} {} /resume opens it and carries it on",
+                        io_cli::exec::describe(&result.outcome),
+                        app.theme.glyphs.dash
+                    ),
+                );
+            }
+        }
     }
     app.status.elapsed = started.elapsed();
     paint(screen, app)?;
@@ -4871,6 +5058,385 @@ const ATTACH_POLL: Duration = Duration::from_millis(100);
 /// step draws exactly as it would have if its parent had waited for it. That is
 /// the property worth having: attaching changes when an operator sees a run, not
 /// what it looks like.
+/// What the operator decided about a parked run, before anything is driven.
+///
+/// Separate from the driving so the decision can be taken with the store's own
+/// row on screen and nothing running, which is the state a parked run is in.
+enum Decided {
+    /// An answer to the question the agent asked.
+    Answer(String),
+    /// A verdict on the plan it proposed.
+    Verdict(io_harness::PlanVerdict),
+    /// What to do about a call that was started and never finished.
+    Recovery(io_harness::RecoveryDecision),
+    /// Nothing to decide — the process died and the run simply needs driving.
+    CarryOn,
+    /// The operator backed out. The run stays exactly as it was found.
+    Left,
+}
+
+/// Put the parked decision in front of the operator and wait for it.
+///
+/// **The overlay is `App`'s own**, opened through `open_resumed_intent` /
+/// `open_resumed_plan` and routed through `App::key` and `App::render` like any
+/// other modal — one widget, one key map, one paint path, so the resumed surface
+/// cannot drift from the live one. What comes back out is
+/// [`io_cli::app::Command::Answered`] / [`io_cli::app::Command::Decided`], which
+/// exist because a stored pause has no run listening for its answer.
+async fn ask_parked(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    inputs: &mut UnboundedReceiver<Event>,
+    app: &mut App,
+    store: &Store,
+    pending: &io_cli::resume::Pending,
+) -> Result<Decided, String> {
+    use io_cli::resume::Pending;
+    match pending {
+        // **The row is read again rather than rebuilt from the classification.**
+        // `Pending` carries the parts so a surface can draw a list without
+        // touching the store per row, but the overlay wants the harness's own
+        // type — and re-reading is both the shortest way to get one and the
+        // freshest answer, since another `io` may have resolved it since the
+        // list was drawn.
+        Pending::Question { question_id, .. } => {
+            match store.question(*question_id) {
+                Ok(Some(row)) => {
+                    app.open_resumed_intent(io_cli::intent::Intent::resumed(&row));
+                }
+                Ok(None) => {
+                    app.say(
+                        Tone::Muted,
+                        format!("question {question_id} is no longer in the store"),
+                    );
+                    return Ok(Decided::Left);
+                }
+                Err(error) => {
+                    app.say(Tone::Error, format!("that question could not be read: {error}"));
+                    return Ok(Decided::Left);
+                }
+            }
+        }
+        Pending::Plan { plan_id, .. } => match store.plan(*plan_id) {
+            Ok(Some(row)) => app.open_resumed_plan(io_cli::plan::Review::resumed(&row)),
+            Ok(None) => {
+                app.say(Tone::Muted, format!("plan {plan_id} is no longer in the store"));
+                return Ok(Decided::Left);
+            }
+            Err(error) => {
+                app.say(Tone::Error, format!("that plan could not be read: {error}"));
+                return Ok(Decided::Left);
+            }
+        },
+        // Neither of these opens a widget. A recovery decision is three words and
+        // a died run is a yes, so both are answered from the keys below with the
+        // question in the scrollback — an overlay for a one-key answer would be a
+        // surface built to be dismissed.
+        Pending::Recovery { tool, step, .. } => app.say(
+            Tone::Warning,
+            format!(
+                "{tool} was called at step {step} and never finished {} r retries it, \
+                 a abandons the run, Esc leaves it parked",
+                app.theme.glyphs.dash
+            ),
+        ),
+        Pending::Died { last_step } => app.say(
+            Tone::Warning,
+            format!(
+                "this run stopped after step {last_step} without finishing {} Enter carries \
+                 it on, Esc leaves it parked",
+                app.theme.glyphs.dash
+            ),
+        ),
+        // Neither reaches here — the caller answers both before asking.
+        Pending::Interrupted | Pending::Finished => return Ok(Decided::Left),
+    }
+    paint(screen, app)?;
+    loop {
+        match inputs.recv().await {
+            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                // The two overlays answer through `App`; the two key prompts
+                // answer here. Split on which is open rather than on the pending
+                // kind, so a widget that failed to open cannot leave this loop
+                // reading keys nobody can see the effect of.
+                if app.modal() {
+                    match app.key(key) {
+                        Command::Answered(Some(answer)) => return Ok(Decided::Answer(answer)),
+                        // A declined question. `Intent`'s own `Esc`, which means
+                        // the same thing here as it does live: leave it for later.
+                        Command::Answered(None) => return Ok(Decided::Left),
+                        Command::Decided(verdict) => return Ok(Decided::Verdict(verdict)),
+                        // **The way out of a plan that must not be cancelled.**
+                        // `Esc` on a plan is `Cancel`, which is a real decision
+                        // that ends the run — right for a live turn and wrong for
+                        // an operator who opened a parked plan to read it.
+                        Command::Interrupt | Command::Abandon | Command::Exit => {
+                            app.leave_resumed();
+                            paint(screen, app)?;
+                            return Ok(Decided::Left);
+                        }
+                        _ => {}
+                    }
+                    paint(screen, app)?;
+                    continue;
+                }
+                let interrupting = key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => return Ok(Decided::Left),
+                    _ if interrupting => return Ok(Decided::Left),
+                    KeyCode::Char('r') if matches!(pending, Pending::Recovery { .. }) => {
+                        return Ok(Decided::Recovery(io_harness::RecoveryDecision::Retry));
+                    }
+                    KeyCode::Char('a') if matches!(pending, Pending::Recovery { .. }) => {
+                        return Ok(Decided::Recovery(io_harness::RecoveryDecision::Abort));
+                    }
+                    KeyCode::Enter if matches!(pending, Pending::Died { .. }) => {
+                        return Ok(Decided::CarryOn);
+                    }
+                    _ => {}
+                }
+            }
+            // A resize while a decision is up is a resize, exactly as it is in
+            // the other two loops in this file. Dropping it leaves the `Screen`
+            // believing in a width the terminal no longer has.
+            Some(Event::Resize(width, height)) => {
+                screen
+                    .resize(width, height)
+                    .map_err(|error| error.to_string())?;
+                paint(screen, app)?;
+            }
+            Some(_) => {}
+            // The terminal went away. Leaving the run parked is the only honest
+            // answer: nothing was decided.
+            None => return Ok(Decided::Left),
+        }
+    }
+}
+
+/// Answer a run that stopped, and carry it on from the step it stopped at.
+///
+/// The decision is taken first and the run is driven second, because a parked
+/// run is not running and the operator is reading a row the store wrote. What is
+/// driven is `crate::resume`'s own function for that kind of pause — never a new
+/// turn, which is what `/resume` amounted to before 0.23.0.
+///
+/// **The contract is rebuilt here and the goal comes off the turn row.**
+/// io-harness stores no contract and publishes no reader for a run's goal, so a
+/// run that served no session turn cannot be resumed from the interface at all;
+/// `io resume --goal` is the door for those, and this says so rather than
+/// resuming against an empty goal.
+#[allow(clippy::too_many_arguments)]
+async fn resume_pending<P: Provider>(
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    inputs: &mut UnboundedReceiver<Event>,
+    app: &mut App,
+    provider: &P,
+    store: &Store,
+    session: &mut Session,
+    policy: &Policy,
+    config: &Config,
+    containment: Option<&io_harness::Containment>,
+    capabilities: &io_cli::contract::Capabilities,
+    // The same record the turn loop reads, and it is here for the same reason: a
+    // resumed run makes real completion calls, so `ctx N%` must move with them.
+    // A drain that read the per-step edits and not the assembly would leave the
+    // field describing the turn before the pause — which is the disagreement
+    // between the field and `/context` that a live run caught in 0.17.0, arriving
+    // through a new door. `tests/context_share.rs` counts the two against each
+    // other so this cannot be forgotten on a path added later.
+    seen: &io_cli::context::Seen,
+    run_id: i64,
+    pending: io_cli::resume::Pending,
+) -> Result<(), String> {
+    use io_cli::resume::{self, Pending};
+    match &pending {
+        // The one pause that cannot be answered, and the sentence is the whole
+        // of this arm's job. See `crate::resume` for why a cancelled run is
+        // terminal to every resume entry point in the pinned harness.
+        Pending::Interrupted => {
+            app.say(
+                Tone::Refused,
+                "you stopped that turn, so it is finished rather than parked — /fork from the \
+                 turn before it to take another run at the same work",
+            );
+            return Ok(());
+        }
+        Pending::Finished => {
+            app.say(Tone::Muted, "that session's last run finished; nothing is waiting");
+            return Ok(());
+        }
+        _ => {}
+    }
+    let decided = ask_parked(screen, inputs, app, store, &pending).await?;
+    if matches!(decided, Decided::Left) {
+        paint(screen, app)?;
+        return Ok(());
+    }
+    // The operator's own words, off the turn the run served. `goal_for` answers
+    // `None` for a run that served no turn, which an interactive session cannot
+    // have produced but a headless one can — and a store is shared between them.
+    let goal = match resume::goal_for(store, run_id) {
+        Ok(Some(goal)) => goal,
+        Ok(None) => {
+            app.say(
+                Tone::Refused,
+                format!(
+                    "run {run_id} was not started by a session, so its goal is not in the \
+                     store — resume it with `io resume --goal`"
+                ),
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            app.say(Tone::Error, format!("run {run_id} could not be read: {error}"));
+            return Ok(());
+        }
+    };
+    // **A question asked by the resumed run parks it again rather than opening a
+    // second overlay.** The receiver is dropped, which is how io-harness is told
+    // nobody is here to answer — the same idiom the idle contract reads already
+    // use. Answering a fresh question mid-resume would mean this loop growing a
+    // second copy of the turn loop's overlay handling, and the operator can
+    // simply `/resume` again.
+    // **Bound as `continuing`, not as `contract`.** `tests/contract.rs` finds the
+    // turn's own builder by its binding name and asserts there is exactly one of
+    // it, because "one contract per turn" stopped being the same sentence as "one
+    // mention of the builder in this file" in 0.14.0. This is a third kind of
+    // site — it takes a run, so it is not one of the two reading sites either —
+    // and it gets its own name and its own assertion rather than widening a
+    // count that would then admit a genuine second arm.
+    let (answerer, _parked) = io_cli::intent::channel();
+    let continuing = io_cli::contract::session(
+        goal,
+        session.root().to_path_buf(),
+        config,
+        capabilities,
+        std::sync::Arc::new(answerer),
+        // No plan gate. A resumed run that proposed a plan is one this surface
+        // is in the middle of answering; registering a gate would turn the
+        // planning phase back on for the continuation.
+        None,
+    );
+    let (observer, mut events) = bridge::channel();
+    let (approver, mut asks) = approval::channel();
+    // Read before anything is driven, and handed down so the head write is a
+    // compare-and-swap against the head this process believed in.
+    let expected_head = session.head();
+    let started = Instant::now();
+    app.say(Tone::Muted, format!("resuming run {run_id}"));
+    paint(screen, app)?;
+    let driving = async {
+        match decided {
+            Decided::Answer(answer) => match &pending {
+                Pending::Question { question_id, .. } => {
+                    resume::answer_question(
+                        &continuing, provider, store, run_id, *question_id, &answer, policy,
+                        &approver, containment, &observer, expected_head,
+                    )
+                    .await
+                }
+                _ => unreachable!("an answer is only taken for a question"),
+            },
+            Decided::Verdict(verdict) => match &pending {
+                Pending::Plan { plan_id, .. } => {
+                    resume::decide_plan(
+                        &continuing, provider, store, run_id, *plan_id, verdict, policy, &approver,
+                        containment, &observer, expected_head,
+                    )
+                    .await
+                }
+                _ => unreachable!("a verdict is only taken for a plan"),
+            },
+            Decided::Recovery(decision) => match &pending {
+                Pending::Recovery { attempt_id, .. } => {
+                    resume::recover(
+                        &continuing, provider, store, run_id, *attempt_id, decision, policy,
+                        &approver, containment, &observer, expected_head,
+                    )
+                    .await
+                }
+                _ => unreachable!("a recovery decision is only taken for an open attempt"),
+            },
+            Decided::CarryOn => {
+                resume::carry_on(
+                    &continuing, provider, store, run_id, None, &approver, containment, &observer,
+                    expected_head,
+                )
+                .await
+            }
+            Decided::Left => unreachable!("the caller returned on Left"),
+        }
+    };
+    tokio::pin!(driving);
+    let mut ticker = tokio::time::interval(io_cli::app::TICK);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let resumed = loop {
+        tokio::select! {
+            result = &mut driving => break result,
+            _ = ticker.tick() => {
+                if app.tick(started.elapsed()) {
+                    paint(screen, app)?;
+                }
+            }
+            Some(event) = events.recv() => {
+                let at = started.elapsed();
+                app.status.elapsed = at;
+                app.event(&event, at);
+                commit_edits(app, store, &event, screen.width());
+                note_context(app, store, &event, seen, &continuing);
+                paint(screen, app)?;
+            }
+            // A resumed run asks for the same approvals a live one does, and it
+            // is the same overlay. Without this arm the run would stop inside
+            // `Approver::decide_in_context` with nothing on screen.
+            Some(ask) = asks.recv() => {
+                app.open_approval(ask);
+                paint(screen, app)?;
+            }
+            Some(Event::Key(key)) = inputs.recv() => {
+                if key.kind == KeyEventKind::Press {
+                    let _ = app.key(key);
+                    paint(screen, app)?;
+                }
+            }
+        }
+    };
+    app.finished();
+    match resumed {
+        Ok(done) => {
+            // The step it carried on from, said once. The per-step `skipped`
+            // markers io-harness writes are accurate and unreadable — thirty-nine
+            // of them for a run resumed at step forty — so they stay in the trace
+            // where `/expand` reaches them.
+            app.record(
+                Tone::Success,
+                format!(
+                    "carried on from step {} {} {}",
+                    done.resumed_after + 1,
+                    app.theme.glyphs.dash,
+                    io_cli::exec::describe(&done.outcome)
+                ),
+            );
+            if let Some(reply) = &done.reply {
+                app.record(Tone::Normal, reply.clone());
+            }
+            // The head moved underneath this `Session`, which caches it in a
+            // private field no setter reaches. Re-reading is what stops the next
+            // turn parenting onto the turn that was just closed.
+            match io_cli::sessions::resume(store, session.id()) {
+                Ok(reopened) => *session = reopened,
+                Err(error) => app.say(
+                    Tone::Error,
+                    format!("the session could not be re-read after the resume: {error}"),
+                ),
+            }
+        }
+        Err(failure) => app.record(Tone::Refused, failure.to_string()),
+    }
+    paint(screen, app)?;
+    Ok(())
+}
+
 async fn watch_child(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,

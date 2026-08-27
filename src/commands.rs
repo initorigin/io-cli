@@ -117,7 +117,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/setup", "run the first-run wizard again"),
     ("/theme", "change the theme for this session"),
     ("/model", "change the model the next turn is sent to"),
-    ("/resume", "reopen an earlier session where it stopped"),
+    (
+        "/resume",
+        "reopen an earlier session and answer whatever its last run is waiting on",
+    ),
     (
         "/fork",
         "continue from an earlier turn of this conversation",
@@ -822,7 +825,15 @@ pub enum Action {
     Theme,
     /// Open the model picker.
     Model,
-    /// Open the picker over the sessions the store holds.
+    /// Open the picker over the sessions the store holds, and answer whatever
+    /// the chosen one's last run stopped on.
+    ///
+    /// **The second half is 0.23.0's and it is what the word now means.** Until
+    /// then this reopened a session and nothing more — a question the agent had
+    /// asked, a plan it had proposed and a call that never finished all stayed in
+    /// the store while the interface offered a fresh prompt. See
+    /// [`crate::resume`] for the four kinds of pause and for the one that cannot
+    /// be answered at all.
     Resume,
     /// Open the picker over the turns of the conversation that is open.
     Fork,
