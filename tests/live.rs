@@ -2469,3 +2469,157 @@ async fn live_f5_an_ordinary_question_is_answered_rather_than_worked_on() {
         .count();
     assert_eq!(calls, 0, "the turn made {calls} tool calls");
 }
+
+/// 0.23.0's headline, against a real model: a run that stopped to ask is answered
+/// afterwards and carries on from the step it stopped at.
+///
+/// **Nothing in the offline suite can assert this.** `tests/resume.rs` proves the
+/// arithmetic against a seeded store, but "the answer reached the agent and the
+/// run went on to do the work" needs a provider — and it is the sentence the
+/// whole release is written around, so it is asserted here or nowhere.
+///
+/// The pause is produced honestly rather than by inserting a row: the responder's
+/// receiver is dropped, which is how io-harness is told nobody is here to answer,
+/// so the harness persists the question and ends the run at `AwaitingAnswer`
+/// exactly as it does for a headless `io exec`. Whether the model asks at all is
+/// still the model's choice, so the assertions are conditional in the shape
+/// `live_f1_a_question_is_answered_on_an_uncontained_turn` already uses — and
+/// what is unconditional is that this crate never drives a run it should not.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f2_a_parked_question_is_answered_and_the_run_carries_on() {
+    use io_cli::contract::Capabilities;
+    use io_cli::resume::{self, Pending};
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(
+        root.join("notes.md"),
+        "# notes\n\nold line\n\n## archive\n\nold line\n",
+    )
+    .expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    // **The receiver is dropped on purpose.** `Answerer::answer` awaits a reply
+    // that can never come and resolves `None`, which is io-harness's own signal
+    // that nobody can answer — so the question is written to `pending_questions`
+    // and the run ends parked. This is the `io exec` shape, reproduced here
+    // because it is the state a resume has to start from.
+    let (answerer, parked) = io_cli::intent::channel();
+    drop(parked);
+    let goal = "notes.md contains the line `old line` twice. Replace exactly one of them with \
+                `new line`. If it is not clear which one is meant, ask before editing.";
+    let contract = io_cli::contract::session(
+        goal,
+        root.to_path_buf(),
+        &no_configuration(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(12);
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    let run_id = result.run_id;
+    let pending = resume::pending_for(&store, run_id).expect("the store answers");
+    let Pending::Question { question_id, .. } = pending else {
+        // The model chose to edit rather than ask, which is a legal answer to
+        // this goal. Nothing to resume, and the release is not falsified by a
+        // model being decisive — but say so, so a run of this suite that never
+        // exercised the path cannot read as one that did.
+        eprintln!("live_f2: the model did not ask; nothing was parked to resume ({pending:?})");
+        return;
+    };
+
+    // Read **before** the resume, because that is the only moment it means
+    // anything: afterwards it is the step the resumed run reached.
+    let before = store.last_step(run_id).expect("the last committed step");
+    let expected_head = session.head();
+
+    let resumed = resume::answer_question(
+        &contract,
+        &provider,
+        &store,
+        run_id,
+        question_id,
+        "the one under the archive heading",
+        &policy,
+        &io_harness::ApproveAll,
+        None,
+        &observer,
+        expected_head,
+    )
+    .await
+    .expect("the parked run is answered and driven");
+
+    assert_eq!(
+        resumed.resumed_after, before,
+        "the resume must carry on from the step the run stopped at, not from the beginning",
+    );
+
+    // The harness's own markers, read back out of the store rather than trusted:
+    // one `resume` for the continuation and one `skipped` per step already
+    // committed. This is what distinguishes a resume from a re-run.
+    let markers = store.checkpoint_events(run_id).expect("the checkpoint events");
+    let resumes = markers.iter().filter(|event| event.kind == "resume").count();
+    let skipped = markers.iter().filter(|event| event.kind == "skipped").count();
+    assert_eq!(resumes, 1, "exactly one resume marker, got {resumes}");
+    assert_eq!(
+        skipped, before as usize,
+        "one skipped marker per committed step: {before} committed, {skipped} skipped",
+    );
+
+    // And the session bookkeeping a free resume does not do. A turn left open
+    // here is the failure that shows up weeks later as a missing turn.
+    let turn_id = resumed.turn_id.expect("a session turn was closed");
+    let turn = store
+        .session_turn(turn_id)
+        .expect("the store answers")
+        .expect("the turn is held");
+    assert!(
+        turn.outcome.is_some(),
+        "the resumed turn must be closed, not left reading awaiting_answer",
+    );
+    // Unchanged, and that is the correct answer rather than a weak one: the turn
+    // already existed and the head already pointed at it — `Session::drive` closes
+    // both even for a run that paused. What the resume had to do was write the
+    // head *conditionally*, and a write that refused would have returned
+    // `Failure::HeadMoved` above rather than reaching here.
+    assert_eq!(
+        session.head(),
+        expected_head,
+        "the resumed turn is still the head this process believed in",
+    );
+
+    // The answer must have reached the model, which is the whole point and the
+    // one thing only a live run can say.
+    let events = collected.lock().expect("not poisoned");
+    let steps = events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::Step { .. }))
+        .count();
+    assert!(
+        steps > 0,
+        "the resumed run drove no step, so the answer reached nothing",
+    );
+}
