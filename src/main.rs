@@ -2450,14 +2450,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // row names a setting and puts it in the composer; a reader
                     // scanning for `policy.defaults.write` should not have to step
                     // over something that does work on the way there.
-                    rows.push(io_cli::configure::refresh_row(
-                        &io_cli::configure::setting(&config, "prices.as_of"),
-                    ));
+                    rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
+                        &config,
+                        "prices.as_of",
+                    )));
                     paths.push(io_cli::configure::REFRESH_PRICES.to_string());
-                    picker = Some((
-                        Picker::new("Which setting?", rows),
-                        Pick::Config(paths),
-                    ));
+                    picker = Some((Picker::new("Which setting?", rows), Pick::Config(paths)));
                 }
                 // A key with no value is a question. Naming what is in force and
                 // which file decided it is the answer, and nothing is written.
@@ -2875,8 +2873,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 Action::Stats => {
-                    let lines =
-                        io_cli::stats::committed(&store, &app.theme, screen.width())?;
+                    let lines = io_cli::stats::committed(&store, &app.theme, screen.width())?;
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 // Reached only at an idle prompt: while a turn runs the driver's
@@ -3576,7 +3573,7 @@ async fn turn<P: Provider>(
                 // same turn. The trace is the fallback for the window between a
                 // step landing and the first completion call being seen.
                 note_context(app, store, &event, seen, &contract);
-                note_cost(app, store, config, event.run_id);
+                note_cost(app, store, config, &event);
                 note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
@@ -3915,7 +3912,7 @@ async fn turn<P: Provider>(
         // And on the drain too, for the same race: the last step of a turn is the
         // one whose event the select loop loses, and it is also the step that
         // makes the largest single difference to what the turn cost.
-        note_cost(app, store, config, event.run_id);
+        note_cost(app, store, config, &event);
         note_fleet(app, store, &event, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
@@ -4156,9 +4153,27 @@ fn note_context(
 /// table captured when the session opened would go on reporting the old rate for
 /// the rest of it — which is the one thing a figure with a currency in front of it
 /// must not do.
-fn note_cost(app: &mut App, store: &Store, config: &io_harness::Config, run_id: i64) {
+fn note_cost(
+    app: &mut App,
+    store: &Store,
+    config: &io_harness::Config,
+    event: &io_harness::RunEvent,
+) {
+    // **Anchored on a step, for the reason `note_context` three functions up is**
+    // — and the doc on both this and `Status::note_cost_from` claimed it before
+    // the code did. Without the gate every event in the stream, token deltas
+    // included, cost one `provider_calls` read and one full `Total::of`; with it,
+    // the read happens when the answer can actually have changed. `Finished`
+    // carries the run's own totals and is the one that settles the last step,
+    // which the drain would otherwise lose.
+    if !matches!(
+        event.kind,
+        io_harness::EventKind::Step { .. } | io_harness::EventKind::Finished { .. }
+    ) {
+        return;
+    }
     let table = io_cli::cost::table(config);
-    app.status.note_cost_from(store, run_id, &table);
+    app.status.note_cost_from(store, event.run_id, &table);
 }
 
 /// Report a fold that was asked for — once, and only from the event that
@@ -4364,6 +4379,20 @@ fn fill_prices(
             ),
         )];
     }
+    // Read rather than assumed, even though the wizard has just written this file
+    // from `settings::render` and `settings::render` carries no `[prices]` at
+    // all. The assumption is true today and is exactly the kind that stops being
+    // true when somebody adds a section to the rendered file, and the failure it
+    // would cause — a refused write on a first run — is one nobody would connect
+    // back to here.
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    if let Some(refusal) = io_cli::prices::refusal(&text) {
+        return vec![theme.notice(Tone::Warning, refusal)];
+    }
+    // Counted off the file rather than off io-cli's own record of a previous
+    // write, which is absent on a first fill and on any hand-written table — see
+    // `prices::priced_in`.
+    let existing = io_cli::prices::priced_in(&text).max(existing);
     if catalogue.too_short(existing) {
         return vec![theme.notice(
             Tone::Warning,
@@ -4376,14 +4405,13 @@ fn fill_prices(
         )];
     }
     let source = io_cli::prices::source_word(&catalogue.source);
-    let mut edits = catalogue.edits();
-    edits.push(io_cli::edit::Edit::set(
-        "app.io-cli.prices.source",
-        format!("\"{source}\""),
-    ));
-    edits.push(io_cli::edit::Edit::set(
-        "app.io-cli.prices.models",
-        catalogue.rows.len().to_string(),
+    let mut edits = catalogue.edits(io_cli::prices::has_models_section(&text));
+    edits.extend(io_cli::prices::bookkeeping(
+        &source,
+        catalogue.rows.len(),
+        io_cli::edit::sections(&text)
+            .iter()
+            .any(|p| p == &["app", "io-cli", "prices"]),
     ));
     match io_cli::edit::write(path, &edits) {
         Ok(()) => vec![theme.notice(
@@ -4430,29 +4458,6 @@ async fn refresh_prices(
         .as_ref()
         .and_then(|s| s.prices.as_ref())
         .and_then(|p| p.source_url.clone());
-    let existing = stored
-        .as_ref()
-        .and_then(|s| s.prices.as_ref())
-        .and_then(|p| p.models)
-        .unwrap_or(0);
-
-    app.say(Tone::Muted, "re-reading the catalogue…");
-    let served = verify::served(spec, source.as_deref()).await;
-
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or(0);
-    let catalogue =
-        io_cli::prices::Catalogue::of(spec, served, io_cli::prices::date(secs));
-
-    let moved = io_cli::prices::changes(config.prices().as_ref(), &catalogue);
-    let lines = io_cli::prices::report(&catalogue, &moved, existing, &app.theme, screen.width());
-    screen.commit(&lines).map_err(|error| error.to_string())?;
-    if moved.is_empty() || catalogue.too_short(existing) {
-        return Ok(());
-    }
-
     // The scope that already holds the prices, so a refresh lands where the last
     // one did. A higher-precedence scope would shadow rather than update, and the
     // operator would be looking at the old numbers in the file they edit.
@@ -4460,15 +4465,58 @@ async fn refresh_prices(
         .decided
         .scope()
         .unwrap_or(io_harness::config::Scope::User);
+    // Read of the file this write is aimed at, not of the merged configuration: a
+    // `[prices.models]` in a lower-precedence scope is not one this scope's file
+    // can have keys set into, and treating it as though it were would try to edit
+    // a section that is not in this document.
+    let text = io_cli::configure::scope_path(root, scope)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    if let Some(refusal) = io_cli::prices::refusal(&text) {
+        app.record(Tone::Warning, refusal);
+        return Ok(());
+    }
+    // Counted off the file, and only then falling back to io-cli's own record.
+    // The record is absent for a hand-written table and for every install from
+    // before this release, which is precisely when a truncated read would do the
+    // most damage.
+    let existing = io_cli::prices::priced_in(&text).max(
+        stored
+            .as_ref()
+            .and_then(|s| s.prices.as_ref())
+            .and_then(|p| p.models)
+            .unwrap_or(0),
+    );
+
+    app.say(Tone::Muted, "re-reading the catalogue…");
+    let served = verify::served(source.as_deref()).await;
+
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0);
+    let catalogue = match source.as_deref().filter(|url| !url.is_empty()) {
+        Some(url) => {
+            io_cli::prices::Catalogue::named(spec, served, io_cli::prices::date(secs), url)
+        }
+        None => io_cli::prices::Catalogue::of(spec, served, io_cli::prices::date(secs)),
+    };
+
+    let moved = io_cli::prices::changes(config.prices().as_ref(), &catalogue);
+    let lines = io_cli::prices::report(&catalogue, &moved, existing, &app.theme, screen.width());
+    screen.commit(&lines).map_err(|error| error.to_string())?;
+    if catalogue.rows.is_empty() || moved.is_empty() || catalogue.too_short(existing) {
+        return Ok(());
+    }
+
     let source_word = io_cli::prices::source_word(&catalogue.source);
-    let mut edits = catalogue.edits();
-    edits.push(io_cli::edit::Edit::set(
-        "app.io-cli.prices.source",
-        format!("\"{source_word}\""),
-    ));
-    edits.push(io_cli::edit::Edit::set(
-        "app.io-cli.prices.models",
-        catalogue.rows.len().to_string(),
+    let mut edits = catalogue.edits(io_cli::prices::has_models_section(&text));
+    edits.extend(io_cli::prices::bookkeeping(
+        &source_word,
+        catalogue.rows.len(),
+        io_cli::edit::sections(&text)
+            .iter()
+            .any(|p| p == &["app", "io-cli", "prices"]),
     ));
     match io_cli::configure::write(root, scope, &edits) {
         Ok(()) => app.record(
@@ -4539,7 +4587,7 @@ async fn wizard(
                 match verify::credential(&spec).await {
                     Ok(()) => {
                         if let Progress::Catalogue(spec) = wizard.verified() {
-                            served = verify::served(&spec, None).await;
+                            served = verify::named(&spec, verify::served(None).await);
                             wizard.catalogue(ids(&served));
                             priced_for = Some(spec);
                         }
@@ -4550,7 +4598,7 @@ async fn wizard(
                 }
             }
             Progress::Catalogue(spec) => {
-                served = verify::served(&spec, None).await;
+                served = verify::named(&spec, verify::served(None).await);
                 wizard.catalogue(ids(&served));
                 priced_for = Some(spec);
             }
@@ -4558,17 +4606,21 @@ async fn wizard(
                 settings::write(&path, &contents)
                     .map_err(|error| format!("could not write {}: {error}", path.display()))?;
                 let theme = wizard.theme();
-                let mut lines = vec![theme.notice(
-                    Tone::Success,
-                    format!("wrote {}", path.display()),
-                )];
+                let mut lines =
+                    vec![theme.notice(Tone::Success, format!("wrote {}", path.display()))];
                 // **The prices go into the file the wizard just wrote, not into a
                 // second one.** `settings::render` cannot carry them: it runs
                 // before the credential is checked and therefore before any
                 // catalogue has been read, and a section written from a fetch that
                 // has not happened would be a date with nothing behind it.
                 if let Some(spec) = &priced_for {
-                    lines.extend(fill_prices(&path, spec, std::mem::take(&mut served), 0, &theme));
+                    lines.extend(fill_prices(
+                        &path,
+                        spec,
+                        std::mem::take(&mut served),
+                        0,
+                        &theme,
+                    ));
                 }
                 lines.push(ratatui::text::Line::from(""));
                 screen.commit(&lines).map_err(|error| error.to_string())?;

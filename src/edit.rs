@@ -70,6 +70,8 @@ enum Kind {
     Set,
     /// Append a whole `[[path]]` entry to the end of the document.
     Append,
+    /// Create the `[path]` section with a whole body, refusing if it exists.
+    Section,
     /// Remove a whole `[[path]]` entry, or a `[path]` section, bytes and all.
     Remove,
     /// Move one `[[path]]` entry to another position in its array.
@@ -105,6 +107,32 @@ impl Edit {
             path: path.into(),
             value: body.into(),
             kind: Kind::Append,
+        }
+    }
+
+    /// Create the `[path]` section with `body` as its whole contents.
+    ///
+    /// **The shape neither [`Edit::set`] nor [`Edit::append`] can express, and the
+    /// gap is not academic.** `append` writes `[[path]]`, an array-of-tables
+    /// entry. `set` writes one key, and when the section it names does not exist
+    /// it appends a whole new header to carry that one key — which is correct for
+    /// one key and catastrophic for many: sixty `set`s into a file with no
+    /// `[prices.models]` each append their own `[prices.models]` header, because
+    /// every edit in a batch is resolved against the document as it was *before*
+    /// the batch. The result is sixty duplicate table definitions, and the whole
+    /// write is refused by the read-back — so the very first fill of a price table
+    /// could never succeed.
+    ///
+    /// `body` is the section's own `key = value` lines without the header; this
+    /// writes the header. **It refuses when the section already exists**, rather
+    /// than replacing it: a caller with an existing section wants `set` per key,
+    /// which preserves every row this one does not name, and silently discarding
+    /// an operator's hand-added rows is not a thing to do by accident.
+    pub fn section(path: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            value: body.into(),
+            kind: Kind::Section,
         }
     }
 
@@ -203,6 +231,36 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 splices.push((text.len()..text.len(), block));
                 continue;
             }
+            Kind::Section => {
+                // **Refused rather than replaced when it already exists**, and the
+                // refusal is the point: a caller holding an existing section wants
+                // `set` per key, which leaves every row it does not name alone.
+                // Replacing here would silently discard whatever the operator had
+                // added by hand, from a call site whose author believed they were
+                // adding rows.
+                let names = segments(&edit.path)?;
+                if regions.iter().any(|r| r.path == names) {
+                    return Err(format!(
+                        "`[{}]` is already in this file, so it was not written whole — \
+                         a section that exists is edited key by key, which is what keeps \
+                         the rows nobody named",
+                        edit.path
+                    ));
+                }
+                let header = names
+                    .iter()
+                    .map(|name| spell(name))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let mut block = String::new();
+                if !text.is_empty() && !text.ends_with('\n') {
+                    block.push('\n');
+                }
+                let body = edit.value.trim_end();
+                block.push_str(&format!("\n[{header}]\n{body}\n"));
+                splices.push((text.len()..text.len(), block));
+                continue;
+            }
             Kind::Move => {
                 let (from, to) = edit
                     .value
@@ -286,10 +344,7 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 // Not `region.body.end`: that is the first byte of the next
                 // header, and the lines just above it document the next section
                 // rather than this one. See [`removal_end`].
-                splices.push((
-                    region.start..removal_end(text, &region.body),
-                    String::new(),
-                ));
+                splices.push((region.start..removal_end(text, &region.body), String::new()));
                 continue;
             }
             Kind::Set => {}
@@ -353,11 +408,7 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 if !text.is_empty() && !text.ends_with('\n') {
                     block.push('\n');
                 }
-                block.push_str(&format!(
-                    "\n[{header}]\n{} = {}\n",
-                    spell(&key),
-                    edit.value
-                ));
+                block.push_str(&format!("\n[{header}]\n{} = {}\n", spell(&key), edit.value));
                 splices.push((text.len()..text.len(), block));
             }
         }

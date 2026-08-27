@@ -549,6 +549,14 @@ impl Status {
     /// would leave the line contradicting prompts that are still going to run.
     pub fn forget_run(&mut self) {
         self.tokens = None;
+        // **The money goes with the tokens it was derived from.** `start_run`
+        // clears this too, and clearing it there alone is not enough: `/clear`,
+        // `/resume`, `/fork` and a rewind all reach here *without* starting a run,
+        // so a session cleared at an idle prompt would have gone on drawing the
+        // previous conversation's cost beside a blank token count — a figure with
+        // a currency in front of it attributed to a session that has spent
+        // nothing, which is the invented number this field exists not to print.
+        self.cost = None;
         // Both new in 0.11.0, and both run facts. The provider is the one that
         // reads as a session fact and is not: a resumed conversation may have
         // been served by another provider entirely, and `Started` sets it again
@@ -1214,14 +1222,21 @@ impl Status {
         // The keys that mean something at this exact moment, and only those. A
         // footer that listed every binding would be a help screen; `/help` is
         // the help screen.
-        counts.push(
-            if self.working {
-                "esc stops"
-            } else {
-                "/ for commands"
-            }
-            .to_string(),
-        );
+        //
+        // **Held out of `counts` until after the narrowing below, because it is
+        // not a counter.** It used to be pushed here, which put it last — and the
+        // narrowing pops from the end, so the first thing a crowded row gave up
+        // was `esc stops`: the only place the footer tells an operator how to
+        // interrupt a turn, dropped exactly when the row is full because a turn is
+        // running. It is appended after the loop instead, and its width is counted
+        // during the loop so the arithmetic still describes the row that gets
+        // drawn.
+        let hint = if self.working {
+            "esc stops"
+        } else {
+            "/ for commands"
+        }
+        .to_string();
 
         // What the agent is allowed to do, on the right, because that is the
         // question a reader asks of a footer when they ask anything of it.
@@ -1272,12 +1287,16 @@ impl Status {
         // leftmost counter is never dropped: a row that had given up every
         // number would be reporting the mode by erasing the session.
         let wanted: usize = allowed.iter().map(|s| s.content.chars().count()).sum();
+        // The hint is not in `counts` and is not droppable, so its width is added
+        // here rather than being carried by the join.
+        let hinted = hint.chars().count() + separator.chars().count();
         while !allowed.is_empty()
-            && counts.len() > 1
-            && counts.join(separator).chars().count() + wanted >= room
+            && !counts.is_empty()
+            && counts.join(separator).chars().count() + hinted + wanted >= room
         {
             counts.pop();
         }
+        counts.push(hint);
         let counted = row(
             vec![Span::styled(counts.join(separator), muted)],
             allowed,

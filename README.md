@@ -154,6 +154,13 @@ name one — `gpt-5` could be OpenAI or any of the twenty-one presets pointed at
 compatible endpoint — so io hands you the id and the entry is built once you have
 chosen the vendor.
 
+**Where a file *is* decides what it is, ahead of what it is called.** A loose
+`CONVENTIONS.md` — or `CLAUDE.md`, or `MEMORY.md` — sitting inside a `skills/` or
+`plugins/` directory is a skill, and from 0.22.0 it is imported as one. It used to
+match on its basename and be appended whole into the instructions file that is
+loaded on **every turn, forever**, instead of being a named skill the model reads
+on demand.
+
 **The whole plan is on screen before a single byte is written.** One row per
 thing found, saying where it came from and where it would go, and you accept them
 item by item. What you did not accept is not written. A cancelled import is not a
@@ -652,9 +659,9 @@ against and is never refused. Rows for models the catalogue no longer serves are
 left alone, because io-harness prices a call by the model name on it and an old
 row is what prices an old run correctly.
 
-**Whose price it is gets said, on every surface that draws money.** OpenAI,
-Anthropic and Google publish no prices on any endpoint — their model endpoints
-carry capabilities and limits and no cost field — so for those three the rates
+**Whose price it is gets said, on every surface that draws money.** OpenAI and
+Anthropic publish no prices on any endpoint — their model endpoints
+carry capabilities and limits and no cost field — so for those two the rates
 necessarily come from the reference catalogue rather than from the vendor. The
 page names which and on what date. On OpenRouter the two coincide, because the
 reference catalogue is OpenRouter's own. `[app.io-cli.prices] source_url` points

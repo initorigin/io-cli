@@ -15,19 +15,35 @@
 //! [`crate::verify::catalogue`] has read the model catalogue since 0.1.0, to offer
 //! the wizard a list of models. It mapped every [`ModelInfo`] down to its `id` and
 //! discarded the `price`, `price_tiers` and `price_source` on the same row. This
-//! module keeps them. No JSON is parsed here and no dependency is added: io-harness
-//! did the parsing and the unit conversion, and `ModelInfo::price` arrives already
-//! normalised into [`Price`]'s micro-units per million tokens.
+//! module keeps the price and the source. No JSON is parsed here and no dependency
+//! is added: io-harness did the parsing and the unit conversion, and
+//! `ModelInfo::price` arrives already normalised into [`Price`]'s micro-units per
+//! million tokens.
+//!
+//! **`price_tiers` is read and deliberately dropped, and the consequence is
+//! stated rather than hidden.** io-harness's `[prices]` section carries `as_of`
+//! and a map of `Price`, and is `deny_unknown_fields` — there is no TOML surface
+//! for a tier, and `PriceTier` is constructible only in Rust. So a model whose
+//! vendor charges more above a long-prompt threshold is priced here at its base
+//! rate, and `/cost` cannot mark that as a floor because nothing in the store says
+//! which calls crossed the line. It is an **understated** figure rather than an
+//! invented one, and it is in the release record as a known limitation.
 //!
 //! # Whose price it is
 //!
-//! For three of the four providers io-cli knows, the answer is not "the vendor's".
-//! OpenAI, Anthropic and Google publish no prices on any endpoint — their model
+//! For two of the three vendors io-cli can connect to, the answer is not "the
+//! vendor's". OpenAI and Anthropic publish no prices on any endpoint — their model
 //! endpoints carry capabilities and limits and no cost field, and their cost APIs
 //! report what was *spent* rather than what a token *costs*. The reference
 //! catalogue does carry rows for their models, which is why
 //! [`crate::verify::catalogue`] strips the `anthropic/` and `openai/` prefixes off
 //! them to build its list.
+//!
+//! The fourth `ProviderSpec` is `Compatible`, and the reference catalogue cannot
+//! speak for it at all: a list of one vendor's models says nothing about what a
+//! server it has never heard of serves. That operator names their own catalogue
+//! with `app.io-cli.prices.source_url`, which [`Catalogue::named`] reads without
+//! narrowing.
 //!
 //! So an operator on Anthropic gets prices *about* Anthropic *from* the reference
 //! catalogue, and every surface that draws money says which. io-harness models the
@@ -100,9 +116,60 @@ impl Catalogue {
     /// testable without a socket — the fetch itself is one io-harness call and
     /// has nothing in it worth a test double.
     pub fn of(spec: &ProviderSpec, models: Vec<ModelInfo>, as_of: impl Into<String>) -> Self {
-        let served = models.len();
+        Self::read(spec, models, as_of, None)
+    }
+
+    /// The same, from a catalogue the operator named rather than the default.
+    ///
+    /// **A named catalogue is not narrowed, and that is the whole of what
+    /// `app.io-cli.prices.source_url` means.** The default catalogue is one
+    /// vendor's view of the entire field, so its rows have to be cut down to the
+    /// provider in force — and for a `compatible` endpoint that cut can only
+    /// remove everything, because a reference list cannot say what a server it has
+    /// never heard of serves. An operator who set `source_url` has answered that:
+    /// they pointed io-cli at the catalogue their own endpoint publishes, so every
+    /// row of it is theirs and the ids are already spelled the way their provider
+    /// names them.
+    ///
+    /// The source is recorded as that URL rather than as the vendor, because it is
+    /// still not the vendor speaking — it is a list the operator chose, and a page
+    /// that drew money under the provider's name would be attributing it wrongly.
+    pub fn named(
+        spec: &ProviderSpec,
+        models: Vec<ModelInfo>,
+        as_of: impl Into<String>,
+        url: &str,
+    ) -> Self {
+        Self::read(spec, models, as_of, Some(url))
+    }
+
+    fn read(
+        spec: &ProviderSpec,
+        models: Vec<ModelInfo>,
+        as_of: impl Into<String>,
+        url: Option<&str>,
+    ) -> Self {
+        if let Some(url) = url.filter(|url| !url.is_empty()) {
+            let served = models.len();
+            let rows = crate::verify::priced(models);
+            return Self {
+                as_of: as_of.into(),
+                source: PriceSource::Reference(url.to_string()),
+                rows,
+                served,
+            };
+        }
         let vendor = matches!(spec, ProviderSpec::OpenRouter { .. });
-        let rows = crate::verify::priced(spec, models);
+        // **Counted after the filter, not before it.** The reference catalogue
+        // serves every model in the field; the number worth reporting is how many
+        // of them *this* provider serves, because that is the denominator the
+        // operator is being told their prices cover. Counting before the filter
+        // told an Anthropic operator their fifteen rates covered fifteen of four
+        // hundred and seventeen models, which is true of the catalogue and
+        // meaningless about them.
+        let mine = crate::verify::named(spec, models);
+        let served = mine.len();
+        let rows = crate::verify::priced(mine);
         Self {
             as_of: as_of.into(),
             // **The one place the two coincide.** The reference catalogue is
@@ -140,17 +207,45 @@ impl Catalogue {
 
     /// The edits that write this catalogue into a configuration file.
     ///
-    /// One `set` for the date and one per model, rather than one edit rewriting
-    /// the section whole. That is not a smaller diff for its own sake: a rate is
-    /// something the operator is invited to correct by hand, and a row per line is
-    /// what makes correcting one a one-line change they can find again.
+    /// A row per model rather than one enormous inline table, because a rate is
+    /// something the operator is invited to correct by hand and a row per line is
+    /// what makes correcting one a change they can find again. For OpenRouter that
+    /// is four hundred rows; as a single inline value it would be one
+    /// twenty-five-kilobyte line.
     ///
-    /// **Rows for models the catalogue no longer serves are left alone.** They are
-    /// not stale — io-harness prices a call by the model name on it, so an old row
-    /// is what prices an old run correctly, and `/cost` reports history as well as
-    /// today.
-    pub fn edits(&self) -> Vec<Edit> {
+    /// **`has_section` decides the shape, and getting it wrong does not merely
+    /// produce a worse file — it produces no file.** Every edit in a batch is
+    /// resolved against the document as it was before the batch, so `set` on four
+    /// hundred keys of a `[prices.models]` that does not exist yet appends four
+    /// hundred `[prices.models]` headers and the read-back refuses the lot. A
+    /// first fill therefore writes the section whole, once; a refresh sets key by
+    /// key into the section that is already there.
+    ///
+    /// It is a parameter rather than something derived here because **it is a
+    /// question about the file, and this type has never seen the file.** The
+    /// obvious substitutes are both wrong: io-cli's own record of how many models
+    /// it last wrote is zero for a `[prices]` an operator wrote by hand, and
+    /// asking the `PriceTable` whether it prices any model this catalogue serves
+    /// answers `false` for a real section whose models the provider has since
+    /// replaced. [`has_models_section`] asks the file.
+    ///
+    /// That split has a second effect worth naming, because it is the behaviour
+    /// rather than an artefact: on a refresh, **rows for models the catalogue no
+    /// longer serves are left alone.** They are not stale. io-harness prices a
+    /// call by the model name recorded on it, so an old row is exactly what prices
+    /// an old run correctly, and `/cost` reports history as well as today.
+    pub fn edits(&self, has_section: bool) -> Vec<Edit> {
         let mut edits = vec![Edit::set("prices.as_of", quoted(&self.as_of))];
+        if !has_section {
+            let body = self
+                .rows
+                .iter()
+                .map(|(model, price)| format!("{} = {}", quoted(model), inline(price)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            edits.push(Edit::section("prices.models", body));
+            return edits;
+        }
         for (model, price) in &self.rows {
             edits.push(Edit::set(
                 format!("prices.models.{}", quoted(model)),
@@ -184,7 +279,10 @@ pub struct Change {
 /// A model the table does not price yet is a change with `was: None`. A rate that
 /// has not moved is not a change and is not listed, so a refresh that found
 /// nothing new says so in one line rather than in four hundred.
-pub fn changes(existing: Option<&io_harness::pricing::PriceTable>, fresh: &Catalogue) -> Vec<Change> {
+pub fn changes(
+    existing: Option<&io_harness::pricing::PriceTable>,
+    fresh: &Catalogue,
+) -> Vec<Change> {
     fresh
         .rows
         .iter()
@@ -197,6 +295,132 @@ pub fn changes(existing: Option<&io_harness::pricing::PriceTable>, fresh: &Catal
             })
         })
         .collect()
+}
+
+/// How a file spells its price table, which decides how it can be written to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// No `[prices.models]` anywhere. The section is created whole.
+    Absent,
+    /// `[prices.models]` with a row per model, which is what io-cli writes. Rows
+    /// are set key by key, so models nobody named survive.
+    Table,
+    /// A `[prices.models."<id>"]` sub-table per model — legal TOML that
+    /// io-harness reads perfectly well, and that io-cli cannot safely rewrite.
+    SubTables,
+}
+
+/// How `text` spells its price table.
+///
+/// **The question [`Catalogue::edits`] needs answered, asked of the only thing
+/// that can answer it**, and it has three answers rather than two.
+///
+/// A `[prices]` carrying an `as_of` and no models is a real state — a refresh
+/// whose catalogue priced nothing leaves exactly that — so the test is for the
+/// child table and not the parent.
+///
+/// [`Shape::SubTables`] is the one worth spelling out. `Price` deserializes from a
+/// sub-table as happily as from an inline one, so an operator writing this section
+/// by hand may well write `[prices.models."gpt-4.1"]` with the rates under it, and
+/// io-harness will read it. io-cli cannot update it: setting a key named
+/// `"gpt-4.1"` beside a table of the same name is a duplicate-key error, and
+/// creating `[prices.models]` above the sub-tables collides with every id in both.
+/// **So it is refused rather than attempted** — the operator owns this section,
+/// and a writer that cannot express their shape should say so and leave it alone,
+/// not produce a refusal from the TOML parser that names neither.
+///
+/// Reads through [`crate::edit::sections`], the same header walk `edit::apply`
+/// itself does, so the two cannot disagree about what is in the file.
+/// Whether `text` carries a `[prices.models]` table io-cli can set keys into.
+///
+/// The two-answer form of [`shape`], for [`Catalogue::edits`], which only needs to
+/// know whether to create the section or write into it. [`Shape::SubTables`]
+/// answers `false` here and must be refused by the caller *before* it gets this
+/// far — see [`shape`] for why io-cli cannot write that spelling at all.
+pub fn has_models_section(text: &str) -> bool {
+    matches!(shape(text), Shape::Table)
+}
+
+pub fn shape(text: &str) -> Shape {
+    let mut found = Shape::Absent;
+    for path in crate::edit::sections(text) {
+        if path.len() < 2 || path[0] != "prices" || path[1] != "models" {
+            continue;
+        }
+        if path.len() > 2 {
+            // Any sub-table settles it: this file is not one io-cli can edit, and
+            // no later `[prices.models]` header makes it one.
+            return Shape::SubTables;
+        }
+        found = Shape::Table;
+    }
+    found
+}
+
+/// Why io-cli will not write prices into `text`, if it will not.
+///
+/// One sentence for the operator, or `None` to go ahead. The only refusal today is
+/// [`Shape::SubTables`], and it is a refusal rather than an attempt because the
+/// operator owns this section: a writer that cannot express their spelling should
+/// say so and leave their file alone.
+pub fn refusal(text: &str) -> Option<String> {
+    match shape(text) {
+        Shape::SubTables => Some(
+            "no prices were written: this file spells its models as \
+             `[prices.models.\"<id>\"]` sub-tables, which io-harness reads and io-cli cannot \
+             safely rewrite — the rates already there go on pricing your calls, and a refresh \
+             means editing them by hand"
+                .to_string(),
+        ),
+        Shape::Absent | Shape::Table => None,
+    }
+}
+
+/// How many models `text`'s own `[prices.models]` table prices.
+///
+/// **What [`Catalogue::too_short`] should have been comparing against all along.**
+/// It was handed `app.io-cli.prices.models`, io-cli's record of its own last write
+/// — which is absent for a hand-written `[prices]`, absent for every install that
+/// predates this release, and absent on the first fill. So `existing` was zero in
+/// exactly the cases the guard exists for, and the guard was off. `PriceTable` has
+/// no length, but the file has a row per model and can simply be counted.
+pub fn priced_in(text: &str) -> usize {
+    let Ok(document) = text.parse::<toml::Value>() else {
+        return 0;
+    };
+    document
+        .get("prices")
+        .and_then(|prices| prices.get("models"))
+        .and_then(|models| models.as_table())
+        .map_or(0, |models| models.len())
+}
+
+/// The `[app.io-cli.prices]` edits that record where a table came from.
+///
+/// **The same defect as [`Catalogue::edits`]'s, one section over, and it is here
+/// rather than at the call site because that is where it was.** The driver used to
+/// push two bare `Edit::set`s for `source` and `models`. Neither section exists in
+/// any file io-cli has ever written — `settings::render` writes `prices: None` and
+/// the field is `skip_serializing_if` — so both fell to the append arm, each
+/// emitted its own `[app.io-cli.prices]` header, and the read-back refused the
+/// whole write. Every first fill would have ended in "the edit would have produced
+/// a file that does not parse", including the one the wizard makes, and `/cost`
+/// would have reported tokens forever.
+///
+/// It survived the fix that added [`crate::edit::Edit::section`] because the two
+/// edits it applies to are added by the driver, and nothing under `tests/` can
+/// link the driver. Putting them here is what makes them testable.
+pub fn bookkeeping(source: &str, models: usize, has_section: bool) -> Vec<Edit> {
+    if has_section {
+        return vec![
+            Edit::set("app.io-cli.prices.source", quoted(source)),
+            Edit::set("app.io-cli.prices.models", models.to_string()),
+        ];
+    }
+    vec![Edit::section(
+        "app.io-cli.prices",
+        format!("source = {}\nmodels = {models}", quoted(source)),
+    )]
 }
 
 /// What a refresh found, committed before anything is written.
@@ -238,6 +462,24 @@ pub fn report(
         return crate::page::commit("prices", &rows, theme, width);
     }
 
+    // **A catalogue that answered with nothing is not a catalogue that agreed with
+    // you**, and this arm exists because the one below it used to swallow the
+    // case. `verify::served` returns an empty vector for a network failure, a
+    // refused key and an unparseable body alike, so with no rows there is nothing
+    // to compare and `moved` is empty — under which the next arm reported "no rate
+    // has moved since the last read", a positive claim about a read that did not
+    // happen. An operator on a flaky connection would have been told their prices
+    // were confirmed current.
+    if catalogue.rows.is_empty() {
+        rows.push(crate::page::Row::caveat(format!(
+            "the catalogue could not be read, or served no prices — {} model{} came back. \
+             Nothing was written and the prices you have are unchanged, which means they are \
+             as old as their date says and not as fresh as this attempt.",
+            catalogue.served,
+            if catalogue.served == 1 { "" } else { "s" }
+        )));
+        return crate::page::commit("prices", &rows, theme, width);
+    }
     if moved.is_empty() {
         rows.push(crate::page::Row::note(
             "no rate has moved since the last read, so nothing was written",
@@ -318,7 +560,11 @@ fn inline(price: &Price) -> String {
 /// So this is not decoration: an unquoted `gpt-4.1` is two path segments and
 /// reaches the wrong place, or no place. `edit::array` sets the precedent of
 /// spelling TOML through `toml` rather than with `format!`.
-fn quoted(text: &str) -> String {
+///
+/// Public because the driver writes two values of its own beside the table — the
+/// source and the count — and `format!("\"{text}\"")` at a call site is a quoting
+/// rule reimplemented, which is how the wrong one eventually gets written.
+pub fn quoted(text: &str) -> String {
     toml::Value::String(text.to_string()).to_string()
 }
 

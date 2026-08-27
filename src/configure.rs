@@ -253,11 +253,26 @@ pub fn settings(config: &Config) -> Vec<Setting> {
         rows.push(setting(config, key));
     }
 
-    // Anything a file named that the catalogue does not carry.
+    // Anything a file named that the catalogue does not carry — **except the
+    // price table, which is a list and not a set of settings.**
+    //
+    // io-harness's origin index records *leaf* keys, so a filled `[prices.models]`
+    // contributes two to five of them per model: `prices.models.<id>.input`,
+    // `.output`, `.cache_read`, and so on. On an OpenRouter install that is well
+    // over a thousand rows, and `/config` — a picker an operator opens to change
+    // one setting — becomes a list of rates with every real setting buried above
+    // them. The `CATALOGUE` comment already says `[prices.models]` is deliberately
+    // not a row; this is what makes that true, because the sweep below was putting
+    // every one of them back.
+    //
+    // They would not even render: `record_origins` joins the path with `.` and
+    // does not quote, so a model id containing a dot arrives as a key that
+    // `edit::value_at` cannot resolve, and the row draws with no value at all.
     let mut extra: Vec<String> = config
         .origins()
         .map(|(key, _)| key.to_string())
         .filter(|key| !seen.contains(key))
+        .filter(|key| !key.starts_with("prices.models."))
         .collect();
     extra.sort();
     for key in extra {

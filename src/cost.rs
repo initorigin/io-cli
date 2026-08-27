@@ -147,8 +147,15 @@ pub struct Provenance {
     pub as_of: Option<String>,
     /// The catalogue, in words. `None` when nothing has been read yet.
     pub source: Option<String>,
-    /// How many models the table prices, as the last read recorded it.
-    pub models: usize,
+    /// How many models the table prices, as the last read recorded it, or `None`
+    /// where nothing recorded it.
+    ///
+    /// **Absent is not zero, and this field had the bug the rest of the module is
+    /// built to prevent.** It was a `usize` defaulting to 0, so a `[prices]` an
+    /// operator wrote by hand — or one carried forward from an install older than
+    /// this release, neither of which has an `[app.io-cli.prices]` beside it —
+    /// made the footer read "0 models" over a table pricing four hundred.
+    pub models: Option<usize>,
 }
 
 impl Provenance {
@@ -165,7 +172,7 @@ impl Provenance {
         Self {
             as_of: config.prices().map(|table| table.as_of().to_string()),
             source: prices.and_then(|p| p.source.clone()),
-            models: prices.and_then(|p| p.models).unwrap_or(0),
+            models: prices.and_then(|p| p.models),
         }
     }
 }
@@ -223,7 +230,11 @@ pub fn committed(
             let turns = store.session_turns(id).map_err(|e| e.to_string())?;
             let mut calls: Vec<ProviderCall> = Vec::new();
             for turn in &turns {
-                calls.extend(store.provider_calls(turn.run_id).map_err(|e| e.to_string())?);
+                calls.extend(
+                    store
+                        .provider_calls(turn.run_id)
+                        .map_err(|e| e.to_string())?,
+                );
             }
             // **Walked rather than grouped, because io-harness offers no session
             // grouping.** `spend_by_run` keys on a run and `spend_by_day` on a
@@ -248,7 +259,9 @@ pub fn committed(
 
     rows.push(Row::Blank);
     rows.push(Row::heading("by day".to_string()));
-    rows.extend(grouped(store.spend_by_day(table).map_err(|e| e.to_string())?));
+    rows.extend(grouped(
+        store.spend_by_day(table).map_err(|e| e.to_string())?,
+    ));
 
     rows.push(Row::Blank);
     rows.extend(footer(provenance));
@@ -262,26 +275,31 @@ fn section(total: &Total) -> Vec<Row> {
         return vec![Row::note("no provider calls")];
     }
     let usage = &total.usage;
-    let mut rows = vec![
-        Row::fact("calls", total.calls.to_string()),
-        Row::fact("cost", money(total.micros)),
-        Row::fact("prompt", tokens(usage.prompt_tokens)),
-    ];
+    let mut rows = vec![Row::fact("calls", total.calls.to_string())];
+    // **No currency at all when nothing was priced, rather than `$0`.** A cost row
+    // reading `$0` over a set of calls the table prices none of would be the
+    // invented number this whole module exists to avoid — and it would be the
+    // worst kind, because zero is a number an operator can believe. The token
+    // figures below are exact either way; it is only the money that is unknown.
+    if total.micros > 0 {
+        rows.push(Row::fact("cost", money(total.micros)));
+    }
+    rows.push(Row::fact("prompt", tokens(usage.prompt_tokens)));
     // The two cache figures are indented under the prompt they are part of, by
     // being named as parts of it rather than by being drawn further right — this
     // page has no columns to indent into, and a reader in `--plain` has only the
     // words.
     if usage.cache_read_tokens > 0 || usage.cache_write_tokens > 0 {
         rows.push(Row::fact(
-            "  of which cache read",
+            "of which cache read",
             tokens(usage.cache_read_tokens),
         ));
         rows.push(Row::fact(
-            "  of which cache written",
+            "of which cache written",
             tokens(usage.cache_write_tokens),
         ));
         rows.push(Row::fact(
-            "  of which fresh",
+            "of which fresh",
             tokens(
                 usage
                     .prompt_tokens
@@ -293,7 +311,7 @@ fn section(total: &Total) -> Vec<Row> {
     rows.push(Row::fact("completion", tokens(usage.completion_tokens)));
     if usage.reasoning_tokens > 0 {
         rows.push(Row::fact(
-            "  of which reasoning",
+            "of which reasoning",
             tokens(usage.reasoning_tokens),
         ));
     }
@@ -303,7 +321,7 @@ fn section(total: &Total) -> Vec<Row> {
             usage.server_tool_requests.to_string(),
         ));
     }
-    rows.extend(caveats(total.unknown, total.unpriced));
+    rows.extend(caveats(total.unknown, total.unpriced, total.micros > 0));
     rows
 }
 
@@ -314,12 +332,24 @@ fn grouped(spend: Vec<Spend>) -> Vec<Row> {
     }
     let mut rows: Vec<Row> = Vec::new();
     for group in spend {
-        let mut value = format!(
-            "{} · {} call{}",
-            money(group.cost_micros),
-            group.calls,
-            if group.calls == 1 { "" } else { "s" }
-        );
+        // Same rule as `section` above: no currency at all where nothing was
+        // priced. `$0` beside a group whose every call used a model the table does
+        // not know reads as a group that was free, and it is the one wrong number
+        // an operator has no reason to doubt.
+        let mut value = if group.cost_micros > 0 {
+            format!(
+                "{} · {} call{}",
+                money(group.cost_micros),
+                group.calls,
+                if group.calls == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "{} call{}",
+                group.calls,
+                if group.calls == 1 { "" } else { "s" }
+            )
+        };
         if group.usage.total_tokens > 0 {
             value.push_str(&format!(" · {} tok", tokens(group.usage.total_tokens)));
         }
@@ -327,7 +357,15 @@ fn grouped(spend: Vec<Spend>) -> Vec<Row> {
             // **Never hidden, and on the row rather than in a note below it.** A
             // reader scanning for the largest figure has to be able to see which
             // of them is incomplete without reading past the list.
-            value.push_str(&format!(" · {} unpriced", group.unpriced_calls));
+            //
+            // **"not priced" rather than "unpriced", because it is a wider set
+            // than the word means two sections up.** io-harness's
+            // `Spend::unpriced_calls` counts a call with no usage as unpriced;
+            // this module's `Total` splits those out as *unknown* and counts only
+            // a missing rate as unpriced. The same call is therefore in different
+            // buckets on the two halves of this page, and one word for both would
+            // have made the numbers look like they disagreed.
+            value.push_str(&format!(" · {} not priced", group.unpriced_calls));
         }
         rows.push(Row::fact(group.key, value));
     }
@@ -335,20 +373,33 @@ fn grouped(spend: Vec<Spend>) -> Vec<Row> {
 }
 
 /// The sentences that qualify a figure, if any qualify it.
-fn caveats(unknown: u64, unpriced: u64) -> Vec<Row> {
+fn caveats(unknown: u64, unpriced: u64, drew_cost: bool) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     if unpriced > 0 {
-        rows.push(Row::caveat(format!(
-            "{unpriced} call{} used a model with no rate in the price table, so \
-             the cost above is a floor and not a total",
-            if unpriced == 1 { "" } else { "s" }
-        )));
+        // **Two sentences, because the row this used to point at is not always
+        // there.** `section` suppresses the cost row entirely when nothing was
+        // priced, so a run every call of which used an unknown model showed no
+        // cost and a caveat reading "the cost above is a floor" — pointing at
+        // nothing.
+        rows.push(Row::caveat(if drew_cost {
+            format!(
+                "{unpriced} call{} used a model with no rate in the price table, so the cost \
+                 above is a floor and not a total",
+                if unpriced == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "no cost is shown because the price table has a rate for none of the {unpriced} \
+                 call{} here — the tokens above are exact, the money is simply unknown",
+                if unpriced == 1 { "" } else { "s" }
+            )
+        }));
     }
     if unknown > 0 {
         rows.push(Row::caveat(format!(
             "{unknown} call{} reported no usage at all, which is unknown rather \
              than free — neither its tokens nor its cost is in the figures above",
-            if unknown == 1 { " " } else { "s " }
+            if unknown == 1 { "" } else { "s" }
         )));
     }
     rows
@@ -356,21 +407,26 @@ fn caveats(unknown: u64, unpriced: u64) -> Vec<Row> {
 
 /// Where the prices came from and when, at the foot of the page.
 fn footer(provenance: &Provenance) -> Vec<Row> {
-    match (&provenance.as_of, &provenance.source) {
-        (Some(as_of), Some(source)) => vec![Row::note(format!(
-            "prices: {} model{} read from {source} on {as_of}",
-            provenance.models,
-            if provenance.models == 1 { "" } else { "s" }
-        ))],
-        (Some(as_of), None) => vec![Row::note(format!(
-            "prices: {} model{}, dated {as_of}, from a source this install did not record",
-            provenance.models,
-            if provenance.models == 1 { "" } else { "s" }
-        ))],
-        _ => vec![Row::note(
-            "prices: none configured".to_string(),
-        )],
-    }
+    let Some(as_of) = &provenance.as_of else {
+        return vec![Row::note("prices: none configured".to_string())];
+    };
+    // **The count is left out when nothing recorded one, rather than shown as
+    // zero.** A hand-written `[prices]`, or one from an install older than this
+    // release, has no `[app.io-cli.prices]` beside it — and "0 models" over a
+    // table pricing four hundred is the same class of invented figure as a `$0`
+    // over an unpriced call.
+    let how_many = match provenance.models {
+        Some(1) => "1 model".to_string(),
+        Some(n) => format!("{n} models"),
+        None => "prices".to_string(),
+    };
+    let sentence = match &provenance.source {
+        Some(source) => format!("prices: {how_many} read from {source} on {as_of}"),
+        None => {
+            format!("prices: {how_many}, dated {as_of}, from a source this install did not record")
+        }
+    };
+    vec![Row::note(sentence)]
 }
 
 /// Micro-units as money.
@@ -381,6 +437,15 @@ fn footer(provenance: &Provenance) -> Vec<Row> {
 /// arithmetic throughout — a bill is not a floating-point quantity, and
 /// `cost_micros` is exact.
 pub fn money(micros: u64) -> String {
+    // **A real cost smaller than the smallest figure this renders is said to be
+    // smaller, not rounded to nothing.** Four decimals stop at a hundredth of a
+    // cent, and a cheap model answering a short prompt genuinely lands under it;
+    // truncating there would print `$0.0000`, which reads as free for a call that
+    // was not. The `$0` below is reserved for a cost that really is zero, which a
+    // free model has.
+    if micros > 0 && micros < 100 {
+        return "<$0.0001".to_string();
+    }
     if micros == 0 {
         return "$0".to_string();
     }

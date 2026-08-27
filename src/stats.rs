@@ -51,12 +51,12 @@ use crate::theme::Theme;
 /// How many of the most recent runs the latency sections read.
 ///
 /// **A bound this module can actually keep, unlike the one `/cost` could not.**
-/// `Store::runs` returns run ids and io-cli takes the tail of that list itself, so
-/// the sample is genuinely the last `N` runs and the page says so in the heading.
-/// That is the difference between a bound and a truncation: a heading reading
-/// "slowest calls of the last 200 runs" is a true statement about a subset, where
-/// "by model" over a truncated read would have been a false statement about the
-/// whole.
+/// `Store::runs` returns run ids newest first, and io-cli takes the head of that
+/// list itself, so the sample is genuinely the last `N` runs and the page says so
+/// in the heading. That is the difference between a bound and a truncation: a
+/// heading reading "slowest calls of the last 200 runs" is a true statement about
+/// a subset, where "by model" over a truncated read would have been a false
+/// statement about the whole.
 ///
 /// The same shape and the same reason as `crate::sessions::MAX_RUNS_SCANNED`.
 pub const RECENT_RUNS: usize = 200;
@@ -89,7 +89,10 @@ pub fn committed(
     rows.push(Row::heading("finished on the first try".to_string()));
     let first = store.first_try().map_err(|e| e.to_string())?;
     rows.push(Row::fact("runs finished", first.runs.to_string()));
-    rows.push(Row::fact("of those, succeeded", first.succeeded.to_string()));
+    rows.push(Row::fact(
+        "of those, succeeded",
+        first.succeeded.to_string(),
+    ));
     rows.push(Row::fact(
         "of those, with no gate failure",
         first.first_try.to_string(),
@@ -126,7 +129,12 @@ pub fn committed(
 
     let ids = store.runs().map_err(|e| e.to_string())?;
     let scanned = ids.len().min(RECENT_RUNS);
-    let recent = &ids[ids.len() - scanned..];
+    // **The head, because `Store::runs` is newest first.** Its own documentation
+    // says so — `ORDER BY id DESC` — and taking the tail would have read the
+    // *oldest* two hundred runs under a heading promising the most recent, which
+    // is a false statement about a subset rather than a true one. That is the
+    // whole difference this bound rests on.
+    let recent = &ids[..scanned];
     let mut calls = Vec::new();
     for id in recent {
         calls.extend(store.provider_calls(*id).map_err(|e| e.to_string())?);
@@ -172,7 +180,10 @@ pub fn committed(
             "median",
             format!("{} ms", sorted[sorted.len() / 2]),
         ));
-        rows.push(Row::fact("slowest", format!("{} ms", sorted[sorted.len() - 1])));
+        rows.push(Row::fact(
+            "slowest",
+            format!("{} ms", sorted[sorted.len() - 1]),
+        ));
         rows.push(Row::fact(
             "measured on",
             format!("{} of {} calls", measured.len(), calls.len()),

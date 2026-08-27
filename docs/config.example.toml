@@ -314,9 +314,9 @@ net = "deny"
 # "unpriced" and shrink your reported bill with nothing failing anywhere. A first
 # fill has nothing to compare against and is never refused.
 #
-# WHOSE PRICE IT IS. OpenAI, Anthropic and Google publish no prices on any
+# WHOSE PRICE IT IS. OpenAI and Anthropic publish no prices on any
 # endpoint — their model endpoints carry capabilities and limits and no cost
-# field. So for those three the rates necessarily come from the reference
+# field. So for those two the rates necessarily come from the reference
 # catalogue rather than from the vendor, and every surface that draws money says
 # which and on what date. On OpenRouter the two coincide, because the reference
 # catalogue is OpenRouter's own.

@@ -157,8 +157,8 @@ pub struct PriceSettings {
     ///
     /// Written by a fetch rather than by hand. It records whether the rates came
     /// from the provider speaking for itself or from a third party's catalogue,
-    /// which for three of the four providers io-cli knows is the second — OpenAI,
-    /// Anthropic and Google publish no prices on any endpoint. A page that drew a
+    /// which for two of the three vendors io-cli can connect to is the second —
+    /// OpenAI and Anthropic publish no prices on any endpoint. A page that drew a
     /// figure without saying which would be attributing a number to a vendor that
     /// never published one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

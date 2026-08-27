@@ -623,3 +623,86 @@ model = \"b\"";
         "the move did not reorder the chain:\n{up}"
     );
 }
+
+/// **A whole new section, once — the shape `set` cannot express and the one the
+/// price fill could not do without.**
+///
+/// Every edit in a batch is resolved against the document as it was *before* the
+/// batch: [`edit::apply`] walks the headers once and answers every `set` from that
+/// walk. So N `set`s addressing keys of a section that does not exist yet each
+/// fall through to the append arm, and each emits its own copy of the header. The
+/// file gains N definitions of one table and the read-back refuses the lot — which
+/// is what happened to the first price fill, at four hundred models, before this
+/// existed. Nothing about the failure named the cause: the operator was told "the
+/// edit would have produced a file that does not parse".
+///
+/// `Kind::Section` is the answer, and the constraint on it is as important as the
+/// capability. It **refuses** a section that is already there rather than replacing
+/// it, because a caller holding an existing section wants `set` per key — that
+/// leaves every row it did not name alone, which for `[prices.models]` is every
+/// model the catalogue stopped serving and every rate the operator corrected by
+/// hand. A replace here would delete both from a call site whose author believed
+/// they were adding rows.
+///
+/// Sabotage: drop the existence check and splice unconditionally, under which the
+/// second half of this test passes by writing a file with two `[app.io-cli]`
+/// headers in it. Or emit the header per key rather than once, which is the shape
+/// that made the failure this exists to remove.
+#[test]
+fn f1_a_whole_section_is_written_once_and_refused_when_it_is_already_there() {
+    let body = "\"gpt-4.1\" = { input = 2000000, output = 8000000 }\n\
+                \"gpt-4o\" = { input = 2500000, output = 10000000 }\n\
+                \"o3\" = { input = 2000000, output = 8000000 }";
+    let after = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::set("prices.as_of", "\"2026-08-27\""),
+            Edit::section("prices.models", body),
+        ],
+    )
+    .expect("a section the file does not have is written whole");
+
+    // One header, whatever the row count. The count is asserted rather than left
+    // to the parse, because a duplicate is only usually a parse error.
+    assert_eq!(
+        after.matches("[prices.models]").count(),
+        1,
+        "the section was written more than once:\n{after}"
+    );
+
+    // The operator's own file is still their file, byte for byte, with the new
+    // sections after it — the same preservation property every other edit here
+    // keeps.
+    assert!(
+        after.starts_with(OPERATORS_FILE),
+        "writing a new section rewrote the document above it:\n{after}"
+    );
+
+    // And it says what it was asked to say. Three dotted ids, each a key rather
+    // than a path, read back through a parser that has no opinion about io-cli.
+    let parsed: toml::Value = toml::from_str(&after).expect("the result parses");
+    assert_eq!(parsed["prices"]["as_of"].as_str(), Some("2026-08-27"));
+    for model in ["gpt-4.1", "gpt-4o", "o3"] {
+        assert!(
+            parsed["prices"]["models"][model]["input"].as_integer().is_some(),
+            "`{model}` did not land as a key of the section:\n{after}"
+        );
+    }
+
+    // The refusal. `[app.io-cli]` is in the fixture, so writing it whole would
+    // discard the theme — and the message says which section and why rather than
+    // reporting a parse failure the caller cannot act on.
+    let error = edit::apply(
+        OPERATORS_FILE,
+        &[Edit::section("app.io-cli", "theme = \"light\"")],
+    )
+    .expect_err("a section that already exists must not be written whole");
+    assert!(
+        error.contains("app.io-cli") && error.contains("already in this file"),
+        "the refusal does not name the section it refused: {error}"
+    );
+    assert!(
+        error.contains("key by key"),
+        "the refusal does not say what to do instead: {error}"
+    );
+}

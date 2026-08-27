@@ -350,14 +350,7 @@ pub const GROUPS: &[(Group, &[&str])] = &[
     (
         Group::Inspect,
         &[
-            "/help",
-            "/status",
-            "/context",
-            "/expand",
-            "/fleet",
-            "/skills",
-            "/cost",
-            "/stats",
+            "/help", "/status", "/context", "/expand", "/fleet", "/skills", "/cost", "/stats",
         ],
     ),
     // **`/mcp` and `/provider` moved here in 0.19.0, and it is a correction rather
