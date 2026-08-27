@@ -1,9 +1,10 @@
-//! The command line. A handful of flags and two subcommands, because everything
-//! else is a slash command inside the session.
+//! The command line. A handful of flags, and a subcommand for each thing that is
+//! not a session, because everything else is a slash command inside one.
 //!
 //! The count is deliberately not stated. It said "five" from 0.2.0 until 0.6.0
-//! and was wrong for most of that time, which is the argument against writing a
-//! number into prose that nothing checks.
+//! and was wrong for most of that time, and it said "two subcommands" until
+//! 0.23.0 added a third — which is the argument against writing a number into
+//! prose that nothing checks.
 
 use std::path::PathBuf;
 
@@ -74,6 +75,10 @@ pub enum Command {
     /// Run one goal to completion without a terminal, and exit with a status
     /// that says how the run ended.
     Exec(Exec),
+    /// List the runs parked in the store, or carry one of them on: answer its
+    /// question, decide its plan, or say what happened to the call it stopped
+    /// mid-way through.
+    Resume(Resume),
 }
 
 /// `io exec` — the headless entry point.
@@ -120,6 +125,130 @@ pub struct Exec {
     /// constructors read, and `-m` overrides the model half.
     #[arg(long, value_enum, value_name = "NAME")]
     pub provider: Option<FromEnv>,
+}
+
+/// `io resume` — the parked runs, and the way to carry one on.
+///
+/// The register is [`Exec`]'s: a positional for the thing being acted on, then
+/// flags, then the same `--json` / `--policy` / `--provider` trio a headless run
+/// takes, meaning the same three things. What is deliberately absent is
+/// `--sandbox`: a resumed run is one that already started under a boundary, and
+/// the confinement it should carry on under is the project's `[sandbox]`, which
+/// [`crate::contract::configured`] already puts on the contract. A flag that
+/// widened it halfway through a run would be a widening nobody asked for at the
+/// point nobody is watching.
+///
+/// **Each pause takes its own input, and exactly one.** A question wants free
+/// text, a plan wants a verdict and — for `revise` — a correction, an
+/// interrupted call wants a decision and — for `completed` — the operator's
+/// account of what it returned, and a run whose process merely died wants
+/// nothing at all. clap cannot see which pause a run is on, so which flag was
+/// the right one is settled against the store by [`crate::exec::decision_for`].
+#[derive(Debug, clap::Args)]
+pub struct Resume {
+    /// The run to carry on. Omitted with `--list`.
+    #[arg(value_name = "RUN_ID", required_unless_present = "list")]
+    pub run: Option<i64>,
+
+    /// List the runs waiting for a person and carry none of them on.
+    ///
+    /// Reads the store and calls no provider, so it costs nothing and takes no
+    /// lease on anything it lists.
+    #[arg(
+        long,
+        conflicts_with_all = ["run", "answer", "plan", "correction", "recovery", "account", "goal"]
+    )]
+    pub list: bool,
+
+    /// The answer to the question the run stopped on.
+    #[arg(long, value_name = "TEXT")]
+    pub answer: Option<String>,
+
+    /// What to do with the plan the run proposed.
+    #[arg(long, value_enum, value_name = "VERDICT")]
+    pub plan: Option<PlanFlag>,
+
+    /// What the plan should do differently. Required by `--plan revise` and
+    /// meaningless without it.
+    #[arg(long, value_name = "TEXT", requires = "plan")]
+    pub correction: Option<String>,
+
+    /// What happened to the call the run was interrupted in the middle of.
+    #[arg(long, value_enum, value_name = "DECISION")]
+    pub recovery: Option<RecoveryFlag>,
+
+    /// What the call returned. Required by `--recovery completed` and
+    /// meaningless without it.
+    ///
+    /// Nothing validates it: the operator is asserting a fact about the outside
+    /// world that no code here can check.
+    #[arg(long, value_name = "TEXT", requires = "recovery")]
+    pub account: Option<String>,
+
+    /// What the run was asked to do.
+    ///
+    /// `runs.goal` has no public reader, so a contract cannot be rebuilt from a
+    /// run alone. For a run that served a session turn the operator's own words
+    /// are recoverable from the turn; for a *bare* run — one `io exec` or any
+    /// other non-session caller started — they are not, and this is the only way
+    /// to supply them.
+    #[arg(long, value_name = "TEXT")]
+    pub goal: Option<String>,
+
+    /// Write the resumed run's events to stdout as newline-delimited JSON, and
+    /// `--list`'s rows as one object per line, instead of prose.
+    #[arg(long)]
+    pub json: bool,
+
+    /// The permission posture for the rest of this run. Defaults to what the run
+    /// itself recorded, and then to `[policy]`.
+    ///
+    /// `ask-writes` is refused for the reason `io exec` refuses it.
+    #[arg(long, value_enum, value_name = "POSTURE")]
+    pub policy: Option<PolicyFlag>,
+
+    /// Take the provider from the environment instead of a configuration file.
+    #[arg(long, value_enum, value_name = "NAME")]
+    pub provider: Option<FromEnv>,
+}
+
+/// `--plan`, in `io_harness::PlanVerdict`'s own words.
+///
+/// `cancel` is a decision and not a refusal to decide: it ends the run as
+/// `PlanRejected`, which is what "do not do this at all" means and is why it
+/// goes through the plan entry point rather than being turned into a plain
+/// resume that would spend the rest of the budget on the approach just refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PlanFlag {
+    /// Carry it out.
+    #[value(name = "approve")]
+    Approve,
+    /// Not this one. `--correction` says what to change.
+    #[value(name = "revise")]
+    Revise,
+    /// Do not do this at all.
+    #[value(name = "cancel")]
+    Cancel,
+}
+
+/// `--recovery`, for a call whose outcome only a person can establish.
+///
+/// The names are the operator's rather than the harness's on one of the three:
+/// io-harness spells the middle one `Abort`, which reads as *stop the program*
+/// on a command line, and what it actually means is *do not make that call, and
+/// stop*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum RecoveryFlag {
+    /// Make the call again. For a call established not to have landed, or one
+    /// that is harmless to repeat.
+    #[value(name = "retry")]
+    Retry,
+    /// Do not make the call, and do not carry on.
+    #[value(name = "abandon")]
+    Abandon,
+    /// The call landed. `--account` is what the agent is told it returned.
+    #[value(name = "completed")]
+    Completed,
 }
 
 /// `--provider`, for a run with no configuration file.
