@@ -194,11 +194,18 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "the providers configured, in the order a turn tries them",
     ),
     // Beside `/mcp` and `/provider` because it is the third of the same kind: a
-    // surface that lists what the file declared and goes on to change it. A
-    // bundle is the widest of the three — it can hand over skills, templates,
-    // agents, servers, hooks and policy in one directory — which is the argument
-    // for it being visible at all, and the argument for it being under
-    // "configure" rather than "inspect".
+    // surface that reads a declaration out of the configuration file and can
+    // take one back out of it. A bundle is the widest of the three — it can hand
+    // over skills, templates, agents, servers, hooks and policy in one directory —
+    // which is the argument for it being visible at all, and the argument for it
+    // being under "configure" rather than "inspect".
+    //
+    // **What it does not do is add one, and the description says "loaded" rather
+    // than implying otherwise.** Declaring a bundle means naming a directory,
+    // which is a path an operator types far more comfortably into their own file
+    // than into a picker; removing one means finding the right entry among three
+    // scope files, which is exactly the part a surface can do better than a
+    // person. So this does the second and not the first.
     (
         "/plugin",
         "the capability bundles loaded, what each contributed, and the ones that failed",

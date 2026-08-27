@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use io_harness::{Config, Policy, Provider, ProviderSpec, Session, Steer, Store, Templates};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -928,10 +928,90 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // the row being drawn and this keystroke the operator may
                         // have moved the file themselves, and a carried row would
                         // then name a path that is no longer there.
-                        // Read and closed. `Esc` and `Enter` do the same thing,
-                        // which is the honest behaviour for a pane with nothing
-                        // to choose.
-                        Pick::Nothing => {}
+                        Pick::PluginEntry {
+                            id,
+                            bundle,
+                            action_at,
+                        } => {
+                            // Every row but one is a fact to read.
+                            if index == *action_at {
+                                match io_cli::pluginview::declared_at(session.root(), bundle) {
+                                    Some((scope, at)) => {
+                                        descended = Some((
+                                            Picker::new(
+                                                format!("Stop loading {id}?"),
+                                                vec![
+                                                    Row::new("leave it".to_string()),
+                                                    Row::with_detail(
+                                                        "stop loading it".to_string(),
+                                                        format!(
+                                                            "removes `plugin[{at}]` from the {} \
+                                                             scope; the directory is left alone",
+                                                            io_cli::configure::Decided::File {
+                                                                scope,
+                                                                path: Default::default(),
+                                                            }
+                                                            .word()
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                            Pick::PluginRemove {
+                                                id: id.clone(),
+                                                scope,
+                                                index: at,
+                                            },
+                                        ));
+                                    }
+                                    // **Said, not guessed at.** No file names this
+                                    // path, so there is no entry to remove — and
+                                    // removing whichever entry happened to sit at
+                                    // some other index would take a bundle the
+                                    // operator never mentioned, silently.
+                                    None => app.record(
+                                        Tone::Refused,
+                                        format!(
+                                            "no `[[plugin]]` entry in any scope names {}; \
+                                             nothing was removed",
+                                            bundle.display()
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        // `at` and not `index`: the outer `index` is the row the
+                        // operator chose, and the entry's own position is a
+                        // different number entirely. Binding both to one name is
+                        // how a confirmation removes the wrong bundle.
+                        Pick::PluginRemove {
+                            id,
+                            scope,
+                            index: at,
+                        } => {
+                            // Row 0 is "leave it", which is the default and does
+                            // nothing — the same shape `/skills`' toggle uses.
+                            if index == 1 {
+                                let edit = io_cli::pluginview::remove(*at);
+                                match io_cli::configure::write(session.root(), *scope, &[edit]) {
+                                    Ok(()) => {
+                                        // The directory is untouched on purpose:
+                                        // this surface edits a configuration file,
+                                        // and deleting an operator's directory
+                                        // because they stopped loading it is not a
+                                        // thing a list should do.
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{id} is no longer declared; its directory is \
+                                                 untouched, and the change is in force from the \
+                                                 next turn",
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                        }
                         Pick::Plugins(view) => {
                             // **Answered from the reading the rows were drawn
                             // from, and `/skills` does the opposite on purpose.**
@@ -957,16 +1037,30 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // A bundle is several *lists* — its agents, its
                                 // servers, its policy layers — and a sentence
                                 // holding three lists is a sentence nobody reads.
+                                let mut rows = io_cli::pluginview::detail(
+                                    plugin,
+                                    screen.width(),
+                                    &app.theme.glyphs,
+                                );
+                                // **The action's index is taken before the row is
+                                // pushed, never worked out afterwards.** Every
+                                // other index in this surface addresses a list
+                                // somewhere else, and the whole class of defect
+                                // here is a row number being read against the
+                                // wrong list — so this one is the length of what
+                                // was already there, which cannot be wrong.
+                                let action_at = rows.len();
+                                rows.push(Row::with_detail(
+                                    "stop loading this bundle".to_string(),
+                                    "removes its `[[plugin]]` entry".to_string(),
+                                ));
                                 descended = Some((
-                                    Picker::new(
-                                        plugin.id.clone(),
-                                        io_cli::pluginview::detail(
-                                            plugin,
-                                            screen.width(),
-                                            &app.theme.glyphs,
-                                        ),
-                                    ),
-                                    Pick::Nothing,
+                                    Picker::new(plugin.id.clone(), rows),
+                                    Pick::PluginEntry {
+                                        id: plugin.id.clone(),
+                                        bundle: plugin.root.clone(),
+                                        action_at,
+                                    },
                                 ));
                             } else if let Some(refused) =
                                 view.refused.get(index - view.plugins.len())
@@ -3594,15 +3688,32 @@ enum Pick {
     /// sentence rather than a detail pane: there is nothing to descend into,
     /// because the bundle contributed nothing at all.
     Plugins(io_cli::pluginview::View),
-    /// A pane that is read and closed, and answers no keystroke.
+    /// One bundle's contributions, and the one thing that can be done about it.
     ///
-    /// **The absence of a choice, made representable.** Every other variant here
-    /// names what choosing a row means; this one exists for a pane where choosing
-    /// a row means nothing — a bundle's contributions, which are facts to read
-    /// rather than levers to pull. Without it the alternative is a pane that
-    /// silently does something arbitrary on `Enter`, which is how a display turns
-    /// into an accident.
-    Nothing,
+    /// `bundle` is the resolved directory, which is the only thing a row on screen
+    /// and an entry in a file genuinely share — `Config::plugins()` reports neither
+    /// the scope that declared a bundle nor its position in that file, so the path
+    /// is what `pluginview::declared_at` matches on to find the entry.
+    ///
+    /// `action_at` is where the removal row sits, recorded by the code that built
+    /// the rows rather than recomputed here.
+    PluginEntry {
+        id: String,
+        bundle: std::path::PathBuf,
+        action_at: usize,
+    },
+    /// The second half of removing a bundle: which entry, and are you sure.
+    ///
+    /// **Two steps rather than one, for the reason [`Pick::SkillToggle`] gives** —
+    /// this is a picker that would otherwise change a file on the way past. It
+    /// carries the scope and index `declared_at` resolved, so the confirmation acts
+    /// on the entry that was found rather than searching again against a file the
+    /// operator may have edited in between.
+    PluginRemove {
+        id: String,
+        scope: io_harness::config::Scope,
+        index: usize,
+    },
     /// The named profiles a file declares, in the order `configure::profiles`
     /// sorted them.
     Profile(Vec<String>),
@@ -3722,6 +3833,38 @@ async fn watch_child(
     // driver's own `Instant` is not in scope here and reaching for it would put
     // the same wrong number behind a more convincing name.
     let watching = Instant::now();
+    // **Ask whether there is anything left to watch, before opening a watch that
+    // can never end.** `Attach::from_now()` sets the cursor to the store's current
+    // position and does not look at the run — so attaching to a child that has
+    // already finished succeeds, polls forever, and prints nothing. That is the
+    // ordinary case rather than an exotic one: a detached child finishes on its
+    // own schedule, its `Finished` reaches nobody once the parent's turn has
+    // ended, so the fleet row still reads `detached` long after the child stopped.
+    // The operator selects exactly that row, because it is the one the pane
+    // invites them to select.
+    match store.run_status(run_id) {
+        Ok(Some(io_harness::RunStatus::Running)) => {}
+        Ok(Some(status)) => {
+            app.record(
+                Tone::Muted,
+                format!(
+                    "run {run_id} is no longer running ({}); there is nothing left to watch",
+                    format!("{status:?}").to_lowercase()
+                ),
+            );
+            return Ok(());
+        }
+        // No row, or a store that cannot answer. Neither is a reason to open a
+        // watch that would show nothing; both are worth saying.
+        Ok(None) => {
+            app.record(Tone::Refused, format!("run {run_id} is not in the store"));
+            return Ok(());
+        }
+        Err(error) => {
+            app.record(Tone::Refused, format!("cannot watch run {run_id}: {error}"));
+            return Ok(());
+        }
+    }
     let mut attach = match io_harness::Attach::to(store, run_id).from_now() {
         Ok(attach) => attach,
         Err(error) => {
@@ -3740,11 +3883,20 @@ async fn watch_child(
     loop {
         match attach.poll() {
             Ok(events) => {
+                let mut drawn = false;
                 for event in &events {
-                    app.event(event, watching.elapsed());
+                    // **`watched`, not `event`.** This run's tokens are not this
+                    // session's spend and its tree is not this turn's fan-out;
+                    // `App::watched` draws the lines and folds nothing into the
+                    // status line or the fleet.
+                    app.watched(event, watching.elapsed());
+                    drawn = true;
                     // The child is finished when it says so. Leaving on its own
                     // `Finished` rather than on a status query keeps this reading
-                    // one stream instead of two sources that can disagree.
+                    // one stream instead of two sources that can disagree — and
+                    // the rest of the batch is drawn first rather than abandoned
+                    // mid-loop, so a `HandleKilled` sitting behind the `Finished`
+                    // is not lost.
                     if matches!(event.kind, io_harness::EventKind::Finished { .. })
                         && event.run_id == run_id
                     {
@@ -3753,7 +3905,7 @@ async fn watch_child(
                         return Ok(());
                     }
                 }
-                if !events.is_empty() {
+                if drawn {
                     paint(screen, app)?;
                 }
             }
@@ -3763,21 +3915,50 @@ async fn watch_child(
                 return Ok(());
             }
         }
-        // `Esc` leaves and everything else is ignored, deliberately: this is a
-        // window onto a run the operator is not driving, so a key that did
-        // something here would be a key that did it to the wrong run.
-        match tokio::time::timeout(ATTACH_POLL, inputs.recv()).await {
-            Ok(Some(Event::Key(key)))
-                if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc =>
-            {
-                app.record(Tone::Muted, format!("stopped watching run {run_id}"));
-                paint(screen, app)?;
-                return Ok(());
+        // **One deadline per poll, and the loop waits out the whole of it.**
+        // Re-entering `timeout` with a fresh `ATTACH_POLL` after every key would
+        // busy-spin: an auto-repeating key or a dragged window edge returns
+        // immediately, and the loop would go straight back to `attach.poll()` —
+        // tens of store reads a second instead of ten, on the connection the
+        // driver is also using.
+        let deadline = tokio::time::Instant::now() + ATTACH_POLL;
+        loop {
+            match tokio::time::timeout_at(deadline, inputs.recv()).await {
+                // Both stop keys, and `Ctrl+C` is here because it is the one key
+                // this product refuses to let a configuration file rebind. An
+                // operator who wants out of anything presses it; a watch it did
+                // nothing to would be the only surface in the interface where
+                // that is false.
+                Ok(Some(Event::Key(key)))
+                    if key.kind == KeyEventKind::Press
+                        && (key.code == KeyCode::Esc
+                            || (key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL))) =>
+                {
+                    app.record(Tone::Muted, format!("stopped watching run {run_id}"));
+                    paint(screen, app)?;
+                    return Ok(());
+                }
+                // A resize while watching is a resize, and the other two loops in
+                // this file already say so. Dropping it leaves the `Screen`
+                // believing in a width the terminal no longer has, and every row
+                // drawn after the watch ends writes past the edge.
+                Ok(Some(Event::Resize(width, height))) => {
+                    screen
+                        .resize(width, height)
+                        .map_err(|error| error.to_string())?;
+                    paint(screen, app)?;
+                }
+                // The channel closing is the terminal going away, which the caller
+                // handles by returning; there is nothing to watch for any more.
+                Ok(None) => return Ok(()),
+                // Any other key is ignored on purpose: this is a window onto a run
+                // the operator is not driving, so a key that did something here
+                // would be a key that did it to the wrong run.
+                Ok(Some(_)) => {}
+                // The deadline, which is the only way out of this inner loop.
+                Err(_) => break,
             }
-            // The channel closing is the terminal going away, which the caller
-            // handles by returning; there is nothing to watch for any more.
-            Ok(None) => return Ok(()),
-            Ok(Some(_)) | Err(_) => {}
         }
     }
 }

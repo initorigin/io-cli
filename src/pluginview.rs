@@ -409,8 +409,65 @@ pub fn add(dir: &Path) -> crate::edit::Edit {
 /// By index rather than by id, because the id is the *manifest's* and the entry is
 /// the *configuration's*: a bundle that was refused for having an unusable `name`
 /// has no id to remove it by, and it is exactly the entry an operator wants gone.
+///
+/// **`index` is an index into the file's `[[plugin]]` array and into nothing
+/// else.** In particular it is *not* a row number from [`rows`], which lists the
+/// loaded bundles and then the refused ones — two lists whose order has no
+/// relation to the order the entries appear in any file. Handing a row number to
+/// this function deletes a different bundle than the one on screen. Find the entry
+/// with [`declared_at`], which answers the question this argument asks.
 pub fn remove(index: usize) -> crate::edit::Edit {
     crate::edit::Edit::remove(format!("plugin[{index}]"))
+}
+
+/// Which scope file declares `root`, and at which `[[plugin]]` index.
+///
+/// **The bridge between a row on screen and an entry in a file, and it exists
+/// because there is no other honest way across.** `Config::plugins()` hands back
+/// loaded bundles and dropped ones as two lists, in neither case ordered by the
+/// file that named them, and it says nothing at all about which of the three
+/// scopes carried a given entry. So the only thing a row and an entry genuinely
+/// share is the path — which is why this matches on that and refuses to guess when
+/// it cannot.
+///
+/// Each scope's file is read and its `plugin[i].path` values are compared, both
+/// as written and resolved against `root`, because a declaration may be relative
+/// or absolute and both name the same directory. The first scope that matches wins,
+/// searched local-first — the same precedence order the harness itself applies, so
+/// a bundle declared twice is removed from the file that was actually deciding.
+///
+/// `None` means no file names that path, and the caller must say so rather than
+/// removing something. Deleting the wrong `[[plugin]]` entry is silent: the
+/// operator loses a bundle they never mentioned and finds out when its skills stop
+/// being offered.
+pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Scope, usize)> {
+    use io_harness::config::Scope;
+    for scope in [Scope::Local, Scope::Project, Scope::User] {
+        let Some(path) = crate::configure::scope_path(root, scope) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // The array is walked until a gap, which is what `value_at` reports by
+        // returning `None` — an array of tables is contiguous, so the first miss
+        // is the end of it.
+        for index in 0.. {
+            let Some(raw) = crate::edit::value_at(&text, &format!("plugin[{index}].path")) else {
+                break;
+            };
+            let declared = PathBuf::from(raw.trim().trim_matches('"'));
+            let resolved = if declared.is_absolute() {
+                declared.clone()
+            } else {
+                root.join(&declared)
+            };
+            if declared == bundle || resolved == bundle {
+                return Some((scope, index));
+            }
+        }
+    }
+    None
 }
 
 /// A TOML basic string, escaped.

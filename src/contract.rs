@@ -250,11 +250,26 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
     // different road entirely: the `Hooks` value is also an `Observer`, and the
     // driver puts it in the fan-out beside the interface's own. Both installs, or
     // one half of the file is accepted and silently never runs.
-    let hooks = plugins.apply_to_hooks(config.hooks(), &dir);
-    let contract = if hooks.is_empty() {
-        contract
+    //
+    // **And not at all where the caller has no root, which is not a nicety.**
+    // `io_harness::Hooks::new` **creates every `append` path it is given, empty,
+    // as it is built** — so building one against `PathBuf::new()` resolves a
+    // relative `append = "audit.jsonl"` against the *process working directory*
+    // and leaves a stray empty file wherever `io` happened to be launched from.
+    // [`server_notices`] calls this function with exactly that empty root, at
+    // startup, purely to read the merged `[[mcp]]` and `[[lsp]]` lists back off a
+    // throwaway contract — so before 0.20.0 the empty root cost nothing and now it
+    // would cost a file in the operator's home. A contract with no root cannot run
+    // a turn, so it has no use for hooks either.
+    let hooks = if dir.as_os_str().is_empty() {
+        None
     } else {
-        contract.with_tool_hooks(std::sync::Arc::new(hooks))
+        let hooks = plugins.apply_to_hooks(config.hooks(), &dir);
+        (!hooks.is_empty()).then_some(hooks)
+    };
+    let contract = match hooks {
+        Some(hooks) => contract.with_tool_hooks(std::sync::Arc::new(hooks)),
+        None => contract,
     };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
@@ -279,6 +294,12 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
 /// one observer and keep read speculation — the same guard [`configured`] makes,
 /// made once here so the two cannot drift apart.
 pub fn hooks(config: &Config, root: &std::path::Path) -> Option<io_harness::Hooks> {
+    // The same empty-root guard [`configured`] makes, and for the same reason:
+    // building a `Hooks` creates its `append` files, so a rootless caller would
+    // leave them in the process working directory.
+    if root.as_os_str().is_empty() {
+        return None;
+    }
     let hooks = config.plugins().apply_to_hooks(config.hooks(), root);
     (!hooks.is_empty()).then_some(hooks)
 }

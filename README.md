@@ -578,6 +578,19 @@ make is dropped, recorded, and otherwise silently absent while every other bundl
 loads. A bundle you believe is running can be gone for a week. This is where that
 week ends.
 
+**And a bundle can be stopped from the same list.** The last row under a bundle's
+contributions removes its `[[plugin]]` entry, after a confirmation that names the
+scope and the entry it will take out. io finds that entry by matching the
+directory across all three scope files rather than by counting rows on screen —
+the two lists have no relation to the order entries appear in any file, and a row
+number read against the wrong list removes a bundle you never mentioned. Where no
+file names the directory, io says so and removes nothing.
+
+The directory itself is never touched. This surface edits a configuration file,
+and deleting somebody's work because they stopped loading it is not a thing a list
+should do. Declaring a bundle is still a line you write yourself: a path is
+something you type more comfortably into your own file than into a picker.
+
 **Which file declared a bundle decides what it may contribute.** A bundle named
 in the project-scoped `io.toml` — the file a `git clone` delivers — may
 contribute skills, templates, agents and policy, and may **not** contribute
@@ -643,6 +656,23 @@ turns that single tool call back and leaves the turn running, which makes a
 **`run` is an argv array and never a shell string.** Nothing is word-split and
 nothing is expanded: the program you named is the program that runs, with the
 arguments you wrote.
+
+**A `run` hook runs on the turn's own critical path, and `timeout_ms` is the only
+thing bounding it.** An observer is called synchronously by the run, and the run
+shares a task with the loop that reads your keyboard — so while a hook's program
+is running, the interface is not repainting and not answering keys. A script that
+takes a tenth of a second, on a hook matching every event, costs that tenth of a
+second per event. Keep a `run` hook fast, match it to the events you actually
+want with `on`, and lower `timeout_ms` from its five-second default if the program
+can hang. An `append` hook has none of this cost: it is a line written to a file.
+
+**A hook that fails is quiet.** io-harness reports a failed hook through a log
+this binary installs no subscriber for, so an `append` path that cannot be written
+and a `run` program that does not exist both leave the session looking normal —
+and a hook with `on_failure = "cancel"` ends the turn without saying which hook
+did it. Verify a new hook by checking that it did something: read the file, or
+give the program a visible side effect. This is a real limitation of 0.20.0 rather
+than a subtlety.
 
 **A project-scoped file may not declare `[[hook]]` at all.** io-harness refuses
 the whole configuration rather than dropping the table — a hook runs a command on

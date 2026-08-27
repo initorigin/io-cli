@@ -21,7 +21,11 @@ and under that the row it really exists for: every bundle that was declared and
 dropped, carrying io-harness's own sentence for why. That loader has no error
 path — a dropped bundle is recorded and otherwise silently absent while every
 other one loads, which is how a bundle you believe is running stays gone for a
-week.
+week. A bundle can also be stopped from that list: the last row under its
+contributions removes its `[[plugin]]` entry after a confirmation naming the scope
+it will edit. The entry is found by matching the directory across all three scope
+files rather than by counting rows on screen, and where no file names it, io says
+so and removes nothing. The directory itself is never touched.
 
 **Which file declared a bundle decides what it may contribute.** A bundle named
 in the project-scoped `io.toml` — the file a `git clone` delivers — may
