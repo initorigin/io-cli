@@ -14,11 +14,22 @@
 //! binary opens a session, and keeping session state is what this product's first
 //! constraint forbids. Everything here is a read, and this module cannot reach
 //! the filesystem at all — it takes a `&Store` and nothing else.
+//!
+//! **Every row also says what its session stopped on.** The walk already knows
+//! each session's newest run — it is the run that put that session where it is in
+//! the list — and [`crate::resume::pending_for`] turns that id into the state the
+//! run is holding: a question, a plan, an interrupted call, a process that died,
+//! a turn the operator ended, or nothing at all. That state is the fact `/resume`
+//! is chosen *on*, so it is drawn as a [`Row::mark`] rather than folded into the
+//! label the matcher ranks or the detail a narrow terminal drops. Reading it is
+//! the whole of what this module does with it; deciding anything about it belongs
+//! to [`crate::resume`], and nothing here drives.
 
 use io_harness::Store;
 
 use crate::glyphs::Glyphs;
 use crate::picker::{fit, fit_left, Row};
+use crate::resume::{pending_for, Pending};
 
 /// How many run ids the walk will look at before giving up.
 ///
@@ -41,6 +52,38 @@ pub const MAX_RUNS_SCANNED: usize = 500;
 /// How much of a workspace path a row keeps before the picker fits it again.
 const ROOT_ROOM: usize = 30;
 
+/// The mark on a session holding a question the operator has not answered.
+///
+/// **Words rather than symbols, and ASCII by rule.** A mark is text and not a
+/// colour, so it survives `NO_COLOR`, `--plain` and the ASCII glyph set
+/// unchanged — the same rule `crate::commands::PINNED_MARK` and its neighbours
+/// are held to, and `tests/glyphs.rs` sweeps for. Those marks are one cell each
+/// because they sit on *every* row of their page and a varying width would move
+/// the label column; these do not. A finished session carries no mark at all, so
+/// a `/resume` list is ragged by construction and there is no column to keep —
+/// which buys a mark that says *which* state it is, to an operator who has no
+/// legend on screen and is about to choose on it.
+pub const QUESTION_MARK: &str = "asks";
+
+/// The mark on a session holding a plan waiting for a verdict.
+pub const PLAN_MARK: &str = "plan";
+
+/// The mark on a session whose last run has a tool call nobody has ruled on:
+/// io-harness could not establish whether it landed, and will not guess.
+pub const RECOVERY_MARK: &str = "tool";
+
+/// The mark on a session whose last run was never closed — the process died
+/// mid-loop — and which is therefore resumable from its last committed step.
+pub const DIED_MARK: &str = "died";
+
+/// The mark on a session whose last turn the **operator** stopped.
+///
+/// Not a resume target and drawn as one only over this product's dead body: a
+/// cancelled run is recorded `completed`, every io-harness resume entry point
+/// short-circuits on it, and a row that offered to continue it would be offering
+/// something that cannot happen. [`note`] says so in words and names `/fork`.
+pub const ENDED_MARK: &str = "ended";
+
 /// One session, as `/resume` shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recent {
@@ -54,6 +97,14 @@ pub struct Recent {
     pub prompt: String,
     /// When its newest turn was recorded, as the store wrote it.
     pub at: String,
+    /// What the session's **newest run** stopped on.
+    ///
+    /// The newest run and not the newest turn: a turn is closed by the driver
+    /// and says nothing about a run that paused, and it is the run that holds the
+    /// question, the plan or the open call. Read through
+    /// [`crate::resume::pending_for`], which drives nothing — this is a list, and
+    /// building it must not answer anything.
+    pub pending: Pending,
 }
 
 /// Every session in this store that ran a turn, newest first.
@@ -66,7 +117,12 @@ pub struct Recent {
 /// That is correct rather than a gap: there is nothing in it to resume.
 pub fn recent(store: &Store) -> Result<(Vec<Recent>, bool), io_harness::Error> {
     let runs = store.runs()?;
-    let mut ids: Vec<i64> = Vec::new();
+    // Each session paired with the newest run that served it, which costs
+    // nothing: `Store::runs` is newest-first, so the run that first mentions a
+    // session **is** that session's newest, and the dedupe below is already
+    // throwing every older one away. Re-deriving it afterwards would mean a
+    // second walk to find a number this one has already had in its hand.
+    let mut ids: Vec<(i64, i64)> = Vec::new();
     let mut cut = false;
 
     for (scanned, run) in runs.iter().enumerate() {
@@ -80,17 +136,17 @@ pub fn recent(store: &Store) -> Result<(Vec<Recent>, bool), io_harness::Error> {
         let Some(turn) = store.session_turn(turn_id)? else {
             continue;
         };
-        if ids.contains(&turn.session_id) {
+        if ids.iter().any(|(session, _)| *session == turn.session_id) {
             continue;
         }
-        ids.push(turn.session_id);
+        ids.push((turn.session_id, *run));
     }
 
     let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        // Three queries per row, and none at all for a run the walk never
-        // reached — which is what splitting the walk from this loop buys, and why
-        // the scan ceiling is charged above rather than here.
+    for (id, newest_run) in ids {
+        // Three queries per row and the state read below, and none at all for a
+        // run the walk never reached — which is what splitting the walk from this
+        // loop buys, and why the scan ceiling is charged above rather than here.
         let Some(root) = store.session_root(id)? else {
             continue;
         };
@@ -104,6 +160,13 @@ pub fn recent(store: &Store) -> Result<(Vec<Recent>, bool), io_harness::Error> {
             turns: turns.len(),
             prompt: first.prompt.clone(),
             at: stamp(&turns[turns.len() - 1].created_at),
+            // The read that makes the list worth having: without it every row
+            // looks alike, and the session actually waiting on an answer is
+            // indistinguishable from the twenty that finished. Charged per **row**
+            // rather than per run scanned, so the ceiling above still bounds the
+            // walk — and taken on the newest run, which the walk above kept for
+            // exactly this.
+            pending: pending_for(store, newest_run)?,
         });
     }
     Ok((out, cut))
@@ -161,6 +224,63 @@ fn stamp(created_at: &str) -> String {
     cut.replace('T', " ")
 }
 
+/// The mark a session's row carries, or `None` for one that finished.
+///
+/// **`None` is the whole of how a finished session is reported, and that is
+/// deliberate.** A mark saying *fine* would be on almost every row of almost
+/// every list, and a mark that is nearly always there is one nobody reads — the
+/// same argument [`cut_note`] is built on. The three states an operator has to
+/// act on, and the two they have to know about, are the ones that get a mark;
+/// everything else is the absence of one.
+pub fn mark(pending: &Pending) -> Option<&'static str> {
+    match pending {
+        Pending::Question { .. } => Some(QUESTION_MARK),
+        Pending::Plan { .. } => Some(PLAN_MARK),
+        Pending::Recovery { .. } => Some(RECOVERY_MARK),
+        Pending::Died { .. } => Some(DIED_MARK),
+        Pending::Interrupted => Some(ENDED_MARK),
+        Pending::Finished => None,
+    }
+}
+
+/// The same state as a sentence, for a surface with room for prose.
+///
+/// A second rendering rather than a longer mark: a picker row has four columns
+/// to spare and a status line or a `/resume` confirmation has a line, and the
+/// state is worth saying properly wherever there is room to say it. `None`
+/// wherever [`mark`] is `None`, so the two agree about what is worth reporting
+/// and a finished session is silent on both.
+///
+/// **The interrupted sentence is the one that has to be read carefully.** A turn
+/// the operator stopped cannot be resumed — io-harness records it `completed`
+/// and every resume entry point returns the original outcome without driving —
+/// so this says who ended it and points at `/fork` from the turn before, which
+/// is the neighbouring thing that *does* work. It must never read as an offer to
+/// continue.
+pub fn note(pending: &Pending) -> Option<String> {
+    Some(match pending {
+        Pending::Question { question, .. } => {
+            format!("waiting on your answer: {question}")
+        }
+        Pending::Plan { steps, .. } => format!(
+            "waiting on your verdict on a plan of {} step{}",
+            steps.len(),
+            if steps.len() == 1 { "" } else { "s" }
+        ),
+        Pending::Recovery { tool, .. } => format!(
+            "waiting on your decision about an interrupted {tool} call — io-harness \
+             cannot tell whether it landed"
+        ),
+        Pending::Died { last_step } => {
+            format!("the process died after step {last_step}; resumable from there")
+        }
+        Pending::Interrupted => "you ended this turn, and an ended turn cannot be \
+             continued — /fork from the turn before it to carry on"
+            .to_string(),
+        Pending::Finished => return None,
+    })
+}
+
 /// The picker rows, fitted for a terminal this wide.
 ///
 /// Content precedes metadata, so the label is what the session was asked to do.
@@ -179,6 +299,19 @@ fn stamp(created_at: &str) -> String {
 /// only if the whole of it fits, in order of how much the operator needs it. A
 /// narrow terminal therefore loses the timestamp entirely, which is legible,
 /// instead of keeping a fragment of it, which is not.
+///
+/// **The state goes on [`Row::mark`], and neither in the label nor in the
+/// detail.** Not the label, because [`crate::picker::Picker`] ranks the label
+/// and nothing else: a state folded into it would give every waiting session the
+/// same first characters, under which no query is a prefix of a row and both of
+/// `crate::fuzzy`'s top tiers stop being reachable — and it would also let a
+/// query for `plan` return the sessions that are *stopped on* a plan rather than
+/// the ones that were asked about one. Not the detail, because the detail is the
+/// first thing the picker drops when the terminal is narrow, and the state is
+/// precisely what an operator on a narrow terminal still has to see: 0.16.0
+/// marked a template and a skill in the detail alone and the distinction vanished
+/// at the width that needed it most. The mark column is the one that survives
+/// both.
 pub fn rows(recent: &[Recent], width: u16, glyphs: &Glyphs) -> Vec<Row> {
     // A third rather than a half. The label is the prompt, which is unbounded, and
     // every column it takes is one the workspace cannot have.
@@ -188,13 +321,17 @@ pub fn rows(recent: &[Recent], width: u16, glyphs: &Glyphs) -> Vec<Row> {
         .iter()
         .map(|session| {
             let label = fit(&session.prompt, room, glyphs);
+            let kind = mark(&session.pending);
             // The picker's own arithmetic, mirrored: two cells of marker, the
-            // label, two cells of gap. Mirrored rather than guessed, because a
-            // budget that is one cell out puts the ellipsis back. Four in either
-            // glyph set — the marker is two cells in both, which is the property
-            // that lets this stay a number.
+            // mark and the space after it on a row that has one, the label, two
+            // cells of gap. Mirrored rather than guessed, because a budget that is
+            // one cell out puts the ellipsis back. Four in either glyph set — the
+            // marker is two cells in both, which is the property that lets that
+            // half stay a number; the mark's own width is counted rather than
+            // assumed, for the reason `picker::fit` measures the ellipsis.
             let mut left = (width as usize)
                 .saturating_sub(4)
+                .saturating_sub(kind.map_or(0, |mark| mark.chars().count() + 1))
                 .saturating_sub(label.chars().count());
 
             let path = fit_left(&session.root, ROOT_ROOM.min(left), glyphs);
@@ -216,7 +353,10 @@ pub fn rows(recent: &[Recent], width: u16, glyphs: &Glyphs) -> Vec<Row> {
                 detail.push_str(&at);
             }
 
-            Row::with_detail(label, detail)
+            match kind {
+                Some(mark) => Row::marked(mark, label, detail),
+                None => Row::with_detail(label, detail),
+            }
         })
         .collect()
 }

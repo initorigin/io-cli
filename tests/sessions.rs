@@ -36,16 +36,45 @@
 //! `Picker` with a query typed into it, because the index is only interesting once
 //! the drawn order and the caller's order have been made to disagree.
 //!
+//! **F1, the half added this release — every row says what its session stopped
+//! on.** The list is chosen from, and until now every row looked alike: the
+//! session holding an unanswered question was indistinguishable from the twenty
+//! that finished, and the operator learned which was which by opening them. The
+//! state comes off the session's newest run through `io_cli::resume::pending_for`
+//! and is drawn on `Row::mark` — **not** in the label, which is the only field the
+//! fuzzy matcher ranks, and **not** in the detail, which is the first thing a
+//! narrow terminal drops. The tests below assert the mark is present *and* that
+//! the same string is absent from both of the other two fields, because "it is on
+//! the row somewhere" is what 0.16.0 asserted about a template and a skill, and
+//! the distinction vanished at exactly the width that needed it.
+//!
+//! **F7 — the one pause that is reported and must never be offered.** A turn the
+//! operator interrupted is recorded `cancelled`, which `finish_run` maps to a
+//! *completed* status, and every io-harness resume entry point short-circuits on
+//! it. So the most common way a turn stops is the one way it cannot be continued.
+//! It gets a mark and a sentence naming `/fork` from the turn before, and the test
+//! asserts the sentence does not offer to resume.
+//!
+//! **The stores here are real files.** These fixtures reach for `Store::open` on a
+//! `TempDir` rather than `Store::memory`, because what is being read back is what
+//! a run loop leaves in a database another process wrote — and where io-harness
+//! exposes no way to *reach* a state, the fixture writes the row through the
+//! public writer the run loop itself calls, so the row is the one production
+//! produces rather than one shaped to suit the assertion.
+//!
 //! **No clock.** `Recent::at` is the store's own stamp, sliced. It is not a
 //! relative age, precisely so that neither the module nor this file has to read a
 //! clock — which `tests/timing.rs` forbids outright, and which a resume picker is
 //! the most tempting surface yet shipped to break.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use io_cli::glyphs::UNICODE;
+use io_cli::glyphs::{ASCII, UNICODE};
 use io_cli::picker::{Outcome, Picker, Row};
-use io_cli::sessions::{cut_note, pick, pick_turn, recent, rows, turn_rows, MAX_RUNS_SCANNED};
-use io_harness::Store;
+use io_cli::sessions::{
+    cut_note, mark, note, pick, pick_turn, recent, rows, turn_rows, DIED_MARK, ENDED_MARK,
+    MAX_RUNS_SCANNED, PLAN_MARK, QUESTION_MARK, RECOVERY_MARK,
+};
+use io_harness::{Plan, PlanStep, Question, StepRecord, Store, ToolRecovery};
 
 /// More sessions than the twenty-row cap 0.7.0 removed, so a list of this length
 /// is itself the evidence the cap is gone. A literal rather than a constant: the
@@ -99,10 +128,47 @@ fn add_turn_from(store: &Store, session: i64, parent: Option<i64>, prompt: &str)
     store
         .finish_turn(turn, Some("done"), "completed")
         .expect("a turn finishes");
+    // The RUN is closed as well as the turn, which this fixture did not do until
+    // the state column existed. A run nothing ever finished is `running` in the
+    // store — which is what a process that died mid-loop leaves behind — and it
+    // reads as finished here only because it committed no step and so has nothing
+    // to be resumed *from*. That is one accident away from every session in this
+    // file drawing a `died` mark for reasons no test in it is about. The product
+    // closes the run when the turn returns; so does this now, and the fixture
+    // stops depending on a step count it never meant to assert.
+    store
+        .finish_run(run, "success")
+        .expect("the run finishes with it");
     store
         .set_session_head(session, Some(turn))
         .expect("the head moves to the newest turn");
     turn
+}
+
+/// One more turn on `session`, with its run left **open** and its id returned.
+///
+/// The seam every state below is built through. A run is the thing a pause is
+/// written under — the question, the plan and the tool journal all key on
+/// `run_id`, none of them on a turn — so a fixture that could not name the newest
+/// run could not put a session into any of these states at all.
+///
+/// The turn is deliberately not finished: a turn whose run is still waiting has
+/// not returned anything, and finishing it here would seed a shape the product
+/// never writes.
+fn open_run(store: &Store, session: i64, prompt: &str) -> i64 {
+    let parent = store
+        .session_turns(session)
+        .expect("a session's turns are readable")
+        .last()
+        .map(|turn| turn.id);
+    let run = store.start_run(prompt, "io-cli").expect("a run starts");
+    let turn = store
+        .record_turn(session, parent, run, prompt)
+        .expect("a turn records");
+    store
+        .set_session_head(session, Some(turn))
+        .expect("the head moves to the newest turn");
+    run
 }
 
 /// A session over `root` that has already run one turn per prompt, in order.
@@ -116,6 +182,23 @@ fn seed(store: &Store, root: &str, prompts: &[&str]) -> i64 {
 
 fn store() -> Store {
     Store::memory().expect("an in-memory store opens")
+}
+
+/// A store in a real file, and the directory that has to outlive it.
+///
+/// `Store::open` rather than `Store::memory` for the state tests: what they read
+/// back is what a run loop committed to a database, and the writers those states
+/// go through — `put_question`, `put_plan`, `open_attempt` — are the ones whose
+/// whole purpose is surviving the process that wrote them. Reading them out of a
+/// connection that never touched a disk would be testing the half of the claim
+/// that was never in doubt.
+///
+/// The `TempDir` comes back with the store because dropping it deletes the
+/// database underneath.
+fn on_disk() -> (tempfile::TempDir, Store) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = Store::open(dir.path().join("runs.db")).expect("a store opens on disk");
+    (dir, store)
 }
 
 #[test]
@@ -239,6 +322,293 @@ fn f1_the_turn_count_includes_the_turns_a_branch_left_behind() {
          — `Session::history` would say 1 here, and a picker that said 1 would be \
          telling the operator work had disappeared when it had only been branched \
          away from",
+    );
+}
+
+/// Six sessions, one per state a newest run can be found in, seeded through the
+/// writers the run loop itself calls.
+///
+/// Returned as pairs of session id and the mark that state calls for, in seeding
+/// order, so the assertions read as a table rather than as six copies of one
+/// paragraph. A state missing from this fixture is a state nothing watches — and
+/// the way a state goes wrong is by being drawn as another state's mark, which
+/// only a fixture holding all of them at once can catch.
+fn seed_every_state(store: &Store) -> Vec<(i64, Option<&'static str>)> {
+    // Waiting on an answer. `put_question` is the writer `run/dispatch.rs` calls
+    // when nothing in the process could answer, and `awaiting_answer` is the
+    // outcome the loop then finishes with. io-harness exposes no way to *reach*
+    // this state without running a model, so the row is written through the
+    // public writer that produces it — which is what makes it the row production
+    // leaves rather than one shaped to suit the assertion.
+    let asking = seed(store, "/work/importer", &["port the importer"]);
+    let run = open_run(store, asking, "which database?");
+    store
+        .put_question(run, 4, &Question::new("postgres or sqlite?"))
+        .expect("a question is written");
+    store
+        .finish_run(run, "awaiting_answer")
+        .expect("and the run stops on it");
+
+    // Waiting on a verdict about a plan. The plan row is written *before* the
+    // gate is consulted, which is the whole of io-harness's durability claim for
+    // it: a process that died between the proposal and the verdict leaves a row a
+    // human can still answer, and that row is what this list has to see.
+    let planning = seed(store, "/work/migration", &["rewrite the migration"]);
+    let run = open_run(store, planning, "here is how I would do it");
+    store
+        .put_plan(
+            run,
+            2,
+            &Plan::new([
+                PlanStep::new("read the schema"),
+                PlanStep::new("write the up and down"),
+            ]),
+        )
+        .expect("a plan is written");
+    store
+        .finish_run(run, "awaiting_plan")
+        .expect("and the run stops on it");
+
+    // Waiting on a decision about a call io-harness cannot inspect. There is no
+    // outcome to write and no status to set here: the pause *is* the open row in
+    // the tool journal. `open_attempt` commits it outside every step transaction
+    // precisely so it survives the death of the process making the call, and
+    // `run/outcome.rs` reads exactly this back at each resume root.
+    let recovering = seed(store, "/work/billing", &["settle the invoice"]);
+    let run = open_run(store, recovering, "charge the customer");
+    store
+        .open_attempt(run, 6, "charge_card", ToolRecovery::Indeterminate)
+        .expect("the journal takes the attempt")
+        .expect("an indeterminate call is journalled at all");
+
+    // Running, with a committed step and nothing pending: the process died
+    // mid-loop and nothing ever closed the row. The step is written rather than
+    // implied because it is what the run would resume *from* — a crashed run with
+    // no committed work and one with six steps behind it are not the same offer.
+    let crashed = seed(store, "/work/archive", &["reindex the archive"]);
+    let run = open_run(store, crashed, "carry on with the reindex");
+    store
+        .record(run, &StepRecord::new(3, "wrote the index", "ok"))
+        .expect("a step commits");
+
+    // Finished, cleanly. The row that carries no mark at all.
+    let finished = seed(store, "/work/changelog", &["write the changelog"]);
+
+    // Ended by the operator. `Ctrl+C` sets the flag that returns `Flow::Cancel`,
+    // io-harness records the outcome `cancelled`, and `finish_run` maps that to a
+    // **completed** status — which is why every resume entry point short-circuits
+    // on it, why it cannot be continued, and why it is reported rather than
+    // offered.
+    let ended = seed(store, "/work/columns", &["rename the columns"]);
+    let run = open_run(store, ended, "and now the indexes");
+    store
+        .finish_run(run, "cancelled")
+        .expect("an interrupted turn ends");
+
+    vec![
+        (asking, Some(QUESTION_MARK)),
+        (planning, Some(PLAN_MARK)),
+        (recovering, Some(RECOVERY_MARK)),
+        (crashed, Some(DIED_MARK)),
+        (finished, None),
+        (ended, Some(ENDED_MARK)),
+    ]
+}
+
+#[test]
+fn f1_each_row_carries_the_mark_its_last_run_state_calls_for() {
+    let (_dir, store) = on_disk();
+    let expected = seed_every_state(&store);
+
+    let (list, cut) = recent(&store).expect("the list reads");
+    assert!(!cut, "six sessions is the whole store");
+    assert_eq!(
+        list.len(),
+        expected.len(),
+        "one row per session, whatever state its newest run stopped in — a state \
+         this list cannot represent must not become a session it drops: {list:?}",
+    );
+
+    // Both glyph sets, because a mark is TEXT and not a glyph. It has to say the
+    // same thing to a terminal that can draw nothing else, which is the whole
+    // reason the state rides in `Row::mark` as a word rather than as a colour or a
+    // symbol on the row.
+    for glyphs in [UNICODE, ASCII] {
+        let built = rows(&list, 100, &glyphs);
+        for (id, want) in &expected {
+            let index = list
+                .iter()
+                .position(|session| session.id == *id)
+                .unwrap_or_else(|| panic!("session {id} is listed, under {}", glyphs.name));
+            let row = &built[index];
+            assert_eq!(
+                row.mark, *want,
+                "the row for session {id} carries the mark its state calls for, \
+                 under {}: {row:?}",
+                glyphs.name,
+            );
+            assert_eq!(
+                mark(&list[index].pending),
+                *want,
+                "and the row is drawn from `mark`, so the two cannot drift apart",
+            );
+            // The completed session is the one asserted to carry NOTHING, and it
+            // is the assertion with teeth: a mark saying *fine* would be on almost
+            // every row of almost every list, and a mark that is nearly always
+            // there is one nobody reads. The absence is the signal.
+            assert_eq!(
+                note(&list[index].pending).is_some(),
+                want.is_some(),
+                "the prose and the mark report the same set of states, so a \
+                 surface with room for a sentence and one without agree: {:?}",
+                list[index].pending,
+            );
+        }
+
+        // **The criterion.** The mark is present in the one field that survives,
+        // and absent from both of the others. In the label it would be ranked by
+        // the fuzzy matcher — every waiting session sharing a first word, and a
+        // query for `plan` answering with the sessions *stopped on* a plan rather
+        // than the ones asked about one. In the detail it would be the first thing
+        // dropped on a narrow terminal, which is where a row is hardest to tell
+        // apart: 0.16.0 marked a template and a skill in the detail alone and the
+        // distinction vanished at exactly the width that needed it.
+        for row in &built {
+            let Some(mark) = row.mark else { continue };
+            assert!(
+                !row.label.contains(mark),
+                "the state must not be in the label, which is what the matcher \
+                 ranks: {row:?}",
+            );
+            let detail = row.detail.as_deref().expect("a session row has a detail");
+            assert!(
+                !detail.contains(mark),
+                "the state must not be in the detail, which is the first thing a \
+                 narrow terminal drops: {row:?}",
+            );
+        }
+    }
+
+    // Every mark is ASCII, by the same rule the memory page's four are held to: a
+    // mark is text rather than a colour, so it has to survive `NO_COLOR`,
+    // `--plain` and a terminal whose locale does not claim UTF-8 unchanged.
+    for (_, want) in &expected {
+        let Some(mark) = want else { continue };
+        assert!(
+            mark.chars().all(|character| character.is_ascii_graphic()),
+            "a mark that cannot be drawn is a state nobody is told about: {mark:?}",
+        );
+    }
+}
+
+#[test]
+fn f7_a_turn_the_operator_ended_is_reported_and_never_offered_as_resumable() {
+    let (_dir, store) = on_disk();
+    let session = seed(&store, "/work/columns", &["draft the release notes"]);
+    let run = open_run(&store, session, "and now rewrite the summary");
+    store
+        .finish_run(run, "cancelled")
+        .expect("an interrupted turn ends");
+
+    let (list, _) = recent(&store).expect("the list reads");
+    let pending = &list[0].pending;
+
+    assert_eq!(
+        mark(pending),
+        Some(ENDED_MARK),
+        "an ended turn is REPORTED — the alternative is a row that looks finished \
+         and a piece of work the operator believes they stopped and cannot find",
+    );
+
+    let note = note(pending).expect("an ended turn has something to say");
+    assert!(
+        note.contains("you ended"),
+        "the sentence says who ended it: the operator did this, and a passive \
+         sentence would read as something that went wrong: {note:?}",
+    );
+    assert!(
+        note.contains("/fork"),
+        "and it names the neighbouring answer that actually works, from the turn \
+         before — otherwise the report is a dead end: {note:?}",
+    );
+    // The half with teeth. `cancelled` maps to a COMPLETED status in the store and
+    // every io-harness resume entry point short-circuits on a completed run,
+    // returning the original outcome without driving. So a sentence offering to
+    // resume would be offering something that cannot happen, and the operator
+    // would learn it by choosing the row and watching nothing occur.
+    assert!(
+        !note.to_lowercase().contains("resum"),
+        "an ended turn must never read as an offer to resume: {note:?}",
+    );
+}
+
+#[test]
+fn f1_a_cut_list_still_marks_its_rows_and_its_note_still_stands_for_no_session() {
+    let (_dir, store) = on_disk();
+
+    // Seeded first, so it is the oldest and sits past the scan window.
+    let buried = seed(&store, "/work/buried", &["the session nobody reaches"]);
+
+    // Runs that served no turn — what a headless run leaves — between the buried
+    // session and the one on screen. They are skipped by the walk and still
+    // COUNTED by it, which is the cheap way to reach the bound: the ceiling
+    // charges for looking at a run, not for finding a session behind it.
+    for n in 0..MAX_RUNS_SCANNED {
+        store
+            .start_run(&format!("headless {n}"), "io-cli")
+            .expect("a run starts");
+    }
+
+    // And the newest run of all is a session waiting on an answer, so the one row
+    // that survives the bound is a MARKED one. A cut list is exactly when the
+    // operator most needs to know what is on it.
+    let waiting = seed(&store, "/work/importer", &["port the importer"]);
+    let run = open_run(&store, waiting, "which database?");
+    store
+        .put_question(run, 4, &Question::new("postgres or sqlite?"))
+        .expect("a question is written");
+    store
+        .finish_run(run, "awaiting_answer")
+        .expect("and the run stops on it");
+
+    let (list, cut) = recent(&store).expect("the list reads");
+    let ids: Vec<i64> = list.iter().map(|session| session.id).collect();
+
+    assert_eq!(
+        list.len(),
+        1,
+        "only the session inside the window: {list:?}"
+    );
+    assert_eq!(list[0].id, waiting);
+    assert!(
+        !ids.contains(&buried),
+        "a session past five hundred runs is beyond the walk",
+    );
+    assert!(cut, "the walk gave up, so the list is cut");
+
+    let mut built = rows(&list, 80, &UNICODE);
+    assert_eq!(
+        built[0].mark,
+        Some(QUESTION_MARK),
+        "the surviving row still says what it is waiting on: {built:?}",
+    );
+
+    // The note is appended by the driver as an ordinary row, and it is not a
+    // session: no mark, because it has no state, and no id, because there is
+    // nothing behind it to reopen. The filter ranks it against the session rows
+    // like any other row and can put it under the marker, so `pick` has to keep
+    // answering `None` for it however the rows above it are now drawn.
+    built.push(Row::new(
+        cut_note(cut, built.len()).expect("a cut list carries a note"),
+    ));
+    assert_eq!(
+        built[1].mark, None,
+        "the note stands for no session, so it carries no session's state",
+    );
+    assert_eq!(
+        pick(&ids, 1),
+        None,
+        "and it resolves to nothing, which the driver answers with a sentence",
     );
 }
 
