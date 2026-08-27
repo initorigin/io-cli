@@ -370,7 +370,10 @@ impl std::fmt::Display for Failure {
                 "nothing recorded what run {run_id} was allowed to do, so carrying it on \
                  would mean choosing its boundary for you; say which policy it ran under"
             ),
-            Self::HeadMoved { session_id, turn_id } => write!(
+            Self::HeadMoved {
+                session_id,
+                turn_id,
+            } => write!(
                 f,
                 "the run was carried on and turn {turn_id} holds its answer, but this \
                  conversation had already moved on somewhere else, so session {session_id} \
@@ -565,7 +568,13 @@ pub async fn answer_question<P: Provider>(
             .await?
         }
     };
-    finish(store, result.run_id, result.outcome, resumed_after, expected_head)
+    finish(
+        store,
+        result.run_id,
+        result.outcome,
+        resumed_after,
+        expected_head,
+    )
 }
 
 /// Carry on a run whose agent proposed an approach.
@@ -598,7 +607,9 @@ pub async fn decide_plan<P: Provider>(
     expected_head: Option<i64>,
 ) -> Result<Resumed, Failure> {
     // Plan first, run second, for the reason [`answer_question`] gives.
-    let plan = store.plan(plan_id)?.ok_or(Failure::NoSuchPlan { plan_id })?;
+    let plan = store
+        .plan(plan_id)?
+        .ok_or(Failure::NoSuchPlan { plan_id })?;
     if plan.run_id != run_id {
         return Err(Failure::PlanElsewhere {
             plan_id,
@@ -631,20 +642,18 @@ pub async fn decide_plan<P: Provider>(
         }
         None => {
             io_harness::resume_with_plan_decision_observed(
-                contract,
-                provider,
-                store,
-                run_id,
-                plan_id,
-                verdict,
-                policy,
-                approver,
-                observer,
+                contract, provider, store, run_id, plan_id, verdict, policy, approver, observer,
             )
             .await?
         }
     };
-    finish(store, result.run_id, result.outcome, resumed_after, expected_head)
+    finish(
+        store,
+        result.run_id,
+        result.outcome,
+        resumed_after,
+        expected_head,
+    )
 }
 
 /// Carry on a run that stopped on a call nobody can tell landed or not.
@@ -696,7 +705,13 @@ pub async fn recover<P: Provider>(
         contract, provider, store, run_id, attempt_id, decision, policy, approver, observer,
     )
     .await?;
-    finish(store, result.run_id, result.outcome, resumed_after, expected_head)
+    finish(
+        store,
+        result.run_id,
+        result.outcome,
+        resumed_after,
+        expected_head,
+    )
 }
 
 /// Carry on a run whose process went away, with nothing to decide.
@@ -730,13 +745,26 @@ pub async fn carry_on<P: Provider>(
     let result = match (containment, policy) {
         (Some(containment), Some(policy)) => {
             io_harness::resume_tree_observed(
-                contract, provider, store, run_id, policy, approver, containment, observer,
+                contract,
+                provider,
+                store,
+                run_id,
+                policy,
+                approver,
+                containment,
+                observer,
             )
             .await?
         }
         (Some(containment), None) => {
             io_harness::resume_tree_from_stored_policy_observed(
-                contract, provider, store, run_id, approver, containment, observer,
+                contract,
+                provider,
+                store,
+                run_id,
+                approver,
+                containment,
+                observer,
             )
             .await?
         }
@@ -753,7 +781,13 @@ pub async fn carry_on<P: Provider>(
             .await?
         }
     };
-    finish(store, result.run_id, result.outcome, resumed_after, expected_head)
+    finish(
+        store,
+        result.run_id,
+        result.outcome,
+        resumed_after,
+        expected_head,
+    )
 }
 
 /// The outcome string the run loop writes when an observer stops a run, which is
@@ -863,7 +897,12 @@ fn finish(
         .session_id;
     match store.set_session_head_if(session_id, expected_head, Some(turn_id)) {
         Ok(()) => {}
-        Err(Error::Conflict { .. }) => return Err(Failure::HeadMoved { session_id, turn_id }),
+        Err(Error::Conflict { .. }) => {
+            return Err(Failure::HeadMoved {
+                session_id,
+                turn_id,
+            })
+        }
         Err(error) => return Err(Failure::Harness(error)),
     }
 

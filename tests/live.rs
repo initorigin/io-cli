@@ -2580,9 +2580,17 @@ async fn live_f2_a_parked_question_is_answered_and_the_run_carries_on() {
     // The harness's own markers, read back out of the store rather than trusted:
     // one `resume` for the continuation and one `skipped` per step already
     // committed. This is what distinguishes a resume from a re-run.
-    let markers = store.checkpoint_events(run_id).expect("the checkpoint events");
-    let resumes = markers.iter().filter(|event| event.kind == "resume").count();
-    let skipped = markers.iter().filter(|event| event.kind == "skipped").count();
+    let markers = store
+        .checkpoint_events(run_id)
+        .expect("the checkpoint events");
+    let resumes = markers
+        .iter()
+        .filter(|event| event.kind == "resume")
+        .count();
+    let skipped = markers
+        .iter()
+        .filter(|event| event.kind == "skipped")
+        .count();
     assert_eq!(resumes, 1, "exactly one resume marker, got {resumes}");
     assert_eq!(
         skipped, before as usize,

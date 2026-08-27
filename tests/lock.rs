@@ -165,7 +165,9 @@ fn f9_two_sessions_in_one_workspace_do_not_contend_but_one_session_does() {
     let resumed =
         refusal(lock::acquire(&home, 1, &root, started()).expect("asking is not an error"));
     assert!(
-        resumed.sentence().contains("another `io` holds this session"),
+        resumed
+            .sentence()
+            .contains("another `io` holds this session"),
         "the same id twice is two processes on one head: {}",
         resumed.sentence(),
     );
@@ -381,9 +383,8 @@ fn f9_a_guard_that_could_not_write_a_record_removes_nothing_when_it_goes() {
     let marker = owner_path.join("not-ours");
     std::fs::write(&marker, "somebody else's").expect("the marker");
 
-    let held = guard(
-        lock::acquire(&home, SESSION, &root, started()).expect("the record is not the lock"),
-    );
+    let held =
+        guard(lock::acquire(&home, SESSION, &root, started()).expect("the record is not the lock"));
     let unreadable =
         refusal(lock::acquire(&home, SESSION, &root, started()).expect("asking is not an error"));
     assert_eq!(

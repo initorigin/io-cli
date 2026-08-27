@@ -72,8 +72,8 @@ mod support;
 use io_cli::resume::{self, Failure, Pending};
 use io_harness::provider::{CompletionRequest, CompletionResponse, ToolCall};
 use io_harness::{
-    ApproveAll, Ignore, Plan, PlanStep, PlanVerdict, Policy, Provider, RecoveryDecision, RunOutcome,
-    Session, StepRecord, Store, TaskContract, ToolRecovery, ASK_QUESTION_TOOL,
+    ApproveAll, Ignore, Plan, PlanStep, PlanVerdict, Policy, Provider, RecoveryDecision,
+    RunOutcome, Session, StepRecord, Store, TaskContract, ToolRecovery, ASK_QUESTION_TOOL,
 };
 use support::Scripted;
 
@@ -221,7 +221,10 @@ fn head_of(store: &Store, session_id: i64) -> Option<i64> {
 #[tokio::test]
 async fn a_paused_question_is_reported_with_its_own_row_and_nothing_is_driven() {
     let fixture = Paused::new().await;
-    let before = fixture.store.last_step(fixture.run_id).expect("a step count");
+    let before = fixture
+        .store
+        .last_step(fixture.run_id)
+        .expect("a step count");
 
     assert_eq!(
         resume::pending_for(&fixture.store, fixture.run_id).expect("the store answers"),
@@ -246,7 +249,10 @@ async fn an_answer_drives_the_run_from_the_step_after_the_last_one_committed() {
     // Read before anything is driven, and every number below is arithmetic on it.
     // A literal here would pass on this fixture and mean nothing on a run that
     // paused anywhere else, which is every run an operator actually has.
-    let before = fixture.store.last_step(fixture.run_id).expect("a step count");
+    let before = fixture
+        .store
+        .last_step(fixture.run_id)
+        .expect("a step count");
     let head = fixture.session.head();
 
     let resumed = resume::answer_question(
@@ -280,7 +286,10 @@ async fn an_answer_drives_the_run_from_the_step_after_the_last_one_committed() {
         "one skipped marker per step that was already committed and already paid for",
     );
     assert_eq!(
-        fixture.store.last_step(fixture.run_id).expect("a step count"),
+        fixture
+            .store
+            .last_step(fixture.run_id)
+            .expect("a step count"),
         before + 1,
         "the run really moved on",
     );
@@ -701,7 +710,11 @@ async fn a_plan_belonging_to_another_run_is_refused_and_names_both_runs() {
         .record(other, &StepRecord::new(1, "read a file", "ok"))
         .expect("a trace row");
     let plan_id = store
-        .put_plan(proposer, 1, &Plan::new([PlanStep::new("rewrite the parser")]))
+        .put_plan(
+            proposer,
+            1,
+            &Plan::new([PlanStep::new("rewrite the parser")]),
+        )
         .expect("a plan row");
 
     let failure = resume::decide_plan(
@@ -743,11 +756,17 @@ async fn a_plan_belonging_to_another_run_is_refused_and_names_both_runs() {
 }
 
 /// The driver read as text, because nothing here can link it.
+///
+/// **Line endings normalised, and Windows is why.** A checkout on Windows gives
+/// `\r\n`, so a needle written `"\n}\n"` — the one that finds where a function
+/// ends — matches nothing there and the test panics on a green product. That is
+/// the same defect 0.19.0 found when `include_str!` handed a frontmatter parser
+/// CRLF: green on two platforms, red on the third, and the fault in the test
+/// rather than in the code it guards.
 fn driver() -> String {
-    std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
-    )
-    .expect("the driver")
+    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+        .expect("the driver")
+        .replace("\r\n", "\n")
 }
 
 /// The four properties of `resume_pending` that the adversarial review found
@@ -811,7 +830,9 @@ fn the_resume_loop_keeps_the_four_properties_the_review_found_missing() {
 #[test]
 fn entering_a_session_releases_the_lock_on_the_one_being_left() {
     let driver = driver();
-    let from = driver.find("fn entering(").expect("the driver takes the lock");
+    let from = driver
+        .find("fn entering(")
+        .expect("the driver takes the lock");
     let body = &driver[from..];
     let end = body.find("\n}\n").expect("the function ends");
     let body = &body[..end];

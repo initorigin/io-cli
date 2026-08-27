@@ -5220,28 +5220,32 @@ async fn ask_parked(
         // type — and re-reading is both the shortest way to get one and the
         // freshest answer, since another `io` may have resolved it since the
         // list was drawn.
-        Pending::Question { question_id, .. } => {
-            match store.question(*question_id) {
-                Ok(Some(row)) => {
-                    app.open_resumed_intent(io_cli::intent::Intent::resumed(&row));
-                }
-                Ok(None) => {
-                    app.say(
-                        Tone::Muted,
-                        format!("question {question_id} is no longer in the store"),
-                    );
-                    return Ok(Decided::Left);
-                }
-                Err(error) => {
-                    app.say(Tone::Error, format!("that question could not be read: {error}"));
-                    return Ok(Decided::Left);
-                }
+        Pending::Question { question_id, .. } => match store.question(*question_id) {
+            Ok(Some(row)) => {
+                app.open_resumed_intent(io_cli::intent::Intent::resumed(&row));
             }
-        }
+            Ok(None) => {
+                app.say(
+                    Tone::Muted,
+                    format!("question {question_id} is no longer in the store"),
+                );
+                return Ok(Decided::Left);
+            }
+            Err(error) => {
+                app.say(
+                    Tone::Error,
+                    format!("that question could not be read: {error}"),
+                );
+                return Ok(Decided::Left);
+            }
+        },
         Pending::Plan { plan_id, .. } => match store.plan(*plan_id) {
             Ok(Some(row)) => app.open_resumed_plan(io_cli::plan::Review::resumed(&row)),
             Ok(None) => {
-                app.say(Tone::Muted, format!("plan {plan_id} is no longer in the store"));
+                app.say(
+                    Tone::Muted,
+                    format!("plan {plan_id} is no longer in the store"),
+                );
                 return Ok(Decided::Left);
             }
             Err(error) => {
@@ -5301,8 +5305,8 @@ async fn ask_parked(
                     paint(screen, app)?;
                     continue;
                 }
-                let interrupting = key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL);
+                let interrupting =
+                    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
                 match key.code {
                     KeyCode::Esc => return Ok(Decided::Left),
                     _ if interrupting => return Ok(Decided::Left),
@@ -5385,7 +5389,10 @@ async fn resume_pending<P: Provider>(
             return Ok(());
         }
         Pending::Finished => {
-            app.say(Tone::Muted, "that session's last run finished; nothing is waiting");
+            app.say(
+                Tone::Muted,
+                "that session's last run finished; nothing is waiting",
+            );
             return Ok(());
         }
         _ => {}
@@ -5411,7 +5418,10 @@ async fn resume_pending<P: Provider>(
             return Ok(());
         }
         Err(error) => {
-            app.say(Tone::Error, format!("run {run_id} could not be read: {error}"));
+            app.say(
+                Tone::Error,
+                format!("run {run_id} could not be read: {error}"),
+            );
             return Ok(());
         }
     };
@@ -5470,8 +5480,17 @@ async fn resume_pending<P: Provider>(
             Decided::Answer(answer) => match &pending {
                 Pending::Question { question_id, .. } => {
                     resume::answer_question(
-                        &continuing, provider, store, run_id, *question_id, &answer, policy,
-                        &approver, containment, &observer, expected_head,
+                        &continuing,
+                        provider,
+                        store,
+                        run_id,
+                        *question_id,
+                        &answer,
+                        policy,
+                        &approver,
+                        containment,
+                        &observer,
+                        expected_head,
                     )
                     .await
                 }
@@ -5480,8 +5499,17 @@ async fn resume_pending<P: Provider>(
             Decided::Verdict(verdict) => match &pending {
                 Pending::Plan { plan_id, .. } => {
                     resume::decide_plan(
-                        &continuing, provider, store, run_id, *plan_id, verdict, policy, &approver,
-                        containment, &observer, expected_head,
+                        &continuing,
+                        provider,
+                        store,
+                        run_id,
+                        *plan_id,
+                        verdict,
+                        policy,
+                        &approver,
+                        containment,
+                        &observer,
+                        expected_head,
                     )
                     .await
                 }
@@ -5490,8 +5518,17 @@ async fn resume_pending<P: Provider>(
             Decided::Recovery(decision) => match &pending {
                 Pending::Recovery { attempt_id, .. } => {
                     resume::recover(
-                        &continuing, provider, store, run_id, *attempt_id, decision, policy,
-                        &approver, containment, &observer, expected_head,
+                        &continuing,
+                        provider,
+                        store,
+                        run_id,
+                        *attempt_id,
+                        decision,
+                        policy,
+                        &approver,
+                        containment,
+                        &observer,
+                        expected_head,
                     )
                     .await
                 }
@@ -5499,7 +5536,14 @@ async fn resume_pending<P: Provider>(
             },
             Decided::CarryOn => {
                 resume::carry_on(
-                    &continuing, provider, store, run_id, None, &approver, containment, &observer,
+                    &continuing,
+                    provider,
+                    store,
+                    run_id,
+                    None,
+                    &approver,
+                    containment,
+                    &observer,
                     expected_head,
                 )
                 .await

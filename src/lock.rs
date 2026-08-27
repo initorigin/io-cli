@@ -415,12 +415,7 @@ fn open(path: &Path, truncate: bool) -> io::Result<File> {
 /// sentence about a process that was never there, and a held lock reported as an
 /// error lets two `io` processes into one session, which is the whole thing this
 /// module exists to stop.
-pub fn acquire(
-    home: &Path,
-    session: i64,
-    root: &Path,
-    started: SystemTime,
-) -> io::Result<Taken> {
+pub fn acquire(home: &Path, session: i64, root: &Path, started: SystemTime) -> io::Result<Taken> {
     crate::home::create(home)?;
     let (lock, owner) = paths(home, session);
 
