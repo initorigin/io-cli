@@ -6,6 +6,154 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-08-28
+
+A run that paused is answered rather than abandoned. Everything needed to do it
+has been public in io-harness since 0.10.0; what this interface did with a paused
+run until now was print its id and walk away.
+
+**`/resume` reads what each session's last run stopped on and puts it on the row
+you choose from.** A word rather than a symbol, so it survives `NO_COLOR`,
+`--plain` and the ASCII glyph set: `asks` for a question nobody answered, `plan`
+for an approach nobody decided, `tool` for a call whose outcome nobody recorded,
+`died` for a process that went away leaving committed work behind, `ended` for a
+turn the operator stopped themselves. A session with nothing outstanding carries
+no mark, so the list is ragged by construction — which is what buys a mark that
+says *which* state it is to somebody choosing on it with no legend on screen.
+There is no new store read to pay for it: the walk that builds the list already
+knows each session's newest run, because that run is what put the session where
+it is in the list.
+
+**Choosing a marked session opens the same overlay the run would have opened
+while it was live, and the answer carries that run on from the step it stopped
+at.** Not a new run with the answer pasted into its goal: the observation ledger,
+the token budget and the elapsed clock are the original run's. A plan is
+approved, sent back with a correction, or cancelled — `cancel` ends the run as
+`PlanRejected`, which is what "do not do this at all" means, rather than spending
+the rest of the budget on the approach just refused. An interrupted call is
+retried, abandoned, or asserted to have landed, and the operator's account of
+what it returned is filed against the step the call was *made* on, so the resumed
+run reads a transcript in which the tool answered where it was asked. A run whose
+process merely died carries on from `last_step + 1`. `Esc` leaves any of them
+parked exactly as it was found.
+
+**A turn the operator interrupted cannot be continued, and this release says so
+instead of pretending.** `Ctrl+C` returns `Flow::Cancel`, io-harness records the
+outcome `cancelled`, `finish_run` maps that to a *completed* status, and every
+resume entry point short-circuits on a completed run and hands back the original
+outcome having driven nothing. So the single most common way a turn stops is the
+one way it cannot be resumed. `/resume` reports it as ended by you and offers
+`/fork` from the preceding turn, which is the honest neighbouring answer; `io
+resume` refuses it in the same sentence, before a provider is built. The
+published io-harness documentation disagrees — `Steer::interrupt` says such a
+turn "stays resumable" — and is contradicted by the run loop in the same crate.
+Reported upstream; not worked around here, because a workaround for a
+short-circuit that returns success would be this interface inventing an outcome.
+
+**`io resume` is the headless door.** `--list` enumerates the parked runs — a
+row per run with what it is waiting on, the id that addresses that pause and the
+step it stopped at, as NDJSON under `--json` — and one is carried on by id with
+the decision on the command line: `--answer`, `--plan` with `--correction`,
+`--recovery` with `--account`, or nothing at all for a run whose process died. It
+takes the same `--json`, `--policy` and `--provider` an `io exec` takes, meaning
+the same three things. There is deliberately no `--sandbox`: a resumed run
+already started under a boundary, and a flag that widened it halfway through
+would be a widening nobody asked for at the point nobody is watching. clap cannot
+see which pause a run is on, so a flag for the wrong one is settled against the
+store and **refused** rather than ignored — `--plan approve` at a run holding a
+question is somebody acting on the wrong thing.
+
+**Exit `4` now names the pause and the invocation that answers it.** It named the
+run id, which addresses none of the four pauses; the closing line now names the
+`question_id`, `plan_id` or `attempt_id` and prints the `io resume` that decides
+it. **No exit code was renumbered and none was added** — the six have meant what
+they mean since 0.5.0, and `4` was given to a pause nothing could yet answer for
+exactly this release. An approval remains the one pause `io resume` cannot take:
+it is answered by the person the run asked, at the terminal it asked from, and
+io-harness publishes no entry point that takes one.
+
+**A bare run needs `--goal`, and is refused without it.** `runs.goal` has no
+public reader, so a contract cannot be rebuilt from a run alone. For a run that
+served a session turn the operator's own words are recoverable from the turn; for
+a run `io exec` or any other non-session caller started they are not, and
+resuming against an empty goal would spend a budget on a task nobody set. A
+`--goal` supplied for a run that has one wins, because that is an operator
+re-aiming their own run.
+
+**One `io` at a time on one conversation.** One store serves the whole machine,
+so two terminals in one repository is the ordinary case — and they are not in
+conflict, because starting `io` creates a new session every time and each gets
+its own. What two processes can genuinely contend over is a single *session*,
+and that happens in one place: `/resume`, when one enters a session another
+already has open. Nothing guarded it, so both advanced the same head and the
+loser of that race had paid for a turn that was then orphaned off the head path
+— still in the store, correctly parented, never shown again by a history that
+walks back from the head.
+
+Each session is now held under an advisory whole-file lock through
+`std::fs::File::try_lock`, which is stable on this crate's MSRV and needs no
+dependency: `flock` on unix, `LockFileEx` on Windows, released by the kernel on
+exit, on panic and on `kill -9`. There is no stale lock to reap and no pid file
+to sweep, and a lock that cannot be taken for an ordinary filesystem reason
+warns rather than refusing to start — trading the guard for "io will not run on
+this machine" would be the worse failure. The lock a session takes when it opens
+contests nothing, since that session did not exist a moment earlier; what it
+does is write down who owns it, so the next process to reach for it can be told.
+`/resume` into a session another `io` holds is refused. Two `io` on two
+different sessions are not, `io exec` and `io resume` take no lock at all, and
+for everything the lock does not see the guard of last resort is io-harness's
+own compare-and-swap on the head.
+
+**What the refusal can say about the holder is what io-cli itself wrote beside
+the lock**: the pid, the workspace root, the `io` version and the instant that
+process started. It is not the operating system's account of that process, and
+the release says so plainly rather than implying more. `/proc` is one platform's
+answer to a three-platform question, `ps` and `tasklist` are two more, and the
+dependency that would abstract them is one this crate's own gate forbids — so a
+pid shown here is a number io wrote down. The record is a second file beside the
+lock rather than the lock's contents, because a Windows byte-range lock is
+mandatory and the refused process could not read the file it is being refused on.
+The twelve-hour lease exists only for a home on a network filesystem, where
+an advisory lock is not this program's business and the record's own timestamp is
+the only evidence there is.
+
+**Two defects are fixed.** `/undo` wrote the session head unconditionally, so
+undoing in one terminal silently clobbered a head another had just advanced,
+orphaning a turn that had been asked for, answered and paid for; it is a
+compare-and-swap now — `set_session_head_if` with the head the undo believed it
+was replacing — and a lost race is **refused and reported** rather than retried
+or forced, because which turn survives is the operator's call and the losing turn
+is only recoverable while it is still on somebody's head. And `failure::advice`
+had no arm for `Error::Conflict`, whose own text reads `run {run_id} is held by
+another owner until {expires_at}` — on the head shape that calls a session id a
+run and ends on the word "until", because a head conflict populates no expiry.
+That variant is now matched on its value before any text is read, and the
+harness's line is dropped rather than kept underneath it: the module's rule is
+that terse text is worth putting in front of an operator, and it was never a rule
+about text that is wrong.
+
+**An interactive turn that ends parked says so.** io-harness returns
+`AwaitingAnswer`, `AwaitingPlan` and `AwaitingRecovery` as an ordinary `Ok`, so
+through 0.22.0 the arm matched and dropped them, and the operator got their
+prompt back with no sign that a run was sitting in the store waiting for a
+sentence from them. Every other way a turn can end had a line.
+
+**No command was added and none changed group.** `/resume` was extended rather
+than joined, so the palette still holds thirty commands in the same four groups,
+and `/resume`'s own description is the one line in that table this release
+rewrites.
+
+**Three limitations are named rather than left to be found.** An interrupted call
+in a *contained* run has no resume entry point — io-harness 0.69 publishes
+`resume_tree_with_answer` and `resume_tree_with_plan_decision` and no recovery
+twin, and driving a tree root through the flat one would silently drop the
+containment it was running under, so that case is refused. A conversational turn
+that paused and was resumed reads back afterwards as a run, because
+`Store::turn_kind` and `Store::set_turn_kind` are both `pub(crate)`. And
+`io resume --list` classifies every run in the store rather than querying for the
+parked ones, which is linear in the store's whole history: the store-side query
+that would fix it is not published.
+
 ## [0.22.0] - 2026-08-27
 
 What the work cost and whether it worked — two questions this interface has been
@@ -1900,6 +2048,6 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.23.0...HEAD
 [0.1.1]: https://github.com/initorigin/io-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/initorigin/io-cli/releases/tag/v0.1.0

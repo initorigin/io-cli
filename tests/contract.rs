@@ -759,17 +759,42 @@ fn f6_both_arms_are_handed_one_contract() {
         2,
         "`/status` and `/context` each read one contract to report with, and neither builds a turn",
     );
+    // **A third kind of site, added in 0.23.0, and it is neither of the two
+    // above.** `resume_pending` takes a run — so it is not a reading site — but
+    // it does not build a turn either: it continues one io-harness already has,
+    // from the step it stopped at. It goes through this builder for the same
+    // reason the reading sites do: `contract::session` is the only call that
+    // merges the `[app.io-cli]` scope and resolves the step-cap precedence, and a
+    // resumed run that quietly dropped the MCP servers or the roster would behave
+    // differently after the pause than before it, which is worse than not
+    // resuming at all.
+    //
+    // Named and asserted once rather than folded into the count above, exactly as
+    // that assertion's own comment prescribes: counting to two there would admit a
+    // genuine second turn arm, which is the failure it exists to make
+    // unrepresentable.
+    assert_eq!(
+        text.matches("let continuing = io_cli::contract::session(")
+            .count(),
+        1,
+        "one contract is rebuilt for a resume, and only `resume_pending` rebuilds one",
+    );
     assert_eq!(
         text.matches("let opening = io_cli::contract::session(")
             .count(),
         1,
         "the session reads one contract at startup to put the ceilings on the line, and runs none",
     );
+    // **Five since 0.23.0, and the fifth is the resume.** The total is checked
+    // beside the four named counts rather than instead of them, so a site that
+    // arrived without a name of its own still fails here even though every named
+    // assertion above would pass. That is the whole value of keeping both: the
+    // named counts say what each site is, and this one says nothing else exists.
     assert_eq!(
         text.matches("io_cli::contract::session(").count(),
-        4,
-        "the turn's contract, the startup reading and the two reporting pages are the only four, \
-         so a fifth is a new arm",
+        5,
+        "the turn's contract, the resume's, the startup reading and the two reporting pages are \
+         the only five, so a sixth is a new arm",
     );
     assert!(
         !text.contains("with_responder") && !text.contains("with_plan_gate"),

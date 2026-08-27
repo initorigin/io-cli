@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::App;
+use io_cli::intent::{Asked, Intent};
 use io_cli::theme::DARK;
-use io_harness::{Question, Responder};
+use io_harness::{PendingQuestion, Question, Responder};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -234,4 +235,204 @@ async fn the_question_is_readable_and_answerable_with_no_colour() {
         asking.await.expect("the responder future"),
         Some("keep it".to_string()),
     );
+}
+
+// ---- 0.23.0: the same overlay, opened on a run that already stopped ----
+
+/// The question every test below is asked, live or stored — one fixture, so the
+/// two construction paths are compared on identical material.
+fn question() -> Question {
+    Question {
+        question: "drop the column or keep it?".to_string(),
+        context: Some("it has 40 rows and one caller".to_string()),
+        choices: vec!["drop".to_string(), "keep".to_string()],
+    }
+}
+
+/// A `PendingQuestion` the store itself wrote and read back.
+///
+/// **The fixture is authentic because io-harness built it.** `PendingQuestion`
+/// has no public constructor, and a struct literal assembled here would skip the
+/// JSON round-trip `choices` actually goes through — which is the one field a
+/// resumed overlay could plausibly lose. So the row is written and read exactly
+/// as a resume reads it. `Store::memory()` rather than a temporary directory:
+/// same schema, same SQL, same encode and decode, and no directory any assertion
+/// here looks at.
+fn stored(question: &Question) -> PendingQuestion {
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let run = store
+        .start_run("drop the column", "openrouter")
+        .expect("a run to hang the question off");
+    let id = store
+        .put_question(run, 1, question)
+        .expect("the row is written");
+    store
+        .question(id)
+        .expect("the row reads back")
+        .expect("the row is there")
+}
+
+/// One overlay, opened on a live turn. The receiver comes back with it because a
+/// `oneshot` whose receiver has been dropped is what the live path already reads
+/// as "nobody can answer" — a fixture that dropped it would be testing the
+/// stored path through the live constructor.
+fn live(question: Question) -> (Intent, tokio::sync::oneshot::Receiver<Option<String>>) {
+    let (answer, reply) = tokio::sync::oneshot::channel();
+    (Intent::new(Asked { question, answer }), reply)
+}
+
+/// What the overlay draws, on its own rather than through the app: `App` can only
+/// hold a live question, so a stored one has to be rendered directly, and holding
+/// the live one to the same helper is what makes the comparison a comparison.
+fn drawn_overlay(overlay: &Intent, theme: &io_cli::theme::Theme) -> String {
+    let (mut screen, _recorder) = support::screen_of(80, 12, 12);
+    screen
+        .draw(|frame| overlay.render(frame, frame.area(), theme))
+        .expect("a frame");
+    screen.viewport_text().to_string()
+}
+
+/// Everything about a question overlay that does **not** depend on which way in
+/// was taken. Run against both constructors, because a property asserted for a
+/// live question and not a stored one is how the two paths drift apart.
+fn the_properties_both_paths_owe(open: impl Fn() -> Intent) {
+    let screen = drawn_overlay(&open(), &DARK);
+    assert!(screen.contains("drop the column or keep it?"), "{screen}");
+    assert!(
+        screen.contains("40 rows and one caller"),
+        "the context: {screen}",
+    );
+    assert!(
+        screen.contains("drop") && screen.contains("keep"),
+        "the choices, as offers: {screen}",
+    );
+    assert!(screen.contains("Esc"), "the way out is a word: {screen}");
+
+    let mut answering = open();
+    assert_eq!(
+        answering.key(key(KeyCode::Enter)),
+        None,
+        "an empty prompt is a mis-key, not an answer",
+    );
+    for ch in "keep it".chars() {
+        assert_eq!(
+            answering.key(key(KeyCode::Char(ch))),
+            None,
+            "typing does not close the overlay",
+        );
+    }
+    assert_eq!(
+        answering.key(key(KeyCode::Enter)),
+        Some(Some("keep it".to_string())),
+        "and the answer is exactly what was typed",
+    );
+
+    let mut declining = open();
+    assert_eq!(
+        declining.key(key(KeyCode::Esc)),
+        Some(None),
+        "Esc declines, and declining carries no answer",
+    );
+}
+
+/// **A question resumed off the store is answered by the same widget on the same
+/// keys as a live one.** The whole point of the second constructor: an operator
+/// answering yesterday's pause must not be looking at a different surface.
+///
+/// Sabotage: give the stored path its own `render` and drop the choices from it —
+/// under which only this test fails, and it fails on the stored arm alone while
+/// every live-path test above still passes, which is precisely the drift this
+/// shared block exists to catch.
+#[test]
+fn a_stored_question_answers_and_declines_and_draws_as_a_live_one_does() {
+    the_properties_both_paths_owe(|| live(question()).0);
+    the_properties_both_paths_owe(|| Intent::resumed(&stored(&question())));
+}
+
+/// **A live question resolves by sending; the caller is handed nothing back**,
+/// because the turn parked on the channel already has it.
+#[tokio::test]
+async fn a_live_answer_goes_down_the_channel_and_leaves_the_caller_nothing_to_do() {
+    let (overlay, reply) = live(question());
+
+    assert_eq!(
+        overlay.resolve(Some("keep it".to_string())),
+        None,
+        "nothing comes back: the turn took it",
+    );
+    assert_eq!(
+        reply.await.expect("the turn's end"),
+        Some("keep it".to_string()),
+    );
+}
+
+/// **A stored question resolves by returning**, because the run it belongs to has
+/// already ended and there is no channel to send down — the answer has to reach
+/// `resume_with_answer_observed`, and it does that as a value.
+///
+/// Sabotage: build the stored path a `oneshot` of its own and send into it — under
+/// which only this test fails, and it fails by dropping the operator's answer into
+/// a channel with no receiver, which is the shape the live path reads as "nobody
+/// answered, stay paused".
+#[test]
+fn a_stored_answer_comes_back_to_the_caller_that_has_to_deliver_it() {
+    let overlay = Intent::resumed(&stored(&question()));
+
+    assert_eq!(
+        overlay.resolve(Some("keep it".to_string())),
+        Some(Some("keep it".to_string())),
+        "the caller resumes the run with this",
+    );
+}
+
+/// **Esc on a stored question declines without producing an answer**: the run was
+/// found parked and is left parked, and what comes back says "no answer" rather
+/// than an empty one, which the agent would read as information.
+#[test]
+fn esc_on_a_stored_question_leaves_the_run_parked_with_no_answer() {
+    let mut overlay = Intent::resumed(&stored(&question()));
+
+    assert_eq!(overlay.key(key(KeyCode::Esc)), Some(None));
+    assert_eq!(
+        overlay.resolve(None),
+        Some(None),
+        "no answer is delivered, and none is invented",
+    );
+}
+
+/// The one line that is allowed to differ, and the reason it differs: declining a
+/// live question defers it inside a turn that is still running, while declining a
+/// resumed one leaves a run parked exactly where it was found. Both name `Esc`;
+/// neither promises something behind the screen is not doing.
+#[test]
+fn the_footer_says_what_esc_actually_leaves_behind_on_each_path() {
+    let live_screen = drawn_overlay(&live(question()).0, &DARK);
+    let stored_screen = drawn_overlay(&Intent::resumed(&stored(&question())), &DARK);
+
+    assert!(
+        live_screen.contains("Esc leaves it for later"),
+        "{live_screen}",
+    );
+    assert!(
+        stored_screen.contains("Esc leaves the run parked"),
+        "{stored_screen}",
+    );
+    assert!(
+        !stored_screen.contains("for later"),
+        "a resumed question does not promise a turn will pick it up: {stored_screen}",
+    );
+}
+
+/// **Non-functional — a resumed question is readable with no colour at all.** The
+/// stored path draws under `MONO` for the same reason the live one must: a tone
+/// carries nothing there, so the question, the context, the choices and the way
+/// out all have to be words.
+#[test]
+fn a_stored_question_is_readable_with_no_colour_at_all() {
+    let overlay = Intent::resumed(&stored(&question()));
+    let screen = drawn_overlay(&overlay, &io_cli::theme::MONO);
+
+    assert!(screen.contains("drop the column or keep it?"), "{screen}");
+    assert!(screen.contains("40 rows"), "{screen}");
+    assert!(screen.contains("Esc"), "{screen}");
 }
