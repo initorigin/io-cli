@@ -100,12 +100,14 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         | RunOutcome::BudgetCeilingReached { .. } => CEILING,
 
         // `AwaitingApproval` stays unreachable from here while approvals are
-        // denied rather than deferred; the other two have been reachable since
-        // 0.13.0, because a question about intent and a proposed plan pass
-        // through no approver at all. **The bet these codes were numbered on has
-        // now been settled.** 0.13.0 mapped all three anyway, saying that adding
-        // an `io resume` later would then renumber nothing. 0.23.0 added it, and
-        // nothing here moved.
+        // denied rather than deferred; the other two are reachable, because a
+        // question about intent and a proposed plan pass through no approver at
+        // all. **The bet these codes were numbered on has now been settled.**
+        // 0.5.0 mapped all three when none of them could happen yet — its own
+        // release notes say the mapping exists "so that adding that subcommand
+        // later renumbers nothing". 0.23.0 added it, and nothing here moved.
+        // (Written as 0.13.0 here until 0.23.0, which was wrong: 0.13.0 is a
+        // later release and the CHANGELOG puts the sentence in 0.5.0's notes.)
         RunOutcome::AwaitingApproval { .. }
         | RunOutcome::AwaitingAnswer { .. }
         | RunOutcome::AwaitingPlan { .. } => PAUSED,
