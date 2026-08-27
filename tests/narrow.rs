@@ -358,6 +358,10 @@ fn n5_the_resume_picker_at_eighty_columns_keeps_the_end_of_the_path() {
         turns: 6,
         prompt: "make the retry loop back off instead of hammering the endpoint".into(),
         at: "2026-08-17 02:31".into(),
+        // A finished session carries no mark, so the row's budget here is the
+        // one this test was written against and every assertion below still
+        // measures what it measured before 0.23.0 added the state column.
+        pending: io_cli::resume::Pending::Finished,
     }];
     let rows = io_cli::sessions::rows(&sessions, WIDTH, &io_cli::theme::DARK.glyphs);
     let mut picker = io_cli::picker::Picker::new("Resume which session?", rows);

@@ -226,6 +226,50 @@ fn f10_status_is_listed_as_a_command_and_resolves_to_its_own_action() {
 }
 
 #[test]
+fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_session() {
+    // **The sabotage this defends against is changing what `/resume` does and
+    // leaving its one line saying what it used to do.** That line is the only
+    // thing most operators ever read about a command: it is the palette row, it
+    // is what `/help` prints, and `tests/docs.rs` copies it into the README
+    // table. A description that still promised a reopen would leave the whole of
+    // 0.23.0 undiscoverable from inside the product.
+    let (_, said) = COMMANDS
+        .iter()
+        .find(|(name, _)| *name == "/resume")
+        .expect("/resume is listed");
+    assert!(
+        said.contains("answer"),
+        "0.23.0 made /resume answer what a run stopped on; the description still \
+         describes 0.22.0's: {said}",
+    );
+    // And it is still a reopen as well — the description must not have swung the
+    // other way and dropped the half that is true for the four sessions in five
+    // that are waiting on nothing at all.
+    assert!(
+        said.contains("session"),
+        "most sessions have nothing parked, and reopening one is still what the \
+         command does for them: {said}",
+    );
+    // Unchanged: the word still resolves, `/continue` is still the same action,
+    // and neither has become the help listing.
+    assert_eq!(
+        commands::parse("resume", &defaults(), &DARK),
+        Action::Resume,
+    );
+    assert_eq!(
+        commands::parse("continue", &defaults(), &DARK),
+        Action::Resume,
+    );
+    // No command was added for any of this — `/resume` was extended — so the
+    // inventory is the size the other gates in this file assert.
+    assert_eq!(
+        COMMANDS.len(),
+        30,
+        "0.23.0 adds no command; a thirty-first here means one arrived unrecorded",
+    );
+}
+
+#[test]
 fn an_unknown_command_says_what_does_exist() {
     let Action::Print(lines) = commands::parse("models", &defaults(), &DARK) else {
         panic!("an unknown command should print rather than do nothing");

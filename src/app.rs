@@ -119,6 +119,21 @@ pub enum Command {
     /// The second `Esc`: undo the last turn — its files, its memory and the
     /// conversation head.
     Rewind,
+    /// A question opened from the store has been answered, and nobody took the
+    /// answer.
+    ///
+    /// **A command for exactly the reason [`Command::Attach`] is one**: what
+    /// this asks for lives in the harness's store, and the store belongs to the
+    /// driver. A *live* question's answer travels down the channel its run is
+    /// blocked on and never reaches here; a question a previous process left
+    /// behind has no such channel, so the answer comes back out to be delivered
+    /// with [`crate::resume::answer_question`]. `None` is a decline, which
+    /// leaves the run parked exactly as it was found.
+    Answered(Option<String>),
+    /// A plan opened from the store has been decided, and nobody took the
+    /// verdict. See [`Command::Answered`] — this is the same arrangement for
+    /// [`crate::resume::decide_plan`].
+    Decided(io_harness::PlanVerdict),
 }
 
 /// What a paste turned out to be.
@@ -393,15 +408,35 @@ impl App {
         self.intent = Some(crate::intent::Intent::new(asked));
     }
 
+    /// A question a *previous* process left in the store, opened to be answered
+    /// now.
+    ///
+    /// The same widget as [`Self::open_intent`], and deliberately the same field:
+    /// one `render`, one `key`, one [`Self::modal`], so the resumed surface
+    /// cannot drift from the live one. What differs is only where the answer
+    /// goes, which [`crate::intent::Intent`] carries with it — a live question
+    /// sends down the channel its run is waiting on, and a stored one has no
+    /// run listening, so its answer comes back out of [`Self::answer_intent`]
+    /// for the caller to deliver.
+    pub fn open_resumed_intent(&mut self, intent: crate::intent::Intent) {
+        self.intent = Some(intent);
+    }
+
     /// Answer the open question, or decline it with `None`.
     ///
     /// Declining is not a refusal: io-harness persists the question and pauses
     /// the run, so the answer can arrive after this process has exited. What is
     /// said in the scrollback says which of the two happened.
-    pub fn answer_intent(&mut self, answer: Option<String>) {
-        let Some(intent) = self.intent.take() else {
-            return;
-        };
+    ///
+    /// **Returns what nobody took.** A live question's answer travels down the
+    /// channel its run is blocked on and this is `None`; a question opened from
+    /// the store has no such channel, so the answer comes back here and the
+    /// caller must hand it to [`crate::resume`]. Discarding it there would drop
+    /// the operator's answer in silence, which is why it is returned rather than
+    /// swallowed as it was before 0.23.0.
+    #[must_use = "a resumed question's answer is delivered by the caller, not by the overlay"]
+    pub fn answer_intent(&mut self, answer: Option<String>) -> Option<Option<String>> {
+        let intent = self.intent.take()?;
         match &answer {
             Some(text) => self.record(
                 Tone::Muted,
@@ -415,12 +450,20 @@ impl App {
                 ),
             ),
         }
-        intent.resolve(answer);
+        intent.resolve(answer)
     }
 
     /// A plan was proposed and nothing has been done about it yet.
     pub fn open_plan(&mut self, proposed: crate::plan::Proposed) {
         self.plan = Some(crate::plan::Review::new(proposed));
+    }
+
+    /// A plan a *previous* process left in the store, opened to be decided now.
+    ///
+    /// The same field and the same widget as [`Self::open_plan`], for the reason
+    /// [`Self::open_resumed_intent`] gives.
+    pub fn open_resumed_plan(&mut self, review: crate::plan::Review) {
+        self.plan = Some(review);
     }
 
     /// Decide the open plan. The overlay closes and the run acts on the verdict.
@@ -429,10 +472,15 @@ impl App {
     /// harness's `PlanDecided` arrives separately on the event stream. They agree
     /// because the verdict travelled one way, and if they ever disagree this is
     /// where it shows.
-    pub fn decide_plan(&mut self, verdict: io_harness::PlanVerdict) {
-        let Some(plan) = self.plan.take() else {
-            return;
-        };
+    ///
+    /// **Returns what nobody took**, for the reason [`Self::answer_intent`]
+    /// gives: a plan opened from the store has no run listening for its verdict.
+    #[must_use = "a resumed plan's verdict is delivered by the caller, not by the overlay"]
+    pub fn decide_plan(
+        &mut self,
+        verdict: io_harness::PlanVerdict,
+    ) -> Option<Option<io_harness::PlanVerdict>> {
+        let plan = self.plan.take()?;
         let dash = self.theme.glyphs.dash;
         let (tone, said) = match &verdict {
             io_harness::PlanVerdict::Approve => (
@@ -447,7 +495,41 @@ impl App {
             }
         };
         self.record(tone, said);
-        plan.resolve(Some(verdict));
+        plan.resolve(Some(verdict))
+    }
+
+    /// Close a question or a plan opened from the store **without deciding it**,
+    /// leaving the run parked exactly as it was found.
+    ///
+    /// This exists because `Esc` means different things to the two overlays, and
+    /// both meanings are right for a live turn. On a question `Esc` declines,
+    /// which leaves the run parked — so backing out is already reachable. On a
+    /// plan `Esc` is [`io_harness::PlanVerdict::Cancel`], a real decision that
+    /// ends the run — so an operator who opened a parked plan to look at it had
+    /// no way back out that did not also throw the plan away. The interrupt key
+    /// is that way out, and it is the same key that means "get me out of this"
+    /// everywhere else in the interface.
+    ///
+    /// A no-op when nothing is open, and it never touches an approval: an
+    /// approval belongs to a run that is still running and blocked on it, so
+    /// there is no parked state to leave it in.
+    pub fn leave_resumed(&mut self) {
+        // **Both takes run.** Written with `||` this short-circuited: with a
+        // question open the plan was never taken, so a state where both were set
+        // would leave one of them on screen with nothing driving it. Nothing
+        // opens two today, and this must not be the line that makes that
+        // assumption load-bearing.
+        let had_intent = self.intent.take().is_some();
+        let had_plan = self.plan.take().is_some();
+        if had_intent || had_plan {
+            self.record(
+                Tone::Muted,
+                format!(
+                    "left where it was {} the run is still parked, and /resume opens it again",
+                    self.theme.glyphs.dash
+                ),
+            );
+        }
     }
 
     /// Whether a modal surface owns the keyboard.
@@ -1398,7 +1480,13 @@ impl App {
         // approval's and above everything else.
         if let Some(open) = self.intent.as_mut().filter(|_| !interrupting) {
             if let Some(answer) = open.key(key) {
-                self.answer_intent(answer);
+                // Handed back rather than dropped when the question came from the
+                // store: `answer_intent` returns whatever no run was waiting for,
+                // and the one thing that must never happen to an operator's
+                // answer is that it goes nowhere quietly.
+                if let Some(undelivered) = self.answer_intent(answer) {
+                    return Command::Answered(undelivered);
+                }
             }
             return Command::None;
         }
@@ -1407,7 +1495,12 @@ impl App {
         // cancel.
         if let Some(open) = self.plan.as_mut().filter(|_| !interrupting) {
             if let Some(verdict) = open.key(key) {
-                self.decide_plan(verdict);
+                // As above. A verdict on a plan nobody is waiting for is the
+                // driver's to deliver, and `Review::resolve` answers `Some` only
+                // on that path.
+                if let Some(Some(undelivered)) = self.decide_plan(verdict) {
+                    return Command::Decided(undelivered);
+                }
             }
             return Command::None;
         }

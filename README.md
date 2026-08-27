@@ -41,8 +41,9 @@ on one row and the keys and the posture on the next.](docs/screenshot.png)
 | **A fan-out you can watch** | Contained turns spawn children under one shared ceiling; `Ctrl+F` shows the tree and what it is costing |
 | **Your file, in force** | Every section of `io.toml` bounds a session turn as it bounds `io exec`; the budgets in force are on the status line with what is left of them, and `/status` commits the whole state — policy layers, sandbox backend, caps, budgets, connections — into the scrollback |
 | **Undo** | `Esc Esc` at an empty prompt rewinds the last turn — its files, its memory and the conversation head |
-| **Conversations that survive** | `/resume` reopens an earlier session, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
-| **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json` |
+| **Conversations that survive** | `/resume` reopens an earlier session and answers whatever its last run stopped on, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
+| **A paused run, answered** | A question, a plan or an interrupted call is decided where it was left and the run carries on from the step it stopped at — from a session, or from a script with `io resume` |
+| **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json`, and `io resume` carries a parked one on |
 | **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
 | **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
 | **Documents, read and written** | Spreadsheets, Word, slide decks, PDFs and barcodes through io-harness's own tools — twelve of them, six of which write, every one under the same gate as any other read or write |
@@ -449,7 +450,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | Command | Does |
 | --- | --- |
 | `/clear` | start a new conversation; this one stays in /resume |
-| `/resume` | reopen an earlier session where it stopped |
+| `/resume` | reopen an earlier session and answer whatever its last run is waiting on |
 | `/fork` | continue from an earlier turn of this conversation |
 | `/setup` | run the first-run wizard again |
 | `/exit` | leave |
@@ -503,6 +504,11 @@ bundles](#capability-bundles).
 here you use once: the others are returned to for the life of the install. It
 writes files, which is the whole reason it is under **configure**. See [Bringing
 your setup across](#bringing-your-setup-across).
+
+`/resume` does more than reopen from 0.23.0: each row says what that session's
+last run stopped on, and choosing one answers it. No command was added for that —
+the one that was already there was extended. See [When a run stops for
+you](#when-a-run-stops-for-you).
 
 `/cost` and `/stats` are new in 0.22.0 and are two commands rather than one
 because they are two questions: `/cost` says what the work cost, `/stats` says
@@ -585,6 +591,96 @@ refuse a large payload without saying so.
 
 `/theme` and `/model` change this session only and say so. Making a choice
 permanent is `io setup`.
+
+## When a run stops for you
+
+A turn does not always end on its own. The agent can ask what you meant, or
+propose a plan before it works; a tool call can be interrupted in a way
+io-harness records but cannot judge; and a process that goes away mid-loop leaves
+a run with committed work and no ending. Through 0.22.0 all four were left where
+they fell — the run was in the store, and nothing here would open it again.
+
+**`/resume` says what each session's last run stopped on, on the row you choose
+it from.** The mark is a word rather than a symbol, so it survives `NO_COLOR`,
+`--plain` and the ASCII glyph set: `asks` for a question nobody answered, `plan`
+for an approach nobody decided, `tool` for a call whose outcome nobody recorded,
+`died` for a process that went away and left committed work behind, `ended` for a
+turn you stopped yourself. A session with nothing outstanding carries no mark at
+all, so the list is ragged by construction and there is no column to read down.
+
+**Choosing a marked session opens the same overlay the run would have opened
+while it was live**, and what you say carries *that* run on from the step it
+stopped at: the observation ledger, the token budget and the elapsed clock are
+the run's own rather than a new run's. A plan is approved, sent back with a
+correction, or cancelled outright. An interrupted call is retried or abandoned
+here — `r` and `a` — and can also be **asserted to have landed**, which takes an
+account of what it returned and is therefore offered by `io resume --recovery
+completed --account "…"` rather than by a keystroke. What you say it returned is
+filed against the step the call was made on, not the step the run has now
+reached, so the resumed run reads a transcript in which the tool answered where
+it was asked. A run whose
+process merely died carries on from its last committed step plus one. `Esc`
+leaves any of them parked exactly as it was found.
+
+**A turn you interrupted is finished, not paused, and it is the one pause that
+cannot be answered.** `Ctrl+C` makes io-harness record the outcome `cancelled`,
+which is mapped to a *completed* run, and every one of its resume entry points
+short-circuits on a completed run and hands back the original outcome having
+driven nothing. So the most common way a turn stops is the one way it cannot be
+continued. `/resume` reports such a session as ended by you and points at `/fork`
+from the turn before it, which is the honest neighbouring answer rather than a
+button that would quietly do nothing. io-harness's published documentation says
+such a turn "stays resumable"; it is contradicted by the run loop in the same
+crate, and that is reported upstream rather than worked around here.
+
+**A turn that ends parked now says so.** Through 0.22.0 the prompt came back with
+no sign that a run was sitting in the store waiting for a sentence from you.
+
+### One `io` at a time on one conversation
+
+One store serves this whole machine, so two terminals in one repository is the
+ordinary case rather than the exotic one — and they are **not** in conflict.
+Starting `io` creates a new session every time, so each terminal gets its own
+conversation and neither is refused.
+
+What two of them can genuinely contend over is a single *session*, and that
+happens in one place: `/resume`, when one process enters a session another
+already has open. Until 0.23.0 nothing guarded it — both advanced the same
+conversation head, and the loser of that race had paid for a turn that was then
+orphaned off the head path: still in the store, correctly parented, and never
+shown again by a history that walks back from the head.
+
+Each session is held under an advisory whole-file lock, and `/resume` into one
+another `io` is holding is refused rather than taken. The lock is the kernel's —
+`flock` on unix, `LockFileEx` on Windows — so it is released on exit, on a panic
+and on `kill -9`: there is no stale lock to reap and no pid file to sweep. The
+lock a session takes when it starts never contests anything, because that session
+did not exist a moment earlier; what it does is write down who owns it, so the
+next process to reach for it can be told.
+
+**What the refusal can say about the holder is what io-cli itself wrote beside
+the lock**, and no more: the process id, the workspace root, the `io` version and
+the instant that process started. It is not the operating system's account of
+that process. Asking the operating system means `/proc` on one platform, `ps` on
+another and `tasklist` on a third, or a dependency this crate does not carry — so
+the pid you are shown is a number `io` wrote down, and on a machine that has
+since reused it, it names something that is not `io`. The lease exists only for
+the case the kernel cannot cover, a home on a network filesystem, where an
+advisory lock is not this program's business; there the record's own timestamp is
+all the evidence there is.
+
+A lock that cannot be taken for an ordinary filesystem reason does not stop the
+session — you are told, and it opens. The guard exists to prevent one specific
+corruption, and trading it for "io will not start on this machine" would be the
+worse failure.
+
+**What it does not cover.** Two `io` in one repository on two different sessions
+are not in conflict and are not stopped. `io exec` and `io resume` take no lock
+at all, so an `io resume` run beside a terminal holding the same session is not
+refused by this. For everything the lock does not see, the guard of last resort
+is io-harness's own compare-and-swap on the conversation head: the second writer
+is refused, told, and its turn is not silently orphaned — which is the defect
+`/undo` carried until this release.
 
 ## What it costs
 
@@ -1203,12 +1299,25 @@ what it already does with a policy refusal.
 | `1` | it never got that far — no provider, a bad credential, an unreadable configuration, a usage error |
 | `2` | a boundary said no: denied, refused, or a rejected plan |
 | `3` | a ceiling was reached: steps, time, tokens, or the tree's shared budget |
-| `4` | the run stopped needing a human: it asked a question, or proposed a plan |
+| `4` | the run stopped needing a human: it asked a question, proposed a plan, or was interrupted in the middle of a call |
 | `5` | it ended without finishing: stalled, escalated, or cancelled |
 
 A ceiling is `3` and not `0` because io-harness returns one as a *successful
 call* whose outcome says a limit was hit; a status read off the result alone
 would call a truncated run a finished one.
+
+**Exit `4` names the pause from 0.23.0, and the invocation that answers it.**
+The closing line used to name the run id and nothing else, which addressed
+none of the four pauses; it now names the question, plan or call the run stopped
+on and the `io resume` that decides it. No exit code was renumbered and none was
+added: the six have meant what they mean here since `io exec` shipped them in
+0.5.0, and `4` was given to a pause that could not yet be answered for exactly
+this release.
+
+An approval is the one pause `io resume` cannot take: it is answered by the
+person the run asked, at the terminal it asked from, and there is no resume entry
+point in io-harness that takes one. A headless run never reaches it, because
+every approval there is declined.
 
 **Give the goal an end condition.** How a run ends is the agent's behaviour, not
 this interface's: a goal with no clear stopping point can keep the agent working
@@ -1247,6 +1356,63 @@ format io-cli owns rather than one it passes through.
 
 Progress, warnings and the closing summary go to stderr, so redirecting it
 leaves the data alone.
+
+### Resuming without a terminal
+
+`io resume` is the headless door to a run that stopped for a person. `--list`
+enumerates the runs waiting for one and drives nothing — it reads the store,
+calls no provider and takes no lease on anything it lists. Naming a run by id
+resumes it, with the decision on the command line:
+
+```sh
+io resume --list
+io resume --list --json | jq -r 'select(.waiting_on=="question") | .run_id'
+io resume 41 --answer "use the parser that is already there"
+io resume 41 --plan revise --correction "leave the public API alone"
+io resume 41 --recovery completed --account "the tag was pushed; CI is green"
+io resume 41 --goal "add a test for the parser and run it"
+```
+
+| Flag | Does |
+| --- | --- |
+| `--list` | list the runs waiting for a person and carry none of them on |
+| `--answer <text>` | answer the question the run stopped on |
+| `--plan <verdict>` | `approve`, `revise` or `cancel` the plan the run proposed |
+| `--correction <text>` | what the plan should do differently; required by `--plan revise` and refused without it |
+| `--recovery <decision>` | `retry`, `abandon` or `completed` — what happened to the call the run was interrupted in the middle of |
+| `--account <text>` | what that call returned; required by `--recovery completed` and refused without it |
+| `--goal <text>` | what the run was asked to do, for a run whose goal cannot be recovered |
+| `--json` | write the resumed run's events, and `--list`'s rows, as newline-delimited JSON |
+| `--policy <posture>` | the posture for the rest of this run; defaults to the one the run itself recorded |
+| `--provider <name>` | `openrouter`, `anthropic` or `openai` — take the credential and model from the environment |
+
+**Each pause takes its own input, and exactly one.** clap cannot see which pause
+a run is on, so a flag for the wrong one is checked against the store and refused
+rather than ignored: `--plan approve` typed at a run holding a question is
+somebody acting on the wrong thing, and the refusal says what that run is
+actually waiting on and what to type. A run whose process merely died takes no
+flag at all — `io resume <id>` carries it on from its last committed step.
+
+**There is no `--sandbox`.** A resumed run already started under a boundary, and
+the confinement it carries on under is the project's `[sandbox]`. A flag that
+widened it halfway through a run would be a widening nobody asked for at the
+point nobody is watching.
+
+**`--goal` is required for a run that served no session turn** — one `io exec`
+started, or any other non-session caller. io-harness publishes no reader for
+`runs.goal`, so for a run that served a session turn your own words are
+recoverable from the turn, and for a bare run they are not. Rather than resuming
+against an empty goal and spending a budget on a task nobody set, `io resume`
+asks for it. Supplying `--goal` for a run that has one is you re-aiming your own
+run, and it wins.
+
+**A turn you interrupted is refused here in the same words the session uses**,
+before a provider is built — see [When a run stops for
+you](#when-a-run-stops-for-you) for why it cannot be carried on.
+
+The exit status is the table above: a resumed run that pauses again exits `4`
+naming the new pause, and `io resume --list` exits `0` whether or not it found
+anything.
 
 ## Configuration
 
@@ -1538,14 +1704,15 @@ parses no skill file: the five it ships from 0.19.0 are bodies it carries and
 writes to disk, and after that they are read the same way yours are — by the
 model, through the tool, under the policy.
 
-**`io exec` runs one goal and stops, and a run that pauses stays paused.** An
-agent that asks a question about what you meant, or proposes a plan, ends the run
-at exit `4` with the question persisted in the store. That is io-harness's
-behaviour and it is the right one — a machine answering a question about intent
-on your behalf sends the agent down a path nobody chose — but there is no `io
-resume` in this release to answer it and carry on, so the run is parked rather
-than lost. The closing line names its id. Approvals are the one pause that cannot
-happen, because they are declined rather than deferred.
+**`io exec` runs one goal and stops, and a run that pauses is still not answered
+by a machine.** An agent that asks a question about what you meant, or proposes a
+plan, ends the run at exit `4` with the pause persisted in the store. That is
+io-harness's behaviour and it is the right one — a machine answering a question
+about intent on your behalf sends the agent down a path nobody chose — so `io
+exec` parks the run and says which pause it is parked on. Answering it is a
+person's job, and from 0.23.0 there is a door for that: `io resume` from a
+script, `/resume` from a session. Approvals are the one pause that cannot happen
+in a headless run, because they are declined rather than deferred.
 
 There are no `--max-steps`, `--timeout` or `--max-tokens` flags either: `[run]`
 in the configuration file expresses all three, and a CI job's limits belong with

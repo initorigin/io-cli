@@ -891,3 +891,106 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
         );
     }
 }
+
+/// The same gate for `io resume`, which is 0.23.0's subcommand and has three
+/// times as many flags to go stale.
+///
+/// The absent flag is asserted as well, and it is not symmetry for its own sake:
+/// the README states in words that there is deliberately no `--sandbox` here,
+/// because a resumed run already started under a boundary and widening it halfway
+/// through is a widening nobody asked for at the point nobody is watching. A
+/// `--sandbox` added later would leave that paragraph standing and wrong, which is
+/// precisely the failure this file exists for.
+#[test]
+fn the_readme_documents_every_flag_io_resume_actually_takes() {
+    use clap::CommandFactory;
+
+    let readme = read("README.md");
+    let cli = io_cli::cli::Cli::command();
+    let resume = cli
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "resume")
+        .expect("`io resume` is a subcommand");
+
+    let flags: Vec<String> = resume
+        .get_arguments()
+        .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
+        .filter(|long| long != "--help")
+        .collect();
+
+    assert!(!flags.is_empty(), "there should be flags to check");
+    for flag in &flags {
+        assert!(
+            readme.contains(&format!("`{flag}")),
+            "`io resume` takes {flag} and the README does not mention it",
+        );
+    }
+
+    // Each pause's own input, because a table that lost one of these would leave
+    // an operator with a run they can see and cannot decide.
+    for promised in ["--list", "--answer", "--plan", "--recovery", "--goal"] {
+        assert!(
+            flags.iter().any(|flag| flag == promised),
+            "the README documents {promised} and `io resume` no longer takes it",
+        );
+    }
+    assert!(
+        !flags.iter().any(|flag| flag == "--sandbox"),
+        "the README says `io resume` takes no --sandbox, and it now does",
+    );
+}
+
+/// The pause that cannot be resumed, said where an operator is deciding what to
+/// do about one.
+///
+/// **A gate on an absence would pass on a page that says nothing**, which is why
+/// this reads the section rather than sweeping the file: a turn the operator
+/// interrupted is recorded `cancelled`, mapped to a *completed* run, and every
+/// io-harness resume entry point hands back the original outcome having driven
+/// nothing. An operator who is not told that reads a `/resume` row for such a
+/// session as a row they can choose, and the release's own answer — `/fork` from
+/// the turn before — is the thing they never find.
+///
+/// The marks are taken from [`io_cli::sessions`] rather than listed here, for the
+/// reason the command table is generated: a sixth state, or a renamed one, fails
+/// this test instead of leaving the README teaching a word that is no longer
+/// drawn.
+#[test]
+fn the_readme_says_which_pause_cannot_be_resumed() {
+    use io_cli::sessions::{DIED_MARK, ENDED_MARK, PLAN_MARK, QUESTION_MARK, RECOVERY_MARK};
+
+    let readme = read("README.md");
+    let (_, section) = readme
+        .split_once("## When a run stops for you")
+        .expect("the README should have a section about a run that stopped for a person");
+    let section = section.split("\n## ").next().unwrap_or(section);
+
+    for mark in [
+        QUESTION_MARK,
+        PLAN_MARK,
+        RECOVERY_MARK,
+        DIED_MARK,
+        ENDED_MARK,
+    ] {
+        assert!(
+            section.contains(&format!("`{mark}`")),
+            "the README should name the `{mark}` mark and say what it means",
+        );
+    }
+
+    // The mechanism, then the consequence, then what to do instead. Short
+    // distinctive phrases rather than sentences, because the sentence around a
+    // claim is what an author rewrites while leaving the claim standing.
+    assert!(
+        section.contains("cancelled"),
+        "the README should say what io-harness records a Ctrl+C as",
+    );
+    assert!(
+        section.contains("cannot be answered"),
+        "the README should say an interrupted turn is the one pause that cannot be resumed",
+    );
+    assert!(
+        section.contains("`/fork`"),
+        "the README should offer /fork, which is what an ended turn leaves you",
+    );
+}

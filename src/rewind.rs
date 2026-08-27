@@ -138,7 +138,7 @@ pub fn preview(session: &Session, store: &Store) -> Option<Preview> {
 /// tried this three times" unanswerable, and would make the ledger disagree with
 /// the invoice.
 ///
-/// # Why the head is moved through the store and the session re-opened
+/// # Why the head is written conditionally, and the session re-opened
 ///
 /// The obvious way to move the head back is `Session::branch_from`, which is what
 /// the interface already uses to leave a turn behind. It cannot express this
@@ -148,8 +148,27 @@ pub fn preview(session: &Session, store: &Store) -> Option<Preview> {
 /// undone turn's id would leave the head on the turn whose work has just been
 /// deleted, which is the half-undo this module exists to avoid.
 ///
-/// So the head is written directly, `store.set_session_head(id, parent)?`, where
-/// `parent` is the undone turn's `parent_turn_id` and is `None` for a first
+/// **That argument is about `branch_from`, and it was once read as licence for
+/// the unconditional `Store::set_session_head`. It never covered that.** One
+/// store serves this whole machine, so two `io` processes in two terminals is
+/// ordinary, and an unconditional write is a lost update: the other process's
+/// turn stays in `session_turns`, correctly parented, answered and paid for, but
+/// off the head path — so `Session::history`, which walks parent links back from
+/// the head, never shows it again. Nothing errors and nothing reaches the screen.
+///
+/// `Store::set_session_head_if(id, expected, new)` is the same write with the
+/// head the caller believed it was replacing, and it takes an `Option` on *both*
+/// sides — so unlike `branch_from` it says "there is no turn" perfectly well, and
+/// the case that motivated the direct write is expressible after all. The head
+/// this function read at the top is what it passes as `expected`; if the store no
+/// longer holds it the update matches no row and the store returns
+/// `Error::Conflict` naming the session. That is returned as it stands: **the
+/// undo is refused rather than retried or forced.** Which turn should survive is
+/// the operator's call and not this function's, and the losing turn is only
+/// recoverable while it is still on somebody's head.
+///
+/// So the head is written as `store.set_session_head_if(id, Some(head), parent)?`,
+/// where `parent` is the undone turn's `parent_turn_id` and is `None` for a first
 /// turn. The session is then re-read with `Session::reopen(store, id)?` rather
 /// than being patched in place, because `Session` caches its head in a private
 /// field that no public setter reaches: a session left holding the old value
@@ -205,7 +224,10 @@ pub fn last_turn(session: &mut Session, store: &Store) -> Result<Option<Undone>,
     }
 
     let id = session.id();
-    store.set_session_head(id, turn.parent_turn_id)?;
+    // `Some(head)` — the head this function read and built the whole undo from.
+    // A store that no longer holds it has had another `io` move the conversation
+    // on, and the conflict goes back to the caller unchanged: no retry, no force.
+    store.set_session_head_if(id, Some(head), turn.parent_turn_id)?;
     *session = Session::reopen(store, id)?;
 
     Ok(Some(Undone {

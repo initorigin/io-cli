@@ -1,4 +1,13 @@
-//! `io exec` — one goal, run to completion, with no terminal.
+//! `io exec` — one goal, run to completion, with no terminal — and, since
+//! 0.23.0, `io resume`, which carries on a run that stopped for a person.
+//!
+//! The second subcommand lives here rather than in [`crate::resume`] for the
+//! reason the first one lives here rather than in `main.rs`: that module is the
+//! library half — it classifies a pause and drives the harness's resume entry
+//! points — and this one is the half that reads a command line, chooses a
+//! provider, writes to two streams and returns an exit status. The exit statuses
+//! are the same six, through the same [`code`] table, because a resumed run ends
+//! the way any other run ends.
 //!
 //! This is a second **consumer** of io-harness, not a second program. It opens
 //! the same store an interactive session opens, creates a session in it the same
@@ -31,12 +40,13 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use io_harness::{
-    Config, DenyAll, ExecMode, Flow, Ignore, Observer, Policy, Provider, RunEvent, RunOutcome,
-    Session, Store, TaskContract, TurnResult,
+    Config, DenyAll, ExecMode, Flow, Ignore, Observer, PlanVerdict, Policy, Provider, ProviderSpec,
+    RecoveryDecision, RunEvent, RunOutcome, Session, Store, TaskContract, TurnResult,
 };
 
-use crate::cli::PolicyFlag;
+use crate::cli::{PlanFlag, PolicyFlag, RecoveryFlag};
 use crate::provider::{self, WithProvider};
+use crate::resume::Pending;
 use crate::settings::{self, Posture};
 
 /// The run ended of its own accord.
@@ -89,20 +99,30 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         | RunOutcome::CostBudgetExceeded { .. }
         | RunOutcome::BudgetCeilingReached { .. } => CEILING,
 
-        // Not reachable while approvals are denied rather than deferred and there
-        // is no `io resume` to continue one. Mapped anyway so the table is total
-        // now and adding that subcommand later renumbers nothing.
+        // `AwaitingApproval` stays unreachable from here while approvals are
+        // denied rather than deferred; the other two are reachable, because a
+        // question about intent and a proposed plan pass through no approver at
+        // all. **The bet these codes were numbered on has now been settled.**
+        // 0.5.0 mapped all three when none of them could happen yet — its own
+        // release notes say the mapping exists "so that adding that subcommand
+        // later renumbers nothing". 0.23.0 added it, and nothing here moved.
+        // (Written as 0.13.0 here until 0.23.0, which was wrong: 0.13.0 is a
+        // later release and the CHANGELOG puts the sentence in 0.5.0's notes.)
         RunOutcome::AwaitingApproval { .. }
         | RunOutcome::AwaitingAnswer { .. }
         | RunOutcome::AwaitingPlan { .. } => PAUSED,
 
         // 0.65.0 — a resume that found a call started and never finished. It is a
         // pause needing a decision, so it belongs with the other three rather than
-        // with the failures. **Not unreachable, and the claim is deliberately not
-        // made:** a session turn registers no tool and no MCP server and cannot
-        // journal an attempt, but `io exec` applies the configuration to its own
-        // contract, so a configured `[[mcp]]` server puts a run of this subcommand
-        // exactly one interrupted call away from it.
+        // with the failures. **Not unreachable, and the reason given here was
+        // wrong until 0.23.0.** It said a session turn registers no tool and no
+        // MCP server and cannot journal an attempt. `crate::contract::session`
+        // attaches `[[mcp]]` servers, an MCP tool declares no `recovery` so it
+        // takes the harness's default of `Indeterminate`, and an attempt on one
+        // is therefore journalable on an ordinary interactive turn. The
+        // conclusion survives its reason: either arm reaches this outcome, and
+        // `io exec` reaches it the same way, since both build their contract from
+        // the same configuration.
         RunOutcome::AwaitingRecovery { .. } => PAUSED,
 
         RunOutcome::Stalled { .. }
@@ -273,19 +293,46 @@ pub fn asks_nobody_can_answer(policy: &Policy) -> Option<String> {
     ))
 }
 
-/// The extra line a paused run gets, naming what was parked.
+/// The extra line a paused run gets, naming the handle that addresses the pause
+/// and the invocation that acts on it.
 ///
-/// A run that stops for a human is persisted and resumable in principle, but
-/// this release has no `io resume` to continue it — so the honest thing is to
-/// say where it went rather than to imply it is gone. `None` for every outcome
-/// that did not pause.
+/// **The run id is not that handle, and through 0.22.0 this line printed only the
+/// run id.** Every resume entry point in io-harness takes a second number — the
+/// question, the plan, the journalled call — and each is the row a compare-and-swap
+/// is made against, which is what makes "was it me who answered" answerable at
+/// all. The outcome carries that number and this function used to discard it, so
+/// an operator was told where their run went and given nothing to reach it with.
+///
+/// `None` for every outcome that did not pause.
 pub fn parked(outcome: &RunOutcome, run_id: i64) -> Option<String> {
-    (code(outcome) == PAUSED).then(|| {
-        format!(
-            "run {run_id} is parked in the store; answering it and carrying on \
-             is not in this release"
-        )
-    })
+    let (waiting_on, how) = match outcome {
+        RunOutcome::AwaitingAnswer { question_id, .. } => (
+            format!("question {question_id}"),
+            format!("io resume {run_id} --answer \"<your answer>\""),
+        ),
+        RunOutcome::AwaitingPlan { plan_id, .. } => (
+            format!("plan {plan_id}"),
+            format!("io resume {run_id} --plan approve"),
+        ),
+        RunOutcome::AwaitingRecovery { attempt_id, .. } => (
+            format!("call {attempt_id}, whose outcome nobody recorded"),
+            format!("io resume {run_id} --recovery retry"),
+        ),
+        // The one pause with no `io resume` behind it. An approval is answered by
+        // the person the run asked, at the terminal it asked from, and there is no
+        // resume entry point that takes one — so this names the request and says
+        // that rather than offering an invocation that does not exist.
+        RunOutcome::AwaitingApproval { request_id, .. } => {
+            return Some(format!(
+                "run {run_id} is parked on approval {request_id}, which is answered \
+                 at the terminal that asked for it and not by `io resume`"
+            ))
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "run {run_id} is parked on {waiting_on}; carry it on with `{how}`"
+    ))
 }
 
 /// What reaches stdout once the turn is done.
@@ -330,10 +377,20 @@ pub async fn turn<P: Provider>(
             provider,
             store,
             policy,
-            // Nothing here can answer a question, so the harness's own documented
-            // choice for an unattended job is the right one: an ask becomes a
+            // **This is about approvals and nothing else, and until 0.23.0 it
+            // also spoke for questions, which it had no business doing.** An
+            // approver decides an *ask* raised by the policy, and nothing in an
+            // unattended run can answer one — so the harness's own documented
+            // choice for a headless job is the right one: the ask becomes a
             // refusal the agent is told about and adapts to, exactly as a policy
-            // refusal already does. An approver that blocks would hang forever.
+            // refusal already does, and the run carries on. An approver that
+            // blocked instead would hang forever.
+            //
+            // A question the agent asks the operator never reaches an approver at
+            // all. It ends the run at `AwaitingAnswer` with the question written
+            // to the store, which is a pause and not a refusal, and nothing here
+            // adapts to anything — see `parked` above, which is the line that
+            // names it and now names the way back in.
             &DenyAll,
             observer,
         )
@@ -386,6 +443,39 @@ pub fn widening(sandbox: Option<ExecMode>) -> Option<&'static str> {
         .then_some("--sandbox full-access: commands in this run are not confined to the workspace")
 }
 
+/// The provider a headless entry point runs on: the flag's, or the file's.
+///
+/// `--provider` wins over the file, and is the only path that works when there is
+/// no file at all — which is the CI case, and the case where an interactive `io`
+/// would open the wizard nobody can answer. Shared by [`main`] and
+/// [`resume_main`] rather than written twice, because the sentence a run with no
+/// provider gets is the one thing both of them are certain to hit on a machine
+/// that has never run `io setup`.
+pub fn spec_for(
+    which: Option<crate::cli::FromEnv>,
+    config: &Config,
+    model_override: Option<&str>,
+) -> Result<ProviderSpec, String> {
+    match (which, config.provider_spec().cloned()) {
+        (Some(which), _) => {
+            let (key_var, model_var) = which.vars();
+            provider::spec_from(
+                which,
+                std::env::var(key_var).ok(),
+                model_override
+                    .map(str::to_string)
+                    .or_else(|| std::env::var(model_var).ok()),
+            )
+        }
+        (None, Some(spec)) => Ok(spec),
+        (None, None) => Err(
+            "no provider is configured; run `io setup`, or pass `--provider` with \
+             its credential in the environment"
+                .into(),
+        ),
+    }
+}
+
 /// `io exec`, from the command line to an exit status.
 pub async fn main(
     args: crate::cli::Exec,
@@ -397,29 +487,7 @@ pub async fn main(
     // a refused posture costs nothing and leaves no run behind.
     let posture = args.policy.map(posture_for).transpose()?;
 
-    // `--provider` wins over the file, and is the only path that works when
-    // there is no file at all — which is the CI case, and the case where an
-    // interactive `io` would open the wizard nobody can answer.
-    let spec = match (args.provider, config.provider_spec().cloned()) {
-        (Some(which), _) => {
-            let (key_var, model_var) = which.vars();
-            provider::spec_from(
-                which,
-                std::env::var(key_var).ok(),
-                model_override
-                    .clone()
-                    .or_else(|| std::env::var(model_var).ok()),
-            )?
-        }
-        (None, Some(spec)) => spec,
-        (None, None) => {
-            return Err(
-                "no provider is configured; run `io setup`, or pass `--provider` with \
-                 its credential in the environment"
-                    .into(),
-            )
-        }
-    };
+    let spec = spec_for(args.provider, &config, model_override.as_deref())?;
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, &root).map_err(|error| error.to_string())?;
@@ -521,5 +589,526 @@ impl WithProvider for Headless {
             eprintln!("io: {parked}");
         }
         Ok(code(&result.outcome))
+    }
+}
+
+/// One row of `io resume --list`, or `None` for a run nothing is waiting on.
+///
+/// `json` splits the same two streams `io exec --json` splits: an object per
+/// line on stdout, everything else on stderr, so `io resume --list --json | jq`
+/// needs no filtering.
+///
+/// **`step` means the same thing in all four shapes** — the last step that
+/// committed. A question, a plan and an interrupted call each record the step
+/// they stopped on, which is committed, and a run whose process went away
+/// records the last one it got through; a resume of any of them starts at that
+/// number plus one.
+///
+/// An interrupted turn and an ended one are not rows here. Neither can be
+/// carried on, so listing them under a heading that means "waiting for you"
+/// would offer work that does not exist — [`decision_for`] is where an operator
+/// who names one by hand is told why.
+pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
+    let (waiting_on, id, step) = match pending {
+        Pending::Question {
+            question_id, step, ..
+        } => ("question", Some(*question_id), *step),
+        Pending::Plan { plan_id, step, .. } => ("plan", Some(*plan_id), *step),
+        Pending::Recovery {
+            attempt_id, step, ..
+        } => ("recovery", Some(*attempt_id), *step),
+        Pending::Died { last_step } => ("died", None, *last_step),
+        Pending::Interrupted | Pending::Finished => return None,
+    };
+    Some(if json {
+        // Built through `serde_json` rather than formatted, so an answer holding
+        // a quote is escaped by the same code that escapes the event stream.
+        serde_json::json!({
+            "run_id": run_id,
+            "waiting_on": waiting_on,
+            "id": id,
+            "step": step,
+        })
+        .to_string()
+    } else {
+        match id {
+            Some(id) => format!("run {run_id}  {waiting_on} {id}  step {step}"),
+            None => format!("run {run_id}  {waiting_on}  step {step}"),
+        }
+    })
+}
+
+/// What the operator's flags mean, once checked against what the run is actually
+/// waiting on, and carrying the id that addresses that pause.
+///
+/// The id travels with the decision rather than beside it, for the reason
+/// [`crate::resume::Pending`] keeps its four ids under four names: a question id
+/// handed to the plan driver is one operator's answer delivered into somebody
+/// else's run, and a shape in which that cannot be typed is worth more than a
+/// check that it was not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Answer the question the run asked.
+    Answer {
+        /// The row the answer is written against.
+        question_id: i64,
+        /// What the operator said.
+        answer: String,
+    },
+    /// Decide the plan the run proposed.
+    Plan {
+        /// The row the verdict is written against.
+        plan_id: i64,
+        /// The verdict.
+        verdict: PlanVerdict,
+    },
+    /// Say what happened to the call the run stopped in the middle of.
+    Recovery {
+        /// The journal row the account is filed against.
+        attempt_id: i64,
+        /// What the operator established.
+        decision: RecoveryDecision,
+    },
+    /// Nothing to decide: the process went away and the run simply has committed
+    /// work and no ending.
+    CarryOn,
+}
+
+/// The plan verdict `--plan` and `--correction` name together.
+///
+/// A correction is refused on the two verdicts that cannot carry one, rather than
+/// dropped: `--plan approve --correction "…"` is somebody who meant `revise`, and
+/// running the plan they were trying to change is the worst reading of it.
+pub fn verdict_for(flag: PlanFlag, correction: Option<&str>) -> Result<PlanVerdict, String> {
+    match (flag, correction) {
+        (PlanFlag::Revise, Some(correction)) if !correction.trim().is_empty() => {
+            Ok(PlanVerdict::revise(correction))
+        }
+        (PlanFlag::Revise, _) => Err(
+            "`--plan revise` sends the plan back to be changed, so it needs to say what to \
+             change: add `--correction \"<what to do differently>\"`."
+                .into(),
+        ),
+        (_, Some(_)) => Err(
+            "`--correction` says what a plan should do differently, and only `--plan revise` \
+             asks for a different plan. Use `--plan revise --correction \"…\"`, or drop it."
+                .into(),
+        ),
+        (PlanFlag::Approve, None) => Ok(PlanVerdict::Approve),
+        (PlanFlag::Cancel, None) => Ok(PlanVerdict::Cancel),
+    }
+}
+
+/// The recovery decision `--recovery` and `--account` name together.
+///
+/// `completed` is the one that needs words. io-harness files the operator's
+/// account against the step the *call* was made on rather than the step the run
+/// has now reached, so the resumed run reads a transcript in which the tool
+/// answered where it was asked. Nothing validates it — this is an assertion about
+/// the outside world — which is exactly why an empty one is refused.
+pub fn recovery_for(flag: RecoveryFlag, account: Option<&str>) -> Result<RecoveryDecision, String> {
+    match (flag, account) {
+        (RecoveryFlag::Completed, Some(account)) if !account.trim().is_empty() => {
+            Ok(RecoveryDecision::Completed {
+                observation: account.to_string(),
+            })
+        }
+        (RecoveryFlag::Completed, _) => Err(
+            "`--recovery completed` tells the agent the call landed, so it needs to say what \
+             the call returned: add `--account \"<what it returned>\"`."
+                .into(),
+        ),
+        (_, Some(_)) => Err(
+            "`--account` is what a call returned, and only `--recovery completed` says a call \
+             returned anything. Use `--recovery completed --account \"…\"`, or drop it."
+                .into(),
+        ),
+        (RecoveryFlag::Retry, None) => Ok(RecoveryDecision::Retry),
+        (RecoveryFlag::Abandon, None) => Ok(RecoveryDecision::Abort),
+    }
+}
+
+/// What this run is waiting on, and the invocation that decides it.
+///
+/// One sentence-maker for two questions an operator asks in the same breath —
+/// "what does this run want" and "then what do I type" — so a missing flag and a
+/// flag for the wrong pause are answered identically rather than by two sentences
+/// that could drift apart.
+fn waiting_on(run_id: i64, pending: &Pending) -> String {
+    match pending {
+        Pending::Question { question_id, .. } => format!(
+            "run {run_id} is waiting on question {question_id}; answer it with \
+             `io resume {run_id} --answer \"<your answer>\"`"
+        ),
+        Pending::Plan { plan_id, .. } => format!(
+            "run {run_id} is waiting on plan {plan_id}; decide it with \
+             `io resume {run_id} --plan approve`"
+        ),
+        Pending::Recovery {
+            attempt_id, tool, ..
+        } => format!(
+            "run {run_id} stopped on call {attempt_id} to `{tool}`, whose outcome nobody \
+             recorded; say what happened with `io resume {run_id} --recovery retry`"
+        ),
+        Pending::Died { last_step } => format!(
+            "run {run_id}'s process went away after step {last_step} and there is nothing to \
+             decide; carry it on with `io resume {run_id}`"
+        ),
+        Pending::Interrupted | Pending::Finished => {
+            format!("there is nothing waiting on run {run_id}")
+        }
+    }
+}
+
+/// The decision to drive, or the sentence that refuses to drive one.
+///
+/// **Two refusals here are the point rather than a side effect.**
+///
+/// A run the operator interrupted is *finished*, not paused: `Ctrl+C` returns
+/// `Flow::Cancel`, the loop records the outcome `cancelled`, and every resume
+/// entry point short-circuits on a completed run and hands back the original
+/// outcome having driven nothing. So it is refused before a provider is built,
+/// in the same words the interactive surface uses — which point at `/fork` from
+/// the turn before, the honest neighbouring answer.
+///
+/// And a flag for a pause the run is not on is refused rather than ignored. clap
+/// cannot see which pause a run is waiting on; only the store can, and
+/// `--plan approve` typed at a run holding a question is an operator acting on
+/// the wrong thing.
+pub fn decision_for(
+    run_id: i64,
+    pending: &Pending,
+    args: &crate::cli::Resume,
+) -> Result<Decision, String> {
+    let wanted = match pending {
+        Pending::Question { .. } => "--answer",
+        Pending::Plan { .. } => "--plan",
+        Pending::Recovery { .. } => "--recovery",
+        Pending::Died { .. } => "",
+        // Both sentences are `crate::resume::Failure`'s own, so the one an
+        // operator gets from `io resume` is the one they get from `/resume`.
+        Pending::Interrupted => {
+            return Err(crate::resume::Failure::Interrupted { run_id }.to_string())
+        }
+        Pending::Finished => return Err(crate::resume::Failure::Ended { run_id }.to_string()),
+    };
+    for (flag, given) in [
+        ("--answer", args.answer.is_some()),
+        ("--plan", args.plan.is_some()),
+        ("--recovery", args.recovery.is_some()),
+    ] {
+        if given && flag != wanted {
+            return Err(format!(
+                "`{flag}` decides something run {run_id} is not waiting on. {}",
+                waiting_on(run_id, pending),
+            ));
+        }
+    }
+
+    match pending {
+        Pending::Question { question_id, .. } => {
+            let answer = args
+                .answer
+                .clone()
+                .ok_or_else(|| waiting_on(run_id, pending))?;
+            Ok(Decision::Answer {
+                question_id: *question_id,
+                answer,
+            })
+        }
+        Pending::Plan { plan_id, .. } => {
+            let flag = args.plan.ok_or_else(|| waiting_on(run_id, pending))?;
+            Ok(Decision::Plan {
+                plan_id: *plan_id,
+                verdict: verdict_for(flag, args.correction.as_deref())?,
+            })
+        }
+        Pending::Recovery { attempt_id, .. } => {
+            let flag = args.recovery.ok_or_else(|| waiting_on(run_id, pending))?;
+            Ok(Decision::Recovery {
+                attempt_id: *attempt_id,
+                decision: recovery_for(flag, args.account.as_deref())?,
+            })
+        }
+        Pending::Died { .. } => Ok(Decision::CarryOn),
+        // Both returned above; repeated here because the compiler asks and an
+        // `unreachable!()` in a function an operator's typing reaches is a panic
+        // waiting for the next variant.
+        Pending::Interrupted | Pending::Finished => {
+            Err(crate::resume::Failure::Ended { run_id }.to_string())
+        }
+    }
+}
+
+/// The goal a resumed run carries on under, or the sentence that refuses to
+/// invent one.
+///
+/// **A bare run has no recoverable goal, and running it against an empty one is
+/// the failure this refuses.** `runs.goal` has no public reader, so
+/// `crate::resume::goal_for` recovers the operator's own words from the session
+/// turn a run served and answers `None` for a run that served none — which is
+/// every run `io exec` starts. A contract built from `None` would hand the agent
+/// a task nobody set and spend a budget on it, so the goal is asked for instead.
+///
+/// `--goal` beats a recovered one when both are there. That is the operator
+/// re-aiming their own run, which is theirs to do, and a flag silently ignored
+/// because the store happened to hold something is worse than one that acts.
+pub fn goal_or_refusal(
+    run_id: i64,
+    recovered: Option<String>,
+    supplied: Option<&str>,
+) -> Result<String, String> {
+    if let Some(goal) = supplied.filter(|goal| !goal.trim().is_empty()) {
+        return Ok(goal.to_string());
+    }
+    recovered.ok_or_else(|| {
+        format!(
+            "run {run_id} served no session turn, so what it was asked to do cannot be read \
+             back — `runs.goal` has no public reader and only a turn keeps the operator's own \
+             words. Carrying it on against an empty goal would set the agent a task nobody \
+             asked for: say what it was for with \
+             `io resume {run_id} --goal \"<what the run was for>\"`."
+        )
+    })
+}
+
+/// `io resume`, from the command line to an exit status.
+///
+/// The listing happens before a provider is chosen and before a credential is
+/// read, so `io resume --list` works on a machine that has never run `io setup`
+/// and costs nothing.
+pub async fn resume_main(
+    args: crate::cli::Resume,
+    config: Config,
+    root: std::path::PathBuf,
+    model_override: Option<String>,
+) -> Result<u8, String> {
+    // Refused first, as `main` refuses it, so a posture nothing can honour costs
+    // no store, no session and no provider.
+    let posture = args.policy.map(posture_for).transpose()?;
+
+    let path = settings::store_path().ok_or("no place to keep the run store")?;
+    let store = Store::open(&path).map_err(|error| error.to_string())?;
+
+    if args.list {
+        // One classification per run, each a handful of store reads and no
+        // provider call. That is linear in the store's whole history rather than
+        // in the parked runs, which is the right cost while a store holds
+        // hundreds; the way past it is a store-side query for the pending rows,
+        // which io-harness does not publish.
+        let mut out = std::io::stdout().lock();
+        for run_id in store.runs().map_err(|error| error.to_string())? {
+            let pending =
+                crate::resume::pending_for(&store, run_id).map_err(|error| error.to_string())?;
+            if let Some(row) = listed(run_id, &pending, args.json) {
+                let _ = writeln!(out, "{row}");
+            }
+        }
+        let _ = out.flush();
+        return Ok(OK);
+    }
+
+    // clap guarantees this through `required_unless_present`, and the sentence is
+    // here rather than an `expect` because a parser's guarantee is not a reason to
+    // panic in front of an operator if it ever stops holding.
+    let run_id = args
+        .run
+        .ok_or("`io resume` needs a run id, or `--list` to see which runs have one")?;
+
+    // Everything that can refuse, before anything is built: the classification is
+    // a few store reads, and an operator who names the one run that cannot be
+    // carried on pays nothing to find out.
+    let pending = crate::resume::pending_for(&store, run_id).map_err(|error| error.to_string())?;
+    let decision = decision_for(run_id, &pending, &args)?;
+    let goal = goal_or_refusal(
+        run_id,
+        crate::resume::goal_for(&store, run_id).map_err(|error| error.to_string())?,
+        args.goal.as_deref(),
+    )?;
+
+    let spec = spec_for(args.provider, &config, model_override.as_deref())?;
+    let policy = policy_for(&config, posture);
+
+    provider::build(
+        spec,
+        model_override,
+        Resuming {
+            store,
+            config,
+            policy,
+            // `None` unless the operator named a posture, which is what lets
+            // `carry_on` use the boundary the run itself recorded rather than one
+            // chosen for it now — the only driver of the four that can.
+            chosen: posture.is_some(),
+            root,
+            run_id,
+            goal,
+            decision,
+            json: args.json,
+        },
+    )
+    .await?
+}
+
+/// The resumed run, as something [`provider::build`] can run.
+struct Resuming {
+    store: Store,
+    config: Config,
+    policy: Policy,
+    chosen: bool,
+    root: std::path::PathBuf,
+    run_id: i64,
+    goal: String,
+    decision: Decision,
+    json: bool,
+}
+
+impl WithProvider for Resuming {
+    type Out = Result<u8, String>;
+
+    async fn call<P: Provider>(
+        self,
+        make: impl Fn(&str) -> Result<P, String>,
+        model: String,
+    ) -> Self::Out {
+        let provider = make(&model)?;
+
+        if let Some(line) = asks_nobody_can_answer(&self.policy) {
+            eprintln!("io: {line}");
+        }
+
+        let json = Ndjson::new(std::io::stdout());
+        let observer: &dyn Observer = if self.json { &json } else { &Ignore };
+
+        // The same composition `Headless` builds, and for the same reason: a
+        // `[[hook]]` that fired on the run and then went quiet the moment it was
+        // carried on would leave an audit log with a hole in exactly the half
+        // nobody watched happen.
+        let hooks = crate::contract::hooks(&self.config, &self.root);
+        let mut observers: Vec<&dyn Observer> = vec![observer];
+        if let Some(hooks) = &hooks {
+            observers.push(hooks);
+        }
+        let fanout = crate::fanout::Fanout::new(observers);
+        let durable = settings::store_path().and_then(|path| Store::open(&path).ok());
+        let broadcast = durable.map(|store| io_harness::Broadcast::new(store, &fanout));
+        let watcher: &dyn Observer = match &broadcast {
+            Some(broadcast) => broadcast,
+            None => &fanout,
+        };
+
+        // Read *before* anything is driven. `crate::resume` closes the turn with a
+        // compare-and-swap against this value, so a head taken afterwards would be
+        // the head this resume is about to move and the swap would never refuse —
+        // which is the lost update the swap exists to catch.
+        let head = self
+            .store
+            .turn_for_run(self.run_id)
+            .ok()
+            .flatten()
+            .and_then(|turn_id| self.store.session_turn(turn_id).ok().flatten())
+            .and_then(|turn| self.store.session_head(turn.session_id).ok().flatten());
+
+        let contract = crate::contract::configured(self.goal, self.root.clone(), &self.config);
+        // `None` on every arm: a containment is a fleet's shared budget, this
+        // subcommand takes no flag that expresses one, and `crate::resume::recover`
+        // refuses a contained run outright because io-harness 0.69 publishes no
+        // tree-aware recovery entry point to keep those limits with.
+        let resumed = match self.decision {
+            Decision::Answer {
+                question_id,
+                answer,
+            } => {
+                crate::resume::answer_question(
+                    &contract,
+                    &provider,
+                    &self.store,
+                    self.run_id,
+                    question_id,
+                    &answer,
+                    &self.policy,
+                    &DenyAll,
+                    None,
+                    watcher,
+                    head,
+                )
+                .await
+            }
+            Decision::Plan { plan_id, verdict } => {
+                crate::resume::decide_plan(
+                    &contract,
+                    &provider,
+                    &self.store,
+                    self.run_id,
+                    plan_id,
+                    verdict,
+                    &self.policy,
+                    &DenyAll,
+                    None,
+                    watcher,
+                    head,
+                )
+                .await
+            }
+            Decision::Recovery {
+                attempt_id,
+                decision,
+            } => {
+                crate::resume::recover(
+                    &contract,
+                    &provider,
+                    &self.store,
+                    self.run_id,
+                    attempt_id,
+                    decision,
+                    &self.policy,
+                    &DenyAll,
+                    None,
+                    watcher,
+                    head,
+                )
+                .await
+            }
+            Decision::CarryOn => {
+                crate::resume::carry_on(
+                    &contract,
+                    &provider,
+                    &self.store,
+                    self.run_id,
+                    self.chosen.then_some(&self.policy),
+                    &DenyAll,
+                    None,
+                    watcher,
+                    head,
+                )
+                .await
+            }
+        }
+        .map_err(|failure| failure.to_string())?;
+
+        // stdout is the data and stderr is everything else, the split `io exec`
+        // already makes.
+        if let Some(reply) = to_stdout(self.json, resumed.reply.as_deref()) {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{reply}");
+            let _ = out.flush();
+        }
+        // **`+ 1`, and the interactive arm has always had it.** `resumed_after`
+        // is the last step that had *committed* before anything was driven, so
+        // the step this resume carried on from is the one after it. Printed bare,
+        // this told the operator it resumed at 12 when it resumed at 13, and
+        // disagreed with what the session said about the same run.
+        eprintln!(
+            "io: carried run {} on from step {}",
+            resumed.run_id,
+            resumed.resumed_after + 1
+        );
+        eprintln!("io: {}", describe(&resumed.outcome));
+        // A resumed run can pause again, on a second question or on a plan the
+        // agent proposes next, and the line that says so names the new handle.
+        if let Some(parked) = parked(&resumed.outcome, resumed.run_id) {
+            eprintln!("io: {parked}");
+        }
+        Ok(code(&resumed.outcome))
     }
 }

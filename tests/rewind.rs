@@ -32,12 +32,22 @@
 //!   back.
 //!
 //! * **The two-turn block** catches an undo that moves files without moving the
-//!   conversation. Sabotage it by deleting the `set_session_head` call: the head
+//!   conversation. Sabotage it by deleting the `set_session_head_if` call: the head
 //!   still points at the undone turn, so the next turn is assembled from a history
 //!   containing a prompt whose work no longer exists.
 //!
+//! * **The head-race block** catches an undo that writes the head *un*conditionally
+//!   — one store serves this whole machine, so two `io` processes in two terminals
+//!   is ordinary, and the second one's turn is then written off the head path while
+//!   still sitting in `session_turns`, answered, parented and paid for. Sabotage it
+//!   by restoring `Store::set_session_head`: **nothing errors, nothing prints, and
+//!   only the assertion on the refusal goes red**, which is why that assertion is
+//!   the one this block is built around rather than the state it leaves behind. Its
+//!   companion block, over a store nobody raced, catches the opposite mistake of
+//!   passing an `expected` that never matches and refusing every undo.
+//!
 //! * **The only-turn block** is F10 and the one that matters most. Sabotage it by
-//!   reaching for `Session::branch_from` instead of `set_session_head` — the whole
+//!   reaching for `Session::branch_from` instead of `set_session_head_if` — the whole
 //!   plausible-looking implementation — and it cannot even be written, because
 //!   there is no parent turn to branch from. Sabotage it by keeping the session
 //!   value instead of re-opening it and `session.head()` answers with the undone
@@ -81,7 +91,7 @@ mod support;
 use io_cli::glyphs::UNICODE;
 use io_cli::rewind;
 use io_cli::theme::Tone;
-use io_harness::{ApproveAll, MemoryKind, Policy, Session, Store};
+use io_harness::{ApproveAll, Error, MemoryKind, Policy, Session, Store};
 use support::Scripted;
 
 /// A temporary workspace, an in-memory store, and a session over the two.
@@ -132,6 +142,34 @@ impl Fixture {
     /// way the harness spells it.
     fn workspace(&self) -> String {
         self.session.root().display().to_string()
+    }
+}
+
+/// Where a shared fixture keeps its database, under the workspace it also serves.
+/// Never restored by a rewind: only paths a run took a snapshot of are visited.
+const DB: &str = "store.sqlite3";
+
+impl Fixture {
+    /// The same fixture over a **file-backed** store, which is what makes a head
+    /// race expressible at all. `Store::memory` cannot be shared — a second
+    /// handle opens its own empty database, so nothing it does is visible here
+    /// and no race can be staged. One file, two handles, one process, no sleeping.
+    fn on_disk() -> Self {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let store = Store::open(dir.path().join(DB)).expect("a store on disk");
+        let session = Session::open(&store, dir.path()).expect("a session");
+        Self {
+            dir,
+            store,
+            session,
+        }
+    }
+
+    /// The other terminal's `io`: a second handle on the same database. This
+    /// product keeps one store for the whole machine, so this is the ordinary
+    /// arrangement rather than an exotic one.
+    fn other_io(&self) -> Store {
+        Store::open(self.dir.path().join(DB)).expect("a second handle on the same file")
     }
 }
 
@@ -446,6 +484,107 @@ async fn rewinding_the_only_turn_leaves_the_session_with_no_head_at_all() {
         1,
         "the undo is itself recorded",
     );
+}
+
+#[tokio::test]
+async fn an_undo_is_refused_when_another_io_has_already_moved_the_head_on() {
+    let mut fixture = Fixture::on_disk();
+    fixture
+        .turn_writing("draft a plan", &[("plan.md", BEFORE)])
+        .await;
+    let mine = fixture.session.head().expect("this process took a turn");
+
+    // The other terminal, doing the most ordinary thing there is: its own handle
+    // on the same database, a turn parented on the head it read, and the head
+    // moved on to it. That is `Session::turn`'s own sequence with the provider
+    // taken out — the turn is real, in `session_turns`, and answered for.
+    let other = fixture.other_io();
+    let workspace = fixture.workspace();
+    let run = other
+        .start_run("what the other terminal asked", &workspace)
+        .expect("a run row");
+    let theirs = other
+        .record_turn(
+            fixture.session.id(),
+            Some(mine),
+            run,
+            "and now the other thing",
+        )
+        .expect("a turn row");
+    other
+        .set_session_head(fixture.session.id(), Some(theirs))
+        .expect("the other process advances the head");
+
+    let refused = rewind::last_turn(&mut fixture.session, &fixture.store)
+        .expect_err("an undo whose head has moved underneath it must not succeed");
+
+    // The assertion is on the **refusal**, and deliberately so: the defect this
+    // block defends against is the unconditional `Store::set_session_head`, which
+    // fails with no error, no message and no mark on screen. Restore it and this
+    // line is the only thing in the suite that goes red.
+    match &refused {
+        Error::Conflict {
+            run_id,
+            owner,
+            expires_at,
+        } => {
+            assert_eq!(
+                *run_id,
+                fixture.session.id(),
+                "the conflict carries the session whose head moved",
+            );
+            assert!(
+                owner.is_empty() && expires_at.is_empty(),
+                "a head has a value that moved, not a holder with a lease: \
+                 {owner:?} until {expires_at:?}",
+            );
+        }
+        unexpected => panic!("the loser of a head race must be told it lost, got {unexpected:?}"),
+    }
+
+    // And the other process's turn is still on the head path — which is the whole
+    // of what was at stake. `Session::history` walks parent links back from the
+    // head, so a turn written off the head is one no later prompt can ever see
+    // again, however correctly it is parented and however much it cost.
+    let reread =
+        Session::reopen(&fixture.store, fixture.session.id()).expect("the session is readable");
+    assert_eq!(
+        reread.head(),
+        Some(theirs),
+        "the head must be left exactly where the other `io` put it",
+    );
+    assert_eq!(
+        reread
+            .history(&fixture.store)
+            .expect("the history is readable")
+            .len(),
+        2,
+        "both turns stay on the head path; neither process's work is orphaned",
+    );
+}
+
+/// The other half of the conditional write: it must refuse a moved head **and**
+/// still perform an undo nobody raced. An implementation that passed the wrong
+/// `expected` — a turn id that never matches, say — would refuse every undo, and
+/// the refusal block above would stay green while `/undo` had stopped working.
+#[tokio::test]
+async fn an_undo_over_a_store_no_other_io_touched_still_moves_the_head_back() {
+    let mut fixture = Fixture::on_disk();
+    fixture
+        .turn_writing("draft a plan", &[("plan.md", BEFORE)])
+        .await;
+    let first = fixture.session.head().expect("the first turn is the head");
+    fixture
+        .turn_writing("now do it", &[("plan.md", AFTER)])
+        .await;
+
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+        .expect("nothing raced, so the conditional write must match its row")
+        .expect("a turn was taken");
+
+    assert_eq!(undone.head, Some(first));
+    assert_eq!(fixture.session.head(), Some(first));
+    assert_eq!(fixture.bytes("plan.md"), BEFORE.as_bytes());
 }
 
 #[test]

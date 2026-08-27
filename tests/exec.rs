@@ -11,6 +11,10 @@
 //! N1 — no interface code on the headless path.
 //! N6 — the plain output is not composed to a width.
 //!
+//! 0.23.0 F8 — `io resume`: the parked runs are listable, one is resumable by id,
+//! the parked line names the id that addresses the pause, and the two pauses that
+//! cannot be carried on are refused in words rather than by a failed drive.
+//!
 //! The two mappings that look like taste are the release's research. A clean
 //! headless run ends in `RunOutcome::Finished` and never `Success`, because the
 //! contract this subcommand builds carries no verification criterion; and every
@@ -116,10 +120,13 @@ async fn f1_a_clean_run_finishes_rather_than_succeeding() {
 
 #[test]
 fn f2_every_outcome_maps_to_its_documented_code() {
-    // All fifteen variants, written out rather than sampled. `RunOutcome` is not
-    // `#[non_exhaustive]` and `exec::code` has no `_` arm, so a variant added by a
-    // later harness breaks the build of both — which is the property that keeps a
-    // published table true across a pin bump.
+    // Fifteen variants, written out rather than sampled — `AwaitingRecovery` is
+    // the sixteenth and has a test of its own below. It used to be true that this
+    // list could not go stale: `RunOutcome` was exhaustive and `exec::code` had no
+    // `_` arm, so a variant a later harness added broke the build of both. io-harness
+    // 0.65 made the enum `#[non_exhaustive]` and took that away, which is why
+    // `the_outcome_table_names_every_outcome_the_locked_harness_declares` reads the
+    // variants out of the locked source instead.
     let cases: &[(RunOutcome, u8)] = &[
         (RunOutcome::Success { steps: 3 }, exec::OK),
         (RunOutcome::Finished { steps: 3 }, exec::OK),
@@ -197,11 +204,6 @@ fn f2_a_paused_run_names_what_was_parked_and_nothing_else_does() {
     )
     .expect("a paused run names what was parked");
     assert!(waiting.contains("41"), "{waiting}");
-    assert!(
-        waiting.contains("not in this release"),
-        "it must say that answering it is not possible yet, rather than implying \
-         the run is lost: {waiting}",
-    );
 
     assert!(exec::parked(
         &RunOutcome::AwaitingPlan {
@@ -217,6 +219,93 @@ fn f2_a_paused_run_names_what_was_parked_and_nothing_else_does() {
         None
     );
     assert_eq!(exec::parked(&RunOutcome::Cancelled { steps: 3 }, 7), None);
+}
+
+/// 0.23.0 F8 — the parked line names the id that addresses the pause, and the
+/// invocation that acts on it.
+///
+/// **The run id is not that id, and until this release the line printed only the
+/// run id.** Every resume entry point takes a second number — the question, the
+/// plan, the journalled call — and `parked` was handed all three inside the
+/// outcome and threw each of them away. So the assertions below are on the
+/// *specific* id and not on the line having changed: a rewording that still drops
+/// the number would pass the second and fail the first, which is the whole point.
+#[test]
+fn a_parked_run_names_the_id_that_addresses_its_pause_and_the_way_to_act_on_it() {
+    let answer = exec::parked(
+        &RunOutcome::AwaitingAnswer {
+            question_id: 219,
+            steps: 8,
+        },
+        41,
+    )
+    .expect("a question pause names its question");
+    assert!(
+        answer.contains("219"),
+        "the question id is what `resume::answer_question` takes, and the run id \
+         does not address it: {answer}",
+    );
+    assert!(answer.contains("io resume 41 --answer"), "{answer}");
+
+    let plan = exec::parked(
+        &RunOutcome::AwaitingPlan {
+            plan_id: 307,
+            steps: 2,
+        },
+        41,
+    )
+    .expect("a plan pause names its plan");
+    assert!(plan.contains("307"), "{plan}");
+    assert!(plan.contains("io resume 41 --plan"), "{plan}");
+
+    let recovery = exec::parked(
+        &RunOutcome::AwaitingRecovery {
+            attempt_id: 512,
+            steps: 3,
+        },
+        41,
+    )
+    .expect("a recovery pause names its attempt");
+    assert!(recovery.contains("512"), "{recovery}");
+    assert!(recovery.contains("io resume 41 --recovery"), "{recovery}");
+
+    // The fourth pause is the one with no `io resume` behind it. It still names
+    // its request, and it deliberately does not offer an invocation that does not
+    // exist: an approval is answered by the person the run asked.
+    let approval = exec::parked(
+        &RunOutcome::AwaitingApproval {
+            request_id: 88,
+            steps: 1,
+        },
+        41,
+    )
+    .expect("an approval pause is still a pause");
+    assert!(approval.contains("88"), "{approval}");
+    assert!(
+        !approval.contains("io resume 41 --"),
+        "there is no resume entry point for an approval; offering one would send \
+         an operator to a flag that cannot exist: {approval}",
+    );
+}
+
+/// 0.23.0 F8 — the six exit codes were pre-numbered for this subcommand, and it
+/// moved none of them.
+#[test]
+fn adding_the_resume_subcommand_moved_no_exit_code() {
+    // 0.13.0 mapped the three pauses to 4 while there was nothing that could
+    // answer one, and said in `src/exec.rs` that it did so precisely to keep this
+    // release from renumbering anything. This is that claim, asserted.
+    assert_eq!(
+        (
+            exec::OK,
+            exec::FAILED,
+            exec::REFUSED,
+            exec::CEILING,
+            exec::PAUSED,
+            exec::UNFINISHED,
+        ),
+        (0, 1, 2, 3, 4, 5),
+    );
 }
 
 #[test]
@@ -891,6 +980,25 @@ fn n1_the_headless_path_is_chosen_before_the_wizard_can_be_reached() {
         "`io exec` must leave before the non-TTY refusal, which is what it is \
          the answer to rather than a victim of",
     );
+
+    // **`io resume` owes exactly the same two orderings, and for the same two
+    // reasons.** It is headless, so a non-TTY stdout is what it is for rather
+    // than something to be refused for; and it answers a missing provider with a
+    // sentence of its own, so reaching the wizard would sit a container at a
+    // prompt nobody can answer. Added with the subcommand in 0.23.0 — the gate
+    // above had covered only the arm that existed when it was written, which is
+    // how an ordering rule stops covering the next thing that needs it.
+    let resume_arm = main
+        .find("Subcommand::Resume(args)")
+        .expect("main routes the resume subcommand");
+    assert!(
+        resume_arm < wizard,
+        "`io resume` must leave before the wizard can be reached",
+    );
+    assert!(
+        resume_arm < refusal,
+        "`io resume` must leave before the non-TTY refusal",
+    );
 }
 
 #[test]
@@ -1196,5 +1304,532 @@ fn f6_a_configuration_that_cannot_be_read_still_says_what_moved() {
     assert!(
         stdout.trim().is_empty(),
         "a run that never started wrote to the JSON stream: {stdout:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.23.0 F8 — `io resume`.
+//
+// **Nothing below drives a run, and that is deliberate.** Every one of the four
+// resume entry points takes a `Provider` and spends on it, so the property "the
+// answer reached the agent and the run carried on" cannot be established here
+// without a live model. It belongs to the live suite, which runs against a real
+// provider with a real key; what is asserted here is everything that happens
+// *before* the provider is built — the parse, the classification, the two
+// refusals and the row an operator reads — which is where every mistake this
+// subcommand can make cheaply is made.
+
+/// The `Resume` args a command line parses to, so the flag wiring is under test
+/// rather than assumed by a struct literal.
+fn resume_args(argv: &[&str]) -> io_cli::cli::Resume {
+    use clap::Parser;
+
+    let cli = io_cli::cli::Cli::try_parse_from(argv)
+        .unwrap_or_else(|error| panic!("{argv:?} should parse\n{error}"));
+    match cli.command {
+        Some(io_cli::cli::Command::Resume(args)) => args,
+        other => panic!("{argv:?} should be a resume command, got {other:?}"),
+    }
+}
+
+/// 0.23.0 F8 — every form the subcommand documents parses, on either side of the
+/// subcommand for the flags that are `global`.
+#[test]
+fn the_resume_subcommand_parses_in_every_form_it_offers() {
+    use clap::Parser;
+
+    assert!(resume_args(&["io", "resume", "--list"]).list);
+    assert_eq!(
+        resume_args(&["io", "resume", "41", "--answer", "the blue one"]).answer,
+        Some("the blue one".to_string()),
+    );
+    assert_eq!(
+        resume_args(&["io", "resume", "41", "--plan", "approve"]).plan,
+        Some(io_cli::cli::PlanFlag::Approve),
+    );
+    let revised = resume_args(&[
+        "io",
+        "resume",
+        "41",
+        "--plan",
+        "revise",
+        "--correction",
+        "start with the tests",
+    ]);
+    assert_eq!(revised.plan, Some(io_cli::cli::PlanFlag::Revise));
+    assert_eq!(revised.correction.as_deref(), Some("start with the tests"));
+    let recovered = resume_args(&[
+        "io",
+        "resume",
+        "41",
+        "--recovery",
+        "completed",
+        "--account",
+        "charge ch_9f21 captured",
+    ]);
+    assert_eq!(
+        recovered.recovery,
+        Some(io_cli::cli::RecoveryFlag::Completed)
+    );
+    assert_eq!(
+        recovered.account.as_deref(),
+        Some("charge ch_9f21 captured")
+    );
+    assert_eq!(
+        resume_args(&["io", "resume", "41", "--recovery", "abandon"]).recovery,
+        Some(io_cli::cli::RecoveryFlag::Abandon),
+    );
+    // A run whose process merely died needs nothing at all.
+    let bare = resume_args(&["io", "resume", "41"]);
+    assert_eq!(bare.run, Some(41));
+    assert!(bare.answer.is_none() && bare.plan.is_none() && bare.recovery.is_none());
+    // The three flags a headless run already takes, meaning the same three things.
+    let shaped = resume_args(&[
+        "io",
+        "resume",
+        "41",
+        "--json",
+        "--policy",
+        "read-only",
+        "--provider",
+        "openrouter",
+    ]);
+    assert!(shaped.json);
+    assert_eq!(shaped.policy, Some(PolicyFlag::ReadOnly));
+    assert_eq!(shaped.provider, Some(FromEnv::OpenRouter));
+
+    // The global flags, on both sides. 0.5.0 shipped a defect where `-m` after
+    // the subcommand was rejected, and a new subcommand is exactly where that
+    // comes back.
+    for argv in [
+        vec!["io", "-m", "a-model", "resume", "--list"],
+        vec!["io", "resume", "--list", "-m", "a-model"],
+    ] {
+        let cli = io_cli::cli::Cli::try_parse_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?} should parse\n{error}"));
+        assert_eq!(cli.model.as_deref(), Some("a-model"), "{argv:?}");
+        assert!(matches!(cli.command, Some(io_cli::cli::Command::Resume(_))));
+    }
+    for argv in [
+        vec!["io", "-C", "/tmp/x", "resume", "41", "--answer", "yes"],
+        vec!["io", "resume", "41", "--answer", "yes", "-C", "/tmp/x"],
+    ] {
+        let cli = io_cli::cli::Cli::try_parse_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?} should parse\n{error}"));
+        assert_eq!(cli.dir.as_deref(), Some(std::path::Path::new("/tmp/x")));
+    }
+    for argv in [
+        vec!["io", "--plain", "resume", "--list"],
+        vec!["io", "resume", "--list", "--plain"],
+        vec!["io", "--profile", "ci", "resume", "--list"],
+        vec!["io", "resume", "--list", "--profile", "ci"],
+    ] {
+        assert!(
+            io_cli::cli::Cli::try_parse_from(&argv).is_ok(),
+            "{argv:?} should parse",
+        );
+    }
+
+    // And the shapes clap itself refuses, which are the ones no code below would
+    // otherwise have to think about.
+    for argv in [
+        // Neither an id nor a listing.
+        vec!["io", "resume"],
+        // A listing of one run is not a thing.
+        vec!["io", "resume", "--list", "41"],
+        // A correction with no plan to correct, and an account with no call.
+        vec!["io", "resume", "41", "--correction", "do it differently"],
+        vec!["io", "resume", "41", "--account", "it landed"],
+    ] {
+        assert!(
+            io_cli::cli::Cli::try_parse_from(&argv).is_err(),
+            "{argv:?} should not parse",
+        );
+    }
+}
+
+/// 0.23.0 F8 — a turn the operator stopped is finished, not paused, and the
+/// refusal points at `/fork` exactly as the interactive surface does.
+#[test]
+fn an_interrupted_turn_is_refused_and_offered_fork_from_the_turn_before() {
+    // `Ctrl+C` returns `Flow::Cancel`, the loop records `cancelled`, `finish_run`
+    // maps that to a *completed* status, and every resume entry point
+    // short-circuits on a completed run and hands back the original outcome
+    // having driven nothing. So the commonest way an io-cli turn stops is the one
+    // way it cannot be continued, and an operator who types the id anyway must be
+    // told that in words rather than by a resume that silently did nothing.
+    let refusal = exec::decision_for(
+        41,
+        &io_cli::resume::Pending::Interrupted,
+        &resume_args(&["io", "resume", "41"]),
+    )
+    .expect_err("an interrupted turn cannot be carried on");
+
+    assert!(refusal.contains("41"), "{refusal}");
+    assert!(
+        refusal.contains("/fork"),
+        "the refusal must offer the honest neighbouring answer rather than only \
+         decline: {refusal}",
+    );
+    assert!(
+        refusal.contains("stopped by you"),
+        "it must say the operator ended it, not that something went wrong: {refusal}",
+    );
+
+    // The same sentence `crate::resume` gives, rather than a second wording of it.
+    assert_eq!(
+        refusal,
+        io_cli::resume::Failure::Interrupted { run_id: 41 }.to_string(),
+    );
+
+    // A run that simply ended is refused too, and says something different.
+    let ended = exec::decision_for(
+        41,
+        &io_cli::resume::Pending::Finished,
+        &resume_args(&["io", "resume", "41"]),
+    )
+    .expect_err("an ended run has nothing to carry on");
+    assert!(ended.contains("has ended"), "{ended}");
+}
+
+/// 0.23.0 F8 — a bare run has no recoverable goal, so one is asked for rather
+/// than invented.
+#[test]
+fn a_bare_run_with_no_supplied_goal_is_refused_rather_than_run_against_an_empty_one() {
+    // `runs.goal` has no public reader. `resume::goal_for` recovers the operator's
+    // own words from the session turn a run served and answers `None` for a run
+    // that served none — which is every run `io exec` starts. A contract built
+    // from that `None` would set the agent a task nobody asked for and spend a
+    // budget pursuing it.
+    let refusal = exec::goal_or_refusal(41, None, None)
+        .expect_err("a bare run's goal cannot be recovered, so it must be asked for");
+    assert!(refusal.contains("41"), "{refusal}");
+    assert!(
+        refusal.contains("--goal"),
+        "the refusal must name the way out: {refusal}",
+    );
+    assert!(
+        refusal.contains("no session turn"),
+        "it must say why the goal is missing, or it reads as a bug: {refusal}",
+    );
+
+    // Supplied on the command line, and the run is resumable.
+    assert_eq!(
+        exec::goal_or_refusal(41, None, Some("write the note")).expect("a supplied goal is enough"),
+        "write the note",
+    );
+    // Whitespace is not a goal. This is the shape a shell hands over for
+    // `--goal ""`, and accepting it is the empty contract by another road.
+    assert!(exec::goal_or_refusal(41, None, Some("   ")).is_err());
+
+    // A run that served a turn needs no flag, and a flag beats what was recovered
+    // — that is the operator re-aiming their own run.
+    assert_eq!(
+        exec::goal_or_refusal(41, Some("write the note".into()), None).expect("recovered"),
+        "write the note",
+    );
+    assert_eq!(
+        exec::goal_or_refusal(41, Some("write the note".into()), Some("write two notes"))
+            .expect("supplied"),
+        "write two notes",
+    );
+}
+
+/// 0.23.0 F8 — a listed run names the id that addresses it, in both streams.
+#[test]
+fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
+    use io_cli::resume::Pending;
+
+    let question = Pending::Question {
+        question_id: 219,
+        question: "which environment?".into(),
+        context: None,
+        choices: vec![],
+        step: 12,
+    };
+    let plain = exec::listed(41, &question, false).expect("a question is a row");
+    assert!(plain.contains("41") && plain.contains("219"), "{plain}");
+
+    let row = exec::listed(41, &question, true).expect("a question is a row");
+    let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
+    assert_eq!(value["run_id"], 41);
+    assert_eq!(value["waiting_on"], "question");
+    assert_eq!(value["id"], 219);
+    assert_eq!(value["step"], 12);
+
+    let plan = exec::listed(
+        41,
+        &Pending::Plan {
+            plan_id: 307,
+            steps: vec![],
+            step: 5,
+        },
+        true,
+    )
+    .expect("a plan is a row");
+    let value: serde_json::Value = serde_json::from_str(&plan).expect("one JSON object");
+    assert_eq!(value["waiting_on"], "plan");
+    assert_eq!(value["id"], 307);
+
+    let recovery = exec::listed(
+        41,
+        &Pending::Recovery {
+            attempt_id: 512,
+            tool: "charge".into(),
+            step: 4,
+        },
+        true,
+    )
+    .expect("an interrupted call is a row");
+    let value: serde_json::Value = serde_json::from_str(&recovery).expect("one JSON object");
+    assert_eq!(value["waiting_on"], "recovery");
+    assert_eq!(value["id"], 512);
+
+    // A run whose process went away has no second id, and says so with a null
+    // rather than with a number it made up.
+    let died =
+        exec::listed(41, &Pending::Died { last_step: 6 }, true).expect("a died run is a row");
+    let value: serde_json::Value = serde_json::from_str(&died).expect("one JSON object");
+    assert_eq!(value["waiting_on"], "died");
+    assert!(value["id"].is_null(), "{died}");
+    assert_eq!(value["step"], 6);
+
+    // Under `--json` every row is one object and nothing else, the same split
+    // `io exec --json` makes.
+    for pending in [&question, &Pending::Died { last_step: 6 }] {
+        let row = exec::listed(41, pending, true).expect("a row");
+        assert!(row.starts_with('{') && row.ends_with('}'), "{row}");
+    }
+}
+
+/// 0.23.0 F8 — the two runs nobody is waiting on are not offered as work.
+#[test]
+fn a_run_that_cannot_be_carried_on_is_not_a_row_in_the_listing() {
+    // Listing them under a heading that means "waiting for you" would offer work
+    // that does not exist. An operator who names one by hand is told why by
+    // `decision_for`; a listing that showed them would send people there.
+    for pending in [
+        io_cli::resume::Pending::Interrupted,
+        io_cli::resume::Pending::Finished,
+    ] {
+        assert_eq!(exec::listed(41, &pending, false), None, "{pending:?}");
+        assert_eq!(exec::listed(41, &pending, true), None, "{pending:?}");
+    }
+}
+
+/// 0.23.0 F8 — each pause takes its own input, carrying its own id.
+#[test]
+fn each_pause_produces_the_decision_that_carries_its_own_id() {
+    use io_cli::exec::Decision;
+    use io_cli::resume::Pending;
+    use io_harness::{PlanVerdict, RecoveryDecision};
+
+    let question = Pending::Question {
+        question_id: 219,
+        question: "which environment?".into(),
+        context: None,
+        choices: vec![],
+        step: 12,
+    };
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &question,
+            &resume_args(&["io", "resume", "41", "--answer", "the staging one"])
+        )
+        .expect("an answered question resumes"),
+        Decision::Answer {
+            question_id: 219,
+            answer: "the staging one".into(),
+        },
+    );
+
+    let plan = Pending::Plan {
+        plan_id: 307,
+        steps: vec![],
+        step: 5,
+    };
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &plan,
+            &resume_args(&["io", "resume", "41", "--plan", "approve"])
+        )
+        .expect("an approved plan resumes"),
+        Decision::Plan {
+            plan_id: 307,
+            verdict: PlanVerdict::Approve,
+        },
+    );
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &plan,
+            &resume_args(&[
+                "io",
+                "resume",
+                "41",
+                "--plan",
+                "revise",
+                "--correction",
+                "start with the tests"
+            ])
+        )
+        .expect("a revised plan resumes"),
+        Decision::Plan {
+            plan_id: 307,
+            verdict: PlanVerdict::revise("start with the tests"),
+        },
+    );
+
+    let recovery = Pending::Recovery {
+        attempt_id: 512,
+        tool: "charge".into(),
+        step: 4,
+    };
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &recovery,
+            &resume_args(&[
+                "io",
+                "resume",
+                "41",
+                "--recovery",
+                "completed",
+                "--account",
+                "charge ch_9f21 captured"
+            ])
+        )
+        .expect("an established call resumes"),
+        Decision::Recovery {
+            attempt_id: 512,
+            decision: RecoveryDecision::Completed {
+                observation: "charge ch_9f21 captured".into(),
+            },
+        },
+    );
+    // `abandon` is the operator's word for the harness's `Abort`, which on a
+    // command line would read as *stop the program*.
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &recovery,
+            &resume_args(&["io", "resume", "41", "--recovery", "abandon"])
+        )
+        .expect("an abandoned call resumes"),
+        Decision::Recovery {
+            attempt_id: 512,
+            decision: RecoveryDecision::Abort,
+        },
+    );
+
+    // A run whose process went away has nothing for anyone to decide.
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &Pending::Died { last_step: 6 },
+            &resume_args(&["io", "resume", "41"])
+        )
+        .expect("a died run carries on"),
+        Decision::CarryOn,
+    );
+}
+
+/// 0.23.0 F8 — a flag for a pause the run is not on is refused, not ignored.
+#[test]
+fn a_flag_that_decides_the_wrong_pause_is_refused_and_names_the_right_one() {
+    use io_cli::resume::Pending;
+
+    // clap cannot see which pause a run is holding; only the store can. So
+    // `--plan approve` typed at a run waiting on a question parses cleanly and is
+    // an operator authorising something they have not been shown.
+    let question = Pending::Question {
+        question_id: 219,
+        question: "which environment?".into(),
+        context: None,
+        choices: vec![],
+        step: 12,
+    };
+    let wrong = exec::decision_for(
+        41,
+        &question,
+        &resume_args(&["io", "resume", "41", "--plan", "approve"]),
+    )
+    .expect_err("a plan verdict does not answer a question");
+    assert!(wrong.contains("--plan"), "{wrong}");
+    assert!(
+        wrong.contains("219") && wrong.contains("--answer"),
+        "the refusal must name what the run IS waiting on and how to answer it: {wrong}",
+    );
+
+    // The same flag missing altogether gets the same sentence, because it is the
+    // same question an operator is asking.
+    let missing = exec::decision_for(41, &question, &resume_args(&["io", "resume", "41"]))
+        .expect_err("a question needs an answer");
+    assert!(
+        missing.contains("219") && missing.contains("--answer"),
+        "{missing}"
+    );
+
+    // And a run with nothing to decide takes none of the three.
+    let died = exec::decision_for(
+        41,
+        &Pending::Died { last_step: 6 },
+        &resume_args(&["io", "resume", "41", "--answer", "yes"]),
+    )
+    .expect_err("a died run has no question to answer");
+    assert!(
+        died.contains("--answer") && died.contains("step 6"),
+        "{died}"
+    );
+}
+
+/// 0.23.0 F8 — the two payload flags are refused where they would be dropped.
+#[test]
+fn a_payload_without_its_verdict_and_a_verdict_without_its_payload_are_both_refused() {
+    use io_cli::cli::{PlanFlag, RecoveryFlag};
+    use io_harness::{PlanVerdict, RecoveryDecision};
+
+    // `--plan revise` with nothing to change is a plan sent back saying nothing,
+    // and `--plan approve --correction "…"` is somebody who meant `revise` — where
+    // dropping the correction runs the very plan they were trying to change.
+    assert!(exec::verdict_for(PlanFlag::Revise, None)
+        .expect_err("revise needs a correction")
+        .contains("--correction"));
+    assert!(exec::verdict_for(PlanFlag::Revise, Some("  "))
+        .expect_err("whitespace is not a correction")
+        .contains("--correction"));
+    let misplaced = exec::verdict_for(PlanFlag::Approve, Some("do it differently"))
+        .expect_err("a correction does not belong to approve");
+    assert!(misplaced.contains("--plan revise"), "{misplaced}");
+    assert_eq!(
+        exec::verdict_for(PlanFlag::Approve, None).expect("approve"),
+        PlanVerdict::Approve,
+    );
+    assert_eq!(
+        exec::verdict_for(PlanFlag::Cancel, None).expect("cancel"),
+        PlanVerdict::Cancel,
+    );
+
+    // `--recovery completed` with no account tells the agent a call landed and
+    // then says nothing about what it returned, which is the transcript hole the
+    // whole recovery pause exists to close.
+    assert!(exec::recovery_for(RecoveryFlag::Completed, None)
+        .expect_err("completed needs an account")
+        .contains("--account"));
+    assert!(exec::recovery_for(RecoveryFlag::Completed, Some(""))
+        .expect_err("an empty account is not an account")
+        .contains("--account"));
+    let stray = exec::recovery_for(RecoveryFlag::Retry, Some("it landed"))
+        .expect_err("an account does not belong to retry");
+    assert!(stray.contains("--recovery completed"), "{stray}");
+    assert_eq!(
+        exec::recovery_for(RecoveryFlag::Retry, None).expect("retry"),
+        RecoveryDecision::Retry,
+    );
+    assert_eq!(
+        exec::recovery_for(RecoveryFlag::Abandon, None).expect("abandon"),
+        RecoveryDecision::Abort,
     );
 }

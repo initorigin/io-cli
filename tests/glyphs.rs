@@ -204,9 +204,10 @@ fn a_shortened_string_still_says_that_it_was_shortened() {
 fn the_two_sets_agree_on_every_width_the_layout_depends_on() {
     // The status line drops whole fields by counting the separator, the picker
     // places the terminal cursor just past the marker, and `sessions::rows`
-    // budgets four cells for the marker and the gap. All three are arithmetic
-    // over a constant, and they stay arithmetic over a constant only because
-    // these two agree.
+    // budgets four cells for the marker and the gap — plus, since 0.23.0, the
+    // width of the state mark on a row that carries one, which is measured
+    // rather than assumed. All three are arithmetic over a constant, and they
+    // stay arithmetic over a constant only because these two agree.
     assert_eq!(
         UNICODE.separator.chars().count(),
         ASCII.separator.chars().count(),
@@ -662,6 +663,10 @@ fn the_resume_rows_draw_in_ascii_and_keep_the_facts_that_fit() {
         turns: 6,
         prompt: "make the retry loop back off instead of hammering the endpoint".into(),
         at: "2026-08-17 02:31".into(),
+        // As in `tests/narrow.rs`: `Finished` is the no-mark case, so this row's
+        // detail budget is unchanged and the sweep below still sees the same
+        // string it was written for.
+        pending: io_cli::resume::Pending::Finished,
     }];
     let rows = io_cli::sessions::rows(&sessions, 80, &ASCII);
     let row = rows.first().expect("one session, one row");
