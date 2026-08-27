@@ -647,3 +647,229 @@ fn n4_every_row_fits_eighty_columns_in_both_glyph_sets() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// `declared_at` — the bridge from a row on screen to an entry in a file
+// ---------------------------------------------------------------------------
+//
+// `/plugin`'s remove is `edit::Edit::remove("plugin[i]")`, and `i` is an index
+// into one file's `[[plugin]]` array. Nothing io-harness returns carries that
+// number: `Config::plugins()` hands back loaded bundles and dropped ones as two
+// lists ordered by neither the file nor the entry, and it never says which of the
+// three scopes declared any of them. So the only thing a row and an entry share is
+// the path, and `declared_at` is the whole of the crossing. Everything below is
+// about the two ways that crossing can be wrong — landing on the wrong entry, or
+// claiming to have found one that is not there — because both are silent: the
+// operator loses a bundle they never mentioned and finds out a week later when its
+// skills stop being offered.
+//
+// These fixtures declare paths inside a fresh `tempfile` root, so the user-scope
+// file `declared_at` also reads on the machine running the suite cannot name one
+// of them and cannot answer instead.
+
+/// A `[[plugin]]` entry naming `path`, spelled as a TOML basic string.
+///
+/// The backslash escaping is not decoration: `pluginview::add` writes the value
+/// through `quoted` for the same reason, and an unescaped absolute Windows path in
+/// `path = "C:\Users\..."` is a different path or a parse error. A fixture that
+/// wrote `format!("path = \"{}\"", ...)` would be green on Unix and would test the
+/// wrong string on the one platform the escaping exists for.
+fn declaration(path: &Path) -> String {
+    format!(
+        "[[plugin]]\npath = \"{}\"\n\n",
+        path.display().to_string().replace('\\', "\\\\")
+    )
+}
+
+/// The entry's index is the entry's own, not the position of anything else.
+///
+/// The target sits second of three in the file, and the two either side are there
+/// so that an off-by-one, a `.position()` over the loaded list, or a row number
+/// from `rows` cannot accidentally agree with the right answer.
+///
+/// Sabotage: return the row's index — `rows(&view, ..)` position — instead of
+/// walking the file, which is exactly the shortcut this function exists to refuse
+/// and which reads as obviously equivalent in review. Under it only this test
+/// fails, and what ships is `/plugin` confirming the bundle on screen and deleting
+/// the `[[plugin]]` entry above or below it.
+#[test]
+fn declared_at_finds_the_entrys_own_index_and_not_a_position_in_some_other_list() {
+    let (_dir, root) = root();
+    let target = root.join("bundles/rust-review");
+    let text = format!(
+        "{}{}{}",
+        declaration(&root.join("bundles/first")),
+        declaration(&target),
+        declaration(&root.join("bundles/third")),
+    );
+    std::fs::write(root.join(LOCAL_FILE), text).expect("the configuration");
+
+    assert_eq!(
+        pluginview::declared_at(&root, &target),
+        Some((io_harness::config::Scope::Local, 1)),
+        "the second of three entries is entry one",
+    );
+    // The neighbours resolve to themselves, so the answer above is a match rather
+    // than a constant.
+    assert_eq!(
+        pluginview::declared_at(&root, &root.join("bundles/third")),
+        Some((io_harness::config::Scope::Local, 2)),
+    );
+}
+
+/// A declaration written relative and one written absolute name the same
+/// directory, and both are found.
+///
+/// Both spellings are legal and both are common — `path = "bundles/rust-review"`
+/// is what an operator types, and `pluginview::add` writes whatever the picker
+/// resolved, which is absolute. What comes back from `Config::plugins()` is always
+/// the resolved directory, so a comparison against the raw string alone would find
+/// the relative entry never, and a comparison against the resolved value alone
+/// would find nothing in a file whose author wrote an absolute path with a
+/// trailing difference. Both roads are walked and this asserts both.
+///
+/// Sabotage: drop the `resolved` half and compare only `declared == bundle`. Under
+/// it only this test fails, and it fails in the direction that costs most: every
+/// relative declaration — the spelling a human writes by hand — becomes a bundle
+/// `/plugin` can list and can never remove, so the panel's remove key refuses on a
+/// row that is plainly there.
+#[test]
+fn declared_at_matches_a_relative_declaration_and_an_absolute_one_alike() {
+    let bundle = "bundles/rust-review";
+
+    let (_dir, relative) = root();
+    std::fs::write(
+        relative.join(LOCAL_FILE),
+        format!("[[plugin]]\npath = \"{bundle}\"\n"),
+    )
+    .expect("the configuration");
+    assert_eq!(
+        pluginview::declared_at(&relative, &relative.join(bundle)),
+        Some((io_harness::config::Scope::Local, 0)),
+        "a relative declaration is resolved against the root before it is compared",
+    );
+
+    let (_dir, absolute) = root();
+    let resolved = absolute.join(bundle);
+    std::fs::write(absolute.join(LOCAL_FILE), declaration(&resolved)).expect("the configuration");
+    assert_eq!(
+        pluginview::declared_at(&absolute, &resolved),
+        Some((io_harness::config::Scope::Local, 0)),
+        "an absolute declaration is compared as written",
+    );
+}
+
+/// A path no file names is `None`, and that is the answer the caller has to be
+/// able to get.
+///
+/// **The most important test here, and the one whose absence is invisible.** The
+/// caller's alternative to `None` is removing *something* — the nearest index, row
+/// zero, the last entry it looked at — and every one of those deletes a
+/// `[[plugin]]` line the operator never pointed at. There is no error, no
+/// confirmation that reads wrong, and no way back: the bundle is simply gone from
+/// the file, and the next session is missing skills, agents and MCP servers nobody
+/// removed.
+///
+/// The fixture declares a real entry, so `None` here is a miss rather than an
+/// empty file — and the near-miss path is a sibling of the declared one, because
+/// the mistakes this guards against are prefix and suffix confusions rather than
+/// wild pointers.
+///
+/// Sabotage: end the scope loop with `Some((Scope::Local, 0))` instead of `None`
+/// — a "we must have meant the first one" fallback, the kind that gets added to
+/// silence an `Option` the caller found awkward. Under it only this test fails.
+#[test]
+fn declared_at_refuses_a_path_no_file_names_rather_than_guessing() {
+    let (_dir, root) = root();
+    std::fs::write(
+        root.join(LOCAL_FILE),
+        declaration(&root.join("bundles/rust-review")),
+    )
+    .expect("the configuration");
+
+    for missing in [
+        root.join("bundles/rust-reviewer"),
+        root.join("bundles/rust-review/skills"),
+        root.join("bundles"),
+        root.join("elsewhere/rust-review"),
+    ] {
+        assert_eq!(
+            pluginview::declared_at(&root, &missing),
+            None,
+            "{} is named by no file, and the caller was handed an entry to delete",
+            missing.display(),
+        );
+    }
+
+    // The declared one is still found, so the four answers above are misses rather
+    // than a function that has stopped working.
+    assert!(pluginview::declared_at(&root, &root.join("bundles/rust-review")).is_some());
+}
+
+/// Declared in two scopes, the local file answers.
+///
+/// Local-first is the precedence io-harness itself applies, so the entry that was
+/// actually deciding is the entry that gets removed. Removing the project one
+/// instead is worse than doing nothing twice over: the bundle keeps loading —
+/// `io.local.toml` still names it — and the operator has silently edited a file
+/// that is committed and shared with everyone else on the repository.
+///
+/// Sabotage: iterate `[Scope::User, Scope::Project, Scope::Local]`, which is the
+/// order the enum declares its variants in and therefore the order a rewrite
+/// naturally reaches for. Under it only this test fails.
+#[test]
+fn declared_at_answers_the_local_file_when_two_scopes_declare_the_same_bundle() {
+    let (_dir, root) = root();
+    let target = root.join("bundles/rust-review");
+    // Two entries in the project file, so a scope confusion would also land on a
+    // different index and cannot be mistaken for a coincidence.
+    std::fs::write(
+        root.join(PROJECT_FILE),
+        format!(
+            "{}{}",
+            declaration(&root.join("bundles/first")),
+            declaration(&target)
+        ),
+    )
+    .expect("the project configuration");
+    std::fs::write(root.join(LOCAL_FILE), declaration(&target)).expect("the local configuration");
+
+    assert_eq!(
+        pluginview::declared_at(&root, &target),
+        Some((io_harness::config::Scope::Local, 0)),
+        "the file that was deciding is the file that is edited",
+    );
+}
+
+/// A configuration with no `[[plugin]]` at all is `None`, and so is no
+/// configuration at all.
+///
+/// The walk stops at the first index `value_at` cannot answer, on the argument
+/// that an array of tables is contiguous. At index zero of a file that has no such
+/// array that argument has to terminate the loop rather than run it — and a file
+/// that is not there at all has to be skipped rather than end the search of the
+/// scopes after it.
+///
+/// Sabotage: `for index in 0..` with a `continue` on the miss instead of a
+/// `break`. Nothing fails: the suite is green, `/plugin` works, and the process
+/// hangs on the first configuration that declares no bundle — which is every
+/// configuration in the world until somebody writes their first `[[plugin]]`.
+/// Under this test it fails by never returning, which is what a hang looks like in
+/// a suite and is the only way this shape can be caught at all.
+#[test]
+fn declared_at_is_none_where_no_file_declares_a_plugin_array() {
+    let (_dir, empty) = root();
+    std::fs::write(empty.join(LOCAL_FILE), "[run]\nmax_steps = 40\n").expect("the configuration");
+    assert_eq!(
+        pluginview::declared_at(&empty, &empty.join("bundles/rust-review")),
+        None,
+    );
+
+    // And with nothing written at all, so an unreadable scope file is skipped
+    // rather than ending the search.
+    let (_dir, bare) = root();
+    assert_eq!(
+        pluginview::declared_at(&bare, &bare.join("bundles/rust-review")),
+        None,
+    );
+}

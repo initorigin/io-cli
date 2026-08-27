@@ -1456,7 +1456,13 @@ impl App {
                 //
                 // With text in the composer `Enter` goes on meaning what it means
                 // everywhere else, which is *queue this*.
-                KeyCode::Enter if self.composer.is_empty() => {
+                // **`modifiers.is_empty()` as well, because a bare `Enter` and a
+                // `Shift+Enter` are different keys and only the first is this
+                // one.** Guarding on the empty composer alone still swallowed the
+                // newline at an empty prompt: an operator opening a multi-line
+                // prompt with `Shift+Enter` while watching a fan-out got nothing,
+                // which is the same defect one keystroke smaller.
+                KeyCode::Enter if self.composer.is_empty() && key.modifiers.is_empty() => {
                     if let Some(child) = self.fleet.selected_child() {
                         if child.state == crate::fleet::State::Detached {
                             return Command::Attach(child.run_id);
