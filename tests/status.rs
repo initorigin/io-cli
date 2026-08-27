@@ -2015,3 +2015,120 @@ fn n3_the_queue_depth_survives_forgetting_the_run() {
         );
     }
 }
+
+/// A session at the width and in the state the 0.21.0 live capture caught.
+///
+/// Nothing here is invented for the test. The posture and the containment word
+/// are the pair `Status::fields` names in its own comment as the real thing —
+/// `workspace-write/macos-sandbox-exec`, thirty-four characters — and the
+/// counters are the ones the footer had when the last turn ended: six steps,
+/// twenty-six point nine thousand tokens, twenty-three percent of the window,
+/// and the idle key hint. That row is forty-six characters, the right-hand
+/// group is fifty-seven, and a hundred columns cannot hold both.
+fn full_row() -> Status {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.policy = Some("read-only".into());
+    status.containment = Some("workspace-write/macos-sandbox-exec".into());
+    status.planning = true;
+    status.steps = Some(6);
+    status.tokens = Some(26_900);
+    status.context = Some(23);
+    status
+}
+
+/// **F4 — a counts row that will not fit costs a counter, never the mode.**
+///
+/// `row` fits the footer's right-hand group all or nothing, and the counts row
+/// used to be handed to it whole: one character over and the posture, the
+/// containment word and the planning phase all left the screen together while
+/// every counter stayed. In the 0.21.0 live capture that is exactly what
+/// happened — the working frame drew the group at column forty-four and the
+/// finished frame, five characters wider because `esc stops` had become `/ for
+/// commands`, drew no group at all. The operator finished a turn under `/plan
+/// on` with nothing on screen saying io-harness would refuse the next write.
+///
+/// It is the failure F4 was written against, reached from the other direction,
+/// and it is a regression with a date: the same capture passes on 0.12.0 and
+/// 0.13.1, whose row was `4 steps · 14.2k tok · / for commands` and left room.
+/// Adding `ctx N%` to the counts row spent the last ten columns.
+///
+/// Which side gives is settled by the module rather than by this test: a
+/// standing mode that stops the agent writing outranks what the last turn
+/// spent. So the assertion is not merely that `planning` survives — it is that
+/// a counter went instead, and that the counters left are the leftmost ones.
+///
+/// Sabotage: hand `counts` to `row` unnarrowed, which is the 0.21.0 code — under
+/// which only this pair of tests fails, and it fails at the one width an
+/// eighty-to-a-hundred-and-twenty-column terminal is most likely to be.
+#[test]
+fn f4_a_full_counts_row_drops_a_counter_and_not_the_planning_phase() {
+    let text = footed(&full_row(), 100);
+
+    assert!(
+        text.contains("planning"),
+        "the mode that stops the agent writing left the row: {text:?}",
+    );
+    assert!(
+        text.contains("workspace-write/macos-sandbox-exec") && text.contains("read-only"),
+        "the phase took the rest of its group with it: {text:?}",
+    );
+    // What paid for it, and which end it was taken off. The key hint is the
+    // rightmost counter and the least of them — `/help` is the help screen —
+    // and the fields left are the ones the row is ordered to keep.
+    assert!(
+        !text.contains("/ for commands"),
+        "nothing was dropped, so the row cannot have fitted: {text:?}",
+    );
+    assert!(
+        text.contains("6 steps") && text.contains("26.9k tok") && text.contains("ctx 23%"),
+        "counters came off the wrong end: {text:?}",
+    );
+}
+
+/// **F4 — and it holds with one more counter on the row, at every width the
+/// group can be drawn at.**
+///
+/// The companion above pins the geometry that actually failed; this one pins
+/// the property, because the geometry is about to move. The counts row grows
+/// every release — `ctx N%` is what tipped 0.21.0 over, and the cost counter
+/// this release adds sits in the same group and makes the row wider still — so
+/// a test that asserted one magic width would go green on the arithmetic of the
+/// week it was written and say nothing about the week after.
+///
+/// `plan 2/5` stands in for that next counter: it is a real member of the same
+/// row, it is eight characters plus a separator, and with it the row no longer
+/// fits at any width in the sweep on the first trim. The sweep starts at seventy
+/// because a right-hand group of fifty-seven plus the leftmost counter is
+/// sixty-four columns, and below that there is no row that holds both — the
+/// trim stops at one counter deliberately, since a row that had given up every
+/// number would be reporting the mode by erasing the session.
+///
+/// Sabotage: pop from the front of `counts` instead of the back — under which
+/// this test still passes at every width and the one above fails on `6 steps`,
+/// which is why both are here.
+#[test]
+fn f4_the_planning_phase_holds_at_every_width_that_can_hold_the_group() {
+    let mut status = full_row();
+    status.plan = Some((2, 5));
+
+    for width in 70..=160u16 {
+        let text = footed(&status, width);
+        assert!(
+            text.contains("planning"),
+            "the planning phase is off the footer at {width} columns: {text:?}",
+        );
+        // The row it was fitted into is still a row. A trim that undercounted
+        // would put the group past the edge instead of dropping a counter.
+        for line in status.footer(width, &DARK) {
+            let drawn: usize = line
+                .spans
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum();
+            assert!(
+                drawn <= width as usize,
+                "a footer row overflowed {width} columns: {line:?}",
+            );
+        }
+    }
+}

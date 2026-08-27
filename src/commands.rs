@@ -232,6 +232,18 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/clear",
         "start a new conversation; this one stays in /resume",
     ),
+    // The two halves of one question, and they are two commands because they are
+    // two questions. `/cost` says what the work cost; `/stats` says whether it
+    // worked. Every agent that has both keeps them apart, and a single screen
+    // carrying thirteen sections would be one nobody reads to the end.
+    (
+        "/cost",
+        "commit what this run, this session and this install have spent",
+    ),
+    (
+        "/stats",
+        "commit how the runs have gone: outcomes, first-try, gates, latency",
+    ),
 ];
 
 /// What an operator is doing when they reach for a command.
@@ -306,10 +318,33 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Session,
         &["/clear", "/resume", "/fork", "/setup", "/exit"],
     ),
+    // **`/image`, `/copy` and `/copy diff` moved here in 0.22.0, and it is a
+    // correction rather than a way of making room** — the same sentence 0.19.0
+    // wrote when it moved `/mcp` and `/provider`, and it is worth being able to
+    // say it twice. All three act on the turn that just finished: `/image` draws
+    // an image attached to it, `/copy` puts its answer or its diff on the
+    // clipboard. None of them asks the store a question, which is what `Inspect`
+    // means. They were filed there because they *show* something, and showing is
+    // not the same as inspecting.
+    //
+    // `/cost` and `/stats` are what made the misfiling worth correcting: `Inspect`
+    // stood at nine of a bound of ten and both new commands belong in it, so the
+    // choice was between re-filing three commands that were in the wrong group and
+    // filing two more that would have been. The bound exists to stop the grouped
+    // menu becoming the flat list it replaced, and answering it by weakening it
+    // would have given up the thing it was protecting.
     (
         Group::Turn,
         &[
-            "/model", "/contain", "/plan", "/profile", "/steer", "/compact",
+            "/model",
+            "/contain",
+            "/plan",
+            "/profile",
+            "/steer",
+            "/compact",
+            "/image",
+            "/copy",
+            "/copy diff",
         ],
     ),
     (
@@ -321,9 +356,8 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/expand",
             "/fleet",
             "/skills",
-            "/image",
-            "/copy",
-            "/copy diff",
+            "/cost",
+            "/stats",
         ],
     ),
     // **`/mcp` and `/provider` moved here in 0.19.0, and it is a correction rather
@@ -815,6 +849,24 @@ pub enum Action {
     /// budgets in force, the context fill, the servers that came up — so what is
     /// committed is the state io-harness is in and not io-cli's account of it.
     Status,
+    /// Commit what has been spent into the scrollback.
+    ///
+    /// The sibling of [`Action::Status`] and drawn the same way, for the same
+    /// reason: this is a page a reader wants to keep beside the turns it accounts
+    /// for, and the terminal's own scrollback is where it keeps things. What
+    /// separates the two is the question. `/status` says what the session *is*
+    /// — the policy, the caps, the budgets in force; this says what it has *cost*,
+    /// which is a different fact about the same run and one that only ever climbs.
+    Cost,
+    /// Commit how the runs have gone into the scrollback.
+    ///
+    /// Deliberately not folded into [`Action::Cost`] under one name. What a run
+    /// cost and whether it worked are two questions, and the answer to the second
+    /// — outcomes, the first-try share, gate failures by phase, latency — is
+    /// eight sections that have no money in them at all. One page carrying both
+    /// would be thirteen sections deep and a reader looking for either would
+    /// scroll past the other.
+    Stats,
     /// Send what is queued into the turn that is already running.
     ///
     /// io-harness delivers it at the next step boundary, so the step in flight
@@ -1558,12 +1610,27 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // second screen: both open the one surface.
         "import" | "migrate" => Action::Import,
         // **An alias earns no row of its own.** `/usage` is what an operator
-        // coming from another agent types for "what is this costing me", and the
-        // answer is `/status` — which already commits the spend, the budgets and
-        // what is left of them. A second row for one screen reads as a second
-        // screen, so this is answered and never listed: it is absent from
-        // `COMMANDS`, from the palette and from every group.
-        "usage" => Action::Status,
+        // coming from another agent types for "what is this costing me", and a
+        // second row for one screen reads as a second screen — so this is
+        // answered and never listed: it is absent from `COMMANDS`, from the
+        // palette and from every group.
+        //
+        // **It answered `/status` until 0.22.0, and the argument for that was
+        // sound right up until it was not.** The note here read: the answer is
+        // `/status`, which already commits the spend, the budgets and what is left
+        // of them. That was the closest thing this program had to a spending
+        // surface, and it was a token draw against a ceiling rather than a cost.
+        // The moment a page exists whose whole subject is what has been spent, an
+        // operator typing the field's word for that page and landing on the
+        // session's configuration is being answered a question they did not ask.
+        //
+        // It stays an alias rather than becoming a third screen. `/usage` means
+        // plan and rate-limit status everywhere else it exists, and this product
+        // has no plan and no rate limit of its own to report — so a distinct
+        // `/usage` here would be a screen with nothing on it.
+        "usage" => Action::Cost,
+        "cost" => Action::Cost,
+        "stats" => Action::Stats,
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {

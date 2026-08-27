@@ -2822,6 +2822,38 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // The sibling of `Action::Status` above and wired the same way,
+                // with one difference worth stating: this arm holds no decision
+                // at all. Every sentence, every figure and every caveat is
+                // `io_cli::cost::committed`, because nothing under `tests/` can
+                // link this file — so a format string here would be a format
+                // string no test could ever read.
+                Action::Cost => {
+                    // Asked of the configuration again rather than threaded down
+                    // from the driver's own binding, for the reason stated where
+                    // `settings_in_force` is: `settings::stored` is a pure
+                    // function of the config, so a second call cannot disagree
+                    // with the first, and a threaded copy could go stale behind a
+                    // `/config` write that reloaded one and not the other.
+                    let (settings, _) = settings::stored(&config);
+                    let table = io_cli::cost::table(&config);
+                    let provenance = io_cli::cost::Provenance::of(&config, settings.as_ref());
+                    let lines = io_cli::cost::committed(
+                        &store,
+                        &table,
+                        &provenance,
+                        last_run(&session, &store).map(|turn| turn.run_id),
+                        Some(session.id()),
+                        &app.theme,
+                        screen.width(),
+                    )?;
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
+                Action::Stats => {
+                    let lines =
+                        io_cli::stats::committed(&store, &app.theme, screen.width())?;
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
                 // Reached only at an idle prompt: while a turn runs the driver's
                 // own key handler answers `/steer` before `parse` is ever called,
                 // because that is where the inbox lives. So this arm is the
@@ -3519,6 +3551,7 @@ async fn turn<P: Provider>(
                 // same turn. The trace is the fallback for the window between a
                 // step landing and the first completion call being seen.
                 note_context(app, store, &event, seen, &contract);
+                note_cost(app, store, config, event.run_id);
                 note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
@@ -3854,6 +3887,10 @@ async fn turn<P: Provider>(
         // for: the last step of a turn is exactly the one whose event the select
         // loop loses to the turn's own return.
         note_context(app, store, &event, seen, &contract);
+        // And on the drain too, for the same race: the last step of a turn is the
+        // one whose event the select loop loses, and it is also the step that
+        // makes the largest single difference to what the turn cost.
+        note_cost(app, store, config, event.run_id);
         note_fleet(app, store, &event, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
@@ -4080,6 +4117,23 @@ fn note_context(
     } else {
         app.status.note_context_from(store, event);
     }
+}
+
+/// Set the status line's cost field from what this run has actually called.
+///
+/// Beside [`note_context`] and on the same events, because the two are the same
+/// shape of fact: both are read from the store rather than accumulated off the
+/// stream, both change only when a step lands, and both are decorative enough
+/// that a failed read is a missing field rather than a notice.
+///
+/// **The table is asked of the configuration on every call rather than held.** A
+/// `/config` write or a price refresh mid-session changes what a turn costs, and a
+/// table captured when the session opened would go on reporting the old rate for
+/// the rest of it — which is the one thing a figure with a currency in front of it
+/// must not do.
+fn note_cost(app: &mut App, store: &Store, config: &io_harness::Config, run_id: i64) {
+    let table = io_cli::cost::table(config);
+    app.status.note_cost_from(store, run_id, &table);
 }
 
 /// Report a fold that was asked for — once, and only from the event that

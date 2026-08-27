@@ -137,6 +137,14 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.max_parallel_reads",
     "app.io-cli.spawn_background_after_secs",
     "app.io-cli.detached_spawns",
+    // What a turn costs, split across two sections because one of them is not
+    // ours. `prices.as_of` is io-harness's and dates the whole table; it is
+    // written by a fetch rather than typed, and it is listed here because a date
+    // an operator cannot see is a claim with no expiry they cannot check.
+    // `[prices.models]` is deliberately **not** a row: it is a list rather than a
+    // setting, and it is reached the way `/provider` and `/mcp` reach a list.
+    "prices.as_of",
+    "app.io-cli.prices.source_url",
 ];
 
 /// Whether a key's value is a credential and must never be shown in full.
