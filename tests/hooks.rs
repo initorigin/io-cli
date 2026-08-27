@@ -324,3 +324,143 @@ fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed()
     let config = Config::discover(&spelled).expect("the configuration loads");
     assert!(io_cli::contract::hooks(&config, &spelled).is_some());
 }
+
+// ---------------------------------------------------------------------------
+// The empty-root guard — a `Hooks` is a write, so building one is a decision
+// ---------------------------------------------------------------------------
+//
+// `io_harness::Hooks::new` creates every `append` path it is given, empty, as the
+// value is constructed (`io-harness-0.69.0/src/hooks.rs`) — deliberately, so that
+// "the filter matched nothing" stays distinguishable from "the hook was never
+// installed". That makes *constructing* a `Hooks` a write to the filesystem, and
+// it resolves a relative `append` against the directory it was handed. Handed
+// `PathBuf::new()`, that directory is the process working directory.
+//
+// Which would be a curiosity except that `contract::server_notices` calls
+// `configured(String::new(), PathBuf::new(), config)` at startup — with an empty
+// root on purpose, because all it wants is the merged `[[mcp]]` and `[[lsp]]`
+// lists off a throwaway contract that will never run a turn. So an operator with
+// `[[hook]] append = "audit.jsonl"` in their configuration got a stray empty
+// `audit.jsonl` dropped in whatever directory they happened to launch `io` from,
+// every single start, in a session where no hook ran and no turn was taken.
+
+/// A configuration whose one hook appends to a path relative to the root.
+const APPENDING_HOOK: &str = "[[hook]]\non = [\"finished\"]\nappend = \"audit.jsonl\"\n";
+
+/// A caller with no root gets no `Hooks`, on both roads, even though the
+/// configuration declares one.
+///
+/// **The two assertions are the whole of the guard and neither covers the other**
+/// — it is made once in `contract::hooks` for the fan-out's event half and once in
+/// `contract::configured` for the lifecycle half, and `server_notices` goes through
+/// the second. `f9_a_declared_hook_reaches_both_the_contract_and_the_fan_out`
+/// above is the other side of this pair: the same file, with a root, gets its
+/// hooks. So `None` here is about the root and nothing else.
+///
+/// **What this proves about the file, and what it does not.** The first half below
+/// is the positive control: with a real root the `Hooks` is built and io-harness
+/// creates `audit.jsonl` inside it, which is the mechanism the guard exists for and
+/// which would otherwise be a claim in a comment. Given that, `None` from the two
+/// rootless calls means no `Hooks` was constructed at all — and a file that is only
+/// ever created by that constructor cannot appear when it is never run. The test
+/// does not `set_current_dir` to watch the empty directory stay empty: the process
+/// working directory is shared by every test in this binary and they run in
+/// parallel, so a test that moved it would be reaching into the others.
+///
+/// Sabotage: delete `if root.as_os_str().is_empty() { return None; }` from
+/// `contract::hooks`, or the `dir.as_os_str().is_empty()` arm from
+/// `contract::configured`. Nothing else in the suite fails — every hook that was
+/// ever written still runs, `/config` is identical, the contract that carries a
+/// turn is unchanged — and what ships is io-cli littering an empty file into the
+/// operator's home, their repository, or whatever directory they started in, once
+/// per launch, for a hook that never fired.
+#[test]
+fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
+    let (_dir, root) = written(LOCAL_FILE, APPENDING_HOOK);
+    let config = Config::discover(&root).expect("the configuration loads");
+
+    // The positive control: this is what building a `Hooks` costs.
+    assert!(
+        !root.join("audit.jsonl").exists(),
+        "the fixture already had the file, so its appearance below proves nothing",
+    );
+    assert!(
+        io_cli::contract::hooks(&config, &root).is_some(),
+        "a declared hook with a root is a Hooks",
+    );
+    assert!(
+        root.join("audit.jsonl").exists(),
+        "io-harness no longer creates `append` paths as the value is built, which is \
+         the entire reason the guard below exists — reread it before deleting either",
+    );
+
+    // And the same configuration with no root writes nothing, because it builds
+    // nothing.
+    assert!(
+        io_cli::contract::hooks(&config, std::path::Path::new("")).is_none(),
+        "a rootless caller was handed a Hooks, which created `audit.jsonl` in \
+         whatever directory `io` was launched from",
+    );
+    assert!(
+        io_cli::contract::configured("", PathBuf::new(), &config)
+            .tool_hooks
+            .is_none(),
+        "the road `server_notices` actually takes at startup: an empty root put a \
+         Hooks on a throwaway contract that will never run a turn",
+    );
+}
+
+/// `server_notices` — the caller the guard was written for — reads its lists
+/// without leaving a file in the directory `io` was launched from.
+///
+/// Asserted through the real function rather than through the empty root it
+/// happens to pass today, because the guard is only as good as the call that
+/// reaches it: a `server_notices` that started resolving a root before asking
+/// would pass every assertion in the test above and reintroduce the write at a
+/// different address.
+///
+/// **The relative path is watched where it would actually land, and the process
+/// working directory is not moved to do it.** `Hooks::new` resolves
+/// `append = "audit.jsonl"` against the empty directory it is handed, which is the
+/// bare relative path `audit.jsonl` — so a broken guard drops the file into
+/// whatever directory the suite is running in, and that is where this looks. It is
+/// recorded before and compared after rather than asserted absent outright, so a
+/// checkout that happens to hold such a file is not a red test about the wrong
+/// thing. Nothing is moved and nothing global is set, so this stays safe beside
+/// every other test in this binary running at the same time.
+///
+/// The `[[mcp]]` entry is here so the call has something to find: a
+/// `server_notices` that returned early on a configuration it had nothing to say
+/// about would never reach `configured`, and this would be asserting that an
+/// unentered branch writes no file.
+///
+/// Sabotage: either guard — `contract::hooks`'s or `contract::configured`'s — or a
+/// `server_notices` that names a root. Under the second only this test fails, and
+/// it fails by leaving the very file it is describing.
+#[test]
+fn server_notices_leaves_no_append_file_in_the_directory_io_was_launched_from() {
+    let (_dir, root) = written(
+        LOCAL_FILE,
+        &format!(
+            "{APPENDING_HOOK}\n[[mcp]]\nid = \"docs\"\ntransport = \"stdio\"\n\
+             command = \"mcp-docs\"\n"
+        ),
+    );
+    let config = Config::discover(&root).expect("the configuration loads");
+    assert!(!config.hooks().is_empty(), "the fixture declares a hook");
+
+    // Exactly what `Hooks::new` would `create` for this hook under an empty root.
+    let stray = std::path::Path::new("audit.jsonl");
+    let before = stray.exists();
+
+    let _ = io_cli::contract::server_notices(&config, &io_cli::contract::Capabilities::default());
+
+    assert_eq!(
+        stray.exists(),
+        before,
+        "reading the merged server lists at startup created {} in the working \
+         directory — which is what every launch of `io` does, for a hook that \
+         never fires",
+        stray.display(),
+    );
+}
