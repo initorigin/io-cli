@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::App;
+use io_cli::plan::{Proposed, Review};
 use io_cli::theme::DARK;
-use io_harness::{Plan, PlanGate, PlanStep, PlanVerdict};
+use io_harness::{PendingPlan, Plan, PlanGate, PlanStep, PlanVerdict};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -281,4 +282,170 @@ async fn the_plan_is_readable_with_no_colour_at_all() {
         said(&mut app).contains("cancelled"),
         "and the outcome is a word, not a colour",
     );
+}
+
+// ---- 0.23.0: the same overlay, opened on a run that already stopped ----
+
+/// The plan every test below decides, live or stored.
+///
+/// One step is handed off, because `[agent]` is drawn only when there is an owner
+/// and a fixture of steps that all have `None` cannot see it go missing on the way
+/// through the store.
+fn handed_off_plan() -> Plan {
+    Plan::new([
+        PlanStep::new("read every caller of the old column"),
+        PlanStep::new("write the migration").by("writer"),
+    ])
+}
+
+/// A `PendingPlan` io-harness itself wrote and read back.
+///
+/// **The fixture is authentic because the store built it.** `PendingPlan` has no
+/// public constructor, and a struct literal assembled here would skip the JSON
+/// encode and decode the steps actually travel through — which is exactly where
+/// an optional `agent` is lost if it is going to be. `Store::memory()` rather
+/// than a temporary directory: same schema, same SQL, same round-trip, and
+/// nothing on disk any assertion here looks at.
+fn stored(plan: &Plan) -> PendingPlan {
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let run = store
+        .start_run("drop the column", "openrouter")
+        .expect("a run to hang the plan off");
+    let id = store.put_plan(run, 1, plan).expect("the row is written");
+    store
+        .plan(id)
+        .expect("the row reads back")
+        .expect("the row is there")
+}
+
+/// One overlay, opened on a live turn. The receiver comes back with it: a
+/// `oneshot` whose receiver has been dropped is what the live path reads as
+/// "nobody decided", so a fixture that dropped it would be exercising the stored
+/// path through the live constructor.
+fn live(plan: Plan) -> (Review, tokio::sync::oneshot::Receiver<Option<PlanVerdict>>) {
+    let (verdict, reply) = tokio::sync::oneshot::channel();
+    (Review::new(Proposed { plan, verdict }), reply)
+}
+
+/// What the overlay draws, on its own rather than through the app: `App` can only
+/// hold a live plan, so a stored one has to be rendered directly, and holding the
+/// live one to the same helper is what makes the comparison a comparison.
+fn drawn_overlay(overlay: &Review, theme: &io_cli::theme::Theme) -> String {
+    let (mut screen, _recorder) = support::screen_of(80, 14, 14);
+    screen
+        .draw(|frame| overlay.render(frame, frame.area(), theme))
+        .expect("a frame");
+    screen.viewport_text().to_string()
+}
+
+/// Everything about a plan overlay that does **not** depend on which way in was
+/// taken — which here is everything except where the verdict goes, the footer
+/// included: `Esc` cancels a plan on both paths, so both say so.
+fn the_properties_both_paths_owe(open: impl Fn() -> Review) {
+    let screen = drawn_overlay(&open(), &DARK);
+    assert!(screen.contains("1. read every caller"), "{screen}");
+    assert!(
+        screen.contains("2. write the migration [writer]"),
+        "numbered, in order, and a handed-off step names its owner: {screen}",
+    );
+    assert!(screen.contains("Enter approves"), "{screen}");
+    assert!(screen.contains("Esc cancels"), "{screen}");
+
+    let mut approving = open();
+    assert_eq!(
+        approving.key(key(KeyCode::Enter)),
+        Some(PlanVerdict::Approve),
+        "an empty prompt and Enter is the whole of agreeing",
+    );
+
+    let mut revising = open();
+    for ch in "start with the tests".chars() {
+        assert_eq!(revising.key(key(KeyCode::Char(ch))), None);
+    }
+    assert_eq!(
+        revising.key(key(KeyCode::Enter)),
+        Some(PlanVerdict::revise("start with the tests")),
+        "text and Enter sends it back in the operator's own words",
+    );
+
+    let mut cancelling = open();
+    assert_eq!(
+        cancelling.key(key(KeyCode::Esc)),
+        Some(PlanVerdict::Cancel),
+        "and Esc is the one key that means nothing else",
+    );
+}
+
+/// **A plan resumed off the store is decided by the same widget on the same keys
+/// as a live one**, and draws the same steps in the same order with the same
+/// owners.
+///
+/// Sabotage: give the stored path its own `render` and drop `[agent]` from it —
+/// under which only this test fails, and it fails on the stored arm alone while
+/// every live-path test above still passes, which is the drift this shared block
+/// exists to catch.
+#[test]
+fn a_stored_plan_draws_and_decides_as_a_live_one_does() {
+    the_properties_both_paths_owe(|| live(handed_off_plan()).0);
+    the_properties_both_paths_owe(|| Review::resumed(&stored(&handed_off_plan())));
+}
+
+/// **A live verdict resolves by sending; the caller is handed nothing back**,
+/// because the turn parked on the channel already has it.
+#[tokio::test]
+async fn a_live_verdict_goes_down_the_channel_and_leaves_the_caller_nothing_to_do() {
+    let (overlay, reply) = live(handed_off_plan());
+
+    assert_eq!(overlay.resolve(Some(PlanVerdict::Approve)), None);
+    assert_eq!(
+        reply.await.expect("the turn's end"),
+        Some(PlanVerdict::Approve),
+    );
+}
+
+/// **All three verdicts come back out of the stored path as values**, because the
+/// run that proposed the plan has already ended and `resume_with_plan_decision_observed`
+/// is the only thing that can act on them.
+///
+/// Sabotage: build the stored path a `oneshot` of its own and send into it — under
+/// which only this test fails, and it fails by dropping a decision that spends the
+/// rest of the budget into a channel with no receiver.
+#[test]
+fn every_verdict_comes_back_to_the_caller_from_a_stored_plan() {
+    for verdict in [
+        PlanVerdict::Approve,
+        PlanVerdict::revise("start with the tests"),
+        PlanVerdict::Cancel,
+    ] {
+        let overlay = Review::resumed(&stored(&handed_off_plan()));
+        assert_eq!(
+            overlay.resolve(Some(verdict.clone())),
+            Some(Some(verdict)),
+            "the caller resumes the run with exactly this",
+        );
+    }
+}
+
+/// Declining to decide is still a decision the caller has to carry: a stored plan
+/// left undecided returns `Some(None)`, which is "no verdict", and never an
+/// approval by default. The one direction that must never be guessed.
+#[test]
+fn a_stored_plan_left_undecided_comes_back_as_no_verdict_at_all() {
+    let overlay = Review::resumed(&stored(&handed_off_plan()));
+
+    assert_eq!(overlay.resolve(None), Some(None));
+}
+
+/// **Non-functional — a resumed plan is readable with no colour at all.** Tones
+/// carry nothing under `NO_COLOR`, so the steps and all three ways out have to be
+/// words on the stored path exactly as they are on the live one.
+#[test]
+fn a_stored_plan_is_readable_with_no_colour_at_all() {
+    let overlay = Review::resumed(&stored(&handed_off_plan()));
+    let screen = drawn_overlay(&overlay, &io_cli::theme::MONO);
+
+    assert!(screen.contains("read every caller"), "{screen}");
+    assert!(screen.contains("[writer]"), "{screen}");
+    assert!(screen.contains("Enter approves"), "{screen}");
+    assert!(screen.contains("Esc cancels"), "{screen}");
 }

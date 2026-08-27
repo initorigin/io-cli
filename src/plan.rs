@@ -11,8 +11,17 @@
 //! `Esc` cancels — so the destructive answer is the one key that never means
 //! anything else, and the correction is prose rather than a menu, because "not
 //! like that, like this" is the whole value of a gate.
+//!
+//! # Two ways in, one overlay (0.23.0)
+//!
+//! A plan can also be decided long after the run that proposed it stopped, as a
+//! `plans` row read back off the store. [`Review::resumed`] opens on one, and
+//! everything from there — the keys, the drawn steps, the footer — is the same
+//! code as the live path. The one difference is where the verdict goes:
+//! [`Review::resolve`] returns it rather than sending it, for the caller to
+//! deliver with `resume_with_plan_decision_observed`.
 
-use io_harness::{Plan, PlanGate, PlanReview, PlanVerdict};
+use io_harness::{PendingPlan, Plan, PlanGate, PlanReview, PlanVerdict};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -20,6 +29,7 @@ use ratatui::Frame;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::composer::{Composer, Reply};
+use crate::intent::Destination;
 use crate::theme::{Theme, Tone};
 
 /// One proposed plan, and the channel its verdict goes back down.
@@ -57,9 +67,10 @@ impl PlanGate for Gate {
     }
 }
 
-/// The overlay a plan is decided through.
+/// The overlay a plan is decided through, live or resumed.
 pub struct Review {
-    proposed: Proposed,
+    plan: Plan,
+    verdict: Destination<Option<PlanVerdict>>,
     composer: Composer,
 }
 
@@ -68,14 +79,29 @@ impl Review {
     /// anything is a correction the operator did not write.
     pub fn new(proposed: Proposed) -> Self {
         Self {
-            proposed,
+            plan: proposed.plan,
+            verdict: Destination::Turn(proposed.verdict),
+            composer: Composer::new(),
+        }
+    }
+
+    /// Open on a plan a run already paused on, read back off the store.
+    ///
+    /// Only `plan` is taken. The row's `verdict` and `decided_by` describe a
+    /// decision already made, and a plan that has one is not one to decide again;
+    /// keeping that check in the caller keeps this constructor from being the
+    /// place a decided plan is quietly re-opened.
+    pub fn resumed(pending: &PendingPlan) -> Self {
+        Self {
+            plan: pending.plan.clone(),
+            verdict: Destination::Stored,
             composer: Composer::new(),
         }
     }
 
     /// The plan on screen.
     pub fn plan(&self) -> &Plan {
-        &self.proposed.plan
+        &self.plan
     }
 
     /// A keystroke while the overlay is up. `Some` closes it with that verdict.
@@ -102,12 +128,24 @@ impl Review {
         }
     }
 
-    /// Send the verdict back to the run.
-    pub fn resolve(self, verdict: Option<PlanVerdict>) {
-        let _ = self.proposed.verdict.send(verdict);
+    /// Resolve the plan. Consumes the overlay: a plan decided twice is a run
+    /// spending its budget on a decision nobody took.
+    ///
+    /// Returns `None` when the verdict has been delivered to a live turn, and
+    /// `Some(verdict)` when this overlay was opened by [`Self::resumed`] — there
+    /// was no turn awaiting it, so it comes back here for the caller to deliver
+    /// with `io_harness::resume_with_plan_decision_observed`.
+    pub fn resolve(self, verdict: Option<PlanVerdict>) -> Option<Option<PlanVerdict>> {
+        self.verdict.deliver(verdict)
     }
 
     /// The steps as steps, and the three ways out.
+    ///
+    /// Identical for both ways in, footer included, and that is not an oversight:
+    /// `Esc` here is a verdict rather than a deferral. It cancels the plan on a
+    /// live turn and on a resumed one alike, so "Esc cancels" is true of both —
+    /// unlike [`crate::intent`], where declining defers and the two paths defer
+    /// to different places.
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if area.height == 0 {
             return;
@@ -117,10 +155,10 @@ impl Review {
             format!(
                 "a plan, before any of it runs {} {} steps",
                 theme.glyphs.dash,
-                self.proposed.plan.steps.len()
+                self.plan.steps.len()
             ),
         )];
-        for (index, step) in self.proposed.plan.steps.iter().enumerate() {
+        for (index, step) in self.plan.steps.iter().enumerate() {
             let owner = match &step.agent {
                 Some(agent) => format!(" [{agent}]"),
                 None => String::new(),
