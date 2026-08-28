@@ -230,6 +230,112 @@ impl<P: Provider> Provider for Watched<P> {
     }
 }
 
+/// A provider that can be printed, which is the only thing io-harness's own
+/// reviewer is missing.
+///
+/// `ModelReviewer<P>` implements `Reviewer` — the trait `TaskContract::with_reviewer`
+/// takes — only for `P: Provider + Debug + Send + Sync`, because `ModelReviewer`
+/// derives `Debug` and the derive puts the bound on `P`. **None of io-harness's
+/// own provider types implements `Debug`**, so `ModelReviewer::new(OpenRouter::new(..), ..)`
+/// cannot be handed to `with_reviewer` at all, and the model-judged half of the
+/// verification pillar is unreachable from any crate that uses the providers the
+/// harness ships. Reported upstream as io-harness#213; this is io-cli shipping
+/// around it rather than waiting.
+///
+/// The `Debug` impl prints the vendor name and **never the credential**. That is
+/// the whole reason it is written by hand rather than derived: a derive here would
+/// put an API key into every error that formatted a reviewer.
+///
+/// Every method delegates, for the reason [`Watched`] gives at length — a default
+/// that fired here would change behaviour silently. This wrapper records nothing;
+/// a reviewer's request is not the operator's conversation and has no business in
+/// what `/context` reports.
+pub struct Printable<P> {
+    inner: P,
+}
+
+impl<P> Printable<P> {
+    /// Wrap `inner` so it can satisfy a `Debug` bound.
+    pub fn new(inner: P) -> Self {
+        Self { inner }
+    }
+}
+
+impl<P: Provider> std::fmt::Debug for Printable<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The name and nothing else. `endpoint()` is safe but uninformative here,
+        // and every other accessor either carries or is derived from the key.
+        f.debug_struct("Printable")
+            .field("provider", &self.inner.name())
+            .finish()
+    }
+}
+
+impl<P: Provider> Provider for Printable<P> {
+    fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> + Send {
+        self.inner.complete(request)
+    }
+
+    fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+    ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> {
+        self.inner.complete_streaming(request, on_token)
+    }
+
+    fn complete_streaming_calls(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+        on_call: &(dyn Fn(usize, &ToolCall) + Send + Sync),
+    ) -> impl std::future::Future<Output = io_harness::Result<CompletionResponse>> {
+        self.inner
+            .complete_streaming_calls(request, on_token, on_call)
+    }
+
+    fn models(
+        &self,
+    ) -> impl std::future::Future<Output = io_harness::Result<Vec<ModelInfo>>> + Send {
+        self.inner.models()
+    }
+
+    fn reachable(&self) -> impl std::future::Future<Output = io_harness::Result<bool>> + Send {
+        self.inner.reachable()
+    }
+
+    fn model_hint(&self) -> Option<&str> {
+        self.inner.model_hint()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn prompt_family(&self) -> PromptFamily {
+        self.inner.prompt_family()
+    }
+
+    fn accepts_images(&self) -> bool {
+        self.inner.accepts_images()
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        self.inner.endpoint()
+    }
+
+    fn endpoints(&self) -> Vec<&str> {
+        self.inner.endpoints()
+    }
+
+    fn last_served(&self) -> Option<String> {
+        self.inner.last_served()
+    }
+}
+
 /// The same maker, making watched providers.
 ///
 /// A maker in and a maker out, rather than a provider in and a provider out,
