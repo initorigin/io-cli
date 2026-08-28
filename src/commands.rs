@@ -247,6 +247,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
+    // 0.27.0 — the undo that is the size of the mistake. The bare word is the
+    // whole run, which is what the rewind chord has always done; the two argued
+    // forms are what this release adds and are the ones an operator reaches for.
+    (
+        "/undo",
+        "put work back: `<path>` for one file, `step <n>` for one step, bare for the run",
+    ),
     (
         "/plan",
         "make turns propose a plan before they work: on, off, or ask",
@@ -393,9 +400,24 @@ pub const GROUPS: &[(Group, &[&str])] = &[
     // that met it — re-file what is in the wrong group, do not widen the bound —
     // and a correction that pays for itself is the correction working, not a
     // loophole in it.
+    // **`/contain` moved here in 0.27.0, and it is a correction rather than a way
+    // of making room** — the fourth time this sentence has been written, after
+    // 0.19.0's `/mcp` and `/provider`, 0.22.0's `/image` and `/copy`, and 0.26.0's
+    // `/profile`. `Turn` means a command acting on the work the turn just
+    // finished. `/contain on|off` acts on nothing that has happened: it decides
+    // whether every *later* turn is driven through the containment entry point,
+    // and it survives the turn that switched it. That is the identical argument
+    // that moved `/profile` one release ago, and `/contain` was the other command
+    // it applied to all along.
+    //
+    // It frees the slot `/undo` takes. `Turn` stood at ten of ten, and the rule
+    // this product wrote for itself when 0.25.0 filled it is to re-file what is in
+    // the wrong group rather than widen the bound.
     (
         Group::Session,
-        &["/clear", "/resume", "/fork", "/profile", "/setup", "/exit"],
+        &[
+            "/clear", "/resume", "/fork", "/profile", "/contain", "/setup", "/exit",
+        ],
     ),
     // **`/image`, `/copy` and `/copy diff` moved here in 0.22.0, and it is a
     // correction rather than a way of making room** — the same sentence 0.19.0
@@ -424,7 +446,12 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             // this session's and dies with it, for the reason the release contract
             // records under `open_questions`.
             "/effort",
-            "/contain",
+            // **`/undo` takes the slot `/contain` left.** It is the most
+            // `Turn`-shaped command in the product: it acts on the work the turn
+            // just finished, at whichever granularity the operator meant. See the
+            // note above `Group::Session` for why `/contain` was the one that
+            // moved rather than the bound.
+            "/undo",
             "/plan",
             "/steer",
             "/compact",
@@ -1253,6 +1280,18 @@ pub enum Action {
     /// used when it is absent — proposed rather than imposed, and refused rather
     /// than overwritten when something is already there.
     Export(Taken),
+    /// Put work back, at the granularity the operator named.
+    ///
+    /// `Grain::Run` is what the rewind chord has always done and what a bare
+    /// `/undo` means. The other two are this release's, and both are public
+    /// io-harness calls this crate had never made.
+    Undo(crate::undo::Grain),
+    /// `/undo step` with no number, or a number that is not one.
+    ///
+    /// A variant rather than a fall-through to the whole run, which is the one
+    /// mistake this command must not make: an operator who typed a step and got
+    /// the entire run undone would have lost work they never asked to lose.
+    UndoNoStep,
 }
 
 /// Which export was asked for, and where it goes.
@@ -1959,6 +1998,21 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // ambiguity worth naming: an operator who wants a file called `trace`
         // types `./trace`. The alternative — a `--trace` flag — would be the only
         // flag on any command in this product.
+        // `step` is a word and everything else is a path, the same shape `/export`
+        // takes for `trace`. A bare `/undo` is the whole run, which is what the
+        // rewind chord already means, so the word and the chord cannot disagree.
+        "undo" => {
+            let mut rest = input.split_whitespace().skip(1);
+            match rest.next() {
+                None => Action::Undo(crate::undo::Grain::Run),
+                Some("step") => match rest.next().map(str::parse::<u32>) {
+                    Some(Ok(step)) => Action::Undo(crate::undo::Grain::Step(step)),
+                    // Never a fall-through to the run. See `Action::UndoNoStep`.
+                    _ => Action::UndoNoStep,
+                },
+                Some(path) => Action::Undo(crate::undo::Grain::File(path.to_string())),
+            }
+        }
         "export" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {

@@ -84,6 +84,11 @@ fn the_commands_are_the_commands() {
             "/profile",
             "/effort",
             "/contain",
+            // 0.27.0 — the undo that is the size of the mistake, taking the
+            // `Turn` slot `/contain` left when it was re-filed into `Session`.
+            // `Turn` was ten of ten and the bound was not widened, which is the
+            // fourth time this product has made that correction.
+            "/undo",
             // 0.12.0 — the planning phase stopped being something
             // `[app.io-cli.containment]` switched on by accident, so it needs a
             // switch of its own.
@@ -101,8 +106,8 @@ fn the_commands_are_the_commands() {
             // 0.27.0 — the third page about work already done, and the first that
             // can also change it. Under **inspect** because that is what its bare
             // form does, with every destructive verb behind a confirmation whose
-            // row 0 does nothing; it takes that group to nine and `/export` will
-            // take it to ten, the bound.
+            // row 0 does nothing; it and `/export` take that group to ten, which
+            // is the bound.
             "/store",
             // 0.27.0 — the other end of the same question: `/store` is what is
             // being kept, this is how the work gets out. It takes `Inspect` to
@@ -319,10 +324,10 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     // release growing a command and losing another.
     assert_eq!(
         COMMANDS.len(),
-        35,
-        "0.27.0 adds `/store` and `/export` on top of the thirty-three 0.26.0 \
-         shipped, and will add `/undo` before it is done; a number this gate does \
-         not name means one arrived unrecorded",
+        36,
+        "0.27.0 adds exactly three commands — `/store`, `/export` and `/undo` — on \
+         top of the thirty-three 0.26.0 shipped; a thirty-seventh here means one \
+         arrived unrecorded",
     );
 }
 

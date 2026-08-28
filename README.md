@@ -508,6 +508,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | --- | --- |
 | `/model` | change the model the next turn is sent to |
 | `/effort` | how much reasoning the next turn buys: low, medium, high, or off |
+| `/undo` | put work back: `<path>` for one file, `step <n>` for one step, bare for the run |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/steer` | send what is queued into the turn that is already running |

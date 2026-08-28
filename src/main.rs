@@ -2532,6 +2532,72 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
+                        // The two new granularities. Both go through `observing`,
+                        // which is what puts `EventKind::Reverted` on the screen —
+                        // an event this product has never once emitted, because
+                        // only the `_observed` form emits it.
+                        Pick::UndoFile { run_id, path } => {
+                            if io_cli::store::acts(index) {
+                                let workspace = io_harness::tools::Workspace::new(session.root());
+                                match io_cli::undo::one_file(&workspace, &store, *run_id, path) {
+                                    Ok(answer) => {
+                                        app.record(Tone::Muted, io_cli::undo::said(path, &answer))
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "{path} was not put back: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::UndoStep { run_id, step } => {
+                            if io_cli::store::acts(index) {
+                                let workspace = io_harness::tools::Workspace::new(session.root());
+                                let run = *run_id;
+                                let at = *step;
+                                let done = observing(&mut app, screen, |observer| {
+                                    io_cli::undo::one_step(&workspace, &store, run, at, observer)
+                                })?;
+                                match done {
+                                    Ok(answers) if answers.is_empty() => app.record(
+                                        Tone::Muted,
+                                        format!("step {at} wrote no files, so nothing changed"),
+                                    ),
+                                    Ok(answers) => {
+                                        for (path, answer) in &answers {
+                                            app.record(
+                                                Tone::Muted,
+                                                io_cli::undo::step_said(path, answer),
+                                            );
+                                        }
+                                        // The order-sensitivity sentence, said only
+                                        // when something actually came back stale —
+                                        // otherwise it is advice about a problem the
+                                        // operator does not have.
+                                        if let Some(advice) = io_cli::undo::step_advice(&answers) {
+                                            app.record(Tone::Warning, advice);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "step {at} was not undone: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        // The same `undo_whole_turn` the chord reaches, so the
+                        // word and the keystroke cannot drift apart.
+                        Pick::UndoRun => {
+                            if io_cli::store::acts(index) {
+                                undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
+                            }
+                        }
                         Pick::Export { path, content } => {
                             if io_cli::store::acts(index) {
                                 let workspace = io_harness::tools::Workspace::with_policy(
@@ -2737,37 +2803,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 None => app.say(Tone::Muted, "there is no turn to undo"),
             },
             // The second. This is where the operator's files change.
-            Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
-                Ok(Some(undone)) => {
-                    // The undone turn is where those numbers came from.
-                    app.status.forget_run();
-                    app.forget_fleet();
-                    // As above: the last request belonged to the undone turn.
-                    seen.forget();
-                    for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
-                        app.say(tone, line);
-                    }
-                }
-                Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
-                // **`failure::said`, and not the raw `Display`.** Since 0.23.0
-                // the undo can lose a head race with another `io`, and
-                // `Error::Conflict`'s own text calls the session id a run id and
-                // renders an expiry that a head conflict never populates. That
-                // sentence is exactly what `failure::advice` exists to replace,
-                // and this arm was the one path in the product still going
-                // around it.
-                //
-                // **And the old line said "nothing was undone", which is false.**
-                // `rewind::last_turn` restores the files before it attempts the
-                // head write, so a conflict leaves the operator's files back as
-                // they were with the conversation head where the other process
-                // put it. Saying nothing happened would send them looking for
-                // changes that are already gone.
-                Err(error) => app.say(
-                    Tone::Error,
-                    format!("the undo did not finish: {}", io_cli::failure::said(&error)),
-                ),
-            },
+            // **Through `observing` since 0.27.0, which is what finally emits
+            // `EventKind::Rewound`.** The call was `rewind_run`, whose observed
+            // twin is the only thing that emits it — so the arm rendering that
+            // event in `src/events.rs` was unreachable from the day it was
+            // written until this one.
+            Command::Rewind => {
+                undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
+            }
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -3780,6 +3823,75 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                              `sweep <date>` and `compact`"
                         ),
                     ),
+                },
+                Action::UndoNoStep => app.record(
+                    Tone::Error,
+                    "/undo step needs a step number — `/expand` lists them, and a \
+                     bare `/undo` is the whole run"
+                        .to_string(),
+                ),
+                // The two new granularities descend into a confirmation; the whole
+                // run keeps the chord's own two-press path, which already
+                // discloses what a restore overwrites.
+                Action::Undo(grain) => match last_run(&session, &store).map(|turn| turn.run_id) {
+                    None => app.record(
+                        Tone::Error,
+                        "there is nothing to undo — this session has taken no turns".to_string(),
+                    ),
+                    Some(run_id) => match &grain {
+                        io_cli::undo::Grain::File(path) => {
+                            let (title, rows) = io_cli::undo::confirm_file(path);
+                            picker = Some((
+                                Picker::new(title, rows),
+                                Pick::UndoFile {
+                                    run_id,
+                                    path: path.clone(),
+                                },
+                            ));
+                        }
+                        io_cli::undo::Grain::Step(step) => {
+                            let (title, rows) = io_cli::undo::confirm_step(*step);
+                            picker = Some((
+                                Picker::new(title, rows),
+                                Pick::UndoStep {
+                                    run_id,
+                                    step: *step,
+                                },
+                            ));
+                        }
+                        // The bare form confirms like the other two rather than
+                        // arming like the chord. The arming is a property of a
+                        // *keystroke* — one press to warn, a second to act — and
+                        // a typed command has already been deliberate once. Both
+                        // paths end in the same `rewind::last_turn`, so the word
+                        // and the chord can never disagree about what an undo is.
+                        io_cli::undo::Grain::Run => {
+                            match io_cli::rewind::preview(&session, &store) {
+                                Some(about) => {
+                                    let title =
+                                        io_cli::rewind::armed_line(&about, &app.theme.glyphs);
+                                    picker = Some((
+                                        Picker::new(
+                                            title,
+                                            vec![
+                                                Row::with_detail(
+                                                    io_cli::store::LEAVE_IT,
+                                                    "the turn stands",
+                                                ),
+                                                Row::with_detail(
+                                                    "undo the whole turn",
+                                                    "its files, its notes, its queued children \
+                                                     and the conversation head",
+                                                ),
+                                            ],
+                                        ),
+                                        Pick::UndoRun,
+                                    ));
+                                }
+                                None => app.say(Tone::Muted, "there is no turn to undo"),
+                            }
+                        }
+                    },
                 },
                 // Both halves build their content HERE, before the confirmation,
                 // so the operator agrees to a file that exists rather than to an
@@ -5499,6 +5611,92 @@ fn commit_transcript(
 }
 
 /// The last run of this session, if it has had one.
+/// Undo the whole turn, and say what it did.
+///
+/// **One implementation, two doors.** The rewind chord reaches it through
+/// `Command::Rewind` after its two keystrokes; `/undo` with no argument reaches
+/// it through a confirmation. The word and the chord must never disagree about
+/// what an undo *is*, and the only way to guarantee that is for there to be one
+/// of them.
+///
+/// **Through [`observing`] since 0.27.0, which is what finally emits
+/// `EventKind::Rewound`.** The call underneath was `rewind_run`, whose observed
+/// twin is the only thing that emits it — so the arm rendering that event in
+/// `src/events.rs` was unreachable from the day it was written until this one.
+fn undo_whole_turn(
+    app: &mut App,
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    session: &mut Session,
+    store: &Store,
+    seen: &io_cli::context::Seen,
+) -> Result<(), String> {
+    match observing(app, screen, |observer| {
+        io_cli::rewind::last_turn(session, store, observer)
+    })? {
+        Ok(Some(undone)) => {
+            // The undone turn is where those numbers came from.
+            app.status.forget_run();
+            app.forget_fleet();
+            // As above: the last request belonged to the undone turn.
+            seen.forget();
+            for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
+                app.say(tone, line);
+            }
+        }
+        Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
+        // **`failure::said`, and not the raw `Display`.** Since 0.23.0 the undo
+        // can lose a head race with another `io`, and `Error::Conflict`'s own
+        // text calls the session id a run id and renders an expiry that a head
+        // conflict never populates. That sentence is exactly what
+        // `failure::advice` exists to replace, and this arm was the one path in
+        // the product still going around it.
+        //
+        // **And the old line said "nothing was undone", which is false.**
+        // `rewind::last_turn` restores the files before it attempts the head
+        // write, so a conflict leaves the operator's files back as they were with
+        // the conversation head where the other process put it. Saying nothing
+        // happened would send them looking for changes that are already gone.
+        Err(error) => app.say(
+            Tone::Error,
+            format!("the undo did not finish: {}", io_cli::failure::said(&error)),
+        ),
+    }
+    Ok(())
+}
+
+/// Run something that wants an `Observer`, and commit whatever it emitted.
+///
+/// **This is what makes `EventKind::Rewound` and `EventKind::Reverted` reach the
+/// screen at all.** Both are emitted only by the `_observed` forms of the rewind
+/// functions, and every one of those forms takes an observer — but an undo
+/// happens between turns, at a keystroke, where the driver's own observer
+/// composition does not exist. So one is built for the act and drained
+/// immediately afterwards.
+///
+/// **The events are rendered and never fed to [`App::event`].** That method
+/// folds into the status line, the fleet and the token totals, which belong to a
+/// *run*; an undo is not a run, and 0.20.0 recorded what happens when foreign
+/// events go through it — inflated session totals, a replaced provider, and a
+/// grafted tree. `Events::event` is the renderer alone, which is exactly what is
+/// wanted here.
+fn observing<T>(
+    app: &mut App,
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    act: impl FnOnce(&dyn io_harness::Observer) -> T,
+) -> Result<T, String> {
+    let (bridge, mut events) = io_cli::bridge::channel();
+    let out = act(&bridge);
+    // Synchronous and already finished, so the queue is complete: `try_recv`
+    // drains it without waiting, and waiting is what would hang the interface.
+    while let Ok(event) = events.try_recv() {
+        let lines = app.events.event(&event, std::time::Duration::ZERO);
+        if !lines.is_empty() {
+            screen.commit(&lines).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(out)
+}
+
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)
@@ -5977,6 +6175,25 @@ enum Pick {
     /// A confirmation over a compaction. Carries nothing: the operation takes no
     /// argument, and the figures it reports are read either side of the call.
     StoreCompact,
+    /// A confirmation over putting one file back, from the run that wrote it.
+    UndoFile {
+        /// The run whose snapshot the file comes from.
+        run_id: i64,
+        /// The path, as the operator named it.
+        path: String,
+    },
+    /// A confirmation over reverse-applying one step's diff.
+    UndoStep {
+        /// The run the step belongs to.
+        run_id: i64,
+        /// The step, one-based as `/expand` shows them.
+        step: u32,
+    },
+    /// A confirmation over undoing the whole turn — the typed form of what the
+    /// rewind chord does with two keystrokes. Carries nothing: `rewind::last_turn`
+    /// reads the head itself, and a run id carried from before the confirmation
+    /// could name a turn another `io` has since moved off the head.
+    UndoRun,
     /// A confirmation over one export, carrying the bytes it will write.
     ///
     /// The content is built before the confirmation and carried rather than

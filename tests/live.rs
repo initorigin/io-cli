@@ -924,7 +924,7 @@ async fn live_f13_work_survives_the_session() {
         "armed: {}",
         io_cli::rewind::armed_line(&about, &DARK.glyphs)
     );
-    let undone = io_cli::rewind::last_turn(&mut session, &store)
+    let undone = io_cli::rewind::last_turn(&mut session, &store, &io_harness::Ignore)
         .expect("the rewind runs")
         .expect("there was a turn to undo");
     for (tone, line) in io_cli::rewind::undone_lines(&undone, &DARK.glyphs) {

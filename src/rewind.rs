@@ -39,7 +39,7 @@
 use crate::glyphs::Glyphs;
 use crate::theme::Tone;
 use io_harness::tools::Workspace;
-use io_harness::{rewind_run, Error, Rewind, Session, Store};
+use io_harness::{rewind_run_observed, Error, Observer, Rewind, Session, Store};
 
 /// What the armed prompt says before anything is undone.
 ///
@@ -180,7 +180,11 @@ pub fn preview(session: &Session, store: &Store) -> Option<Preview> {
 /// tries by hand: a two-turn undo still leaves a plausible-looking head, so a
 /// build that got this wrong would pass every test written against a longer
 /// conversation.
-pub fn last_turn(session: &mut Session, store: &Store) -> Result<Option<Undone>, Error> {
+pub fn last_turn(
+    session: &mut Session,
+    store: &Store,
+    observer: &dyn Observer,
+) -> Result<Option<Undone>, Error> {
     let Some(head) = session.head() else {
         return Ok(None);
     };
@@ -197,7 +201,7 @@ pub fn last_turn(session: &mut Session, store: &Store) -> Result<Option<Undone>,
     // snapshots is a path whose write already passed the operator's gate, so
     // putting it back cannot reach anywhere the run could not.
     let workspace = Workspace::new(session.root());
-    let rewound = rewind_run(&workspace, store, turn.run_id)?;
+    let rewound = rewind_run_observed(&workspace, store, turn.run_id, observer)?;
 
     let mut restored = Vec::new();
     let mut declined = Vec::new();
