@@ -2631,3 +2631,280 @@ async fn live_f2_a_parked_question_is_answered_and_the_run_carries_on() {
         "the resumed run drove no step, so the answer reached nothing",
     );
 }
+
+/// The `[app.io-cli.gates]` section, built in memory rather than through a file.
+///
+/// `Config::from_toml` is public and takes the whole document, so the live arms
+/// need no `IO_CONFIG` and therefore no environment lock — which matters here
+/// because these tests run in one process and an environment variable is
+/// process-wide.
+fn gated(section: &str) -> Config {
+    Config::from_toml(section).expect("the gates section parses")
+}
+
+/// **0.24.0 F2 — a command criterion that passes makes the run `Success`.**
+///
+/// The whole release in one assertion. Until now every contract this crate built
+/// carried `Verification::None`, so `Finished` was the only thing a clean run
+/// could return and `Success` was unreachable from this interface. A criterion the
+/// operator wrote is what makes the difference, and the run has to come back
+/// saying so.
+///
+/// `true` and `false` are used as the gate programs because they are the only
+/// commands whose exit status is their entire contract. The policy is permissive
+/// so that `Act::Exec` admits them — a refused program is a different fact, and
+/// `live_f2_a_refused_gate_program_is_not_a_failing_gate` is where that belongs.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+#[cfg(unix)]
+async fn live_f2_a_command_criterion_that_passes_makes_the_run_succeed() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+
+    let config = gated("[app.io-cli.gates]\ncommand = [\"true\"]\n");
+    let contract = io_cli::contract::configured(
+        "Replace the line `old line` in notes.md with `new line`. Nothing else.",
+        root.to_path_buf(),
+        &config,
+    )
+    .with_max_steps(12);
+
+    // The criterion actually reached the contract. Asserted before the run,
+    // because a run that succeeded with no criterion on it would look identical
+    // from the outcome alone — which is exactly the confusion this release exists
+    // to end.
+    assert!(
+        matches!(
+            contract.verify,
+            io_harness::Verification::Command { ref argv, expect_exit }
+                if argv == &vec!["true".to_string()] && expect_exit == 0
+        ),
+        "the configured criterion did not reach the contract: {:?}",
+        contract.verify,
+    );
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &Policy::permissive(),
+            &io_harness::ApproveAll,
+            &io_harness::Ignore,
+        )
+        .await
+        .expect("the turn runs");
+
+    println!("live 0.24.0 F2: outcome {:?}", result.outcome);
+
+    assert!(
+        matches!(result.outcome, io_harness::RunOutcome::Success { .. }),
+        "a passing criterion should return Success, not {:?} — if this is Finished \
+         the criterion never ran",
+        result.outcome,
+    );
+
+    let attempts = store
+        .gate_attempts(result.run_id)
+        .expect("the gate attempts");
+    println!("live 0.24.0 F2: {} gate attempt(s)", attempts.len());
+    assert!(
+        io_cli::gates::standing(&attempts)
+            .is_some_and(|standing| matches!(standing.outcome, io_harness::GateOutcome::Passed)),
+        "the store should record a passing gate attempt, found {attempts:?}",
+    );
+
+    // And the exit status a headless run would have reported is unchanged by a
+    // gate that passed.
+    assert_eq!(
+        io_cli::exec::verified_code(&result.outcome, io_cli::gates::standing(&attempts).as_ref()),
+        io_cli::exec::OK,
+    );
+}
+
+/// **0.24.0 F2 + F8 — a failing criterion is recorded, and it is exit `6`.**
+///
+/// The negative half, and the one that pays for the release: without it an
+/// unattended run exits `0` over work nothing checked. `false` cannot be satisfied
+/// by any amount of agent effort, so this asserts the gate's verdict rather than
+/// the model's competence — the run is allowed to do whatever it likes with the
+/// file and still must not be reported as verified.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+#[cfg(unix)]
+async fn live_f2_f8_a_failing_criterion_is_recorded_and_exits_six() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+
+    let config = gated("[app.io-cli.gates]\ncommand = [\"false\"]\n");
+    let contract = io_cli::contract::configured(
+        "Replace the line `old line` in notes.md with `new line`. Nothing else.",
+        root.to_path_buf(),
+        &config,
+    )
+    .with_max_steps(6);
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &Policy::permissive(),
+            &io_harness::ApproveAll,
+            &io_harness::Ignore,
+        )
+        .await
+        .expect("the turn runs");
+
+    println!("live 0.24.0 F8: outcome {:?}", result.outcome);
+
+    assert!(
+        !matches!(result.outcome, io_harness::RunOutcome::Success { .. }),
+        "a criterion that cannot pass must never return Success",
+    );
+
+    let attempts = store
+        .gate_attempts(result.run_id)
+        .expect("the gate attempts");
+    let standing = io_cli::gates::standing(&attempts).expect("a gate ran and answered");
+    println!(
+        "live 0.24.0 F8: phase {:?}, outcome {:?}, attempt {}",
+        standing.phase, standing.outcome, standing.attempt,
+    );
+    assert_eq!(standing.phase, "command");
+    assert!(matches!(standing.outcome, io_harness::GateOutcome::Failed));
+
+    // The point of the release: whatever the run itself reported, the operator's
+    // own criterion decides the status a script branches on.
+    assert_eq!(
+        io_cli::exec::verified_code(&result.outcome, Some(&standing)),
+        io_cli::exec::UNVERIFIED,
+        "a run whose gate said no must exit 6, not {}",
+        io_cli::exec::code(&result.outcome),
+    );
+
+    // And the retry has something real to say. An empty failure text would make
+    // the follow-up turn no better informed than the first, which is the whole
+    // reason io-cli drives one at all.
+    let events = store.sandbox_events(result.run_id).expect("sandbox events");
+    let step = attempts.last().map(|last| last.step).unwrap_or_default();
+    println!(
+        "live 0.24.0 F7: recorded output {:?}",
+        io_cli::gates::output(&events, step),
+    );
+}
+
+/// **0.24.0 F5 — a rubric is judged by a second model, and the verdict arrives.**
+///
+/// The one criterion that costs a provider call, and the only one whose verdict
+/// reaches the event stream at all: `EventKind::Reviewed` is emitted for a review
+/// and for nothing else. The rubric is written so that a correct run passes it and
+/// the judgement is still a real one — a rubric no model could satisfy would prove
+/// only that the reviewer answered.
+///
+/// The reviewer is named explicitly and is the same model here, with
+/// `allow_self_review` set, because this asserts the mechanism rather than the
+/// independence. An operator who does not set it is refused, which is asserted in
+/// the offline suite.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f5_a_rubric_is_judged_by_a_second_model() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+
+    // The provider block is what `contract::configured` builds the reviewer from,
+    // so the section carries both. The key reaches the file only in memory.
+    let config = gated(&format!(
+        "[[provider]]\nkind = \"openrouter\"\nmodel = \"{model}\"\napi_key = \"{key}\"\n\n\
+         [app.io-cli.gates]\nrubric = \"notes.md contains the line `new line`\"\n\
+         reviewer = \"{model}\"\nallow_self_review = true\n",
+        model = model(),
+    ));
+
+    let contract = io_cli::contract::configured(
+        "Replace the line `old line` in notes.md with `new line`. Nothing else.",
+        root.to_path_buf(),
+        &config,
+    )
+    .with_max_steps(12);
+
+    assert!(
+        matches!(contract.verify, io_harness::Verification::Review { .. }),
+        "the rubric did not reach the contract: {:?}",
+        contract.verify,
+    );
+    assert!(
+        contract.reviewer.is_some(),
+        "a Review criterion with no reviewer is Error::Config at run start",
+    );
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &Policy::permissive(),
+            &io_harness::ApproveAll,
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    println!("live 0.24.0 F5: outcome {:?}", result.outcome);
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let reviewed: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::Reviewed { passed, reasons } => Some((*passed, reasons.clone())),
+            _ => None,
+        })
+        .collect();
+    println!("live 0.24.0 F5: reviewed {reviewed:?}");
+
+    assert!(
+        !reviewed.is_empty(),
+        "a review criterion must emit EventKind::Reviewed; the second model was \
+         never asked",
+    );
+
+    // A refusal has to carry its reasons, because the reasons are the only thing
+    // the operator can act on and the only thing the retry can carry.
+    for (passed, reasons) in &reviewed {
+        if !passed {
+            assert!(
+                !reasons.is_empty(),
+                "a failing review with no reasons tells the operator nothing",
+            );
+        }
+    }
+
+    let attempts = store
+        .gate_attempts(result.run_id)
+        .expect("the gate attempts");
+    let standing = io_cli::gates::standing(&attempts).expect("the review answered");
+    assert_eq!(standing.phase, "review");
+}
