@@ -156,7 +156,7 @@ pub fn code(outcome: &RunOutcome) -> u8 {
 /// reformat the one function a test reads as text and make a table about
 /// outcomes answer a question outcomes do not contain.
 ///
-/// **Only [`GateOutcome::Failed`] earns [`UNVERIFIED`].** A gate that
+/// **Only a `GateOutcome::Failed` earns [`UNVERIFIED`].** A gate that
 /// `Errored` never answered at all — the criterion could not run, the reviewer
 /// returned nothing parsable, the program was refused — and reporting that as
 /// "the work does not hold up" would claim a judgement nobody made. Such a run
