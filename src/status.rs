@@ -725,6 +725,16 @@ impl Status {
     /// then being one refused call ahead is worth being right for the whole of the
     /// turn in the ordinary case.
     pub fn note_branch(&mut self, event: &io_harness::RunEvent) {
+        // **Depth zero only, and 0.25.0 is the release that makes this matter.**
+        // A `worktree = true` child works in its own checkout on its own branch;
+        // its `git_branch` call is a fact about *that* tree, and this field is a
+        // fact about the session's. Taking a child's branch here would put a name
+        // on the status line, the `/status` page and every later commit block
+        // that no reader could act on, because the checkout it belongs to is one
+        // io-harness exposes no way to name.
+        if event.depth > 0 {
+            return;
+        }
         let io_harness::EventKind::ToolCall { name, target } = &event.kind else {
             return;
         };

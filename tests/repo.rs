@@ -289,3 +289,37 @@ fn f3_no_head_ever_yields_an_empty_name() {
         );
     }
 }
+
+/// **F3 — a workspace below the repository root still knows its branch.**
+///
+/// `io -C src` is an ordinary invocation, and git itself walks up from the
+/// working directory — so the agent's seven built-ins find the repository while a
+/// check that looked only at `<root>/.git` found nothing and said, permanently,
+/// that a perfectly readable checkout had no branch. Found by the adversarial
+/// review; none of the arms above reached it, because every one of them builds
+/// its fixture at the root it then asks about.
+#[test]
+fn f3_a_directory_below_the_repository_root_still_reads_the_branch() {
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    checkout(root, "ref: refs/heads/feat/0.25.0\n");
+
+    let nested = root.join("src").join("deep");
+    std::fs::create_dir_all(&nested).expect("the nested directory");
+
+    assert_eq!(
+        repo::branch(&nested).as_deref(),
+        Some("feat/0.25.0"),
+        "a directory inside the checkout must read the checkout's branch; git \
+         walks up and so must this",
+    );
+
+    // And a directory that is genuinely outside any repository still answers
+    // nothing, rather than walking up far enough to find someone else's.
+    let elsewhere = tempfile::tempdir().expect("a directory that is not a checkout");
+    assert_eq!(
+        repo::branch(elsewhere.path()),
+        None,
+        "walking up must stop at the filesystem, not borrow an unrelated repository",
+    );
+}

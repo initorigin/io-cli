@@ -66,7 +66,7 @@ fn f5_a_colon_message_survives_the_block_and_the_subject() {
 
     assert_eq!(made.subject(), COLON);
     assert!(
-        commit::block(&made, Some("feat/0.25.0"), None)
+        commit::block(&made, Some("feat/0.25.0"))
             .iter()
             .any(|line| line.contains(COLON)),
         "the committed block carries the message as written",
@@ -173,20 +173,17 @@ fn f5_no_turns_and_no_commits_are_the_same_silence() {
 }
 
 #[test]
-fn f5_the_block_carries_the_message_the_branch_and_what_git_touched() {
+fn f5_the_block_carries_the_message_and_the_branch() {
     let made = Made {
         step: 3,
         message: COLON.to_string(),
     };
 
     assert_eq!(
-        commit::block(&made, Some("feat/0.25.0"), Some("2 files changed")),
-        vec![
-            "committed on feat/0.25.0".to_string(),
-            format!("  {COLON}"),
-            "  2 files changed".to_string(),
-        ],
-        "one block, carrying all three things the criterion names",
+        commit::block(&made, Some("feat/0.25.0")),
+        vec!["committed on feat/0.25.0".to_string(), format!("  {COLON}"),],
+        "one block, carrying both things the criterion names — and the colon is \
+         the point of the fixture, not decoration",
     );
 }
 
@@ -198,15 +195,12 @@ fn f5_an_unknown_branch_or_report_leaves_out_a_line_rather_than_inventing_one() 
     };
 
     assert_eq!(
-        commit::block(&made, None, None),
+        commit::block(&made, None),
         vec!["committed".to_string(), format!("  {COLON}")],
     );
     // Present but blank is an unknown wearing a value's clothes, and is treated
     // as the unknown it is rather than drawn as `committed on `.
-    assert_eq!(
-        commit::block(&made, Some("  "), Some("\n")),
-        commit::block(&made, None, None),
-    );
+    assert_eq!(commit::block(&made, Some("  ")), commit::block(&made, None),);
 }
 
 #[test]
@@ -222,7 +216,7 @@ fn f5_a_body_is_kept_whole_and_the_subject_is_only_its_first_line() {
         "a status row shows the subject alone"
     );
     assert_eq!(
-        commit::block(&made, Some("develop"), None),
+        commit::block(&made, Some("develop")),
         vec![
             "committed on develop".to_string(),
             format!("  {COLON}"),
@@ -359,53 +353,101 @@ fn posture(exec: Effect) -> Policy {
 #[test]
 fn f2_a_posture_that_allows_git_buys_the_turn() {
     assert_eq!(
-        commit::asked(&posture(Effect::Allow), false),
-        Ok(()),
+        commit::asked(&posture(Effect::Allow)),
+        commit::Asked::Ready,
         "nothing refuses git, so there is nothing to say and the turn is bought",
     );
 }
 
 #[test]
-fn f2_an_asking_posture_is_refused_before_the_turn_is_paid_for() {
-    let refusal = commit::asked(&posture(Effect::Ask), true)
-        .expect_err("an asking posture refuses git at the spawn, so /commit must not spend a turn");
+fn f2_an_asking_default_is_offered_the_allowance() {
+    let commit::Asked::Offer(sentence) = commit::asked(&posture(Effect::Ask)) else {
+        panic!("an asking default is the one case the allowance both helps and is honest in");
+    };
     assert!(
-        refusal.contains("refused rather than asked"),
+        sentence.contains("refused rather than asked"),
         "the sentence has to name what the posture did, because the posture's own \
-         name says it will ask and the harness does not: {refusal:?}",
+         name says it will ask and the harness does not: {sentence:?}",
     );
     assert!(
-        refusal.contains("git"),
-        "and it has to name the one binary the allowance covers: {refusal:?}",
+        sentence.contains("/commit allow"),
+        "an offer the operator cannot take is not an offer: {sentence:?}",
     );
 }
 
 #[test]
-fn f2_a_denying_posture_is_refused_without_being_offered_a_rule() {
-    // The asymmetry found while building F1, and the reason `asked` takes the
-    // second argument at all. A rule is matched BEFORE a default, so the same
-    // allowance that lifts an asking default would also lift a denying one — and
-    // a keystroke that defeats the one posture whose name is a promise is not a
-    // convenience. Under a deny the answer is to change posture.
-    let refusal = commit::asked(&posture(Effect::Deny), false)
-        .expect_err("a denying posture cannot run a command, so it cannot commit");
+fn f2_a_denying_default_is_refused_and_never_offered_the_allowance() {
+    // **The defect this arm was rewritten for.** A rule is matched BEFORE a tier
+    // default, so the allowance would in fact work under `read only` — which is
+    // exactly why it must not be offered there. The first version of this test
+    // asserted only the wording of the refusal and would have passed while the
+    // driver applied the rule anyway.
+    let refused = commit::asked(&posture(Effect::Deny));
     assert!(
-        !refusal.contains("Allow `git`"),
-        "a denying posture must NOT be offered the allowance: {refusal:?}",
+        matches!(refused, commit::Asked::Refuse(_)),
+        "a denying posture must never be offered the allowance: {refused:?}",
     );
+    let commit::Asked::Refuse(sentence) = refused else {
+        unreachable!()
+    };
     assert!(
-        refusal.contains("posture"),
-        "it is told what to change instead: {refusal:?}",
+        sentence.contains("posture"),
+        "it is told what to change instead: {sentence:?}",
     );
 }
 
 #[test]
-fn f2_the_two_refusals_are_not_the_same_sentence() {
-    let asking = commit::asked(&posture(Effect::Ask), true).unwrap_err();
-    let denying = commit::asked(&posture(Effect::Deny), false).unwrap_err();
+fn f2_a_rule_that_refuses_git_is_refused_rather_than_offered_advice_it_cannot_take() {
+    // A deny wins over any later allow, across layers. Offering the allowance
+    // here would print advice that can never be taken, on every attempt, forever
+    // — and the operator's own configuration is where the answer actually is, so
+    // the sentence names the rule.
+    for effect in [Effect::Ask, Effect::Deny] {
+        let mut policy = Policy::permissive();
+        policy.defaults = Defaults {
+            read: Effect::Allow,
+            write: Effect::Allow,
+            // An ASKING default underneath, so only the rule can be what decides.
+            exec: Effect::Ask,
+            net: Effect::Deny,
+        };
+        policy.layers.push(io_harness::Layer {
+            name: "the operator's own".into(),
+            rules: vec![io_harness::Rule {
+                act: io_harness::Act::Exec,
+                effect,
+                pattern: "git".into(),
+            }],
+        });
+        let answer = commit::asked(&policy);
+        assert!(
+            matches!(answer, commit::Asked::Refuse(_)),
+            "a rule decided, so the allowance cannot lift it and must not be \
+             offered ({effect:?}): {answer:?}",
+        );
+        let commit::Asked::Refuse(sentence) = answer else {
+            unreachable!()
+        };
+        assert!(
+            sentence.contains("git"),
+            "the refusal names the rule that decided: {sentence:?}",
+        );
+    }
+}
+
+#[test]
+fn f2_the_three_answers_are_three_different_sentences() {
+    let offered = match commit::asked(&posture(Effect::Ask)) {
+        commit::Asked::Offer(sentence) => sentence,
+        other => panic!("expected an offer: {other:?}"),
+    };
+    let denied = match commit::asked(&posture(Effect::Deny)) {
+        commit::Asked::Refuse(sentence) => sentence,
+        other => panic!("expected a refusal: {other:?}"),
+    };
     assert_ne!(
-        asking, denying,
+        offered, denied,
         "an operator who asked to be asked and one who asked for nothing to run \
-         are in different situations, and one of them has a one-keystroke fix",
+         are in different situations, and only one of them has a one-keystroke fix",
     );
 }

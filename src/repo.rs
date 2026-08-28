@@ -56,6 +56,17 @@ pub fn branch(root: &std::path::Path) -> Option<String> {
 /// *file* whose contents are `gitdir: <path>`, and the path may be relative to the
 /// worktree. Both are resolved here so no caller has to know the difference.
 pub fn git_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    // **Walked upward, because a workspace root is not always a repository root.**
+    // `io -C src` is an ordinary thing to do, and git itself walks up from the
+    // working directory — so the agent's own seven tools find the repository
+    // while a check that looked only at `root/.git` found nothing and reported,
+    // permanently, that a perfectly readable checkout had no branch. The first
+    // ancestor holding a `.git` wins, which is git's own rule.
+    root.ancestors().find_map(git_dir_at)
+}
+
+/// The git directory named by exactly this directory's `.git`, if it has one.
+fn git_dir_at(root: &std::path::Path) -> Option<std::path::PathBuf> {
     let dot = root.join(".git");
     let meta = std::fs::metadata(&dot).ok()?;
     if meta.is_dir() {

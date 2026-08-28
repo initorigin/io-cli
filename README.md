@@ -1237,7 +1237,7 @@ directory that is not a repository draws no field at all: `io` runs in plenty of
 them and must not get worse there.
 
 **A commit the agent makes is committed into the scrollback** — the branch it
-landed on, the message the model wrote, and what git reported as touched. The
+landed on and the message the model wrote. The
 diff is not drawn a second time. It is already on screen immediately above, from
 the step that wrote it, and drawing it twice would cost you the reason the block
 is there at all.
@@ -1296,8 +1296,14 @@ name = "reviewer"
 worktree = true
 ```
 
-io-harness roots it under `.worktrees/` in your repository, on a new branch of
-the same name, created before the child's first step. If the worktree cannot be
+io-harness roots it under `.worktrees/` in your repository, on a new branch
+created before the child's first step. **The branch is not named after the
+entry** — it is the entry's name, the parent run, the step and a digest of the
+child's goal, so `reviewer` becomes something like `reviewer-12-3-a1b2c3d4`.
+That is what makes two children of one entry, spawned in the same step, land in
+two checkouts rather than one; and since nothing here removes either, it is also
+the shape to look for when you go and find the work afterwards. If the worktree
+cannot be
 made — no git, not a repository, the boundary refusing that path — the spawn
 fails with the reason and **no child starts**, rather than quietly sharing the
 parent's tree and reintroducing the collision the switch exists to remove.

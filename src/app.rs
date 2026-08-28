@@ -1197,13 +1197,26 @@ impl App {
                     Some(posture) => format!("the `{}` posture", posture.short()),
                     None => "the policy in force".to_string(),
                 };
+                // **The sentence says what to type and does not promise it will
+                // work, and both halves are corrections.** It named an action —
+                // allowing `git` — with no way to perform it anywhere in the
+                // product, so an operator reading it had been told about a door
+                // and not where it was. And it asserted the allowance *lifts* the
+                // refusal, which `crate::commit::asked` had already learnt is
+                // false whenever a rule rather than a tier default decided: a deny
+                // wins over any later allow, so under a `deny_exec` in the
+                // operator's own file that promise can never be kept. This arm
+                // sees an `EventKind::Refused` whose `rule` and `layer` it does
+                // not receive, so it cannot tell the two apart — and a sentence
+                // that cannot tell them apart must not claim either.
                 self.record(
                     Tone::Refused,
                     format!(
                         "{posture} does not let the agent run `git`, and the harness's git \
                          tools are refused outright rather than asked about — so nothing \
-                         stopped to ask you. Allowing `git` for this session is the one rule \
-                         that lifts it."
+                         stopped to ask you. `/commit allow` permits `git` for this session \
+                         where the posture is what refused it, and says so when something \
+                         else did."
                     ),
                 );
             }
@@ -2485,7 +2498,7 @@ mod tests {
         app.event(&git_refused(), Duration::ZERO);
         let said = text(&mut app);
         assert!(
-            said.contains("run `git`") && said.contains("Allowing `git` for this session"),
+            said.contains("run `git`") && said.contains("/commit allow"),
             "an unprompted git refusal said: {said:?}"
         );
     }
@@ -2509,7 +2522,7 @@ mod tests {
         for _ in 0..5 {
             app.event(&git_refused(), Duration::ZERO);
         }
-        assert_eq!(text(&mut app).matches("Allowing `git`").count(), 1);
+        assert_eq!(text(&mut app).matches("/commit allow").count(), 1);
     }
 
     /// And the next turn is explained again: the flag is about a turn, not about
@@ -2521,7 +2534,7 @@ mod tests {
         let _ = text(&mut app);
         app.started();
         app.event(&git_refused(), Duration::ZERO);
-        assert!(text(&mut app).contains("Allowing `git`"));
+        assert!(text(&mut app).contains("/commit allow"));
     }
 
     /// A refusal of something that is not git explains nothing about git.
@@ -2541,7 +2554,7 @@ mod tests {
             ),
             Duration::ZERO,
         );
-        assert!(!text(&mut app).contains("Allowing `git`"));
+        assert!(!text(&mut app).contains("/commit allow"));
     }
 
     #[test]

@@ -1711,8 +1711,20 @@ fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
     }
 }
 
-/// **0.25.0 F11 — what the branch field displaces on the footer at eighty
-/// columns, measured and pinned.**
+/// **0.25.0 F11 — the branch reaches the footer, and yields before the standing
+/// facts when the row cannot hold it.**
+///
+/// **Two widths, and the first one is why.** The first version of this test
+/// asserted only at eighty columns — where, with this fixture, the branch never
+/// fits — so the footer with a branch and the footer without one were
+/// character-identical and every assertion was equally true of both. Deleting
+/// the push from `Status::footer` entirely left it green. It was a gate over a
+/// field it could not observe, which is the shape 0.20.0's
+/// `a_queue_behind_an_open_fleet_view_answers_no_key` had and the shape this
+/// release already found once in `tests/commands.rs`.
+///
+/// So the wide arm proves the field is drawn at all, and the narrow arm proves
+/// what it gives up when it cannot be. Neither alone is a gate.
 ///
 /// The fixture is `tests/status.rs`'s own `full_row` without the planning phase:
 /// the posture and containment word `src/status.rs` names in its comments as the
@@ -1721,19 +1733,17 @@ fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
 /// plus `workspace-write/macos-sandbox-exec` (34) — forty-six columns. The key
 /// hint is fourteen and its separator three.
 ///
-/// **Without a branch**, forty-six plus seventeen leaves seventeen columns, and
-/// the narrowing stops with `6 steps` still on the row: `26.9k tok` and `ctx 23%`
-/// were already what a full eighty-column row gave up before this release.
+/// **The branch is in `counts`, pushed last, so `counts.pop()` takes it before it
+/// takes any number.** That is the corrected design: a branch is the one fact on
+/// this row an operator can afford to lose, because it is a keystroke away on the
+/// `/status` page, while a posture that silently vanished is not. The rejected
+/// design put it in the right-hand group, which `row` keeps or drops whole — and
+/// at eighty columns with `planning` on, every real branch took the posture, the
+/// containment mode and the planning phase off together.
 ///
-/// **With `git:feat/0.25.0`** the group is sixty-four, and `6 steps` — the last
-/// counter standing — is what pays for it. That is the trade `src/status.rs`
-/// states where it puts the field in this group, and this is the assertion that
-/// holds it to the claim: the standing facts survive, a number goes, and the key
-/// hint is not a counter and cannot be taken.
-///
-/// Sabotage: put the branch in `counts` instead. The group is unchanged, `6
-/// steps` survives, and the branch itself becomes the thing a full row drops —
-/// under which the second half of this test fails and nothing else does.
+/// Sabotage: put the branch back in the right-hand group — under which the narrow
+/// arm's standing-facts assertions fail. Or delete the push altogether — under
+/// which the wide arm fails, which is the half that was missing.
 #[test]
 fn f11_a_branch_yields_before_the_standing_facts_at_eighty_columns() {
     use io_cli::status::Status;
@@ -1759,6 +1769,11 @@ fn f11_a_branch_yields_before_the_standing_facts_at_eighty_columns() {
                 );
             }
             rows.join("\n")
+        };
+        // The same renderer at a width that can hold everything, for the arm that
+        // proves the field exists at all rather than what it displaces.
+        let footer_at = |status: &Status, width: u16| -> String {
+            text_of(&status.footer(width, &theme)).join("\n")
         };
 
         let bare = footer(&fixture());
@@ -1815,6 +1830,27 @@ fn f11_a_branch_yields_before_the_standing_facts_at_eighty_columns() {
         assert!(
             drawn.contains("/ for commands"),
             "{set}: the key hint was dropped to make room for the branch: {drawn:?}",
+        );
+
+        // **The wide arm, and it is the half that was missing.** Everything above
+        // is equally true of a footer that never had a branch at all, because at
+        // eighty columns this fixture cannot fit one either way — so on its own it
+        // is a gate over a field it cannot observe. Given room, the branch must
+        // actually be drawn, and here it is asserted where nothing else can
+        // explain its presence.
+        let roomy = footer_at(&branched, 200);
+        assert!(
+            roomy.contains("git:feat/0.25.0"),
+            "{set}: the branch never reaches the footer at all — delete the push \
+             from `Status::footer` and every narrow assertion above still passes, \
+             which is what made the first version of this test vacuous: {roomy:?}",
+        );
+        // And it is still the last thing in its group, which is what makes it the
+        // first to go when the room disappears.
+        let bare_wide = footer_at(&fixture(), 200);
+        assert!(
+            !bare_wide.contains("git:"),
+            "{set}: a branch appeared with none set: {bare_wide:?}",
         );
     }
 }

@@ -220,8 +220,12 @@ net = "deny"
 # `worktree = true` GIVES ONE CHILD ITS OWN CHECKOUT. Every agent in a tree
 # shares one working directory otherwise, so two children editing the same file
 # are one overwriting the other. Set this and io-harness roots that child under
-# `.worktrees/` in the repository, on a new branch of the same name, created
-# before its first step. `/fleet` marks the rows whose definition asked for one.
+# `.worktrees/` in the repository, on a new branch created before its first
+# step. THE BRANCH IS NOT NAMED AFTER THIS ENTRY: it is the entry's name, the
+# parent run, the step and a digest of the child's goal — `reviewer` becomes
+# something like `reviewer-12-3-a1b2c3d4`. That is what makes the line below
+# true, and it is the shape to look for when you go and find the work.
+# `/fleet` marks the rows whose definition asked for one.
 #
 # WHAT IT COSTS. Another checkout of the repository on disk, and a branch per
 # CHILD rather than per definition — two children of the same entry spawned in

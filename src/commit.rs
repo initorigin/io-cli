@@ -129,16 +129,22 @@ pub fn made_in(turns: &[io_harness::AssistantTurn]) -> Vec<Made> {
 /// this crate returns text: the tone is the caller's, and a module that builds
 /// styled lines cannot be asserted without a theme.
 ///
-/// `branch` is where it landed and `touched` is what git printed — both optional,
-/// because both can genuinely be unknown, and a line saying "unknown" is worse
-/// than a line that is not there. A `branch` or `touched` that is present but
-/// blank is treated as absent for the same reason: it is an unknown wearing a
-/// value's clothes.
+/// `branch` is where it landed, optional because it can genuinely be unknown — a
+/// contained child commits in a checkout this process cannot name — and a line
+/// saying "unknown" is worse than a line that is not there. A branch that is
+/// present but blank is treated as absent for the same reason: it is an unknown
+/// wearing a value's clothes.
+///
+/// **There is deliberately no "what git printed" parameter, and one was removed
+/// to make that true.** It had a single production call site, passing `None`
+/// forever, because no `EventKind` carries a tool's result — the module header
+/// says so. Only the tests ever supplied it, which made it dead flexibility, and
+/// the README carried a sentence describing a line no operator could ever see.
 ///
 /// Only a commit that landed reaches here. See the module note on why a refused
 /// or failed `git_commit` is the caller's to filter and not this function's to
 /// detect.
-pub fn block(made: &Made, branch: Option<&str>, touched: Option<&str>) -> Vec<String> {
+pub fn block(made: &Made, branch: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(match branch.map(str::trim).filter(|b| !b.is_empty()) {
         Some(branch) => format!("committed on {branch}"),
@@ -154,12 +160,6 @@ pub fn block(made: &Made, branch: Option<&str>, touched: Option<&str>) -> Vec<St
         } else {
             format!("  {line}")
         });
-    }
-    if let Some(touched) = touched {
-        let touched = touched.trim();
-        if !touched.is_empty() {
-            lines.push(format!("  {touched}"));
-        }
     }
     lines
 }
@@ -181,39 +181,77 @@ pub fn prompt() -> String {
         .to_string()
 }
 
+/// What `/commit` may do, given the policy in force.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// Nothing refuses git. Buy the turn.
+    Ready,
+    /// An **asking default** refuses it, and [`crate::approval::git_allowance`]
+    /// would lift it. The sentence names the rule; `/commit allow` takes it.
+    Offer(String),
+    /// Something refuses it that the allowance cannot lift, or must not.
+    Refuse(String),
+}
+
 /// Whether `/commit` may spend a turn, and what to say when it may not.
 ///
 /// **The check happens before the turn, not after it.** A commit the policy was
 /// always going to refuse still costs a real completion against a real model to
-/// discover, so the one question worth asking first is whether git can run at
-/// all.
+/// discover, so the one question worth asking first is whether git can run at all.
 ///
-/// The three answers are not symmetrical, and the asymmetry is deliberate:
+/// **The three answers turn on the whole verdict and not on the tier default, and
+/// this release shipped the shallower version first.** `Verdict` carries `rule`,
+/// which is `None` exactly when the tier default decided, so:
 ///
-/// - Nothing refuses git, so the turn is bought.
-/// - The refusal came from an **asking** default. The operator chose a posture
-///   that promises to ask, and the harness's git spawn does not ask — so naming
-///   the one rule that lifts it is telling them what their own posture meant to
-///   do. [`crate::approval::git_allowance`] is that rule, and it names one binary.
-/// - The refusal came from a **denying** default or an explicit deny. Here the
-///   answer is *not* to offer a rule. A rule is matched before a default, so the
-///   same allowance would work under `read only` too — and a keystroke that
-///   defeats the one posture whose name is a promise is not a convenience. The
-///   answer is to change posture, which is a decision rather than a shortcut.
-pub fn asked(policy: &io_harness::Policy, asking: bool) -> Result<(), String> {
-    if !crate::approval::refuses_git(policy) {
-        return Ok(());
+/// - `Allow` — [`Asked::Ready`].
+/// - `Ask` **with no rule** — an asking *default*. The operator chose a posture
+///   that promises to ask and the harness's git spawn does not ask, so naming the
+///   one rule that lifts it tells them what their own posture meant to do. This
+///   is the only case the allowance is offered in, because it is the only case
+///   where the allowance both helps and is honest.
+/// - **Anything else** — [`Asked::Refuse`], and the allowance is neither offered
+///   nor applied. Two distinct situations arrive here and both are traps:
+///
+///   A **denying default** is `read only`. A rule is matched *before* a default,
+///   so the allowance would in fact work there — which is exactly why it must not
+///   be offered. A keystroke that defeats the one posture whose name is a promise
+///   is not a convenience, and worse, the `.git` write gate would refuse the
+///   commit anyway, so the turn would be bought for nothing.
+///
+///   A **rule** — a `deny_exec` in the operator's own configuration, or a deny
+///   with an allowlist — cannot be lifted by a later allow at all, because deny
+///   wins across layers. Offering the allowance there would print advice that can
+///   never be taken, on every attempt, forever.
+pub fn asked(policy: &io_harness::Policy) -> Asked {
+    let verdict = policy.check(io_harness::Act::Exec, crate::approval::GIT);
+    match (verdict.effect, verdict.rule.as_deref()) {
+        (io_harness::Effect::Allow, _) => Asked::Ready,
+        (io_harness::Effect::Ask, None) => Asked::Offer(
+            "this posture asks before running a command, and the harness's git tools are refused \
+             rather than asked — so a commit would be refused after the turn was paid for. Run \
+             `/commit allow` to permit `git` for this session and commit."
+                .to_string(),
+        ),
+        // A rule decided, whatever it said. Name the layer, because a refusal an
+        // operator cannot locate in their own files is one they cannot act on.
+        (_, Some(rule)) => Asked::Refuse(format!(
+            "a rule in the policy refuses git ({rule}{}), so the agent cannot commit. Allowing \
+             `git` for the session cannot lift it — a deny wins over any later allow — so this is \
+             a change to make in the file the rule came from.",
+            verdict
+                .layer
+                .as_deref()
+                .map(|layer| format!(" in {layer}"))
+                .unwrap_or_default(),
+        )),
+        // A denying default: `read only`, and it is a posture rather than a rule.
+        (_, None) => Asked::Refuse(
+            "this posture does not let the agent run a command, so it cannot commit. Change the \
+             posture if you want it to — `/commit allow` deliberately will not, because a rule \
+             beats a default and this one would quietly undo the posture you chose."
+                .to_string(),
+        ),
     }
-    Err(if asking {
-        "this posture asks before running a command, and the harness's git tools are refused \
-         rather than asked — so a commit would be refused after the turn was paid for. Allow \
-         `git` for this session and run /commit again."
-            .to_string()
-    } else {
-        "this posture does not let the agent run a command, so it cannot commit. Change the \
-         posture if you want it to."
-            .to_string()
-    })
 }
 
 /// The sentence naming who a commit will be authored as.

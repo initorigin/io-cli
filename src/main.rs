@@ -873,6 +873,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     let mut provider = make(&model)?;
     let mut app = App::new(theme, model);
     app.set_diff_style(diff_style);
+    // **Before the first keystroke, because the branch is true before the first
+    // turn and the field claiming otherwise would be a lie of omission.** Every
+    // other read of it is at a turn boundary, which meant an operator opening
+    // `io` in a repository saw no branch at all until they had spent a turn —
+    // while the README and the CHANGELOG both say the branch the working tree is
+    // on is on the status line. One file read at startup makes that sentence true
+    // from the first frame.
+    app.set_branch(io_cli::repo::branch(session.root()));
     // Before anything is drawn and before the first keystroke, so the keys are
     // never briefly the defaults, and so the notices are the first thing in the
     // scrollback rather than something that appears under an answer.
@@ -2495,21 +2503,42 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         let mut command = app.key(key);
         if let Command::Slash(text) = &command {
             if let Action::Commit(allow) = commands::parse(text, app.keys(), &app.theme) {
-                // **The allowance is taken before the policy is built, or it
-                // would not be in the policy this very keystroke is judged
-                // against.** `/commit allow` means "permit git and commit", one
-                // action and not two, so an operator who has just been told what
-                // the rule is does not have to type the word twice.
-                if allow {
-                    app.allow_git();
-                }
+                // **Asked first, allowed second, and the order is the fix for a
+                // defect this release found in its own wiring.** Applying the
+                // allowance before asking made the question moot: the rule is
+                // matched ahead of the tier default, so pushing it turned every
+                // posture — `read only` included — into one that permits `git`,
+                // and `asked` then answered `Ready` and bought the turn. Under
+                // `read only` the `.git` write gate refused the commit anyway, so
+                // the turn was spent on work that was never going to land, which
+                // is the single thing this check exists to prevent. Worse, the
+                // rule outlives the keystroke: `remembered` is threaded into every
+                // later turn, so one `/commit allow` left the agent able to run
+                // git for the rest of a session whose status line still read
+                // `policy:read-only`.
+                //
+                // So the answer decides. `Offer` is the one case the allowance is
+                // both effective and honest, and it is the only case it is applied
+                // in.
                 let effective = approval::session_policy(&policy, app.posture(), app.remembered());
-                let asking = app
-                    .posture()
-                    .map_or(policy.defaults.exec, |posture| posture.defaults().exec)
-                    == io_harness::Effect::Ask;
-                command = match io_cli::commit::asked(&effective, asking) {
-                    Ok(()) => {
+                command = match io_cli::commit::asked(&effective) {
+                    io_cli::commit::Asked::Offer(_) if allow => {
+                        app.allow_git();
+                        app.say(
+                            Tone::Muted,
+                            io_cli::commit::authored_as(&opening.commit_identity),
+                        );
+                        Command::Submit(io_cli::commit::prompt())
+                    }
+                    io_cli::commit::Asked::Offer(sentence) => {
+                        app.say(Tone::Refused, sentence);
+                        Command::None
+                    }
+                    io_cli::commit::Asked::Refuse(sentence) => {
+                        app.say(Tone::Refused, sentence);
+                        Command::None
+                    }
+                    io_cli::commit::Asked::Ready => {
                         // **Said before the turn is bought, not after it lands.**
                         // Authorship is the one thing about a commit that cannot
                         // be corrected later without rewriting history, so the
@@ -2523,10 +2552,6 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             io_cli::commit::authored_as(&opening.commit_identity),
                         );
                         Command::Submit(io_cli::commit::prompt())
-                    }
-                    Err(refusal) => {
-                        app.say(Tone::Refused, refusal);
-                        Command::None
                     }
                 };
             }
@@ -4993,26 +5018,40 @@ fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, widt
 /// fails on a loaded machine, which `src/status.rs` already records for the
 /// context read.
 ///
-/// **`changed` decides whether a commit is even possible**, and that is what
-/// separates a call that landed from one the policy refused or git rejected.
-/// `crate::commit::made_in` reads the model's *requested* calls and cannot tell
-/// those apart — the boundary is stated in its own rustdoc — so the caller has to
-/// be the one that knows, and this is the caller. io-harness sets
-/// `Step { changed: true }` only when a dispatched `git_add` or `git_commit`
-/// actually succeeded, so a refused commit reaches here as `changed: false` and
-/// puts nothing on screen. A scrollback claiming a commit that does not exist is
-/// the one failure this surface must never have.
+/// **The step's `changed` flag is NOT the signal, and believing it was is the
+/// worst defect this release nearly shipped.** `changed` is a step-level OR over
+/// every dispatch in the step (`run/step.rs` folds `step_changed |= changed`), so
+/// an ordinary `write_file` in the same step sets it — and a `git_commit` beside
+/// that write which git rejected, or which the policy refused before it ran,
+/// arrives under `changed: true` all the same. `crate::commit::made_in` reads the
+/// model's *requested* calls and cannot tell a commit that landed from one that
+/// did not, which its own rustdoc says; so the caller must, and the caller is
+/// this. Under the wizard's own posture the two together printed the refusal
+/// paragraph and a `committed on main` block in the same step.
 ///
-/// The branch is whatever the session last heard, which is either the one
-/// `.git/HEAD` named at the turn boundary or the one a `git_branch` call made
-/// during it. The diff is deliberately not redrawn: [`commit_edits`] has already
-/// put this step's hunks on screen immediately above.
+/// The honest signal is the step's own decision. io-harness writes
+/// `"{tool} ok"` or `"{tool} exit {code}"` per dispatched call and joins them with
+/// `"; "` (`run/dispatch.rs`), so `git_commit ok` appears once per commit that
+/// actually succeeded. Counting them bounds what may be drawn: a step whose
+/// commit was refused counts zero and draws nothing.
+///
+/// **Depth zero only.** `App`'s branch is the session's, read from the root's
+/// `.git/HEAD`; a contained child with `worktree = true` is on a different branch
+/// in a different checkout, and io-harness exposes no reader for where — so a
+/// child's commit drawn here would be attributed to a branch it was never on.
+/// Better silent than wrong, and `src/fleet.rs` already draws that line.
+///
+/// The diff is deliberately not redrawn: [`commit_edits`] has already put this
+/// step's hunks on screen immediately above.
 fn commit_commits(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
-    let io_harness::EventKind::Step { changed: true, .. } = &event.kind else {
+    let io_harness::EventKind::Step { .. } = &event.kind else {
         return;
     };
-    let turns = match store.step_turns(event.run_id) {
-        Ok(turns) => turns,
+    if event.depth > 0 {
+        return;
+    }
+    let steps = match store.steps(event.run_id) {
+        Ok(steps) => steps,
         // Said once and quietly. A commit that happened is still on the branch
         // whether or not this crate could read it back, so the session is not
         // worth interrupting over a store read.
@@ -5024,14 +5063,38 @@ fn commit_commits(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
             return;
         }
     };
+    let landed = steps
+        .iter()
+        .find(|step| step.step == event.step)
+        .map(|step| step.decision.matches(COMMIT_LANDED).count())
+        .unwrap_or_default();
+    if landed == 0 {
+        return;
+    }
+    let Ok(turns) = store.step_turns(event.run_id) else {
+        return;
+    };
     let branch = app.branch().map(str::to_string);
+    // Bounded by what the step reported landing. Pairing a particular call to a
+    // particular success is not possible — the decisions are joined into one
+    // string — so a step that made two commits and landed one draws one. That is
+    // an under-claim in a case no model has produced here, and an under-claim is
+    // the side of this to be wrong on.
     for made in io_cli::commit::made_in(&turns)
         .into_iter()
         .filter(|made| made.step == event.step)
+        .take(landed)
     {
-        app.committed(io_cli::commit::block(&made, branch.as_deref(), None));
+        app.committed(io_cli::commit::block(&made, branch.as_deref()));
     }
 }
+
+/// What a step's decision says when a commit actually landed.
+///
+/// io-harness builds it as `format!("{name} {}")` per dispatched call, so
+/// this is that string for `git_commit` and nothing else matches it — `exit 1`
+/// and `refused` both fail the test, which is the whole point.
+const COMMIT_LANDED: &str = "git_commit ok";
 
 /// Put the whole conversation back into the terminal's own scrollback.
 ///
@@ -6159,6 +6222,13 @@ async fn resume_pending<P: Provider>(
     // twice over. Saying a run has started fixes both — the prompt is queued and
     // the key becomes an interrupt — and it is what a live turn says here too.
     app.started();
+    // **The same re-read the ordinary turn does, and leaving it out here was a
+    // defect rather than an omission of no consequence.** A resumed run drives
+    // work that commits, and without this the branch is whatever the last live
+    // turn left — or nothing at all in a fresh process that resumed immediately.
+    // A commit block naming the branch the tree was on an hour ago is exactly
+    // what `App::set_branch` calls worse than naming none.
+    app.set_branch(io_cli::repo::branch(session.root()));
     paint(screen, app)?;
     let driving = async {
         match decided {
