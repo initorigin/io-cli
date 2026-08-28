@@ -39,8 +39,14 @@
 //! keystroke that caused it. So [`Refusal`] exists to catch both while the
 //! operator is still looking at the surface that wrote them.
 
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use io_harness::{
+    Anthropic, Compatible, Config, GateAttempt, GateOutcome, ModelReviewer, OpenAi, OpenRouter,
+    ProviderSpec, Reviewer, SandboxEvent, Verification,
+};
 use serde::{Deserialize, Serialize};
 
 /// The `[app.io-cli.gates]` section exactly as an operator wrote it.
@@ -150,4 +156,425 @@ pub enum Refusal {
         /// The model named as both the worker and the judge.
         model: String,
     },
+}
+
+impl Settings {
+    /// The one criterion this section resolves to, or why it cannot.
+    ///
+    /// `Ok(None)` is the answer for a section that is entirely absent — every key
+    /// unset. That is not the same as [`Refusal::Empty`], which is a section an
+    /// operator plainly meant to be a gate (`retries` is set, or `contains`, or a
+    /// `reviewer`) and which names no kind: the first is "no gate was asked for"
+    /// and the second is "a gate was asked for and half-written", and answering
+    /// both with silence would let a typo turn a gate off without a word.
+    ///
+    /// `turn_model` is the model the session will actually run with, passed in
+    /// rather than read here, so this function stays a pure decision over its
+    /// arguments and the tests need no configuration on disk. An empty string
+    /// means the caller does not yet know which model will run — the wizard, a
+    /// fresh home directory — and the self-review refusal cannot fire, because
+    /// there is nothing to compare the reviewer against. It is not defaulted to
+    /// "no clash": the caller that knows the model is the caller that must say it.
+    ///
+    /// The order of the checks is the order an operator can act on. Ambiguity is
+    /// answered before emptiness because the two cannot both be true; a missing
+    /// reviewer is answered before self-review because a reviewer that was never
+    /// named cannot be compared to anything.
+    pub fn criterion(&self, turn_model: &str) -> Result<Option<Criterion>, Refusal> {
+        let kinds = u8::from(self.command.is_some())
+            + u8::from(self.file.is_some())
+            + u8::from(self.rubric.is_some());
+        if kinds > 1 {
+            return Err(Refusal::Ambiguous);
+        }
+        if kinds == 0 {
+            // Compared against the default rather than against a hand-written
+            // list of the remaining keys: a key added to `Settings` later joins
+            // this check by existing, instead of by somebody remembering to add
+            // it here and shipping a silent hole when they do not.
+            return if self == &Settings::default() {
+                Ok(None)
+            } else {
+                Err(Refusal::Empty)
+            };
+        }
+
+        if let Some(argv) = &self.command {
+            return Ok(Some(Criterion::Command {
+                argv: argv.clone(),
+                expect_exit: self.expect_exit.unwrap_or(0),
+            }));
+        }
+        if let Some(file) = &self.file {
+            return Ok(Some(Criterion::File {
+                file: file.clone(),
+                contains: self.contains.clone(),
+            }));
+        }
+
+        let rubric = self.rubric.clone().expect("one kind is set and it is the rubric");
+        let Some(reviewer) = self.reviewer.clone() else {
+            return Err(Refusal::ReviewerMissing);
+        };
+        let allow_self_review = self.allow_self_review.unwrap_or(false);
+        if !allow_self_review && !turn_model.is_empty() && reviewer == turn_model {
+            return Err(Refusal::SelfReview { model: reviewer });
+        }
+        Ok(Some(Criterion::Review {
+            rubric,
+            reviewer,
+            allow_self_review,
+        }))
+    }
+
+    /// How many further turns a failing gate may buy, with the default applied.
+    ///
+    /// One, not zero and not three. Zero would make the whole retry half of this
+    /// release opt-in, and an operator who configured a gate has already said they
+    /// want the work checked; more than one spends real money on a model that has
+    /// already been told once what it got wrong.
+    pub fn retries(&self) -> u8 {
+        self.retries.unwrap_or(1)
+    }
+}
+
+impl Criterion {
+    /// The criterion as the dependency's own type, ready for `with_verification`.
+    ///
+    /// Three of the four mappings are direct. The fourth — a file criterion with
+    /// no needle — is the one that has no honest counterpart, and it is worth
+    /// saying exactly why rather than picking the nearest variant:
+    ///
+    /// `Verification::WorkspaceFileContains` reads its file with
+    /// `read_to_string(..).unwrap_or_default()`, so a file that is not there is
+    /// the empty string, and every string contains the empty needle. Mapping
+    /// existence to an empty needle would therefore produce a gate that passes on
+    /// a file nobody ever wrote — a criterion that can never fail, which is worse
+    /// than no criterion at all, because a run reports `Success` on it.
+    /// `DocumentContains` does error on a file it cannot read, but it errors on
+    /// nearly every file: it reads four office formats by extension and refuses
+    /// the rest, so it would report a criterion that could not be evaluated rather
+    /// than one that failed. Nothing else in the enum reads a path.
+    ///
+    /// So existence is answered by [`Criterion::satisfied_in`], here, with a
+    /// reader that tells a missing file from an empty one — and this returns
+    /// `Verification::None`, which is the truthful statement that io-harness was
+    /// asked to check nothing. A caller must therefore ask
+    /// [`Criterion::checked_here`] before treating a run's own outcome as the
+    /// whole verdict; that is what the flag is for.
+    pub fn verification(&self) -> Verification {
+        match self {
+            Criterion::Command { argv, expect_exit } => Verification::Command {
+                argv: argv.clone(),
+                expect_exit: *expect_exit,
+            },
+            Criterion::File {
+                file,
+                contains: Some(needle),
+            } => Verification::WorkspaceFileContains {
+                file: file.clone(),
+                needle: needle.clone(),
+            },
+            Criterion::File { contains: None, .. } => Verification::None,
+            Criterion::Review {
+                rubric,
+                allow_self_review,
+                ..
+            } => Verification::Review {
+                rubric: rubric.clone(),
+                allow_self_review: *allow_self_review,
+            },
+        }
+    }
+
+    /// Whether this crate evaluates the criterion itself rather than the run loop.
+    ///
+    /// True for exactly one shape — a file criterion with no needle — and the
+    /// reason it is a question a surface can ask without a workspace root is that
+    /// "the run finished and its gate passed" is not the whole verdict for such a
+    /// criterion. A caller that reads [`Criterion::verification`] and nothing else
+    /// would see `Verification::None` and report an ungated run.
+    pub fn checked_here(&self) -> bool {
+        matches!(self, Criterion::File { contains: None, .. })
+    }
+
+    /// The verdict for a criterion this crate owns, or `None` when io-harness does.
+    ///
+    /// The read goes through `io_harness::tools::Workspace::read_bytes`, and the
+    /// choice of reader is the whole check: `Workspace::read_file` answers `Ok("")`
+    /// for a file that is not there, so a criterion written on top of it passes on
+    /// a file that was never created. `read_bytes` is the one that errors. Going
+    /// through `Workspace` rather than `std::fs` also keeps the path resolution
+    /// the rest of this crate uses, so a `file` that climbs out of the workspace
+    /// is refused here exactly as it is everywhere else.
+    ///
+    /// A directory at that path is not a satisfied criterion: reading it fails,
+    /// which is the answer an operator who wrote a file name wanted.
+    pub fn satisfied_in(&self, root: &Path) -> Option<bool> {
+        let Criterion::File {
+            file,
+            contains: None,
+        } = self
+        else {
+            return None;
+        };
+        // Separators normalised the way io-harness normalises them before it
+        // resolves a workspace-relative path, so a path an operator typed with
+        // backslashes means the same file on either platform.
+        let relative = file.to_string_lossy().replace('\\', "/");
+        Some(
+            io_harness::tools::Workspace::new(root)
+                .read_bytes(&relative)
+                .is_ok(),
+        )
+    }
+
+    /// What the criterion asks, in one sentence, for a prompt or a surface.
+    ///
+    /// Delegates to the dependency for everything it can express, so the words a
+    /// retried turn reads are the same words the first turn was judged by. The
+    /// existence criterion has no `Verification` to delegate to and says so here.
+    pub fn describe(&self) -> String {
+        if let Criterion::File {
+            file,
+            contains: None,
+        } = self
+        {
+            return format!("the file {} must exist in the workspace", file.display());
+        }
+        self.verification().describe()
+    }
+}
+
+/// The gate's standing after a turn, as a surface draws it.
+///
+/// Read off the stored rows rather than remembered, because a resumed session did
+/// not run the turn whose gate it has to report, and a field that is only correct
+/// when this process happened to watch the run is a field that lies after every
+/// `/resume`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+    /// Which criterion ran, as io-harness recorded it — one of `command`,
+    /// `review`, `compiles`, `document`, `contains`, `none`. Taken from the row
+    /// rather than from the configured [`Criterion`]: the row is what actually
+    /// ran, and a configuration edited mid-session would otherwise relabel a gate
+    /// that was never it.
+    pub phase: String,
+    /// How the last attempt ended.
+    pub outcome: GateOutcome,
+    /// Which attempt that was, counting from one.
+    pub attempt: usize,
+}
+
+/// The gate's standing for a run, or `None` when nothing has been gated.
+///
+/// Pure over the rows the caller already read, so nothing here opens a store, and
+/// nothing here asks what time it is — the attempt number is a count of rows, not
+/// an interval. `attempts` is expected in the ascending row order
+/// `Store::gate_attempts` returns; the last row is the standing.
+pub fn standing(attempts: &[GateAttempt]) -> Option<Standing> {
+    let last = attempts.last()?;
+    Some(Standing {
+        phase: last.phase.clone(),
+        outcome: last.outcome,
+        attempt: attempts.len(),
+    })
+}
+
+/// What a failing gate printed on `step`, or `None` if it printed nothing.
+///
+/// The output of a gate command is not in the gate row — `GateAttempt::detail`
+/// carries a verdict's reasons — it arrives as sandbox events of kind
+/// `gate_output`, already bounded in size by io-harness. Filtered by step so that
+/// a retried gate's prompt carries the failure that caused the retry rather than
+/// the first one, which is the difference between telling the model what is wrong
+/// now and telling it what was wrong two turns ago.
+///
+/// More than one row for a step is joined in order: io-harness records one per
+/// failing phase, and dropping all but the last would drop the half that explains
+/// the other.
+pub fn output(events: &[SandboxEvent], step: u32) -> Option<String> {
+    let text: Vec<&str> = events
+        .iter()
+        .filter(|event| event.kind == "gate_output" && event.step == step)
+        .filter_map(|event| event.detail.as_deref())
+        .collect();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.join("\n"))
+    }
+}
+
+/// Whether a failing gate has a retry left under `retries`.
+///
+/// **Deliberately not `GateOutcome::is_retryable`, which answers a different
+/// question.** That method asks whether re-running the *same* criterion over the
+/// *same* tree could honestly say something else, and for `Failed` the answer is
+/// no. This asks whether it is worth driving *another turn* — after which the
+/// tree is not the same, because the agent has been handed the failure and sent
+/// back to work. `Errored` retries too: a gate that could not be evaluated has
+/// judged nothing.
+///
+/// No attempts at all is not a retry: nothing has failed yet.
+pub fn may_retry(attempts: &[GateAttempt], retries: u8) -> bool {
+    let Some(standing) = standing(attempts) else {
+        return false;
+    };
+    standing.outcome != GateOutcome::Passed && standing.attempt <= usize::from(retries)
+}
+
+/// The test command this repository proposes for itself, if it has one.
+///
+/// **This crate holds no list of marker filenames and no list of test commands,
+/// and that is the point of the function.** Both lists live in
+/// `io_harness::toolchain`, which is where the ecosystems are added; a copy here
+/// would be a second list that drifts, and the way it drifts is by offering a
+/// Rust command in a repository with no Rust in it. `Config::toolchain` then
+/// layers whatever the operator wrote in their own `[toolchain.*]` section over
+/// the detected answer, so an operator who runs a different test runner is offered
+/// theirs rather than the ecosystem's default.
+///
+/// `None` means the repository said nothing about itself, and nothing is proposed.
+/// There is deliberately no fallback: a proposal is a suggestion an operator
+/// accepts with a keystroke, and one that is wrong is worse than one that is
+/// absent, because it is accepted just as easily.
+pub fn proposed_command(root: &Path, config: &Config) -> Option<Vec<String>> {
+    let tuned = config.toolchain(io_harness::toolchain::detect(root)?);
+    // An override can name an empty command, which is an operator saying this
+    // ecosystem has no test step here. Proposing an empty argv would produce a
+    // criterion with no program in it.
+    (!tuned.test.is_empty()).then_some(tuned.test)
+}
+
+/// A reviewer that asks `model` through `spec`, ready for `with_reviewer`.
+///
+/// **Nothing here calls a provider.** It constructs `ModelReviewer`, which holds
+/// its own provider and its own model, and hands it to io-harness to call when the
+/// run loop reaches the gate. That is also what keeps `tests/dependencies.rs`'s
+/// count of provider calls in this crate at one — the wizard's credential ping in
+/// [`crate::verify`] — which is the gate that says this crate has not grown an
+/// agent loop.
+///
+/// `Provider` is not dyn-compatible, so each variant is constructed in its own arm
+/// and boxed as `Arc<dyn Reviewer>` afterwards; `Reviewer` *is* dyn-compatible,
+/// which is what makes one return type possible at all. The arms mirror
+/// [`crate::verify::credential`] exactly, including the fallback to each vendor's
+/// own environment variable, because a reviewer configured the way the session's
+/// provider is configured should authenticate the way the session does.
+///
+/// The error is the provider's own message, for the same reason the wizard keeps
+/// it: a refusal an operator can act on names the endpoint and the key, and
+/// "could not build a reviewer" names neither.
+pub fn reviewer(spec: &ProviderSpec, model: &str) -> Result<Arc<dyn Reviewer>, String> {
+    match spec {
+        ProviderSpec::OpenRouter { api_key, .. } => {
+            let key = api_key_or_env(api_key, "OPENROUTER_API_KEY")?;
+            Ok(Arc::new(ModelReviewer::new(
+                crate::provider::Printable::new(OpenRouter::new(key, model)),
+                model,
+            )))
+        }
+        ProviderSpec::Anthropic { api_key, .. } => {
+            let key = api_key_or_env(api_key, "ANTHROPIC_API_KEY")?;
+            Ok(Arc::new(ModelReviewer::new(
+                crate::provider::Printable::new(Anthropic::new(key, model)),
+                model,
+            )))
+        }
+        ProviderSpec::OpenAi { api_key, .. } => {
+            let key = api_key_or_env(api_key, "OPENAI_API_KEY")?;
+            Ok(Arc::new(ModelReviewer::new(
+                crate::provider::Printable::new(OpenAi::new(key, model)),
+                model,
+            )))
+        }
+        ProviderSpec::Compatible {
+            base_url,
+            preset,
+            api_key,
+            auth,
+            ..
+        } => {
+            // The model is the reviewer's, never the endpoint's configured one:
+            // the entire criterion is that a second model reads the work, and
+            // reusing the spec's model is the mistake it exists to prevent.
+            let secret = api_key.clone().unwrap_or_default();
+            let compatible = match (preset, base_url) {
+                (Some(preset), _) => {
+                    Compatible::preset(preset, secret, model).map_err(|error| error.to_string())?
+                }
+                (None, Some(base)) => Compatible::new(
+                    base,
+                    auth.unwrap_or(io_harness::Auth::Bearer),
+                    secret,
+                    model,
+                ),
+                (None, None) => {
+                    return Err("this endpoint names neither a preset nor a base URL".into())
+                }
+            };
+            Ok(Arc::new(ModelReviewer::new(
+                crate::provider::Printable::new(compatible),
+                model,
+            )))
+        }
+        // `ProviderSpec` is `#[non_exhaustive]`. A provider this release has not
+        // seen cannot be built into a reviewer, and refusing at write time is the
+        // whole reason this module validates anything.
+        other => Err(format!(
+            "this release does not know how to review with a {other:?} provider yet"
+        )),
+    }
+}
+
+/// The key from the spec, or from the provider's own environment variable.
+///
+/// A near-twin of the wizard's own resolver, kept separate on purpose: that one is
+/// private to [`crate::verify`], and importing it would make a module about live
+/// provider calls a dependency of a module whose entire claim is that it makes
+/// none.
+fn api_key_or_env(api_key: &Option<String>, var: &str) -> Result<String, String> {
+    if let Some(key) = api_key {
+        return Ok(key.clone());
+    }
+    match std::env::var(var) {
+        Ok(key) if !key.is_empty() => Ok(key),
+        _ => Err(format!(
+            "no key was given and ${var} is not set in this shell"
+        )),
+    }
+}
+
+/// One sentence an operator can act on, for each way a section is refused.
+///
+/// ASCII throughout — no quotation marks that are not the typewriter kind, no
+/// arrows, no ellipsis character. These render on the plain renderer, under
+/// `NO_COLOR`, and through the ASCII glyph set, and a refusal that arrives as a
+/// replacement character is a refusal nobody reads.
+///
+/// Each one names the key to change, because the operator is looking at the file.
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Refusal::Empty => f.write_str(
+                "this gates section sets no criterion: name a command, a file or a \
+                 rubric, or delete the section",
+            ),
+            Refusal::Ambiguous => f.write_str(
+                "this gates section names more than one criterion: keep exactly one \
+                 of command, file and rubric",
+            ),
+            Refusal::ReviewerMissing => f.write_str(
+                "a rubric needs a model to answer it: set reviewer, or delete the \
+                 rubric",
+            ),
+            Refusal::SelfReview { model } => write!(
+                f,
+                "the reviewer {model} is the model doing the work: name a different \
+                 reviewer, or set allow_self_review = true to accept a model \
+                 marking its own paper"
+            ),
+        }
+    }
 }
