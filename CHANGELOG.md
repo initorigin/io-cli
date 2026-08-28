@@ -6,6 +6,75 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-28
+
+The store stops being something you cannot see, undo stops being
+all-or-nothing, and the work stops ending when the terminal closes.
+
+**`/store` says what the run store is holding, and three verbs change it.**
+`~/.io-cli/runs.db` has held every session, run, step, event, provider call,
+snapshot and restore point since 0.15.0, with no retention policy, no rotation
+and no way to look at it. The page reports the file's own page arithmetic —
+what it costs on disk, what is already free inside it, and what each session in
+it holds. `/store rm <id>` removes one session, `/store sweep <date>` removes
+every session created before a timestamp, and `/store compact` returns the free
+pages to the filesystem. Each descends into a confirmation whose first row is
+"leave it", which is the row the cursor starts on.
+
+**A deletion does not shrink the file, and io says so.** SQLite frees pages into
+the database rather than out of it, so a removal moves bytes into the free space
+*inside* the file and the file on disk stays the size it was. A `VACUUM` is the
+only reclamation available, because every store this product has created was made
+without `auto_vacuum` — so `/store compact` is a thing you ask for, it needs
+roughly the file's own size in free disk space while it runs, and it reports the
+bytes the file actually shrank by rather than an inference from the freelist.
+
+A sweep refuses a session that still holds a resumable run, and names it. It asks
+you to agree to the rule rather than to a count, because io-harness exposes no
+reader for the column the sweep filters on and the nearest substitute would
+under-state what is about to go — filed as io-harness#216. The figures are
+reported the moment it finishes, refusals included.
+
+**`/undo` is the size of the mistake.** `/undo <path>` puts one file back,
+`/undo step <n>` reverse-applies one step's diff, and a bare `/undo` is the whole
+turn — the same thing the rewind chord has always done, now reaching the same
+implementation. One file has four possible answers and they read as four
+different sentences: it came back, it was removed because the run created it, or
+nothing changed — for either of two different reasons.
+
+Undoing a step is order-sensitive: a later step still standing on the same lines
+makes the revert stale, io-harness leaves the file alone rather than
+fuzzy-matching it, and io says why. A restore does not know about an edit you
+made after the turn, and the confirmation says that before you agree to it.
+
+**`/export` writes the conversation as markdown, and `/export trace` writes one
+run's canonical trace.** Both go into the workspace under the session's own path
+policy, and an existing file is refused rather than overwritten. The trace is
+written exactly as io-harness produced it — not parsed, not reserialised, not
+pretty-printed — because being canonical is the whole of what it is for.
+
+**Undoing a turn now announces itself.** `EventKind::Rewound` and
+`EventKind::Reverted` are emitted only by the observed forms of io-harness's
+rewind calls, and this product had called the plain ones since 0.4.0 — so neither
+event had ever fired, and the code drawing one of them had been unreachable since
+the day it was written.
+
+**One event that reached nobody now has a line.** A read started before the model
+had finished asking, and thrown away — work that was paid for and not used. It
+draws only when something was discarded, because a line in every transcript
+saying nothing went wrong is a line nobody reads. The other eight silences in
+this interface were reviewed in the same pass and keep their routes, which are
+better arguments than drawing them would be.
+
+**`/contain` moves from *this turn* to *the session*.** It is a posture that
+changes how every later turn is driven rather than something that acts on the
+turn just finished, and moving it is what makes room for `/undo` without widening
+the ten-command bound. `Inspect` reaches ten with `/store` and `/export`.
+
+No configuration key is added, nothing is read at startup that was not read
+before, and no model can reach any of the store operations.
+
+
 ## [0.26.0] - 2026-08-28
 
 A turn asks for the model, the vendor and the amount of thinking the work
@@ -2191,6 +2260,7 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/initorigin/io-cli/releases/tag/v0.27.0
 [0.1.1]: https://github.com/initorigin/io-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/initorigin/io-cli/releases/tag/v0.1.0

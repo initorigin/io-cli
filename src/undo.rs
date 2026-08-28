@@ -25,7 +25,7 @@
 //! **1. Reverting a step is order-sensitive, and io-harness will not guess.**
 //! Reverse-applying a hunk while a *later* step's change still sits on top of it
 //! finds context that has moved, and the honest answer is
-//! [`Reverted::Stale`](io_harness::Reverted::Stale) with the file untouched —
+//! [`io_harness::Reverted::Stale`] with the file untouched —
 //! never a fuzzy match that quietly corrupts it. Newest step first is the order
 //! that works, and [`step_advice`] is what says so on screen when a stale answer
 //! comes back, because "nothing happened" without that sentence reads as a bug.
