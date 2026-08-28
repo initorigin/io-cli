@@ -2367,6 +2367,110 @@ fn gate_said(
         .or_else(|| (!last.detail.trim().is_empty()).then(|| last.detail.clone()))
 }
 
+/// The line a turn that was answered rather than run commits, if it was one.
+///
+/// **io-harness has answered questions conversationally for longer than this
+/// interface has existed, and this crate has never read the field that says so.**
+/// `session.rs:1125-1127` turns classification on whenever the contract carries
+/// `Verification::None`, which `TaskContract::workspace` does — so a greeting has
+/// always come back after one completion with **no steps row, no gate attempt, no
+/// checkpoint, no snapshot and no tool loop** (`run/step.rs:312-320`). What reached
+/// the operator was silence, because every line this product draws about a turn is
+/// drawn from events a conversational turn does not emit.
+///
+/// `None` for a run, which must stay byte-identical to what it was: an ordinary
+/// turn already accounts for itself and a second sentence saying it was a run
+/// would appear under every turn anybody ever takes.
+///
+/// **A kind this build does not know reports as a run.** `TurnKind` is
+/// `#[non_exhaustive]` (`session.rs:1434`), and the conservative arm is the one
+/// that says nothing: claiming a turn was answered when it may have used tools is
+/// the one error here that would mislead about what happened to somebody's files.
+///
+/// **`TurnKind::Reply` alone is not "answered", and reading it alone shipped a
+/// lie.** io-harness documents the second meaning in the variant itself
+/// (`session.rs:1440-1443`): a turn whose one completion *crossed the token
+/// ceiling and was refused rather than served* is also a `Reply`, because no run
+/// was opened either way and "`outcome` is what says how it ended". So an operator
+/// with `[run] max_tokens` set, whose question is refused at the budget, would have
+/// been told the turn was answered — with no answer anywhere on screen.
+///
+/// The guard is io-harness's own, copied deliberately rather than invented:
+/// `session.rs:1202` emits `EventKind::Answered` only
+/// `if kind == TurnKind::Reply && matches!(result.outcome, RunOutcome::Finished { .. })`,
+/// with the comment that announcing it otherwise "would be reporting a message
+/// nobody wrote". That is exactly this function's job, so it asks exactly that
+/// question.
+#[must_use]
+pub fn answered_said(
+    kind: &io_harness::TurnKind,
+    outcome: &io_harness::RunOutcome,
+) -> Option<String> {
+    match (kind, outcome) {
+        (io_harness::TurnKind::Reply, io_harness::RunOutcome::Finished { .. }) => Some(
+            "answered without opening a run — one completion, no steps and no tools".to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// What `/effort` changes the session's level to, or `None` to change nothing.
+///
+/// The outer `Option` is the question and the inner one is the answer, which reads
+/// awkwardly and is the honest shape: `Some(None)` is `/effort off` — a level was
+/// set, and the level set is the absence of one — while `None` is a bare `/effort`,
+/// which is a question and must leave the session as it found it.
+///
+/// Here rather than in the driver because nothing under `tests/` links
+/// `src/main.rs`: an assignment written there could be neither asserted nor
+/// sabotaged, and this release's F1 turns on exactly the difference between a level
+/// that survives the turn and one that does not.
+#[must_use]
+pub fn reasoning_of(said: &crate::commands::Reasoning) -> Option<Option<io_harness::Effort>> {
+    match said {
+        crate::commands::Reasoning::Buy(level) => Some(Some(*level)),
+        crate::commands::Reasoning::Off => Some(None),
+        // A question and a rejected word both leave the level exactly where it is.
+        // They say different things, which is [`reasoning_said`]'s job, not this
+        // one's.
+        crate::commands::Reasoning::Report | crate::commands::Reasoning::Unknown(_) => None,
+    }
+}
+
+/// The line `/effort` commits into the scrollback.
+///
+/// `now` is the level in force **after** the command has been applied, so one
+/// sentence covers setting and reporting: what an operator wants to read back is
+/// the state they are now in, not the instruction they gave.
+///
+/// The absent case says what it means rather than naming a level. "No reasoning
+/// field" is the fact — io-harness sends the pre-0.31.0 request body — and calling
+/// it "off" on screen would suggest a fourth setting between `low` and nothing.
+#[must_use]
+pub fn reasoning_said(
+    said: &crate::commands::Reasoning,
+    now: Option<io_harness::Effort>,
+) -> String {
+    let level = match now {
+        Some(level) => format!("{level} reasoning"),
+        None => "no reasoning field, which is what this product sent before 0.26.0".to_string(),
+    };
+    match said {
+        // **A rejected word says so first**, and says the level it did not change
+        // second. Reporting alone read as an answer: an operator on `high` who
+        // typed `/effort lwo` to spend less was told "every turn asks for high
+        // reasoning" and went on paying for it, with the typo invisible.
+        crate::commands::Reasoning::Unknown(word) => format!(
+            "`{word}` is not a reasoning level — say low, medium, high, or off. \
+             Every turn still asks for {level}"
+        ),
+        crate::commands::Reasoning::Report => {
+            format!("every turn asks for {level}")
+        }
+        _ => format!("every turn from here asks for {level}"),
+    }
+}
+
 /// The one line a turn's gate commits into the scrollback, with its tone.
 ///
 /// `None` for a turn nothing gated, which is the ordinary case and not a thing to

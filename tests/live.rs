@@ -3200,3 +3200,198 @@ async fn live_f1_f2_an_asking_posture_refuses_git_and_the_allowance_lifts_it() {
          `App::note_git` explains and what `/commit allow` lifts; got {refusals:?}",
     );
 }
+
+/// **F1 live — a reasoning level goes out on a real wire and the endpoint takes
+/// it.**
+///
+/// The half of F1 no fixture can reach. `contract::buying` puts an `Effort` on the
+/// contract and `tests/contract.rs` asserts that; what only a real request can
+/// settle is that io-harness translates it into a field the vendor accepts, and
+/// that a turn carrying one still finishes. A wrong spelling would be a 400 from
+/// the endpoint rather than a failing assertion here, which is exactly why this arm
+/// exists.
+///
+/// **The assertion is that the turn finishes, and that is the whole of it.** A
+/// reasoning field the endpoint does not recognise is an HTTP 400 from the vendor,
+/// not a failing comparison — so a turn that completes against a real endpoint
+/// with `contract.effort` set is the evidence, and there is nothing further to
+/// read back. io-cli's own `context::Request` deliberately does not carry the
+/// field: `/context` reports what is in the window, and a reasoning level is not
+/// context.
+///
+/// Nothing is asserted about the answer's words, for the reason every arm in this
+/// file gives: identical code and the same model produce different prose.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f1_a_reasoning_level_reaches_the_wire_and_the_turn_still_finishes() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(root.join("notes.md"), "one line\n").expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::buying(
+        io_cli::contract::session(
+            "What is in notes.md? Answer in one sentence.",
+            root.to_path_buf(),
+            &no_configuration(),
+            &io_cli::contract::Capabilities::default(),
+            Arc::new(answerer),
+            None,
+        ),
+        Some(io_harness::Effort::Low),
+    );
+
+    assert_eq!(
+        contract.effort,
+        Some(io_harness::Effort::Low),
+        "the contract has to carry the level before the wire can",
+    );
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &io_harness::Ignore,
+        )
+        .await
+        .expect("a turn carrying a reasoning level still finishes");
+
+    println!(
+        "live 0.26.0 F1: outcome {:?} kind {:?}",
+        result.outcome, result.kind
+    );
+
+    assert!(
+        result
+            .reply
+            .as_deref()
+            .is_some_and(|text| !text.trim().is_empty()),
+        "a turn carrying a reasoning level produced no answer, which is what a \
+         field the endpoint refuses looks like from here: {:?}",
+        result.outcome,
+    );
+}
+
+/// **F5 live — a primary that cannot be reached is fallen through, against a real
+/// endpoint underneath.**
+///
+/// The other half no fixture settles. `tests/provider.rs` proves the chain's logic
+/// with a fake link that fails on demand; what it cannot prove is that a *real*
+/// transport failure is classified as retryable by io-harness and therefore
+/// reaches the next link at all. The head here is a `Compatible` pointed at a port
+/// nothing is listening on, which is the cheapest genuine `ProviderErrorKind::
+/// Transport` available — no credential is spent on it, because the connection
+/// never opens.
+///
+/// The tail is the real provider, so a pass means an answer that actually came
+/// from the second link, and `last_served` names it. That name is also what
+/// io-harness turns into `EventKind::FellBackTo` (`run/step.rs:503`), which is the
+/// scrollback arm this release makes reachable for the first time.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f5_an_unreachable_primary_falls_through_to_the_provider_underneath() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let policy = workspace_policy();
+
+    // A base URL on the loopback with nothing behind it. The failure is a refused
+    // connection, which is `Transport` — retryable, and therefore worth another
+    // vendor by io-harness's own predicate.
+    let specs = vec![
+        ProviderSpec::Compatible {
+            model: model(),
+            preset: None,
+            base_url: Some("http://127.0.0.1:9/v1".into()),
+            api_key: Some("unused".into()),
+            auth: None,
+            name: None,
+            reference_prices: false,
+        },
+        ProviderSpec::OpenRouter {
+            model: model(),
+            api_key: Some(key),
+        },
+    ];
+
+    struct Falling<'a> {
+        session: &'a mut Session,
+        store: &'a Store,
+        policy: &'a Policy,
+        root: std::path::PathBuf,
+    }
+
+    impl io_cli::provider::WithProvider for Falling<'_> {
+        type Out = (String, Option<String>);
+
+        async fn call<P: io_harness::Provider>(
+            self,
+            make: impl Fn(&str) -> Result<P, String>,
+            model: String,
+        ) -> Self::Out {
+            let provider = make(&model).expect("the chain builds");
+            let (answerer, _questions) = io_cli::intent::channel();
+            let contract = io_cli::contract::session(
+                "Reply with the single word: ready.",
+                self.root.clone(),
+                &no_configuration(),
+                &io_cli::contract::Capabilities::default(),
+                Arc::new(answerer),
+                None,
+            );
+            let result = self
+                .session
+                .turn_bounded_observed(
+                    &contract,
+                    &provider,
+                    self.store,
+                    self.policy,
+                    &DenyAll,
+                    &io_harness::Ignore,
+                )
+                .await
+                .expect("the second link answers");
+            (
+                result.reply.clone().unwrap_or_default(),
+                provider.last_served(),
+            )
+        }
+    }
+
+    let (reply, served) = io_cli::provider::build(
+        specs,
+        None,
+        Falling {
+            session: &mut session,
+            store: &store,
+            policy: &policy,
+            root: root.to_path_buf(),
+        },
+    )
+    .await
+    .expect("a chain of two builds");
+
+    println!("live 0.26.0 F5: served {served:?} reply {reply:?}");
+
+    assert!(
+        !reply.trim().is_empty(),
+        "the turn produced no answer, so nothing fell through to anything",
+    );
+    assert!(
+        served.is_some(),
+        "a fall-through happened and `last_served` must name the link that \
+         answered — it is what io-harness turns into `EventKind::FellBackTo`",
+    );
+}

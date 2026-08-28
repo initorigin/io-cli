@@ -1711,6 +1711,171 @@ fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
     }
 }
 
+/// **0.26.0 N2 — setting an effort level does not take the posture off the row.**
+///
+/// The sibling of `f11_a_branch_yields_before_the_standing_facts_at_eighty_columns`
+/// and it exists because this release very nearly repeated the defect that one was
+/// written for. `effort` was first pushed into the footer's right-hand group beside
+/// `planning`, on the argument that it is a standing choice rather than a counter —
+/// which reads well and is wrong, because `row` fits that group **all or nothing**.
+/// Measured on this fixture, `effort high` takes the group past what eighty columns
+/// can hold, so typing `/effort high` removed the posture, the containment mode and
+/// the planning phase together. `branch` was moved out of that group one release
+/// ago for exactly this reason.
+///
+/// **The wide arm is not optional.** At eighty columns with this fixture the level
+/// may yield, so an assertion made only there is equally true of a status line that
+/// never drew the field at all — which is how 0.25.0 shipped a vacuous gate over
+/// this very row. So one arm proves the field is drawn where there is room, and the
+/// other proves what it does not cost where there is not.
+///
+/// Sabotage: push the level into the `allowed` group instead — under which the
+/// narrow arm fails, because the posture and the containment word disappear
+/// together.
+#[test]
+fn n2_an_effort_level_yields_before_the_standing_facts_at_eighty_columns() {
+    use io_cli::status::Status;
+
+    let fixture = |effort: Option<io_harness::Effort>| {
+        let mut status = Status::new("anthropic/claude-sonnet-4.5");
+        status.policy = Some("read-only".into());
+        status.containment = Some("workspace-write/macos-sandbox-exec".into());
+        status.planning = true;
+        status.effort = effort;
+        status
+    };
+
+    // **The invariant across widths, rather than an assertion at one.** Which
+    // width a field starts costing something depends on the posture string, the
+    // glyph set and every counter on the row, so a test that picks one number is
+    // asserting arithmetic it will get wrong — the first version of this gate
+    // picked eighty, where this fixture's group does not fit either way, and the
+    // sabotage that put the level back in the all-or-nothing group passed it. The
+    // property that actually matters has no number in it: **setting a level must
+    // never remove a standing fact that was on the row without it.**
+    let standing = [
+        "read-only",
+        "workspace-write/macos-sandbox-exec",
+        "planning",
+    ];
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut ever_held = false;
+
+        for width in [80, 88, 96, 104, 120, 160] {
+            let bare = text_of(&fixture(None).footer(width, &theme)).join("\n");
+            let level =
+                text_of(&fixture(Some(io_harness::Effort::High)).footer(width, &theme)).join("\n");
+
+            for row in level.lines() {
+                assert!(
+                    row.chars().count() <= width as usize,
+                    "{set}: a footer row overflowed {width} columns: {row:?}",
+                );
+            }
+
+            for fact in standing {
+                if bare.contains(fact) {
+                    ever_held = true;
+                    assert!(
+                        level.contains(fact),
+                        "{set}: at {width} columns, setting an effort level took \
+                         `{fact}` off the row. The level belongs in the counters, \
+                         which narrow one at a time, not in the group `row` keeps \
+                         or drops whole.\n  without: {bare:?}\n  with:    {level:?}",
+                    );
+                }
+            }
+        }
+
+        // Without this the loop above is satisfied by a row that never carried a
+        // standing fact at any width — which is precisely how the first version of
+        // this test passed its own sabotage.
+        assert!(
+            ever_held,
+            "{set}: no width held a standing fact even without an effort level, so \
+             nothing above measured anything",
+        );
+
+        // And the level is drawn where there is room for it, so this is a gate over
+        // a field that exists rather than over one that was never added.
+        let wide = text_of(&fixture(Some(io_harness::Effort::High)).footer(200, &theme)).join("\n");
+        assert!(
+            wide.contains("effort high"),
+            "{set}: the level is not on the footer at any width: {wide:?}",
+        );
+    }
+}
+
+/// **0.26.0 N2 — the effort level is drawn in both glyph sets and costs no glyph
+/// it does not have.**
+///
+/// The field is a word and a level: `effort low`, `effort medium`, `effort high`.
+/// It carries no marker, no bullet and no arrow, so it is the same characters in
+/// both sets — which is the property to assert rather than assume, because every
+/// other standing field on this row was at some point a glyph the ASCII set did
+/// not have. `Status::line` hardcoded a `•` for four releases for exactly that
+/// reason.
+///
+/// **Two widths, which is 0.25.0's lesson and not a flourish.** At eighty columns
+/// with a crowded row a field may not fit either way, and a gate that asserts only
+/// there is equally true of a status line that never drew the field at all — that
+/// release shipped one and found it by sabotage. So the wide arm proves it is
+/// drawn, and the narrow arm proves the row still fits when it is.
+///
+/// Sabotage: draw the level with a glyph — under which the ASCII arm fails on the
+/// `is_ascii` assertion, which is the one a monochrome or ASCII terminal actually
+/// pays for.
+#[test]
+fn n2_the_effort_field_is_a_plain_word_in_both_glyph_sets() {
+    use io_cli::status::Status;
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut status = Status::new("io/model");
+
+        // Absent until it is set, asserted on both renderers — a default that
+        // drew `effort medium` would put a field on every operator's status line
+        // for a release that changed nothing about their turns.
+        let quiet = text_of(&[status.line(WIDTH, &theme)]).remove(0);
+        assert!(
+            !quiet.contains("effort"),
+            "{set}: a session that has never said `/effort` is not a session \
+             buying zero reasoning: {quiet:?}",
+        );
+
+        for level in [
+            io_harness::Effort::Low,
+            io_harness::Effort::Medium,
+            io_harness::Effort::High,
+        ] {
+            status.effort = Some(level);
+            let drawn = format!("effort {level}");
+            assert!(
+                drawn.is_ascii(),
+                "{set}: the field needs a glyph it does not have: {drawn:?}",
+            );
+
+            // Wide, where the row has room: the field is there and whole.
+            let wide = text_of(&[status.line(200, &theme)]).remove(0);
+            assert!(
+                wide.contains(&drawn),
+                "{set}: the level every turn is buying is not on the line: {wide:?}",
+            );
+
+            // And at eighty, where the row must still fit whatever it decided to
+            // keep. The field may yield here — it is a narrowing decision, not a
+            // promise — but the line may never overrun.
+            let narrow = text_of(&[status.line(WIDTH, &theme)]).remove(0);
+            assert!(
+                narrow.chars().count() <= WIDTH as usize,
+                "{set}: the status line overran eighty columns: {narrow:?}",
+            );
+        }
+    }
+}
+
 /// **0.25.0 F11 — the branch reaches the footer, and yields before the standing
 /// facts when the row cannot hold it.**
 ///

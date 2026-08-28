@@ -166,6 +166,38 @@ pub struct CliSettings {
     /// addition rather than a break.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gates: Option<crate::gates::Settings>,
+    /// Whether a question that is only a question may be answered without opening
+    /// a run.
+    ///
+    /// **The behaviour is io-harness's and it has been on all along.**
+    /// `session.rs:1125-1127` reads
+    /// `contract.conversational.unwrap_or(matches!(contract.verify,
+    /// Verification::None))`, and `TaskContract::workspace` starts at
+    /// `Verification::None` — so every ungated operator has had greetings answered
+    /// in one completion, with no steps row, no gate attempt and no snapshot, since
+    /// before this interface existed. 0.24.0 turned it on for gated operators too,
+    /// because attaching a criterion would otherwise have switched it off.
+    ///
+    /// What has never existed is a way to say *no*. This key is that, and it is
+    /// `false`-only in spirit: `true` is what an unset file already does in every
+    /// case io-cli produces. An operator who wants every prompt to open a run —
+    /// because a run is what their hooks, their gate or their trace expect — has
+    /// had no way to ask for one.
+    ///
+    /// Absent leaves the decision exactly where it was, which is what
+    /// `tests/contract.rs`'s field-for-field gate requires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversational: Option<bool>,
+    /// `[app.io-cli.routing]` — when a run should change models, and to which.
+    ///
+    /// io-cli's own type rather than `io_harness::Routing`, which is the one place
+    /// this section differs from `[app.io-cli.containment]`: `Containment`
+    /// deserializes straight into the harness's type, and `Routing` derives no
+    /// serde at all and is `#[non_exhaustive]` besides (`contract.rs:1745`). So the
+    /// shape an operator writes is [`crate::routing::Settings`] and the conversion
+    /// goes through the harness's three builders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<crate::routing::Settings>,
 }
 
 /// Where prices come from, and what the last read was.
@@ -536,6 +568,17 @@ pub fn render(
                 // there is no default worth writing: "no gate" is the honest
                 // answer for an operator who has not answered yet.
                 gates: None,
+                // Left out for the strongest version of the same reason: absent
+                // is what io-harness already does, and it is what almost every
+                // operator wants. Writing `conversational = true` into a fresh
+                // file would state a default as though it were a choice, and
+                // writing `false` would make a new install open a run to answer
+                // "hello".
+                conversational: None,
+                // Left out for the caps' reason: routing names models, and the
+                // wizard has asked about exactly one. A rule pointing at a model
+                // the operator never chose is worse than no rule.
+                routing: None,
             },
         },
     };

@@ -68,30 +68,392 @@ pub fn model_of(spec: &ProviderSpec) -> &str {
     }
 }
 
-pub async fn build<W: WithProvider>(
-    spec: ProviderSpec,
-    model_override: Option<String>,
-    with: W,
-) -> Result<W::Out, String> {
-    let model = |configured: String| model_override.unwrap_or(configured);
+/// The whole chain a configuration names, head first.
+///
+/// `provider_spec()` is the head and `fallback_specs()` is the tail — io-harness's
+/// own split, and the same one [`crate::providers::chain`] draws in the panel. The
+/// panel has shown this list since 0.21.0 while [`build`] ran only its head; asking
+/// for it in one place is what keeps the chain that runs and the chain that is drawn
+/// from being two different answers.
+pub fn chain_of(config: &io_harness::Config) -> Vec<ProviderSpec> {
+    config
+        .provider_spec()
+        .into_iter()
+        .chain(config.fallback_specs())
+        .cloned()
+        .collect()
+}
+
+/// One provider, whichever vendor built it.
+///
+/// **A chain of arbitrary length needs one concrete type, and this is it.**
+/// `Provider::complete` returns `impl Future` (RPITIT), so the trait is not
+/// dyn-compatible and there is no `Box<dyn Provider>` to put in a `Vec` —
+/// `io_harness::provider::Fallback`'s own module says as much. An enum is the
+/// remaining shape: four arms, one type, and `Fallback` can nest over it.
+///
+/// **It wraps and never constructs.** Every value inside one of these arms was
+/// built in [`build`], which is still the only site in this crate that names a
+/// vendor constructor — the rule `tests/provider.rs` enforces and which this
+/// release does not widen.
+///
+/// Every method delegates across all four arms, for the reason [`Watched`] gives
+/// at length: the trait has eight defaulted methods, and a default that fired here
+/// would change behaviour silently rather than fail. The async ones are written as
+/// `async fn` rather than by returning the inner future, because four arms return
+/// four distinct future types and only an `async` body can unify them.
+pub enum Vendor {
+    OpenRouter(OpenRouter),
+    Anthropic(Anthropic),
+    OpenAi(OpenAi),
+    Compatible(Compatible),
+}
+
+impl Provider for Vendor {
+    async fn complete(&self, request: CompletionRequest) -> io_harness::Result<CompletionResponse> {
+        match self {
+            Self::OpenRouter(p) => p.complete(request).await,
+            Self::Anthropic(p) => p.complete(request).await,
+            Self::OpenAi(p) => p.complete(request).await,
+            Self::Compatible(p) => p.complete(request).await,
+        }
+    }
+
+    async fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+    ) -> io_harness::Result<CompletionResponse> {
+        match self {
+            Self::OpenRouter(p) => p.complete_streaming(request, on_token).await,
+            Self::Anthropic(p) => p.complete_streaming(request, on_token).await,
+            Self::OpenAi(p) => p.complete_streaming(request, on_token).await,
+            Self::Compatible(p) => p.complete_streaming(request, on_token).await,
+        }
+    }
+
+    async fn complete_streaming_calls(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+        on_call: &(dyn Fn(usize, &ToolCall) + Send + Sync),
+    ) -> io_harness::Result<CompletionResponse> {
+        match self {
+            Self::OpenRouter(p) => p.complete_streaming_calls(request, on_token, on_call).await,
+            Self::Anthropic(p) => p.complete_streaming_calls(request, on_token, on_call).await,
+            Self::OpenAi(p) => p.complete_streaming_calls(request, on_token, on_call).await,
+            Self::Compatible(p) => p.complete_streaming_calls(request, on_token, on_call).await,
+        }
+    }
+
+    async fn models(&self) -> io_harness::Result<Vec<ModelInfo>> {
+        match self {
+            Self::OpenRouter(p) => p.models().await,
+            Self::Anthropic(p) => p.models().await,
+            Self::OpenAi(p) => p.models().await,
+            Self::Compatible(p) => p.models().await,
+        }
+    }
+
+    async fn reachable(&self) -> io_harness::Result<bool> {
+        match self {
+            Self::OpenRouter(p) => p.reachable().await,
+            Self::Anthropic(p) => p.reachable().await,
+            Self::OpenAi(p) => p.reachable().await,
+            Self::Compatible(p) => p.reachable().await,
+        }
+    }
+
+    fn model_hint(&self) -> Option<&str> {
+        match self {
+            Self::OpenRouter(p) => p.model_hint(),
+            Self::Anthropic(p) => p.model_hint(),
+            Self::OpenAi(p) => p.model_hint(),
+            Self::Compatible(p) => p.model_hint(),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::OpenRouter(p) => p.name(),
+            Self::Anthropic(p) => p.name(),
+            Self::OpenAi(p) => p.name(),
+            Self::Compatible(p) => p.name(),
+        }
+    }
+
+    fn prompt_family(&self) -> PromptFamily {
+        match self {
+            Self::OpenRouter(p) => p.prompt_family(),
+            Self::Anthropic(p) => p.prompt_family(),
+            Self::OpenAi(p) => p.prompt_family(),
+            Self::Compatible(p) => p.prompt_family(),
+        }
+    }
+
+    fn accepts_images(&self) -> bool {
+        match self {
+            Self::OpenRouter(p) => p.accepts_images(),
+            Self::Anthropic(p) => p.accepts_images(),
+            Self::OpenAi(p) => p.accepts_images(),
+            Self::Compatible(p) => p.accepts_images(),
+        }
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        match self {
+            Self::OpenRouter(p) => p.endpoint(),
+            Self::Anthropic(p) => p.endpoint(),
+            Self::OpenAi(p) => p.endpoint(),
+            Self::Compatible(p) => p.endpoint(),
+        }
+    }
+
+    fn endpoints(&self) -> Vec<&str> {
+        match self {
+            Self::OpenRouter(p) => p.endpoints(),
+            Self::Anthropic(p) => p.endpoints(),
+            Self::OpenAi(p) => p.endpoints(),
+            Self::Compatible(p) => p.endpoints(),
+        }
+    }
+
+    fn last_served(&self) -> Option<String> {
+        match self {
+            Self::OpenRouter(p) => p.last_served(),
+            Self::Anthropic(p) => p.last_served(),
+            Self::OpenAi(p) => p.last_served(),
+            Self::Compatible(p) => p.last_served(),
+        }
+    }
+}
+
+/// A chain of providers, each answering when the one before it fails.
+///
+/// **The decision to fall over is io-harness's**, not this crate's:
+/// [`io_harness::ProviderErrorKind::is_retryable`] is the same predicate its own
+/// `Fallback` and its own in-run retry both ask, and the reasoning is its own — a
+/// failure about the request or about the caller's configuration will happen
+/// identically at the next vendor, so falling over on one fails twice and spends
+/// twice. io-cli holds no opinion here and must not grow one.
+///
+/// **Flat rather than nested, and that is not a preference.** The obvious shape is
+/// `Fallback<Vendor, Fallback<Vendor, Vendor>>`, folded recursively so the tail is
+/// itself one type. It does not compile: `Provider::complete` returns `impl Future`
+/// (RPITIT), so a `Chain` whose secondary is a `Chain` makes the future's auto-trait
+/// inference depend on itself, and rustc reports a type cycle that `Box::pin` on the
+/// recursive arm does not break. A list and a loop have neither problem.
+///
+/// **`last_served` answers `None` when the head served, and that is a deliberate
+/// difference from `Fallback`.** io-harness emits `EventKind::FellBackTo` for any
+/// `Some` (`run/step.rs:503`), while `Fallback::last_served` answers `Some` for its
+/// *primary* too — so a chain built from that type would report "the provider fell
+/// over" on every step of every run, including the ones where nothing did. Reporting
+/// only a link that is not the head makes the event mean what its name says, and
+/// makes a chain whose head is answering indistinguishable from no chain at all,
+/// which is what an operator would expect.
+///
+/// Generic over the link so the fall-through is assertable. The chain a
+/// configuration builds is `Chain<Vendor>`; a test builds `Chain<Fake>` over links
+/// that fail on demand with a chosen `ProviderErrorKind`, which is the only way to
+/// prove that a retryable failure falls through and an `Auth` failure does not
+/// without a network and without spending anything.
+pub struct Chain<P = Vendor> {
+    links: Vec<P>,
+    /// Which link answered last, as an index, or `usize::MAX` for nobody yet.
+    ///
+    /// An atomic rather than a lock for the reason io-harness gives for the same
+    /// field: a `MutexGuard` is not `Send` and `complete`'s future has to be.
+    served: std::sync::atomic::AtomicUsize,
+}
+
+/// Nobody has answered yet.
+const UNSERVED: usize = usize::MAX;
+
+impl<P: Provider> Chain<P> {
+    /// A chain over `links`, head first. `None` when there are no links at all.
+    pub fn of(links: Vec<P>) -> Option<Self> {
+        if links.is_empty() {
+            return None;
+        }
+        Some(Self {
+            links,
+            served: std::sync::atomic::AtomicUsize::new(UNSERVED),
+        })
+    }
+
+    /// The head, which is the provider every question is asked of first.
+    fn head(&self) -> &P {
+        &self.links[0]
+    }
+
+    fn note(&self, who: usize) {
+        self.served.store(who, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a different vendor is worth trying, asked of io-harness.
+    fn worth_another(error: &io_harness::Error) -> bool {
+        matches!(error, io_harness::Error::Provider { kind, .. } if kind.is_retryable())
+    }
+}
+
+impl<P: Provider + Sync> Provider for Chain<P> {
+    async fn complete(&self, request: CompletionRequest) -> io_harness::Result<CompletionResponse> {
+        let mut last = None;
+        for (index, link) in self.links.iter().enumerate() {
+            match link.complete(request.clone()).await {
+                Ok(response) => {
+                    self.note(index);
+                    return Ok(response);
+                }
+                Err(error) if Self::worth_another(&error) => last = Some(error),
+                // Not worth another vendor: a bad credential or a malformed
+                // request fails the same way everywhere, and trying the next link
+                // would spend somebody else's budget to be told so again.
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last.expect("a chain has at least one link, so the loop ran at least once"))
+    }
+
+    async fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+    ) -> io_harness::Result<CompletionResponse> {
+        let mut last = None;
+        for (index, link) in self.links.iter().enumerate() {
+            match link.complete_streaming(request.clone(), on_token).await {
+                Ok(response) => {
+                    self.note(index);
+                    return Ok(response);
+                }
+                Err(error) if Self::worth_another(&error) => last = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last.expect("a chain has at least one link, so the loop ran at least once"))
+    }
+
+    async fn complete_streaming_calls(
+        &self,
+        request: CompletionRequest,
+        on_token: &(dyn Fn(&str) + Send + Sync),
+        on_call: &(dyn Fn(usize, &ToolCall) + Send + Sync),
+    ) -> io_harness::Result<CompletionResponse> {
+        let mut last = None;
+        for (index, link) in self.links.iter().enumerate() {
+            match link
+                .complete_streaming_calls(request.clone(), on_token, on_call)
+                .await
+            {
+                Ok(response) => {
+                    self.note(index);
+                    return Ok(response);
+                }
+                Err(error) if Self::worth_another(&error) => last = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last.expect("a chain has at least one link, so the loop ran at least once"))
+    }
+
+    async fn models(&self) -> io_harness::Result<Vec<ModelInfo>> {
+        self.head().models().await
+    }
+
+    async fn reachable(&self) -> io_harness::Result<bool> {
+        self.head().reachable().await
+    }
+
+    fn model_hint(&self) -> Option<&str> {
+        self.head().model_hint()
+    }
+
+    fn name(&self) -> &str {
+        self.head().name()
+    }
+
+    fn prompt_family(&self) -> PromptFamily {
+        self.head().prompt_family()
+    }
+
+    /// Every link, or none of them — io-harness's own rule for the same question.
+    ///
+    /// Reporting the head's answer would let an image reach a link that cannot read
+    /// it on the one call that matters, the fall-through. The link would refuse it
+    /// anyway, so the conjunction only changes *when* the operator finds out: before
+    /// the run rather than midway through a failure.
+    fn accepts_images(&self) -> bool {
+        self.links.iter().all(Provider::accepts_images)
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        self.head().endpoint()
+    }
+
+    /// **Every link's hosts, and this is the reason `endpoints` exists at all.**
+    /// io-harness's egress policy is deny-by-default and a run authorizes its
+    /// provider's hosts before its first step, so a chain that reported only the
+    /// head's host would make a fall-through a way to reach a host the policy never
+    /// saw.
+    fn endpoints(&self) -> Vec<&str> {
+        self.links.iter().flat_map(Provider::endpoints).collect()
+    }
+
+    /// The link that answered, unless it was the head.
+    ///
+    /// See the type's own documentation: io-harness emits `EventKind::FellBackTo`
+    /// for any `Some`, so answering `Some` for the head would report a fall-through
+    /// on every step of every run that configured a chain.
+    fn last_served(&self) -> Option<String> {
+        match self.served.load(std::sync::atomic::Ordering::Relaxed) {
+            UNSERVED | 0 => None,
+            index => self.links.get(index).map(|link| {
+                link.last_served()
+                    .unwrap_or_else(|| link.name().to_string())
+            }),
+        }
+    }
+}
+
+/// One link's maker: a closure that builds this vendor for a named model.
+///
+/// Boxed because the four arms produce four closure types and the chain holds a
+/// list of them. The credential is captured here and nowhere else, which is what
+/// keeps it out of every struct in this crate.
+type Maker = Box<dyn Fn(&str) -> Result<Vendor, String> + Send + Sync>;
+
+/// The maker for one spec, and the model that spec names.
+fn maker_for(spec: ProviderSpec) -> Result<(Maker, String), String> {
     match spec {
-        ProviderSpec::OpenRouter { model: m, api_key } => {
+        ProviderSpec::OpenRouter { model, api_key } => {
             let key = key_for(api_key, "OPENROUTER_API_KEY")?;
-            let make = move |name: &str| Ok(OpenRouter::new(key.clone(), name));
-            Ok(with.call(make, model(m)).await)
+            Ok((
+                Box::new(move |name: &str| {
+                    Ok(Vendor::OpenRouter(OpenRouter::new(key.clone(), name)))
+                }),
+                model,
+            ))
         }
-        ProviderSpec::Anthropic { model: m, api_key } => {
+        ProviderSpec::Anthropic { model, api_key } => {
             let key = key_for(api_key, "ANTHROPIC_API_KEY")?;
-            let make = move |name: &str| Ok(Anthropic::new(key.clone(), name));
-            Ok(with.call(make, model(m)).await)
+            Ok((
+                Box::new(move |name: &str| {
+                    Ok(Vendor::Anthropic(Anthropic::new(key.clone(), name)))
+                }),
+                model,
+            ))
         }
-        ProviderSpec::OpenAi { model: m, api_key } => {
+        ProviderSpec::OpenAi { model, api_key } => {
             let key = key_for(api_key, "OPENAI_API_KEY")?;
-            let make = move |name: &str| Ok(OpenAi::new(key.clone(), name));
-            Ok(with.call(make, model(m)).await)
+            Ok((
+                Box::new(move |name: &str| Ok(Vendor::OpenAi(OpenAi::new(key.clone(), name)))),
+                model,
+            ))
         }
         ProviderSpec::Compatible {
-            model: m,
+            model,
             preset,
             base_url,
             api_key,
@@ -103,16 +465,25 @@ pub async fn build<W: WithProvider>(
                 return Err("this provider names neither a preset nor a base URL".into());
             }
             let auth = auth.unwrap_or(Auth::Bearer);
-            let make = move |name: &str| match (&preset, &base_url) {
-                (Some(preset), _) => {
-                    Compatible::preset(preset, key.clone(), name).map_err(|error| error.to_string())
-                }
-                (None, Some(base)) => Ok(Compatible::new(base.clone(), auth, key.clone(), name)),
-                // Refused above, before anything was built, so this arm exists
-                // only to make the match total.
-                (None, None) => Err("this provider names neither a preset nor a base URL".into()),
-            };
-            Ok(with.call(make, model(m)).await)
+            Ok((
+                Box::new(move |name: &str| match (&preset, &base_url) {
+                    (Some(preset), _) => Compatible::preset(preset, key.clone(), name)
+                        .map(Vendor::Compatible)
+                        .map_err(|error| error.to_string()),
+                    (None, Some(base)) => Ok(Vendor::Compatible(Compatible::new(
+                        base.clone(),
+                        auth,
+                        key.clone(),
+                        name,
+                    ))),
+                    // Refused above, before anything was built, so this arm exists
+                    // only to make the match total.
+                    (None, None) => {
+                        Err("this provider names neither a preset nor a base URL".into())
+                    }
+                }),
+                model,
+            ))
         }
         // `ProviderSpec` is `#[non_exhaustive]`: a provider the harness gains and
         // this release has not seen is refused by name rather than driven wrongly.
@@ -120,6 +491,53 @@ pub async fn build<W: WithProvider>(
             "this release cannot drive a {other:?} provider yet"
         )),
     }
+}
+
+/// Build the chain a configuration names and hand it to `with`.
+///
+/// `specs` is head first — [`chain_of`] is how a caller gets one. A single-element
+/// list builds exactly one provider and no `Fallback` at all, which is what keeps
+/// an operator who has configured one provider on precisely the code path they
+/// were on before this release.
+///
+/// `model_override` is `-m/--model`: it replaces the model the configuration names
+/// for the **head only**, which is why it is applied to the extracted model rather
+/// than by rewriting the spec. A fallback link keeps the model its own entry names —
+/// naming one model for a whole chain would ask a second vendor for a model id only
+/// the first one serves.
+pub async fn build<W: WithProvider>(
+    specs: Vec<ProviderSpec>,
+    model_override: Option<String>,
+    with: W,
+) -> Result<W::Out, String> {
+    // **Iterators and not a `for`, which is a rule rather than a taste.**
+    // `tests/dependencies.rs` refuses a loop in any file that calls a provider,
+    // because a loop beside a provider call is the shape of a second agent loop.
+    // The one loop this module is permitted is the chain's own over its links, and
+    // that gate now names it by path and holds it to iterating nothing else — so
+    // turning configuration into closures, which is what this does, has to be
+    // written without one.
+    let built: Result<Vec<(Maker, String)>, String> = specs.into_iter().map(maker_for).collect();
+    let (makers, mut models): (Vec<Maker>, Vec<String>) = built?.into_iter().unzip();
+    let Some(head) = models.first().cloned() else {
+        return Err("no provider is configured; run `io setup`".into());
+    };
+    let head = model_override.unwrap_or(head);
+    // The tail's models are fixed at build time; only the head's follows the
+    // maker's argument, so a `/model` switch changes what is asked first and
+    // leaves every fallback answering as its own entry says it should.
+    let tail: Vec<String> = models.split_off(1);
+    let make = move |name: &str| {
+        let head = std::iter::once(makers[0](name)?);
+        let rest: Vec<Vendor> = makers[1..]
+            .iter()
+            .zip(tail.iter())
+            .map(|(maker, model)| maker(model))
+            .collect::<Result<_, String>>()?;
+        Chain::of(head.chain(rest).collect())
+            .ok_or_else(|| "no provider is configured; run `io setup`".to_string())
+    };
+    Ok(with.call(make, head).await)
 }
 
 /// A provider that keeps a copy of every request on the way past.

@@ -493,12 +493,18 @@ pub fn widening(sandbox: Option<ExecMode>) -> Option<&'static str> {
 /// [`resume_main`] rather than written twice, because the sentence a run with no
 /// provider gets is the one thing both of them are certain to hit on a machine
 /// that has never run `io setup`.
+///
+/// **`--provider` replaces the whole chain rather than heading it.** An operator
+/// naming a provider on the command line has said which endpoint this run uses;
+/// silently keeping the file's fallbacks underneath would let a run they scoped to
+/// one vendor spend at another. The file's own chain is head-plus-fallbacks, which
+/// is what [`provider::chain_of`] answers.
 pub fn spec_for(
     which: Option<crate::cli::FromEnv>,
     config: &Config,
     model_override: Option<&str>,
-) -> Result<ProviderSpec, String> {
-    match (which, config.provider_spec().cloned()) {
+) -> Result<Vec<ProviderSpec>, String> {
+    match (which, config.provider_spec().is_some()) {
         (Some(which), _) => {
             let (key_var, model_var) = which.vars();
             provider::spec_from(
@@ -508,9 +514,10 @@ pub fn spec_for(
                     .map(str::to_string)
                     .or_else(|| std::env::var(model_var).ok()),
             )
+            .map(|spec| vec![spec])
         }
-        (None, Some(spec)) => Ok(spec),
-        (None, None) => Err(
+        (None, true) => Ok(provider::chain_of(config)),
+        (None, false) => Err(
             "no provider is configured; run `io setup`, or pass `--provider` with \
              its credential in the environment"
                 .into(),

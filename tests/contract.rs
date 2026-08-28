@@ -284,6 +284,334 @@ fn f2_nothing_configured_is_the_contract_the_session_built_before() {
     // reads it off the built contract, which is where it can actually be wrong.
 }
 
+/// **F1 — the effort level is read by each turn, never taken from the session.**
+///
+/// A driver-text gate, and it is here because there is no other instrument.
+/// Nothing under `tests/` links `src/main.rs`, so the difference between a posture
+/// and a one-shot — which is the whole of what `/effort` promises — lives in a
+/// binding this suite cannot call. The sibling `fold_next` is deliberately a
+/// `std::mem::take` two lines above it, so the wrong shape is not merely
+/// imaginable here: it is written out, correctly, immediately adjacent.
+///
+/// Weak, and the only one available. Four gates of this kind already exist in this
+/// file and in `tests/steer.rs` for the same reason.
+///
+/// Sabotage: change the argument to `std::mem::take(&mut effort)` — under which
+/// only this test fails, and it fails by making every level last exactly one turn
+/// while every other assertion about `/effort` stays green.
+#[test]
+fn f1_the_driver_reads_the_effort_level_rather_than_taking_it() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver).expect("the driver");
+    // Line endings normalised: a Windows checkout has `\r\n`, and slicing on a
+    // bare `\n` has now shipped a defect in a test twice — 0.19.0 and 0.23.0.
+    let text = text.replace("\r\n", "\n");
+
+    assert!(
+        !text.contains("std::mem::take(&mut effort)"),
+        "the effort level is a posture: taking it would spend the level on one \
+         turn, which is what `fold_next` beside it is supposed to be alone in doing",
+    );
+    assert!(
+        text.contains("io_cli::contract::buying(contract, effort)"),
+        "the level reaches the turn through `contract::buying`, which is where \
+         the decision is so that it can be asserted at all",
+    );
+}
+
+/// **F4 — the routing disclosure has callers, and `describe` has one at all.**
+///
+/// The third driver-text gate, and it exists because tracing callers found this
+/// release about to ship `routing::describe` with none — a public function
+/// reachable from no keystroke, no subcommand and no event arm, which is exactly
+/// what 0.20.0 shipped seven of behind 1,077 passing tests and what this release's
+/// own `risks` calls this codebase's proven blind spot. `tests/routing.rs` covered
+/// the function thoroughly and could not see that nothing called it.
+///
+/// Three call sites, because there are three moments an operator can be in this
+/// state: at session start, when they open the surface that edits the rules, and
+/// when they type `/contain on` and enter the state mid-session. The last was
+/// missing too.
+#[test]
+fn f4_the_routing_disclosure_is_reachable_from_the_driver() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    assert!(
+        text.contains("io_cli::routing::describe("),
+        "`routing::describe` says what the rules are and nothing calls it — a \
+         function no operator can reach is not a surface, it is dead code with \
+         tests",
+    );
+    assert_eq!(
+        text.matches("io_cli::routing::inert_under_containment(")
+            .count(),
+        3,
+        "the disclosure belongs at session start, on `/config` where the rules are \
+         edited, and on `/contain on`, which is the keystroke that puts an operator \
+         into the state it warns about",
+    );
+}
+
+/// **F7 — the driver asks the turn's own kind and never infers it.**
+///
+/// The second driver-text gate, and the criterion's named sabotage is exactly what
+/// it forbids: a run cancelled before its first step also has zero steps and was
+/// not an answer, so a report derived from a step count would call an interrupted
+/// turn a conversation.
+///
+/// Sabotage: report on `result.outcome`'s step count instead — under which only
+/// this test fails, because `app::answered_said` would still be correct and simply
+/// never called.
+#[test]
+fn f7_the_driver_reads_the_turn_kind_rather_than_counting_steps() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    assert!(
+        text.contains("io_cli::app::answered_said(&result.kind, &result.outcome)"),
+        "whether a turn was answered is a fact io-harness reports on \
+         `TurnResult::kind` — read WITH the outcome, because a `Reply` also covers \
+         a completion refused at the token ceiling — and never something to infer \
+         from what the run did not do",
+    );
+}
+
+/// **F1 — every turn that runs buys the reasoning the session asked for.**
+///
+/// `contract::buying`'s own note counted three `contract::session` callers that
+/// build a contract nothing runs — and there are five sites, not four: the startup
+/// reading, the two reporting pages, the turn, and `resume_pending`, which drives
+/// real completions and was missed. The consequence was that `/effort high`
+/// applied to every turn except the half of the work an operator came back to
+/// `/resume` and finish, while the status line went on saying `effort high`.
+///
+/// **Counted, not `contains`.** The first version of this gate asked whether the
+/// call appeared at all, which one site satisfies forever — so it could never have
+/// caught the site that was missing. That is the vacuous-gate shape this suite has
+/// now recorded three times.
+#[test]
+fn f1_every_turn_that_runs_applies_the_effort_level() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    assert_eq!(
+        text.matches("io_cli::contract::buying(").count(),
+        2,
+        "two sites drive a turn — the ordinary one and the resumed one — and both \
+         buy the level the session asked for. A third `contract::session` caller \
+         that runs completions needs one too.",
+    );
+}
+
+/// **F8 — `conversational = false` makes a greeting a run, and absent changes
+/// nothing.**
+///
+/// Both files, because an assertion on one of them cannot tell a wired key from a
+/// default. io-harness decides this for io-cli today —
+/// `contract.conversational.unwrap_or(matches!(contract.verify,
+/// Verification::None))` at `session.rs:1125-1127` — so with the key absent the
+/// contract must carry `None` and leave that decision where it is, and with the key
+/// present it must carry exactly what was written.
+///
+/// Sabotage: pass the key's value only when it is `true` — under which this fails
+/// on the `false` file, which is the only file anybody would write the key into.
+#[test]
+fn f8_the_conversational_key_reaches_the_contract_in_both_directions() {
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+
+    let built = |body: &str| {
+        let (dir, config) = discovered(&[("io.toml", body)]);
+        let root = dir.path().to_path_buf();
+        let contract = session(
+            "say hello",
+            root,
+            &config,
+            &Capabilities::default(),
+            responder.clone(),
+            None,
+        );
+        (dir, contract.conversational)
+    };
+
+    let (_empty, absent) = built("");
+    assert_eq!(
+        absent, None,
+        "with no key, the decision stays io-harness's — it is on for an ungated \
+         contract and io-cli must not restate that as a choice of its own",
+    );
+
+    let (_off, refused) = built("[app.io-cli]\nconversational = false\n");
+    assert_eq!(
+        refused,
+        Some(false),
+        "an operator who wants every prompt to open a run has asked for one",
+    );
+
+    let (_on, wanted) = built("[app.io-cli]\nconversational = true\n");
+    assert_eq!(wanted, Some(true));
+}
+
+/// **F3 — a routing section reaches the contract, and no section leaves it alone.**
+///
+/// The rules themselves are asserted in `tests/routing.rs` against
+/// `io_harness::Routing::model_for`, which is io-harness's own pure function and
+/// the only implementation of the decision. What belongs here is the seam: that
+/// what the operator wrote arrives on the contract, and that a file which names no
+/// rule does not put a default `Routing` where there was nothing.
+#[test]
+fn f3_a_routing_section_reaches_the_contract_and_an_absent_one_leaves_it_unset() {
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+
+    let built = |body: &str| {
+        let (dir, config) = discovered(&[("io.toml", body)]);
+        let root = dir.path().to_path_buf();
+        let contract = session(
+            "bring the docs up to date",
+            root,
+            &config,
+            &Capabilities::default(),
+            responder.clone(),
+            None,
+        );
+        (dir, contract.routing)
+    };
+
+    let (_none, unset) = built("");
+    assert_eq!(unset, None, "a file with no rules asks for no routing");
+
+    let (_empty, still_unset) = built("[app.io-cli.routing]\n");
+    assert_eq!(
+        still_unset, None,
+        "a present but empty section names no rule, and a default `Routing` is a \
+         value where there was absence",
+    );
+
+    let (_both, routed) = built(
+        "[app.io-cli.routing.escalate_after]\nfailures = 3\nmodel = \"stronger\"\n\
+         [app.io-cli.routing.downshift_under]\nbytes = 2000\nmodel = \"cheaper\"\n",
+    );
+    let routed = routed.expect("a section naming both rules routes");
+    assert_eq!(routed.escalate_after, Some((3, "stronger".to_string())));
+    assert_eq!(routed.downshift_under, Some((2000, "cheaper".to_string())));
+}
+
+/// **F7 — a turn that was answered is reported as answered, and a run is not.**
+///
+/// The `Run` half is the one that must not move: every existing report about an
+/// ordinary turn stays byte-identical, so this arm answers `None` and the driver
+/// records nothing.
+///
+/// Sabotage: report `Reply` for any run whose step count is zero — under which this
+/// still passes and F7's live arm fails, because a turn cancelled before its first
+/// step also has zero steps and was not an answer. That is why the kind is read
+/// rather than inferred.
+#[test]
+fn f7_only_a_reply_is_reported_as_having_been_answered() {
+    let finished = io_harness::RunOutcome::Finished { steps: 0 };
+
+    assert!(
+        io_cli::app::answered_said(&io_harness::TurnKind::Reply, &finished)
+            .is_some_and(|said| said.contains("without opening a run")),
+        "a question that was only a question has to say so, or it arrives as silence",
+    );
+    assert_eq!(
+        io_cli::app::answered_said(&io_harness::TurnKind::Run, &finished),
+        None,
+        "an ordinary turn already accounts for itself",
+    );
+}
+
+/// **F7 — a `Reply` that said nothing is not an answer.**
+///
+/// `TurnKind::Reply` carries a second meaning io-harness documents on the variant
+/// itself (`session.rs:1440-1443`): a turn whose one completion crossed the token
+/// ceiling and was **refused rather than served** is also a `Reply`, because no run
+/// was opened either way. Reading the kind alone told an operator with
+/// `[run] max_tokens` set that their refused question had been answered — with no
+/// answer anywhere on screen and no mention of the budget.
+///
+/// Found by both adversarial reviewers independently, which is the strongest
+/// signal this gate produces.
+///
+/// The guard is io-harness's own, copied rather than invented: `session.rs:1202`
+/// emits its `Answered` event only for a `Reply` whose outcome is `Finished`.
+///
+/// Sabotage: drop the outcome from the match — under which only this test fails,
+/// and it fails by reporting a message nobody wrote.
+#[test]
+fn f7_a_reply_refused_at_the_token_ceiling_is_not_an_answer() {
+    assert_eq!(
+        io_cli::app::answered_said(
+            &io_harness::TurnKind::Reply,
+            &io_harness::RunOutcome::CostBudgetExceeded { steps: 0 },
+        ),
+        None,
+        "a completion refused at the budget was never served, so there is no \
+         answer to announce",
+    );
+}
+
+/// **F1 — a session that never says `/effort` sends no reasoning field.**
+///
+/// The absent case is not a fourth level. `TaskContract::effort` is an
+/// `Option<Effort>`, and `None` sends the pre-0.31.0 request body byte for byte —
+/// `openai_wire.rs:1443` and `anthropic.rs:1529`. So the whole of what must be
+/// proven here is that [`io_cli::contract::buying`] leaves the contract *identical*
+/// when nothing was asked for, which Debug equality states exactly.
+///
+/// Asserted through the same instrument as
+/// [`f2_nothing_configured_is_the_contract_the_session_built_before`] and for the
+/// same reason: a field set by accident is invisible to a test that only looks at
+/// the field it meant to set.
+///
+/// Sabotage: give `buying` a default of `Effort::Medium` for the `None` case —
+/// under which only this test fails, and it fails by buying reasoning on every
+/// turn of every operator who never asked for any.
+#[test]
+fn f1_no_effort_asked_for_leaves_the_contract_byte_for_byte() {
+    let root = std::path::PathBuf::from("/nowhere");
+    let contract = TaskContract::workspace("a turn", root);
+    let before = format!("{contract:?}");
+
+    let after = io_cli::contract::buying(contract, None);
+
+    assert_eq!(format!("{after:?}"), before);
+    assert_eq!(after.effort, None);
+}
+
+/// **F1 — a level that was asked for is on the contract, and it is the one asked
+/// for.**
+///
+/// All three levels rather than one, because the mapping is a place a swap is
+/// invisible: `Effort` is `Ord`, so `Low` and `High` transposed would still be a
+/// valid contract and would still pass a test that only checked `is_some()`.
+#[test]
+fn f1_the_level_asked_for_is_the_level_the_turn_buys() {
+    let root = std::path::PathBuf::from("/nowhere");
+    for level in [
+        io_harness::Effort::Low,
+        io_harness::Effort::Medium,
+        io_harness::Effort::High,
+    ] {
+        let contract =
+            io_cli::contract::buying(TaskContract::workspace("a turn", root.clone()), Some(level));
+        assert_eq!(contract.effort, Some(level));
+    }
+}
+
 /// **F1 — the prompt is on the contract itself, so both arms carry it.**
 ///
 /// The difference the test above allows, asserted as the one it is: a contract

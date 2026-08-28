@@ -6,6 +6,84 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-28
+
+A turn asks for the model, the vendor and the amount of thinking the work
+actually needs. Three of the four things in this release were already sitting in
+io-harness, reachable and unasked for; the fourth was a list this interface had
+been drawing for five releases without ever running it.
+
+**`/effort low`, `/effort medium`, `/effort high`, `/effort off`.** How much
+reasoning a turn buys, said once and held: the level applies to that turn and to
+every turn after it until you change it, it shows on the status line as `effort
+high`, and a bare `/effort` reports what is in force and changes nothing.
+io-harness owns the translation to each vendor's spelling — `reasoning_effort` on
+the OpenAI wire, `reasoning: { effort }` on OpenRouter, a converted thinking
+budget on Anthropic — and io-cli names a level and nothing else. `off` is not a
+fourth level below `low`: it goes back to sending no reasoning field at all, which
+is what every release before this one sent, and the line it commits says that
+rather than naming a level. The level is the session's and is written to no file.
+
+**`/profile` moves from *this turn* to *the session*, and it is a correction
+rather than a reshuffle** — the third time after 0.19.0's `/mcp` and `/provider`
+and 0.22.0's `/image` and `/copy`. *this turn* means a command acting on the work
+the turn just finished; `/profile` changes which configuration overlay every later
+turn is built from, which is a property of the session. It is where `/help` lists
+it now, which is the only visible trace of the move. That it also made room for
+`/effort` is the order the bound was meant to force: the group stood at ten of
+ten, and the answer written down in advance was to re-file what is in the wrong
+group rather than widen the bound.
+
+**`[app.io-cli.routing]` changes the model mid-run.** `escalate_after` moves up to
+a stronger model after that many consecutive failed verification-gate attempts;
+`downshift_under` asks a cheaper one while the run has written fewer than that
+many bytes to disk. Escalation happens once and does not come back down, and it
+wins over downshifting where both apply — io-harness's rules, and it evaluates
+them, so io-cli holds no counter of its own.
+
+**A rule that could only misfire is refused by name.** Half a rule, `failures = 0`
+— which io-harness reads as "escalate before anything has failed", pinning every
+run to the escalation model from its first request — `bytes = 0`, which can never
+be true, and a model written as the empty string are each refused with the key
+named, and the run goes unrouted rather than obeying them. The two keys inside
+each rule are optional for the same reason: making them required meant a half
+rule failed to deserialize `[app.io-cli]` entirely, which silently took the
+theme, the keys, the ceilings, the capabilities and the verification gate with
+it.
+
+**Routing does not reach a contained turn, and this release says so rather than
+letting it be discovered.** io-harness applies routing in its flat workspace loop
+only; a turn run under `[app.io-cli.containment]` takes each agent's model from
+that agent's own roster entry and never consults the rules. For an operator with
+containment configured the section parses, is listed by `/config`, reaches the
+contract and never fires. A session with both is told at start, on `/config`, and
+when `/contain on` is typed, and a session without containment is told nothing, because a caveat attached to a working
+feature is how somebody learns to stop reading the notices. `io exec` uses the
+flat loop, so routing works there, and so does a turn taken with `/contain off`.
+There is no `require_primary` key: io-harness has the field, it gates on
+`Provider::reachable`, which is defaulted to yes and which no provider in
+io-harness 0.69 overrides, so a key for it would be permanently inert.
+
+**The `[[provider]]` chain is finally what runs, and this changes behaviour for a
+file that already has more than one entry.** `/provider` has drawn the whole chain
+since 0.21.0 while the product only ever asked its head. From this release the
+next entry answers when the first fails in a way another vendor might survive — a
+transport error, a timeout, a rate limit, a 5xx — with the fall-through committed
+to the scrollback and the status line's provider field moving to whoever actually
+answered. **A failure that will fail identically everywhere does not fall
+through**, a bad API key above all, so a wrong credential on the primary cannot
+start spending at the secondary. The predicate is io-harness's own. `--provider`
+on `io exec` replaces the whole chain rather than heading it, because a run scoped
+to one vendor on the command line must not spend at another.
+
+**A question that is only a question says so.** io-harness has answered such a
+turn in one completion — no steps, no tools, no gate — for longer than this
+interface has existed, and io-cli drew every line it draws about a turn from
+events that turn does not emit, so what reached you was silence. It now commits
+`answered without opening a run`. `conversational = false` in `[app.io-cli]` turns
+the classification off so every prompt opens a full run; absent leaves the
+behaviour exactly as it was.
+
 ## [0.25.0] - 2026-08-28
 
 The work a turn does ends as something somebody can review. io-harness has
@@ -2113,6 +2191,6 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.26.0...HEAD
 [0.1.1]: https://github.com/initorigin/io-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/initorigin/io-cli/releases/tag/v0.1.0

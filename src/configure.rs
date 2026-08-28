@@ -178,6 +178,25 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.gates.rubric",
     "app.io-cli.gates.reviewer",
     "app.io-cli.gates.allow_self_review",
+    // Whether a question that is only a question opens a run. One key rather than
+    // a section, and listed because its default is io-harness's rather than
+    // io-cli's: an operator who wants every prompt to be a run has no other way to
+    // discover that the answer is currently no.
+    "app.io-cli.conversational",
+    // When a run changes model, and to which. Every key of both rules for the
+    // reason the gate's eight are all here: a threshold without its model is half
+    // a rule, and an operator meeting one half on this surface would write a
+    // section that refuses to parse. `require_primary` is deliberately absent —
+    // see `crate::routing` for the provider method that never answers.
+    //
+    // **This surface is also where the containment disclosure is owed.** The rules
+    // reach the contract on every arm and fire only on the flat one, so an
+    // operator editing them with `[app.io-cli.containment]` in the same file is
+    // told here as well as at startup — see `routing::inert_under_containment`.
+    "app.io-cli.routing.escalate_after.failures",
+    "app.io-cli.routing.escalate_after.model",
+    "app.io-cli.routing.downshift_under.bytes",
+    "app.io-cli.routing.downshift_under.model",
 ];
 
 /// The `/config` row that re-reads the price catalogue.
