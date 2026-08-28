@@ -140,6 +140,32 @@ pub struct CliSettings {
     /// model belongs here and nowhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prices: Option<PriceSettings>,
+
+    /// What "done" means for this repository: `[app.io-cli.gates]`.
+    ///
+    /// **The section as written, and deliberately not the criterion that runs.**
+    /// io-harness's `TaskContract` carries one `Verification`, and a section can
+    /// say things a `Verification` cannot be built from — no criterion at all, two
+    /// kinds at once, a rubric with nobody to answer it, a reviewer that is the
+    /// model doing the work. Deserializing straight into the harness's own type
+    /// would put that check nowhere, so this field is io-cli's own
+    /// [`crate::gates::Settings`] and [`crate::gates::Criterion`] is what survives
+    /// being checked. The difference is where the operator hears about a mistake:
+    /// io-harness answers the last two with a hard configuration error at run
+    /// start, which turns editing a file into a session that will not start.
+    ///
+    /// It is also **not a preference and not a ceiling**. The three ceilings above
+    /// bound a turn that would have run anyway; this decides whether a turn that
+    /// finished is finished, and a review criterion spends a real completion on
+    /// every gated turn. So an absent section is no gate rather than a default
+    /// one — nothing is verified for an operator who never said what verifying
+    /// would mean.
+    ///
+    /// A table rather than an array because the contract's verification is one
+    /// value, not a suite; if the dependency ever grows a list, a list here is an
+    /// addition rather than a break.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<crate::gates::Settings>,
 }
 
 /// Where prices come from, and what the last read was.
@@ -501,6 +527,15 @@ pub fn render(
                 // operator who runs the wizard and one who adds a provider from
                 // `/provider` later.
                 prices: None,
+                // Left out for the same reason as the caps, and with the same
+                // force: a gate decides whether a finished turn counts as
+                // finished, and a file that arrived with one already in it would
+                // hold back every turn of somebody who never said what "done"
+                // means here — a review criterion by spending a second model's
+                // completion to do it. The wizard asks about none of that, and
+                // there is no default worth writing: "no gate" is the honest
+                // answer for an operator who has not answered yet.
+                gates: None,
             },
         },
     };

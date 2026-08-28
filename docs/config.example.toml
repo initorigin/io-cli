@@ -345,7 +345,7 @@ net = "deny"
 
 # --- io-cli's own section ---------------------------------------------------
 #
-# Eight keys and six tables. io-harness does not validate any of it, so an
+# Eight keys and seven tables. io-harness does not validate any of it, so an
 # unrecognised VALUE reads as the default rather than stopping a session. A
 # table io-harness cannot parse at all is different: the session starts on the
 # defaults and says so, carrying the harness's own message.
@@ -549,3 +549,87 @@ fleet = "ctrl+f"
 #
 # [app.io-cli.prices]
 # source_url = "https://openrouter.ai/api/v1/models"
+
+# --- what "done" means for this repository (0.24.0) -------------------------
+#
+# A gate is the answer to a question only you can answer: what has to be true
+# before this turn is finished. io-harness has run a verification after the agent
+# stops since long before io-cli asked it to — a task contract carries one, the
+# run loop executes it inside the sandbox, and the run comes back a success only
+# when it passed. Until this release io-cli supplied none, so every clean turn
+# reported "finished", which was an honest report of a contract that asked for
+# nothing.
+#
+# ABSENT MEANS NO GATE, AND THAT IS NOT A DEFAULT WORTH WRITING. Nothing is
+# verified for an operator who has not said what verifying would mean, and there
+# is no criterion this file could pick for you that would not be a guess about
+# somebody else's repository.
+#
+# EXACTLY ONE OF `command`, `file` AND `rubric` MAY BE SET. They are the three
+# kinds, and the key you write is what selects one. Naming none, or naming two,
+# is refused where you can still see what you typed rather than resolved by a
+# precedence rule — a precedence rule here would quietly gate every turn on
+# something you did not choose, which is the one failure a gate must not have.
+#
+# `retries` is how many further turns a failing gate may buy, and it defaults to
+# 1. ZERO MEANS REPORT AND DO NOT RE-DRIVE: the failure is shown and the turn
+# ends, which is what you want when a person is watching. It is a small number on
+# purpose — a retry is a whole turn against a real model, not a loop iteration —
+# so an operator who wants several says so.
+#
+#   --- 1. a command that must exit a status ---------------------------------
+#
+# The argv of a program, not a shell line: io-harness checks argv[0] against this
+# session's `exec` policy and runs it without a shell, so `&&`, a pipe and a glob
+# are not available and were never going to be. `expect_exit` defaults to 0.
+#
+# AN EMPTY OR ABSENT `command` MEANS THE COMMAND THIS REPOSITORY'S OWN TOOLCHAIN
+# PROPOSES. io-harness detects that — it is the half of this that knows a Cargo
+# workspace from a package.json — and io-cli holds no list of its own to consult.
+# That is deliberate: a list of build tools shipped inside a TUI is a list that is
+# wrong for somebody the day it is written, and stale for everybody a year later.
+# Write the key when your repository's real gate is narrower than what a detector
+# would propose, and leave it out when it is not.
+#
+# [app.io-cli.gates]
+# retries = 1
+# command = ["cargo", "test", "--all-features"]
+# expect_exit = 0
+#
+#   --- 2. a file that must exist, and optionally say something --------------
+#
+# The path is relative to the workspace root. `contains` is plain text the file
+# must hold; absent, existence alone is the whole criterion. This is the cheap
+# gate — nothing is run and nothing is billed — and it is the right one for work
+# whose product is a file: a migration written, a changelog entry added, a
+# generated artefact that has to appear.
+#
+# [app.io-cli.gates]
+# file = "CHANGELOG.md"
+# contains = "## 0.24.0"
+#
+#   --- 3. a rubric a second model answers -----------------------------------
+#
+# For work no exit status can judge. `rubric` is what the reviewer is asked to
+# decide; `reviewer` is the model that decides it.
+#
+# A RUBRIC REQUIRES A REVIEWER, AND THE REVIEWER MAY NOT BE THE MODEL DOING THE
+# WORK UNLESS `allow_self_review = true`. Both are refused when the section is
+# written rather than when the turn runs, and that is the whole reason they are
+# stated here: io-harness answers each of them with a hard configuration error at
+# RUN START — before the first billed call, on every turn — so a file that says
+# either one turns a configuration edit into a session that will not start, with
+# the failure on screen nowhere near the key that caused it. Self review is
+# allowed when you ask for it and never by default: a judge marking its own paper
+# is a decision, not an oversight.
+#
+# AND A REVIEW CRITERION IS A REAL BILLED COMPLETION ON EVERY GATED TURN. It is a
+# second model reading the work, charged like any other call, and it runs again on
+# each retry the gate buys. The other two kinds cost a process and a file read;
+# this one costs money per turn, which is worth knowing before it is in a file
+# that runs in CI.
+#
+# [app.io-cli.gates]
+# rubric = "every public item changed in this turn has a doc comment saying why"
+# reviewer = "anthropic/claude-sonnet-4.5"
+# allow_self_review = false
