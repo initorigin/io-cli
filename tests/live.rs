@@ -2908,3 +2908,295 @@ async fn live_f5_a_rubric_is_judged_by_a_second_model() {
     let standing = io_cli::gates::standing(&attempts).expect("the review answered");
     assert_eq!(standing.phase, "review");
 }
+
+// ---------------------------------------------------------------------------
+// 0.25.0 — the git surface.
+// ---------------------------------------------------------------------------
+
+/// Build a real repository at `root`, on `main`, with one committed file.
+///
+/// A real `.git`, written by git itself, because [`io_cli::repo`] parses the
+/// format git actually writes and a fixture that mimics it would only prove the
+/// mimicry. This is the one place in this file that shells out, and it is a test
+/// fixture rather than product code — the crate itself starts no process, which
+/// `tests/dependencies.rs` asserts by path.
+fn a_repository(root: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    };
+    git(&["init", "--initial-branch=main"]);
+    git(&["config", "user.email", "fixture@io-cli.invalid"]);
+    git(&["config", "user.name", "fixture"]);
+    std::fs::write(root.join("notes.md"), "# notes\n\nold line\n").expect("the fixture file");
+    git(&["add", "notes.md"]);
+    git(&["commit", "-m", "fixture: the file the agent will change"]);
+}
+
+/// **F8 — a `worktree = true` child works in a checkout of its own.**
+///
+/// The rooting happens inside io-harness, before the child's first step, off a
+/// roster io-cli passes in — and there is no public reader for a child's root, so
+/// this asserts on the filesystem the harness created rather than on a store row.
+/// That is the honest assertion available: `.worktrees/<slug>` exists and holds a
+/// checkout, and the parent is still on `main`.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f8_a_worktree_child_works_in_a_checkout_of_its_own() {
+    use io_cli::contract::Capabilities;
+    use io_harness::{AgentDef, Agents, Containment};
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    a_repository(root);
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let roster = Agents::new().with(
+        AgentDef::new("builder")
+            .with_role("Edit the file you are asked to edit.")
+            .with_max_steps(6)
+            .with_worktree(),
+    );
+    let contract = io_cli::contract::session(
+        "Spawn the `builder` agent and ask it to replace the line `old line` in \
+         notes.md with `new line`. Wait for it.",
+        root.to_path_buf(),
+        &no_configuration(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_agents(roster)
+    .with_max_steps(12);
+
+    let result = session
+        .turn_contained_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &Containment::new(4, 2, 1, 200_000),
+            &io_harness::Ignore,
+        )
+        .await
+        .expect("the turn runs");
+
+    let worktrees = root.join(".worktrees");
+    let made: Vec<String> = std::fs::read_dir(&worktrees)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    println!("live 0.25.0 F8: run {} worktrees {made:?}", result.run_id);
+
+    assert!(
+        !made.is_empty(),
+        "a `worktree = true` roster entry must root its child under `.worktrees/`; \
+         nothing was created, so the roster did not reach the spawn",
+    );
+
+    // The child's checkout is a real one, and the parent did not move onto it.
+    for name in &made {
+        let child = worktrees.join(name);
+        assert!(
+            io_cli::repo::branch(&child).is_some(),
+            "the child's checkout at {child:?} has no readable head, so it is a \
+             directory rather than a worktree",
+        );
+    }
+    assert_eq!(
+        io_cli::repo::branch(root).as_deref(),
+        Some("main"),
+        "the parent must stay where it was; a child taking the parent's branch \
+         with it is the overwriting this switch exists to stop",
+    );
+}
+
+/// **F5 — a commit the agent made comes back with the message it wrote.**
+///
+/// The whole chain in one turn: the agent calls `git_commit`, the message
+/// survives only in the typed call, and `commit::made_in` reads it back off
+/// `Store::step_turns`. Asserted against the repository as well as the store, so
+/// a block that rendered without a commit behind it fails here.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f5_a_commit_the_agent_made_reads_back_with_its_message() {
+    use io_cli::contract::Capabilities;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    a_repository(root);
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::session(
+        "Replace the line `old line` in notes.md with `new line`, then stage and \
+         commit that change with a message describing it.",
+        root.to_path_buf(),
+        &no_configuration(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(12);
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &io_harness::Ignore,
+        )
+        .await
+        .expect("the turn runs");
+
+    let turns = store
+        .step_turns(result.run_id)
+        .expect("the assistant turns");
+    let made = io_cli::commit::made_in(&turns);
+    println!("live 0.25.0 F5: commits {made:?}");
+
+    assert!(
+        !made.is_empty(),
+        "the agent was asked to commit and no `git_commit` call came back off \
+         `Store::step_turns`; the message survives nowhere else",
+    );
+
+    for commit in &made {
+        assert!(
+            !commit.subject().is_empty(),
+            "a commit block with an empty subject says nothing: {commit:?}",
+        );
+    }
+
+    // And the repository agrees. A block drawn from a call the policy refused
+    // would pass everything above and fail here, which is why this assertion is
+    // against git rather than against the store.
+    let log = std::process::Command::new("git")
+        .args(["log", "--oneline", "--no-decorate"])
+        .current_dir(root)
+        .output()
+        .expect("git log runs");
+    let log = String::from_utf8_lossy(&log.stdout);
+    println!("live 0.25.0 F5: log\n{log}");
+    assert!(
+        log.lines().count() >= 2,
+        "the fixture commit is one; the agent's is the second, and the log has \
+         only: {log}",
+    );
+}
+
+/// **F1/F2 — an asking posture refuses git before anything is spent, and the one
+/// rule lifts it.**
+///
+/// Asserted against a real run rather than against a `Policy` alone, because the
+/// claim this release rests on is about what io-harness's *spawn* does with an
+/// asking posture, and that is only observable by letting it try.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f1_f2_an_asking_posture_refuses_git_and_the_allowance_lifts_it() {
+    use io_cli::contract::Capabilities;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    a_repository(root);
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+
+    // The posture io-cli's own wizard recommends, and the one most operators run.
+    let asking = Policy {
+        layers: Policy::default().layers,
+        defaults: Posture::AskWrites.defaults(),
+    };
+    assert!(
+        io_cli::approval::refuses_git(&asking),
+        "the premise of this release: an asking posture refuses git",
+    );
+
+    let lifted = io_cli::approval::effective_policy(&asking, &[io_cli::approval::git_allowance()]);
+    assert!(
+        !io_cli::approval::refuses_git(&lifted),
+        "and the one rule lifts it",
+    );
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::session(
+        "Run `git status` to see what has changed in this repository, then say what it said.",
+        root.to_path_buf(),
+        &no_configuration(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(6);
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &asking,
+            &io_harness::ApproveAll,
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let refusals: Vec<(String, String)> = events
+        .iter()
+        .filter_map(|event: &RunEvent| match &event.kind {
+            EventKind::Refused { act, target, .. } => Some((act.clone(), target.clone())),
+            _ => None,
+        })
+        .collect();
+    println!(
+        "live 0.25.0 F1/F2: run {} refusals {refusals:?}",
+        result.run_id
+    );
+
+    // **The refusal io-cli explains, arriving from the harness rather than from a
+    // fixture.** `ApproveAll` is handed in deliberately: it answers the `.git`
+    // write gate, so anything refused here was refused by the spawn's own exec
+    // check, which is the behaviour reported upstream as io-harness#214.
+    assert!(
+        refusals
+            .iter()
+            .any(|(act, target)| act == "exec" && target == io_cli::approval::GIT),
+        "an asking posture must produce an `exec`/`git` refusal — that is what \
+         `App::note_git` explains and what `/commit allow` lifts; got {refusals:?}",
+    );
+}

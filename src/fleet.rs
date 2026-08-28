@@ -51,7 +51,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use io_harness::{AgentMessage, Agents, EventKind, RunEvent};
+use io_harness::{AgentDef, AgentMessage, Agents, EventKind, RunEvent};
 
 use crate::glyphs::Glyphs;
 use crate::picker::fit;
@@ -116,6 +116,24 @@ pub struct Child {
     /// see [`Fleet::name`] for the two shapes that resolve and the one that
     /// cannot.
     pub role: Option<String>,
+    /// Whether the definition it was spawned from asked for its own worktree.
+    ///
+    /// **A property of the roster entry, not a directory.** io-harness writes a
+    /// contained child's actual worktree path into its `runs` row and no query
+    /// ever selects it back out, and the functions that derive one are private to
+    /// the harness — so a path drawn here could only be *reconstructed*, and a
+    /// reconstruction is an address that disagrees with the truth the moment
+    /// either side changes. That is the same rule `DERIVED_MARK` states for the
+    /// role — named without a doc link because it is private to this module and a
+    /// public item may not link one: copy a constant only where being wrong is
+    /// harmless. Being wrong
+    /// about a directory is not harmless — an operator would `cd` into it.
+    ///
+    /// So this is the one bit that *is* knowable: `contract.agents` says whether
+    /// the definition carries `worktree = true`, and that is what the row says.
+    /// `false` where the roster cannot name this child at all, which is the same
+    /// honest silence [`Child::role`] keeps.
+    pub worktree: bool,
     /// Its nesting level: one below the event that announced it.
     pub depth: u32,
     /// What it was asked to do.
@@ -308,14 +326,22 @@ impl Fleet {
     /// `n(n+1)/2`. Nothing here re-walks history.
     pub fn name(&mut self, addresses: &[(String, i64)], roster: &Agents) {
         for (address, run_id) in addresses {
-            let role = role_of(address, roster);
+            let def = def_of(address, roster);
+            let role = def.map(|def| def.name.clone());
+            // Read off the same definition the role came from rather than looked
+            // up again: two lookups of one address are two chances to disagree.
+            let worktree = def.is_some_and(|def| def.worktree);
             if let Some(child) = self.child_mut(*run_id) {
                 child.address = Some(address.clone());
-                // Assigned rather than merged: `role_of` is a pure function of the
+                // Assigned rather than merged: `def_of` is a pure function of the
                 // address and the roster, so a `None` here means the roster cannot
                 // name this one, and keeping a stale role after an `/agents`
                 // reload would be showing a definition that no longer exists.
                 child.role = role;
+                // The same rule, and it matters more: a stale `true` would keep
+                // saying a child is contained after the definition that contained
+                // it was edited away.
+                child.worktree = worktree;
             }
         }
     }
@@ -380,6 +406,10 @@ impl Fleet {
                     // reads one — see `Fleet::name`.
                     address: None,
                     role: None,
+                    // Not knowable from the event either: `Spawned` carries a run
+                    // id and a goal, and the roster entry behind them is what says
+                    // whether this one is contained.
+                    worktree: false,
                     depth: event.depth + 1,
                     goal: goal.clone(),
                     state: State::Working,
@@ -498,8 +528,20 @@ impl Fleet {
             .map(|child| {
                 let indent = "  ".repeat(child.depth.saturating_sub(1) as usize);
                 let drawn = crate::status::format_tokens(child.drawn);
+                // A word, not a symbol, and so it needs no entry in [`Glyphs`]:
+                // `worktree` is the same eight letters in both sets, which is the
+                // test that set applies — a mark goes in it when the two sets
+                // would otherwise spell one thing differently, as `arrow` does.
+                // It is also the word the roster spells, so an operator reading
+                // the row and an operator reading `contract.agents` are reading
+                // the same term.
+                let contained = if child.worktree {
+                    format!("worktree {sep} ")
+                } else {
+                    String::new()
+                };
                 let head = format!(
-                    "{indent}{} {sep} {} {sep} {drawn} drawn {sep} ",
+                    "{indent}{} {sep} {} {sep} {drawn} drawn {sep} {contained}",
                     child.label(),
                     child.state.word(),
                 );
@@ -602,6 +644,10 @@ impl Fleet {
 /// The `[[agent]]` definition an address was spawned from, where the address can
 /// still say.
 ///
+/// The definition itself rather than its name, because two things on the row come
+/// off it — the role label and whether the child is contained — and one lookup
+/// cannot disagree with itself.
+///
 /// Two shapes resolve and one cannot, and the one that cannot is why this returns
 /// an `Option` rather than a guess:
 ///
@@ -621,9 +667,9 @@ impl Fleet {
 ///
 /// Pure and bounded: one split and one `BTreeMap` lookup, no allocation on the
 /// path that fails.
-fn role_of(address: &str, roster: &Agents) -> Option<String> {
+fn def_of<'a>(address: &str, roster: &'a Agents) -> Option<&'a AgentDef> {
     let stem = address.split(DERIVED_MARK).next().unwrap_or(address);
-    roster.get(stem).map(|def| def.name.clone())
+    roster.get(stem)
 }
 
 /// The mark between a sender and a recipient, in whichever set is in play.

@@ -1,10 +1,16 @@
-//! F6 and F7 — the boundary the operator chooses, and the one the agent gets.
+//! F1, F6 and F7 — the boundary the operator chooses, the one the agent gets,
+//! and the one act that never reaches the operator at all.
 //!
-//! Two criteria and they are deliberately not the same one. F6 is what the status
-//! line says; F7 is what the next turn actually runs under. A mode indicator that
-//! is not backed by the policy it names is invisible to every assertion on a
+//! F6 and F7 are deliberately not the same criterion. F6 is what the status line
+//! says; F7 is what the next turn actually runs under. A mode indicator that is
+//! not backed by the policy it names is invisible to every assertion on a
 //! rendered line, which is why the second criterion asserts on an
 //! `io_harness::Policy` and never on a word.
+//!
+//! F1 is the same question asked of one act. `io_harness::tools::git` refuses a
+//! spawn on any effect that is not `Allow` without consulting an approver, so
+//! there is no rendered sentence to assert on even in principle — the only place
+//! the repair is visible is the verdict.
 
 mod support;
 
@@ -175,4 +181,74 @@ fn a_posture_is_recognised_from_the_defaults_it_is() {
         None,
         "a policy nobody offered is not silently reported as one that was",
     );
+}
+
+/// **F1.** The posture the wizard recommends refuses git, and refuses it where no
+/// approver is reachable: `Git::run` (io-harness 0.69.0, `src/tools/git.rs:549`)
+/// treats every effect that is not `Allow` as a hard refusal. Asserted as
+/// `!= Allow` rather than `== Ask`, because that inequality is the whole predicate
+/// upstream applies.
+#[test]
+fn f1_an_asking_posture_refuses_git_before_anyone_is_asked() {
+    let base = Policy::default();
+    let policy = approval::session_policy(&base, Some(Posture::AskWrites), &[]);
+    assert_ne!(
+        policy.check(Act::Exec, "git").effect,
+        Effect::Allow,
+        "the recommended posture leaves git short of allow, which upstream refuses",
+    );
+    assert!(approval::refuses_git(&policy));
+}
+
+/// **F1.** The repair, offered through the mechanism that already exists for
+/// everything else the operator allows for the session.
+#[test]
+fn f1_the_git_allowance_turns_that_refusal_into_an_allow() {
+    let base = approval::session_policy(&Policy::default(), Some(Posture::AskWrites), &[]);
+    let policy = approval::effective_policy(&base, &[approval::git_allowance()]);
+    assert_eq!(
+        policy.check(Act::Exec, "git").effect,
+        Effect::Allow,
+        "with the allowance in force the seven git tools may spawn",
+    );
+    assert!(!approval::refuses_git(&policy));
+}
+
+/// **F1, and the half the sabotage attacks.** One rule, one program. An
+/// `Act::Exec` pattern names a binary, so a grant written wider than the binary it
+/// was for is a grant of the whole PATH.
+#[test]
+fn f1_the_git_allowance_changes_nothing_for_another_program() {
+    let base = approval::session_policy(&Policy::default(), Some(Posture::AskWrites), &[]);
+    let before = base.check(Act::Exec, "curl").effect;
+    let policy = approval::effective_policy(&base, &[approval::git_allowance()]);
+    assert_eq!(
+        policy.check(Act::Exec, "curl").effect,
+        before,
+        "allowing git must leave every other binary exactly where it was",
+    );
+    assert_ne!(
+        policy.check(Act::Exec, "curl").effect,
+        Effect::Allow,
+        "an allowance for one program is not an allowance for the machine",
+    );
+}
+
+/// **F1.** A layer that denies exec still denies it afterwards. The allowance
+/// rides the same `remembered` layer as everything else, and a later layer may add
+/// capability but may never re-allow what an earlier one denied — so this is a
+/// property of the mechanism, asserted rather than assumed.
+#[test]
+fn f1_a_denied_exec_is_still_denied_after_the_git_allowance() {
+    let base = Policy::default().layer("locked-down").deny_exec("git");
+    for posture in Posture::ALL {
+        let policy = approval::session_policy(&base, Some(*posture), &[approval::git_allowance()]);
+        assert_eq!(
+            policy.check(Act::Exec, "git").effect,
+            Effect::Deny,
+            "{:?}: the allowance re-opened a spawn a layer had denied",
+            posture,
+        );
+        assert!(approval::refuses_git(&policy));
+    }
 }

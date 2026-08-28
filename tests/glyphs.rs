@@ -1093,3 +1093,166 @@ async fn the_approval_overlay_draws_in_ascii() {
     let decision = deciding.await.expect("the approver did not panic");
     assert!(matches!(decision, Decision::Deny { .. }));
 }
+
+// ---------------------------------------------------------------------------
+// 0.25.0 — the worktree mark and the branch field
+// ---------------------------------------------------------------------------
+
+/// **F5 — the fleet's worktree mark is a word, so the two sets spell it
+/// identically and there is nothing to degrade.**
+///
+/// The claim `src/fleet.rs` makes for the mark is stronger than "it has an ASCII
+/// form": it needs no entry in [`Glyphs`] at all, because the eight letters are
+/// the same in both sets. So the sweep is not the only assertion here — the two
+/// rows are compared character for character with the set's own separator
+/// normalised out, and the mark is required to sit at the same column in each.
+/// A mark that had reached for a symbol would fail the sweep; one that had
+/// reached for a *different* symbol per set would pass the sweep and fail this.
+#[test]
+fn the_worktree_mark_is_the_same_word_in_both_sets() {
+    use io_cli::fleet::Fleet;
+    use io_harness::{AgentDef, Agents};
+
+    let roster = Agents::new().with(AgentDef::new("builder").with_worktree());
+    let mut fleet = Fleet::new();
+    fleet.event(&RunEvent::at_depth(
+        1,
+        1,
+        0,
+        EventKind::Spawned {
+            child_run_id: 7,
+            goal: "port the tokenizer".to_string(),
+        },
+    ));
+    fleet.name(&[("builder#7".to_string(), 7)], &roster);
+
+    let unicode = fleet.rows(80, &UNICODE).remove(0);
+    let plain = fleet.rows(80, &ASCII).remove(0);
+
+    assert_ascii("the fleet row", &plain);
+    for row in [&unicode, &plain] {
+        assert!(row.contains("worktree"), "the mark went missing: {row:?}");
+    }
+    // Columns, not byte offsets: the Unicode separator is two bytes and one cell,
+    // so a comparison of `str::find` results would report a difference the
+    // terminal never draws.
+    let column = |row: &str| row.find("worktree").map(|byte| row[..byte].chars().count());
+    assert_eq!(
+        column(&unicode),
+        column(&plain),
+        "the mark moved between the sets\nunicode: {unicode:?}\nascii:   {plain:?}",
+    );
+    // The whole row, with each set's separator replaced by the other's, is the
+    // same string — so the *only* difference between the two is the separator.
+    assert_eq!(
+        unicode.replace(UNICODE.separator.trim(), ASCII.separator.trim()),
+        plain,
+        "the sets draw more than a separator apart\nunicode: {unicode:?}\nascii:   {plain:?}",
+    );
+}
+
+/// **F5 — the branch field is a plain name, so it draws the same under the ASCII
+/// set, under `--plain` and under `NO_COLOR`.**
+///
+/// Three surfaces, because the branch reaches all three and they are drawn by
+/// three different pieces of code: `Status::line` builds fields and joins them,
+/// `Status::footer` hand-builds two groups, and `Status::branch_field` is what
+/// both read. A field that had acquired a glyph in one of them would be a mark on
+/// a terminal that cannot draw it, in the one place an operator looks to find out
+/// which checkout their agent is writing into.
+///
+/// `NO_COLOR` is asserted as text equality rather than as a second sweep: the
+/// colour axis must change nothing about *what* is on the row, and `MONO` against
+/// `DARK` on the same set is the sharpest way to say so.
+#[test]
+fn the_branch_field_draws_in_ascii_and_survives_no_colour() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.policy = Some("read-only".into());
+    status.branch = Some("feat/0.25.0".into());
+
+    // Set-independent by construction, and that is the claim rather than an
+    // observation: nothing in `branch_field` takes a `Glyphs` at all.
+    let field = status.branch_field().expect("a branch is set");
+    assert_eq!(field, "git:feat/0.25.0");
+    assert_ascii("the branch field", &field);
+
+    for (background, theme) in [
+        ("coloured", ascii()),
+        ("uncoloured", MONO.with_glyphs(ASCII)),
+    ] {
+        let line = row(&status.line(120, &theme));
+        assert_ascii("the status line's branch", &line);
+        assert!(
+            line.contains(&field),
+            "{background}: the branch left the status line: {line:?}",
+        );
+
+        // The row the branch is actually drawn on — the counts row, which is the
+        // third and last the footer builds. Swept whole rather than searched,
+        // because a mark that arrived beside the field would be as unreachable on
+        // a plain terminal as one inside it. The row above it is the identity row
+        // and is the subject of its own test below.
+        let rows = status.footer(120, &theme);
+        let counted = row(rows.last().expect("the footer's three rows"));
+        assert_ascii("the footer's counts row", &counted);
+        assert!(
+            counted.contains(&field),
+            "{background}: the branch left the footer: {counted:?}",
+        );
+    }
+
+    // The colour axis changed nothing about the text on either renderer, and the
+    // glyph axis changed nothing about the field on either.
+    for set in [UNICODE, ASCII] {
+        let coloured = DARK.with_glyphs(set);
+        let uncoloured = MONO.with_glyphs(set);
+        assert_eq!(
+            row(&status.line(120, &coloured)),
+            row(&status.line(120, &uncoloured)),
+            "{}: NO_COLOR changed what the status line says",
+            set.name,
+        );
+        assert_eq!(
+            text(&status.footer(120, &coloured)),
+            text(&status.footer(120, &uncoloured)),
+            "{}: NO_COLOR changed what the footer says",
+            set.name,
+        );
+        assert!(
+            row(&status.line(120, &coloured)).contains(&field),
+            "{}: the branch is drawn from the set rather than from the name",
+            set.name,
+        );
+    }
+}
+
+/// **F5 — the footer, whole, draws in ASCII.**
+///
+/// The sweep above covers the counts row because that is where the branch lands.
+/// This one covers all three, and it is the surface that most needed one: every
+/// existing sweep in this file runs over `Status::line`, which has exactly one
+/// production caller — the fallback for a terminal under seven rows — while
+/// `Status::render` takes the footer on every real terminal. A mark that only the
+/// footer draws has never been swept here at all.
+///
+/// Both states, because the identity row draws different things in each: `•
+/// ready` when nothing is running, a spinner frame and no word while a turn is.
+#[test]
+fn the_footer_draws_in_ascii_in_both_states() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.policy = Some("read-only".into());
+    status.branch = Some("feat/0.25.0".into());
+    status.steps = Some(6);
+
+    let theme = ascii();
+    for state in [false, true] {
+        status.working = state;
+        // Every frame of the indicator, so a set whose later frames are Unicode
+        // cannot hide behind the first — the same shape the status line's sweep
+        // uses.
+        for _ in 0..UNICODE.spinner.len().max(ASCII.spinner.len()) * 2 {
+            assert_ascii("the footer", &text(&status.footer(120, &theme)));
+            status.advance();
+        }
+    }
+}

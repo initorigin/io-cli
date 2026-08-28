@@ -53,6 +53,14 @@ fn the_commands_are_the_commands() {
             "/compact",
             "/copy",
             "/copy diff",
+            // 0.25.0 — the third thing an operator does with the work a turn has
+            // just finished, and it sits beside the two that copy it: one takes
+            // the answer, one takes the patch, this one makes the patch permanent.
+            // It goes under **this turn** and not **inspect** for that reason, and
+            // it takes that group to ten, which is the bound — so the next command
+            // that would fill a group re-files one that is in the wrong group
+            // rather than widening it.
+            "/commit",
             "/config",
             // 0.18.0 — the other two surfaces that write a file the operator
             // keeps, and they ask the same scope question `/config` does: three
@@ -118,6 +126,21 @@ fn the_commands_are_the_commands() {
 /// stops covering the next row the moment somebody forgets to extend it, which is
 /// exactly the failure this test exists for. Exactly ONE listed command may
 /// resolve to the help listing, and it is `/help`.
+///
+/// **0.25.0 rewrote how "the help listing" is recognised, because the old
+/// spelling had stopped recognising it at all.** The check was one comparison —
+/// `parse(name) == parse("help")` — and that was true of the `unknown` arm only
+/// while the arm literally returned `help(…)`. It has not for some time: it now
+/// builds a *warning notice* followed by `commands(theme)` alone, with no key
+/// table, so an armless command's `Action::Print` can never equal `/help`'s. The
+/// gate was passing on the one command it was allowed to pass on and blind to
+/// every command it existed to catch. `/commit`'s sabotage — the row added and
+/// the `parse` arm withheld — went green under it, which is how it was found.
+///
+/// So the property is asserted against **both** shapes an inert command can take:
+/// the help listing itself, and the sentence the `unknown` arm writes. The second
+/// is matched on `there is no /<word>`, which is the arm's own text and the one
+/// thing a fallen-through command is guaranteed to carry.
 #[test]
 fn no_listed_command_falls_through_to_the_help_listing() {
     let listing = commands::parse("help", &defaults(), &DARK);
@@ -126,16 +149,27 @@ fn no_listed_command_falls_through_to_the_help_listing() {
         .map(|(name, _)| *name)
         .filter(|name| {
             let typed = name.strip_prefix('/').unwrap_or(name);
-            commands::parse(typed, &defaults(), &DARK) == listing
+            let got = commands::parse(typed, &defaults(), &DARK);
+            if got == listing {
+                return true;
+            }
+            // The `unknown` arm names the word it did not recognise, and `parse`
+            // decides on the FIRST word — which is what `/copy diff` is spelled
+            // out of, and what the sentence would carry if it ever fell through.
+            let word = typed.split_whitespace().next().unwrap_or(typed);
+            match got {
+                Action::Print(lines) => text(&lines).contains(&format!("there is no /{word}")),
+                _ => false,
+            }
         })
         .collect();
     assert_eq!(
         inert,
         vec!["/help"],
-        "these commands are listed but resolve to the help listing, which is what \
-         an unknown command resolves to — they are advertised and inert. Give each \
-         one an arm in `commands::parse` and an arm in the driver, or take the row \
-         out of `COMMANDS`."
+        "these commands are listed but resolve to what an UNKNOWN command resolves \
+         to — the help listing, or the notice that says the command does not exist. \
+         They are advertised and inert. Give each one an arm in `commands::parse` \
+         and an arm in the driver, or take the row out of `COMMANDS`."
     );
 }
 
@@ -269,14 +303,14 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     );
     // No command was added for any of this — `/resume` was extended — so the
     // inventory is the size the other gates in this file assert. The number is
-    // 30 plus 0.24.0's one addition, and the two halves are named separately on
-    // purpose: a total that merely went up by one would be satisfied by 0.23.0
-    // growing a command and 0.24.0 losing one.
+    // 31 plus 0.25.0's one addition, and the two halves are named separately on
+    // purpose: a total that merely went up by one would be satisfied by this
+    // release growing a command and losing another.
     assert_eq!(
         COMMANDS.len(),
-        31,
-        "0.23.0 adds no command and 0.24.0 adds exactly one, `/gates`; a \
-         thirty-second here means one arrived unrecorded",
+        32,
+        "0.25.0 adds exactly one command, `/commit`, on top of the thirty-one \
+         0.24.0 shipped; a thirty-third here means one arrived unrecorded",
     );
 }
 

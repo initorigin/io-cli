@@ -1544,6 +1544,317 @@ fn f5_the_fleet_view_fits_eighty_columns_in_both_glyph_sets() {
     }
 }
 
+/// **0.25.0 F5 — the worktree mark fits eighty columns in both sets, and the goal
+/// is what pays for it, to the column.**
+///
+/// The mark is a word rather than a symbol, so the two sets spell it identically
+/// and the arithmetic is the same on both — which is the claim, not an
+/// assumption. It is drawn immediately in front of the goal, and the goal is the
+/// only column on the row that can give way, so the cost is measurable: the same
+/// child, the same address, the same goal, named once from a roster entry that
+/// asks for a worktree and once from one that does not. The marked row keeps
+/// **exactly eleven fewer characters** of its goal — `worktree` is eight, the
+/// separator between it and the goal is three — and that is the whole bill.
+///
+/// Both rows are fitted rather than clipped, which the trailing mark says: a row
+/// that had overrun eighty would fail the width assertion, and one that had lost
+/// the identity in front of the goal would fail the `builder#7` assertion.
+///
+/// Sabotage: draw the mark *after* the goal. The width assertion still passes,
+/// the row still contains the word — and the eleven-character claim fails,
+/// because the goal is then fitted to the room the mark has not taken yet and the
+/// mark is what runs off the end.
+#[test]
+fn f5_the_worktree_mark_fits_eighty_columns_and_the_goal_pays_for_it() {
+    use io_cli::fleet::Fleet;
+    use io_harness::{AgentDef, Agents, EventKind, RunEvent};
+
+    let goal = "port the tokenizer, the error paths, and everything that reads either \
+                of them, one at a time, without changing behaviour";
+
+    // The same entry twice, differing in the one field the mark is derived from.
+    // `Fleet::name` assigns rather than merges, so naming the same child from the
+    // second roster is the whole change between the two rows below.
+    let plain = Agents::new().with(AgentDef::new("builder"));
+    let contained = Agents::new().with(AgentDef::new("builder").with_worktree());
+
+    // How much of `goal` survived on this row: the longest prefix of it the row
+    // still contains. `fit` truncates by character and appends the set's mark, so
+    // this is exactly the room the goal was given minus the mark.
+    let kept = |row: &str| -> usize {
+        (0..=goal.chars().count())
+            .rev()
+            .find(|n| row.contains(&goal.chars().take(*n).collect::<String>()))
+            .expect("the empty prefix is in every row")
+    };
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut fleet = Fleet::new();
+        fleet.event(&RunEvent::at_depth(
+            1,
+            1,
+            0,
+            EventKind::Spawned {
+                child_run_id: 7,
+                goal: goal.to_string(),
+            },
+        ));
+
+        fleet.name(&[("builder#7".to_string(), 7)], &plain);
+        let before = fleet.rows(WIDTH, &theme.glyphs).remove(0);
+        fleet.name(&[("builder#7".to_string(), 7)], &contained);
+        let after = fleet.rows(WIDTH, &theme.glyphs).remove(0);
+
+        for row in [&before, &after] {
+            assert!(
+                row.chars().count() <= WIDTH as usize,
+                "{set}: {row:?} is wider than the terminal",
+            );
+            assert!(
+                row.contains("builder#7") && row.contains("working"),
+                "{set}: the identity survives the cut: {row:?}",
+            );
+            assert!(
+                row.ends_with(theme.glyphs.ellipsis),
+                "{set}: the goal is what gets cut, and says so with the set's own \
+                 mark: {row:?}",
+            );
+        }
+
+        assert!(
+            after.contains("worktree"),
+            "{set}: the mark went missing at eighty columns: {after:?}",
+        );
+        assert!(
+            !before.contains("worktree"),
+            "{set}: an entry that never asked for one is not marked: {before:?}",
+        );
+        // In front of the goal, so the goal is still the column that gives way.
+        assert!(
+            after.find("worktree") < after.find("port the tokenizer"),
+            "{set}: the mark is drawn after the goal: {after:?}",
+        );
+
+        // The bill, in columns, and it is the same in both sets because the mark
+        // is a word and the separator is three cells in each.
+        assert_eq!(
+            kept(&after) + 11,
+            kept(&before),
+            "{set}: the mark cost the goal something other than eleven columns\n\
+             plain:  {before:?}\nmarked: {after:?}",
+        );
+    }
+}
+
+/// **0.25.0 F11 — the branch is a plain name, and it costs what it says it
+/// costs.**
+///
+/// Three shapes, because they are the three a real checkout produces and their
+/// widths are what every fitter on the footer is spending: `main` on an ordinary
+/// branch, a detached head, and the branch this repository is actually on. The
+/// widths are stated rather than derived, so a field that grew a decoration —
+/// brackets, an arrow, a dirty marker — moves a number here rather than quietly
+/// eating a counter off the footer.
+///
+/// The separator is counted in, because the field never appears without one: it
+/// is appended to a group that already has members on every row it can reach.
+/// Three cells in both sets, so the bill is the same in each.
+#[test]
+fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
+    use io_cli::status::Status;
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let separator = theme.glyphs.separator.chars().count();
+        let mut status = Status::new("io/model");
+
+        assert_eq!(
+            status.branch_field(),
+            None,
+            "{set}: a workspace with no readable head draws no field at all",
+        );
+
+        for (branch, cost) in [("main", 11), ("a1b2c3d", 14), ("feat/0.25.0", 18)] {
+            status.branch = Some(branch.to_string());
+            let field = status
+                .branch_field()
+                .unwrap_or_else(|| panic!("{set}: a branch is set and no field was drawn"));
+
+            assert_eq!(
+                field,
+                format!("git:{branch}"),
+                "{set}: the branch is a plain name and nothing else",
+            );
+            assert_eq!(
+                field.chars().count() + separator,
+                cost,
+                "{set}: `{field}` no longer costs {cost} columns",
+            );
+            assert!(
+                field.is_ascii(),
+                "{set}: the field needs a glyph it does not have: {field:?}",
+            );
+
+            // And on the one-row form it reaches the terminal whole rather than
+            // shortened, at a width that has room for it.
+            let line = text_of(&[status.line(WIDTH, &theme)]).remove(0);
+            assert!(
+                line.chars().count() <= WIDTH as usize,
+                "{set}: the status line overran eighty columns: {line:?}",
+            );
+            assert!(
+                line.contains(&field),
+                "{set}: the branch was shortened rather than dropped whole: {line:?}",
+            );
+        }
+    }
+}
+
+/// **0.25.0 F11 — the branch reaches the footer, and yields before the standing
+/// facts when the row cannot hold it.**
+///
+/// **Two widths, and the first one is why.** The first version of this test
+/// asserted only at eighty columns — where, with this fixture, the branch never
+/// fits — so the footer with a branch and the footer without one were
+/// character-identical and every assertion was equally true of both. Deleting
+/// the push from `Status::footer` entirely left it green. It was a gate over a
+/// field it could not observe, which is the shape 0.20.0's
+/// `a_queue_behind_an_open_fleet_view_answers_no_key` had and the shape this
+/// release already found once in `tests/commands.rs`.
+///
+/// So the wide arm proves the field is drawn at all, and the narrow arm proves
+/// what it gives up when it cannot be. Neither alone is a gate.
+///
+/// The fixture is `tests/status.rs`'s own `full_row` without the planning phase:
+/// the posture and containment word `src/status.rs` names in its comments as the
+/// real thing, and the counters the footer had when the 0.21.0 live capture's
+/// turn ended. The right-hand group is `read-only` (9) plus the separator (3)
+/// plus `workspace-write/macos-sandbox-exec` (34) — forty-six columns. The key
+/// hint is fourteen and its separator three.
+///
+/// **The branch is in `counts`, pushed last, so `counts.pop()` takes it before it
+/// takes any number.** That is the corrected design: a branch is the one fact on
+/// this row an operator can afford to lose, because it is a keystroke away on the
+/// `/status` page, while a posture that silently vanished is not. The rejected
+/// design put it in the right-hand group, which `row` keeps or drops whole — and
+/// at eighty columns with `planning` on, every real branch took the posture, the
+/// containment mode and the planning phase off together.
+///
+/// Sabotage: put the branch back in the right-hand group — under which the narrow
+/// arm's standing-facts assertions fail. Or delete the push altogether — under
+/// which the wide arm fails, which is the half that was missing.
+#[test]
+fn f11_a_branch_yields_before_the_standing_facts_at_eighty_columns() {
+    use io_cli::status::Status;
+
+    let fixture = || {
+        let mut status = Status::new("anthropic/claude-sonnet-4.5");
+        status.policy = Some("read-only".into());
+        status.containment = Some("workspace-write/macos-sandbox-exec".into());
+        status.steps = Some(6);
+        status.tokens = Some(26_900);
+        status.context = Some(23);
+        status
+    };
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let footer = |status: &Status| -> String {
+            let rows = text_of(&status.footer(WIDTH, &theme));
+            for row in &rows {
+                assert!(
+                    row.chars().count() <= WIDTH as usize,
+                    "{set}: a footer row overflowed eighty columns: {row:?}",
+                );
+            }
+            rows.join("\n")
+        };
+        // The same renderer at a width that can hold everything, for the arm that
+        // proves the field exists at all rather than what it displaces.
+        let footer_at = |status: &Status, width: u16| -> String {
+            text_of(&status.footer(width, &theme)).join("\n")
+        };
+
+        let bare = footer(&fixture());
+        assert!(
+            bare.contains("6 steps"),
+            "{set}: the row did not hold a counter to begin with, so nothing below \
+             measures anything: {bare:?}",
+        );
+        assert!(
+            !bare.contains("26.9k tok") && !bare.contains("ctx 23%"),
+            "{set}: eighty columns already cost these two before a branch was set, \
+             and the comparison below assumes it: {bare:?}",
+        );
+
+        let mut branched = fixture();
+        branched.branch = Some("feat/0.25.0".into());
+        let drawn = footer(&branched);
+
+        // **The standing facts survive, and the branch is what yields.** This is
+        // the corrected behaviour and the assertion is written the way round it
+        // is because the first attempt at this field was the other way round: the
+        // branch went into the right-hand group, which `row` keeps or drops
+        // whole, and at eighty columns with `planning` on it took the posture,
+        // the containment mode and the planning phase off together — leaving a
+        // bare key hint. Every real branch did it; the break-even was a name one
+        // character long.
+        //
+        // So a branch is the one fact on this row an operator can afford to lose.
+        // It is a keystroke away on the `/status` page; a posture that silently
+        // vanished is not, and an operator finishing a turn under `/plan on` with
+        // nothing on screen saying the next write will stop and ask is exactly
+        // what `f4_a_full_counts_row_drops_a_counter_and_not_the_planning_phase`
+        // exists to prevent.
+        for standing in ["read-only", "workspace-write/macos-sandbox-exec"] {
+            assert!(
+                drawn.contains(standing),
+                "{set}: `{standing}` left the footer at eighty columns — the branch \
+                 must never be paid for out of the standing facts: {drawn:?}",
+            );
+        }
+        // The counter survives too: the branch yields before any number does,
+        // because `counts.pop()` takes from the end and it is pushed last.
+        assert!(
+            drawn.contains("6 steps"),
+            "{set}: a counter was dropped to make room for a branch that then did \
+             not fit either: {drawn:?}",
+        );
+        assert!(
+            !drawn.contains("git:feat/0.25.0"),
+            "{set}: the branch fitted at eighty columns beside everything else, so \
+             this fixture no longer measures the trade it was written for: {drawn:?}",
+        );
+        // The hint is not a counter and is never the thing that pays.
+        assert!(
+            drawn.contains("/ for commands"),
+            "{set}: the key hint was dropped to make room for the branch: {drawn:?}",
+        );
+
+        // **The wide arm, and it is the half that was missing.** Everything above
+        // is equally true of a footer that never had a branch at all, because at
+        // eighty columns this fixture cannot fit one either way — so on its own it
+        // is a gate over a field it cannot observe. Given room, the branch must
+        // actually be drawn, and here it is asserted where nothing else can
+        // explain its presence.
+        let roomy = footer_at(&branched, 200);
+        assert!(
+            roomy.contains("git:feat/0.25.0"),
+            "{set}: the branch never reaches the footer at all — delete the push \
+             from `Status::footer` and every narrow assertion above still passes, \
+             which is what made the first version of this test vacuous: {roomy:?}",
+        );
+        // And it is still the last thing in its group, which is what makes it the
+        // first to go when the room disappears.
+        let bare_wide = footer_at(&fixture(), 200);
+        assert!(
+            !bare_wide.contains("git:"),
+            "{set}: a branch appeared with none set: {bare_wide:?}",
+        );
+    }
+}
+
 /// 0.11.0 F5 — the activity line drops fields from the right, and never wraps.
 ///
 /// The same rule the status line under it follows, and the same order the
@@ -1683,6 +1994,10 @@ fn f11_status_folds_at_eighty_columns_rather_than_losing_the_end_of_a_row() {
         std::time::Duration::ZERO,
     );
     app.status.budgets = io_cli::status::Budgets::in_force(&contract);
+    // The branch this page draws since 0.25.0, and a real one rather than `main`:
+    // the field is a plain name with no width of its own to hide behind, and a
+    // name short enough to fit anywhere would not be asked to survive the fold.
+    app.status.branch = Some("feat/0.25.0".into());
 
     for theme in themes() {
         let set = theme.glyphs.name;
@@ -1720,6 +2035,10 @@ fn f11_status_folds_at_eighty_columns_rather_than_losing_the_end_of_a_row() {
             session.root().display().to_string(),
             skills.display().to_string(),
             "organisation-baseline-secrets-and-egress".to_string(),
+            // The branch as a plain name — no `git:` prefix here, because this
+            // page is one fact per row and the label beside it already says what
+            // it is.
+            "feat/0.25.0".to_string(),
             "up to 12 agents, 4 at once per tier, 2 deep, 200000 tokens for the tree".to_string(),
         ] {
             let wanted: String = whole.chars().filter(|c| !c.is_whitespace()).collect();
@@ -1742,6 +2061,7 @@ fn f11_status_folds_at_eighty_columns_rather_than_losing_the_end_of_a_row() {
         let page = rows.join("\n");
         for label in [
             "workspace:",
+            "branch:",
             "session:",
             "model:",
             "provider:",
