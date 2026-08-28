@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-28
+
+The work a turn does ends as something somebody can review. io-harness has
+offered seven git built-ins — `git_status`, `git_diff`, `git_log`, `git_add`,
+`git_commit`, `git_branch`, `git_worktree` — on every workspace run since long
+before this interface existed, with no feature gate and a fixed argv that can
+reach no other subcommand. io-cli had never surfaced one of them.
+
+The branch the working tree is on is on the status line, read from `.git/HEAD`
+rather than from a subprocess, and it follows the agent when it switches. A
+commit the agent makes is committed to the scrollback with the message it wrote
+and the branch it landed on. `/commit` hands the turn's work to the agent to
+describe and stage, under the identity `[run.commit_identity]` names — the
+identity 0.14.0 made reach a turn and which nothing had yet read.
+
+**And it repairs what made all of that unreachable.** Under `ask-writes` — the
+posture the wizard recommends — io-harness's git spawn treats an asking `exec`
+policy as a hard refusal rather than raising an approval, so every one of the
+seven tools was refused before it ran and the operator was never asked. io-cli
+now names that refusal, before a turn is spent and whenever one arrives, and
+offers the single rule that lifts it: `exec` allowed for `git`, one binary,
+for the session.
+
+A sub-agent can also work in a checkout of its own. `worktree = true` on an
+`[[agent]]` entry roots that child under `.worktrees/` on its own branch before
+its first step, and the fleet says which children have one.
+
 ## [0.24.0] - 2026-08-28
 
 A turn proves its work instead of asserting it. io-harness has carried a

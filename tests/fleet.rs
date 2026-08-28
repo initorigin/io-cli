@@ -1,6 +1,8 @@
 //! F4 — the fleet counts tiers, and a queued child is a count and never a row.
 //! F5 — the view opens over the composer, updates live, and costs no row it does
 //! not have.
+//! F9 — a child spawned from a roster entry that asks for its own worktree says
+//! so, and no row names a directory.
 //!
 //! Everything here is driven by a synthetic `RunEvent` stream, which is the whole
 //! point: the model has to be right for a tree that queues, drains, detaches and
@@ -13,8 +15,9 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::App;
 use io_cli::fleet::{Fleet, State};
+use io_cli::glyphs::{ASCII, UNICODE};
 use io_cli::theme::DARK;
-use io_harness::{EventKind, RunEvent};
+use io_harness::{AgentDef, Agents, EventKind, RunEvent};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -553,5 +556,123 @@ fn f5_shift_enter_still_writes_a_newline_through_the_open_view() {
         "first line\nsecond line",
         "the shifted Enter never reached the composer, so a multi-line prompt \
          cannot be written while the view is open",
+    );
+}
+
+/// The roster io-cli already hands to `Fleet::name` for role labelling: one entry
+/// that asks for its own worktree, one that does not.
+fn roster() -> Agents {
+    Agents::new()
+        .with(AgentDef::new("builder").with_worktree())
+        .with(AgentDef::new("scout"))
+}
+
+/// F9 — the mark is derived from `contract.agents`, and only from there.
+///
+/// Two children, same tree, same shape of address; the only thing that separates
+/// them is the roster entry behind each. A view that marked both, or neither,
+/// would be reporting something other than what the contract says.
+#[test]
+fn f9_a_child_of_a_worktree_entry_is_marked_and_an_ordinary_one_is_not() {
+    let mut fleet = Fleet::new();
+    fleet.event(&spawned(1, 0, 7, "port the tokenizer"));
+    fleet.event(&spawned(1, 0, 8, "look around"));
+    fleet.name(
+        &[("builder#7".to_string(), 7), ("scout#8".to_string(), 8)],
+        &roster(),
+    );
+    assert!(fleet.children()[0].worktree, "{:?}", fleet.children()[0]);
+    assert!(!fleet.children()[1].worktree, "{:?}", fleet.children()[1]);
+
+    let rows = fleet.rows(80, &UNICODE);
+    assert!(rows[0].contains("worktree"), "{:?}", rows[0]);
+    assert!(
+        !rows[1].contains("worktree"),
+        "an entry that never asked for one is not marked: {:?}",
+        rows[1],
+    );
+    // And the mark sits in front of the goal, so the goal is still the column
+    // that gives way when the row is narrow.
+    let head = rows[0].find("worktree").expect("the mark");
+    let goal = rows[0].find("port the tokenizer").expect("the goal");
+    assert!(head < goal, "{:?}", rows[0]);
+}
+
+/// F9 — no row names a directory.
+///
+/// The sabotage arm draws the derived `.worktrees/<slug>` path instead. It cannot
+/// be right: io-harness writes a contained child's real path into its `runs` row,
+/// no query selects it back out, and the deriver is private — so anything drawn
+/// here is reconstructed from two copied private functions, which the note on
+/// `DERIVED_MARK` in `src/fleet.rs` already forbids for exactly this reason. A
+/// wrong role costs a label; a wrong path is somewhere an operator goes.
+#[test]
+fn f9_no_row_names_a_directory() {
+    let mut fleet = Fleet::new();
+    fleet.event(&spawned(1, 0, 7, "port the tokenizer"));
+    fleet.event(&spawned(1, 0, 8, "look around"));
+    fleet.name(
+        &[("builder#7".to_string(), 7), ("scout#8".to_string(), 8)],
+        &roster(),
+    );
+    for glyphs in [UNICODE, ASCII] {
+        for row in fleet.rows(80, &glyphs) {
+            assert!(!row.contains(".worktrees"), "{} {row:?}", glyphs.name);
+            // No separator either: the goals above carry none, so any that turns
+            // up was put there by the row.
+            assert!(!row.contains('/'), "{} {row:?}", glyphs.name);
+            assert!(!row.contains('\\'), "{} {row:?}", glyphs.name);
+        }
+    }
+}
+
+/// F9 — the mark is a word, so it is the same in both sets and fits eighty
+/// columns with a long address and a long goal in front of it.
+#[test]
+fn f9_the_mark_is_ascii_and_the_row_still_fits_eighty_columns() {
+    let mut fleet = Fleet::new();
+    fleet.event(&spawned(
+        1,
+        0,
+        7,
+        "port the tokenizer, the error paths, and everything that reads either of \
+         them, one at a time, without changing behaviour",
+    ));
+    fleet.name(&[("builder#7".to_string(), 7)], &roster());
+    for glyphs in [UNICODE, ASCII] {
+        let row = fleet.rows(80, &glyphs).remove(0);
+        assert!(row.chars().count() <= 80, "{} {row:?}", glyphs.name);
+        assert!(row.contains("worktree"), "{} {row:?}", glyphs.name);
+        assert!(
+            row.contains("builder#7"),
+            "the identity survives the cut: {} {row:?}",
+            glyphs.name,
+        );
+    }
+    assert!(
+        fleet.rows(80, &ASCII).remove(0).is_ascii(),
+        "the mark degrades because it never needed a glyph",
+    );
+}
+
+/// F9 — an address the roster cannot name is not marked, and a reload that drops
+/// the entry unmarks the child rather than remembering it.
+#[test]
+fn f9_an_unknown_address_is_not_marked_and_the_mark_is_not_kept_stale() {
+    let mut fleet = Fleet::new();
+    fleet.event(&spawned(1, 0, 7, "one"));
+    fleet.name(&[("left-hand".to_string(), 7)], &roster());
+    assert!(!fleet.children()[0].worktree, "nothing was guessed");
+
+    fleet.name(&[("builder#7".to_string(), 7)], &roster());
+    assert!(fleet.children()[0].worktree);
+    // `/agents` reloaded, and the entry no longer asks for one.
+    fleet.name(
+        &[("builder#7".to_string(), 7)],
+        &Agents::new().with(AgentDef::new("builder")),
+    );
+    assert!(
+        !fleet.children()[0].worktree,
+        "the row was still saying what a definition used to say",
     );
 }

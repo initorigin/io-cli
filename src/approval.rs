@@ -733,3 +733,51 @@ pub fn session_policy(
     }
     effective_policy(&policy, remembered)
 }
+
+/// The program `io_harness::tools::git` spawns, spelled the way the harness
+/// spells it when it asks the policy about it.
+///
+/// A bare name and not a path: the harness passes this exact string to
+/// `Policy::check(Act::Exec, ..)`, and an `Act::Exec` pattern is compared against
+/// the target and against its basename — never against a command line — so the
+/// name is the whole vocabulary a rule about git has.
+pub const GIT: &str = "git";
+
+/// Will this policy refuse a git spawn?
+///
+/// `Ask` counts as a refusal here, and that is the entire point. Every other
+/// gated act in the harness turns `Effect::Ask` into a question for the
+/// [`Approver`]; git's spawn does not. `Git::run`, at `src/tools/git.rs:549-561`
+/// of io-harness 0.69.0, checks `self.policy.check(Act::Exec, &self.program)` and
+/// returns `Error::Refused` on **anything that is not `Allow`**, before any
+/// approver exists to be consulted. So the question a caller needs answered is
+/// not *does this ask* but *does this fall short of allow*, which is what this
+/// answers.
+pub fn refuses_git(policy: &io_harness::Policy) -> bool {
+    policy.check(Act::Exec, GIT).effect != Effect::Allow
+}
+
+/// The rule that lets the git tools run at all.
+///
+/// [`crate::settings::Posture::AskWrites`] sets `exec: Effect::Ask`, and it is the
+/// posture the wizard recommends — so on the reading in [`refuses_git`] the seven
+/// git tools are refused, for most operators, without anyone ever being asked. The
+/// repair is a rule, not a special case in the spawn path: io-cli offers this
+/// through the same `remembered` layer [`effective_policy`] already builds, so a
+/// git allowance is exactly as strong as any other thing the operator allowed for
+/// the session — it widens an *asking* default and still cannot re-allow a deny
+/// from a layer beneath it, because layers add capability and never take a denial
+/// back.
+///
+/// The pattern is one binary name. `Act::Exec` matching (see [`GIT`]) has no
+/// notion of a subcommand, so `"git"` is the narrowest expressible grant that
+/// makes the tools work: it says *this program may be spawned* and nothing about
+/// any other. A pattern like `"*"` would answer the same criterion by handing over
+/// every binary on the machine in order to hand over one.
+pub fn git_allowance() -> Rule {
+    Rule {
+        act: Act::Exec,
+        effect: Effect::Allow,
+        pattern: GIT.into(),
+    }
+}
