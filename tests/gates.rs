@@ -225,9 +225,17 @@ fn f5_a_reviewer_equal_to_the_turn_model_is_refused_unless_allowed() {
     // A caller that does not yet know which model will run cannot be told there
     // is a clash, and must not be told there is none either — it is told nothing,
     // which is what an empty model means.
+    // Asserted on the criterion it resolves to, not on `is_ok()`. `Ok(None)` — a
+    // silently ungated run, the exact outcome every refusal here exists to
+    // prevent — satisfies `is_ok()` just as happily as the right answer does.
     assert!(
-        judging_itself.criterion("").is_ok(),
-        "with no turn model there is nothing to compare the reviewer against"
+        matches!(
+            judging_itself.criterion(""),
+            Ok(Some(Criterion::Review { .. }))
+        ),
+        "with no turn model there is nothing to compare the reviewer against, so \
+         the rubric stands: {:?}",
+        judging_itself.criterion(""),
     );
 }
 
@@ -340,12 +348,16 @@ fn f4_existence_is_never_an_empty_needle() {
         }
     );
 
-    if let Verification::WorkspaceFileContains { needle, .. } = criterion.verification() {
-        panic!(
-            "existence was mapped to a contains criterion with needle {needle:?}, \
-             which a file that does not exist satisfies"
-        );
-    }
+    // Asserted as an equality rather than by ruling out one variant. Naming only
+    // `WorkspaceFileContains` leaves `FileContains("")` and `DocumentContains`
+    // with an empty needle passing — the same empty-needle bug wearing a different
+    // variant, which is precisely what this assertion is for.
+    assert!(
+        matches!(criterion.verification(), Verification::None),
+        "bare existence has no honest io-harness criterion, so nothing is asked of \
+         the harness and io-cli answers it itself; got {:?}",
+        criterion.verification(),
+    );
     assert!(
         criterion.checked_here(),
         "the dependency cannot express existence, so this crate must own it, and \

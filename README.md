@@ -1144,13 +1144,15 @@ winner:
 - **A rubric** a second model answers: a sentence saying what the work has to be,
   judged by a reviewer you name.
 
-**io-cli holds no list of test commands.** Leave `command` empty and the one that
-runs is the one the repository's own toolchain proposes — io-harness detects that
-from the project, so a Rust checkout is offered a `cargo` line and a Node one is
-not. That detection is the dependency's, and it is deliberately not reimplemented
-here: a table of build tools inside this crate would be a second opinion that goes
-stale the first time somebody's project does not look like the ones it was written
-against.
+**io-cli holds no list of test commands.** `/gates` offers you the one the
+repository's own toolchain proposes — io-harness detects that from the project, so
+a Rust checkout is offered a `cargo` line and a Node one is not — and accepting the
+offer writes that command into your file, where you can read it and change it. What
+is written is always a concrete argv: `command` is the program and its arguments,
+never a shell line and never blank. That detection is the dependency's, and it is
+deliberately not reimplemented here: a table of build tools inside this crate would
+be a second opinion that goes stale the first time somebody's project does not look
+like the ones it was written against.
 
 **The criterion is run by io-harness, in the sandbox, and not by io-cli.** That is
 not squeamishness. A criterion run from here could not be handed the cache
@@ -1158,6 +1160,12 @@ directories a real run gets from the detected toolchain, so a `cargo test` gate
 would fail on a registry write that io-harness's own gate would have allowed. It
 also keeps a rule worth keeping: exactly one module in io-cli starts a process at
 all, and it is the one behind `!`.
+
+The single exception is a `file` criterion with no `contains`. io-harness has no
+criterion for bare existence — the nearest one treats a missing file and an empty
+needle as a pass — so io-cli answers that one itself, with the reader that tells a
+missing file from an empty one. It runs no process to do it, and it is the reason
+that criterion costs nothing at all.
 
 **`retries` defaults to 1, and `0` means report-only.** A failing gate sends the
 agent back to work with the failure text — the compiler's output, the missing
@@ -1168,13 +1176,21 @@ model and not a loop counter; if you want several, say so. Set `retries = 0` and
 the verdict is drawn and recorded and nothing is re-driven, which is what you want
 in a run you are watching and what you want in a run you are only measuring.
 
-**A rubric is a real billed completion on every gated turn.** Not on failures, not
-on the first one — every turn that carries the gate ends with a call to the
-reviewer, and that call costs what a call costs. This is the reason the three
-kinds are named in `/gates`'s own one-line description rather than left to the
-surface: two of them cost nothing but the time they take and one of them costs
-money, and that is the whole of the choice between them. The call is io-harness's,
-so it lands in the run's usage like any other and `/cost` counts it.
+**The criterion runs after every step, not once when the turn ends — and for a
+rubric every one of those is a billed completion.** This is the number to know
+before you configure anything. io-harness evaluates the contract's criterion at the
+bottom of its step loop and keeps going until it passes, so a turn that takes nine
+steps runs your command nine times, and a rubric on that turn is nine calls to the
+reviewer rather than one. It is not "the agent finishes and then the work is
+checked": it is checked continuously, and the run ends the moment the check
+succeeds.
+
+That is what makes a command criterion worth choosing carefully. `cargo test --all`
+after every step of a long turn is a great deal of compilation, and a narrow
+command — one test, one binary, one lint — is usually the right gate. For a rubric
+the cost is money rather than time, which is the reason the three kinds are named
+in `/gates`'s own one-line description rather than left to the surface. The call is
+io-harness's, so it lands in the run's usage like any other and `/cost` counts it.
 
 **A rubric needs a `reviewer`, and it is refused without one.** io-harness answers
 a missing reviewer with a configuration error at run start — before the first

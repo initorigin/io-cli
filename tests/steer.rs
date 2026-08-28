@@ -465,7 +465,7 @@ fn f7_an_existence_criterion_is_evaluated_where_io_harness_did_not() {
     };
 
     // Nothing recorded, because nothing was asked of io-harness.
-    let missing = io_cli::app::gate_attempts(Vec::new(), Some(&criterion), dir.path());
+    let missing = io_cli::gates::gate_attempts(Vec::new(), Some(&criterion), dir.path());
     let standing = io_cli::gates::standing(&missing)
         .expect("an existence criterion that reports nothing is an ungated run");
     assert_eq!(standing.outcome, io_harness::GateOutcome::Failed);
@@ -475,7 +475,7 @@ fn f7_an_existence_criterion_is_evaluated_where_io_harness_did_not() {
     );
 
     std::fs::write(dir.path().join("REPORT.md"), "done").expect("the report");
-    let written = io_cli::app::gate_attempts(Vec::new(), Some(&criterion), dir.path());
+    let written = io_cli::gates::gate_attempts(Vec::new(), Some(&criterion), dir.path());
     assert_eq!(
         io_cli::gates::standing(&written)
             .expect("a standing")
@@ -483,13 +483,21 @@ fn f7_an_existence_criterion_is_evaluated_where_io_harness_did_not() {
         io_harness::GateOutcome::Passed,
     );
 
-    // **A `none` row is dropped, not kept.** A run that spends its step cap DOES
-    // reach the gate with `Verification::None`, which passes trivially and records
-    // `phase = "none", passed` — a row saying a criterion that checked nothing was
-    // satisfied. Left as the last row it would report a missing file as a pass.
+    // **A `none` row is dropped, not kept — and the row shape here is the whole
+    // point.** io-harness evaluates the contract's criterion after every step on
+    // which the agent called a tool, and for `Verification::None` that evaluation
+    // is `Ok(false)` — so it records `phase = "none", **Failed**`, once per such
+    // step, on every ungated run this product has ever driven. An earlier draft of
+    // this test used `Passed`, a row production never emits, and so proved nothing
+    // about the case that actually exists: read naively those rows say the gate
+    // failed on a session nobody gated.
     std::fs::remove_file(dir.path().join("REPORT.md")).expect("take it away again");
-    let folded = io_cli::app::gate_attempts(
-        vec![attempt(7, "none", io_harness::GateOutcome::Passed)],
+    let folded = io_cli::gates::gate_attempts(
+        vec![
+            attempt(5, "none", io_harness::GateOutcome::Failed),
+            attempt(6, "none", io_harness::GateOutcome::Failed),
+            attempt(7, "none", io_harness::GateOutcome::Failed),
+        ],
         Some(&criterion),
         dir.path(),
     );
@@ -513,11 +521,38 @@ fn f7_an_existence_criterion_is_evaluated_where_io_harness_did_not() {
     };
     let rows = vec![attempt(1, "command", io_harness::GateOutcome::Passed)];
     assert_eq!(
-        io_cli::app::gate_attempts(rows.clone(), Some(&command), dir.path()),
+        io_cli::gates::gate_attempts(rows.clone(), Some(&command), dir.path()),
         rows,
         "a command gate is not re-judged here",
     );
-    assert!(io_cli::app::gate_attempts(Vec::new(), None, dir.path()).is_empty());
+    assert!(io_cli::gates::gate_attempts(Vec::new(), None, dir.path()).is_empty());
+
+    // **The case that would have shipped exit 6 to every operator alive.** A
+    // session with no `[app.io-cli.gates]` at all still leaves `none`/`Failed`
+    // rows behind for any turn in which the model called a tool. Folded with no
+    // criterion they must come to nothing — no standing, no status word, no
+    // scrollback line, and in `io exec` no exit 6.
+    let ungated = vec![
+        attempt(1, "none", io_harness::GateOutcome::Failed),
+        attempt(2, "none", io_harness::GateOutcome::Failed),
+    ];
+    let folded = io_cli::gates::gate_attempts(ungated, None, dir.path());
+    assert!(
+        folded.is_empty(),
+        "an ungated run's bookkeeping rows are not a verdict: {folded:?}",
+    );
+    assert!(
+        io_cli::gates::standing(&folded).is_none(),
+        "a run nobody gated has no standing",
+    );
+    assert_eq!(
+        io_cli::exec::verified_code(
+            &io_harness::RunOutcome::Finished { steps: 2 },
+            io_cli::gates::standing(&folded).as_ref(),
+        ),
+        io_cli::exec::OK,
+        "an ungated headless run exits exactly what it exited before this release",
+    );
 }
 
 /// F6 — the scrollback line spells the verdict the way everything else does.
@@ -534,10 +569,22 @@ fn f6_the_gate_line_names_the_phase_the_verdict_and_what_it_printed() {
     )];
     let (tone, line) =
         io_cli::app::gate_report(&attempts, &events).expect("a gated turn has a line");
+    // **`Warning`, and `Refused` would be a defect rather than a preference.**
+    // `Tone::Refused` renders the literal word `refused`, which is the permission
+    // boundary's word — this release moved the failing review off that tone in
+    // `src/events.rs` for exactly that reason, and a scrollback line one row below
+    // spelling `refused: gate failed` would put the collision straight back.
+    // "The policy would not run my gate" and "your work did not meet the bar"
+    // need opposite responses from the operator.
     assert_eq!(
         tone,
+        io_cli::theme::Tone::Warning,
+        "a gate that answered no did not refuse anything: `refused` is the boundary's word",
+    );
+    assert_ne!(
+        tone,
         io_cli::theme::Tone::Refused,
-        "a gate that answered no is a refusal, not an error: nothing went wrong",
+        "the gate's verdict must not borrow the permission boundary's vocabulary",
     );
     assert!(
         line.contains("failed") && line.contains("command") && line.contains("2 tests failed"),
@@ -628,7 +675,7 @@ fn f7_the_retry_rides_the_drivers_own_queue() {
     // only the current run's rows to `may_retry` would buy another turn for every
     // one of them, forever, against a real model.
     assert!(
-        flat.contains("gated.extend(io_cli::app::gate_attempts("),
+        flat.contains("gated.extend(io_cli::gates::gate_attempts("),
         "the chain's attempts accumulate; `retries = 1` means one further turn, \
          not an unbounded loop",
     );

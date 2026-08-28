@@ -583,13 +583,22 @@ fleet = "ctrl+f"
 # session's `exec` policy and runs it without a shell, so `&&`, a pipe and a glob
 # are not available and were never going to be. `expect_exit` defaults to 0.
 #
-# AN EMPTY OR ABSENT `command` MEANS THE COMMAND THIS REPOSITORY'S OWN TOOLCHAIN
-# PROPOSES. io-harness detects that — it is the half of this that knows a Cargo
-# workspace from a package.json — and io-cli holds no list of its own to consult.
-# That is deliberate: a list of build tools shipped inside a TUI is a list that is
-# wrong for somebody the day it is written, and stale for everybody a year later.
-# Write the key when your repository's real gate is narrower than what a detector
-# would propose, and leave it out when it is not.
+# `command` IS ALWAYS A CONCRETE ARGV. An empty list is refused, and an absent one
+# is not a criterion at all — this key never means "work it out for me".
+#
+# What detection is for is the OFFER: `/gates` asks io-harness what this repository
+# builds and tests with — it is the half of this that knows a Cargo workspace from
+# a package.json — and offers you that command as a row you can accept, which
+# writes it here in full. io-cli holds no list of its own to consult, deliberately:
+# a list of build tools shipped inside a TUI is wrong for somebody the day it is
+# written and stale for everybody a year later. So the file always says exactly
+# what will run, and you can read it and narrow it.
+#
+# AND IT RUNS AFTER EVERY STEP, NOT ONCE AT THE END. io-harness evaluates the
+# criterion at the bottom of its step loop and keeps going until it passes, so a
+# nine-step turn runs this command nine times. `cargo test --all-features` after
+# every step of a long turn is a lot of compiling; the gate you want is usually
+# the narrowest command that would still catch the mistake.
 #
 # [app.io-cli.gates]
 # retries = 1
@@ -623,11 +632,13 @@ fleet = "ctrl+f"
 # allowed when you ask for it and never by default: a judge marking its own paper
 # is a decision, not an oversight.
 #
-# AND A REVIEW CRITERION IS A REAL BILLED COMPLETION ON EVERY GATED TURN. It is a
-# second model reading the work, charged like any other call, and it runs again on
-# each retry the gate buys. The other two kinds cost a process and a file read;
-# this one costs money per turn, which is worth knowing before it is in a file
-# that runs in CI.
+# AND A REVIEW CRITERION IS A REAL BILLED COMPLETION AFTER EVERY STEP — NOT ONCE
+# PER TURN. The criterion is evaluated at the bottom of io-harness's step loop and
+# keeps being evaluated until it passes, so a nine-step turn asks the reviewer nine
+# times, and each retry the gate buys starts that again. The other two kinds cost a
+# process and a file read; this one costs money per step, which is worth knowing
+# before it is in a file that runs in CI. Keep the rubric to something a model can
+# decide quickly, and prefer a command or a file where one would do.
 #
 # [app.io-cli.gates]
 # rubric = "every public item changed in this turn has a doc comment saying why"

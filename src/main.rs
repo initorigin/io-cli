@@ -2617,9 +2617,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // Whichever key a file actually names decides the scope word,
                     // because that is the file the operator has to open. Three
                     // files are called `io.toml` and only one of them is theirs.
+                    // **Only a key that names a criterion may decide it.** The
+                    // catalogue's first entry is `retries`, which is a preference
+                    // and not a gate — so an operator with `retries` in their user
+                    // file and `command` in the project's would be sent to the
+                    // wrong one of the three files, by the very line written to
+                    // stop that happening.
                     let decided = settings
                         .iter()
-                        .find(|setting| setting.value.is_some())
+                        .find(|setting| {
+                            setting.value.is_some()
+                                && matches!(
+                                    setting.path.rsplit('.').next(),
+                                    Some("command" | "file" | "rubric")
+                                )
+                        })
                         .map(|setting| setting.decided.word())
                         .unwrap_or("default");
                     // A refusal is NOT reported here. `gate_notice` below is the
@@ -2659,9 +2671,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // recorded row at all, and reading the store alone would
                     // report an ungated run.
                     if let Some(run_id) = last_run(&session, &store).map(|turn| turn.run_id) {
-                        let attempts = io_cli::app::gate_attempts(
+                        // **`None`, not today's criterion, and the difference is
+                        // whether this is a fact.** Folding the configured
+                        // criterion in here would evaluate `satisfied_in` against
+                        // the filesystem *now* and report the answer as the last
+                        // turn's verdict — so a turn that ran before any gate
+                        // existed would be reported as having passed one, and a
+                        // turn that genuinely passed would read as failed the
+                        // moment the file was deleted. What io-harness recorded
+                        // for that run is the only thing here that is a statement
+                        // about the past.
+                        let attempts = io_cli::gates::gate_attempts(
                             store.gate_attempts(run_id).unwrap_or_default(),
-                            criterion.as_ref(),
+                            None,
                             &root,
                         );
                         let events = store.sandbox_events(run_id).unwrap_or_default();
@@ -3745,11 +3767,25 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // would report an ungated run as a run that passed.
                         // `app::gate_attempts` evaluates that one criterion here
                         // and appends the attempt io-harness never made.
-                        gated.extend(io_cli::app::gate_attempts(
-                            store.gate_attempts(run_id).unwrap_or_default(),
-                            criterion.as_ref(),
-                            session.root(),
-                        ));
+                        // **One row per TURN, and taking them all is how the
+                        // retry died in review.** io-harness evaluates the
+                        // criterion after *every* step the agent takes, not once
+                        // when it stops — `run/step.rs:1654` sits inside the step
+                        // loop — so one nine-step turn writes nine rows. Extending
+                        // by all of them makes `standing.attempt` the step count,
+                        // so `may_retry` compares nine against a budget of one and
+                        // answers no, and the headline feature of this release
+                        // never fires for any criterion except the bare-existence
+                        // one. The run's last row is its verdict; the count of
+                        // those is the count of turns.
+                        gated.extend(
+                            io_cli::gates::gate_attempts(
+                                store.gate_attempts(run_id).unwrap_or_default(),
+                                criterion.as_ref(),
+                                session.root(),
+                            )
+                            .pop(),
+                        );
                         let events = store.sandbox_events(run_id).unwrap_or_default();
                         if let Some(standing) = io_cli::gates::standing(&gated) {
                             // `GateOutcome::as_str` passed through verbatim: it
@@ -4621,8 +4657,32 @@ async fn turn<P: Provider>(
     // turn that ran to a result has one: a run that came back `Err` was not judged,
     // and a turn the operator abandoned has whatever io-harness had written when
     // the future was dropped — neither is a verdict on the work.
+    //
+    // **And `Ok` is not the same as ended, which is a defect this nearly shipped.**
+    // `Some(Ok(_))` also covers `AwaitingAnswer`, `AwaitingPlan`,
+    // `AwaitingRecovery`, `Denied`, `Refused`, `PlanRejected`, `Stalled`,
+    // `Escalated` and `Cancelled`. A parked run judged by the gate is told
+    // `/resume opens it` four lines below and then, in the same pass, buried
+    // under a fresh billed retry turn that tells the model its work failed —
+    // while the question the operator was asked is never answered. A gate is a
+    // verdict on work that finished, so only the outcomes that mean the run
+    // reached its own end are handed over. `exec::code` already owns that
+    // classification and is reused rather than re-derived.
+    //
+    // **A ceiling counts, and the live rehearsal is why.** A run whose criterion
+    // keeps failing spends its whole step budget doing so and comes back
+    // `StepCapReached` — that is what 0.24.0's own live arm recorded, `Failed` at
+    // attempt six. Excluding ceilings would mean the commonest failing-gate ending
+    // was never judged and never retried, which is the opposite of the intent.
     let ran = match &outcome {
-        Some(Ok(result)) => Some(result.run_id),
+        Some(Ok(result))
+            if matches!(
+                io_cli::exec::code(&result.outcome),
+                io_cli::exec::OK | io_cli::exec::CEILING
+            ) =>
+        {
+            Some(result.run_id)
+        }
         _ => None,
     };
 

@@ -287,10 +287,21 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
     let contract = match criterion_for(config) {
         Some((criterion, reviewer)) => {
             let contract = contract.with_verification(criterion.verification());
-            match reviewer {
+            let contract = match reviewer {
                 Some(reviewer) => contract.with_reviewer(reviewer),
                 None => contract,
-            }
+            };
+            // **A gate must not turn "hello" into a run, and by default it does.**
+            // io-harness infers whether a turn may be answered conversationally
+            // from `matches!(contract.verify, Verification::None)` — so attaching
+            // any criterion silently switches greeting handling off for the whole
+            // session, and every idle question becomes a full agent run that then
+            // runs the operator's test suite after each of its steps. The harness's
+            // own field documents this as the way back for exactly a surface like
+            // this one. Set only where a criterion was attached, so an operator
+            // with no gate reproduces the contract this crate built before the
+            // release, field for field, which is what `tests/contract.rs` asserts.
+            contract.with_conversational_turns(true)
         }
         None => contract,
     };
@@ -308,6 +319,25 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
 /// `Verification::Review` reaching a contract with no reviewer beside it is
 /// `Error::Config` at run start, on every turn**, so the criterion and its
 /// reviewer are decided together here and either both go on or neither does.
+/// The criterion this configuration resolves to, with no reviewer built.
+///
+/// What a *reader* wants: the surfaces that report a verdict need to know which
+/// criterion was in force, and building a provider to tell them would resolve a
+/// credential for a question that does not need one. [`criterion_for`] is the
+/// half that also builds the reviewer, for the contract that will run it.
+///
+/// This is what lets `io exec` fold the gate rows the same way a session does —
+/// without it the headless arm reads io-harness's `phase = "none"` bookkeeping as
+/// a failed gate, and a bare `file` criterion is never evaluated at all.
+pub fn criterion_of(config: &Config) -> Option<crate::gates::Criterion> {
+    let gates = crate::settings::stored(config).0?.gates?;
+    let working = config
+        .provider_spec()
+        .map(crate::provider::model_of)
+        .unwrap_or_default();
+    gates.criterion(working).ok()?
+}
+
 fn criterion_for(
     config: &Config,
 ) -> Option<(
@@ -339,7 +369,18 @@ fn criterion_for(
 /// refusal is not a contract. A surface calls this to say the one sentence an
 /// operator needs: the section is there, and it is not doing anything.
 pub fn gate_notice(config: &Config) -> Option<String> {
-    let gates = crate::settings::stored(config).0?.gates?;
+    // **The commonest mistake is a value of the wrong shape, and it takes the
+    // whole table with it.** `command = "cargo test"` — a string where an array
+    // belongs — fails to deserialize `[app.io-cli]` entirely, so `stored` answers
+    // `(None, Some(complaint))`: no theme, no keys, no ceilings and no gate.
+    // Reading only `.0` and giving up would leave `/gates` saying "no gate is in
+    // force" while the section is plainly in the operator's file, which is the one
+    // surface they opened to ask why it is not running.
+    let (stored, complaint) = crate::settings::stored(config);
+    let Some(stored) = stored else {
+        return complaint;
+    };
+    let gates = stored.gates?;
     let working = config
         .provider_spec()
         .map(crate::provider::model_of)

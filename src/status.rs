@@ -657,9 +657,16 @@ impl Status {
         // two, which is the per-turn field this codebase has already shipped
         // stale once.
         //
-        // A gate *retry* is not affected: the retries happen inside io-harness's
-        // own turn, under one `App` turn and therefore one `start_run`, so the
-        // failure that caused the retry is still on screen while the retry runs.
+        // **A gate retry IS affected, and the honest note is worth more than the
+        // reassuring one.** An earlier draft of this comment said the retries
+        // happen inside io-harness's own turn under a single `start_run`. They do
+        // not: io-cli drives the retry as a fresh turn through the driver's own
+        // queue, so it arrives here and the standing is cleared for the duration
+        // of the very turn it explains. What stays on screen is the scrollback
+        // record, which is permanent and says what failed; the footer field
+        // reappears when the retry is judged in its turn. Keeping the word across
+        // the chain would mean not clearing it here, and that is the same door the
+        // stale-per-turn defect above came through.
         self.gate = None;
         self.gate_attempt = None;
     }

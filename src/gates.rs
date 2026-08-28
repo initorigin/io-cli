@@ -54,7 +54,18 @@ use serde::{Deserialize, Serialize};
 /// more than one is a [`Refusal`] rather than a silent precedence rule, because a
 /// precedence rule here would quietly gate a turn on something the operator did
 /// not choose.
+///
+/// **`deny_unknown_fields`, unlike its parent, and the asymmetry is deliberate.**
+/// `CliSettings` cannot refuse an unknown key: `[app.io-cli]` is a section
+/// io-harness does not validate, and a newer io-cli's key must not stop an older
+/// one from starting. This table is a leaf with eight names and one job, and the
+/// commonest way to get it wrong is a typo — `comand = ["cargo", "test"]`
+/// deserializes to the default, compares equal to it, and answers `Ok(None)`: no
+/// refusal, no notice, no gate. The whole point of [`Refusal::Empty`] is that a
+/// section which plainly means to be a gate and is not one says so, and a typo is
+/// exactly that case.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Settings {
     /// How many further turns a failing gate may buy, defaulting to one.
     ///
@@ -147,6 +158,14 @@ pub enum Refusal {
     Ambiguous,
     /// A rubric was given with no model to answer it.
     ReviewerMissing,
+    /// A command criterion was written with no program in it.
+    ///
+    /// Its own arm rather than [`Refusal::Empty`], because the operator plainly
+    /// meant a command and the fix is to name one. io-harness answers an empty
+    /// argv with `Error::Config` when the gate first runs — every turn, before
+    /// anything useful happens — so this is the same class of mistake as a rubric
+    /// with no reviewer and is caught in the same place.
+    NoProgram,
     /// The reviewer is the model doing the work, and that was not asked for.
     SelfReview {
         /// The model named as both the worker and the judge.
@@ -196,6 +215,13 @@ impl Settings {
         }
 
         if let Some(argv) = &self.command {
+            // An empty argv is not a criterion. Left to io-harness it becomes
+            // `Error::Config` at the first gated step of every turn, recorded as
+            // `Errored` — and because an errored gate is worth another turn, the
+            // retry then buys a second one that fails identically.
+            if argv.is_empty() {
+                return Err(Refusal::NoProgram);
+            }
             return Ok(Some(Criterion::Command {
                 argv: argv.clone(),
                 expect_exit: self.expect_exit.unwrap_or(0),
@@ -454,6 +480,83 @@ pub fn proposed_command(root: &Path, config: &Config) -> Option<Vec<String>> {
 // which is precisely the drift that gate exists to catch. It caught this release
 // writing one. See `crate::provider::reviewer`.
 
+/// The gate attempts a turn is judged by, including the one io-harness never made.
+///
+/// **Here rather than in `crate::app`, because `io exec` needs it and may not
+/// reach the interface.** `tests/exec.rs` forbids the headless modules from naming
+/// `crate::app` at all — a renderer on that path is how ANSI ends up in a stream
+/// something is parsing — and the first version of this release put the fold there
+/// and had the headless arm call it. That gate caught it. The fold is gate
+/// semantics, not interface, and this is where the rest of those live.
+///
+/// **A run with no criterion has no standing, and saying otherwise is how this
+/// release nearly shipped a catastrophe.** io-harness evaluates the contract's
+/// criterion after *every* step on which the agent called a tool
+/// (`run/step.rs:1654`), and for `Verification::None` the evaluation is
+/// `Ok(false)` (`verify.rs:1361`) — so it records `phase = "none",
+/// GateOutcome::Failed`, once per tool-calling step, on **every ungated run this
+/// product has ever driven**. Read back naively that says the gate failed: the
+/// status line would read `gate failed` under every ordinary turn, and `io exec`
+/// would exit `6` for every operator who has never configured a gate at all.
+///
+/// Dropping every `none` row is the whole of the fix, and it needs to know nothing
+/// about what is configured: an ungated run's rows are *all* `none`, so filtering
+/// them empties the list for exactly those sessions, while a caller reporting a
+/// past run still gets what io-harness actually recorded.
+///
+/// (An earlier draft of this comment said a `none` row records *passed*. It
+/// records **failed**. That difference is the whole defect.)
+///
+/// The other half is the criterion io-cli owns. [`Criterion::verification`] maps a
+/// bare existence criterion — `file` with no `contains` — to `Verification::None`,
+/// because io-harness has no honest counterpart for it, so nothing in the store
+/// ever speaks for it. It is evaluated here through [`Criterion::satisfied_in`],
+/// the reader that tells a missing file from an empty one, and appended as an
+/// attempt of its own — after which it flows through [`standing`], [`may_retry`]
+/// and the report exactly as a recorded one does. One path, not two.
+///
+/// Every other criterion is io-harness's to judge and the rows come back
+/// untouched.
+pub fn gate_attempts(
+    mut recorded: Vec<GateAttempt>,
+    criterion: Option<&Criterion>,
+    root: &Path,
+) -> Vec<GateAttempt> {
+    recorded.retain(|attempt| attempt.phase != "none");
+    // `satisfied_in` answers `None` for every criterion the run loop evaluates,
+    // so this one call is both the question "is this ours?" and its answer —
+    // asking `checked_here` first would be the same test written twice.
+    let Some(satisfied) = criterion.and_then(|criterion| criterion.satisfied_in(root)) else {
+        return recorded;
+    };
+    let step = recorded.last().map_or(0, |attempt| attempt.step);
+    recorded.push(GateAttempt {
+        // Not a stored row and never read back as one: `id` addresses a row in
+        // `gate_attempts` and this attempt was made here, so it has none.
+        id: 0,
+        step,
+        // Not `none`, which is what io-harness would have called it, and not
+        // `contains`, which is the phase of a criterion that reads a file's
+        // contents. This one asserts existence and says so.
+        phase: "exists".to_string(),
+        outcome: if satisfied {
+            GateOutcome::Passed
+        } else {
+            GateOutcome::Failed
+        },
+        // Empty on both arms. The row's `detail` is what the report reads back as
+        // "this is what it reported", and for this criterion the only thing io-cli
+        // could put there is the criterion itself — which the report line and the
+        // retry prompt have already said one clause earlier.
+        detail: String::new(),
+        // A stored timestamp this crate never parses and never compares, and the
+        // one field that would need a clock. `src/main.rs` is the only module
+        // allowed one, so it stays empty rather than being invented here.
+        at: String::new(),
+    });
+    recorded
+}
+
 /// One sentence an operator can act on, for each way a section is refused.
 ///
 /// ASCII throughout — no quotation marks that are not the typewriter kind, no
@@ -476,6 +579,10 @@ impl fmt::Display for Refusal {
             Refusal::ReviewerMissing => f.write_str(
                 "a rubric needs a model to answer it: set reviewer, or delete the \
                  rubric",
+            ),
+            Refusal::NoProgram => f.write_str(
+                "this gates section sets an empty command: name the program to run, \
+                 such as command = [\"cargo\", \"test\"]",
             ),
             Refusal::SelfReview { model } => write!(
                 f,

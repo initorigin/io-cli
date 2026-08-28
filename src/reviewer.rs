@@ -101,8 +101,14 @@ pub fn build(spec: &ProviderSpec, model: &str) -> Result<Arc<dyn Reviewer>, Stri
         // `ProviderSpec` is `#[non_exhaustive]`. A provider this release has not
         // seen cannot be built into a reviewer, and refusing where the operator is
         // still looking at what they typed is the whole point of refusing at all.
-        other => Err(format!(
-            "this release does not know how to review with a {other:?} provider yet"
-        )),
+        //
+        // **The spec is never formatted into the message.** Every variant holds
+        // `api_key: Option<String>` verbatim and `ProviderSpec` derives `Debug`,
+        // so `{other:?}` would put the operator's credential into a refusal that
+        // this crate then records into the scrollback. That is the same trap
+        // `Printable`'s hand-written `Debug` exists to avoid two files away.
+        _ => Err(
+            "this release does not know how to review with that kind of provider yet".to_string(),
+        ),
     }
 }

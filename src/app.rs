@@ -2176,78 +2176,6 @@ pub fn server_value(key: &str, typed: &str) -> String {
 /// driver so a test can reach it.
 pub const PROPOSED_GATE: &str = "!proposed-gate";
 
-/// The gate attempts a turn is judged by, including the one io-harness never made.
-///
-/// **This is the fold that stops an ungated run reporting as gated, and it is the
-/// easiest defect in this release to ship.** [`crate::gates::Criterion::verification`]
-/// maps a bare existence criterion — `file` with no `contains` — to
-/// `Verification::None`, because there is no honest counterpart for it in
-/// io-harness's enum. A run carrying `Verification::None` never reaches the gate
-/// at all: io-harness's step loop returns `Finished` the moment the agent stops
-/// calling tools, so the store holds **no** `gate_attempts` row and
-/// [`crate::gates::standing`] answers `None`. A caller that stopped there would
-/// draw nothing, retry nothing, and leave an operator who asked for a file to
-/// exist with a session that never once looked for it.
-///
-/// So the criterion this crate owns is evaluated here — through
-/// [`crate::gates::Criterion::satisfied_in`], which is the reader that tells a
-/// missing file from an empty one — and appended as an attempt of its own. It
-/// then flows through `standing`, `may_retry` and the report exactly as a
-/// recorded one does, which is the point: one path, not two.
-///
-/// Any `none` row is dropped first. A run that ran out of steps *does* reach the
-/// gate with `Verification::None`, which passes trivially and records
-/// `phase = "none", passed` — a row saying a criterion that checked nothing was
-/// satisfied. Left in place it would be the last row, and the standing would read
-/// `passed` for a file that is not there.
-///
-/// Every other criterion is io-harness's to judge and the rows come back
-/// untouched.
-pub fn gate_attempts(
-    mut recorded: Vec<io_harness::GateAttempt>,
-    criterion: Option<&crate::gates::Criterion>,
-    root: &std::path::Path,
-) -> Vec<io_harness::GateAttempt> {
-    // `satisfied_in` answers `None` for every criterion the run loop evaluates,
-    // so this one call is both the question "is this ours?" and its answer —
-    // asking `checked_here` first would be the same test written twice.
-    let Some(satisfied) = criterion.and_then(|criterion| criterion.satisfied_in(root)) else {
-        return recorded;
-    };
-    recorded.retain(|attempt| attempt.phase != "none");
-    let step = recorded.last().map_or(0, |attempt| attempt.step);
-    recorded.push(io_harness::GateAttempt {
-        // Not a stored row and never read back as one: `id` addresses a row in
-        // `gate_attempts` and this attempt was made here, so it has none.
-        id: 0,
-        step,
-        // Not `none`, which is what io-harness would have called it, and not
-        // `contains`, which is the phase of a criterion that reads a file's
-        // contents. This one asserts existence and says so.
-        phase: "exists".to_string(),
-        outcome: if satisfied {
-            io_harness::GateOutcome::Passed
-        } else {
-            io_harness::GateOutcome::Failed
-        },
-        // The row's own explanation, for the same reason io-harness leaves it
-        // empty on a plain pass: there is nothing to explain about a file that is
-        // where it was asked to be.
-        detail: if satisfied {
-            String::new()
-        } else {
-            criterion
-                .map(crate::gates::Criterion::describe)
-                .unwrap_or_default()
-        },
-        // A stored timestamp this crate never parses and never compares, and the
-        // one field that would need a clock. `src/main.rs` is the only module
-        // allowed one, so it stays empty rather than being invented here.
-        at: String::new(),
-    });
-    recorded
-}
-
 /// What the failing gate actually said, or `None` when it said nothing.
 ///
 /// Two sources because a gate has two ways of speaking and neither covers the
@@ -2263,8 +2191,13 @@ fn gate_said(
     events: &[io_harness::SandboxEvent],
 ) -> Option<String> {
     let last = attempts.last()?;
+    // `trim`, because io-harness writes `review.reasons.join("; ")` verbatim and a
+    // reviewer that answered with blanks would otherwise produce a report line
+    // ending in a dangling colon and a retry prompt whose "this is what it
+    // reported" section is empty. Nothing to say is `None`, and `gate_retry`
+    // already has a sentence for that.
     crate::gates::output(events, last.step)
-        .or_else(|| (!last.detail.is_empty()).then(|| last.detail.clone()))
+        .or_else(|| (!last.detail.trim().is_empty()).then(|| last.detail.clone()))
 }
 
 /// The one line a turn's gate commits into the scrollback, with its tone.
@@ -2288,9 +2221,16 @@ pub fn gate_report(
     let word = standing.outcome.as_str();
     let tone = match standing.outcome {
         io_harness::GateOutcome::Passed => Tone::Success,
-        // A gate that answered no is a refusal and not an error: nothing went
-        // wrong, the work was judged and did not meet the criterion.
-        io_harness::GateOutcome::Failed => Tone::Refused,
+        // **`Tone::Warning` and emphatically not `Tone::Refused`, whose rendered
+        // word is the literal `refused`.** That word belongs to the permission
+        // boundary, and this release moved the failing review off that tone in
+        // `src/events.rs` for exactly this reason — only for the scrollback line
+        // one row below to put it back. An operator would read `warning: the gate
+        // ran and did not pass` and directly beneath it `refused: gate failed`,
+        // which collapses "the policy would not run my gate" into "your work did
+        // not meet the bar". Those are the two facts a gate most has to keep
+        // apart, and they need opposite responses.
+        io_harness::GateOutcome::Failed => Tone::Warning,
         // `Errored`, and whatever a later io-harness adds — the enum is
         // `#[non_exhaustive]`, and an outcome this release has not seen is not a
         // pass.
