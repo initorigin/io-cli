@@ -236,11 +236,11 @@ impl<P: Provider> Provider for Watched<P> {
 /// `ModelReviewer<P>` implements `Reviewer` — the trait `TaskContract::with_reviewer`
 /// takes — only for `P: Provider + Debug + Send + Sync`, because `ModelReviewer`
 /// derives `Debug` and the derive puts the bound on `P`. **None of io-harness's
-/// own provider types implements `Debug`**, so `ModelReviewer::new(OpenRouter::new(..), ..)`
-/// cannot be handed to `with_reviewer` at all, and the model-judged half of the
-/// verification pillar is unreachable from any crate that uses the providers the
-/// harness ships. Reported upstream as io-harness#213; this is io-cli shipping
-/// around it rather than waiting.
+/// own provider types implements `Debug`**, so a `ModelReviewer` built over one of
+/// them cannot be handed to `with_reviewer` at all, and the model-judged half of
+/// the verification pillar is unreachable from any crate that uses the providers
+/// the harness ships. Reported upstream as io-harness#213; this is io-cli
+/// shipping around it rather than waiting.
 ///
 /// The `Debug` impl prints the vendor name and **never the credential**. That is
 /// the whole reason it is written by hand rather than derived: a derive here would

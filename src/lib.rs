@@ -72,6 +72,7 @@ pub mod queue;
 pub mod recall;
 pub mod reload;
 pub mod resume;
+pub mod reviewer;
 pub mod rewind;
 pub mod servers;
 pub mod sessions;

@@ -260,9 +260,11 @@ fn f8_a_failing_gate_is_exit_six_and_a_gate_that_never_answered_is_not() {
     }
 
     // `6` is outside the range `code` can produce, so a script branching on the
-    // old six cannot mistake it for one of them.
+    // old six cannot mistake it for one of them. Asserted against `UNFINISHED`
+    // rather than as a bare literal, so that moving any existing code reddens
+    // here too.
+    assert_eq!(exec::UNVERIFIED, exec::UNFINISHED + 1);
     assert_eq!(exec::UNVERIFIED, 6);
-    assert!(exec::UNVERIFIED > exec::UNFINISHED);
 }
 
 #[test]

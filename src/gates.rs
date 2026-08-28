@@ -41,12 +41,8 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use io_harness::{
-    Anthropic, Compatible, Config, GateAttempt, GateOutcome, ModelReviewer, OpenAi, OpenRouter,
-    ProviderSpec, Reviewer, SandboxEvent, Verification,
-};
+use io_harness::{Config, GateAttempt, GateOutcome, SandboxEvent, Verification};
 use serde::{Deserialize, Serialize};
 
 /// The `[app.io-cli.gates]` section exactly as an operator wrote it.
@@ -450,104 +446,13 @@ pub fn proposed_command(root: &Path, config: &Config) -> Option<Vec<String>> {
     (!tuned.test.is_empty()).then_some(tuned.test)
 }
 
-/// A reviewer that asks `model` through `spec`, ready for `with_reviewer`.
-///
-/// **Nothing here calls a provider.** It constructs `ModelReviewer`, which holds
-/// its own provider and its own model, and hands it to io-harness to call when the
-/// run loop reaches the gate. That is also what keeps `tests/dependencies.rs`'s
-/// count of provider calls in this crate at one — the wizard's credential ping in
-/// [`crate::verify`] — which is the gate that says this crate has not grown an
-/// agent loop.
-///
-/// `Provider` is not dyn-compatible, so each variant is constructed in its own arm
-/// and boxed as `Arc<dyn Reviewer>` afterwards; `Reviewer` *is* dyn-compatible,
-/// which is what makes one return type possible at all. The arms mirror
-/// [`crate::verify::credential`] exactly, including the fallback to each vendor's
-/// own environment variable, because a reviewer configured the way the session's
-/// provider is configured should authenticate the way the session does.
-///
-/// The error is the provider's own message, for the same reason the wizard keeps
-/// it: a refusal an operator can act on names the endpoint and the key, and
-/// "could not build a reviewer" names neither.
-pub fn reviewer(spec: &ProviderSpec, model: &str) -> Result<Arc<dyn Reviewer>, String> {
-    match spec {
-        ProviderSpec::OpenRouter { api_key, .. } => {
-            let key = api_key_or_env(api_key, "OPENROUTER_API_KEY")?;
-            Ok(Arc::new(ModelReviewer::new(
-                crate::provider::Printable::new(OpenRouter::new(key, model)),
-                model,
-            )))
-        }
-        ProviderSpec::Anthropic { api_key, .. } => {
-            let key = api_key_or_env(api_key, "ANTHROPIC_API_KEY")?;
-            Ok(Arc::new(ModelReviewer::new(
-                crate::provider::Printable::new(Anthropic::new(key, model)),
-                model,
-            )))
-        }
-        ProviderSpec::OpenAi { api_key, .. } => {
-            let key = api_key_or_env(api_key, "OPENAI_API_KEY")?;
-            Ok(Arc::new(ModelReviewer::new(
-                crate::provider::Printable::new(OpenAi::new(key, model)),
-                model,
-            )))
-        }
-        ProviderSpec::Compatible {
-            base_url,
-            preset,
-            api_key,
-            auth,
-            ..
-        } => {
-            // The model is the reviewer's, never the endpoint's configured one:
-            // the entire criterion is that a second model reads the work, and
-            // reusing the spec's model is the mistake it exists to prevent.
-            let secret = api_key.clone().unwrap_or_default();
-            let compatible = match (preset, base_url) {
-                (Some(preset), _) => {
-                    Compatible::preset(preset, secret, model).map_err(|error| error.to_string())?
-                }
-                (None, Some(base)) => Compatible::new(
-                    base,
-                    auth.unwrap_or(io_harness::Auth::Bearer),
-                    secret,
-                    model,
-                ),
-                (None, None) => {
-                    return Err("this endpoint names neither a preset nor a base URL".into())
-                }
-            };
-            Ok(Arc::new(ModelReviewer::new(
-                crate::provider::Printable::new(compatible),
-                model,
-            )))
-        }
-        // `ProviderSpec` is `#[non_exhaustive]`. A provider this release has not
-        // seen cannot be built into a reviewer, and refusing at write time is the
-        // whole reason this module validates anything.
-        other => Err(format!(
-            "this release does not know how to review with a {other:?} provider yet"
-        )),
-    }
-}
-
-/// The key from the spec, or from the provider's own environment variable.
-///
-/// A near-twin of the wizard's own resolver, kept separate on purpose: that one is
-/// private to [`crate::verify`], and importing it would make a module about live
-/// provider calls a dependency of a module whose entire claim is that it makes
-/// none.
-fn api_key_or_env(api_key: &Option<String>, var: &str) -> Result<String, String> {
-    if let Some(key) = api_key {
-        return Ok(key.clone());
-    }
-    match std::env::var(var) {
-        Ok(key) if !key.is_empty() => Ok(key),
-        _ => Err(format!(
-            "no key was given and ${var} is not set in this shell"
-        )),
-    }
-}
+// **The reviewer is built in `crate::provider` and not here, and the gate that
+// says so is `tests/provider.rs`.** Every vendor type must be constructed in
+// exactly one place outside the wizard's handshake and the `/provider` panel, so
+// that the interactive and the headless entry points cannot drift apart — and a
+// reviewer built here would have been a second site with its own key resolution,
+// which is precisely the drift that gate exists to catch. It caught this release
+// writing one. See `crate::provider::reviewer`.
 
 /// One sentence an operator can act on, for each way a section is refused.
 ///

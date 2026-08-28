@@ -326,7 +326,7 @@ fn criterion_for(
     match &criterion {
         crate::gates::Criterion::Review { reviewer, .. } => {
             let spec = config.provider_spec()?;
-            let built = crate::gates::reviewer(spec, reviewer).ok()?;
+            let built = crate::reviewer::build(spec, reviewer).ok()?;
             Some((criterion.clone(), Some(built)))
         }
         _ => Some((criterion, None)),
@@ -352,7 +352,7 @@ pub fn gate_notice(config: &Config) -> Option<String> {
                 "the gate asks {reviewer} to review the work, but no provider is configured to \
                  reach it — this turn is not gated"
             )),
-                Some(spec) => crate::gates::reviewer(spec, &reviewer)
+                Some(spec) => crate::reviewer::build(spec, &reviewer)
                     .err()
                     .map(|why| format!("the gate's reviewer could not be built: {why}")),
             }

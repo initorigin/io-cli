@@ -2374,7 +2374,7 @@ fn the_gate_and_review_lines_survive_the_ascii_set_and_plain_mode() {
         }
 
         assert!(
-            said.chars().all(|c| c.is_ascii()),
+            said.is_ascii(),
             "a character the ASCII set cannot draw reached the terminal in \
              plain={plain}: {said:?}",
         );
