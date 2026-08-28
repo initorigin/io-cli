@@ -1391,7 +1391,17 @@ impl Status {
         // terminal does not have.
         let mut left = Vec::new();
         if !self.working {
-            left.push(Span::styled("• ready", muted));
+            // **`theme.glyphs.bullet` and not a literal `•`.** This line carried
+            // a hardcoded U+2022 from the release that wrote it, so the footer
+            // drew a character the terminal had just been told it could not
+            // render. It went unnoticed because every glyph sweep in
+            // `tests/glyphs.rs` ran over `Status::line`, which only a terminal
+            // under seven rows ever draws, while `Status::render` takes this
+            // footer on every real one — a gate aimed at the surface nobody sees.
+            left.push(Span::styled(
+                format!("{} ready", theme.glyphs.bullet),
+                muted,
+            ));
             left.push(Span::styled(separator, muted));
         }
         left.push(Span::styled(
@@ -1524,34 +1534,32 @@ impl Status {
             }
             allowed.push(Span::styled("planning", muted));
         }
-        // **The right-hand group and not `counts`, out of the same method
-        // `Status::fields` draws it from.** This group is where the row keeps the
-        // facts that describe the circumstances the agent is working in — the
-        // posture, the sandbox, the phase — and the branch is the last of them: it
-        // says which checkout every write on this row landed in. It is also not a
-        // counter, and `counts` is documented as everything countable and nothing
-        // that is not.
+        // **`counts` and NOT the right-hand group, and this release measured why.**
+        // The branch first went in beside the posture, on the argument that it
+        // describes the circumstances the agent works in rather than counting
+        // anything — which reads well and is wrong, because of how the two groups
+        // yield. `row` fits its right-hand group all or nothing, so the group
+        // survives only while it fits what narrowing leaves; at eighty columns,
+        // with `planning` on, the counters are already gone and there is nothing
+        // left to pay with. The measurement, taken rather than reasoned about:
         //
-        // **What that costs, stated plainly.** The two groups yield asymmetrically:
-        // when they cannot both fit, counters come off the right of `counts` until
-        // the right group fits, and the right group is never dropped. So a branch
-        // here is paid for by the rightmost counters — the plan claim first, then
-        // the background and queue counts — on a row that is already full. That is
-        // the same trade this module states for `planning` and takes deliberately:
-        // a fact that is still true after the turn ends outranks a number that
-        // measured it. The bill is the branch name plus four cells for `git:` and
-        // three for the separator, which on an ordinary branch is under twenty
-        // columns and on `main` is eleven.
+        //   [None]         "/ for commands   read-only · workspace-write/… · planning"
+        //   [Some("main")] "/ for commands"
         //
-        // Appended after `planning` rather than inserted at the front, because the
-        // group is kept or dropped whole — position inside it is reading order, not
-        // priority — and pushing it last leaves the separator rule one uniform
-        // check instead of moving it onto the posture arm.
+        // **Every real branch does that** — the break-even is a name one character
+        // long — so the operator finishes a turn under `/plan on` with nothing on
+        // screen saying the next write will stop and ask. That is verbatim the
+        // failure `f4_a_full_counts_row_drops_a_counter_and_not_the_planning_phase`
+        // exists to prevent, and 0.22.0 shipped its ancestor.
+        //
+        // So the branch is a counter's neighbour rather than a posture's: it is
+        // the one fact on this row an operator can afford to lose, because it is
+        // still readable one keystroke away on the `/status` page while a posture
+        // that has silently vanished is not. Pushed last, so `counts.pop()` takes
+        // it before it takes any number — a narrow row keeps what it measured and
+        // gives up where it measured it.
         if let Some(text) = self.branch_field() {
-            if !allowed.is_empty() {
-                allowed.push(Span::styled(separator, muted));
-            }
-            allowed.push(Span::styled(text, muted));
+            counts.push(text);
         }
         // **When the two groups cannot both fit, the counters yield — not the
         // group.** `row` fits its right-hand group all or nothing, so a counts
