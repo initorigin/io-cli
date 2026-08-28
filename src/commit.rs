@@ -19,6 +19,18 @@
 //! documented format, and splitting it on `:` fails on the first commit message
 //! containing a colon, which is most of them.
 //!
+//! # A call is a decision, not an outcome
+//!
+//! io-harness stages an `AssistantTurn` from the provider's response, with the
+//! calls exactly as the model produced them, *before* any of them is dispatched.
+//! So a `git_commit` the policy refused, or one git rejected, is in `calls` beside
+//! one that landed and reads identically there. Nothing this module can see
+//! separates them, and no `EventKind` carries a tool's result either — which is
+//! why [`made_in`] answers "what the model asked for" and the block is committed
+//! by the caller, which watched the refusal and the failure go past. That
+//! boundary is stated here rather than guessed at, because the wrong half of it
+//! is a scrollback claiming a commit that does not exist.
+//!
 //! # The block does not re-draw the diff
 //!
 //! `crate::events` states the rule this module is an exception to: one cell per
@@ -51,13 +63,24 @@ pub struct Made {
 }
 
 impl Made {
-    /// The message's first line, which is what a one-line summary shows.
+    /// The message's first written line, which is what a one-line summary shows.
     ///
     /// A commit message is a subject and an optional body separated by a blank
     /// line; showing the whole thing on a status row would push the body through
     /// a surface that has no room for it.
+    ///
+    /// **First *written* line, not first line.** A model that opens its message
+    /// with a newline has still written a subject, and taking `lines().next()`
+    /// there answers `""` — a status row that has gone blank for a commit that
+    /// has a perfectly good subject one line below. The scan stops at the first
+    /// line with something on it, so nothing further down can be promoted past a
+    /// real subject.
     pub fn subject(&self) -> &str {
-        self.message.lines().next().unwrap_or_default().trim()
+        self.message
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
     }
 }
 
@@ -65,9 +88,19 @@ impl Made {
 ///
 /// Pure over the store's own rows so it can be asserted without a store: the
 /// caller passes what `Store::step_turns` returned. A call carrying no `message`
-/// argument, or one whose `message` is not a string, is skipped rather than
-/// rendered as an empty commit — an absent argument means the model called the
-/// tool wrongly and the harness refused it, not that somebody committed nothing.
+/// argument, one whose `message` is not a string, and one whose message is only
+/// whitespace are all skipped rather than rendered as an empty commit — each of
+/// those means the model called the tool wrongly and the harness refused it, not
+/// that somebody committed nothing.
+///
+/// Order is the order the model worked in: turns arrive from `step_turns`
+/// oldest step first, and a turn's `calls` are in the order it made them, so
+/// walking both in sequence is already chronological. Nothing sorts afterwards,
+/// because a sort on `step` alone would shuffle two commits made in one step
+/// into whichever order the sort happened to be stable about.
+///
+/// A turn holding one `git_commit` among a batch of reads and writes yields that
+/// one call and nothing else; the name check is per call, not per turn.
 pub fn made_in(turns: &[io_harness::AssistantTurn]) -> Vec<Made> {
     let mut out = Vec::new();
     for turn in turns {
@@ -98,15 +131,29 @@ pub fn made_in(turns: &[io_harness::AssistantTurn]) -> Vec<Made> {
 ///
 /// `branch` is where it landed and `touched` is what git printed — both optional,
 /// because both can genuinely be unknown, and a line saying "unknown" is worse
-/// than a line that is not there.
+/// than a line that is not there. A `branch` or `touched` that is present but
+/// blank is treated as absent for the same reason: it is an unknown wearing a
+/// value's clothes.
+///
+/// Only a commit that landed reaches here. See the module note on why a refused
+/// or failed `git_commit` is the caller's to filter and not this function's to
+/// detect.
 pub fn block(made: &Made, branch: Option<&str>, touched: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.push(match branch {
+    lines.push(match branch.map(str::trim).filter(|b| !b.is_empty()) {
         Some(branch) => format!("committed on {branch}"),
         None => "committed".to_string(),
     });
     for line in made.message.lines() {
-        lines.push(format!("  {line}"));
+        // A blank line in the body stays blank rather than becoming two spaces.
+        // Indenting nothing is invisible on screen and load-bearing everywhere
+        // else — it is what a copied block pastes back, and what a test that
+        // compares committed lines has to spell.
+        lines.push(if line.trim().is_empty() {
+            String::new()
+        } else {
+            format!("  {line}")
+        });
     }
     if let Some(touched) = touched {
         let touched = touched.trim();
@@ -122,8 +169,11 @@ pub fn block(made: &Made, branch: Option<&str>, touched: Option<&str>) -> Vec<St
 /// io-cli does not write the message. It asks the agent to describe the work it
 /// just did and to stage it, which is the whole of what the command means — and
 /// it is why this is a prompt rather than a git invocation. This crate cannot run
-/// git at all: the engine is `pub(crate)` in the dependency and
-/// `std::process::Command` is permitted in `crate::shell` alone.
+/// git at all: the engine is `pub(crate)` in the dependency, and
+/// `tests/dependencies.rs` permits a process spawn in `src/shell.rs` alone,
+/// identified by path. That gate matches raw text, comments included, so the
+/// forbidden name is not spelled out here — not even to say this module does not
+/// use it, which is a sentence that reddens the gate it is describing.
 pub fn prompt() -> String {
     "Commit the work from this turn. Review what changed with the git tools, stage \
      what belongs in this commit, and write a message describing what the change \
@@ -135,9 +185,22 @@ pub fn prompt() -> String {
 ///
 /// Shown before the turn is spent, because the identity is the one thing about a
 /// commit that cannot be corrected afterwards without rewriting history.
-/// io-cli never sets it: `[run.commit_identity]` reaches the contract through the
-/// harness's own `Config::apply_to`, and when the operator has configured nothing
-/// this reports the default the *harness* will use rather than one invented here.
+///
+/// **This function has no default of its own, and that is the whole of it.**
+/// `[run.commit_identity]` reaches `TaskContract::commit_identity` through the
+/// harness's own `Config::apply_to`, and io-harness passes that value to git as
+/// `-c user.name=… -c user.email=…` on the commit invocation itself. The field is
+/// an `Identity` rather than an `Option<Identity>`, already carrying
+/// `Identity::default()` when the operator configured no section — so a
+/// repository with no identity of its own is told which default *io-harness* will
+/// use, by reading the same value git will be handed.
+///
+/// A name chosen here instead would be a string this crate invented, written into
+/// the operator's history by a tool that was only asked to describe it. There is
+/// nowhere else to correct that afterwards, which is why the branch that would
+/// pick one does not exist rather than being merely unused: an identity is read
+/// and printed, never substituted, not even for a value this crate recognises as
+/// the default.
 pub fn authored_as(identity: &Identity) -> String {
     format!("authored as {} <{}>", identity.name, identity.email)
 }
