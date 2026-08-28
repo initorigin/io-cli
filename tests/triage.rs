@@ -145,6 +145,53 @@ fn the_three_kinds_this_release_draws_are_lines_rather_than_silent() {
     }
 }
 
+/// **0.24.0.** The `sandbox` route said `gate_phase_failed` and `gate_output`
+/// "belong to a verification gate no session has until 0.24.0". This is that
+/// release.
+///
+/// The route column is the only evidence anybody has that a fact reaches its
+/// reader, so a sentence in it that has stopped being true is worse than a blank
+/// one: a reviewer checking whether a kind is drawn reads this and stops. The
+/// seam was left open here deliberately, and closing it means closing the
+/// sentence that described it as open.
+///
+/// Sabotage: restore either retired phrase to the row. Only this fails, and it
+/// fails on the claim rather than on the sentence around it — which is the part
+/// an author rewrites while leaving the claim standing.
+#[test]
+fn the_route_column_no_longer_says_a_session_has_no_verification_gate() {
+    let sandbox = triage::route("sandbox").expect("the sandbox row");
+    for retired in ["no session has", "until 0.24.0"] {
+        assert!(
+            !sandbox.contains(retired),
+            "the sandbox route still says {retired:?}, which stopped being true in this \
+             release: {sandbox}",
+        );
+    }
+    // And says where the two of them go now, which is the whole job of this
+    // column: a `Line` disposition covers seven kinds at once, so the row is the
+    // only place that can record which of them the arm actually draws.
+    for kind in ["gate_phase_failed", "gate_output"] {
+        assert!(
+            sandbox.contains(kind),
+            "{kind} is drawn from this release and the route does not say so: {sandbox}",
+        );
+    }
+    // `dial` is the one kind of the seven that still reaches no line, so the row
+    // has to go on naming the event that draws it instead.
+    assert!(sandbox.contains("dialed"), "{sandbox}");
+
+    // The asymmetry a reader of this table cannot work out from the enum: a
+    // review that never happened emits nothing at all, so a missing verdict line
+    // is a criterion that did not answer rather than one that said yes.
+    let reviewed = triage::route("reviewed").expect("the reviewed row");
+    assert!(
+        reviewed.contains("Errored"),
+        "the reviewed route does not record that a review which never ran emits \
+         nothing here: {reviewed}",
+    );
+}
+
 /// The other direction, in behaviour rather than in source: a kind whose fact
 /// belongs to a status field or to another event commits no line.
 ///

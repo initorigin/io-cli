@@ -414,10 +414,13 @@ fn a_turn_that_ended_well_does_not_end_the_transcript_with_a_warning() {
     use io_cli::events::outcome_tone;
     use io_cli::theme::Tone;
 
-    // `finished` is what EVERY io-cli turn returns: a steerable turn is built on
-    // TaskContract::workspace, which carries Verification::None, so there is no
-    // criterion to pass and `success` is unreachable from this interface. Reading
-    // it as a warning was a real defect and a live run is what found it.
+    // Two words for a turn that ended well, and both are reachable from 0.24.0.
+    // `finished` is a turn with no criterion ending on its own terms, which was
+    // every io-cli turn until this release: a contract built here carried
+    // Verification::None and `success` could not be produced from this interface
+    // at all. A turn whose operator configured a gate — `io_cli::gates` — ends
+    // `success` when it holds. Reading either as a warning was a real defect and
+    // a live run is what found it.
     assert_eq!(outcome_tone("finished"), Tone::Success);
     assert_eq!(outcome_tone("success"), Tone::Success);
 
@@ -2122,9 +2125,9 @@ fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists
 /// it immediately beside `EventKind::Dialed` for the same connection, so a
 /// session drawing both would put every dial in the transcript twice — and the
 /// copy here is the poorer one, carrying the word and neither the host, the port
-/// nor the verdict. `gate_phase_failed` and `gate_output` are the other two that
-/// draw nothing: they belong to an execution gate, and a session has none until
-/// 0.24.0.
+/// nor the verdict. It is now the **only** kind of the seven that draws nothing:
+/// `gate_phase_failed` and `gate_output` stood beside it here until 0.24.0 gave a
+/// session a criterion to fail, and the test below is where they went.
 ///
 /// Sabotage: give `"dial"` a sentence of its own in the `Sandbox` arm, under
 /// which only this fails, on one dial arriving as two rows that disagree about
@@ -2132,24 +2135,261 @@ fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists
 #[test]
 fn f8_the_dial_kind_of_a_sandbox_event_is_left_to_the_dial_itself() {
     let mut events = Events::new(DARK);
-    for kind in ["dial", "gate_phase_failed", "gate_output"] {
-        let lines = events.event(
-            &event(EventKind::Sandbox {
-                kind: kind.into(),
-                backend: None,
-            }),
-            Duration::ZERO,
-        );
-        assert!(lines.is_empty(), "{kind} drew a line: {lines:?}");
-    }
-    // Drawn nowhere is not the same as undecided. `sandbox` has a disposition,
-    // so none of these reaches the counter that exists for a kind nobody has
-    // decided about.
+    let lines = events.event(
+        &event(EventKind::Sandbox {
+            kind: "dial".into(),
+            backend: None,
+        }),
+        Duration::ZERO,
+    );
+    assert!(lines.is_empty(), "dial drew a line: {lines:?}");
+    // Drawn nowhere is not the same as undecided. `sandbox` has a disposition, so
+    // this does not reach the counter that exists for a kind nobody has decided
+    // about.
     assert_eq!(
         events.unknown(),
         0,
         "a kind the table holds was counted as one this release has never seen",
     );
+}
+
+/// **0.24.0 — a gate that ran and said no reaches the screen.**
+///
+/// Until this release both kinds returned an empty `Vec` from the `Sandbox` arm,
+/// which was correct while no contract this crate built carried a criterion: an
+/// event that cannot arrive needs no sentence. It can arrive now, and a verdict
+/// that lives only in the store is a verdict nobody reads.
+///
+/// **Neither line can carry the phase or the output**, and that is asserted here
+/// rather than merely commented: `EventKind::Sandbox` has `kind` and `backend`
+/// and nothing else, while `SandboxEvent::detail` — which holds the failing phase
+/// for one and the command's bounded output for the other — never reaches this
+/// channel. A line that named a phase would have invented it.
+///
+/// Sabotage: put either kind back on the `_ => return Vec::new()` arm. Only this
+/// fails, and it fails on the line's absence with `Events::unknown` still at
+/// zero — a triaged kind is never counted there — which is a gate that judged the
+/// work and told nobody.
+#[test]
+fn a_gate_that_ran_and_did_not_pass_says_so_on_the_channel_a_session_is_watching() {
+    let mut events = Events::new(DARK);
+
+    let phase = rendered(
+        &mut events,
+        EventKind::Sandbox {
+            kind: "gate_phase_failed".into(),
+            backend: None,
+        },
+    );
+    // **That it ran is the load-bearing half.** "did not pass" alone is the same
+    // sentence a criterion that never executed would deserve, and those two need
+    // opposite responses from whoever reads the row.
+    assert!(phase.contains("ran and"), "{phase:?}");
+    assert!(phase.contains("did not pass"), "{phase:?}");
+
+    let output = rendered(
+        &mut events,
+        EventKind::Sandbox {
+            kind: "gate_output".into(),
+            backend: None,
+        },
+    );
+    assert!(!output.trim().is_empty(), "gate_output drew nothing");
+    assert!(output.contains("printed output"), "{output:?}");
+
+    // Neither event carries a backend and neither line may name one — the same
+    // rule `cap_hit` and `destroy` are already held to.
+    for line in [&phase, &output] {
+        assert!(
+            !line.contains("sandbox-exec") && !line.contains("none"),
+            "a gate event carries no backend and this line invented one: {line:?}",
+        );
+    }
+
+    assert_eq!(
+        events.unknown(),
+        0,
+        "a kind the table holds was counted as one this release has never seen",
+    );
+}
+
+/// **0.24.0 — a criterion that answered and one that never ran do not read
+/// alike.**
+///
+/// `GateOutcome::Failed` and `GateOutcome::Errored` are the two verdicts io-cli
+/// has to keep apart on screen, and only one of them has an event: a gate that
+/// ran and said no emits `gate_phase_failed`, while a gate whose program the
+/// policy would not run emits `EventKind::Refused` with act `exec` and no gate
+/// event at all — nothing executed, so nothing judged anything. io-harness will
+/// retry the second and never the first.
+///
+/// So the words have to be disjoint, which is what is asserted: the refusal keeps
+/// `refused` and never claims a criterion ran, and the gate line never borrows the
+/// word the permission boundary owns. A reader who cannot tell them apart fixes
+/// the wrong thing — the policy, or the work.
+///
+/// Sabotage: draw `gate_phase_failed` through `Tone::Refused`, which is the tone
+/// the failing review carried until this release. The line reads `refused: …`,
+/// only this test fails, and it fails on the two facts having become one word.
+#[test]
+fn a_gate_that_could_not_run_does_not_read_like_a_gate_that_ran_and_failed() {
+    let mut events = Events::new(DARK);
+
+    // Errored: the policy refused the criterion's program. This is the whole of
+    // what the stream says about it — there is no gate event behind it.
+    let errored = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "exec".into(),
+            target: "cargo".into(),
+            rule: Some("exec.deny".into()),
+            layer: Some("workspace".into()),
+        },
+    );
+    assert!(errored.contains("refused"), "{errored:?}");
+    assert!(
+        !errored.contains("did not pass"),
+        "a criterion that never ran did not fail: {errored:?}",
+    );
+
+    // Failed: it ran, and it said no.
+    let failed = rendered(
+        &mut events,
+        EventKind::Sandbox {
+            kind: "gate_phase_failed".into(),
+            backend: None,
+        },
+    );
+    assert!(
+        !failed.contains("refused"),
+        "the permission boundary owns that word and nothing stopped this gate: {failed:?}",
+    );
+    // Nor the error path. Nothing broke: a criterion that holds the work to a
+    // standard and reports that it was not met did its job.
+    assert!(!failed.contains("error"), "{failed:?}");
+    assert_ne!(errored, failed);
+}
+
+/// **0.24.0 — a review's reasons reach the scrollback, in the reviewer's words.**
+///
+/// The reasons are the operator's only account of why the work was judged
+/// insufficient. The store keeps the same sentences joined by semicolons, so a
+/// session that dropped them would be sending somebody to a database to read a
+/// paragraph the run had already said out loud.
+///
+/// **The failing verdict is a warning and not a refusal**, which is the half that
+/// changed this release. `Tone::Refused` carries the literal word `refused`, and
+/// everywhere else in this transcript that word means the permission boundary
+/// stopped an act. A reviewer that read the work and judged it stopped nothing.
+///
+/// Sabotage: restore `Tone::Refused` on the failing arm. Only this fails, on a
+/// judged verdict and a blocked act arriving under one word.
+#[test]
+fn a_review_carries_its_reasons_and_a_failing_verdict_is_not_a_refusal() {
+    let mut events = Events::new(DARK);
+
+    let failed = rows(events.event(
+        &event(EventKind::Reviewed {
+            passed: false,
+            reasons: vec![
+                "the new branch has no test".into(),
+                "README still documents the old flag".into(),
+            ],
+        }),
+        Duration::ZERO,
+    ));
+    let said = failed.join("\n");
+    assert!(said.contains("the review ran and did not pass"), "{said:?}");
+    // Every reason, whole. Asserted per row rather than over the join, so a
+    // second reason silently swallowed by the first cannot pass.
+    assert!(
+        failed
+            .iter()
+            .any(|row| row.contains("the new branch has no test")),
+        "{failed:?}",
+    );
+    assert!(
+        failed
+            .iter()
+            .any(|row| row.contains("README still documents the old flag")),
+        "{failed:?}",
+    );
+    assert!(
+        !said.contains("refused"),
+        "a review that read the work and judged it stopped nothing: {said:?}",
+    );
+
+    let passed = flatten(events.event(
+        &event(EventKind::Reviewed {
+            passed: true,
+            reasons: Vec::new(),
+        }),
+        Duration::ZERO,
+    ));
+    assert!(passed.contains("the review passed"), "{passed:?}");
+    assert!(
+        !passed.contains("did not"),
+        "the two verdicts must not be one sentence apart from a negation this reader \
+         can miss: {passed:?}",
+    );
+}
+
+/// **F5 for the lines this release added.** Nothing outside ASCII reaches the
+/// terminal under the ASCII set, and the meaning survives the substitution.
+///
+/// Swept by `char::is_ascii` over the whole rendered output rather than by
+/// looking for the marks this release happens to know about — `tests/glyphs.rs`
+/// says why: a `contains` over the code points somebody remembered is green the
+/// day a twelfth one is typed into a new line. The review's reasons are the rows
+/// that carry a glyph here, through `Glyphs::bullet`.
+///
+/// Plain mode is the other axis and is asserted beside it, because a plain
+/// session is the one that has no status line to fall back on: if a gate verdict
+/// were dropped there it would reach nobody at all.
+#[test]
+fn the_gate_and_review_lines_survive_the_ascii_set_and_plain_mode() {
+    use io_cli::glyphs::ASCII;
+
+    for plain in [false, true] {
+        let mut events = Events::new(DARK.with_glyphs(ASCII));
+        events.set_plain(plain);
+
+        let mut said = String::new();
+        for kind in [
+            EventKind::Sandbox {
+                kind: "gate_phase_failed".into(),
+                backend: None,
+            },
+            EventKind::Sandbox {
+                kind: "gate_output".into(),
+                backend: None,
+            },
+            EventKind::Reviewed {
+                passed: false,
+                reasons: vec!["the diff does not build".into()],
+            },
+        ] {
+            said.push_str(&rendered(&mut events, kind));
+            said.push('\n');
+        }
+
+        assert!(
+            said.chars().all(|c| c.is_ascii()),
+            "a character the ASCII set cannot draw reached the terminal in \
+             plain={plain}: {said:?}",
+        );
+        // And the meaning survived it. A set that mapped every mark to a space
+        // would pass the sweep above and destroy the product.
+        assert!(
+            said.contains("ran and did not pass"),
+            "plain={plain}: {said:?}"
+        );
+        assert!(said.contains("printed output"), "plain={plain}: {said:?}");
+        assert!(
+            said.contains("the diff does not build"),
+            "plain={plain}: {said:?}",
+        );
+    }
 }
 
 /// 0.14.0 F9 — a stalled agent is on screen before anybody interrupts it.

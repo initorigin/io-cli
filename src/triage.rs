@@ -128,11 +128,14 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     (
         "sandbox",
         Disposition::Line,
-        "the sandbox line, for the four kinds an ordinary session can see — `create`, `exec`, \
-         `cap_hit` and `destroy`. The other three reach no line and each has its own route: \
-         `dial` is drawn by `dialed`, which carries the host, the port and the verdict this kind \
-         does not, and `gate_phase_failed` and `gate_output` belong to a verification gate no \
-         session has until 0.24.0",
+        "the sandbox line, for six of the seven kinds. `create`, `exec`, `cap_hit` and `destroy` \
+         say what isolated the work; `gate_phase_failed` and `gate_output` say that the criterion \
+         the operator configured under `[app.io-cli.gates]` ran and did not hold, which from \
+         0.24.0 is a thing a session can see. `dial` is the one kind that reaches no line: it is \
+         drawn by `dialed`, which carries the host, the port and the verdict this kind does not. \
+         Neither gate line names the phase or quotes the output — `EventKind::Sandbox` carries \
+         the kind and the backend alone, and the `detail` holding both stays in the run's own \
+         `sandbox_events` rows, which is where a diagnosis reads it",
     ),
     (
         "mcp",
@@ -155,7 +158,10 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
     (
         "reviewed",
         Disposition::Line,
-        "the verdict line and its reasons",
+        "the verdict line and its reasons, in the reviewer's own words. Emitted only for a review \
+         that happened: one that could not run emits nothing here at all and is recorded as \
+         `GateOutcome::Errored`, so an absent verdict line is a review that never answered rather \
+         than one that said yes",
     ),
     (
         "routed",
