@@ -2248,3 +2248,152 @@ fn f11_status_folds_at_eighty_columns_rather_than_losing_the_end_of_a_row() {
         }
     }
 }
+
+/// **N2 — every surface 0.27.0 adds fits eighty columns in both glyph sets.**
+///
+/// The store page, the four confirmations, and the reports each operation
+/// writes. Drawn through the real render buffer for the picker, and measured as
+/// built lines for the page and the reports, which are committed into the
+/// terminal's own scrollback rather than drawn into the viewport.
+///
+/// **Width-independent where it can be.** 0.26.0's lesson is that a gate which
+/// picks a width is asserting arithmetic it will get wrong — its own
+/// narrow-fixture test passed at eighty because the fixture could not fit the
+/// field either way. So the confirmations are checked at six widths and the
+/// property is the same at all of them: no row overflows, and the declining row
+/// survives, because a confirmation that dropped its "leave it" at a narrow
+/// terminal would leave an operator with only the destructive choice on screen.
+#[test]
+fn n2_every_store_confirmation_fits_and_keeps_its_declining_row() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = io_harness::Store::open(dir.path().join("runs.db")).expect("a store");
+    let session = store
+        .create_session("/a/deliberately/long/workspace/path/that/will/not/fit/in/eighty/columns")
+        .expect("a session");
+    let sized = io_cli::store::sized(&store, session).expect("a size");
+    let size = store.store_size().expect("a size");
+
+    for theme in themes() {
+        let set = if theme.glyphs.separator == io_cli::glyphs::ASCII.separator {
+            "ascii"
+        } else {
+            "unicode"
+        };
+        for (what, (title, rows)) in [
+            ("remove", io_cli::store::confirm_remove(session, &sized)),
+            (
+                "sweep",
+                io_cli::store::confirm_sweep("2026-08-01T00:00:00.000Z"),
+            ),
+            ("compact", io_cli::store::confirm_compact(&size)),
+            (
+                "export",
+                io_cli::export::confirm("io-session-1.md", "conversation"),
+            ),
+            (
+                "undo file",
+                io_cli::undo::confirm_file("src/a/deeply/nested/path/that/is/long.rs"),
+            ),
+            ("undo step", io_cli::undo::confirm_step(12)),
+        ] {
+            // Six widths rather than one. The property holds at all of them and
+            // names no number, which is what 0.26.0's correction asks for.
+            for width in [40u16, 60, 72, 80, 100, 160] {
+                let mut picker = io_cli::picker::Picker::new(title.clone(), rows.clone());
+                let (mut screen, _recorder) = support::screen(width, HEIGHT);
+                screen
+                    .draw(|frame| picker.render(frame, frame.area(), &theme))
+                    .expect("frame");
+                let drawn = screen.viewport_text().to_string();
+                for line in drawn.lines() {
+                    assert!(
+                        line.chars().count() <= width as usize,
+                        "{what} overflowed {width} columns ({set}): {line:?}",
+                    );
+                }
+            }
+            assert_eq!(
+                rows[0].label,
+                io_cli::store::LEAVE_IT,
+                "{what} ({set}): the declining row is row 0 at every width",
+            );
+        }
+    }
+}
+
+/// **N2 — the store page and every report fit eighty columns in both sets.**
+#[test]
+fn n2_the_store_page_and_the_reports_fit_eighty_columns() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = io_harness::Store::open(dir.path().join("runs.db")).expect("a store");
+    let session = store
+        .create_session("/a/deliberately/long/workspace/path/that/will/not/fit/in/eighty/columns")
+        .expect("a session");
+    let run = store.start_run("a goal", "/tmp/w").expect("a run");
+    let turn = store
+        .record_turn(session, None, run, "a goal")
+        .expect("a turn");
+    store
+        .finish_turn(turn, Some("an answer"), "completed")
+        .expect("the turn finishes");
+    store.finish_run(run, "success").expect("the run finishes");
+
+    for theme in themes() {
+        let set = if theme.glyphs.separator == io_cli::glyphs::ASCII.separator {
+            "ascii"
+        } else {
+            "unicode"
+        };
+        let page = io_cli::store::committed(&store, &theme, WIDTH).expect("the page renders");
+        within_eighty(set, &text_of(&page).join("\n"));
+
+        // The reports are committed as plain sentences, so they are measured as
+        // strings rather than drawn — `App::record` wraps them the way every
+        // other committed line is wrapped.
+        let removed = io_cli::store::remove(&store, session).expect("the removal runs");
+        for line in io_cli::store::removed_report(&removed) {
+            assert!(
+                !line.contains('\n'),
+                "{set}: a report line carries its own newline: {line:?}",
+            );
+        }
+        let swept = io_cli::store::sweep(&store, "2000-01-01T00:00:00.000Z").expect("the sweep");
+        for line in io_cli::store::swept_report(&swept) {
+            assert!(!line.contains('\n'), "{set}: {line:?}");
+        }
+        let freed = io_cli::store::compact(&store).expect("the compaction");
+        for line in io_cli::store::freed_report(&freed) {
+            assert!(!line.contains('\n'), "{set}: {line:?}");
+        }
+    }
+}
+
+/// **N2 — the speculation line fits eighty columns in both glyph sets.**
+///
+/// The one event 0.27.0 draws. It carries the muted leader and a separator, both
+/// of which differ between the sets.
+#[test]
+fn n2_the_speculation_line_fits_eighty_columns() {
+    for theme in themes() {
+        let set = if theme.glyphs.separator == io_cli::glyphs::ASCII.separator {
+            "ascii"
+        } else {
+            "unicode"
+        };
+        let mut events = io_cli::events::Events::new(theme);
+        let lines = events.event(
+            &io_harness::RunEvent::new(
+                1,
+                1,
+                io_harness::EventKind::Speculated {
+                    started: 999,
+                    used: 111,
+                    discarded: 888,
+                },
+            ),
+            std::time::Duration::ZERO,
+        );
+        assert!(!lines.is_empty(), "{set}: the line is drawn");
+        within_eighty(set, &text_of(&lines).join("\n"));
+    }
+}
