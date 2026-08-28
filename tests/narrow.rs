@@ -1711,6 +1711,74 @@ fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
     }
 }
 
+/// **0.26.0 N2 — the effort level is drawn in both glyph sets and costs no glyph
+/// it does not have.**
+///
+/// The field is a word and a level: `effort low`, `effort medium`, `effort high`.
+/// It carries no marker, no bullet and no arrow, so it is the same characters in
+/// both sets — which is the property to assert rather than assume, because every
+/// other standing field on this row was at some point a glyph the ASCII set did
+/// not have. `Status::line` hardcoded a `•` for four releases for exactly that
+/// reason.
+///
+/// **Two widths, which is 0.25.0's lesson and not a flourish.** At eighty columns
+/// with a crowded row a field may not fit either way, and a gate that asserts only
+/// there is equally true of a status line that never drew the field at all — that
+/// release shipped one and found it by sabotage. So the wide arm proves it is
+/// drawn, and the narrow arm proves the row still fits when it is.
+///
+/// Sabotage: draw the level with a glyph — under which the ASCII arm fails on the
+/// `is_ascii` assertion, which is the one a monochrome or ASCII terminal actually
+/// pays for.
+#[test]
+fn n2_the_effort_field_is_a_plain_word_in_both_glyph_sets() {
+    use io_cli::status::Status;
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut status = Status::new("io/model");
+
+        // Absent until it is set, asserted on both renderers — a default that
+        // drew `effort medium` would put a field on every operator's status line
+        // for a release that changed nothing about their turns.
+        let quiet = text_of(&[status.line(WIDTH, &theme)]).remove(0);
+        assert!(
+            !quiet.contains("effort"),
+            "{set}: a session that has never said `/effort` is not a session \
+             buying zero reasoning: {quiet:?}",
+        );
+
+        for level in [
+            io_harness::Effort::Low,
+            io_harness::Effort::Medium,
+            io_harness::Effort::High,
+        ] {
+            status.effort = Some(level);
+            let drawn = format!("effort {level}");
+            assert!(
+                drawn.is_ascii(),
+                "{set}: the field needs a glyph it does not have: {drawn:?}",
+            );
+
+            // Wide, where the row has room: the field is there and whole.
+            let wide = text_of(&[status.line(200, &theme)]).remove(0);
+            assert!(
+                wide.contains(&drawn),
+                "{set}: the level every turn is buying is not on the line: {wide:?}",
+            );
+
+            // And at eighty, where the row must still fit whatever it decided to
+            // keep. The field may yield here — it is a narrowing decision, not a
+            // promise — but the line may never overrun.
+            let narrow = text_of(&[status.line(WIDTH, &theme)]).remove(0);
+            assert!(
+                narrow.chars().count() <= WIDTH as usize,
+                "{set}: the status line overran eighty columns: {narrow:?}",
+            );
+        }
+    }
+}
+
 /// **0.25.0 F11 — the branch reaches the footer, and yields before the standing
 /// facts when the row cannot hold it.**
 ///
