@@ -2480,7 +2480,59 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             continue;
         }
 
-        match app.key(key) {
+        // **`/commit` is a submit, not a report, so it is rewritten here rather
+        // than answered in the `Command::Slash` arm below.** Every other command
+        // in that arm reports something or writes a file; this one hands the
+        // turn's work to the agent, which means it has to become the same
+        // `Command::Submit` a typed prompt becomes — otherwise the prompt would
+        // sit in the queue until the operator started a turn of their own, which
+        // is not what the word means.
+        //
+        // The decision itself is `commit::asked`, in the library, because nothing
+        // under `tests/` links this file and a refusal written here could be
+        // neither asserted nor sabotaged. This arm holds the wiring: build the
+        // policy actually in force, ask, and either say why not or submit.
+        let mut command = app.key(key);
+        if let Command::Slash(text) = &command {
+            if let Action::Commit(allow) = commands::parse(text, app.keys(), &app.theme) {
+                // **The allowance is taken before the policy is built, or it
+                // would not be in the policy this very keystroke is judged
+                // against.** `/commit allow` means "permit git and commit", one
+                // action and not two, so an operator who has just been told what
+                // the rule is does not have to type the word twice.
+                if allow {
+                    app.allow_git();
+                }
+                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+                let asking = app
+                    .posture()
+                    .map_or(policy.defaults.exec, |posture| posture.defaults().exec)
+                    == io_harness::Effect::Ask;
+                command = match io_cli::commit::asked(&effective, asking) {
+                    Ok(()) => {
+                        // **Said before the turn is bought, not after it lands.**
+                        // Authorship is the one thing about a commit that cannot
+                        // be corrected later without rewriting history, so the
+                        // operator sees who it will be attributed to while the
+                        // decision is still theirs. Read off `opening`, built at
+                        // startup from the same builder every turn uses, rather
+                        // than from a sixth `contract::session` call —
+                        // `tests/contract.rs` counts those and fails at five.
+                        app.say(
+                            Tone::Muted,
+                            io_cli::commit::authored_as(&opening.commit_identity),
+                        );
+                        Command::Submit(io_cli::commit::prompt())
+                    }
+                    Err(refusal) => {
+                        app.say(Tone::Refused, refusal);
+                        Command::None
+                    }
+                };
+            }
+        }
+
+        match command {
             Command::None => {}
             Command::Exit => return Ok(()),
             // Nothing is running at an idle prompt, so there is nothing to stop.
@@ -2551,6 +2603,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // Rewritten into a `Command::Submit` above, so this is not the
+                // path `/commit` takes. It stays because the match is exhaustive
+                // and a wildcard here would swallow the next command somebody
+                // adds without an arm — which is the defect `tests/commands.rs`
+                // exists to catch, and it would be a shame to reintroduce it in
+                // the driver on the release that repaired the gate.
+                Action::Commit(_) => debug_assert!(
+                    false,
+                    "/commit is rewritten into a submit before the match and cannot arrive here"
+                ),
                 Action::Quit => return Ok(()),
                 Action::Setup => {
                     app.say(
@@ -4027,6 +4089,13 @@ async fn turn<P: Provider>(
     // on the contract only where the contract itself reaches the run.
     let (gate, mut plans) = io_cli::plan::channel();
     app.started();
+    // **Re-read at the turn boundary, so a branch changed outside io-cli is stale
+    // for at most one turn.** A `git_branch` call updates the field live during a
+    // turn, but nothing tells this process about a `git switch` the operator ran
+    // in another terminal — and a status line naming a branch the tree left is
+    // worse than one naming none. One file read per turn is the whole cost, and
+    // it is the same read that answers a session's very first turn.
+    app.set_branch(io_cli::repo::branch(session.root()));
     paint(screen, app)?;
 
     // **The fifth seam, and the only one that speaks to a turn already in
@@ -4217,6 +4286,7 @@ async fn turn<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
+                commit_commits(app, store, &event);
                 // The live half of `ctx N%`. Anchored on a step rather than on
                 // every event, for the reason `commit_edits` above it is: the
                 // assembly is written once a step and reading it per event would
@@ -4559,6 +4629,7 @@ async fn turn<P: Provider>(
         // and the last step of a turn is exactly the one that loses that race,
         // so the edit a reader most wants to see is the one that vanishes.
         commit_edits(app, store, &event, width);
+        commit_commits(app, store, &event);
         // And on the drain, for the same race the two lines above it are here
         // for: the last step of a turn is exactly the one whose event the select
         // loop loses to the turn's own return.
@@ -4910,6 +4981,55 @@ fn commit_edits(app: &mut App, store: &Store, event: &io_harness::RunEvent, widt
             Tone::Muted,
             format!("the diff for this step could not be read: {error}"),
         ),
+    }
+}
+
+/// Put a commit the agent made into the scrollback, with the message it wrote.
+///
+/// **Anchored on `Step` for the reason [`commit_edits`] above it is**: io-harness
+/// documents `Step` as emitted once the step has been committed to the store, so
+/// the assistant turn this reads is on disk by the time it is asked for. Reading
+/// at the tool call instead would be a race that passes on a quiet laptop and
+/// fails on a loaded machine, which `src/status.rs` already records for the
+/// context read.
+///
+/// **`changed` decides whether a commit is even possible**, and that is what
+/// separates a call that landed from one the policy refused or git rejected.
+/// `crate::commit::made_in` reads the model's *requested* calls and cannot tell
+/// those apart — the boundary is stated in its own rustdoc — so the caller has to
+/// be the one that knows, and this is the caller. io-harness sets
+/// `Step { changed: true }` only when a dispatched `git_add` or `git_commit`
+/// actually succeeded, so a refused commit reaches here as `changed: false` and
+/// puts nothing on screen. A scrollback claiming a commit that does not exist is
+/// the one failure this surface must never have.
+///
+/// The branch is whatever the session last heard, which is either the one
+/// `.git/HEAD` named at the turn boundary or the one a `git_branch` call made
+/// during it. The diff is deliberately not redrawn: [`commit_edits`] has already
+/// put this step's hunks on screen immediately above.
+fn commit_commits(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
+    let io_harness::EventKind::Step { changed: true, .. } = &event.kind else {
+        return;
+    };
+    let turns = match store.step_turns(event.run_id) {
+        Ok(turns) => turns,
+        // Said once and quietly. A commit that happened is still on the branch
+        // whether or not this crate could read it back, so the session is not
+        // worth interrupting over a store read.
+        Err(error) => {
+            app.say(
+                Tone::Muted,
+                format!("the commit for this step could not be read: {error}"),
+            );
+            return;
+        }
+    };
+    let branch = app.branch().map(str::to_string);
+    for made in io_cli::commit::made_in(&turns)
+        .into_iter()
+        .filter(|made| made.step == event.step)
+    {
+        app.committed(io_cli::commit::block(&made, branch.as_deref(), None));
     }
 }
 
@@ -6132,6 +6252,7 @@ async fn resume_pending<P: Provider>(
                 app.status.elapsed = at;
                 app.event(&event, at);
                 commit_edits(app, store, &event, screen.width());
+                commit_commits(app, store, &event);
                 note_context(app, store, &event, seen, &continuing);
                 paint(screen, app)?;
             }

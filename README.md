@@ -468,7 +468,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/image` | draw an attached image again: /image 1 |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
-| `/commit` | ask the agent to describe this turn's work and commit it |
+| `/commit` | ask the agent to describe this turn's work and commit it; allow to permit git |
 
 **inspect**
 

@@ -1153,7 +1153,7 @@ impl App {
         // Last, so the explanation lands *under* the refusal line `Events` just
         // committed rather than above it. The order is the argument: the fact,
         // then the reason for it.
-        self.note_git(&event.kind);
+        self.note_git(event);
     }
 
     /// The git surface's share of an event.
@@ -1174,21 +1174,17 @@ impl App {
     /// and the operator watching a turn quietly achieve nothing. Explaining only
     /// what `/commit` initiated would leave exactly that case silent, which is the
     /// defect this release exists to repair.
-    fn note_git(&mut self, kind: &io_harness::EventKind) {
-        match kind {
-            // The target of a `git_branch` call *is* the branch name: io-harness
-            // announces a call with whichever conventional argument it carries,
-            // and `git_branch`'s is `name`. A call missing it falls back to the
-            // tool's own name, which is a malformed call rather than a branch —
-            // so an announcement that named nothing is skipped rather than
-            // recorded as a branch called `git_branch`.
-            io_harness::EventKind::ToolCall { name, target }
-                if name == io_harness::tools::GIT_BRANCH_TOOL
-                    && target != name
-                    && !target.trim().is_empty() =>
-            {
-                self.set_branch(Some(target.clone()));
-            }
+    fn note_git(&mut self, event: &io_harness::RunEvent) {
+        // **Delegated rather than reimplemented, and the whole event goes across
+        // rather than its kind.** [`Status::note_branch`] already decides what a
+        // `git_branch` announcement means — the target of such a call *is* the
+        // branch name, and a call that named nothing falls back to the tool's own
+        // name and must be skipped rather than recorded as a branch called
+        // `git_branch`. That rule belongs beside the field it fills, and having
+        // it in one place is what keeps the status line, the `/status` page and
+        // the commit block naming the same branch.
+        self.status.note_branch(event);
+        match &event.kind {
             // `"exec"` is io-harness's own word on the wire, and not
             // [`crate::approval::act_word`]'s — that one reads `run`, for the
             // operator. Matching the operator's vocabulary here would match

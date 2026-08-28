@@ -728,7 +728,16 @@ impl Status {
         let io_harness::EventKind::ToolCall { name, target } = &event.kind else {
             return;
         };
-        if name != io_harness::tools::GIT_BRANCH_TOOL || target.is_empty() {
+        // **`target == name` is a call that named nothing, not a branch called
+        // `git_branch`.** io-harness picks a call's subject from the first
+        // conventional argument it carries and falls back to the tool's own name
+        // when it carries none, so an announcement with no `name` argument
+        // arrives here reading `git_branch` — and recording that would put a
+        // branch nobody has on the status line, the `/status` page and every
+        // commit block, from a call that failed. Trimmed as well as compared,
+        // because whitespace is not a branch either.
+        if name != io_harness::tools::GIT_BRANCH_TOOL || target == name || target.trim().is_empty()
+        {
             return;
         }
         self.branch = Some(target.clone());

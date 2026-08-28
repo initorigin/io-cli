@@ -179,7 +179,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     // the one thing a command that writes to a repository must not do.
     (
         "/commit",
-        "ask the agent to describe this turn's work and commit it",
+        "ask the agent to describe this turn's work and commit it; allow to permit git",
     ),
     (
         "/config",
@@ -993,13 +993,27 @@ pub enum Action {
     /// a commit happened — no `EventKind` carries a message, a branch or an object
     /// id, and no `Store` method returns one.
     ///
-    /// **No argument, and that is a decision rather than an omission.** A commit
-    /// message is a subject, a blank line and a body; none of that is a word that
-    /// fits after a slash, and offering half of one would put io-cli back in the
-    /// business of writing the message — which is precisely what the command
-    /// exists not to do. So anything after the word is ignored, the way
-    /// `/model gpt-5` and `/gates` ignore theirs.
-    Commit,
+    /// **The message is never an argument, and that is a decision rather than an
+    /// omission.** A commit message is a subject, a blank line and a body; none of
+    /// that is a word that fits after a slash, and offering half of one would put
+    /// io-cli back in the business of writing the message — which is precisely
+    /// what the command exists not to do.
+    ///
+    /// **The one word it does take is `allow`, and it exists because the refusal
+    /// would otherwise be an offer nobody can accept.** io-harness's git spawn
+    /// answers an *asking* `exec` posture with a refusal instead of an approval,
+    /// so no `ApprovalRequested` is ever raised and the operator never reaches the
+    /// remember path every other act has. `/commit` says so and names the one rule
+    /// that lifts it; `/commit allow` is how they take it. The rule covers the
+    /// single binary `git`, lasts for the session, and is the same
+    /// [`crate::approval::git_allowance`] the refusal named — a keystroke that
+    /// grants exactly what was described and nothing else.
+    ///
+    /// `true` means the operator asked for the allowance as well as the commit.
+    /// The word is spelled the way `/contain on` is: an argument on the existing
+    /// row rather than a second command, because it is one answer to one question
+    /// and a `COMMANDS` row is for a surface rather than for an answer.
+    Commit(bool),
     /// Put the whole conversation back into the scrollback.
     Transcript,
     /// Clear the screen and start a new conversation.
@@ -1862,7 +1876,15 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // the rest because the sentence IS the thing being stored; here the message
         // is the agent's to write, and a half-typed subject picked up off the prompt
         // would be io-cli writing it after all — see [`Action::Commit`].
-        "commit" => Action::Commit,
+        // `allow` and nothing else, because there is exactly one thing to say
+        // here beyond the word itself. An unrecognised second word commits
+        // without the allowance rather than refusing the whole line: the operator
+        // asked for a commit, and the worst case is the refusal they were already
+        // going to get, said again with the rule named.
+        "commit" => Action::Commit(matches!(
+            input.split_whitespace().nth(1),
+            Some("allow") | Some("allow-git")
+        )),
         unknown => {
             let mut lines = vec![theme.notice(
                 Tone::Warning,

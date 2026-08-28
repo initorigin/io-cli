@@ -16,7 +16,7 @@
 //! all colonless would pass under that reading and prove nothing.
 
 use io_cli::commit::{self, Made};
-use io_harness::{AssistantTurn, Identity, ToolCall};
+use io_harness::{AssistantTurn, Defaults, Effect, Identity, Policy, ToolCall};
 
 /// A `git_commit` call carrying `message`.
 fn commits(message: &str) -> ToolCall {
@@ -333,4 +333,79 @@ fn f7_no_identity_is_substituted_for_one_that_merely_looks_like_a_default() {
             format!("authored as {name} <somebody@example.com>"),
         );
     }
+}
+
+// F2's first half — the check that happens BEFORE a turn is bought.
+//
+// `asked` is the whole of the pre-turn decision, and it lives here rather than in
+// the driver for the reason every decision in this release does: nothing under
+// `tests/` links `src/main.rs`, so a refusal written there could be neither
+// asserted nor sabotaged. The driver holds the wiring — build the policy in
+// force, ask, and either say why not or submit — and this is where the answer is
+// pinned.
+
+/// A policy whose `exec` default is what a posture would set it to.
+fn posture(exec: Effect) -> Policy {
+    let mut policy = Policy::permissive();
+    policy.defaults = Defaults {
+        read: Effect::Allow,
+        write: Effect::Allow,
+        exec,
+        net: Effect::Deny,
+    };
+    policy
+}
+
+#[test]
+fn f2_a_posture_that_allows_git_buys_the_turn() {
+    assert_eq!(
+        commit::asked(&posture(Effect::Allow), false),
+        Ok(()),
+        "nothing refuses git, so there is nothing to say and the turn is bought",
+    );
+}
+
+#[test]
+fn f2_an_asking_posture_is_refused_before_the_turn_is_paid_for() {
+    let refusal = commit::asked(&posture(Effect::Ask), true)
+        .expect_err("an asking posture refuses git at the spawn, so /commit must not spend a turn");
+    assert!(
+        refusal.contains("refused rather than asked"),
+        "the sentence has to name what the posture did, because the posture's own \
+         name says it will ask and the harness does not: {refusal:?}",
+    );
+    assert!(
+        refusal.contains("git"),
+        "and it has to name the one binary the allowance covers: {refusal:?}",
+    );
+}
+
+#[test]
+fn f2_a_denying_posture_is_refused_without_being_offered_a_rule() {
+    // The asymmetry found while building F1, and the reason `asked` takes the
+    // second argument at all. A rule is matched BEFORE a default, so the same
+    // allowance that lifts an asking default would also lift a denying one — and
+    // a keystroke that defeats the one posture whose name is a promise is not a
+    // convenience. Under a deny the answer is to change posture.
+    let refusal = commit::asked(&posture(Effect::Deny), false)
+        .expect_err("a denying posture cannot run a command, so it cannot commit");
+    assert!(
+        !refusal.contains("Allow `git`"),
+        "a denying posture must NOT be offered the allowance: {refusal:?}",
+    );
+    assert!(
+        refusal.contains("posture"),
+        "it is told what to change instead: {refusal:?}",
+    );
+}
+
+#[test]
+fn f2_the_two_refusals_are_not_the_same_sentence() {
+    let asking = commit::asked(&posture(Effect::Ask), true).unwrap_err();
+    let denying = commit::asked(&posture(Effect::Deny), false).unwrap_err();
+    assert_ne!(
+        asking, denying,
+        "an operator who asked to be asked and one who asked for nothing to run \
+         are in different situations, and one of them has a one-keystroke fix",
+    );
 }

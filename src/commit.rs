@@ -181,6 +181,41 @@ pub fn prompt() -> String {
         .to_string()
 }
 
+/// Whether `/commit` may spend a turn, and what to say when it may not.
+///
+/// **The check happens before the turn, not after it.** A commit the policy was
+/// always going to refuse still costs a real completion against a real model to
+/// discover, so the one question worth asking first is whether git can run at
+/// all.
+///
+/// The three answers are not symmetrical, and the asymmetry is deliberate:
+///
+/// - Nothing refuses git, so the turn is bought.
+/// - The refusal came from an **asking** default. The operator chose a posture
+///   that promises to ask, and the harness's git spawn does not ask — so naming
+///   the one rule that lifts it is telling them what their own posture meant to
+///   do. [`crate::approval::git_allowance`] is that rule, and it names one binary.
+/// - The refusal came from a **denying** default or an explicit deny. Here the
+///   answer is *not* to offer a rule. A rule is matched before a default, so the
+///   same allowance would work under `read only` too — and a keystroke that
+///   defeats the one posture whose name is a promise is not a convenience. The
+///   answer is to change posture, which is a decision rather than a shortcut.
+pub fn asked(policy: &io_harness::Policy, asking: bool) -> Result<(), String> {
+    if !crate::approval::refuses_git(policy) {
+        return Ok(());
+    }
+    Err(if asking {
+        "this posture asks before running a command, and the harness's git tools are refused \
+         rather than asked — so a commit would be refused after the turn was paid for. Allow \
+         `git` for this session and run /commit again."
+            .to_string()
+    } else {
+        "this posture does not let the agent run a command, so it cannot commit. Change the \
+         posture if you want it to."
+            .to_string()
+    })
+}
+
 /// The sentence naming who a commit will be authored as.
 ///
 /// Shown before the turn is spent, because the identity is the one thing about a
