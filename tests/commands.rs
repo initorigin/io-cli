@@ -89,6 +89,13 @@ fn the_commands_are_the_commands() {
             // this list, which is the rule every alias here follows.
             "/cost",
             "/stats",
+            // 0.24.0 — beside `/stats` because `/stats` is the only other row
+            // that says the word: that page counts how the gates went, and until
+            // this release nothing in the product could say what a gate was. It
+            // is under **configure** and not **inspect**, because opening it is
+            // one keystroke from writing `[app.io-cli.gates]` and changing what
+            // every later turn has to prove.
+            "/gates",
         ],
         "the fuzzy palette is still 0.7.0; this list is written out so that adding \
          a command is a decision somebody makes rather than a line somebody adds",
@@ -261,11 +268,15 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
         Action::Resume,
     );
     // No command was added for any of this — `/resume` was extended — so the
-    // inventory is the size the other gates in this file assert.
+    // inventory is the size the other gates in this file assert. The number is
+    // 30 plus 0.24.0's one addition, and the two halves are named separately on
+    // purpose: a total that merely went up by one would be satisfied by 0.23.0
+    // growing a command and 0.24.0 losing one.
     assert_eq!(
         COMMANDS.len(),
-        30,
-        "0.23.0 adds no command; a thirty-first here means one arrived unrecorded",
+        31,
+        "0.23.0 adds no command and 0.24.0 adds exactly one, `/gates`; a \
+         thirty-second here means one arrived unrecorded",
     );
 }
 
@@ -1153,5 +1164,85 @@ fn f17_usage_answers_and_is_never_listed() {
     assert!(
         !rows.iter().any(|row| row.label == "usage"),
         "a second row for one screen reads as a second screen",
+    );
+}
+
+/// 0.24.0 — `/gates` is a **configure** command, resolves to its own action, and
+/// its row is reachable.
+///
+/// Every claim here is written against the sabotage that would satisfy the
+/// generic gates in this file while leaving the command broken. None of them is
+/// a restatement of a gate that already covers it.
+///
+/// `no_listed_command_falls_through_to_the_help_listing` proves only that the
+/// word is not the unknown-command listing; a `parse` arm that returned
+/// `Action::Config(None)` — the surface next door, and the one a careless hand
+/// reaches for — would pass it and would open the wrong screen. So the action is
+/// asserted by name.
+///
+/// `f13_every_command_is_in_exactly_one_group` proves only that it has *a* home.
+/// `Inspect` would satisfy it, and `Inspect`'s own documentation says nothing
+/// under it changes what a turn does — which a surface that writes
+/// `[app.io-cli.gates]` falsifies for every later turn at once. So the group is
+/// asserted by name rather than left to the count, exactly as the `/mcp` and
+/// `/provider` move is.
+///
+/// And the description is asserted to name a cost, because `tests/docs.rs` copies
+/// it into the README verbatim and it is the only sentence most operators will
+/// ever read about this command. A rubric is a real billed completion on every
+/// gated turn; a one-liner that said "what done means" and stopped would hide
+/// that behind a word that sounds free.
+#[test]
+fn gates_is_a_configure_command_that_resolves_to_its_own_action() {
+    use io_cli::commands::{group_of, palette, palette_pick, Chosen, Group};
+    use io_harness::Templates;
+
+    assert!(
+        COMMANDS.iter().any(|(name, _)| *name == "/gates"),
+        "a surface nobody is told about is a surface nobody uses",
+    );
+    assert_eq!(
+        commands::parse("gates", &defaults(), &DARK),
+        Action::Gates,
+        "`/gates` must open its own surface, not the one next door",
+    );
+    // The singular is the spelling a hand reaches for when there is exactly one
+    // criterion, and it must be the same screen rather than an unknown command.
+    assert_eq!(commands::parse("gate", &defaults(), &DARK), Action::Gates);
+    // Arguments are tolerated and the first word decides, as everywhere else —
+    // and this is the command most likely to be typed with one, because the
+    // thing an operator wants to set is a command line.
+    assert_eq!(
+        commands::parse("gates cargo test", &defaults(), &DARK),
+        Action::Gates,
+    );
+
+    assert_eq!(
+        group_of("/gates"),
+        Some(Group::Configure),
+        "`/gates` writes [app.io-cli.gates], and Inspect promises it never writes \
+         — a gate an operator did not mean to set spends a whole extra turn \
+         against a real model",
+    );
+
+    let (_, said) = COMMANDS
+        .iter()
+        .find(|(name, _)| *name == "/gates")
+        .expect("/gates is listed");
+    assert!(
+        said.contains("rubric"),
+        "the one line most operators read must name the kind that costs money on \
+         every gated turn: {said}",
+    );
+
+    let rows = palette(&Templates::none(), &[]);
+    let index = rows
+        .iter()
+        .position(|row| row.label == "gates")
+        .expect("`/gates` has no palette row");
+    assert_eq!(
+        palette_pick(&Templates::none(), &[], index),
+        Some(Chosen::Command("/gates")),
+        "`/gates`'s row is advertised and inert",
     );
 }

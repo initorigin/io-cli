@@ -1299,19 +1299,36 @@ impl Events {
             }
             // The reasons are carried rather than summarised, for io-harness's own
             // reason: a refusal a human cannot argue with is a gate nobody trusts
-            // twice.
+            // twice. They are the operator's only account of why the work was
+            // judged insufficient — the store has the same sentence joined by
+            // semicolons, and a session that dropped them would be sending
+            // somebody to a database to read a paragraph the run already said.
+            //
+            // **The failing verdict is a warning and not `Tone::Refused`, from
+            // 0.24.0.** That tone carries the literal word `refused`, which
+            // everywhere else in this transcript means the permission boundary
+            // stopped an act; a reviewer that read the work and judged it did not
+            // stop anything, and giving both the same word would make the two
+            // things an operator most needs to tell apart — the policy would not
+            // run my gate, versus my work did not meet the bar — read identically.
+            //
+            // **A review that did not happen is not drawn here, because it is not
+            // emitted.** io-harness sends this event only for a verdict somebody
+            // gave; a transport failure or an unparseable answer emits nothing and
+            // is `GateOutcome::Errored` in the store. So this line always means a
+            // review that ran, and its absence is not evidence that one passed.
             EventKind::Reviewed { passed, reasons } => {
                 let mut lines = self.flush_text();
                 lines.push(theme.notice(
                     if *passed {
                         Tone::Success
                     } else {
-                        Tone::Refused
+                        Tone::Warning
                     },
                     if *passed {
                         "the review passed"
                     } else {
-                        "the review did not pass"
+                        "the review ran and did not pass"
                     },
                 ));
                 for reason in reasons {
@@ -1357,27 +1374,53 @@ impl Events {
                 // `triage::TRIAGE` records that route.
                 Vec::new()
             }
-            // **What isolated the work, said in the operator's words rather than
-            // inferred from a tool cell that happened to succeed.** Seven kinds
-            // reach this channel and four of them are drawn.
+            // **What isolated the work, and how the criterion it was isolated
+            // for answered, said in the operator's words rather than inferred
+            // from a tool cell that happened to succeed.** Seven kinds reach this
+            // channel and six of them are drawn.
             //
-            // **`dial` is not one of them.** io-harness builds it as a `destroy`
-            // event with the kind overwritten and emits it immediately beside
-            // `EventKind::Dialed` for the same outbound connection, so a session
-            // drawing both would put every dial in the transcript twice — and
-            // the copy here is the poorer one, carrying the word and nothing
+            // **`dial` is the one that is not.** io-harness builds it as a
+            // `destroy` event with the kind overwritten and emits it immediately
+            // beside `EventKind::Dialed` for the same outbound connection, so a
+            // session drawing both would put every dial in the transcript twice —
+            // and the copy here is the poorer one, carrying the word and nothing
             // else where the dial itself carries the host, the port and the
-            // verdict. `gate_phase_failed` and `gate_output` are the other two:
-            // they belong to an execution gate, and every contract this crate
-            // builds — see `crate::contract` — leaves `Verification::None` on it,
-            // because nothing here ever calls `with_verification`. So
-            // neither can arrive in a session before 0.24.0 gives one a gate,
-            // and neither is given a sentence written in advance of the release
-            // that could check it.
-            //
-            // An empty `Vec` is this module's own word for "nothing yet" and is
-            // the honest way to say all three: a caller cannot tell it from a
+            // verdict. An empty `Vec` is this module's own word for "nothing yet"
+            // and is the honest way to say it: a caller cannot tell it from a
             // dropped event because there is nothing there to tell apart.
+            //
+            // **`gate_phase_failed` and `gate_output` are drawn from 0.24.0.**
+            // Before this release every contract this crate built left
+            // `Verification::None` on it, so neither kind could arrive in a
+            // session and neither was given a sentence written in advance of the
+            // release that could check it. An operator now configures one
+            // criterion — `[app.io-cli.gates]`, resolved by `crate::gates` —
+            // io-harness runs it after the agent stops, and these two are the
+            // whole of what it says about a criterion that did not hold on the
+            // channel a session is already watching. A verdict that lives only in
+            // the store is a verdict nobody reads.
+            //
+            // **Neither line carries the fact that made it worth emitting, and
+            // that is io-harness's shape rather than a choice made here.** The
+            // failing phase and the failing command's bounded output are both in
+            // `SandboxEvent::detail`, and `EventKind::Sandbox` carries the kind
+            // and the backend alone. So a session learns that the gate ran and
+            // said no, and the text stays in the run's `sandbox_events` rows
+            // where a diagnosis reads it. Naming a phase here, or printing an
+            // empty string as though it were the command's output, would be this
+            // module writing the half it was not given.
+            //
+            // **A gate that did not hold is not a refusal, and neither line says
+            // that word.** `Tone::Refused` in this transcript means the
+            // permission boundary stopped an act — which is exactly what a
+            // criterion whose program the policy will not run produces: an
+            // `EventKind::Refused` with act `exec`, and no gate event at all,
+            // because nothing ran and nothing judged anything. That is
+            // `GateOutcome::Errored` in the store, the one verdict io-harness
+            // will retry. A gate line therefore only ever stands for a criterion
+            // that ran and answered, and the two need opposite responses from
+            // whoever is reading — fix the policy, or fix the work — so they are
+            // told apart by the words and never by a colour.
             //
             // **`cap_hit` is a limit reached and not a failure.** The sandbox
             // did exactly what its configuration told it to; reporting that
@@ -1400,6 +1443,11 @@ impl Events {
                     "exec" => ("a command ran in the sandbox", Tone::Muted),
                     "cap_hit" => ("the sandbox reached a limit it was given", Tone::Warning),
                     "destroy" => ("the sandbox was torn down", Tone::Muted),
+                    // `ran and` is load-bearing: it is the whole of what
+                    // separates a criterion that judged the work from one that
+                    // never got to.
+                    "gate_phase_failed" => ("the gate ran and did not pass", Tone::Warning),
+                    "gate_output" => ("the gate command printed output", Tone::Muted),
                     _ => return Vec::new(),
                 };
                 let mut text = said.to_string();
@@ -1747,9 +1795,14 @@ fn format_millis(duration: Duration) -> String {
 /// The vocabulary is io-harness's, and the distinction that matters here is
 /// between `success` and `finished`: `success` means a verification criterion
 /// passed, and `finished` means a run with no criterion ended on its own terms.
-/// **Every io-cli turn ends `finished`**, because every contract this crate
-/// builds — see [`crate::contract`] — leaves `Verification::None` on it: nothing
-/// here calls `with_verification`, on either arm.
+///
+/// **Both are reachable from 0.24.0, and until this release only one was.** Every
+/// contract this crate built left `Verification::None` on it, so every io-cli
+/// turn ended `finished` and `success` could not be produced from this interface
+/// at all. An operator now configures one criterion — see [`crate::gates`] — and
+/// a turn that carries one ends `success` when it holds. Neither word is a
+/// failure and both are drawn as the same thing; what separates them is how much
+/// the run is claiming, and that claim is the operator's to read.
 ///
 /// Found in a live run, not in the suite: treating anything that was not
 /// `success` as a warning meant every ordinary, completely successful turn ended

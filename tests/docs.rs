@@ -245,6 +245,22 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
             source: Some("the reference catalogue".into()),
             models: Some(417),
         }),
+        // Written out field by field rather than as a `Default::default()`, which
+        // would serialize to `{}` and satisfy the row check just as well. The
+        // point is the compile error: `[app.io-cli.gates]` is the one nested
+        // table whose keys are explained in README prose rather than in a row of
+        // their own, so a key added to `gates::Settings` has to break something
+        // to be noticed. This is that something.
+        gates: Some(io_cli::gates::Settings {
+            retries: Some(2),
+            command: Some(vec!["cargo".into(), "test".into()]),
+            expect_exit: Some(0),
+            file: Some("CHANGELOG.md".into()),
+            contains: Some("## [0.24.0]".into()),
+            rubric: Some("the change is covered by a test that fails without it".into()),
+            reviewer: Some("a-reviewing-model".into()),
+            allow_self_review: Some(false),
+        }),
     };
     let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");
@@ -856,6 +872,37 @@ fn the_readme_exit_table_is_the_exit_table() {
             "the README describes {code} differently from the code: {what}",
         );
     }
+
+    // 0.24.0's `6`, and it is asserted as a NUMBER rather than through a constant
+    // on purpose. What a script branches on is the integer, and the one mistake
+    // this release could make that a caller cannot recover from is landing the
+    // gate code on a number that already meant something else. So the claim is
+    // that `6` is the code immediately after `UNFINISHED`, which is where the six
+    // that shipped in 0.5.0 stopped. Move any of those six and this fails; give
+    // the gate a number one of them already holds and it fails too.
+    assert_eq!(
+        io_cli::exec::UNFINISHED + 1,
+        6,
+        "the gate code sits after the six that shipped in 0.5.0; a code that moved \
+         one of them cannot be migrated by fixing forward",
+    );
+    assert!(
+        readme.contains("| `6` |"),
+        "the README's exit table has no row for the gate that did not pass",
+    );
+    assert!(
+        readme.contains("does not hold up"),
+        "the README should say what `6` means in the words the release uses: the \
+         agent finished and the work does not hold up",
+    );
+    // And the half a reader most needs: nothing above it moved. A release that
+    // renumbered `5` would leave every script branching on it silently wrong,
+    // which is the failure the sentence exists to rule out.
+    assert!(
+        readme.contains("No exit code was renumbered"),
+        "the README should say, where the table is, that no existing code changed \
+         meaning",
+    );
 }
 
 #[test]

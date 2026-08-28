@@ -159,6 +159,25 @@ pub const CATALOGUE: &[&str] = &[
     // setting, and it is reached the way `/provider` and `/mcp` reach a list.
     "prices.as_of",
     "app.io-cli.prices.source_url",
+    // What "done" means here. Every key of the section and not a chosen few,
+    // because the section refuses rather than defaults: exactly one of `command`,
+    // `file` and `rubric` may be set, and an operator meeting three of the eight
+    // on this surface would be reading a partial list as the whole schema and
+    // writing an ambiguous section from it. `expect_exit`, `contains` and
+    // `allow_self_review` each qualify exactly one of those three, and a
+    // qualifier nobody can see is a qualifier nobody sets.
+    //
+    // Unlike `prices.source`, none of these is written by machinery — a gate is
+    // typed by the operator or it does not exist — so there is no key here that
+    // is listed only to be read.
+    "app.io-cli.gates.retries",
+    "app.io-cli.gates.command",
+    "app.io-cli.gates.expect_exit",
+    "app.io-cli.gates.file",
+    "app.io-cli.gates.contains",
+    "app.io-cli.gates.rubric",
+    "app.io-cli.gates.reviewer",
+    "app.io-cli.gates.allow_self_review",
 ];
 
 /// The `/config` row that re-reads the price catalogue.

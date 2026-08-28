@@ -107,9 +107,15 @@ async fn f1_a_clean_run_finishes_rather_than_succeeding() {
     .expect("the turn runs");
 
     // Not an incidental assertion. `TaskContract::workspace` sets
-    // `Verification::None`, so `Success` is unreachable from this subcommand and
-    // `Finished` is what every good run returns. A table that mapped only
+    // `Verification::None`, and this fixture configures no criterion, so
+    // `Finished` is what a good run returns here. A table that mapped only
     // `Success` to zero would fail here — and only here, on the ordinary case.
+    //
+    // **0.24.0 makes `Success` reachable and this assertion narrower rather than
+    // false.** An operator who writes `[app.io-cli.gates]` gets a real
+    // criterion on the contract and a passing gate returns `Success`. What stays
+    // true is that a run with NO criterion finishes rather than succeeding, which
+    // is the case this fixture builds and the case every operator has today.
     assert!(
         matches!(result.outcome, RunOutcome::Finished { .. }),
         "a contract with no verification criterion finishes, it does not succeed: {:?}",
@@ -178,14 +184,87 @@ fn f2_every_outcome_maps_to_its_documented_code() {
     }
 
     // The six codes are distinct and cover 0..=5, so a script can branch on them.
+    //
+    // **`6` is deliberately absent from this list and that is the assertion.**
+    // 0.24.0 added `UNVERIFIED`, and it is not reachable from an outcome —
+    // io-harness has no `RunOutcome` variant for a criterion that answered no, so
+    // the verdict is read from the store and applied by `exec::verified_code`.
+    // This test is about `exec::code`, whose input is an outcome and nothing
+    // else; widening it to admit 6 would make it a weaker statement about a
+    // function that cannot produce one. `verified_code` has its own test below.
     let mut codes: Vec<u8> = cases.iter().map(|(_, code)| *code).collect();
     codes.sort_unstable();
     codes.dedup();
     assert_eq!(
         codes,
         vec![0, 2, 3, 4, 5],
-        "0, 2, 3, 4 and 5 are reachable from an outcome; 1 is reserved for never reaching one"
+        "0, 2, 3, 4 and 5 are reachable from an outcome; 1 is reserved for never reaching one, \
+         and 6 is decided after the run by `verified_code`"
     );
+}
+
+/// A gate that ran and said no is exit `6`, whatever the run itself reported.
+///
+/// The two outcomes below are the ones a gate-failed run actually ends in, and
+/// they map to different codes without a gate — `StepCapReached` to `3` when the
+/// agent spends its budget failing the criterion, `Finished` to `0` when it stops
+/// early believing itself done. Both become `6`, which is the whole point: the
+/// operator asked a question and got the same answer either way.
+///
+/// Sabotage: treat `Errored` as `UNVERIFIED` too — under which the `Errored` arm
+/// fails, and it fails by reporting a judgement that was never made.
+#[test]
+fn f8_a_failing_gate_is_exit_six_and_a_gate_that_never_answered_is_not() {
+    use io_cli::gates::Standing;
+    use io_harness::GateOutcome;
+
+    let standing = |outcome| Standing {
+        phase: "command".into(),
+        outcome,
+        attempt: 1,
+    };
+
+    for outcome in [
+        RunOutcome::StepCapReached { steps: 12 },
+        RunOutcome::Finished { steps: 3 },
+    ] {
+        assert_eq!(
+            exec::verified_code(&outcome, Some(&standing(GateOutcome::Failed))),
+            exec::UNVERIFIED,
+            "{outcome:?} with a failed gate is the work not holding up",
+        );
+
+        // A criterion that could not run has judged nothing. The run keeps the
+        // code its own outcome earned.
+        assert_eq!(
+            exec::verified_code(&outcome, Some(&standing(GateOutcome::Errored))),
+            exec::code(&outcome),
+            "{outcome:?} with an errored gate keeps its own code",
+        );
+
+        // A passing gate is not a reason to change anything either: `Success`
+        // already maps to `OK` through the table.
+        assert_eq!(
+            exec::verified_code(&outcome, Some(&standing(GateOutcome::Passed))),
+            exec::code(&outcome),
+            "{outcome:?} with a passing gate keeps its own code",
+        );
+
+        // And an operator who configured no criterion sees exactly what they saw
+        // in 0.23.0.
+        assert_eq!(
+            exec::verified_code(&outcome, None),
+            exec::code(&outcome),
+            "{outcome:?} with no gate configured is unchanged",
+        );
+    }
+
+    // `6` is outside the range `code` can produce, so a script branching on the
+    // old six cannot mistake it for one of them. Asserted against `UNFINISHED`
+    // rather than as a bare literal, so that moving any existing code reddens
+    // here too.
+    assert_eq!(exec::UNVERIFIED, exec::UNFINISHED + 1);
+    assert_eq!(exec::UNVERIFIED, 6);
 }
 
 #[test]

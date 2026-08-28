@@ -6,6 +6,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-28
+
+A turn proves its work instead of asserting it. io-harness has carried a
+verification pillar since long before this interface existed — a contract holds a
+criterion, the run executes it after the agent stops, and the run comes back as
+`Success` rather than `Finished` when it passed. io-cli has never once supplied
+one, which is why every clean run this product has ever reported said `finished`
+and meant "the agent stopped", not "the work holds up".
+
+**You say what done means for this repository, in the repository's own
+language.** A command that must exit zero, a file that must exist and say
+something, or a rubric a second model answers. The command is proposed from what
+the repository actually is: io-harness reads its marker files and names its own
+test command, so a Rust checkout offers `cargo test`, a `package.json` offers
+whatever its lockfile implies, and a repository with no marker offers nothing
+rather than guessing. io-cli holds no list of test commands and no list of marker
+files.
+
+**The verdict is on screen while it happens.** The status line carries the gate's
+standing and, once there has been more than one, which attempt this is. After a
+gated turn the scrollback takes the phase that ran, what it answered and what the
+command printed — a gate that failed because the tests went red reads differently
+from one that failed because the policy would not let the program run at all.
+
+**A failing gate sends the agent back to work with the failure in hand**, up to a
+retry budget you set and defaulting to one. The harness's own loop does not do
+this: it records the failure and takes another step without telling the model
+anything, so a run can spend its whole budget failing the same gate for the same
+reason. What io-cli does instead is drive a follow-up turn carrying the criterion
+and the output it produced.
+
+**`io exec` gains exit `6`** — the agent finished and the work does not hold up.
+It is distinct from `5`, the agent stopping without finishing, and from `3`, the
+ceiling a failing gate used to hide behind. No existing code changed meaning.
+
+Also: `/mcp` can edit a server at last, closing a limitation this product has
+carried and stated since 0.21.0.
+
 ## [0.23.0] - 2026-08-28
 
 A run that paused is answered rather than abandoned. Everything needed to do it

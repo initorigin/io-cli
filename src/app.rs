@@ -2094,3 +2094,194 @@ impl App {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The verification gate, as a surface and a driver read it
+// ---------------------------------------------------------------------------
+//
+// **These live here rather than in `src/main.rs`, and that placement is the
+// whole reason they are functions at all.** Nothing under `tests/` links the
+// binary, so a decision written as a branch in the driver is one no test can
+// drive and no sabotage can make fail. `crate::gates` owns everything that is a
+// property of a criterion; what is left is the handful of answers a *surface*
+// needs — which attempts a turn is judged by, what one line of scrollback says
+// about them, and what a retried turn is told. Each is pure over its arguments,
+// reads no clock, and opens no store.
+
+// ---------------------------------------------------------------------------
+// `/mcp`'s edit verb, as it travels through the composer
+// ---------------------------------------------------------------------------
+
+/// What `/mcp`'s edit verb writes on the prompt in front of the server's id.
+///
+/// **An id and not an index, and the whole verb rests on that.** `mcp[3].command`
+/// is a position in one file's `[[mcp]]` array; the operator is about to type a
+/// value into a composer that any other keystroke can leave, and a file edited in
+/// another window in between moves the array under it. `mcp.<id>.<key>` names the
+/// entry by the one thing that is stable, so the driver resolves
+/// [`crate::servers::At`] again — from the file's own bytes — when the line comes
+/// back. That is the same rule `/mcp`'s removal verb has followed since 0.21.0,
+/// and it is the rule 0.20.0's wrong delete was shipped by breaking.
+///
+/// It is spelled here rather than in the driver because nothing under `tests/`
+/// links `src/main.rs`: the prefix the composer writes and the prefix the driver
+/// matches on must be one constant, or the verb goes quietly dead the first time
+/// either is retyped.
+pub const SERVER_KEY: &str = "mcp.";
+
+/// The server id and the key a `mcp.<id>.<key>` line addresses.
+///
+/// `None` for anything that is not that shape, including a bare `mcp.` and an id
+/// with no key after it. An id containing a dot splits at the LAST one, because
+/// the key is the part this crate knows the spelling of — [`crate::servers::KEYS`]
+/// holds none with a dot in it, and an MCP server may be called anything at all.
+pub fn server_key(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix(SERVER_KEY)?;
+    let (id, key) = rest.rsplit_once('.')?;
+    (!id.is_empty() && !key.is_empty()).then_some((id, key))
+}
+
+/// The TOML source for a value an operator typed after an `[[mcp]]` key.
+///
+/// [`crate::servers::edit`] takes TOML **source**, and what arrives from a
+/// composer is a person's typing. The gap is not cosmetic: `format!("\"{typed}\"")`
+/// — the spelling every call site reaches for — is a parse error or a different
+/// value the moment the text carries a quote or a backslash, and a Windows command
+/// path is full of the second.
+///
+/// Four shapes, because `[[mcp]]` has four kinds of value:
+///
+/// * `args` is a list, and an operator writes a list of arguments as a command
+///   line. Split on whitespace, which is the same trade every shell makes and the
+///   reason an argument with a space in it needs the file rather than this verb.
+/// * `timeout_secs` is a number, and a number is already TOML.
+/// * `env` and `headers` are inline tables, which have exactly one spelling —
+///   `{ KEY = "value" }` — so what the operator typed is passed through and
+///   `crate::edit::apply` refuses it if it is not TOML.
+/// * everything else is a string, escaped by [`crate::servers::quoted`].
+pub fn server_value(key: &str, typed: &str) -> String {
+    let typed = typed.trim();
+    match key {
+        "args" => crate::edit::array(&typed.split_whitespace().collect::<Vec<&str>>()),
+        "timeout_secs" | "env" | "headers" => typed.to_string(),
+        _ => crate::servers::quoted(typed),
+    }
+}
+
+/// The row `/gates` draws for the command this repository proposes for itself.
+///
+/// A sentinel and not a key, for the reason [`crate::configure::REFRESH_PRICES`]
+/// is one: every other row on that surface names a setting and puts it in the
+/// composer, and this one does something. It is spelled here rather than in the
+/// driver so a test can reach it.
+pub const PROPOSED_GATE: &str = "!proposed-gate";
+
+/// What the failing gate actually said, or `None` when it said nothing.
+///
+/// Two sources because a gate has two ways of speaking and neither covers the
+/// other. A command's output is **not** in its row — `GateAttempt::detail` is
+/// empty for every non-review criterion — it arrives as `gate_output` sandbox
+/// events, which is what [`crate::gates::output`] reads, filtered to the step this
+/// attempt ran after so a retried gate carries the failure that caused the retry
+/// rather than the one two turns ago. A review's reasons and an errored gate's
+/// cause are the opposite: they are in the row and there is no sandbox event at
+/// all, because nothing was executed.
+fn gate_said(
+    attempts: &[io_harness::GateAttempt],
+    events: &[io_harness::SandboxEvent],
+) -> Option<String> {
+    let last = attempts.last()?;
+    // `trim`, because io-harness writes `review.reasons.join("; ")` verbatim and a
+    // reviewer that answered with blanks would otherwise produce a report line
+    // ending in a dangling colon and a retry prompt whose "this is what it
+    // reported" section is empty. Nothing to say is `None`, and `gate_retry`
+    // already has a sentence for that.
+    crate::gates::output(events, last.step)
+        .or_else(|| (!last.detail.trim().is_empty()).then(|| last.detail.clone()))
+}
+
+/// The one line a turn's gate commits into the scrollback, with its tone.
+///
+/// `None` for a turn nothing gated, which is the ordinary case and not a thing to
+/// say: a session with no `[app.io-cli.gates]` section would otherwise earn a
+/// line under every turn saying so.
+///
+/// **Scrollback and not the footer.** The verdict is an account of the turn above
+/// it and outlives the keystroke that follows; `App::say` is answered by the next
+/// key press. The driver is what calls [`App::record`] with this — the tone
+/// travels with the sentence so the driver holds no branch about it.
+pub fn gate_report(
+    attempts: &[io_harness::GateAttempt],
+    events: &[io_harness::SandboxEvent],
+) -> Option<(Tone, String)> {
+    let standing = crate::gates::standing(attempts)?;
+    // `GateOutcome::as_str` verbatim, never a word of io-cli's own: the status
+    // line, the exit code and this sentence all have to spell one verdict the
+    // same way, and `as_str` is where that spelling is decided.
+    let word = standing.outcome.as_str();
+    let tone = match standing.outcome {
+        io_harness::GateOutcome::Passed => Tone::Success,
+        // **`Tone::Warning` and emphatically not `Tone::Refused`, whose rendered
+        // word is the literal `refused`.** That word belongs to the permission
+        // boundary, and this release moved the failing review off that tone in
+        // `src/events.rs` for exactly this reason — only for the scrollback line
+        // one row below to put it back. An operator would read `warning: the gate
+        // ran and did not pass` and directly beneath it `refused: gate failed`,
+        // which collapses "the policy would not run my gate" into "your work did
+        // not meet the bar". Those are the two facts a gate most has to keep
+        // apart, and they need opposite responses.
+        io_harness::GateOutcome::Failed => Tone::Warning,
+        // `Errored`, and whatever a later io-harness adds — the enum is
+        // `#[non_exhaustive]`, and an outcome this release has not seen is not a
+        // pass.
+        _ => Tone::Error,
+    };
+    let mut line = format!("gate {word} ({} criterion", standing.phase);
+    if standing.attempt > 1 {
+        line.push_str(&format!(", attempt {}", standing.attempt));
+    }
+    line.push(')');
+    if let Some(said) = gate_said(attempts, events) {
+        line.push_str(": ");
+        line.push_str(said.trim());
+    }
+    Some((tone, line))
+}
+
+/// The prompt a failing gate drives the next turn with.
+///
+/// **It takes no goal, and that absence is the whole design.** A retry that
+/// re-sent the original prompt would look like a working retry — a second turn
+/// runs, the model does more work — while telling the agent nothing about what
+/// went wrong, and the criterion it is judged by would fail again for the same
+/// reason. There is no parameter here it could be passed through, so that
+/// implementation cannot be written. What the turn is told is what the criterion
+/// asks, in [`crate::gates::Criterion::describe`]'s words — the same words the
+/// first turn was judged by — and what the gate reported when it said no.
+///
+/// The last sentence is not decoration. A gate is a command, a file or a rubric
+/// the operator wrote; an agent handed a failing check and no instruction about it
+/// will sometimes edit the check.
+pub fn gate_retry(
+    criterion: &crate::gates::Criterion,
+    attempts: &[io_harness::GateAttempt],
+    events: &[io_harness::SandboxEvent],
+) -> String {
+    let asks = criterion.describe();
+    match gate_said(attempts, events) {
+        Some(said) => format!(
+            "The verification gate for this work did not pass. It asks: {asks}.\n\nThis is \
+             what it reported:\n\n{}\n\nChange the work so that the gate passes. Do not \
+             change the gate itself.",
+            said.trim()
+        ),
+        // A gate that failed silently — a command that printed nothing, an
+        // existence check on a file nobody wrote — still has a criterion to
+        // state, and stating it is more than the turn had before.
+        None => format!(
+            "The verification gate for this work did not pass. It asks: {asks}. It reported \
+             nothing further.\n\nChange the work so that the gate passes. Do not change the \
+             gate itself."
+        ),
+    }
+}

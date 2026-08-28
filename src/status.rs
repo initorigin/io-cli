@@ -326,6 +326,47 @@ pub struct Status {
     /// `false` renders as nothing at all, on the rule this line already holds:
     /// a session that has not asked to plan is not a session planning zero times.
     pub planning: bool,
+    /// Where this turn's verification gate stands, in one word.
+    ///
+    /// **A word and never a mark**, for the reason [`WORDS`] is a list of words
+    /// and [`SPINNER`] is explicitly not a state: the standing has to survive
+    /// `--plain`, `NO_COLOR` and the ASCII glyph set, and a tick that means
+    /// *passed* only in green is a fact a monochrome terminal does not carry at
+    /// all. It is the choice 0.23.0 made for the resume marks, made again.
+    ///
+    /// **A `String` this file never interprets, and that is the decision rather
+    /// than the shortcut it looks like.** The words are io-harness's own —
+    /// `GateOutcome::as_str` spells the three outcomes a gate can end on, and the
+    /// driver supplies the one the harness has no outcome for, a criterion that
+    /// is being evaluated right now. Holding the gate's own type here would make
+    /// this line the second place that decides what a standing is called;
+    /// matching on the word to pick a tone would make it the third, and would
+    /// leave a literal in this file that a rename on the other side walks
+    /// silently past. So the word arrives composed and is drawn as it arrives —
+    /// the same rule the containment word is held to, and the reason no backend
+    /// name is written into this module either.
+    ///
+    /// `None` is a session with no criterion configured, which is nearly all of
+    /// them, and it draws **nothing at all** — not `none`, not an empty label,
+    /// not a zero. A turn nobody asked to verify has not failed verification.
+    ///
+    /// Cleared by [`Status::forget_run`] and by [`Status::start_run`]: a standing
+    /// is an account of the turn that was gated and of no other turn.
+    pub gate: Option<String>,
+    /// Which attempt that standing was taken on, where more than one was made.
+    ///
+    /// **Absent below two, which is the absent-rather-than-zero rule sharpened by
+    /// one.** Every gate that ran at all ran once, so `attempt 1` would be on
+    /// every gated line in the world and would tell an operator nothing — the
+    /// argument [`Budgets::in_force`] already makes about io-cli's own step
+    /// floor, which is a cap on every turn and therefore a ceiling nobody chose.
+    /// What is worth a field is that the turn is being *retried*, and that starts
+    /// at the second attempt.
+    ///
+    /// `None` where the driver has no number to report, which is every session
+    /// with no gate and the first attempt of every session with one. The
+    /// rendering is [`Status::gate_field`]'s, so the threshold is decided once.
+    pub gate_attempt: Option<u32>,
     /// What this turn has drawn against the tree's shared ceiling, and what is
     /// left of it: `(drawn, remaining)`.
     ///
@@ -502,6 +543,8 @@ impl Status {
             spend: None,
             plan: None,
             planning: false,
+            gate: None,
+            gate_attempt: None,
             jobs: 0,
             mcp: (0, 0),
             lsp: 0,
@@ -569,6 +612,15 @@ impl Status {
         self.containment = None;
         self.spend = None;
         self.plan = None;
+        // **A standing belongs to the turn that was gated, and this is the field
+        // where keeping it would be worst.** Every other run fact left behind is
+        // a stale *number*; this one is a verdict on work that is no longer on
+        // the screen, so a `/resume` onto a conversation nobody ever gated would
+        // inherit `gate passed` and read as verified. The attempt count goes with
+        // it rather than separately: a retry count with no standing beside it is
+        // a number about nothing.
+        self.gate = None;
+        self.gate_attempt = None;
         // A handle belongs to the run that started it. Leaving the count behind
         // would have `/resume`, `/fork` and a rewind assert that another run's
         // jobs are still alive — and there would be no event left that could ever
@@ -597,6 +649,26 @@ impl Status {
         // `run_tokens` above is held to: a turn that has not called a provider yet
         // has not cost zero, it has not cost anything anybody can report.
         self.cost = None;
+        // **Here as well as in `forget_run`, because `forget_run` does not run
+        // between two ordinary turns.** That method is reached by `/resume`,
+        // `/fork`, `/clear` and a rewind; the common case — the operator types a
+        // second prompt — reaches only this one, and a standing left behind by it
+        // would have the line asserting turn one's verdict over the whole of turn
+        // two, which is the per-turn field this codebase has already shipped
+        // stale once.
+        //
+        // **A gate retry IS affected, and the honest note is worth more than the
+        // reassuring one.** An earlier draft of this comment said the retries
+        // happen inside io-harness's own turn under a single `start_run`. They do
+        // not: io-cli drives the retry as a fresh turn through the driver's own
+        // queue, so it arrives here and the standing is cleared for the duration
+        // of the very turn it explains. What stays on screen is the scrollback
+        // record, which is permanent and says what failed; the footer field
+        // reappears when the retry is judged in its turn. Keeping the word across
+        // the chain would mean not clearing it here, and that is the same door the
+        // stale-per-turn defect above came through.
+        self.gate = None;
+        self.gate_attempt = None;
     }
 
     /// Set [`Status::cost`] from what this run has actually called, priced by
@@ -884,6 +956,42 @@ impl Status {
         self.cost.map(crate::cost::money)
     }
 
+    /// Where the gate stands, drawn, or nothing at all.
+    ///
+    /// **One method, reached by both renderers**, which is the shape
+    /// [`Status::budgets_left`], [`Status::queued_left`] and
+    /// [`Status::cost_field`] already have and for the reason written where they
+    /// are: this file has shipped a field into one renderer twice — 0.8.0's spend
+    /// and 0.12.0's planning phase — and both times it was green in a unit test
+    /// and nowhere on screen, because the binary draws the footer on every
+    /// terminal seven rows or taller.
+    ///
+    /// `Option` rather than a `String` that is sometimes empty, so the absence is
+    /// decided here once and cannot be forgotten by a caller: both renderers push
+    /// whatever this returns and neither one asks about [`Status::gate`] itself.
+    ///
+    /// **The attempt is part of the same field rather than a second one**, because
+    /// the two are one fact — `failed` and `failed for the third time` are
+    /// different situations for an operator, and an `attempt 3` that could be
+    /// dropped away from the word it qualifies would be a number about nothing.
+    /// It costs ten cells and appears only from the second attempt, which is to
+    /// say on the lines where a turn is visibly not converging.
+    ///
+    /// **No tone is chosen here and none is chosen by the callers.** Both draw the
+    /// word in `Tone::Normal`, the tone the planning phase and the background-job
+    /// count wear, because deciding between them would mean this module comparing
+    /// the standing against literal outcome words that belong to io-harness — see
+    /// [`Status::gate`]. Nothing is lost by it: the rule this line has held since
+    /// its first release is that the word is the state and a colour only ever
+    /// agrees with it, so a standing spelled out in full needs no second channel.
+    pub fn gate_field(&self) -> Option<String> {
+        let standing = self.gate.as_ref()?;
+        Some(match self.gate_attempt {
+            Some(attempt) if attempt > 1 => format!("gate {standing} attempt {attempt}"),
+            _ => format!("gate {standing}"),
+        })
+    }
+
     /// The fields, most important first.
     pub fn fields(&self, theme: &Theme) -> Vec<Field> {
         // The WORD is the state, and the animation is only beside it. A spinner
@@ -996,6 +1104,25 @@ impl Status {
         if self.planning {
             fields.push(Field::new("planning".to_string(), Tone::Normal));
         }
+        // **Immediately right of the planning phase and left of every counter,
+        // which is a decision about a narrow terminal and not a grouping.** The
+        // rule this row already states is that a standing mode which stops the
+        // agent writing outranks what the last turn spent; a gate that has not
+        // passed is the same class of fact from the other end — it is why the
+        // turn is not finished, and on a retry it is why the agent is doing the
+        // work a second time. If a narrow terminal can hold one of `gate failed
+        // attempt 2` and `14.2k tok`, it should hold the one that explains what
+        // is happening rather than the one that measures it.
+        //
+        // Right of `planning` rather than left, because `planning` is a standing
+        // choice that holds until `/plan off` while this is an account of one
+        // turn: where both are on the line and only one can survive, the one that
+        // is still true after the turn ends is the one that stays.
+        //
+        // `Normal` rather than `Muted`, for the reason `planning` and `bg N` are:
+        // it is a fact about what the turn is still doing, not a footnote about
+        // what it did.
+        fields.extend(self.gate_field().map(|text| Field::new(text, Tone::Normal)));
         // Beside the token count rather than anywhere else, because the two are
         // the same kind of fact — what this run has spent — and they used to sit
         // together in the `Finished` row this release removed.
@@ -1172,6 +1299,20 @@ impl Status {
         // there is something to count, so a session that has run nothing carries
         // an almost empty row rather than a row of zeroes.
         let mut counts: Vec<String> = Vec::new();
+        // **First in the group, and that is the same ordering decision
+        // `Status::fields` makes, arrived at through this row's own mechanism.**
+        // The narrowing below pops counters off the right until the right-hand
+        // group fits, so position in this vector *is* priority — and the standing
+        // that says why the turn is not finished outranks every number beside it,
+        // exactly as the planning phase outranks them in the group on the right.
+        // Pushed after `steps` it would have been among the first things a
+        // crowded row gave up, which is the inversion the release before this one
+        // spent a live capture finding.
+        //
+        // Here as well as on `Status::line` and out of the same method: this is
+        // the row the binary draws at an ordinary prompt, so a gate added to
+        // `line` alone would be a gate no operator ever saw.
+        counts.extend(self.gate_field());
         if let Some(steps) = self.steps {
             counts.push(format!("{steps} step{}", if steps == 1 { "" } else { "s" }));
         }
@@ -1787,6 +1928,15 @@ pub fn committed(
     // a reader cannot trust is worse than none. The line and the footer redraw,
     // so they are where a depth that changes belongs — which is also why N3 names
     // those two renderers and not this one.
+    //
+    // **`Status::gate` is not a row here either, and for that same argument.** A
+    // standing is the verdict on one turn: `gate failed attempt 2` committed into
+    // a scrollback goes on saying so under the passing turn that follows it, and a
+    // row that is false a turn later on a page whose whole claim is that it can be
+    // trusted is worse than no row. What a reader wants from *this* page about a
+    // gate is the criterion the next turn will be held to, which is configuration
+    // and belongs beside the budgets — a row this release does not draw rather
+    // than one it draws wrongly.
 
     // Three of whatever the set draws a rule with, at both ends — the same edge
     // `crate::transcript` gives a committed conversation, and for the same
