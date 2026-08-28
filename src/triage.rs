@@ -183,11 +183,21 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         Disposition::Status,
         "the web field, with its verdict",
     ),
-    (
-        "speculated",
-        Disposition::Silent,
-        "`io exec --json` and the durable trace; nothing about the step's own events moves",
-    ),
+    // **0.27.0 — the one silence in this table with no route to any surface an
+    // operator uses.** It read "`io exec --json` and the durable trace", and both
+    // of those are places a person goes deliberately, afterwards, having already
+    // suspected something. A route is supposed to name where the fact reaches
+    // somebody who was not looking for it, and this one never did.
+    //
+    // What it says is worth a line, too: reads started before the model had
+    // finished asking, and how many were thrown away. Started-and-discarded is
+    // work that was paid for, and it is the only figure in this product an
+    // operator can act on by turning speculation off.
+    //
+    // The other eight silences reviewed in the same pass keep their routes,
+    // which are better arguments than drawing them would be — see
+    // `US-IO-CLI-0.27.0-I04`.
+    ("speculated", Disposition::Line, "the speculation line"),
     (
         "plugin_dropped",
         Disposition::Silent,

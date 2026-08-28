@@ -1580,7 +1580,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             }
                         }
                         // Row 0 is "leave it", the default that does nothing —
-                        // the shape `/skills` and `/plugin` both already use.
+                        // the shape `/plugin` and `/provider` also use.
+                        //
+                        // **Corrected in 0.27.0: this comment named `/skills`,
+                        // and `/skills` is the one confirmation in this product
+                        // that does the opposite** — `Pick::SkillToggle` puts the
+                        // verb at row 0 and "leave it as it is" at row 1. That is
+                        // defensible there and only there, because a toggle is
+                        // reversible by repeating it and nothing is destroyed;
+                        // every confirmation that removes something puts the
+                        // declining row first. The comment was load-bearing
+                        // enough to be believed and repeated while `/store` was
+                        // designed, which is why it is corrected rather than
+                        // deleted.
                         // Row 2 is the edit verb, and it descends rather than
                         // acting: which key is half the decision, and the other
                         // half is a value only the operator can type.
@@ -2478,6 +2490,170 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                  listing is not shown",
                             ),
                         },
+                        // The three store confirmations, and all three share one
+                        // rule: **index 0 is `store::LEAVE_IT` and does nothing**.
+                        // Asserted on the index rather than on the label, because
+                        // a confirmation whose acting row drifted to the top is
+                        // the defect F5 exists to catch and a label comparison
+                        // would not see it.
+                        Pick::StoreRemove { id } => {
+                            if io_cli::store::acts(index) {
+                                match io_cli::store::remove(&store, *id, session.id()) {
+                                    Ok(io_cli::store::Removal::Done(removed)) => {
+                                        for line in io_cli::store::removed_report(&removed) {
+                                            app.record(Tone::Muted, line);
+                                        }
+                                    }
+                                    // Unreachable from this surface, because
+                                    // `confirm_remove` offers no acting row for the
+                                    // live session. Kept because the guard belongs
+                                    // to the library and a second caller must not
+                                    // be able to route around it.
+                                    Ok(io_cli::store::Removal::Live) => app.record(
+                                        Tone::Refused,
+                                        "that is the conversation you are in; io will not \
+                                         remove it"
+                                            .to_string(),
+                                    ),
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "session {id} was not removed: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::StoreSweep { date } => {
+                            if io_cli::store::acts(index) {
+                                match io_cli::store::sweep(&store, date) {
+                                    Ok(swept) => {
+                                        for line in io_cli::store::swept_report(&swept) {
+                                            app.record(Tone::Muted, line);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "the sweep did not run: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        // The two new granularities. The step form goes through
+                        // `observing`, which is what makes `EventKind::Reverted`
+                        // fire at all — an event this product had never emitted,
+                        // because only the `_observed` form emits it. The file
+                        // form does not: `io_harness::rewind` has no observed
+                        // twin and emits nothing, which is why it takes none.
+                        Pick::UndoFile { run_id, path } => {
+                            if io_cli::store::acts(index) {
+                                let workspace = io_harness::tools::Workspace::new(session.root());
+                                match io_cli::undo::one_file(&workspace, &store, *run_id, path) {
+                                    Ok(answer) => {
+                                        app.record(Tone::Muted, io_cli::undo::said(path, &answer))
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "{path} was not put back: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::UndoStep { run_id, step } => {
+                            if io_cli::store::acts(index) {
+                                let workspace = io_harness::tools::Workspace::new(session.root());
+                                let run = *run_id;
+                                let at = *step;
+                                let done = observing(&mut app, screen, |observer| {
+                                    io_cli::undo::one_step(&workspace, &store, run, at, observer)
+                                })?;
+                                match done {
+                                    Ok(answers) if answers.is_empty() => app.record(
+                                        Tone::Muted,
+                                        format!("step {at} wrote no files, so nothing changed"),
+                                    ),
+                                    Ok(answers) => {
+                                        for (path, answer) in &answers {
+                                            app.record(
+                                                Tone::Muted,
+                                                io_cli::undo::step_said(path, answer),
+                                            );
+                                        }
+                                        // The order-sensitivity sentence, said only
+                                        // when something actually came back stale —
+                                        // otherwise it is advice about a problem the
+                                        // operator does not have.
+                                        if let Some(advice) = io_cli::undo::step_advice(&answers) {
+                                            app.record(Tone::Warning, advice);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "step {at} was not undone: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        // The same `undo_whole_turn` the chord reaches, so the
+                        // word and the keystroke cannot drift apart.
+                        Pick::UndoRun => {
+                            if io_cli::store::acts(index) {
+                                undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
+                            }
+                        }
+                        Pick::Export { path, content } => {
+                            if io_cli::store::acts(index) {
+                                let effective = approval::session_policy(
+                                    &policy,
+                                    app.posture(),
+                                    app.remembered(),
+                                );
+                                let workspace = io_harness::tools::Workspace::with_policy(
+                                    session.root(),
+                                    effective,
+                                );
+                                match io_cli::export::write(&workspace, path, content) {
+                                    Ok(written) => {
+                                        app.record(Tone::Muted, io_cli::export::report(&written))
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "{path} was not written: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::StoreCompact => {
+                            if io_cli::store::acts(index) {
+                                match io_cli::store::compact(&store) {
+                                    Ok(freed) => {
+                                        for line in io_cli::store::freed_report(&freed) {
+                                            app.record(Tone::Muted, line);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "the store was not compacted: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
                     }
                     // `None` in every arm but the descent, so this closes the
                     // picker exactly as it always did and replaces it in the one
@@ -2645,37 +2821,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 None => app.say(Tone::Muted, "there is no turn to undo"),
             },
             // The second. This is where the operator's files change.
-            Command::Rewind => match io_cli::rewind::last_turn(&mut session, &store) {
-                Ok(Some(undone)) => {
-                    // The undone turn is where those numbers came from.
-                    app.status.forget_run();
-                    app.forget_fleet();
-                    // As above: the last request belonged to the undone turn.
-                    seen.forget();
-                    for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
-                        app.say(tone, line);
-                    }
-                }
-                Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
-                // **`failure::said`, and not the raw `Display`.** Since 0.23.0
-                // the undo can lose a head race with another `io`, and
-                // `Error::Conflict`'s own text calls the session id a run id and
-                // renders an expiry that a head conflict never populates. That
-                // sentence is exactly what `failure::advice` exists to replace,
-                // and this arm was the one path in the product still going
-                // around it.
-                //
-                // **And the old line said "nothing was undone", which is false.**
-                // `rewind::last_turn` restores the files before it attempts the
-                // head write, so a conflict leaves the operator's files back as
-                // they were with the conversation head where the other process
-                // put it. Saying nothing happened would send them looking for
-                // changes that are already gone.
-                Err(error) => app.say(
-                    Tone::Error,
-                    format!("the undo did not finish: {}", io_cli::failure::said(&error)),
-                ),
-            },
+            // **Through `observing` since 0.27.0, which is what finally emits
+            // `EventKind::Rewound`.** The call was `rewind_run`, whose observed
+            // twin is the only thing that emits it.
+            Command::Rewind => {
+                undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
+            }
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
@@ -3621,6 +3772,224 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Stats => {
                     let lines = io_cli::stats::committed(&store, &app.theme, screen.width())?;
                     screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
+                // The bare word reports and nothing else; every verb that changes
+                // the store descends into a confirmation whose row 0 does
+                // nothing. The reads that build each confirmation happen HERE,
+                // before the operator agrees, so the figures they are shown are
+                // the ones the operation is about to act on rather than a second
+                // reading taken afterwards.
+                Action::Store(None) => {
+                    let lines = io_cli::store::committed(&store, &app.theme, screen.width())?;
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
+                Action::Store(Some(keep)) => match keep {
+                    commands::Keep::Remove(id) => match io_cli::store::sized(&store, id) {
+                        Ok(sized) => {
+                            let (title, rows) =
+                                io_cli::store::confirm_remove(id, &sized, session.id());
+                            picker = Some((Picker::new(title, rows), Pick::StoreRemove { id }));
+                        }
+                        Err(error) => app.record(
+                            Tone::Error,
+                            format!(
+                                "the store could not be read: {}",
+                                io_cli::failure::said(&error)
+                            ),
+                        ),
+                    },
+                    // No read at all before this one, because there is nothing
+                    // readable: the set a date selects cannot be counted in
+                    // advance — see io-harness#216 and `US-IO-CLI-0.27.0-I02`.
+                    // The operator agrees to the rule and the report carries the
+                    // figures.
+                    // **Validated before the confirmation is even built.** The
+                    // comparison io-harness makes is lexical against a text
+                    // column, so `2026-8-1` or `yesterday` sorts above every real
+                    // timestamp and sweeps the entire store — while the
+                    // confirmation echoes back exactly what was typed and reads
+                    // as correct. Both adversarial reviewers found this
+                    // independently, which is the strongest signal that gate
+                    // gives.
+                    commands::Keep::Sweep(date) => match io_cli::store::boundary(&date) {
+                        Ok(date) => {
+                            let (title, rows) = io_cli::store::confirm_sweep(&date);
+                            picker = Some((Picker::new(title, rows), Pick::StoreSweep { date }));
+                        }
+                        Err(said) => app.record(Tone::Error, said),
+                    },
+                    commands::Keep::Compact => match store.store_size() {
+                        Ok(size) => {
+                            let (title, rows) = io_cli::store::confirm_compact(&size);
+                            picker = Some((Picker::new(title, rows), Pick::StoreCompact));
+                        }
+                        Err(error) => app.record(
+                            Tone::Error,
+                            format!(
+                                "the store could not be read: {}",
+                                io_cli::failure::said(&error)
+                            ),
+                        ),
+                    },
+                    // Three refusals, each naming what was missing. None of them
+                    // falls through to the page: an operator who typed a deletion
+                    // and was shown a report would believe the deletion happened.
+                    commands::Keep::NoId => app.record(
+                        Tone::Error,
+                        "/store rm needs a session id — `/store` lists them".to_string(),
+                    ),
+                    commands::Keep::NoDate => app.record(
+                        Tone::Error,
+                        "/store sweep needs a date, as the store writes them: \
+                         `/store sweep 2026-08-01`"
+                            .to_string(),
+                    ),
+                    commands::Keep::Unknown(word) => app.record(
+                        Tone::Error,
+                        format!(
+                            "/store does not know `{word}` — the verbs are `rm <id>`, \
+                             `sweep <date>` and `compact`"
+                        ),
+                    ),
+                },
+                Action::UndoNoStep => app.record(
+                    Tone::Error,
+                    "/undo step needs a step number — `/expand` lists them, and a \
+                     bare `/undo` is the whole run"
+                        .to_string(),
+                ),
+                // The two new granularities descend into a confirmation; the whole
+                // run keeps the chord's own two-press path, which already
+                // discloses what a restore overwrites.
+                Action::Undo(grain) => match last_run(&session, &store).map(|turn| turn.run_id) {
+                    None => app.record(
+                        Tone::Error,
+                        "there is nothing to undo — this session has taken no turns".to_string(),
+                    ),
+                    Some(run_id) => match &grain {
+                        io_cli::undo::Grain::File(path) => {
+                            let (title, rows) = io_cli::undo::confirm_file(path);
+                            picker = Some((
+                                Picker::new(title, rows),
+                                Pick::UndoFile {
+                                    run_id,
+                                    path: path.clone(),
+                                },
+                            ));
+                        }
+                        io_cli::undo::Grain::Step(step) => {
+                            let (title, rows) = io_cli::undo::confirm_step(*step);
+                            picker = Some((
+                                Picker::new(title, rows),
+                                Pick::UndoStep {
+                                    run_id,
+                                    step: *step,
+                                },
+                            ));
+                        }
+                        // The bare form confirms like the other two rather than
+                        // arming like the chord. The arming is a property of a
+                        // *keystroke* — one press to warn, a second to act — and
+                        // a typed command has already been deliberate once. Both
+                        // paths end in the same `rewind::last_turn`, so the word
+                        // and the chord can never disagree about what an undo is.
+                        io_cli::undo::Grain::Run => {
+                            match io_cli::rewind::preview(&session, &store) {
+                                Some(about) => {
+                                    let title =
+                                        io_cli::rewind::armed_line(&about, &app.theme.glyphs);
+                                    picker = Some((
+                                        Picker::new(
+                                            title,
+                                            vec![
+                                                Row::with_detail(
+                                                    io_cli::store::LEAVE_IT,
+                                                    "the turn stands",
+                                                ),
+                                                Row::with_detail(
+                                                    "undo the whole turn",
+                                                    "its files, its notes, its queued children \
+                                                     and the conversation head",
+                                                ),
+                                            ],
+                                        ),
+                                        Pick::UndoRun,
+                                    ));
+                                }
+                                None => app.say(Tone::Muted, "there is no turn to undo"),
+                            }
+                        }
+                    },
+                },
+                // Both halves build their content HERE, before the confirmation,
+                // so the operator agrees to a file that exists rather than to an
+                // intention. A build that fails says so and opens nothing.
+                Action::Export(taken) => {
+                    let workspace =
+                        io_harness::tools::Workspace::with_policy(session.root(), policy.clone());
+                    let built = match &taken {
+                        commands::Taken::Conversation(path) => {
+                            match io_cli::export::conversation(&store, &session) {
+                                Ok(Some(text)) => Ok(Some((
+                                    path.clone().unwrap_or_else(|| {
+                                        io_cli::export::conversation_path(session.id())
+                                    }),
+                                    text,
+                                    "conversation",
+                                ))),
+                                Ok(None) => Err(io_cli::export::Refused::Nothing.said()),
+                                Err(error) => Err(format!(
+                                    "the conversation could not be read: {}",
+                                    io_cli::failure::said(&error)
+                                )),
+                            }
+                        }
+                        commands::Taken::Trace(path) => {
+                            match last_run(&session, &store).map(|turn| turn.run_id) {
+                                Some(run_id) => match io_cli::export::trace(&store, run_id) {
+                                    Ok(json) => Ok(Some((
+                                        path.clone()
+                                            .unwrap_or_else(|| io_cli::export::trace_path(run_id)),
+                                        json,
+                                        "trace",
+                                    ))),
+                                    Err(error) => Err(format!(
+                                        "the trace could not be read: {}",
+                                        io_cli::failure::said(&error)
+                                    )),
+                                },
+                                None => Err(io_cli::export::Refused::Nothing.said()),
+                            }
+                        }
+                    };
+                    match built {
+                        Ok(Some((path, content, what))) => {
+                            // Asked before the confirmation, so an operator is
+                            // never shown a write that is going to be refused.
+                            match io_cli::export::occupied(&workspace, &path) {
+                                Ok(true) => app.record(
+                                    Tone::Error,
+                                    io_cli::export::Refused::Exists(path).said(),
+                                ),
+                                Ok(false) => {
+                                    let (title, rows) = io_cli::export::confirm(&path, what);
+                                    picker = Some((
+                                        Picker::new(title, rows),
+                                        Pick::Export { path, content },
+                                    ));
+                                }
+                                Err(error) => app.record(
+                                    Tone::Error,
+                                    format!(
+                                        "{path} could not be checked: {}",
+                                        io_cli::failure::said(&error)
+                                    ),
+                                ),
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(said) => app.record(Tone::Error, said),
+                    }
                 }
                 // Reached only at an idle prompt: while a turn runs the driver's
                 // own key handler answers `/steer` before `parse` is ever called,
@@ -5270,6 +5639,119 @@ fn commit_transcript(
 }
 
 /// The last run of this session, if it has had one.
+/// Undo the whole turn, and say what it did.
+///
+/// **One implementation, two doors.** The rewind chord reaches it through
+/// `Command::Rewind` after its two keystrokes; `/undo` with no argument reaches
+/// it through a confirmation. The word and the chord must never disagree about
+/// what an undo *is*, and the only way to guarantee that is for there to be one
+/// of them.
+///
+/// **Through [`observing`] since 0.27.0, which is what finally emits
+/// `EventKind::Rewound`.** The call underneath was `rewind_run`, whose observed
+/// twin is the only thing that emits it, so the event had never fired. It draws
+/// no line — `rewound` is `Disposition::Silent` and routes to the summary this
+/// function commits — but it now reaches hooks, `io exec --json` and the trace.
+fn undo_whole_turn(
+    app: &mut App,
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    session: &mut Session,
+    store: &Store,
+    seen: &io_cli::context::Seen,
+) -> Result<(), String> {
+    match observing(app, screen, |observer| {
+        io_cli::rewind::last_turn(session, store, observer)
+    })? {
+        Ok(Some(undone)) => {
+            // The undone turn is where those numbers came from.
+            app.status.forget_run();
+            app.forget_fleet();
+            // As above: the last request belonged to the undone turn.
+            seen.forget();
+            // **`record`, never `say`.** `App::say` is a one-slot footer notice
+            // that the next keystroke clears, and `undone_lines` returns at least
+            // two lines plus one per file that was NOT put back — so every
+            // "left as the turn left it" warning was being overwritten and the
+            // operator was told a restore had happened that had not. This is
+            // 0.26.0's recorded rule (`record`, always, for anything an operator
+            // must still be able to read) arriving one release late, and it is
+            // the most destructive act in the product having the least durable
+            // report. Found by the adversarial review.
+            for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
+                app.record(tone, line);
+            }
+        }
+        Ok(None) => app.record(Tone::Muted, "there is no turn to undo".to_string()),
+        // **`failure::said`, and not the raw `Display`.** Since 0.23.0 the undo
+        // can lose a head race with another `io`, and `Error::Conflict`'s own
+        // text calls the session id a run id and renders an expiry that a head
+        // conflict never populates. That sentence is exactly what
+        // `failure::advice` exists to replace, and this arm was the one path in
+        // the product still going around it.
+        //
+        // **And the old line said "nothing was undone", which is false.**
+        // `rewind::last_turn` restores the files before it attempts the head
+        // write, so a conflict leaves the operator's files back as they were with
+        // the conversation head where the other process put it. Saying nothing
+        // happened would send them looking for changes that are already gone.
+        Err(error) => app.record(
+            Tone::Error,
+            format!("the undo did not finish: {}", io_cli::failure::said(&error)),
+        ),
+    }
+    Ok(())
+}
+
+/// Run something that wants an `Observer`, and commit whatever it emitted.
+///
+/// **This is what makes `EventKind::Rewound` and `EventKind::Reverted` exist at
+/// all.** Both are emitted only by the `_observed` forms of the rewind
+/// functions, and every one of those forms takes an observer — but an undo
+/// happens between turns, at a keystroke, where the driver's own observer
+/// composition does not exist. So one is built for the act and drained
+/// immediately afterwards.
+///
+/// **It does not put either event on screen, and an earlier version of this
+/// comment said it did.** Both kinds are `Disposition::Silent` in
+/// [`io_cli::triage`] and route to io-cli's own rewind summary; `src/events.rs`
+/// has no arm for either and correctly renders nothing. What the observed forms
+/// buy is that the events reach `[[hook]]` observers, the `io exec --json`
+/// stream and the durable trace — none of which they had ever reached. The
+/// drain below is what carries anything a *future* arm renders, and what makes
+/// this the one place such an arm would need no further wiring. Found by the
+/// adversarial review.
+///
+/// **What is drained is rendered and never fed to [`App::event`].** That method
+/// folds into the status line, the fleet and the token totals, which belong to a
+/// *run*; an undo is not a run, and 0.20.0 recorded what happens when foreign
+/// events go through it — inflated session totals, a replaced provider, and a
+/// grafted tree. `Events::event` is the renderer alone, which is exactly what is
+/// wanted here.
+fn observing<T>(
+    app: &mut App,
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    act: impl FnOnce(&dyn io_harness::Observer) -> T,
+) -> Result<T, String> {
+    let (bridge, mut events) = io_cli::bridge::channel();
+    let out = act(&bridge);
+    // Synchronous and already finished, so the queue is complete: `try_recv`
+    // drains it without waiting, and waiting is what would hang the interface.
+    while let Ok(event) = events.try_recv() {
+        let lines = app.events.event(&event, std::time::Duration::ZERO);
+        if !lines.is_empty() {
+            screen.commit(&lines).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(out)
+}
+
+/// The last run of this session, if it has had one.
+///
+/// **Its doc comment was taken by an insertion in this release** — `undo_whole_turn`
+/// and `observing` were added directly beneath it, so this sentence became their
+/// summary line and this function was left with none. Found by the adversarial
+/// review, and worth noting because nothing in the suite can see a rustdoc
+/// summary attached to the wrong item.
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)
@@ -5728,6 +6210,57 @@ enum Pick {
         label: String,
         at: io_cli::providers::At,
         first: bool,
+    },
+    /// A confirmation over one session's removal. Row 0 is `store::LEAVE_IT` and
+    /// every other row acts — the shape `/mcp` remove established and the one
+    /// criterion F5 asserts by *index*, because a confirmation whose default
+    /// keystroke destroys something is the defect it exists to prevent.
+    StoreRemove {
+        /// The session the confirmation named, carried rather than re-read: the
+        /// figures the operator agreed to were read against this id.
+        id: i64,
+    },
+    /// A confirmation over a date sweep, carrying the boundary the operator was
+    /// shown. The counts are not here because they cannot be — see
+    /// io-harness#216.
+    StoreSweep {
+        /// The timestamp the sweep compares `sessions.created_at` against.
+        date: String,
+    },
+    /// A confirmation over a compaction. Carries nothing: the operation takes no
+    /// argument, and the figures it reports are read either side of the call.
+    StoreCompact,
+    /// A confirmation over putting one file back, from the run that wrote it.
+    UndoFile {
+        /// The run whose snapshot the file comes from.
+        run_id: i64,
+        /// The path, as the operator named it.
+        path: String,
+    },
+    /// A confirmation over reverse-applying one step's diff.
+    UndoStep {
+        /// The run the step belongs to.
+        run_id: i64,
+        /// The step, one-based as `/expand` shows them.
+        step: u32,
+    },
+    /// A confirmation over undoing the whole turn — the typed form of what the
+    /// rewind chord does with two keystrokes. Carries nothing: `rewind::last_turn`
+    /// reads the head itself, and a run id carried from before the confirmation
+    /// could name a turn another `io` has since moved off the head.
+    UndoRun,
+    /// A confirmation over one export, carrying the bytes it will write.
+    ///
+    /// The content is built before the confirmation and carried rather than
+    /// rebuilt on acceptance, so the file written is the one the operator was
+    /// shown the size of — and so a store that stops answering between the two
+    /// keystrokes cannot turn an agreed export into a truncated file.
+    Export {
+        /// Where it goes, relative to the workspace root.
+        path: String,
+        /// Exactly what goes in it. For a trace this is io-harness's own string,
+        /// untouched.
+        content: String,
     },
     /// One directory of the workspace, in the order `list_dir` sorted it, so a
     /// chosen index reads straight back through `complete::pick`. The rows are

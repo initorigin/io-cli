@@ -192,7 +192,7 @@ async fn an_edited_file_comes_back_and_a_created_file_goes_and_both_are_reported
     assert_eq!(fixture.bytes("notes.md"), AFTER.as_bytes());
     assert_eq!(fixture.bytes("summary.md"), INVENTED.as_bytes());
 
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("the rewind cannot fail")
         .expect("a turn was taken, so there is one to undo");
 
@@ -280,7 +280,7 @@ async fn memory_the_run_changed_is_put_back_and_memory_it_invented_is_removed() 
         "the turn's wrong value must actually be in the store before it is undone",
     );
 
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("the rewind cannot fail")
         .expect("a turn was taken");
 
@@ -338,7 +338,7 @@ async fn a_file_whose_previous_contents_were_not_kept_is_declined_and_left_untou
     let by_hand = b"what the operator typed instead\n";
     std::fs::write(fixture.dir.path().join("logo.bin"), by_hand).expect("the file is writable");
 
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("the rewind cannot fail")
         .expect("a turn was taken");
 
@@ -394,7 +394,7 @@ async fn rewinding_the_second_of_two_turns_leaves_the_head_on_the_first() {
         "the fixture needs two distinct turns",
     );
 
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("the rewind cannot fail")
         .expect("a turn was taken");
 
@@ -435,7 +435,7 @@ async fn rewinding_the_only_turn_leaves_the_session_with_no_head_at_all() {
         "the fixture needs one turn",
     );
 
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("the rewind cannot fail")
         .expect("a turn was taken");
 
@@ -515,7 +515,7 @@ async fn an_undo_is_refused_when_another_io_has_already_moved_the_head_on() {
         .set_session_head(fixture.session.id(), Some(theirs))
         .expect("the other process advances the head");
 
-    let refused = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let refused = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect_err("an undo whose head has moved underneath it must not succeed");
 
     // The assertion is on the **refusal**, and deliberately so: the defect this
@@ -578,7 +578,7 @@ async fn an_undo_over_a_store_no_other_io_touched_still_moves_the_head_back() {
         .turn_writing("now do it", &[("plan.md", AFTER)])
         .await;
 
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("nothing raced, so the conditional write must match its row")
         .expect("a turn was taken");
 
@@ -594,7 +594,7 @@ fn a_session_that_has_taken_no_turns_undoes_nothing_and_does_not_fail() {
         rewind::preview(&fixture.session, &fixture.store).is_none(),
         "there is nothing to arm a confirmation prompt about",
     );
-    let undone = rewind::last_turn(&mut fixture.session, &fixture.store)
+    let undone = rewind::last_turn(&mut fixture.session, &fixture.store, &io_harness::Ignore)
         .expect("an empty session is not an error");
     assert!(
         undone.is_none(),

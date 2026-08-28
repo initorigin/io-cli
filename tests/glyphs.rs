@@ -582,6 +582,15 @@ fn every_event_this_release_renders_draws_in_ascii() {
             backend: Some("macos-sandbox-exec".into()),
         },
         EventKind::Stalled,
+        // 0.27.0 — the one silence that gained a line, and it carries the muted
+        // leader and a separator, both of which differ between the two glyph
+        // sets. `discarded` is non-zero because the arm declines a step that
+        // speculated perfectly, and a declined event renders nothing to sweep.
+        EventKind::Speculated {
+            started: 3,
+            used: 1,
+            discarded: 2,
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is

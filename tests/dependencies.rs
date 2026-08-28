@@ -950,3 +950,73 @@ fn n4_the_syntax_set_is_loaded_lazily_and_only_by_the_diff_renderer() {
         "the driver reached for the highlighter, which puts it on the startup path",
     );
 }
+
+/// **N1 — the three destructive store operations are named in exactly one
+/// module each, and no model can reach any of them.**
+///
+/// The roadmap's words for `/store` are *none of which any model can call*, and
+/// the way that stays true is by adding nothing: io-harness's workspace tool set
+/// contains nothing that reaches `delete_session`, `sweep_sessions` or
+/// `compact`, and this release registers no tool, no MCP server and no skill
+/// that could.
+///
+/// **"Nothing was added" is not assertable, so this asserts the reachable form
+/// of it**: each call is named in one file, that file is `src/store.rs`, and
+/// `src/store.rs` is reached from command dispatch rather than from anything on
+/// a run's path. A second module naming one of these would be the first step
+/// towards a caller that is not a keystroke, and it fails here by name.
+///
+/// The needles are assembled at run time for the reason `tests/store.rs` records
+/// at length: a gate that reads source cannot spell the thing it forbids, or its
+/// own array is the first match. io-cli has now hit that in 0.16.0, 0.19.0,
+/// 0.25.0, 0.26.0 and twice in 0.27.0.
+#[test]
+fn n1_the_store_operations_live_in_one_module_and_no_model_can_reach_them() {
+    let calls = [
+        format!("{}_{}", "delete", "session"),
+        format!("{}_{}", "sweep", "sessions"),
+        format!("{}{}", "compact", "()"),
+    ];
+
+    for call in &calls {
+        let named: Vec<String> = sources()
+            .into_iter()
+            .filter(|(_, text)| code_of(text).contains(call.as_str()))
+            .map(|(path, _)| {
+                path.file_name()
+                    .expect("a file name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+
+        assert_eq!(
+            named,
+            vec!["store.rs".to_string()],
+            "`{call}` must be named in exactly one module, and it must be the one \
+             whose whole subject is the store; found it in {named:?}",
+        );
+    }
+}
+
+/// **N1 — this release registers no tool, no MCP server and no skill.**
+///
+/// The other half of *no model can call it*. A tool is how a model reaches
+/// anything at all, so the honest check is that the set of ways this crate hands
+/// the model a capability did not grow: `with_tools` is io-harness's own field
+/// and this crate never sets it, and the two surfaces that do add capability —
+/// `[[mcp]]` servers and skills — are read from the operator's configuration
+/// rather than written by this release.
+#[test]
+fn n1_this_release_hands_the_model_no_new_capability() {
+    let forbidden = format!("{}_{}", "with", "tools");
+    for (path, text) in sources() {
+        assert!(
+            !code_of(&text).contains(forbidden.as_str()),
+            "{} calls `{forbidden}`: io-cli does not choose the model's tool set, \
+             and a release that started to would be handing it reach this crate \
+             has never granted",
+            path.display(),
+        );
+    }
+}

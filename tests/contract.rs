@@ -1896,3 +1896,31 @@ fn f11_asking_for_the_default_explicitly_changes_nothing() {
     let built = io_cli::contract::configured("a goal", root(), &agrees);
     assert!(built.detached_spawns);
 }
+
+/// **N3 — 0.27.0 adds no configuration key, so an operator who runs none of it
+/// gets the contract 0.26.0 built.**
+///
+/// Every surface this release adds is a *command*: `/store`, `/export`, `/undo`.
+/// None of them is configured, none is read at startup, and none reaches
+/// `contract::session` at all. So the strongest statement of N3 is that the key
+/// catalogue did not move — a new key is the only way this release could have
+/// changed what a turn is built from, and this is the one place that would show.
+///
+/// The number is written out rather than derived, which is the same choice
+/// `tests/commands.rs` makes about the command inventory and for the same
+/// reason: growing the settings surface should be a decision somebody records
+/// here, not a line somebody adds elsewhere.
+///
+/// Sabotage: add a key to `CATALOGUE` — under which only this fails, and it
+/// fails by saying a release that promised to add no configuration added one.
+#[test]
+fn n3_this_release_adds_no_configuration_key() {
+    let before_0_27_0 = 37;
+    assert_eq!(
+        io_cli::configure::CATALOGUE.len(),
+        before_0_27_0,
+        "0.27.0 adds three commands and no keys; a different number here means a \
+         release that promised an operator nothing would change gave them \
+         something to configure",
+    );
+}
