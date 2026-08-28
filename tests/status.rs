@@ -103,6 +103,123 @@ fn f4_the_planning_phase_is_named_and_survives_the_run() {
     assert!(!shown(&status).contains("planning"));
 }
 
+/// **F4 — the branch is on both surfaces, and it describes the checkout rather
+/// than the conversation.**
+///
+/// It arrives from `EventKind::ToolCall`'s `target`, which io-harness fills with
+/// the `name` argument of the `git_branch` call — the branch the agent created
+/// and moved onto. Neither `Status::forget_run` nor `Status::start_run` clears
+/// it, and that is the property: `/clear`, `/resume`, a rewind and the operator
+/// simply typing again all change which conversation is on screen, and none of
+/// them checks out another branch. A field cleared by any of them would blank a
+/// fact about the operator's own working tree that is still true.
+///
+/// Both renderers, through `both_renderers`, because `Status::line` is the
+/// one-row fallback and `Status::footer` is what the binary draws on every
+/// terminal seven rows or taller. 0.12.0 added a field to `line` alone, asserted
+/// `line` alone, went green, and shipped a mode that was nowhere on screen.
+///
+/// Sabotage: clear the field in `forget_run` beside `containment` — under which
+/// only this test fails, and it fails by blanking a true fact about the
+/// operator's checkout every time they start a new conversation.
+#[test]
+fn f4_the_branch_is_drawn_by_both_renderers_and_survives_the_conversation() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    // A run-scoped neighbour, so the test states the difference rather than only
+    // the half it is about: the containment word dies with its run and this does
+    // not.
+    status.containment = Some("workspace-write/macos-sandbox-exec".into());
+
+    status.note_branch(&event(EventKind::ToolCall {
+        name: "git_branch".into(),
+        target: "agent/fix-the-flake".into(),
+    }));
+    assert_eq!(status.branch.as_deref(), Some("agent/fix-the-flake"));
+
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("git:agent/fix-the-flake"),
+            "{renderer} does not say which branch the tree is on: {text:?}",
+        );
+    }
+
+    // The conversation under the line changes: `/clear`, `/resume`, `/fork`, a
+    // rewind. The checkout does not.
+    status.forget_run();
+    assert_eq!(
+        status.containment, None,
+        "the containment word belongs to the run that reported it",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("git:agent/fix-the-flake"),
+            "{renderer} forgot the branch when the conversation changed: {text:?}",
+        );
+    }
+
+    // And the ordinary path `forget_run` never reaches: the operator types again.
+    status.start_run();
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains("git:agent/fix-the-flake"),
+            "{renderer} forgot the branch when the next turn started: {text:?}",
+        );
+    }
+}
+
+/// **F4 — a directory that is not a checkout draws no branch field at all.**
+///
+/// The absence half, and the rule this whole line is held to: an absent fact is
+/// absent, not zero and not a word standing in for one. io-cli runs in plenty of
+/// directories that were never a repository and must not become worse there — so
+/// there is no empty label, no `none`, and no bare `git:` with nothing after it.
+///
+/// The empty `target` arm is the same rule one step earlier. `git_branch` names
+/// the branch in its `target`, and an event carrying none is an event with no
+/// answer in it; storing the empty string would put a prefix on screen owning
+/// nothing.
+///
+/// Sabotage: clear the field in `forget_run` beside `containment` — under which
+/// only the surviving-the-conversation arm above fails, which is what makes the
+/// pair state the field's whole contract.
+#[test]
+fn f4_a_workspace_with_no_branch_draws_no_branch_field_anywhere() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    assert_eq!(status.branch, None);
+    assert_eq!(status.branch_field(), None);
+
+    // An event that names the tool but carries no branch leaves it exactly as it
+    // was, rather than storing an empty name.
+    status.note_branch(&event(EventKind::ToolCall {
+        name: "git_branch".into(),
+        target: String::new(),
+    }));
+    // And so does every other tool call, whatever it points at.
+    status.note_branch(&event(EventKind::ToolCall {
+        name: "apply_patch".into(),
+        target: "src/lib.rs".into(),
+    }));
+    assert_eq!(
+        status.branch, None,
+        "a call with no branch in it named one anyway",
+    );
+
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("git:"),
+            "{renderer} drew a branch field where there is no branch: {text:?}",
+        );
+        assert!(
+            !text.contains("branch"),
+            "{renderer} named the absent field rather than leaving it out: {text:?}",
+        );
+        assert!(
+            !text.contains("none"),
+            "{renderer} spelled the absence as a word: {text:?}",
+        );
+    }
+}
+
 /// **F4 — it is a word, not only a tone.**
 ///
 /// The rule the whole product is held to, and the one a mode field cannot be

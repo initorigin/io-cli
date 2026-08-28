@@ -313,6 +313,33 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// The branch the working tree is on, or `None` where there is no answer.
+    ///
+    /// **A fact about the checkout, so neither [`Status::forget_run`] nor
+    /// [`Status::start_run`] clears it** — which puts it beside [`Status::policy`]
+    /// and [`Status::budgets`] rather than beside [`Status::containment`], the
+    /// field it otherwise most resembles. The containment word describes how *one
+    /// run's* commands were held and dies with that run; a branch describes the
+    /// directory the operator is standing in, and that directory does not change
+    /// because a turn ended, because `/clear` started a new conversation, or
+    /// because `/resume` put another one on screen. A line that blanked it there
+    /// would be erasing a true fact about the operator's own checkout at the exact
+    /// moment they opened a fresh conversation to work in it.
+    ///
+    /// Set two ways, and they answer different halves of one question.
+    /// [`Status::note_branch`] takes it from a `git_branch` call the moment the
+    /// agent makes one, so a branch io-cli's own agent created is on screen before
+    /// the turn it created it in has finished. The driver re-reads
+    /// [`crate::repo::branch`] at the turn boundary, which is what keeps a branch
+    /// changed by anything *else* — a shell in another pane, a colleague's script
+    /// — from standing here forever. The event arrives before the tool's result is
+    /// known and a name that already exists is refused, so the second source is
+    /// also the one that corrects the first.
+    ///
+    /// `None` draws **nothing at all** — not `none`, not an empty label. io-cli is
+    /// run in plenty of directories that were never a checkout, and the rule this
+    /// line holds everywhere is that an absent fact is absent rather than zero.
+    pub branch: Option<String>,
     /// Whether later turns propose a plan before they work.
     ///
     /// **Not run-scoped, and the only field on this line that is a standing
@@ -540,6 +567,7 @@ impl Status {
             cost: None,
             context: None,
             containment: None,
+            branch: None,
             spend: None,
             plan: None,
             planning: false,
@@ -585,11 +613,14 @@ impl Status {
     /// read, and absent is the honest answer until the agent writes a list in the
     /// run that is now on screen.
     ///
-    /// The model, the posture, plain mode, the session's age and the depth of the
-    /// prompt queue are not run facts and are left alone — the session is the
-    /// same session either way, and the queue in particular is not even reachable
-    /// from here: see [`Status::queued_prompts`] for why blanking the count
-    /// would leave the line contradicting prompts that are still going to run.
+    /// The model, the posture, plain mode, the session's age, the branch the tree
+    /// is on and the depth of the prompt queue are not run facts and are left
+    /// alone — the session is the same session either way, and the queue in
+    /// particular is not even reachable from here: see [`Status::queued_prompts`]
+    /// for why blanking the count would leave the line contradicting prompts that
+    /// are still going to run. [`Status::branch`] is the sharpest of them:
+    /// changing which conversation is on screen does not check out another
+    /// branch, so clearing it here would blank a fact that is still true.
     pub fn forget_run(&mut self) {
         self.tokens = None;
         // **The money goes with the tokens it was derived from.** `start_run`
@@ -669,6 +700,59 @@ impl Status {
         // stale-per-turn defect above came through.
         self.gate = None;
         self.gate_attempt = None;
+    }
+
+    /// Take the branch from a `git_branch` call, if that is what this event is.
+    ///
+    /// **The whole event rather than its parts, and the filter is here rather than
+    /// at the call site**, which is the shape [`Status::note_context_from`] already
+    /// has: the driver hands over every event it routes and cannot pick the wrong
+    /// one, and the name being matched lives next to the field it sets. The name is
+    /// io-harness's own constant and is never spelled here as a literal, so a
+    /// rename on that side is a compile error rather than a field that silently
+    /// stops updating.
+    ///
+    /// `target` is what io-harness made the subject of the call, which for this
+    /// tool is its `name` argument — the branch being created and moved onto. An
+    /// empty one sets nothing: the field's absence means "no answer", and an empty
+    /// string dressed as a branch name is the one thing it must never hold.
+    ///
+    /// **Optimistic, on purpose, and corrected at the turn boundary.** io-harness
+    /// documents `ToolCall` as emitted before the result is known, and this tool
+    /// refuses a name that already exists — so this is the branch the agent asked
+    /// for and not yet the branch git granted. The driver's re-read of
+    /// [`crate::repo::branch`] when the turn ends is what settles it, and until
+    /// then being one refused call ahead is worth being right for the whole of the
+    /// turn in the ordinary case.
+    pub fn note_branch(&mut self, event: &io_harness::RunEvent) {
+        let io_harness::EventKind::ToolCall { name, target } = &event.kind else {
+            return;
+        };
+        if name != io_harness::tools::GIT_BRANCH_TOOL || target.is_empty() {
+            return;
+        }
+        self.branch = Some(target.clone());
+    }
+
+    /// The branch, drawn, or nothing at all.
+    ///
+    /// **One method, reached by both renderers**, which is the shape
+    /// [`Status::budgets_left`], [`Status::queued_left`], [`Status::cost_field`]
+    /// and [`Status::gate_field`] already have and for the reason written where
+    /// they are: this file has shipped a field into one renderer twice — 0.8.0's
+    /// spend and 0.12.0's planning phase — and both times it was green in a unit
+    /// test and nowhere on screen, because the binary draws the footer on every
+    /// terminal seven rows or taller.
+    ///
+    /// `git:main`, spelled the way [`Status::policy`] and [`Status::provider`] are
+    /// spelled on [`Status::fields`]. A bare `main` would be a word with no owner
+    /// sitting beside a containment word and a posture, and a reader who does not
+    /// already know the branch cannot tell which of the three it is. Four cells
+    /// buys that, and four cells is what the shortest honest prefix costs — the
+    /// same reason a detached head is seven characters of object id in
+    /// [`crate::repo`] rather than forty.
+    pub fn branch_field(&self) -> Option<String> {
+        self.branch.as_ref().map(|branch| format!("git:{branch}"))
     }
 
     /// Set [`Status::cost`] from what this run has actually called, priced by
@@ -1185,6 +1269,28 @@ impl Status {
         if let Some(containment) = &self.containment {
             fields.push(Field::new(containment.clone(), Tone::Muted));
         }
+        // **Immediately right of the containment word, which is its nearest kin on
+        // this line, and left of the plan claim.** Both are standing facts about
+        // the circumstances the agent is working in rather than counters of what a
+        // turn spent — one says how its commands are held, the other says which
+        // checkout its writes land in — so they read together and narrow together.
+        //
+        // Left of `plan` rather than right of it, and that is the drop order rather
+        // than a grouping: `fits` gives up fields from the right, and what the
+        // agent *claims* about its own list is the field this line already names as
+        // the first to go. Which branch the operator is standing on outlives the
+        // claim, the turn and the conversation, so it survives one column further.
+        // The cost of putting it here is that the plan claim and the `unknown`
+        // diagnostic beyond it are pushed right by the field's own width plus a
+        // separator, which is what they give up on a crowded line.
+        //
+        // `Muted` like the containment word beside it: it is a fact about where the
+        // work is happening, not a bound on what may happen, which is the tone
+        // `policy` and `planning` wear.
+        fields.extend(
+            self.branch_field()
+                .map(|text| Field::new(text, Tone::Muted)),
+        );
         // Rightmost, and so the first field to go when the terminal narrows. It is
         // the only field on this line that is not an observation — everything to
         // its left is something the harness reported happening, and this is what
@@ -1408,6 +1514,35 @@ impl Status {
                 allowed.push(Span::styled(separator, muted));
             }
             allowed.push(Span::styled("planning", muted));
+        }
+        // **The right-hand group and not `counts`, out of the same method
+        // `Status::fields` draws it from.** This group is where the row keeps the
+        // facts that describe the circumstances the agent is working in — the
+        // posture, the sandbox, the phase — and the branch is the last of them: it
+        // says which checkout every write on this row landed in. It is also not a
+        // counter, and `counts` is documented as everything countable and nothing
+        // that is not.
+        //
+        // **What that costs, stated plainly.** The two groups yield asymmetrically:
+        // when they cannot both fit, counters come off the right of `counts` until
+        // the right group fits, and the right group is never dropped. So a branch
+        // here is paid for by the rightmost counters — the plan claim first, then
+        // the background and queue counts — on a row that is already full. That is
+        // the same trade this module states for `planning` and takes deliberately:
+        // a fact that is still true after the turn ends outranks a number that
+        // measured it. The bill is the branch name plus four cells for `git:` and
+        // three for the separator, which on an ordinary branch is under twenty
+        // columns and on `main` is eleven.
+        //
+        // Appended after `planning` rather than inserted at the front, because the
+        // group is kept or dropped whole — position inside it is reading order, not
+        // priority — and pushing it last leaves the separator rule one uniform
+        // check instead of moving it onto the posture arm.
+        if let Some(text) = self.branch_field() {
+            if !allowed.is_empty() {
+                allowed.push(Span::styled(separator, muted));
+            }
+            allowed.push(Span::styled(text, muted));
         }
         // **When the two groups cannot both fit, the counters yield — not the
         // group.** `row` fits its right-hand group all or nothing, so a counts
@@ -1704,6 +1839,24 @@ pub fn committed(
     // threaded down from the driver, so there is one answer to "which workspace
     // is this" and it is io-harness's — the same rule `App::set_root` follows.
     facts.push(("workspace".into(), session.root().display().to_string()));
+
+    // Directly under the workspace, because it is the second half of the same
+    // fact: the path says which directory, and this says which of its branches is
+    // checked out. Read off `Status` rather than off disk, so opening this page
+    // reads nothing and reports exactly what the footer is already showing — the
+    // rule the budgets on this page are held to, arrived at from the other side.
+    //
+    // An absence gets a row of its own here, unlike on the status line where it
+    // draws nothing at all. This surface is one fact per row with no width to
+    // compete for, and every other unknown on it — the provider, the sandbox, the
+    // containment — says why it is unknown rather than going missing.
+    facts.push((
+        "branch".into(),
+        match &status.branch {
+            Some(branch) => branch.clone(),
+            None => format!("not known {dash} this workspace has no readable git head"),
+        },
+    ));
 
     // **Where io-cli keeps what it keeps, and who decided.** The directory in
     // force rather than [`crate::home::path`]: under `$IO_CONFIG` the file is
