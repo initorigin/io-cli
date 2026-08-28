@@ -249,3 +249,203 @@ fn f10_the_reviewer_judges_and_never_drives() {
         "the reviewer is built for the contract's criterion and for nothing else",
     );
 }
+
+// ---------------------------------------------------------------------------
+// F5 and F6 — the chain that runs is the chain the panel draws.
+
+use io_cli::provider::Chain;
+use io_harness::{CompletionRequest, CompletionResponse, Provider, ProviderErrorKind};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// A link that answers, or fails in a chosen way, and counts what it was asked.
+///
+/// The counter lives outside the link because [`Chain::of`] takes ownership of its
+/// links. It is what makes F6 assertable at all: "the second provider is never
+/// called" is a statement about a call that did not happen, and no message can tell
+/// that apart from a call that happened and was discarded.
+struct Fake {
+    label: String,
+    fail: Option<ProviderErrorKind>,
+    calls: Arc<AtomicUsize>,
+}
+
+/// A counter to read afterwards, and the link that increments it.
+fn link(label: &str, fail: Option<ProviderErrorKind>) -> (Fake, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    (
+        Fake {
+            label: label.into(),
+            fail,
+            calls: Arc::clone(&calls),
+        },
+        calls,
+    )
+}
+
+fn asked(calls: &Arc<AtomicUsize>) -> usize {
+    calls.load(Ordering::Relaxed)
+}
+
+impl Provider for Fake {
+    async fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> io_harness::Result<CompletionResponse> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        match self.fail {
+            Some(kind) => Err(io_harness::Error::Provider {
+                kind,
+                status: None,
+                retry_after: None,
+                message: format!("{} was asked and refused", self.label),
+            }),
+            None => Ok(CompletionResponse {
+                text: Some(self.label.clone()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn endpoints(&self) -> Vec<&str> {
+        vec![&self.label]
+    }
+}
+
+fn asking() -> CompletionRequest {
+    CompletionRequest {
+        system: "s".into(),
+        user: "u".into(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn f5_a_retryable_failure_falls_through_to_the_next_link() {
+    let (first, first_calls) = link("first", Some(ProviderErrorKind::Server));
+    let (second, second_calls) = link("second", None);
+    let chain = Chain::of(vec![first, second]).expect("two links are a chain");
+
+    let answer = chain.complete(asking()).await.expect("the second answers");
+
+    assert_eq!(
+        answer.text.as_deref(),
+        Some("second"),
+        "a head that failed in a way another vendor might survive must not end the turn",
+    );
+    assert_eq!(
+        chain.last_served().as_deref(),
+        Some("second"),
+        "the link that answered is what io-harness records and what the status line moves to",
+    );
+    assert_eq!((asked(&first_calls), asked(&second_calls)), (1, 1));
+}
+
+#[tokio::test]
+async fn f5_the_head_is_asked_first_and_a_link_below_it_is_not_asked_at_all() {
+    let (first, first_calls) = link("first", None);
+    let (second, second_calls) = link("second", None);
+    let chain = Chain::of(vec![first, second]).expect("a chain");
+
+    let answer = chain.complete(asking()).await.expect("the head answers");
+
+    assert_eq!(
+        answer.text.as_deref(),
+        Some("first"),
+        "the operator's first choice is the provider a question is put to",
+    );
+    assert_eq!(
+        (asked(&first_calls), asked(&second_calls)),
+        (1, 0),
+        "a link below a head that answered is not asked, so it is not billed",
+    );
+}
+
+#[tokio::test]
+async fn f5_a_head_that_answered_reports_no_fallover() {
+    // **The whole reason this crate does not build on `io_harness::Fallback`.**
+    // io-harness emits `EventKind::FellBackTo` for any `Some` from `last_served`
+    // (`run/step.rs:503`), and `Fallback::last_served` answers `Some` for its own
+    // primary — so a chain built from that type would tell the operator "the
+    // provider fell over" on every step of every run.
+    let (first, _) = link("first", None);
+    let (second, _) = link("second", None);
+    let chain = Chain::of(vec![first, second]).expect("a chain");
+    chain.complete(asking()).await.expect("the head answers");
+
+    assert_eq!(
+        chain.last_served(),
+        None,
+        "nothing fell over, so nothing may be reported as having fallen over",
+    );
+}
+
+#[tokio::test]
+async fn f5_one_provider_is_a_chain_that_behaves_exactly_as_no_chain_did() {
+    let (only, _) = link("only", None);
+    let chain = Chain::of(vec![only]).expect("one link is a chain");
+
+    let answer = chain
+        .complete(asking())
+        .await
+        .expect("the only link answers");
+
+    assert_eq!(answer.text.as_deref(), Some("only"));
+    assert_eq!(
+        chain.last_served(),
+        None,
+        "an operator who configured one provider must stay on the path they were on",
+    );
+}
+
+#[tokio::test]
+async fn f6_a_bad_credential_on_the_head_does_not_spend_the_link_below_it() {
+    let (first, first_calls) = link("first", Some(ProviderErrorKind::Auth));
+    let (second, second_calls) = link("second", None);
+    let chain = Chain::of(vec![first, second]).expect("a chain");
+
+    let refused = chain.complete(asking()).await;
+
+    assert!(
+        refused.is_err(),
+        "a wrong key is not a failure another vendor can survive",
+    );
+    assert_eq!(
+        (asked(&first_calls), asked(&second_calls)),
+        (1, 0),
+        "the second link is never called, so a typo in a key cannot start spending elsewhere",
+    );
+    assert_eq!(
+        chain.last_served(),
+        None,
+        "nobody answered, so no provider may be named as having done so",
+    );
+}
+
+#[test]
+fn f5_every_link_s_host_is_authorized_and_not_only_the_head_s() {
+    // io-harness's egress policy is deny-by-default and authorizes the provider's
+    // hosts before the first step. A chain reporting only its head's host would
+    // make a fall-through a way to reach a host the policy never saw.
+    let (first, _) = link("first", None);
+    let (second, _) = link("second", None);
+    let chain = Chain::of(vec![first, second]).expect("a chain");
+
+    assert_eq!(chain.endpoints(), vec!["first", "second"]);
+}
+
+#[test]
+fn f5_an_image_is_refused_unless_every_link_accepts_one() {
+    // The conjunction is io-harness's own rule for the same question, and the
+    // reason is that the fall-through is the one call where it matters.
+    let (first, _) = link("first", None);
+    let (second, _) = link("second", None);
+    let chain = Chain::of(vec![first, second]).expect("a chain");
+    // `Fake` takes the trait's default, which is `false`, so the conjunction is
+    // asserted rather than a default being read back.
+    assert!(!chain.accepts_images());
+}

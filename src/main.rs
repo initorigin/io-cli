@@ -490,7 +490,7 @@ async fn drive(
     // dyn-compatible, so what comes back from that call is not a provider: it is
     // this session, run from inside the arm that built one.
     provider::build(
-        spec,
+        provider::chain_of(&config),
         model_override,
         Interactive {
             screen,
