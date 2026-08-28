@@ -1606,6 +1606,39 @@ impl Events {
                 lines.push(Line::from(""));
                 lines
             }
+            // **What starting early bought, and what it cost.** 0.27.0, and the
+            // one silence in `triage::TRIAGE` that had no route to a surface an
+            // operator uses: it went to `io exec --json` and the durable trace,
+            // which are both places somebody goes deliberately, afterwards,
+            // already suspecting something.
+            //
+            // `discarded` is the figure worth the line. A read started before the
+            // model had finished asking and then thrown away is work that was paid
+            // for and not used, and it is the only number here an operator can act
+            // on — by turning speculation off. `started` alone would read as a
+            // brag about concurrency.
+            //
+            // **Only when something was discarded.** io-harness emits this
+            // whenever `started > 0` (`run/step.rs:1272`), so a step that
+            // speculated perfectly would otherwise put a line in every transcript
+            // saying nothing happened. A run where speculation always pays is a
+            // run with nothing to report, which is the same rule the sandbox arm
+            // above follows for a cap that was not hit.
+            EventKind::Speculated {
+                started,
+                used,
+                discarded,
+            } if *discarded > 0 => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{}read ahead{separator}{used} of {started} used, {discarded} discarded",
+                        leader(separator),
+                    ),
+                    theme.style(Tone::Muted),
+                )));
+                lines
+            }
             // Every kind that commits no line of its own, and the one case that
             // is a defect rather than a decision.
             //
