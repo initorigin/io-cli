@@ -305,10 +305,75 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
         }
         None => contract,
     };
+    // **The operator's own answer, and it outranks the gate's.** The block above
+    // sets classification on because a criterion would otherwise turn it off; this
+    // is the only place an operator can say what they actually want, so it is
+    // applied last and wins. `None` changes nothing at all — not
+    // `with_conversational_turns(true)`, which would be io-cli deciding for the
+    // ungated majority a question io-harness already answers for them, and would
+    // put a field on every contract that was not there before.
+    let contract = match crate::settings::stored(config)
+        .0
+        .and_then(|s| s.conversational)
+    {
+        Some(want) => contract.with_conversational_turns(want),
+        None => contract,
+    };
+    // **`[app.io-cli.routing]`, in `configured` and not in `session`, because
+    // `io exec` is where it matters most.** An unattended run is the one that
+    // cannot notice a model failing its gate four times and reach for a better
+    // one, and the headless arm uses io-harness's flat loop — the only loop that
+    // consults the rules at all (`run/step.rs:1097`).
+    //
+    // A section that names no rule leaves the contract's routing unset rather than
+    // putting a default `Routing` on it; `routing::routing` owns that decision and
+    // says why at length.
+    //
+    // **A refused section leaves the turn unrouted rather than killing it**, which
+    // is the same answer the gate block above gives an unusable criterion: the
+    // honest response to a rule that cannot be obeyed is a run with no routing plus
+    // a notice, never a turn that will not start. `routing::notice` is what puts
+    // that on screen, and it is the only place this product says why a section that
+    // is plainly in the operator's file is not doing anything.
+    let contract = match crate::settings::stored(config)
+        .0
+        .and_then(|s| s.routing)
+        .and_then(|routing| crate::routing::routing(&routing).ok().flatten())
+    {
+        Some(routing) => contract.with_routing(routing),
+        None => contract,
+    };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.
     resolve_skills(contract)
+}
+
+/// Apply what `/effort` said to the contract of a turn that is about to run.
+///
+/// **A function here rather than a seventh parameter of [`session`], and the
+/// argument is the one `src/main.rs` already makes for `/compact`'s fold.** Three
+/// of that builder's callers make a contract nothing runs — the startup reading
+/// and the two reporting pages — so a parameter would be three `None`s of noise
+/// and a signature break, against one call on the contract that is actually a
+/// turn.
+///
+/// **A function and not a line in the driver**, because nothing under `tests/`
+/// links `src/main.rs`: a conditional written there could not be asserted or
+/// sabotaged. The decision is here, the driver holds one call.
+///
+/// **`None` must produce the contract unchanged, byte for byte.**
+/// `TaskContract::effort` is an `Option<Effort>` and its absence sends no
+/// reasoning field at all — `openai_wire.rs:1443` and `anthropic.rs:1529` are the
+/// pre-0.31.0 bodies — so an unconditional `with_effort` carrying a default would
+/// change what every operator's turn asks for, silently, while passing every test
+/// that only looks at the level it set.
+#[must_use]
+pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> TaskContract {
+    match effort {
+        Some(effort) => contract.with_effort(effort),
+        None => contract,
+    }
 }
 
 /// The criterion this configuration resolves to, with its reviewer already built.

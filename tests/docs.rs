@@ -261,6 +261,21 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
             reviewer: Some("a-reviewing-model".into()),
             allow_self_review: Some(false),
         }),
+        conversational: Some(false),
+        // Written out field by field for `gates`' reason, and with the same
+        // consequence: `[app.io-cli.routing]`'s two rules are sub-tables whose
+        // keys are explained in README prose rather than in rows of their own, so
+        // a key added to `routing::Settings` has to break something to be noticed.
+        routing: Some(io_cli::routing::Settings {
+            escalate_after: Some(io_cli::routing::Escalation {
+                failures: Some(3),
+                model: Some("a-stronger-model".into()),
+            }),
+            downshift_under: Some(io_cli::routing::Downshift {
+                bytes: Some(2_000),
+                model: Some("a-cheaper-model".into()),
+            }),
+        }),
     };
     let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");

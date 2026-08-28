@@ -353,6 +353,19 @@ pub struct Status {
     /// `false` renders as nothing at all, on the rule this line already holds:
     /// a session that has not asked to plan is not a session planning zero times.
     pub planning: bool,
+    /// How much reasoning every turn is buying, from `/effort`.
+    ///
+    /// A standing choice like [`Self::planning`], and it survives
+    /// [`Status::forget_run`] for the same reason: it holds until the operator
+    /// says otherwise, and the turn it was set on is over by the time anybody
+    /// reads it.
+    ///
+    /// `None` renders as nothing at all, on the rule this line already holds — a
+    /// session that has never said `/effort` is not a session buying zero
+    /// reasoning, it is one sending no reasoning field. Rendering a word for the
+    /// default would also put a field on every operator's status line for a
+    /// release that changed nothing about their turns.
+    pub effort: Option<io_harness::Effort>,
     /// Where this turn's verification gate stands, in one word.
     ///
     /// **A word and never a mark**, for the reason [`WORDS`] is a list of words
@@ -559,6 +572,7 @@ impl Status {
         Self {
             model: model.into(),
             provider: None,
+            effort: None,
             steps: None,
             unknown: 0,
             policy: None,
@@ -1207,6 +1221,13 @@ impl Status {
         if self.planning {
             fields.push(Field::new("planning".to_string(), Tone::Normal));
         }
+        // Beside `planning` because it is the same class of fact: a standing choice
+        // the operator made that holds until they unmake it, and one that changes
+        // what every later turn costs. `Normal` for that reason too — it is not a
+        // footnote about the turn that just ended.
+        if let Some(effort) = self.effort {
+            fields.push(Field::new(format!("effort {effort}"), Tone::Normal));
+        }
         // **Immediately right of the planning phase and left of every counter,
         // which is a decision about a narrow terminal and not a grouping.** The
         // rule this row already states is that a standing mode which stops the
@@ -1463,6 +1484,15 @@ impl Status {
         // operator ever saw. 0.12.0's planning field, again, and 0.8.0's spend
         // field before it.
         counts.extend(self.cost_field());
+        // **The effort level is a count-side field, not a standing one, and the
+        // reason is arithmetic rather than taxonomy** — see the note beside
+        // `planning` below for what putting it there cost. Pushed last, so
+        // narrowing takes it before it takes any number: of everything on this row,
+        // a level the operator has just set and can read back by typing `/effort`
+        // is the one they can most afford to lose to a narrow terminal.
+        if let Some(effort) = self.effort {
+            counts.push(format!("effort {effort}"));
+        }
         // **Here as well as on `Status::line`, from the same method, and that is
         // deliberate rather than tidy.** This is the row the binary draws at an
         // ordinary prompt — `Status::render` takes the footer on any terminal
@@ -1544,6 +1574,18 @@ impl Status {
             }
             allowed.push(Span::styled("planning", muted));
         }
+        // **The effort level is NOT here, and 0.25.0 already paid for the lesson.**
+        // The obvious home for a standing choice is beside `planning`, on the
+        // argument that it describes the circumstances a turn works in rather than
+        // counting anything — which reads well and is wrong, because of how the two
+        // groups yield. `row` fits this right-hand group all or nothing, so adding
+        // `effort high` to it takes the group past what eighty columns can hold and
+        // the operator loses the posture and the containment word **together**, by
+        // typing `/effort high`. That is the failure
+        // `f4_a_full_counts_row_drops_a_counter_and_not_the_planning_phase` exists
+        // to prevent, and it is why `branch` was moved out of this group one
+        // release ago. The level goes into `counts` below, where narrowing takes
+        // one field at a time.
         // **`counts` and NOT the right-hand group, and this release measured why.**
         // The branch first went in beside the posture, on the argument that it
         // describes the circumstances the agent works in rather than counting

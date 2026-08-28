@@ -1253,6 +1253,59 @@ fn both_renderers(status: &Status) -> [(&'static str, String); 2] {
     ]
 }
 
+/// **F1 — the effort level is on both renderers, and absent from both when unset.**
+///
+/// Both, because a field added to `Status::fields` alone is green on
+/// `Status::line` and nowhere the binary draws: `Status::render` takes the footer
+/// on any terminal seven rows or taller. That is 0.12.0's planning field and
+/// 0.8.0's spend field, and [`both_renderers`] exists because of them.
+///
+/// The absent half is asserted as an absence rather than assumed. A default that
+/// rendered `effort medium` would put a field on every operator's status line for
+/// a release that changed nothing about their turns.
+///
+/// Sabotage: draw the level on `Status::line` only — under which this fails on the
+/// footer arm alone, which is exactly the shape of the two defects above.
+#[test]
+fn f1_the_effort_level_is_on_both_renderers_and_absent_until_it_is_set() {
+    let mut status = Status::new("a-model");
+
+    for (which, drawn) in both_renderers(&status) {
+        assert!(
+            !drawn.contains("effort"),
+            "{which} names an effort level in a session that has never set one: {drawn}",
+        );
+    }
+
+    status.effort = Some(io_harness::Effort::High);
+    for (which, drawn) in both_renderers(&status) {
+        assert!(
+            drawn.contains("effort high"),
+            "{which} does not carry the level every turn is buying: {drawn}",
+        );
+    }
+}
+
+/// **F1 — the level survives the turn it was set on.**
+///
+/// `Status::forget_run` clears everything that was true of one run. A standing
+/// choice is not one of those, and it is cleared beside them exactly as often as
+/// somebody adds a field to that function without asking which kind it is —
+/// `policy`, `budgets` and `planning` are all there for the same reason.
+#[test]
+fn f1_forgetting_a_run_does_not_forget_the_effort_level() {
+    let mut status = Status::new("a-model");
+    status.effort = Some(io_harness::Effort::Low);
+
+    status.forget_run();
+
+    assert_eq!(
+        status.effort,
+        Some(io_harness::Effort::Low),
+        "a level holds until `/effort` says otherwise, not until a run ends",
+    );
+}
+
 /// A contract carrying all three budgets, the way an operator's `[run]` table
 /// leaves one.
 fn budgeted() -> TaskContract {

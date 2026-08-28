@@ -490,7 +490,7 @@ async fn drive(
     // dyn-compatible, so what comes back from that call is not a provider: it is
     // this session, run from inside the arm that built one.
     provider::build(
-        spec,
+        provider::chain_of(&config),
         model_override,
         Interactive {
             screen,
@@ -960,6 +960,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     let mut planning = false;
     // One `/compact` typed at an idle prompt, spent by the next turn that starts.
     let mut fold_next = false;
+    // **How much reasoning every later turn buys, and it is not spent by being
+    // used.** The sibling of `fold_next` and its opposite in the one way that
+    // matters: a fold is a one-shot and a level is a posture, so this is read by
+    // each turn and cleared by nothing but `/effort off`. `None` is the absence of
+    // the reasoning field rather than a fourth level — see `contract::buying`.
+    //
+    // Session state and not configuration: there is no `[app.io-cli] effort` key,
+    // and it deliberately does not live on `Capabilities`, which is rebuilt from
+    // the file on every turn and would wipe the level each time.
+    let mut effort: Option<io_harness::Effort> = None;
     // **The file, held so it can be read again — which through 0.17.0 it never
     // was.** io-harness composes the instruction files inside `Config::discover`
     // and stores the result privately; there is no `Config::reload`, so a
@@ -979,6 +989,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // it can carry has already been disclosed by `drive`, which is where that
     // read is documented as *the read that discloses*.
     let (settings_in_force, _) = settings::stored(&config);
+    // **The one thing a routing section cannot say about itself**, said before the
+    // configuration is handed on so it reads from the settings actually in force
+    // rather than from a copy of them. io-harness consults the rules only in its
+    // flat loop (`run/step.rs:1097`), so a contained turn parses them, carries them
+    // and never fires them.
+    //
+    // Conditional on the session actually being contained, and that is F4's whole
+    // point: warning every operator who wrote a routing section would tell the
+    // majority — who have no containment at all — about a limitation that does not
+    // apply to them. `routing::inert_under_containment` owns the condition; this is
+    // its one caller.
+    // `contained` rather than `containment.is_some()`, which are equal here and stop
+    // being equal the moment the operator types `/contain off`. Keying the sentence
+    // on what the session is actually doing is what lets the same call answer at
+    // `/config` and after a `/contain` switch.
+    let inert_routing = settings_in_force
+        .as_ref()
+        .and_then(|stored| stored.routing.as_ref())
+        .and_then(|routing| io_cli::routing::inert_under_containment(routing, contained));
+    let refused_routing = settings_in_force
+        .as_ref()
+        .and_then(|stored| stored.routing.as_ref())
+        .and_then(io_cli::routing::notice);
     let mut configuration = io_cli::reload::Configuration::new(
         session.root().to_path_buf(),
         config.clone(),
@@ -987,6 +1020,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     if let Some(caps) = &containment {
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
+    }
+    // Beside the containment notice, because it is a qualification of it — and
+    // **`record` and not `say`**, which is the difference between a sentence that
+    // stays and one nobody reads. `App::say` writes `status.notice`, a single slot
+    // that `App::key` clears on the first keystroke, so a `say` here would first
+    // overwrite the containment notice immediately above (the two conditions are
+    // true in exactly the same case, since the disclosure only fires when
+    // contained) and would then be wiped by the operator's first character. This
+    // file already states that rule where the migration report is committed, and
+    // the `/config` and `/contain on` sites both got it right.
+    if let Some(notice) = inert_routing {
+        app.record(Tone::Warning, notice);
+    }
+    // And a section that cannot be obeyed at all, said once at the start for the
+    // reason every other startup notice is: an operator meets this one without
+    // having asked a question.
+    if let Some(why) = refused_routing {
+        app.record(Tone::Refused, why);
     }
     // **The session no longer keeps a clock, because nothing shows one.** The
     // clock on screen belongs to the turn — it starts at zero when one starts and
@@ -1242,6 +1293,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                         .flatten(),
                                                     &capabilities,
                                                     &seen,
+                                                    effort,
                                                     run_id,
                                                     pending,
                                                 )
@@ -3016,6 +3068,38 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Config(None) => {
+                    // **What the routing rules say, and where they will not fire**,
+                    // said on the surface that edits them. `/config` is where an
+                    // operator meets `[app.io-cli.routing]`, and a section they can
+                    // change here without being told it is inert for their session
+                    // is the defect this release exists partly to avoid. Read from
+                    // the configuration in force rather than the startup snapshot,
+                    // so an edit made this session is what is described.
+                    if let Some(routing) = io_cli::settings::stored(&config)
+                        .0
+                        .and_then(|stored| stored.routing)
+                    {
+                        if let Some(said) = io_cli::routing::describe(&routing) {
+                            app.record(Tone::Muted, said);
+                        }
+                        // **Why the section is not routing anything, if it is
+                        // not.** The pair of `contract::gate_notice`: this
+                        // surface lists the four routing keys, so a section
+                        // that is plainly in the operator's file and doing
+                        // nothing has to say why here or nowhere.
+                        if let Some(why) = io_cli::routing::notice(&routing) {
+                            app.record(Tone::Refused, why);
+                        }
+                        // `contained` and not `containment.is_some()`: `/contain off`
+                        // puts the session back on the flat loop, where the rules do
+                        // fire, so a warning keyed on the configuration would go on
+                        // being shown to an operator it no longer applies to.
+                        if let Some(notice) =
+                            io_cli::routing::inert_under_containment(&routing, contained)
+                        {
+                            app.record(Tone::Warning, notice);
+                        }
+                    }
                     let settings = io_cli::configure::settings(&config);
                     let mut paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
                     let mut rows = io_cli::configure::rows(&settings);
@@ -3290,6 +3374,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // the completion above and the turn below build it — so what may
                 // be attached and what the agent may read are the same set by
                 // construction rather than by two agreeing lists.
+                // **A posture and not a one-shot**, which is the whole of what the
+                // three words mean here: a level set now is what every later turn
+                // buys until `/effort off`. The sentence is built by
+                // `io_cli::app::reasoning_said` so it can be asserted; this arm
+                // holds the assignment and nothing else.
+                Action::Effort(said) => {
+                    if let Some(level) = io_cli::app::reasoning_of(&said) {
+                        effort = level;
+                        // The status line carries the same value, not a second
+                        // opinion about it. Set beside the assignment so the two
+                        // cannot drift — the 0.25.0 defect where one wave gave
+                        // `App` a branch field and another gave `Status` one, and
+                        // the line drew the half nothing wrote.
+                        app.status.effort = level;
+                    }
+                    // A word that is not a level is refused rather than
+                    // reported, so the tone is the refusal's.
+                    let tone = match said {
+                        io_cli::commands::Reasoning::Unknown(_) => Tone::Refused,
+                        _ => Tone::Muted,
+                    };
+                    app.record(tone, io_cli::app::reasoning_said(&said, effort));
+                }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —
@@ -3321,6 +3428,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         contained = true;
                         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
                         app.record(Tone::Muted, notice);
+                        // **Turning containment on is entering the state the routing
+                        // disclosure warns about**, so it is said here as well as at
+                        // start. An operator who begins uncontained, reads nothing
+                        // about routing because nothing applied, and then types
+                        // `/contain on` has silently moved into the one mode where
+                        // their rules do not fire.
+                        if let Some(said) = io_cli::settings::stored(&config)
+                            .0
+                            .and_then(|stored| stored.routing)
+                            .as_ref()
+                            .and_then(|routing| {
+                                io_cli::routing::inert_under_containment(routing, contained)
+                            })
+                        {
+                            app.record(Tone::Warning, said);
+                        }
                     }
                     (Some(_), Some(false)) => {
                         contained = false;
@@ -3785,6 +3908,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // Taken rather than read: one request, one turn. A queue
                         // of three prompts must not fold three times.
                         std::mem::take(&mut fold_next),
+                        // **Read rather than taken, which is the whole difference
+                        // between a posture and a one-shot.** `/compact` folds the
+                        // turn it was typed before and nothing after it; `/effort`
+                        // says how hard to think until it is told otherwise, so a
+                        // `mem::take` here would make every level last exactly one
+                        // turn — the defect F1's sabotage names.
+                        effort,
                         text,
                         // **This turn's own clock, not the session's.** What a
                         // reader wants of the row above the prompt is how long the
@@ -4091,6 +4221,11 @@ async fn turn<P: Provider>(
     // with `mem::take`, so a contract reused for every turn would not fold every
     // turn; io-cli builds a fresh one anyway.
     fold: bool,
+    // How much reasoning this turn buys — what `/effort` last said, or `None` for a
+    // session that has never said it. `None` is the absence of the field rather
+    // than a fourth level, so a session that never types `/effort` sends the
+    // request body this crate sent before 0.26.0.
+    effort: Option<io_harness::Effort>,
     text: String,
     started: Instant,
 ) -> Result<Turned, String> {
@@ -4202,6 +4337,10 @@ async fn turn<P: Provider>(
     } else {
         contract
     };
+    // **What `/effort` last said, applied here for the reason above.** The decision
+    // is `contract::buying`'s, not this file's — nothing under `tests/` links this
+    // binary, so a conditional written here could not be asserted or sabotaged.
+    let contract = io_cli::contract::buying(contract, effort);
     // Set while a fold has been asked for and no `Compacted` event has arrived.
     // A one-shot: io-harness spends the request whether or not it folds, so what
     // this guards is the report and never a retry.
@@ -4810,6 +4949,17 @@ async fn turn<P: Provider>(
                         app.theme.glyphs.dash
                     ),
                 );
+            }
+            // **A turn that was answered rather than run, said out loud at last.**
+            // io-harness has classified these since before this interface existed
+            // and io-cli has never read `TurnResult::kind`, so the commonest turn
+            // there is — a question that is only a question — arrived as silence:
+            // every line this product draws about a turn comes from events a
+            // conversational turn does not emit. The sentence is
+            // `app::answered_said`'s, which also owns the decision that an unknown
+            // kind reports as a run.
+            if let Some(said) = io_cli::app::answered_said(&result.kind, &result.outcome) {
+                app.record(Tone::Muted, said);
             }
         }
     }
@@ -6119,6 +6269,10 @@ async fn resume_pending<P: Provider>(
     // through a new door. `tests/context_share.rs` counts the two against each
     // other so this cannot be forgotten on a path added later.
     seen: &io_cli::context::Seen,
+    // What `/effort` last said. A resumed run is a turn like any other and buys the
+    // same reasoning — see `contract::buying` at the bottom of this function for why
+    // this parameter exists at all.
+    effort: Option<io_harness::Effort>,
     run_id: i64,
     pending: io_cli::resume::Pending,
 ) -> Result<(), String> {
@@ -6206,6 +6360,15 @@ async fn resume_pending<P: Provider>(
         // planning phase back on for the continuation.
         None,
     );
+    // **The resumed run buys the same reasoning the session is buying**, and this
+    // is the second of the two sites that run a turn rather than read one.
+    // `contract::buying`'s own note counts three callers that build a contract
+    // nothing runs — the startup reading and the two reporting pages — and it
+    // undercounted: this is a fifth `contract::session` call site and it drives
+    // real completions. Without it, `/effort high` applied to every turn except
+    // the half of the work an operator came back to `/resume` and finish, while
+    // the status line went on saying `effort high`.
+    let continuing = io_cli::contract::buying(continuing, effort);
     let (observer, mut events) = bridge::channel();
     let canceller = observer.canceller();
     let (approver, mut asks) = approval::channel();
