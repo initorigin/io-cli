@@ -311,6 +311,33 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
     resolve_skills(contract)
 }
 
+/// Apply what `/effort` said to the contract of a turn that is about to run.
+///
+/// **A function here rather than a seventh parameter of [`session`], and the
+/// argument is the one `src/main.rs` already makes for `/compact`'s fold.** Three
+/// of that builder's callers make a contract nothing runs — the startup reading
+/// and the two reporting pages — so a parameter would be three `None`s of noise
+/// and a signature break, against one call on the contract that is actually a
+/// turn.
+///
+/// **A function and not a line in the driver**, because nothing under `tests/`
+/// links `src/main.rs`: a conditional written there could not be asserted or
+/// sabotaged. The decision is here, the driver holds one call.
+///
+/// **`None` must produce the contract unchanged, byte for byte.**
+/// `TaskContract::effort` is an `Option<Effort>` and its absence sends no
+/// reasoning field at all — `openai_wire.rs:1443` and `anthropic.rs:1529` are the
+/// pre-0.31.0 bodies — so an unconditional `with_effort` carrying a default would
+/// change what every operator's turn asks for, silently, while passing every test
+/// that only looks at the level it set.
+#[must_use]
+pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> TaskContract {
+    match effort {
+        Some(effort) => contract.with_effort(effort),
+        None => contract,
+    }
+}
+
 /// The criterion this configuration resolves to, with its reviewer already built.
 ///
 /// `None` covers every case in which the run must not be gated: no section, a

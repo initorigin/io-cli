@@ -82,6 +82,7 @@ fn the_commands_are_the_commands() {
             // whose subject is a tool that is not io.
             "/import",
             "/profile",
+            "/effort",
             "/contain",
             // 0.12.0 — the planning phase stopped being something
             // `[app.io-cli.containment]` switched on by accident, so it needs a
@@ -308,10 +309,133 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     // release growing a command and losing another.
     assert_eq!(
         COMMANDS.len(),
-        32,
-        "0.25.0 adds exactly one command, `/commit`, on top of the thirty-one \
-         0.24.0 shipped; a thirty-third here means one arrived unrecorded",
+        33,
+        "0.26.0 adds exactly one command, `/effort`, on top of the thirty-two \
+         0.25.0 shipped; a thirty-fourth here means one arrived unrecorded",
     );
+}
+
+/// **F1 — `/effort` is a posture, and a bare `/effort` is a question.**
+///
+/// The three words the command understands, plus the two ways of asking rather
+/// than setting. `Reasoning::Report` is what a question resolves to and it is what
+/// makes the sentence below safe to print: the driver only assigns when
+/// [`io_cli::app::reasoning_of`] answers `Some`.
+///
+/// Sabotage: resolve an unrecognised word to the nearest level — under which this
+/// fails on `/effort hgih`, and it fails by spending a turn's reasoning budget on
+/// a typo.
+#[test]
+fn f1_effort_parses_three_levels_the_absence_and_the_question() {
+    use io_cli::commands::Reasoning;
+    let parse = |text: &str| commands::parse(text, &defaults(), &DARK);
+
+    assert_eq!(
+        parse("effort low"),
+        Action::Effort(Reasoning::Buy(io_harness::Effort::Low)),
+    );
+    assert_eq!(
+        parse("effort medium"),
+        Action::Effort(Reasoning::Buy(io_harness::Effort::Medium)),
+    );
+    assert_eq!(
+        parse("effort high"),
+        Action::Effort(Reasoning::Buy(io_harness::Effort::High)),
+    );
+    assert_eq!(parse("effort off"), Action::Effort(Reasoning::Off));
+    assert_eq!(parse("effort"), Action::Effort(Reasoning::Report));
+    assert_eq!(
+        parse("effort hgih"),
+        Action::Effort(Reasoning::Report),
+        "an unrecognised word reports rather than guessing at a level",
+    );
+}
+
+/// **F1 — a question changes nothing, and `off` is a change.**
+///
+/// The outer `Option` [`io_cli::app::reasoning_of`] returns is the difference
+/// between the two, and it is the difference the driver's assignment turns on. A
+/// `Report` that answered `Some(None)` would make every bare `/effort` silently
+/// clear the level the operator set — a question with a side effect.
+#[test]
+fn f1_asking_what_the_effort_is_does_not_change_it() {
+    use io_cli::app::reasoning_of;
+    use io_cli::commands::Reasoning;
+
+    assert_eq!(reasoning_of(Reasoning::Report), None);
+    assert_eq!(reasoning_of(Reasoning::Off), Some(None));
+    assert_eq!(
+        reasoning_of(Reasoning::Buy(io_harness::Effort::High)),
+        Some(Some(io_harness::Effort::High)),
+    );
+}
+
+/// **F1 — the sentence says the state the session is now in.**
+///
+/// Setting and reporting share one sentence because what an operator wants read
+/// back is where they now are, and the absent case names the fact rather than a
+/// level: "no reasoning field" is what goes on the wire, and calling it "off"
+/// would suggest a setting between `low` and nothing.
+#[test]
+fn f1_the_effort_line_names_the_level_now_in_force() {
+    use io_cli::app::reasoning_said;
+    use io_cli::commands::Reasoning;
+
+    let set = reasoning_said(
+        Reasoning::Buy(io_harness::Effort::High),
+        Some(io_harness::Effort::High),
+    );
+    assert!(set.contains("high"), "{set}");
+    assert!(
+        set.contains("from here"),
+        "a level set holds for later turns: {set}"
+    );
+
+    let asked = reasoning_said(Reasoning::Report, Some(io_harness::Effort::Low));
+    assert!(asked.contains("low"), "{asked}");
+    assert!(
+        !asked.contains("from here"),
+        "a question reports what is already true rather than announcing a change: {asked}",
+    );
+
+    let none = reasoning_said(Reasoning::Off, None);
+    assert!(
+        none.contains("no reasoning field"),
+        "the absent case is the absence of the field, not a fourth level: {none}",
+    );
+}
+
+/// The group bound was met and paid for by a re-file, not by widening it.
+///
+/// `src/commands.rs` pre-committed this answer when `Configure` reached nine and
+/// again when `/commit` took `Turn` to ten: re-file what is in the wrong group, do
+/// not widen the bound. This release is the one that had to keep it, so the keeping
+/// is asserted rather than described — `f13_no_group_is_longer_than_ten` would pass
+/// just as well if a later release had moved the bound to eleven.
+#[test]
+fn f2_effort_is_a_turn_command_and_profile_moved_to_the_session() {
+    assert_eq!(
+        commands::group_of("/effort"),
+        Some(commands::Group::Turn),
+        "`/effort` decides what the next turn buys, which is what `Turn` means",
+    );
+    assert_eq!(
+        commands::group_of("/profile"),
+        Some(commands::Group::Session),
+        "`/profile` changes the overlay every later turn is built from, which is \
+         not the work the turn just finished — it was misfiled, and moving it is \
+         what made room rather than widening the bound",
+    );
+    // The bound itself, restated here so this test fails as one story: a release
+    // that added `/effort` without the re-file would leave `Turn` at eleven.
+    for (group, names) in commands::GROUPS {
+        assert!(
+            names.len() <= 10,
+            "the {group:?} group holds {}; the bound is ten and this release \
+             does not move it",
+            names.len(),
+        );
+    }
 }
 
 #[test]

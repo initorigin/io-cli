@@ -284,6 +284,54 @@ fn f2_nothing_configured_is_the_contract_the_session_built_before() {
     // reads it off the built contract, which is where it can actually be wrong.
 }
 
+/// **F1 — a session that never says `/effort` sends no reasoning field.**
+///
+/// The absent case is not a fourth level. `TaskContract::effort` is an
+/// `Option<Effort>`, and `None` sends the pre-0.31.0 request body byte for byte —
+/// `openai_wire.rs:1443` and `anthropic.rs:1529`. So the whole of what must be
+/// proven here is that [`io_cli::contract::buying`] leaves the contract *identical*
+/// when nothing was asked for, which Debug equality states exactly.
+///
+/// Asserted through the same instrument as
+/// [`f2_nothing_configured_is_the_contract_the_session_built_before`] and for the
+/// same reason: a field set by accident is invisible to a test that only looks at
+/// the field it meant to set.
+///
+/// Sabotage: give `buying` a default of `Effort::Medium` for the `None` case —
+/// under which only this test fails, and it fails by buying reasoning on every
+/// turn of every operator who never asked for any.
+#[test]
+fn f1_no_effort_asked_for_leaves_the_contract_byte_for_byte() {
+    let root = std::path::PathBuf::from("/nowhere");
+    let contract = TaskContract::workspace("a turn", root);
+    let before = format!("{contract:?}");
+
+    let after = io_cli::contract::buying(contract, None);
+
+    assert_eq!(format!("{after:?}"), before);
+    assert_eq!(after.effort, None);
+}
+
+/// **F1 — a level that was asked for is on the contract, and it is the one asked
+/// for.**
+///
+/// All three levels rather than one, because the mapping is a place a swap is
+/// invisible: `Effort` is `Ord`, so `Low` and `High` transposed would still be a
+/// valid contract and would still pass a test that only checked `is_some()`.
+#[test]
+fn f1_the_level_asked_for_is_the_level_the_turn_buys() {
+    let root = std::path::PathBuf::from("/nowhere");
+    for level in [
+        io_harness::Effort::Low,
+        io_harness::Effort::Medium,
+        io_harness::Effort::High,
+    ] {
+        let contract =
+            io_cli::contract::buying(TaskContract::workspace("a turn", root.clone()), Some(level));
+        assert_eq!(contract.effort, Some(level));
+    }
+}
+
 /// **F1 — the prompt is on the contract itself, so both arms carry it.**
 ///
 /// The difference the test above allows, asserted as the one it is: a contract

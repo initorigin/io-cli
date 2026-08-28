@@ -240,6 +240,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "switch to a named profile from the configuration, for this session",
     ),
     (
+        "/effort",
+        "how much reasoning the next turn buys: low, medium, high, or off",
+    ),
+    (
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
@@ -356,9 +360,25 @@ impl Group {
 /// compile error in a file nobody was editing, rather than a test that says
 /// which command has no home.
 pub const GROUPS: &[(Group, &[&str])] = &[
+    // **`/profile` moved here in 0.26.0, and it is a correction rather than a way
+    // of making room** — the third time this sentence has been written, after
+    // 0.19.0's `/mcp` and `/provider` and 0.22.0's `/image` and `/copy`. `Turn`
+    // means a command that acts on the work the turn just finished, which is the
+    // argument the note above that group makes at length. `/profile` acts on
+    // nothing that has happened: it changes which configuration overlay every
+    // *later* turn is built from, which is a property of the session. It was filed
+    // under `Turn` because switching one feels like something you do between turns,
+    // and where a command sits is decided by what it acts on rather than by when it
+    // is typed.
+    //
+    // That this is also what makes room for `/effort` is the order the bound was
+    // meant to force: `src/commands.rs` pre-committed the answer for the release
+    // that met it — re-file what is in the wrong group, do not widen the bound —
+    // and a correction that pays for itself is the correction working, not a
+    // loophole in it.
     (
         Group::Session,
-        &["/clear", "/resume", "/fork", "/setup", "/exit"],
+        &["/clear", "/resume", "/fork", "/profile", "/setup", "/exit"],
     ),
     // **`/image`, `/copy` and `/copy diff` moved here in 0.22.0, and it is a
     // correction rather than a way of making room** — the same sentence 0.19.0
@@ -379,9 +399,16 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Turn,
         &[
             "/model",
+            // **`/effort` takes the slot `/profile` left**, and it belongs here on
+            // this group's own rule: it decides how much reasoning the next turn
+            // buys, which is a property of the turn and of nothing else. It asks
+            // the store nothing, which is what `Inspect` means, and it writes no
+            // configuration file, which is what `Configure` means — the level is
+            // this session's and dies with it, for the reason the release contract
+            // records under `open_questions`.
+            "/effort",
             "/contain",
             "/plan",
-            "/profile",
             "/steer",
             "/compact",
             "/image",
@@ -886,6 +913,24 @@ pub fn skills(
     )
 }
 
+/// What `/effort` was asked to do.
+///
+/// **Three words and not four, because the absent case is not a fourth level.**
+/// `TaskContract::effort` is an `Option<Effort>` and `None` sends no reasoning
+/// field at all — the request body this product sent before 0.26.0, byte for byte.
+/// So "off" is a real answer an operator can want and is not the same as "low",
+/// which buys a thinking budget of 1,024 tokens on Anthropic and sets
+/// `reasoning_effort` on the OpenAI wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reasoning {
+    /// Buy this much, for this turn and every turn after it.
+    Buy(io_harness::Effort),
+    /// Send no reasoning field at all.
+    Off,
+    /// Say what is in force, and change nothing.
+    Report,
+}
+
 /// What the driver should do about a slash command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -1096,6 +1141,11 @@ pub enum Action {
     Provider,
     /// List the named profiles, and switch to one for this session.
     Profile,
+    /// Say how much reasoning the next turn should buy, or report what is in force.
+    ///
+    /// The word is spelled the way `/contain on` is: an argument on the existing
+    /// command rather than a second command, and a bare `/effort` is a question.
+    Effort(Reasoning),
     /// List the capability bundles a `[[plugin]]` entry declared: what each one
     /// contributed, and what each dropped bundle failed on.
     ///
@@ -1731,6 +1781,22 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         "skills" => Action::Skills,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile,
+        // `Effort` carries `FromStr`, so the three levels are spelled io-harness's
+        // way rather than this crate's — a second spelling of `low` would be a
+        // second vocabulary for one wire field. "off" is handled beside it because
+        // the harness has no word for the absent case; it is an `Option`, not a
+        // fourth variant.
+        "effort" | "reasoning" => match input.split_whitespace().nth(1) {
+            Some("off" | "none") => Action::Effort(Reasoning::Off),
+            Some(word) => match word.parse::<io_harness::Effort>() {
+                Ok(level) => Action::Effort(Reasoning::Buy(level)),
+                // An unrecognised word reports rather than guesses. Choosing the
+                // nearest level for `/effort hgih` would spend a turn's reasoning
+                // budget on a typo.
+                Err(_) => Action::Effort(Reasoning::Report),
+            },
+            None => Action::Effort(Reasoning::Report),
+        },
         // `/plugins` is admitted for the same reason `/servers` and `/providers`
         // are: the thing being listed is plural, so the plural is what a hand
         // reaches for, and refusing it teaches nothing.

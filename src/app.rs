@@ -2367,6 +2367,49 @@ fn gate_said(
         .or_else(|| (!last.detail.trim().is_empty()).then(|| last.detail.clone()))
 }
 
+/// What `/effort` changes the session's level to, or `None` to change nothing.
+///
+/// The outer `Option` is the question and the inner one is the answer, which reads
+/// awkwardly and is the honest shape: `Some(None)` is `/effort off` — a level was
+/// set, and the level set is the absence of one — while `None` is a bare `/effort`,
+/// which is a question and must leave the session as it found it.
+///
+/// Here rather than in the driver because nothing under `tests/` links
+/// `src/main.rs`: an assignment written there could be neither asserted nor
+/// sabotaged, and this release's F1 turns on exactly the difference between a level
+/// that survives the turn and one that does not.
+#[must_use]
+pub fn reasoning_of(said: crate::commands::Reasoning) -> Option<Option<io_harness::Effort>> {
+    match said {
+        crate::commands::Reasoning::Buy(level) => Some(Some(level)),
+        crate::commands::Reasoning::Off => Some(None),
+        crate::commands::Reasoning::Report => None,
+    }
+}
+
+/// The line `/effort` commits into the scrollback.
+///
+/// `now` is the level in force **after** the command has been applied, so one
+/// sentence covers setting and reporting: what an operator wants to read back is
+/// the state they are now in, not the instruction they gave.
+///
+/// The absent case says what it means rather than naming a level. "No reasoning
+/// field" is the fact — io-harness sends the pre-0.31.0 request body — and calling
+/// it "off" on screen would suggest a fourth setting between `low` and nothing.
+#[must_use]
+pub fn reasoning_said(said: crate::commands::Reasoning, now: Option<io_harness::Effort>) -> String {
+    let level = match now {
+        Some(level) => format!("{level} reasoning"),
+        None => "no reasoning field, which is what this product sent before 0.26.0".to_string(),
+    };
+    match said {
+        crate::commands::Reasoning::Report => {
+            format!("every turn asks for {level}")
+        }
+        _ => format!("every turn from here asks for {level}"),
+    }
+}
+
 /// The one line a turn's gate commits into the scrollback, with its tone.
 ///
 /// `None` for a turn nothing gated, which is the ordinary case and not a thing to

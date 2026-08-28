@@ -960,6 +960,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     let mut planning = false;
     // One `/compact` typed at an idle prompt, spent by the next turn that starts.
     let mut fold_next = false;
+    // **How much reasoning every later turn buys, and it is not spent by being
+    // used.** The sibling of `fold_next` and its opposite in the one way that
+    // matters: a fold is a one-shot and a level is a posture, so this is read by
+    // each turn and cleared by nothing but `/effort off`. `None` is the absence of
+    // the reasoning field rather than a fourth level — see `contract::buying`.
+    //
+    // Session state and not configuration: there is no `[app.io-cli] effort` key,
+    // and it deliberately does not live on `Capabilities`, which is rebuilt from
+    // the file on every turn and would wipe the level each time.
+    let mut effort: Option<io_harness::Effort> = None;
     // **The file, held so it can be read again — which through 0.17.0 it never
     // was.** io-harness composes the instruction files inside `Config::discover`
     // and stores the result privately; there is no `Config::reload`, so a
@@ -3290,6 +3300,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // the completion above and the turn below build it — so what may
                 // be attached and what the agent may read are the same set by
                 // construction rather than by two agreeing lists.
+                // **A posture and not a one-shot**, which is the whole of what the
+                // three words mean here: a level set now is what every later turn
+                // buys until `/effort off`. The sentence is built by
+                // `io_cli::app::reasoning_said` so it can be asserted; this arm
+                // holds the assignment and nothing else.
+                Action::Effort(said) => {
+                    if let Some(level) = io_cli::app::reasoning_of(said) {
+                        effort = level;
+                        // The status line carries the same value, not a second
+                        // opinion about it. Set beside the assignment so the two
+                        // cannot drift — the 0.25.0 defect where one wave gave
+                        // `App` a branch field and another gave `Status` one, and
+                        // the line drew the half nothing wrote.
+                        app.status.effort = level;
+                    }
+                    app.record(Tone::Muted, io_cli::app::reasoning_said(said, effort));
+                }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
                     // with the key that closes it, rather than as a refusal —
@@ -3785,6 +3812,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // Taken rather than read: one request, one turn. A queue
                         // of three prompts must not fold three times.
                         std::mem::take(&mut fold_next),
+                        // **Read rather than taken, which is the whole difference
+                        // between a posture and a one-shot.** `/compact` folds the
+                        // turn it was typed before and nothing after it; `/effort`
+                        // says how hard to think until it is told otherwise, so a
+                        // `mem::take` here would make every level last exactly one
+                        // turn — the defect F1's sabotage names.
+                        effort,
                         text,
                         // **This turn's own clock, not the session's.** What a
                         // reader wants of the row above the prompt is how long the
@@ -4091,6 +4125,11 @@ async fn turn<P: Provider>(
     // with `mem::take`, so a contract reused for every turn would not fold every
     // turn; io-cli builds a fresh one anyway.
     fold: bool,
+    // How much reasoning this turn buys — what `/effort` last said, or `None` for a
+    // session that has never said it. `None` is the absence of the field rather
+    // than a fourth level, so a session that never types `/effort` sends the
+    // request body this crate sent before 0.26.0.
+    effort: Option<io_harness::Effort>,
     text: String,
     started: Instant,
 ) -> Result<Turned, String> {
@@ -4202,6 +4241,10 @@ async fn turn<P: Provider>(
     } else {
         contract
     };
+    // **What `/effort` last said, applied here for the reason above.** The decision
+    // is `contract::buying`'s, not this file's — nothing under `tests/` links this
+    // binary, so a conditional written here could not be asserted or sabotaged.
+    let contract = io_cli::contract::buying(contract, effort);
     // Set while a fold has been asked for and no `Compacted` event has arrived.
     // A one-shot: io-harness spends the request whether or not it folds, so what
     // this guards is the report and never a retry.
