@@ -388,7 +388,7 @@ net = "deny"
 
 # --- io-cli's own section ---------------------------------------------------
 #
-# Eight keys and seven tables. io-harness does not validate any of it, so an
+# Nine keys and eight tables. io-harness does not validate any of it, so an
 # unrecognised VALUE reads as the default rather than stopping a session. A
 # table io-harness cannot parse at all is different: the session starts on the
 # defaults and says so, carrying the harness's own message.
@@ -424,6 +424,24 @@ diff = "unified"
 # false is the default and what an absent key means; it is written out so the file
 # says which way round it is.
 plain = false
+#
+# Whether a prompt that is only a question may be answered in one completion.
+#
+# io-harness has classified turns since long before io-cli asked it to: a contract
+# carrying no verification criterion turns classification on, and a question then
+# comes back after ONE completion — no steps, no tools, no checkpoint and no gate.
+# Absent leaves that where it is, which is what every release before 0.26.0 did,
+# so there is nothing to write here for the ordinary case.
+#
+# false OPENS A FULL RUN FOR EVERY PROMPT, which is what you want in a session
+# meant to work rather than to answer. The key earns its place on the other side
+# of a gate: attaching a criterion is what io-harness reads as "this turn is not a
+# conversation", so a repository with `[app.io-cli.gates]` would otherwise have
+# every idle question become an agent run that then runs the gate after each of
+# its steps. io-cli sets classification back on wherever it attached a criterion,
+# and this key is how you say you wanted the runs after all.
+#
+# conversational = false
 #
 # How many steps one turn may take.
 #
@@ -687,3 +705,49 @@ fleet = "ctrl+f"
 # rubric = "every public item changed in this turn has a doc comment saying why"
 # reviewer = "anthropic/claude-sonnet-4.5"
 # allow_self_review = false
+
+# --- which model a run asks (0.26.0) ----------------------------------------
+#
+# Two optional rules. Each is a SUB-TABLE rather than a pair of flat keys because
+# a rule is a threshold and a model that only mean anything together: a threshold
+# with no model and a model with no threshold are both half a rule. Neither key
+# defaults, so half a rule is a parse error naming the key you left out, rather
+# than a threshold quietly reading as zero — which would escalate on the very
+# first gate attempt of every turn.
+#
+# `escalate_after` moves UP after that many CONSECUTIVE failed gate attempts —
+# the gates above. Consecutive rather than cumulative: a run that fails, recovers
+# and fails again much later is doing hard work, not asking for a bigger model.
+#
+# `downshift_under` asks the cheaper model while the run has written fewer than
+# that many bytes to disk, measured on what was WRITTEN rather than on what was
+# planned — a fact about the run rather than a forecast of it.
+#
+# ESCALATION HAPPENS ONCE AND DOES NOT COME BACK DOWN, AND IT WINS OVER
+# DOWNSHIFTING WHERE BOTH APPLY. Both are io-harness's own rules: it owns the
+# failure count, the byte total and the decision, taken after every step. io-cli
+# evaluates none of it, because a second implementation here would be a second
+# answer that drifts from the one the run actually used.
+#
+# THESE RULES DO NOT FIRE UNDER [app.io-cli.containment]. io-harness applies
+# routing in its flat workspace loop only, and a contained turn takes each agent's
+# model from that agent's own definition without ever consulting them. The section
+# still parses, still shows in /config and still reaches the contract — it simply
+# never fires, and a session configured for both says so at start. `io exec` uses
+# the flat loop, and a turn taken with /contain off routes normally.
+#
+# THERE IS NO `require_primary` KEY, AND THAT IS A DECISION. io-harness's own
+# Routing carries the field; it gates on Provider::reachable, a defaulted trait
+# method whose body answers yes and which no provider in io-harness 0.69
+# overrides. A key for it would be accepted from this file, believed, and
+# permanently inert — you would set it, expect an unattended run to refuse to
+# start against a dead endpoint, and get exactly the behaviour you had before. It
+# goes in when a provider answers the question.
+#
+# [app.io-cli.routing.escalate_after]
+# failures = 3
+# model = "a-stronger-model"
+#
+# [app.io-cli.routing.downshift_under]
+# bytes = 2000
+# model = "a-cheaper-model"

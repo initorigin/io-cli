@@ -334,6 +334,52 @@ same session — io re-reads the configuration for every turn, so an edit you ma
 in your own editor counts too, and a file that stops parsing leaves the last good
 one in force rather than ending the session.
 
+### Answered without opening a run
+
+**A prompt that is only a question is answered in one completion**, with no steps,
+no tools, no checkpoint and no verification gate. io-harness has classified turns
+that way for longer than this interface has existed — a contract carrying no
+criterion turns the classification on, and the contract io-cli builds carries none
+until you write a gate — so a greeting has always come back from a single call.
+What io-cli never did was *say* so. Every line this product draws about a turn is
+drawn from events that a turn like this does not emit, so what reached you was
+silence, and a fast answer with nothing above it reads as something having gone
+wrong. From 0.26.0 such a turn commits one line: `answered without opening a run —
+one completion, no steps and no tools`.
+
+**`conversational` in `[app.io-cli]` is where you overrule it.** `false` opens a
+full run for every prompt; absent leaves the behaviour exactly as it is, which is
+why there is nothing to write here for the ordinary case. The key earns its place
+on the other side of the gate: attaching a criterion is what io-harness reads as
+"this turn is not a conversation", so a repository with a gate would otherwise
+have every idle question turned into an agent run that then runs the test suite
+after each of its steps. io-cli sets classification back on wherever a criterion
+was attached, and this key is how you say you wanted the runs.
+
+### How much reasoning a turn buys
+
+**`/effort low`, `/effort medium`, `/effort high`, `/effort off`.** The level is a
+posture and not a one-shot: it holds for the turn you set it on and for every turn
+after it until you change it, it sits on the status line as `effort high`, and a
+bare `/effort` reports what is in force and changes nothing.
+
+What reaches the wire is the vendor's own spelling, and io-harness owns the
+translation: `reasoning_effort` on the OpenAI wire, `reasoning: { effort }` on
+OpenRouter, and a converted thinking budget on Anthropic — 1024, 4096 and 16384
+tokens for `low`, `medium` and `high`. io-cli names a level and nothing else,
+because a per-vendor number chosen here would be a second opinion about somebody
+else's request body.
+
+**`off` is not a fourth level below `low`.** It goes back to sending no reasoning
+field at all, which is what every release before 0.26.0 sent, and the line it
+commits says that rather than naming a level — calling it "off" on screen would
+suggest a setting between `low` and nothing.
+
+The level is this session's and is written to no file. There is no `[app.io-cli]`
+key for it: how much thinking to buy is a thing you change while you work — a
+cheap question, then a hard one — and a value on disk would be one more setting
+that is in force on a session you have forgotten setting it for.
+
 ## Keys
 
 <!-- keys:start -->
@@ -452,6 +498,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/clear` | start a new conversation; this one stays in /resume |
 | `/resume` | reopen an earlier session and answer whatever its last run is waiting on |
 | `/fork` | continue from an earlier turn of this conversation |
+| `/profile` | switch to a named profile from the configuration, for this session |
 | `/setup` | run the first-run wizard again |
 | `/exit` | leave |
 
@@ -460,9 +507,9 @@ above a row that ranked there for reasons having nothing to do with it.
 | Command | Does |
 | --- | --- |
 | `/model` | change the model the next turn is sent to |
+| `/effort` | how much reasoning the next turn buys: low, medium, high, or off |
 | `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
-| `/profile` | switch to a named profile from the configuration, for this session |
 | `/steer` | send what is queued into the turn that is already running |
 | `/compact` | fold this conversation into a summary, at the next step |
 | `/image` | draw an attached image again: /image 1 |
@@ -496,6 +543,27 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
 | `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
 | `/import` | bring instructions, MCP servers, skills and a model across from another agent |
+
+`/effort` is new in 0.26.0 and sits under **this turn** beside `/model`, because
+the two are the same question asked twice: which model the work goes to, and how
+much thinking it is worth buying from it. It is a posture rather than a one-shot —
+the level it sets holds for that turn and for every turn after it until you change
+it — and a bare `/effort` reports the level in force and changes nothing.
+`/effort off` is not a fourth level below `low`: it goes back to sending no
+reasoning field at all, which is what every release before this one sent. See [How
+much reasoning a turn buys](#how-much-reasoning-a-turn-buys).
+
+`/profile` sits under **the session** from 0.26.0, and it is a correction rather
+than a reshuffle — the third time this sentence has been written, after 0.19.0's
+`/mcp` and `/provider` and 0.22.0's `/image` and `/copy`. **this turn** means a
+command acting on the work the turn just finished, and `/profile` acts on nothing
+that has happened: it changes which configuration overlay every *later* turn is
+built from, which is a property of the session. It was filed under **this turn**
+because switching one feels like something you do between turns, and where a
+command sits is decided by what it acts on rather than by when it is typed. That
+it also made room for `/effort` is the order the bound was meant to force: the
+group stood at ten of ten, and the answer had been written down in advance —
+re-file what is in the wrong group, do not widen the bound.
 
 `/commit` is new in 0.25.0 and sits under **this turn** beside `/copy` and `/copy
 diff` because it is the third thing you do with work that has just finished: one
@@ -1217,6 +1285,65 @@ back with.
 `io exec` gains exit `6` for this — the agent finished and the work does not hold
 up. See [Exit status](#exit-status).
 
+## Which model a run asks
+
+A gate says what "done" means. This says what to do when the model that has to
+reach it keeps missing, and what to do when the work turns out not to have needed
+the model you started with. `[app.io-cli.routing]` holds two optional rules, each
+written as a sub-table because a rule is a threshold and a model that only mean
+anything together — a threshold with no model and a model with no threshold are
+both half a rule, and a sub-table makes the pair the unit the file itself
+enforces:
+
+```toml
+[app.io-cli.routing.escalate_after]
+failures = 3
+model = "a-stronger-model"
+
+[app.io-cli.routing.downshift_under]
+bytes = 2000
+model = "a-cheaper-model"
+```
+
+**`escalate_after` moves up after that many consecutive failed gate attempts** —
+the gates above, counted consecutively rather than cumulatively, because a run
+that fails, recovers, and fails again much later is a run doing hard work rather
+than one that needs a bigger model. **`downshift_under` asks the cheaper model
+while the run has written fewer than that many bytes to disk**, measured on what
+was actually written rather than on what was planned, so it is a fact about the
+run rather than a forecast of it. Neither key defaults: half a rule is a parse
+error naming the key you left out, rather than a threshold quietly reading as
+zero and escalating on the first gate attempt of every turn.
+
+Escalation happens **once** and does not come back down, and escalation **wins**
+over downshifting where both apply. Both of those are io-harness's rules rather
+than io-cli's: it owns the consecutive-failure count, the byte total and the
+decision, taken after every step of the run. io-cli evaluates none of it, because
+a second implementation here would be a second answer that drifts from the one the
+run actually used.
+
+**Routing does not reach a contained turn, and that is the first thing to know
+about it.** io-harness applies routing in its flat workspace loop only; a turn run
+under `[app.io-cli.containment]` takes each agent's model from that agent's own
+roster entry and never consults the rules. So for an operator who has configured
+containment, the section parses, is listed by `/config`, reaches the contract —
+and never fires. A session that has both says so at start, and a session with
+containment off says nothing, because a caveat attached to a feature that is
+working is how an operator learns to stop reading the notices. A turn taken with
+`/contain off` routes normally, and `io exec` uses the flat loop, so routing works
+there. Nothing in io-cli can close this: the loop that would have to consult the
+rules is the dependency's, and what this interface owes you meanwhile is the
+disclosure.
+
+**There is no `require_primary` key**, and its absence is a decision rather than
+an omission. io-harness's own `Routing` carries the field, and it gates on
+`Provider::reachable` — a defaulted trait method whose body answers yes, and which
+no provider in io-harness 0.69 overrides. A key for it would be offered on a
+surface, accepted from a file, and permanently inert: you would set it, believe an
+unattended overnight run now refuses to start against a dead endpoint, and get
+exactly the behaviour you had before. It goes in when a provider answers the
+question.
+
 ## Git
 
 A gate says the work holds up. This says what becomes of it.
@@ -1711,6 +1838,25 @@ Reordering moves an entry with its own comments and its own keys rather than
 rebuilding the array, because a chain rebuilt from io-cli's model would silently
 drop whatever io-cli does not model.
 
+**From 0.26.0 the chain is what runs.** Since 0.21.0 that panel has drawn the
+whole order while the product only ever asked its head, so a second
+`[[provider]]` entry was a row on a screen and nothing else. It answers now: when
+the first provider fails in a way another vendor might survive — a transport
+error, a timeout, a rate limit, a 5xx — the next entry is asked, the fall-through
+is committed to the scrollback as it happens, and the status line's provider field
+moves to whoever actually answered. **A failure that will fail identically
+everywhere does not fall through**, a bad API key above all, so a wrong credential
+on the primary can never start spending at the secondary. That predicate is
+io-harness's own — the same one its `Fallback` and its in-run retry ask — and
+io-cli holds no opinion here and must not grow one. **This is a behaviour change
+for a file that already has more than one entry**: the second one starts being
+used.
+
+`--provider` on `io exec` and `io resume` replaces the whole chain rather than
+heading it. Naming a provider on the command line is saying which endpoint this
+run uses, and keeping the file's fallbacks underneath it would let a run you
+scoped to one vendor spend at another.
+
 **Both of those panels could only list until 0.21.0.** The writers were there and
 tested and called from nothing, while three places in this documentation said they
 "add, edit, disable and remove". They genuinely write now, and the word *disable*
@@ -1730,7 +1876,7 @@ bundles](#capability-bundles).
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.
 
-Eight keys live there, and seven tables:
+Nine keys live there, and eight tables:
 
 | Key | Is |
 | --- | --- |
@@ -1742,12 +1888,14 @@ Eight keys live there, and seven tables:
 | `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
 | `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |
 | `detached_spawns` | whether a spawn may detach at all. Absent, it may. `false` buys a trace with every child's whole life in it, which a detached child gives up. |
+| `conversational` | whether a prompt that is only a question may be answered in one completion, with no steps and no tools. Absent leaves io-harness's own classification where it is, which is what every release before 0.26.0 did; `false` opens a full run for every prompt. See [Answered without opening a run](#answered-without-opening-a-run). |
 | `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
 | `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
 | `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Merged with the top-level `[[mcp]]`, and wins a collision of ids. |
 | `[[app.io-cli.lsp]]` | language servers for this workspace. Merged with the top-level `[[lsp]]`, and wins a collision of ids. |
 | `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. |
 | `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](#verification-gates). |
+| `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start when both are configured. See [Which model a run asks](#which-model-a-run-asks). |
 | `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](#where-a-price-comes-from). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
