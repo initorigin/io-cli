@@ -264,7 +264,10 @@ fn f2_a_command_criterion_carries_the_exit_status_it_was_given() {
         panic!("a command criterion maps to a command verification");
     };
     assert_eq!(argv, ["npm", "run", "lint"]);
-    assert_eq!(expect_exit, 1, "a hardcoded zero would pass every other test");
+    assert_eq!(
+        expect_exit, 1,
+        "a hardcoded zero would pass every other test"
+    );
 
     let defaulted = Settings {
         command: Some(vec!["make".into(), "check".into()]),
@@ -494,7 +497,10 @@ fn f7_the_retry_budget_defaults_to_one_and_zero_means_zero() {
         !gates::may_retry(&failed, 0),
         "zero retries must not buy one"
     );
-    assert!(gates::may_retry(&failed, 1), "one retry buys the second turn");
+    assert!(
+        gates::may_retry(&failed, 1),
+        "one retry buys the second turn"
+    );
 
     let twice = [
         attempt(1, "command", GateOutcome::Failed),
@@ -529,8 +535,15 @@ fn f6_the_standing_is_the_last_attempt_and_its_number() {
         attempt(2, "command", GateOutcome::Passed),
     ];
     let standing = gates::standing(&attempts).expect("two attempts have a standing");
-    assert_eq!(standing.outcome, GateOutcome::Passed, "the last one, not the first");
-    assert_eq!(standing.attempt, 2, "counted from one, so two attempts is two");
+    assert_eq!(
+        standing.outcome,
+        GateOutcome::Passed,
+        "the last one, not the first"
+    );
+    assert_eq!(
+        standing.attempt, 2,
+        "counted from one, so two attempts is two"
+    );
     assert_eq!(standing.phase, "command");
 }
 
@@ -589,8 +602,11 @@ fn f3_the_test_command_is_proposed_by_the_repository_and_never_defaulted() {
     );
 
     let python = tempfile::tempdir().expect("a temporary directory");
-    std::fs::write(python.path().join("pyproject.toml"), "[project]\nname = \"x\"\n")
-        .expect("the marker is written");
+    std::fs::write(
+        python.path().join("pyproject.toml"),
+        "[project]\nname = \"x\"\n",
+    )
+    .expect("the marker is written");
     let proposed = gates::proposed_command(python.path(), &plain())
         .expect("a Python project proposes a test command");
     assert!(

@@ -212,7 +212,10 @@ impl Settings {
             }));
         }
 
-        let rubric = self.rubric.clone().expect("one kind is set and it is the rubric");
+        let rubric = self
+            .rubric
+            .clone()
+            .expect("one kind is set and it is the rubric");
         let Some(reviewer) = self.reviewer.clone() else {
             return Err(Refusal::ReviewerMissing);
         };

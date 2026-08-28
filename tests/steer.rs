@@ -1,5 +1,12 @@
 //! F5 — a queued line reaches the turn that is still running, on both arms.
 //!
+//! **And F7 since 0.24.0, at the bottom of the file, because it is the same
+//! queue.** A failing verification gate buys another turn by putting a prompt at
+//! the FRONT of the queue this file is about — not by opening a second driver
+//! loop beside the one that already drains it. So the retry's mechanism belongs
+//! next to the mechanism it borrows, and the same instrument proves it: the
+//! library halves are driven directly, and the driver's wiring is read as text.
+//!
 //! **What this file can and cannot prove, stated first, because the gap is the
 //! whole reason the file is shaped like this.**
 //!
@@ -345,5 +352,303 @@ fn f5_a_send_after_the_turn_has_ended_is_refused() {
     assert!(
         steer.interrupt().is_err() && steer.fold().is_err(),
         "and the other two go the same way",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F7 — a failing gate buys another turn, through this same queue
+// ---------------------------------------------------------------------------
+//
+// The retry is not a second driver loop. It is a prompt at the FRONT of the queue
+// this file is otherwise about, so a turn earned by a gate and a turn typed by an
+// operator go through one `turn` call, get one echo, one clock and one `Ctrl+C`.
+// What is provable here is the mechanism — the queue's order, the prompt's
+// contents, and the fact that the wiring in the driver exists at all. What is not
+// is that a real model reads it, which is the live run's to close.
+
+/// One recorded gate evaluation. `at` is a stored string this crate never parses.
+fn attempt(step: u32, phase: &str, outcome: io_harness::GateOutcome) -> io_harness::GateAttempt {
+    io_harness::GateAttempt {
+        id: 1,
+        step,
+        phase: phase.into(),
+        outcome,
+        detail: String::new(),
+        at: String::new(),
+    }
+}
+
+/// F7 — the retry prompt carries the criterion and the failure, and not the goal.
+///
+/// **A retry that re-sent the original prompt is the sabotage this criterion
+/// names**, and it is the one that looks like it works: a second turn runs, the
+/// model does more work, and the gate fails again for exactly the reason nobody
+/// told it about. `app::gate_retry` has no parameter a goal could arrive through,
+/// so that implementation cannot be written — and this asserts the two things it
+/// must carry instead.
+#[test]
+fn f7_the_retry_prompt_carries_the_criterion_and_what_failed() {
+    let criterion = io_cli::gates::Criterion::Command {
+        argv: vec!["cargo".into(), "test".into()],
+        expect_exit: 0,
+    };
+    let attempts = [attempt(4, "command", io_harness::GateOutcome::Failed)];
+    let events = [
+        io_harness::SandboxEvent::gate_output(9, 3, "an older failure, two turns ago"),
+        io_harness::SandboxEvent::gate_output(9, 4, "error[E0433]: failed to resolve `frobnicate`"),
+    ];
+
+    let prompt = io_cli::app::gate_retry(&criterion, &attempts, &events);
+    assert!(
+        prompt.contains("cargo test"),
+        "the retried turn is told what it is judged by, in the words it was judged \
+         by: {prompt}",
+    );
+    assert!(
+        prompt.contains("E0433") && prompt.contains("frobnicate"),
+        "a retry that does not carry the failure is a retry that repeats it: {prompt}",
+    );
+    assert!(
+        !prompt.contains("two turns ago"),
+        "the output is the one for the step this attempt ran after, not the first \
+         failure of the run: {prompt}",
+    );
+    assert!(
+        prompt.contains("Do not change the gate"),
+        "an agent handed a failing check and no instruction about it will sometimes \
+         edit the check",
+    );
+
+    // A review says its reasons in the ROW and prints nothing, so a reader that
+    // only looked at sandbox events would retry with no explanation at all.
+    let reviewed = io_cli::gates::Criterion::Review {
+        rubric: "every public item has a doc comment".into(),
+        reviewer: "vendor/judge".into(),
+        allow_self_review: false,
+    };
+    let mut refused = attempt(2, "review", io_harness::GateOutcome::Failed);
+    refused.detail = "three functions carry no documentation".into();
+    let prompt = io_cli::app::gate_retry(&reviewed, &[refused], &[]);
+    assert!(
+        prompt.contains("three functions carry no documentation"),
+        "a review's reasons are in its row, not in a sandbox event: {prompt}",
+    );
+
+    // And a gate that failed silently still states the criterion, which is more
+    // than the turn had before.
+    let quiet = io_cli::app::gate_retry(&criterion, &attempts, &[]);
+    assert!(
+        quiet.contains("cargo test") && !quiet.is_empty(),
+        "a command that printed nothing still has a criterion to state: {quiet}",
+    );
+}
+
+/// F7 — an existence criterion is judged here, or it is not judged at all.
+///
+/// **This is the single easiest defect in the release to ship.**
+/// `Criterion::verification` maps a bare `file` criterion to `Verification::None`,
+/// because there is no honest counterpart for it in io-harness's enum — and a run
+/// carrying `Verification::None` never reaches the gate: the step loop returns
+/// `Finished` the moment the agent stops calling tools, so the store holds no row
+/// at all. A caller that read `Store::gate_attempts` and stopped would draw
+/// nothing, retry nothing, and report an ungated run.
+///
+/// Sabotage: return the recorded rows unchanged. Every command and review gate in
+/// the product still works, the suite stays green, and an operator who asked for a
+/// file to exist gets a session that never once looks for it.
+#[test]
+fn f7_an_existence_criterion_is_evaluated_where_io_harness_did_not() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let criterion = io_cli::gates::Criterion::File {
+        file: std::path::PathBuf::from("REPORT.md"),
+        contains: None,
+    };
+
+    // Nothing recorded, because nothing was asked of io-harness.
+    let missing = io_cli::app::gate_attempts(Vec::new(), Some(&criterion), dir.path());
+    let standing = io_cli::gates::standing(&missing)
+        .expect("an existence criterion that reports nothing is an ungated run");
+    assert_eq!(standing.outcome, io_harness::GateOutcome::Failed);
+    assert!(
+        io_cli::gates::may_retry(&missing, 1),
+        "and a file that is not there earns the turn that writes it",
+    );
+
+    std::fs::write(dir.path().join("REPORT.md"), "done").expect("the report");
+    let written = io_cli::app::gate_attempts(Vec::new(), Some(&criterion), dir.path());
+    assert_eq!(
+        io_cli::gates::standing(&written)
+            .expect("a standing")
+            .outcome,
+        io_harness::GateOutcome::Passed,
+    );
+
+    // **A `none` row is dropped, not kept.** A run that spends its step cap DOES
+    // reach the gate with `Verification::None`, which passes trivially and records
+    // `phase = "none", passed` — a row saying a criterion that checked nothing was
+    // satisfied. Left as the last row it would report a missing file as a pass.
+    std::fs::remove_file(dir.path().join("REPORT.md")).expect("take it away again");
+    let folded = io_cli::app::gate_attempts(
+        vec![attempt(7, "none", io_harness::GateOutcome::Passed)],
+        Some(&criterion),
+        dir.path(),
+    );
+    assert_eq!(
+        io_cli::gates::standing(&folded)
+            .expect("a standing")
+            .outcome,
+        io_harness::GateOutcome::Failed,
+        "a row for a criterion that checked nothing must not stand as the verdict",
+    );
+    assert!(
+        folded.iter().all(|attempt| attempt.phase != "none"),
+        "the row io-harness wrote about checking nothing is not part of the count",
+    );
+
+    // Every other criterion is io-harness's to judge, and the rows come back
+    // untouched — including the empty list, which is an ungated run.
+    let command = io_cli::gates::Criterion::Command {
+        argv: vec!["make".into()],
+        expect_exit: 0,
+    };
+    let rows = vec![attempt(1, "command", io_harness::GateOutcome::Passed)];
+    assert_eq!(
+        io_cli::app::gate_attempts(rows.clone(), Some(&command), dir.path()),
+        rows,
+        "a command gate is not re-judged here",
+    );
+    assert!(io_cli::app::gate_attempts(Vec::new(), None, dir.path()).is_empty());
+}
+
+/// F6 — the scrollback line spells the verdict the way everything else does.
+#[test]
+fn f6_the_gate_line_names_the_phase_the_verdict_and_what_it_printed() {
+    let attempts = [
+        attempt(3, "command", io_harness::GateOutcome::Failed),
+        attempt(4, "command", io_harness::GateOutcome::Failed),
+    ];
+    let events = [io_harness::SandboxEvent::gate_output(
+        9,
+        4,
+        "2 tests failed",
+    )];
+    let (tone, line) =
+        io_cli::app::gate_report(&attempts, &events).expect("a gated turn has a line");
+    assert_eq!(
+        tone,
+        io_cli::theme::Tone::Refused,
+        "a gate that answered no is a refusal, not an error: nothing went wrong",
+    );
+    assert!(
+        line.contains("failed") && line.contains("command") && line.contains("2 tests failed"),
+        "the phase, the verdict and what it printed: {line}",
+    );
+    assert!(
+        line.contains("attempt 2"),
+        "the attempt is on the line once there has been more than one: {line}",
+    );
+
+    // `GateOutcome::as_str` verbatim, because the status line, the exit code and
+    // this sentence all have to spell one verdict the same way.
+    let (_, passed) = io_cli::app::gate_report(
+        &[attempt(1, "contains", io_harness::GateOutcome::Passed)],
+        &[],
+    )
+    .expect("a line");
+    assert!(
+        passed.contains(io_harness::GateOutcome::Passed.as_str()),
+        "the word is the harness's own: {passed}",
+    );
+    assert!(
+        !passed.contains("attempt"),
+        "every gate that ran at all ran once, so `attempt 1` tells nobody anything",
+    );
+
+    assert!(
+        io_cli::app::gate_report(&[], &[]).is_none(),
+        "a turn nothing gated earns no line; a session with no gates section would \
+         otherwise carry one under every turn",
+    );
+}
+
+/// F7 — the driver drives the retry through the queue it already drains.
+///
+/// Nothing under `tests/` links `src/main.rs`, so the wiring is read as text, the
+/// way `tests/contract.rs` and `tests/context_share.rs` read it. Four properties,
+/// each of which is a way the retry can be wrong while every test above still
+/// passes:
+///
+/// 1. **One loop.** The retry goes back through `next`, so it gets the
+///    configuration refresh, the picture drain and the stop key that every other
+///    turn gets. A second loop beside this one is where those drift apart.
+/// 2. **The budget is asked of the library.** `gates::may_retry` deliberately
+///    differs from `GateOutcome::is_retryable` — both `Failed` and `Errored` earn
+///    another *turn*, because the tree changes between turns — and a driver that
+///    reached for the method would silently stop retrying the commonest failure
+///    there is.
+/// 3. **A stopped turn is never retried.** One press of the stop key must not
+///    start another turn.
+/// 4. **The prompt is composed by the library.** A sentence built in this file
+///    would be one no test can read.
+#[test]
+fn f7_the_retry_rides_the_drivers_own_queue() {
+    let text = driver();
+    let flat = squashed(&text);
+
+    assert!(
+        flat.contains("next=app.next_queued_prompt();"),
+        "the retry is drained by the loop that was already there",
+    );
+    assert!(
+        flat.contains("app.requeue_prompts(vec![prompt])"),
+        "and it goes to the FRONT of that queue, so it is the next turn and the \
+         prompts typed during this one keep their order behind it",
+    );
+    assert!(
+        flat.contains("io_cli::gates::may_retry(&gated,section.retries())"),
+        "the budget is the library's answer, asked with the operator's own number",
+    );
+    assert!(
+        !text.contains("is_retryable"),
+        "`GateOutcome::is_retryable` answers a different question — whether the \
+         SAME criterion over the SAME tree could say something else — and using it \
+         would stop retrying every gate that merely failed",
+    );
+    assert!(
+        flat.contains("!turned.stopped&&io_cli::gates::may_retry("),
+        "a turn the operator interrupted is not retried",
+    );
+    assert!(
+        flat.contains("io_cli::app::gate_retry(criterion,&gated,&events)"),
+        "the prompt is composed in the library, where a test can read it",
+    );
+
+    // The attempts are accumulated across the chain. Every turn is its own run, so
+    // `Store::gate_attempts` restarts at one on each retry — a driver that passed
+    // only the current run's rows to `may_retry` would buy another turn for every
+    // one of them, forever, against a real model.
+    assert!(
+        flat.contains("gated.extend(io_cli::app::gate_attempts("),
+        "the chain's attempts accumulate; `retries = 1` means one further turn, \
+         not an unbounded loop",
+    );
+    assert!(
+        flat.contains("gated.clear();"),
+        "and a chain that ends releases them, or the next prompt is charged for a \
+         gate that failed two prompts ago",
+    );
+
+    // The standing comes off the STORE. `EventKind::Sandbox` carries no detail
+    // payload, so nothing in the event stream can say which phase failed or what
+    // it printed — and reading rows is also what makes this right after a
+    // `/resume`, where this process never watched the run.
+    assert!(
+        flat.contains("store.gate_attempts(run_id)")
+            && flat.contains("store.sandbox_events(run_id)"),
+        "the phase, the verdict and the output are the store's",
+    );
+    assert!(
+        flat.contains("app.status.gate=Some(standing.outcome.as_str().to_string());"),
+        "the status word is the harness's own spelling, passed through",
     );
 }

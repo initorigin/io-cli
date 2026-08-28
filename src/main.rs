@@ -1504,6 +1504,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 vec![
                                                     Row::new("leave it as it is"),
                                                     Row::new("remove this server"),
+                                                    Row::with_detail(
+                                                        "change one setting",
+                                                        io_cli::servers::KEYS.join(", "),
+                                                    ),
                                                 ],
                                             ),
                                             Pick::McpRemove {
@@ -1517,7 +1521,25 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         }
                         // Row 0 is "leave it", the default that does nothing —
                         // the shape `/skills` and `/plugin` both already use.
+                        // Row 2 is the edit verb, and it descends rather than
+                        // acting: which key is half the decision, and the other
+                        // half is a value only the operator can type.
                         Pick::McpRemove { id, at } => {
+                            if index == 2 {
+                                descended = Some((
+                                    Picker::new(
+                                        format!("Change what about {id}?"),
+                                        io_cli::servers::KEYS
+                                            .iter()
+                                            .map(|key| Row::new(*key))
+                                            .collect(),
+                                    ),
+                                    Pick::McpEdit {
+                                        id: id.clone(),
+                                        at: *at,
+                                    },
+                                ));
+                            }
                             if index == 1 {
                                 let edit = io_cli::servers::remove(at);
                                 match io_cli::configure::write(session.root(), at.scope, &[edit]) {
@@ -1548,6 +1570,37 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     }
                                     Err(refusal) => app.record(Tone::Refused, refusal),
                                 }
+                            }
+                        }
+                        // **The key goes into the composer and the value is
+                        // typed, which is `/config`'s own shape.** A picker
+                        // cannot ask for a URL or a command line, and this
+                        // product has exactly one surface that takes free text.
+                        //
+                        // The line carries the server's **id**, never `at`'s
+                        // index: the composer holds it while the operator types,
+                        // and a file they edit in another window in between would
+                        // move the array under a carried index. `servers::At` is
+                        // resolved again, from the file's own bytes, when the
+                        // line comes back — which is also what decides the scope
+                        // the write goes to, so no scope question is asked for a
+                        // change to an entry that lives in exactly one file.
+                        Pick::McpEdit { id, at } => {
+                            if let Some(key) = io_cli::servers::KEYS.get(index) {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{id}'s {key} is declared in the {} scope; type the value \
+                                         after the key and press Enter",
+                                        io_cli::configure::Decided::File {
+                                            scope: at.scope,
+                                            path: Default::default(),
+                                        }
+                                        .word()
+                                    ),
+                                );
+                                let prefix = io_cli::app::SERVER_KEY;
+                                app.composer.set(&format!("/config {prefix}{id}.{key} "));
                             }
                         }
                         // Says what the skill is and offers the one change there
@@ -2007,6 +2060,76 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             Some(key) => app.composer.set(&format!("/config {key} ")),
                             None => {}
                         },
+                        // The gates surface. Every row but the first names a key
+                        // and goes to the composer, which is `/config`'s own
+                        // shape and reaches `/config`'s own write — the value of
+                        // a rubric or a path is the operator's to type, and a
+                        // picker cannot ask for one.
+                        Pick::Gates { keys, proposed } => {
+                            match keys.get(index).map(String::as_str) {
+                                Some(io_cli::app::PROPOSED_GATE) => {
+                                    // **Refused where the operator can still see
+                                    // what they asked for, rather than written
+                                    // and discovered at run start.** A section
+                                    // that already names a file or a rubric gains
+                                    // a second kind from this write, and
+                                    // `Settings::criterion` answers `Ambiguous` —
+                                    // which `contract::configured` honours by
+                                    // running every later turn with NO gate at
+                                    // all. That is a config edit that silently
+                                    // turns verification off, which is the exact
+                                    // failure F5 exists to make impossible.
+                                    //
+                                    // Checked against a prospective section built
+                                    // here rather than against the file, so the
+                                    // answer is about the write being offered and
+                                    // not about the one already there. The real
+                                    // working model goes in, because the refusal
+                                    // that compares a reviewer against it cannot
+                                    // fire on a guess.
+                                    let working = config
+                                        .provider_spec()
+                                        .map(io_cli::provider::model_of)
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    let stored = io_cli::settings::stored(&config)
+                                        .0
+                                        .and_then(|stored| stored.gates)
+                                        .unwrap_or_default();
+                                    let prospective = io_cli::gates::Settings {
+                                        command: proposed.clone(),
+                                        ..stored
+                                    };
+                                    match prospective.criterion(&working) {
+                                        Err(refusal) => {
+                                            app.record(Tone::Refused, refusal.to_string())
+                                        }
+                                        Ok(_) => {
+                                            // The argv as TOML, built by
+                                            // `edit::array` rather than by a
+                                            // format string: an argument with a
+                                            // quote or a backslash in it is
+                                            // either a parse error or a
+                                            // different command.
+                                            let argv = proposed.clone().unwrap_or_default();
+                                            let items: Vec<&str> =
+                                                argv.iter().map(String::as_str).collect();
+                                            // `descended`, not `picker`: the
+                                            // assignment at the bottom of this
+                                            // block is unconditional, and `kind`
+                                            // still borrows `picker` here.
+                                            descended = Some(write_where(
+                                                session.root(),
+                                                "app.io-cli.gates.command".to_string(),
+                                                io_cli::edit::array(&items),
+                                            ));
+                                        }
+                                    }
+                                }
+                                Some(key) => app.composer.set(&format!("/config {key} ")),
+                                None => {}
+                            }
+                        }
                         Pick::ConfigScope { key, value, paths } => {
                             // An index past the end puts nothing in the file,
                             // which is the same answer every other picker arm
@@ -2039,6 +2162,34 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                             .word()
                                                         ),
                                                     );
+                                                    // **The one place a gates
+                                                    // write is checked against
+                                                    // the model that will do the
+                                                    // work.** `/gates` sends its
+                                                    // key rows through this arm,
+                                                    // and the value is the
+                                                    // operator's own typing — so
+                                                    // a rubric with no reviewer,
+                                                    // or a reviewer that IS the
+                                                    // working model, is refused
+                                                    // by `Settings::criterion`
+                                                    // here rather than by
+                                                    // io-harness at run start,
+                                                    // where the failure arrives
+                                                    // disconnected from the
+                                                    // keystroke that caused it.
+                                                    // Read off the reloaded
+                                                    // configuration, so what is
+                                                    // judged is the file as it
+                                                    // now stands. Silent when
+                                                    // the section is fine or
+                                                    // absent, which is every
+                                                    // other write.
+                                                    if let Some(notice) =
+                                                        io_cli::contract::gate_notice(&config)
+                                                    {
+                                                        app.record(Tone::Refused, notice);
+                                                    }
                                                 }
                                                 Err(error) => app.record(Tone::Error, error),
                                             }
@@ -2423,6 +2574,129 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         ));
                     }
                 }
+                // **Three questions, answered before anything is offered, because
+                // an operator opens this surface for exactly one of them.** What
+                // is being asked of a turn; why a section that is plainly in the
+                // file is not asking it; and how the last turn's gate actually
+                // went. The first is a fresh clone's question, the second is a
+                // typo's, and the third is the one asked after a turn came back
+                // red — and answering only the first would leave the other two
+                // discoverable nowhere in the product.
+                //
+                // **No contract is built here, deliberately.** `tests/contract.rs`
+                // counts `contract::session(` in this file by binding name *and*
+                // in total, and a sixth site is a new arm by that test's own
+                // reckoning. A surface that reads a criterion needs the `Config`
+                // and the workspace root, which is all `gates::Settings` and
+                // `gates::proposed_command` take between them.
+                Action::Gates => {
+                    let root = session.root().to_path_buf();
+                    // The model the work will be done by, and the one thing the
+                    // self-review refusal is decided against. Empty where no
+                    // provider is configured, which `Settings::criterion` reads
+                    // as "cannot clash" rather than as a model of that name —
+                    // and it is read here rather than defaulted, because the
+                    // caller that knows the model is the caller that must say it.
+                    let working = config
+                        .provider_spec()
+                        .map(io_cli::provider::model_of)
+                        .unwrap_or_default()
+                        .to_string();
+                    let section = io_cli::settings::stored(&config)
+                        .0
+                        .and_then(|stored| stored.gates)
+                        .unwrap_or_default();
+                    // Every key of the section, resolved by the same reader
+                    // `/config` uses, so the two surfaces cannot disagree about
+                    // what is in force or about which file decided it.
+                    let settings: Vec<io_cli::configure::Setting> = io_cli::configure::CATALOGUE
+                        .iter()
+                        .filter(|key| key.starts_with("app.io-cli.gates."))
+                        .map(|key| io_cli::configure::setting(&config, key))
+                        .collect();
+                    // Whichever key a file actually names decides the scope word,
+                    // because that is the file the operator has to open. Three
+                    // files are called `io.toml` and only one of them is theirs.
+                    let decided = settings
+                        .iter()
+                        .find(|setting| setting.value.is_some())
+                        .map(|setting| setting.decided.word())
+                        .unwrap_or("default");
+                    // A refusal is NOT reported here. `gate_notice` below is the
+                    // one place this product says why a section is not gating a
+                    // run, and it covers both the refusals and the reviewer that
+                    // could not be built — saying it twice would read as two
+                    // different problems.
+                    let criterion = section.criterion(&working).ok().flatten();
+                    match &criterion {
+                        Some(criterion) => app.record(
+                            Tone::Muted,
+                            format!(
+                                "the gate asks that {}, from the {decided} scope; a turn that \
+                                 fails it earns {} more",
+                                criterion.describe(),
+                                match section.retries() {
+                                    0 => "no turns".to_string(),
+                                    1 => "one turn".to_string(),
+                                    many => format!("{many} turns"),
+                                },
+                            ),
+                        ),
+                        None => app.record(
+                            Tone::Muted,
+                            "no gate is in force, so a turn that stops is a turn that finished",
+                        ),
+                    }
+                    if let Some(notice) = io_cli::contract::gate_notice(&config) {
+                        app.record(Tone::Refused, notice);
+                    }
+                    // How the last turn's gate went, read off the store rather
+                    // than remembered — a resumed session did not run the turn
+                    // whose gate it has to report, and a field that is only right
+                    // when this process watched the run lies after every
+                    // `/resume`. Folded through `app::gate_attempts` for the same
+                    // reason the driver folds it: an existence criterion has no
+                    // recorded row at all, and reading the store alone would
+                    // report an ungated run.
+                    if let Some(run_id) = last_run(&session, &store).map(|turn| turn.run_id) {
+                        let attempts = io_cli::app::gate_attempts(
+                            store.gate_attempts(run_id).unwrap_or_default(),
+                            criterion.as_ref(),
+                            &root,
+                        );
+                        let events = store.sandbox_events(run_id).unwrap_or_default();
+                        if let Some((tone, line)) = io_cli::app::gate_report(&attempts, &events) {
+                            app.record(tone, format!("the last turn's {line}"));
+                        }
+                    }
+
+                    // **The repository's own proposal first, and it is the one
+                    // row that is an offer rather than a key.** `cargo test`,
+                    // `npm test`, `pytest` — the command the toolchain detected,
+                    // which io-cli holds no list of and could not invent. A gate
+                    // an operator accepts with one keystroke is the difference
+                    // between a gate configured and a gate intended, and a
+                    // proposal that is absent is better than one that is wrong.
+                    let mut rows = Vec::new();
+                    let mut keys: Vec<String> = Vec::new();
+                    let proposed = io_cli::gates::proposed_command(&root, &config);
+                    if let Some(argv) = &proposed {
+                        rows.push(Row::with_detail(
+                            format!("gate on `{}`", argv.join(" ")),
+                            "the command this repository proposes for itself".to_string(),
+                        ));
+                        keys.push(io_cli::app::PROPOSED_GATE.to_string());
+                    }
+                    // Then every key, drawn by `configure` rather than by rows
+                    // spelled here: nothing under `tests/` links this file, so a
+                    // label written in the driver is one no test can assert.
+                    rows.extend(io_cli::configure::rows(&settings));
+                    keys.extend(settings.iter().map(|setting| setting.path.clone()));
+                    picker = Some((
+                        Picker::new("What does done mean here?", rows),
+                        Pick::Gates { keys, proposed },
+                    ));
+                }
                 // **Both directories, and a failed discovery is drawn rather than
                 // swallowed.** `view` reads the enabled set through the same
                 // `Skills::discover` the run makes, so what this lists is what the
@@ -2657,36 +2931,86 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         format!("{key} is {what} ({})", setting.decided.word()),
                     );
                 }
-                Action::Config(Some((key, value))) => {
-                    // Every scope, whether or not its file exists yet — writing a
-                    // key into a scope for the first time is how this is used.
+                // **`/mcp`'s edit verb comes back through here, and it comes back
+                // addressed by the server's own id.** The composer line `/mcp`
+                // puts up is `mcp.<id>.<key>`, never `mcp[3].<key>`: an index is a
+                // position in one file's `[[mcp]]` array, and the operator is
+                // about to be asked which file to write into. Handing one list's
+                // index to another file's array is precisely the silent wrong
+                // delete 0.20.0 shipped in `pluginview::rows`, and `servers::At`
+                // exists so it cannot be spelled. So the entry is found again, by
+                // content, in whichever scope declares it — and the write goes to
+                // that scope with no question asked, because there is only one
+                // file the entry is in.
+                Action::Config(Some((key, value)))
+                    if key.starts_with(io_cli::app::SERVER_KEY) && !value.is_empty() =>
+                {
                     let root = session.root().to_path_buf();
-                    let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
-                        io_harness::config::Scope::User,
-                        io_harness::config::Scope::Project,
-                        io_harness::config::Scope::Local,
-                    ]
-                    .into_iter()
-                    .filter_map(|scope| {
-                        io_cli::configure::scope_path(&root, scope).map(|p| (scope, p))
-                    })
-                    .collect();
-
-                    let rows: Vec<Row> = paths
-                        .iter()
-                        .map(|(scope, path)| {
-                            let word = io_cli::configure::Decided::File {
-                                scope: *scope,
-                                path: path.clone(),
-                            };
-                            Row::with_detail(word.word().to_string(), path.display().to_string())
-                        })
-                        .collect();
-
-                    picker = Some((
-                        Picker::new(format!("Write {key} where?"), rows),
-                        Pick::ConfigScope { key, value, paths },
-                    ));
+                    match io_cli::app::server_key(&key) {
+                        None => app.record(
+                            Tone::Refused,
+                            format!("{key} names no MCP server and no key of one"),
+                        ),
+                        Some((id, field)) => match io_cli::servers::declared_in(&root, id) {
+                            None => app.record(
+                                Tone::Refused,
+                                format!(
+                                    "no configuration file in force declares {id}, so there is \
+                                     nothing here to change"
+                                ),
+                            ),
+                            // **Reported, never dropped.** `[[mcp]]` is not held
+                            // to `deny_unknown_fields`, so a key io-harness does
+                            // not know is written, accepted and ignored — the
+                            // operator would be told their change landed while
+                            // the server went on running the old value. That is
+                            // the whole reason `servers::edit` returns an option.
+                            Some(at) => match io_cli::servers::edit(
+                                &at,
+                                field,
+                                &io_cli::app::server_value(field, &value),
+                            ) {
+                                None => app.record(
+                                    Tone::Refused,
+                                    format!(
+                                        "{field} is not a key an [[mcp]] entry may carry; the \
+                                         keys are {}",
+                                        io_cli::servers::KEYS.join(", ")
+                                    ),
+                                ),
+                                Some(edit) => {
+                                    match io_cli::configure::write(&root, at.scope, &[edit]) {
+                                        Ok(()) => {
+                                            // Both halves, or the next turn talks
+                                            // to the server the file described at
+                                            // startup.
+                                            match io_cli::configure::reload(&root) {
+                                                Ok((fresh, stored)) => {
+                                                    capabilities =
+                                                        io_cli::contract::Capabilities::stored(
+                                                            stored.as_ref(),
+                                                        );
+                                                    config = fresh;
+                                                    app.record(
+                                                        Tone::Success,
+                                                        format!(
+                                                            "{id}'s {field} is now {value}; the \
+                                                             next turn talks to it that way"
+                                                        ),
+                                                    );
+                                                }
+                                                Err(error) => app.record(Tone::Error, error),
+                                            }
+                                        }
+                                        Err(refusal) => app.record(Tone::Refused, refusal),
+                                    }
+                                }
+                            },
+                        },
+                    }
+                }
+                Action::Config(Some((key, value))) => {
+                    picker = Some(write_where(session.root(), key, value));
                 }
                 // A line typed with nothing after the word. Answered with what to
                 // type rather than by opening a picker over three files it would
@@ -3227,6 +3551,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // pass rather than the queue being drained into a list up front.
             Command::Submit(text) => {
                 let mut next = Some(text);
+                // **Every gate attempt this chain of turns has made, oldest
+                // first, and it is carried because io-harness cannot carry it.**
+                // Every turn is its own run, so `Store::gate_attempts` starts
+                // again at one on each retry — and `gates::may_retry`, which asks
+                // how many attempts the *work* has had, would then buy another
+                // turn for every one of them, forever. Accumulating here is what
+                // makes `retries = 1` mean one further turn rather than an
+                // unbounded loop against a real model.
+                let mut gated: Vec<io_harness::GateAttempt> = Vec::new();
                 while let Some(text) = next.take() {
                     // Rebuilt every turn rather than kept, because `remembered`
                     // grows as the operator answers and the harness's own
@@ -3322,7 +3655,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     .0;
                     let effective =
                         approval::session_policy(&policy, app.posture(), app.remembered());
-                    let stopped = turn(
+                    let turned = turn(
                         screen,
                         inputs,
                         &mut app,
@@ -3367,7 +3700,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // of the operator. Firing the queue here would turn one press
                     // into three more turns against a conversation they had just
                     // decided to steer somewhere else.
-                    if stopped {
+                    if turned.stopped {
                         let dropped = app.forget_queued_prompts();
                         if dropped > 0 {
                             let dash = app.theme.glyphs.dash;
@@ -3376,6 +3709,91 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 format!("{dropped} queued {dash} dropped with the stopped turn"),
                             );
                         }
+                    }
+
+                    // **The gate, read after the turn and before the next
+                    // prompt.** Nothing that arrives through the event stream can
+                    // say any of this: `EventKind::Sandbox` carries no detail
+                    // payload at all, so the phase, the verdict and the output are
+                    // the store's — which is also what makes it right after a
+                    // `/resume`, because the rows outlive the process that watched
+                    // the run.
+                    //
+                    // Every decision below is a library call. The two `if`s here
+                    // are wiring — *did a run happen* and *did the operator stop
+                    // it* — because nothing under `tests/` links this file and a
+                    // decision written as a branch in the driver is one no test
+                    // can drive and no sabotage can make fail.
+                    let mut retry = None;
+                    if let Some(run_id) = turned.ran {
+                        let working = config
+                            .provider_spec()
+                            .map(io_cli::provider::model_of)
+                            .unwrap_or_default()
+                            .to_string();
+                        let section = io_cli::settings::stored(&config)
+                            .0
+                            .and_then(|stored| stored.gates)
+                            .unwrap_or_default();
+                        let criterion = section.criterion(&working).ok().flatten();
+                        // **The fold, and it is the one thing here that cannot be
+                        // skipped.** io-harness is handed `Verification::None` for
+                        // a bare existence criterion — there is no honest
+                        // counterpart for it in its enum — and its step loop
+                        // returns `Finished` without ever reaching the gate, so
+                        // the store holds NO row. Reading `gate_attempts` alone
+                        // would report an ungated run as a run that passed.
+                        // `app::gate_attempts` evaluates that one criterion here
+                        // and appends the attempt io-harness never made.
+                        gated.extend(io_cli::app::gate_attempts(
+                            store.gate_attempts(run_id).unwrap_or_default(),
+                            criterion.as_ref(),
+                            session.root(),
+                        ));
+                        let events = store.sandbox_events(run_id).unwrap_or_default();
+                        if let Some(standing) = io_cli::gates::standing(&gated) {
+                            // `GateOutcome::as_str` passed through verbatim: it
+                            // spells `passed`, `failed` and `errored`, and the
+                            // status line, the exit code and the scrollback all
+                            // have to say one verdict the same way.
+                            app.status.gate = Some(standing.outcome.as_str().to_string());
+                            app.status.gate_attempt = u32::try_from(standing.attempt).ok();
+                        }
+                        // `record` and not `say`: a verdict is an account of the
+                        // turn above it and would be gone at the next keystroke.
+                        if let Some((tone, line)) = io_cli::app::gate_report(&gated, &events) {
+                            app.record(tone, line);
+                        }
+                        // **A turn the operator stopped is never retried**, which
+                        // is the same rule that drops the rest of the queue eight
+                        // lines up: one press of the stop key must not start
+                        // another turn. `retries = 0` drives nothing because
+                        // `may_retry` answers no — the budget is not consulted
+                        // here, it is passed in.
+                        if !turned.stopped && io_cli::gates::may_retry(&gated, section.retries()) {
+                            retry = criterion.as_ref().map(|criterion| {
+                                io_cli::app::gate_retry(criterion, &gated, &events)
+                            });
+                        }
+                    }
+                    // **The retry rides the queue this loop already drains.** It
+                    // goes to the FRONT, so it is the next turn and the prompts an
+                    // operator typed during this one keep their order behind it.
+                    // A second loop written beside this one would be a second
+                    // place `Ctrl+C`, the picture drain and the configuration
+                    // refresh could drift.
+                    if let Some(prompt) = retry {
+                        app.requeue_prompts(vec![prompt]);
+                        let dash = app.theme.glyphs.dash;
+                        app.record(
+                            Tone::Muted,
+                            format!("the gate gets one more turn {dash} it is told what failed"),
+                        );
+                    } else {
+                        // The chain is over and the next prompt starts its own.
+                        // Attempts carried across it would charge a fresh turn for
+                        // a gate that failed two prompts ago.
+                        gated.clear();
                     }
                     next = app.next_queued_prompt();
                 }
@@ -3504,12 +3922,22 @@ fn commit_viewed(
     }
 }
 
-/// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
+/// What the caller of [`turn`] still has to decide about.
 ///
-/// Returns whether the operator asked this turn to stop — the one thing about a
-/// turn the caller cannot see from outside it, and the thing the caller now has
-/// to decide about, because a prompt queue that fired after a stop would make the
-/// stop key start three more turns.
+/// Two facts, and neither is visible from outside the turn. The stop is the older
+/// one: a prompt queue that fired after `Ctrl+C` would make one press of the stop
+/// key start three more turns. The run id is 0.24.0's, and it is here rather than
+/// re-derived from the transcript because a turn that ended on an error has no run
+/// to report a gate for — asking the store for "the last run" would find the
+/// *previous* turn's and report its verdict under this one.
+struct Turned {
+    /// Whether the operator asked this turn to stop.
+    stopped: bool,
+    /// The run that served it, where one ran to a result at all.
+    ran: Option<i64>,
+}
+
+/// One turn, with the keyboard live throughout so `Ctrl+C` can reach it.
 #[allow(clippy::too_many_arguments)]
 async fn turn<P: Provider>(
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -3542,7 +3970,7 @@ async fn turn<P: Provider>(
     fold: bool,
     text: String,
     started: Instant,
-) -> Result<bool, String> {
+) -> Result<Turned, String> {
     let (observer, mut events) = bridge::channel();
     // The one way a turn is stopped from the interface, contained or not. Both
     // arms take a contract **and** a steer inbox since 0.17.0, and the stop key
@@ -4189,6 +4617,15 @@ async fn turn<P: Provider>(
         );
     }
 
+    // The run this turn served, for the gate the caller reads afterwards. Only a
+    // turn that ran to a result has one: a run that came back `Err` was not judged,
+    // and a turn the operator abandoned has whatever io-harness had written when
+    // the future was dropped — neither is a verdict on the work.
+    let ran = match &outcome {
+        Some(Ok(result)) => Some(result.run_id),
+        _ => None,
+    };
+
     match outcome {
         // The operator's sentence in front of the harness's own line — see
         // `io_cli::failure`. A provider that will not take an image says so in the
@@ -4222,7 +4659,7 @@ async fn turn<P: Provider>(
     }
     app.status.elapsed = started.elapsed();
     paint(screen, app)?;
-    Ok(stopped)
+    Ok(Turned { stopped, ran })
 }
 
 /// Draw what a step changed, by asking the store what it recorded.
@@ -4909,10 +5346,40 @@ enum Pick {
     /// rather than read off a label because a label is a rendered string and the
     /// key is what a write addresses.
     Config(Vec<String>),
-    /// The MCP servers, in the order `servers::rows` drew them. Read-only in
-    /// this release: the write verbs are reached through `/config`, and the two
-    /// the roadmap named that io-harness cannot express are not offered at all.
+    /// The MCP servers, in the order `servers::rows` drew them.
+    ///
+    /// **No longer read-only.** Through 0.23.0 this surface could show a server
+    /// and remove one, and every other change had to be made by hand in the file
+    /// — a limitation the product had stated since 0.21.0 while
+    /// `servers::edit` sat in the library, tested and reachable from no
+    /// keystroke. 0.24.0 wires it: the row descends into [`Pick::McpRemove`],
+    /// which offers the edit as well as the removal, and the key goes to the
+    /// composer so the value can be typed. Both verbs address the entry through
+    /// its own [`io_cli::servers::At`] and never through a row index.
     Mcp,
+    /// One MCP server and the keys of it that may be changed, in `servers::KEYS`
+    /// order. The position is carried rather than re-derived for the reason
+    /// [`Pick::McpRemove`] carries one: this surface's row index addresses a
+    /// merged view across three scopes, and the `[[mcp]]` array a write is
+    /// spliced into is a different list entirely.
+    McpEdit {
+        id: String,
+        at: io_cli::servers::At,
+    },
+    /// The gates surface, in the order its rows were drawn, carried as the key
+    /// each row stands for — parallel to the rows and built in the same pass, the
+    /// arrangement [`Pick::Config`] uses and for the same reason: a label is a
+    /// rendered string and a key is what a write addresses.
+    ///
+    /// One row is not a key: [`io_cli::app::PROPOSED_GATE`] is the sentinel for
+    /// the command this repository proposes for itself, which is an act rather
+    /// than a setting. `proposed` is the argv behind it, carried so the write and
+    /// the row cannot disagree — re-detecting it on the keystroke would re-read
+    /// the filesystem underneath the operator.
+    Gates {
+        keys: Vec<String>,
+        proposed: Option<Vec<String>>,
+    },
     /// The provider chain, in the order `providers::rows` drew it — which is
     /// the order a turn tries it.
     Provider,
@@ -5020,6 +5487,44 @@ enum Pick {
         key: String,
         verbs: Vec<io_cli::commands::Verb>,
     },
+}
+
+/// The picker that asks which file a `key = value` write goes into.
+///
+/// **Two steps rather than one because *which scope* is half the decision and this
+/// product has three of them** — a write that guessed would put an operator's
+/// credential in the file a repository ships. `/config` has asked it since 0.9.0
+/// and `/gates` asks exactly the same question about exactly the same three files,
+/// so it is one function: two copies would be two answers the first time a scope
+/// moved.
+///
+/// Every scope is offered whether or not its file exists yet, because writing a
+/// key into a scope for the first time is how this is used.
+fn write_where(root: &std::path::Path, key: String, value: String) -> (Picker, Pick) {
+    let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
+        io_harness::config::Scope::User,
+        io_harness::config::Scope::Project,
+        io_harness::config::Scope::Local,
+    ]
+    .into_iter()
+    .filter_map(|scope| io_cli::configure::scope_path(root, scope).map(|p| (scope, p)))
+    .collect();
+
+    let rows: Vec<Row> = paths
+        .iter()
+        .map(|(scope, path)| {
+            let word = io_cli::configure::Decided::File {
+                scope: *scope,
+                path: path.clone(),
+            };
+            Row::with_detail(word.word().to_string(), path.display().to_string())
+        })
+        .collect();
+
+    (
+        Picker::new(format!("Write {key} where?"), rows),
+        Pick::ConfigScope { key, value, paths },
+    )
 }
 
 /// The completion picker over one directory of the workspace, or `None` when the

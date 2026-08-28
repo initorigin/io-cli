@@ -346,15 +346,17 @@ pub fn gate_notice(config: &Config) -> Option<String> {
         .unwrap_or_default();
     match gates.criterion(working) {
         Err(refusal) => Some(refusal.to_string()),
-        Ok(Some(crate::gates::Criterion::Review { reviewer, .. })) => match config.provider_spec() {
-            None => Some(format!(
+        Ok(Some(crate::gates::Criterion::Review { reviewer, .. })) => {
+            match config.provider_spec() {
+                None => Some(format!(
                 "the gate asks {reviewer} to review the work, but no provider is configured to \
                  reach it — this turn is not gated"
             )),
-            Some(spec) => crate::gates::reviewer(spec, &reviewer)
-                .err()
-                .map(|why| format!("the gate's reviewer could not be built: {why}")),
-        },
+                Some(spec) => crate::gates::reviewer(spec, &reviewer)
+                    .err()
+                    .map(|why| format!("the gate's reviewer could not be built: {why}")),
+            }
+        }
         Ok(_) => None,
     }
 }
