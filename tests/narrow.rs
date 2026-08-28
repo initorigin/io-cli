@@ -1736,60 +1736,75 @@ fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
 fn n2_an_effort_level_yields_before_the_standing_facts_at_eighty_columns() {
     use io_cli::status::Status;
 
-    // The branch arm's fixture, and deliberately **without** `planning`: with it
-    // on, this row's standing group already does not fit at eighty columns, so
-    // every assertion below would have held whether or not the effort level cost
-    // anything. The first version of this test had it on and failed for that
-    // reason rather than for a defect — a gate over a field it could not observe,
-    // caught this time before it shipped rather than a release later.
-    let fixture = || {
+    let fixture = |effort: Option<io_harness::Effort>| {
         let mut status = Status::new("anthropic/claude-sonnet-4.5");
         status.policy = Some("read-only".into());
         status.containment = Some("workspace-write/macos-sandbox-exec".into());
-        status.steps = Some(6);
+        status.planning = true;
+        status.effort = effort;
         status
     };
 
+    // **The invariant across widths, rather than an assertion at one.** Which
+    // width a field starts costing something depends on the posture string, the
+    // glyph set and every counter on the row, so a test that picks one number is
+    // asserting arithmetic it will get wrong — the first version of this gate
+    // picked eighty, where this fixture's group does not fit either way, and the
+    // sabotage that put the level back in the all-or-nothing group passed it. The
+    // property that actually matters has no number in it: **setting a level must
+    // never remove a standing fact that was on the row without it.**
+    let standing = [
+        "read-only",
+        "workspace-write/macos-sandbox-exec",
+        "planning",
+    ];
+
     for theme in themes() {
         let set = theme.glyphs.name;
+        let mut ever_held = false;
 
-        // The control. Without it, everything below is equally true of a row that
-        // never carried the standing facts in the first place.
-        let bare = text_of(&fixture().footer(WIDTH, &theme)).join("\n");
-        for standing in ["read-only", "workspace-write/macos-sandbox-exec"] {
-            assert!(
-                bare.contains(standing),
-                "{set}: the row did not hold `{standing}` to begin with, so nothing \
-                 below measures anything: {bare:?}",
-            );
+        for width in [80, 88, 96, 104, 120, 160] {
+            let bare = text_of(&fixture(None).footer(width, &theme)).join("\n");
+            let level =
+                text_of(&fixture(Some(io_harness::Effort::High)).footer(width, &theme)).join("\n");
+
+            for row in level.lines() {
+                assert!(
+                    row.chars().count() <= width as usize,
+                    "{set}: a footer row overflowed {width} columns: {row:?}",
+                );
+            }
+
+            for fact in standing {
+                if bare.contains(fact) {
+                    ever_held = true;
+                    assert!(
+                        level.contains(fact),
+                        "{set}: at {width} columns, setting an effort level took \
+                         `{fact}` off the row. The level belongs in the counters, \
+                         which narrow one at a time, not in the group `row` keeps \
+                         or drops whole.\n  without: {bare:?}\n  with:    {level:?}",
+                    );
+                }
+            }
         }
 
-        let mut level = fixture();
-        level.effort = Some(io_harness::Effort::High);
+        // Without this the loop above is satisfied by a row that never carried a
+        // standing fact at any width — which is precisely how the first version of
+        // this test passed its own sabotage.
+        assert!(
+            ever_held,
+            "{set}: no width held a standing fact even without an effort level, so \
+             nothing above measured anything",
+        );
 
-        // Wide, where the row holds everything: the level is drawn at all.
-        let wide = text_of(&level.footer(200, &theme)).join("\n");
+        // And the level is drawn where there is room for it, so this is a gate over
+        // a field that exists rather than over one that was never added.
+        let wide = text_of(&fixture(Some(io_harness::Effort::High)).footer(200, &theme)).join("\n");
         assert!(
             wide.contains("effort high"),
             "{set}: the level is not on the footer at any width: {wide:?}",
         );
-
-        // Narrow, where it must not cost the standing facts.
-        let narrow = text_of(&level.footer(WIDTH, &theme)).join("\n");
-        for row in narrow.lines() {
-            assert!(
-                row.chars().count() <= WIDTH as usize,
-                "{set}: a footer row overflowed eighty columns: {row:?}",
-            );
-        }
-        for standing in ["read-only", "workspace-write/macos-sandbox-exec"] {
-            assert!(
-                narrow.contains(standing),
-                "{set}: setting an effort level took `{standing}` off the row — the \
-                 level belongs in the counters, which narrow one at a time, and not \
-                 in the group `row` keeps or drops whole: {narrow:?}",
-            );
-        }
     }
 }
 
