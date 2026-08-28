@@ -100,8 +100,11 @@ impl Refused {
                 "{path} is already there — an export is a snapshot, so this one is \
                  not written over it; name another path"
             ),
+            // "no turns", not "no finished turns": `conversation` answers `None`
+            // only when the conversation is empty, and a turn that never finished
+            // is exported with a line saying so.
             Refused::Nothing => {
-                "there is nothing to export yet — this session has no finished turns".to_string()
+                "there is nothing to export yet — this conversation has no turns".to_string()
             }
         }
     }
@@ -126,8 +129,20 @@ pub struct Written {
 /// Every turn the store holds for the session, in the order it returns them,
 /// each with its prompt and — when the turn finished — its reply. A turn that
 /// never finished says so.
-pub fn conversation(store: &Store, session_id: i64) -> Result<Option<String>, Error> {
-    let turns = store.session_turns(session_id)?;
+pub fn conversation(store: &Store, session: &io_harness::Session) -> Result<Option<String>, Error> {
+    // **`Session::history` and never `Store::session_turns`.** io-harness
+    // documents the second as "the whole tree, not one path through it"
+    // (`state/sessions.rs:265-266`), and a rewind moves the head back **without
+    // deleting the turn** (`src/rewind.rs`), so a session that was undone once
+    // and carried on holds turns that are not part of the conversation at all.
+    //
+    // Exporting the tree flat would put those turns in the document, in
+    // sequence, with nothing marking them — in the one artifact whose stated
+    // purpose is being read by somebody who was not there. It would
+    // misrepresent both what the agent was asked and what it answered. Found by
+    // the adversarial review; the first implementation had exactly that defect.
+    let turns = session.history(store)?;
+    let session_id = session.id();
     if turns.is_empty() {
         return Ok(None);
     }
@@ -190,12 +205,18 @@ pub fn trace_path(run_id: i64) -> String {
 /// under is the one that applies and a path outside the workspace is io-harness's
 /// refusal rather than a check invented here.
 ///
-/// The existence check is [`Workspace::read_bytes`] — the same reader
-/// `crate::rewind` uses to tell a missing file from an empty one — and it is
-/// deliberately asked *through the workspace* too, so a path the policy denies
-/// is refused by the policy rather than answered by a filesystem probe that
-/// leaked whether the file exists.
+/// **The refusal is checked here, immediately before the write, and not only by
+/// the caller.** The confirmation an operator agrees to is shown after an earlier
+/// [`occupied`] call, and between the two keystrokes another `io`, an editor
+/// autosave or a build can create the file — after which the write would
+/// silently replace it while reporting a creation. The doc on [`Written::wrote`]
+/// promised `Wrote::Created` and only this check makes that true. Found by the
+/// adversarial review, which is also where the earlier version of this comment —
+/// describing a `read_bytes` check that was not in the function — was caught.
 pub fn write(workspace: &Workspace, path: &str, content: &str) -> Result<Written, Error> {
+    if occupied(workspace, path)? {
+        return Err(Error::Config(Refused::Exists(path.to_string()).said()));
+    }
     let wrote = workspace.write_file(path, content)?;
     Ok(Written {
         path: path.to_string(),
@@ -227,7 +248,15 @@ pub fn write(workspace: &Workspace, path: &str, content: &str) -> Result<Written
 /// permission check that ran early and a permission check that ran late would be
 /// two answers to one question.
 pub fn occupied(workspace: &Workspace, path: &str) -> Result<bool, Error> {
-    Ok(workspace.resolve(path)?.exists())
+    let resolved = workspace.resolve(path)?;
+    // **`symlink_metadata` and not `exists()`.** `exists` follows the link, so a
+    // **dangling** symlink inside the workspace answers "nothing is there" — and
+    // `write_file` then follows it and creates the file wherever it points,
+    // outside the root. `Workspace::resolve` cannot catch that: it is purely
+    // lexical, and `check_path`'s own symlink branch is guarded by a
+    // `canonicalize` that fails on a broken link. Asking about the link itself is
+    // what closes it. Found by the adversarial review.
+    Ok(resolved.symlink_metadata().is_ok())
 }
 
 /// The confirmation `/export` shows before it writes.

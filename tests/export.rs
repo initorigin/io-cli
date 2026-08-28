@@ -24,6 +24,11 @@ use io_cli::export::{
 use io_harness::tools::{Workspace, Wrote};
 use io_harness::Store;
 
+/// The session, as a `Session`, for the reader that walks its history.
+fn reopened(store: &Store, id: i64) -> io_harness::Session {
+    io_harness::Session::reopen(store, id).expect("the session reopens")
+}
+
 /// A store in a real file, plus a workspace to write into.
 ///
 /// One `TempDir` for both, because an export writes into the workspace the
@@ -52,6 +57,7 @@ fn fixture() -> (tempfile::TempDir, Store, Workspace) {
 fn seed(store: &Store, prompts: &[(&str, Option<&str>)]) -> (i64, Vec<i64>) {
     let session = store.create_session("/tmp/work").expect("a session opens");
     let mut runs = Vec::new();
+    let mut parent: Option<i64> = None;
     for (prompt, reply) in prompts {
         let run = store.start_run(prompt, "/tmp/work").expect("a run starts");
         for step in 1..=2u32 {
@@ -70,8 +76,17 @@ fn seed(store: &Store, prompts: &[(&str, Option<&str>)]) -> (i64, Vec<i64>) {
                 .expect("a step records");
         }
         let turn = store
-            .record_turn(session, None, run, prompt)
+            .record_turn(session, parent, run, prompt)
             .expect("a turn records");
+        // **The head is moved as a real turn would move it.** `conversation`
+        // walks `Session::history` — the path from the head back to the root —
+        // rather than `Store::session_turns`, which io-harness documents as the
+        // whole tree. A fixture that left the head unset would export nothing,
+        // and one that parented every turn at the root would export a fan.
+        store
+            .set_session_head(session, Some(turn))
+            .expect("the head moves");
+        parent = Some(turn);
         // A `None` reply is a turn that did not finish, and it is written as one.
         // The turn is still closed, because an unfinished *reply* and an
         // unfinished *turn* are different states and only the first is on trial.
@@ -105,7 +120,7 @@ fn f8_every_prompt_and_reply_appears_in_the_stores_order() {
         ],
     );
 
-    let markdown = conversation(&store, session)
+    let markdown = conversation(&store, &reopened(&store, session))
         .expect("the conversation is readable")
         .expect("there is one");
 
@@ -138,7 +153,7 @@ fn f8_a_turn_that_never_answered_says_so_rather_than_showing_an_empty_reply() {
         &[("answered", Some("here you are")), ("never answered", None)],
     );
 
-    let markdown = conversation(&store, session)
+    let markdown = conversation(&store, &reopened(&store, session))
         .expect("the conversation is readable")
         .expect("there is one");
 
@@ -159,7 +174,7 @@ fn a_session_with_no_turns_is_refused_rather_than_written_empty() {
     let session = store.create_session("/tmp/work").expect("a session opens");
 
     assert_eq!(
-        conversation(&store, session).expect("readable"),
+        conversation(&store, &reopened(&store, session)).expect("readable"),
         None,
         "there is no conversation to write",
     );
@@ -243,7 +258,7 @@ fn the_trace_is_not_reformatted() {
 fn f8_a_path_outside_the_workspace_is_refused() {
     let (_dir, store, workspace) = fixture();
     let (session, _runs) = seed(&store, &[("a question", Some("an answer"))]);
-    let markdown = conversation(&store, session)
+    let markdown = conversation(&store, &reopened(&store, session))
         .expect("readable")
         .expect("there is one");
 
@@ -267,7 +282,7 @@ fn an_existing_file_is_refused_rather_than_overwritten() {
     let (_dir, store, workspace) = fixture();
     let (session, _runs) = seed(&store, &[("a question", Some("an answer"))]);
     let path = conversation_path(session);
-    let markdown = conversation(&store, session)
+    let markdown = conversation(&store, &reopened(&store, session))
         .expect("readable")
         .expect("there is one");
 
@@ -314,7 +329,7 @@ fn the_confirmation_declines_at_row_zero_and_names_the_path() {
 fn the_report_names_the_file_and_its_size() {
     let (_dir, store, workspace) = fixture();
     let (session, _runs) = seed(&store, &[("a question", Some("an answer"))]);
-    let markdown = conversation(&store, session)
+    let markdown = conversation(&store, &reopened(&store, session))
         .expect("readable")
         .expect("there is one");
     let written =
@@ -324,4 +339,107 @@ fn the_report_names_the_file_and_its_size() {
     assert!(said.contains(&conversation_path(session)), "{said}");
     assert!(said.contains(&written.bytes.to_string()), "{said}");
     assert_eq!(written.bytes, markdown.len());
+}
+
+/// **`write` refuses an existing file itself, not only through its caller.**
+///
+/// The confirmation an operator agrees to is shown after an earlier `occupied`
+/// call, and between the two keystrokes another `io`, an editor autosave or a
+/// build can create the file. Without a check inside `write` the export would
+/// silently replace it and report a creation — and `Written::wrote` promises
+/// `Wrote::Created`. Found by the adversarial review, which also found that the
+/// test named for this refusal never actually called `write` twice.
+#[test]
+fn f8_write_refuses_an_existing_file_rather_than_overwriting_it() {
+    let (_dir, store, workspace) = fixture();
+    let (session, _runs) = seed(&store, &[("a question", Some("an answer"))]);
+    let path = conversation_path(session);
+    let markdown = conversation(&store, &reopened(&store, session))
+        .expect("readable")
+        .expect("there is one");
+
+    write(&workspace, &path, &markdown).expect("the first export is written");
+    let again = write(&workspace, &path, "something else entirely");
+
+    assert!(again.is_err(), "the second write is refused");
+    assert_eq!(
+        std::fs::read_to_string(workspace.root().join(&path)).expect("the file"),
+        markdown,
+        "and the first export is untouched",
+    );
+}
+
+/// **A dangling symlink is occupied, so the write cannot follow it out of the
+/// workspace.**
+///
+/// `Workspace::resolve` is purely lexical and `Path::exists()` follows the link,
+/// so a broken symlink answered "nothing is there" — and `write_file` then
+/// followed it and created the file wherever it pointed. `check_path`'s own
+/// symlink branch cannot help: it is guarded by a `canonicalize` that fails on a
+/// broken link. Asking about the link itself is what closes it. Found by the
+/// adversarial review.
+#[cfg(unix)]
+#[test]
+fn f8_a_dangling_symlink_is_not_mistaken_for_an_empty_path() {
+    let (_dir, _store, workspace) = fixture();
+    let link = workspace.root().join("io-session-9.md");
+    std::os::unix::fs::symlink("../../escaped.md", &link).expect("the link is made");
+
+    assert!(
+        !link.exists(),
+        "the link is dangling, which is the whole point",
+    );
+    assert!(
+        occupied(&workspace, "io-session-9.md").expect("askable"),
+        "a dangling symlink is something, and a write would follow it out of the \
+         workspace",
+    );
+    assert!(
+        write(&workspace, "io-session-9.md", "anything").is_err(),
+        "so the write is refused",
+    );
+}
+
+/// **The export is the conversation, not the whole turn tree.**
+///
+/// `Store::session_turns` is documented as "the whole tree, not one path through
+/// it", and a rewind moves the head back **without deleting the turn**. So a
+/// session that was undone once and carried on holds turns that are not part of
+/// the conversation at all — and exporting them flat, unmarked, in the one
+/// artifact whose purpose is being read by somebody who was not there, would
+/// misrepresent both what the agent was asked and what it answered.
+///
+/// Found by the adversarial review. `Session::history` is the path.
+#[test]
+fn f8_an_undone_turn_is_not_in_the_export() {
+    let (_dir, store, _ws) = fixture();
+    let (session, _runs) = seed(
+        &store,
+        &[
+            ("the first question", Some("the first answer")),
+            ("the abandoned question", Some("the abandoned answer")),
+        ],
+    );
+
+    // Move the head back to the first turn, exactly as a rewind does — the turn
+    // row stays, off the head path.
+    let turns = store.session_turns(session).expect("readable");
+    let first = turns.first().expect("a first turn").id;
+    store
+        .set_session_head(session, Some(first))
+        .expect("the head moves back");
+
+    let markdown = conversation(&store, &reopened(&store, session))
+        .expect("readable")
+        .expect("there is a conversation");
+
+    assert!(
+        markdown.contains("the first question"),
+        "the conversation that stands is exported:\n{markdown}",
+    );
+    assert!(
+        !markdown.contains("the abandoned question"),
+        "a turn that was undone is not part of the conversation and must not be \
+         in the document:\n{markdown}",
+    );
 }

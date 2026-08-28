@@ -2498,12 +2498,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // would not see it.
                         Pick::StoreRemove { id } => {
                             if io_cli::store::acts(index) {
-                                match io_cli::store::remove(&store, *id) {
-                                    Ok(removed) => {
+                                match io_cli::store::remove(&store, *id, session.id()) {
+                                    Ok(io_cli::store::Removal::Done(removed)) => {
                                         for line in io_cli::store::removed_report(&removed) {
                                             app.record(Tone::Muted, line);
                                         }
                                     }
+                                    // Unreachable from this surface, because
+                                    // `confirm_remove` offers no acting row for the
+                                    // live session. Kept because the guard belongs
+                                    // to the library and a second caller must not
+                                    // be able to route around it.
+                                    Ok(io_cli::store::Removal::Live) => app.record(
+                                        Tone::Refused,
+                                        "that is the conversation you are in; io will not \
+                                         remove it"
+                                            .to_string(),
+                                    ),
                                     Err(error) => app.record(
                                         Tone::Error,
                                         format!(
@@ -2532,10 +2543,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
-                        // The two new granularities. Both go through `observing`,
-                        // which is what puts `EventKind::Reverted` on the screen —
-                        // an event this product has never once emitted, because
-                        // only the `_observed` form emits it.
+                        // The two new granularities. The step form goes through
+                        // `observing`, which is what makes `EventKind::Reverted`
+                        // fire at all — an event this product had never emitted,
+                        // because only the `_observed` form emits it. The file
+                        // form does not: `io_harness::rewind` has no observed
+                        // twin and emits nothing, which is why it takes none.
                         Pick::UndoFile { run_id, path } => {
                             if io_cli::store::acts(index) {
                                 let workspace = io_harness::tools::Workspace::new(session.root());
@@ -2600,9 +2613,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         }
                         Pick::Export { path, content } => {
                             if io_cli::store::acts(index) {
+                                let effective = approval::session_policy(
+                                    &policy,
+                                    app.posture(),
+                                    app.remembered(),
+                                );
                                 let workspace = io_harness::tools::Workspace::with_policy(
                                     session.root(),
-                                    policy.clone(),
+                                    effective,
                                 );
                                 match io_cli::export::write(&workspace, path, content) {
                                     Ok(written) => {
@@ -2805,9 +2823,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // The second. This is where the operator's files change.
             // **Through `observing` since 0.27.0, which is what finally emits
             // `EventKind::Rewound`.** The call was `rewind_run`, whose observed
-            // twin is the only thing that emits it — so the arm rendering that
-            // event in `src/events.rs` was unreachable from the day it was
-            // written until this one.
+            // twin is the only thing that emits it.
             Command::Rewind => {
                 undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
             }
@@ -3770,7 +3786,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Store(Some(keep)) => match keep {
                     commands::Keep::Remove(id) => match io_cli::store::sized(&store, id) {
                         Ok(sized) => {
-                            let (title, rows) = io_cli::store::confirm_remove(id, &sized);
+                            let (title, rows) =
+                                io_cli::store::confirm_remove(id, &sized, session.id());
                             picker = Some((Picker::new(title, rows), Pick::StoreRemove { id }));
                         }
                         Err(error) => app.record(
@@ -3786,10 +3803,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // advance — see io-harness#216 and `US-IO-CLI-0.27.0-I02`.
                     // The operator agrees to the rule and the report carries the
                     // figures.
-                    commands::Keep::Sweep(date) => {
-                        let (title, rows) = io_cli::store::confirm_sweep(&date);
-                        picker = Some((Picker::new(title, rows), Pick::StoreSweep { date }));
-                    }
+                    // **Validated before the confirmation is even built.** The
+                    // comparison io-harness makes is lexical against a text
+                    // column, so `2026-8-1` or `yesterday` sorts above every real
+                    // timestamp and sweeps the entire store — while the
+                    // confirmation echoes back exactly what was typed and reads
+                    // as correct. Both adversarial reviewers found this
+                    // independently, which is the strongest signal that gate
+                    // gives.
+                    commands::Keep::Sweep(date) => match io_cli::store::boundary(&date) {
+                        Ok(date) => {
+                            let (title, rows) = io_cli::store::confirm_sweep(&date);
+                            picker = Some((Picker::new(title, rows), Pick::StoreSweep { date }));
+                        }
+                        Err(said) => app.record(Tone::Error, said),
+                    },
                     commands::Keep::Compact => match store.store_size() {
                         Ok(size) => {
                             let (title, rows) = io_cli::store::confirm_compact(&size);
@@ -3901,7 +3929,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         io_harness::tools::Workspace::with_policy(session.root(), policy.clone());
                     let built = match &taken {
                         commands::Taken::Conversation(path) => {
-                            match io_cli::export::conversation(&store, session.id()) {
+                            match io_cli::export::conversation(&store, &session) {
                                 Ok(Some(text)) => Ok(Some((
                                     path.clone().unwrap_or_else(|| {
                                         io_cli::export::conversation_path(session.id())
@@ -5621,8 +5649,9 @@ fn commit_transcript(
 ///
 /// **Through [`observing`] since 0.27.0, which is what finally emits
 /// `EventKind::Rewound`.** The call underneath was `rewind_run`, whose observed
-/// twin is the only thing that emits it — so the arm rendering that event in
-/// `src/events.rs` was unreachable from the day it was written until this one.
+/// twin is the only thing that emits it, so the event had never fired. It draws
+/// no line — `rewound` is `Disposition::Silent` and routes to the summary this
+/// function commits — but it now reaches hooks, `io exec --json` and the trace.
 fn undo_whole_turn(
     app: &mut App,
     screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -5639,11 +5668,20 @@ fn undo_whole_turn(
             app.forget_fleet();
             // As above: the last request belonged to the undone turn.
             seen.forget();
+            // **`record`, never `say`.** `App::say` is a one-slot footer notice
+            // that the next keystroke clears, and `undone_lines` returns at least
+            // two lines plus one per file that was NOT put back — so every
+            // "left as the turn left it" warning was being overwritten and the
+            // operator was told a restore had happened that had not. This is
+            // 0.26.0's recorded rule (`record`, always, for anything an operator
+            // must still be able to read) arriving one release late, and it is
+            // the most destructive act in the product having the least durable
+            // report. Found by the adversarial review.
             for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
-                app.say(tone, line);
+                app.record(tone, line);
             }
         }
-        Ok(None) => app.say(Tone::Muted, "there is no turn to undo"),
+        Ok(None) => app.record(Tone::Muted, "there is no turn to undo".to_string()),
         // **`failure::said`, and not the raw `Display`.** Since 0.23.0 the undo
         // can lose a head race with another `io`, and `Error::Conflict`'s own
         // text calls the session id a run id and renders an expiry that a head
@@ -5656,7 +5694,7 @@ fn undo_whole_turn(
         // write, so a conflict leaves the operator's files back as they were with
         // the conversation head where the other process put it. Saying nothing
         // happened would send them looking for changes that are already gone.
-        Err(error) => app.say(
+        Err(error) => app.record(
             Tone::Error,
             format!("the undo did not finish: {}", io_cli::failure::said(&error)),
         ),
@@ -5666,14 +5704,24 @@ fn undo_whole_turn(
 
 /// Run something that wants an `Observer`, and commit whatever it emitted.
 ///
-/// **This is what makes `EventKind::Rewound` and `EventKind::Reverted` reach the
-/// screen at all.** Both are emitted only by the `_observed` forms of the rewind
+/// **This is what makes `EventKind::Rewound` and `EventKind::Reverted` exist at
+/// all.** Both are emitted only by the `_observed` forms of the rewind
 /// functions, and every one of those forms takes an observer — but an undo
 /// happens between turns, at a keystroke, where the driver's own observer
 /// composition does not exist. So one is built for the act and drained
 /// immediately afterwards.
 ///
-/// **The events are rendered and never fed to [`App::event`].** That method
+/// **It does not put either event on screen, and an earlier version of this
+/// comment said it did.** Both kinds are `Disposition::Silent` in
+/// [`io_cli::triage`] and route to io-cli's own rewind summary; `src/events.rs`
+/// has no arm for either and correctly renders nothing. What the observed forms
+/// buy is that the events reach `[[hook]]` observers, the `io exec --json`
+/// stream and the durable trace — none of which they had ever reached. The
+/// drain below is what carries anything a *future* arm renders, and what makes
+/// this the one place such an arm would need no further wiring. Found by the
+/// adversarial review.
+///
+/// **What is drained is rendered and never fed to [`App::event`].** That method
 /// folds into the status line, the fleet and the token totals, which belong to a
 /// *run*; an undo is not a run, and 0.20.0 recorded what happens when foreign
 /// events go through it — inflated session totals, a replaced provider, and a
@@ -5697,6 +5745,13 @@ fn observing<T>(
     Ok(out)
 }
 
+/// The last run of this session, if it has had one.
+///
+/// **Its doc comment was taken by an insertion in this release** — `undo_whole_turn`
+/// and `observing` were added directly beneath it, so this sentence became their
+/// summary line and this function was left with none. Found by the adversarial
+/// review, and worth noting because nothing in the suite can see a rustdoc
+/// summary attached to the wrong item.
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)

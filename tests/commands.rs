@@ -344,7 +344,12 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
 #[test]
 fn f1_effort_parses_three_levels_the_absence_and_the_question() {
     use io_cli::commands::Reasoning;
-    let parse = |text: &str| commands::parse(text, &defaults(), &DARK);
+    // `parse` takes the word without its slash — the driver strips it before the
+    // call, which is why every other test in this file types `continue` rather
+    // than `/continue`. Written as a helper so the cases below read as the
+    // operator types them.
+    let parse =
+        |text: &str| commands::parse(text.strip_prefix('/').unwrap_or(text), &defaults(), &DARK);
 
     assert_eq!(
         parse("effort low"),
@@ -1469,5 +1474,105 @@ fn gates_is_a_configure_command_that_resolves_to_its_own_action() {
         palette_pick(&Templates::none(), &[], index),
         Some(Chosen::Command("/gates")),
         "`/gates`'s row is advertised and inert",
+    );
+}
+
+/// **The three new commands' argued forms, which had no gate at all.**
+///
+/// The adversarial review found that nothing in `tests/` typed `/store`,
+/// `/undo` or `/export` with an argument — so the release's most load-bearing
+/// decision, that an unparseable verb must **never** fall through to something
+/// destructive, was asserted nowhere.
+///
+/// Both refusal families exist for a stated reason and both are checked here:
+///
+/// - `Action::UndoNoStep` — *an operator who typed a step and got the entire run
+///   undone would have lost work they never asked to lose.*
+/// - `Keep::{NoId, NoDate, Unknown}` — *somebody who typed a delete and got a
+///   report would believe the delete had happened.*
+#[test]
+fn f10_an_unparseable_verb_never_falls_through_to_something_destructive() {
+    use io_cli::commands::{Keep, Taken};
+    use io_cli::undo::Grain;
+
+    // `parse` takes the word without its slash — the driver strips it before the
+    // call, which is why every other test in this file types `continue` rather
+    // than `/continue`. Written as a helper so the cases below read as the
+    // operator types them.
+    let parse =
+        |text: &str| commands::parse(text.strip_prefix('/').unwrap_or(text), &defaults(), &DARK);
+
+    // `/undo` — the one that must never become a whole-run undo.
+    assert_eq!(parse("/undo"), Action::Undo(Grain::Run));
+    assert_eq!(
+        parse("/undo src/a.rs"),
+        Action::Undo(Grain::File("src/a.rs".into())),
+    );
+    assert_eq!(parse("/undo step 4"), Action::Undo(Grain::Step(4)));
+    for wrong in [
+        "/undo step",
+        "/undo step -1",
+        "/undo step 3.5",
+        "/undo step nine",
+        "/undo step 99999999999999999999",
+        "/undo step 0x10",
+    ] {
+        assert_eq!(
+            parse(wrong),
+            Action::UndoNoStep,
+            "`{wrong}` must be refused by name and must never become Grain::Run",
+        );
+    }
+
+    // `/store` — the verbs, and the three refusals.
+    assert_eq!(parse("/store"), Action::Store(None));
+    assert_eq!(parse("/store rm 7"), Action::Store(Some(Keep::Remove(7))));
+    assert_eq!(parse("/store compact"), Action::Store(Some(Keep::Compact)));
+    assert_eq!(
+        parse("/store sweep 2026-08-01"),
+        Action::Store(Some(Keep::Sweep("2026-08-01".into()))),
+    );
+    for wrong in [
+        "/store rm",
+        "/store rm all",
+        "/store rm -1x",
+        "/store delete",
+    ] {
+        assert!(
+            matches!(parse(wrong), Action::Store(Some(Keep::NoId))),
+            "`{wrong}` must ask for an id rather than act: {:?}",
+            parse(wrong),
+        );
+    }
+    assert!(matches!(
+        parse("/store sweep"),
+        Action::Store(Some(Keep::NoDate))
+    ));
+    // The typo that matters: a near-miss verb must not reach the page, because a
+    // report where a deletion was asked for reads as a deletion that happened.
+    for typo in ["/store swep 2026-08-01", "/store purge", "/store vacume"] {
+        assert!(
+            matches!(parse(typo), Action::Store(Some(Keep::Unknown(_)))),
+            "`{typo}` must be named as unknown rather than showing the page: {:?}",
+            parse(typo),
+        );
+    }
+
+    // `/export` — `trace` is a word and everything else is a path.
+    assert_eq!(parse("/export"), Action::Export(Taken::Conversation(None)));
+    assert_eq!(
+        parse("/export notes.md"),
+        Action::Export(Taken::Conversation(Some("notes.md".into()))),
+    );
+    assert_eq!(parse("/export trace"), Action::Export(Taken::Trace(None)));
+    assert_eq!(
+        parse("/export trace run.txt"),
+        Action::Export(Taken::Trace(Some("run.txt".into()))),
+    );
+    // The documented ambiguity, and its documented escape.
+    assert_eq!(
+        parse("/export ./trace"),
+        Action::Export(Taken::Conversation(Some("./trace".into()))),
+        "a file literally called `trace` is reachable as `./trace`",
     );
 }

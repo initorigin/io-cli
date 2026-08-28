@@ -20,7 +20,7 @@ mod support;
 use std::sync::Mutex;
 
 use io_cli::undo::{
-    confirm_file, confirm_step, one_file, one_step, said, step_advice, step_said, whole_run, Grain,
+    confirm_file, confirm_step, one_file, one_step, said, step_advice, step_said, Grain,
 };
 use io_harness::tools::Workspace;
 use io_harness::{
@@ -293,21 +293,33 @@ async fn f7_one_step_is_undone_and_the_rest_of_the_run_stands() {
 /// **F7 — undoing the whole run emits `EventKind::Rewound`.**
 ///
 /// The event this product has never fired. `src/rewind.rs:200` called the plain
-/// `rewind_run` from 0.4.0 until this release, so the arm rendering this in
-/// `src/events.rs` was unreachable from the day it was written.
+/// `rewind_run` from 0.4.0 until this release, so the event had never fired.
+///
+/// **What that buys is not a line on screen.** `rewound` is `Disposition::Silent`
+/// and routes to io-cli's own rewind summary; `src/events.rs` has no arm for it
+/// and correctly draws nothing. What the observed form buys is that the event
+/// exists at all — it reaches `[[hook]]` observers, `io exec --json` and the
+/// durable trace, none of which it had ever reached. An earlier draft of this
+/// file claimed there was an unreachable renderer arm; there is not, and the
+/// adversarial review caught the overclaim.
+///
+/// It goes through `rewind::last_turn`, which is the production path: that is
+/// what moves the conversation head back, and a thin wrapper beside it would be
+/// a second entry point to one act.
 #[tokio::test]
 async fn f7_the_whole_run_emits_rewound() {
     let mut fixture = Fixture::new();
     std::fs::write(fixture.dir.path().join("one.rs"), "before\n").expect("a starting file");
-    let run = fixture
+    fixture
         .turn_writing("a whole run", &[("one.rs", "after\n")])
         .await;
 
     let watcher = Collected::default();
-    let rewound =
-        whole_run(&fixture.workspace(), &fixture.store, run, &watcher).expect("the undo runs");
+    let undone = io_cli::rewind::last_turn(&mut fixture.session, &fixture.store, &watcher)
+        .expect("the undo runs")
+        .expect("there was a turn to undo");
 
-    assert!(!rewound.files.is_empty(), "there was a file to put back");
+    assert!(!undone.restored.is_empty(), "there was a file to put back");
     assert_eq!(
         fixture.read("one.rs").as_deref(),
         Some("before\n"),
@@ -425,10 +437,18 @@ fn the_file_confirmation_discloses_what_a_restore_overwrites() {
     assert!(detail.contains("overwritten"), "{detail}");
 }
 
-/// The grains name themselves in the words the surface uses.
+/// `Grain` is a description of what was asked for and nothing more.
+///
+/// It carries no `label()`: the confirmations build their own sentences and the
+/// run arm never renders one, so a formatter here would be reachable only from
+/// this file — the tested-but-unreachable shape this codebase has shipped three
+/// times. The adversarial review caught it before it became a fourth.
 #[test]
-fn the_grains_name_themselves() {
-    assert!(Grain::File("src/a.rs".into()).label().contains("src/a.rs"));
-    assert!(Grain::Step(7).label().contains('7'));
-    assert_eq!(Grain::Run.label(), "the whole run");
+fn the_grains_carry_only_what_was_asked_for() {
+    assert_eq!(
+        Grain::File("src/a.rs".into()),
+        Grain::File("src/a.rs".into())
+    );
+    assert_ne!(Grain::Step(1), Grain::Step(2));
+    assert_ne!(Grain::Run, Grain::Step(1));
 }

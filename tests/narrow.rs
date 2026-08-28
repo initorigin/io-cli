@@ -2280,7 +2280,7 @@ fn n2_every_store_confirmation_fits_and_keeps_its_declining_row() {
             "unicode"
         };
         for (what, (title, rows)) in [
-            ("remove", io_cli::store::confirm_remove(session, &sized)),
+            ("remove", io_cli::store::confirm_remove(session, &sized, 0)),
             (
                 "sweep",
                 io_cli::store::confirm_sweep("2026-08-01T00:00:00.000Z"),
@@ -2350,7 +2350,10 @@ fn n2_the_store_page_and_the_reports_fit_eighty_columns() {
         // The reports are committed as plain sentences, so they are measured as
         // strings rather than drawn — `App::record` wraps them the way every
         // other committed line is wrapped.
-        let removed = io_cli::store::remove(&store, session).expect("the removal runs");
+        let removed = match io_cli::store::remove(&store, session, 0).expect("the removal runs") {
+            io_cli::store::Removal::Done(removed) => *removed,
+            io_cli::store::Removal::Live => unreachable!("0 is not a session id"),
+        };
         for line in io_cli::store::removed_report(&removed) {
             assert!(
                 !line.contains('\n'),

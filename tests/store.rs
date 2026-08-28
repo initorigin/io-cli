@@ -31,7 +31,7 @@
 //! up on the other side of the same wall.
 
 use io_cli::store::{
-    acts, committed, compact, confirm_compact, confirm_remove, confirm_sweep, freed_report, remove,
+    acts, committed, compact, confirm_compact, confirm_remove, confirm_sweep, freed_report,
     removed_report, sized, sweep, swept_report, view, Sized, LEAVE_IT,
 };
 use io_harness::Store;
@@ -86,6 +86,17 @@ fn seed_resumable(store: &Store, root: &str) -> i64 {
     session
 }
 
+/// Remove a session that is not the live one, and unwrap the removal.
+///
+/// The live-session id is `0`, which no store ever allocates, so every test that
+/// is not *about* the guard is unaffected by it. `f6`'s own test names a real id.
+fn removed(store: &Store, session: i64) -> io_cli::store::Removed {
+    match io_cli::store::remove(store, session, 0).expect("the removal runs") {
+        io_cli::store::Removal::Done(removed) => *removed,
+        io_cli::store::Removal::Live => panic!("session {session} is not the live one"),
+    }
+}
+
 /// A timestamp after every session any of these tests can create.
 const AFTER_EVERYTHING: &str = "2999-01-01T00:00:00.000Z";
 
@@ -128,7 +139,7 @@ fn f1_a_removal_frees_pages_into_the_file_and_the_file_does_not_move() {
     let doomed = seed(&store, "/tmp/doomed", 12);
     seed(&store, "/tmp/kept", 2);
 
-    let removed = remove(&store, doomed).expect("the session is removed");
+    let removed = removed(&store, doomed);
 
     assert_eq!(removed.pruned.sessions, 1);
     assert!(removed.pruned.turns >= 12, "every turn is accounted for");
@@ -143,8 +154,21 @@ fn f1_a_removal_frees_pages_into_the_file_and_the_file_does_not_move() {
     );
     assert!(
         removed.after.free_bytes >= removed.before.free_bytes,
-        "the freed pages are inside the file",
+        "free space inside the file never goes down on a removal",
     );
+    // **`>=` and not `>`, and that is a fact about SQLite rather than a weak
+    // assertion.** The adversarial review proposed strengthening this to a strict
+    // `>`; it was tried and it is **false**. A deletion frees *rows*, and pages
+    // reach the freelist only when a page empties — a twelve-turn session does
+    // not fill one, so `free_bytes` is unchanged and a compaction afterwards
+    // returns zero. Both were run before this comment was written.
+    //
+    // The claim this criterion actually makes is the equality above: the file on
+    // disk did not move. That the freed pages go *into* the file is asserted by
+    // `f2_only_compact_shrinks_the_file_and_reports_the_measured_difference`, at
+    // a size where whole pages are freed and the compaction has something to
+    // return. Asserting it here as well would be asserting arithmetic about
+    // SQLite's page layout, which is 0.26.0's recorded mistake in a new place.
 }
 
 /// **F1 — the report says the file did not move, and names the compaction.**
@@ -155,7 +179,7 @@ fn f1_a_removal_frees_pages_into_the_file_and_the_file_does_not_move() {
 fn f1_the_report_says_the_file_is_unchanged_and_what_would_change_it() {
     let (_dir, store) = on_disk();
     let doomed = seed(&store, "/tmp/doomed", 6);
-    let removed = remove(&store, doomed).expect("the session is removed");
+    let removed = removed(&store, doomed);
 
     let report = removed_report(&removed).join("\n");
     assert!(report.contains("removed 1 session"), "{report}");
@@ -184,7 +208,7 @@ fn f2_only_compact_shrinks_the_file_and_reports_the_measured_difference() {
     let (_dir, store) = on_disk();
     let doomed = seed(&store, "/tmp/doomed", 40);
     seed(&store, "/tmp/kept", 1);
-    remove(&store, doomed).expect("the session is removed");
+    removed(&store, doomed);
 
     let freed = compact(&store).expect("the store compacts");
 
@@ -256,7 +280,7 @@ fn f3_absent_is_not_the_same_answer_as_empty() {
 /// for a session the store does not have would be a button that cannot work.
 #[test]
 fn f3_the_confirmation_for_a_missing_session_offers_nothing_to_do() {
-    let (title, rows) = confirm_remove(9_999, &Sized::Absent);
+    let (title, rows) = confirm_remove(9_999, &Sized::Absent, 0);
 
     assert!(title.contains("no session 9999"), "{title}");
     assert_eq!(rows.len(), 1, "only the declining row");
@@ -273,7 +297,7 @@ fn f3_removing_a_session_that_is_not_there_reports_nothing() {
     let (_dir, store) = on_disk();
     seed(&store, "/tmp/kept", 1);
 
-    let removed = remove(&store, 9_999).expect("removing nothing is not an error");
+    let removed = removed(&store, 9_999);
 
     assert_eq!(removed.pruned.sessions, 0);
     assert_eq!(removed.pruned.turns, 0);
@@ -402,7 +426,7 @@ fn f5_row_zero_declines_in_every_confirmation() {
     let held = sized(&store, session).expect("a size is readable");
 
     for (what, rows) in [
-        ("remove", confirm_remove(session, &held).1),
+        ("remove", confirm_remove(session, &held, 0).1),
         ("sweep", confirm_sweep("2026-08-01").1),
         ("compact", confirm_compact(&size).1),
     ] {
@@ -433,7 +457,7 @@ fn f5_declining_leaves_the_store_byte_identical() {
     // decision and it lives in the library precisely so this can be asserted —
     // `src/main.rs` is a binary nothing under `tests/` can link.
     if acts(0) {
-        remove(&store, session).expect("unreachable");
+        removed(&store, session);
     }
 
     let after = store.store_size().expect("a size is readable");
@@ -452,7 +476,7 @@ fn f5_the_removal_confirmation_states_the_cost_and_the_restore_points() {
     let session = seed(&store, "/tmp/one", 5);
     let held = sized(&store, session).expect("a size is readable");
 
-    let (title, rows) = confirm_remove(session, &held);
+    let (title, rows) = confirm_remove(session, &held, 0);
 
     assert!(title.contains(&session.to_string()), "{title}");
     assert!(
@@ -497,7 +521,7 @@ fn the_page_names_the_file_the_free_space_and_the_three_verbs() {
     let (_dir, store) = on_disk();
     let doomed = seed(&store, "/tmp/doomed", 8);
     seed(&store, "/tmp/kept", 1);
-    remove(&store, doomed).expect("the session is removed");
+    removed(&store, doomed);
 
     let theme = io_cli::theme::THEMES[0];
     let lines = committed(&store, &theme, 100).expect("the page renders");
@@ -561,4 +585,136 @@ fn o4_no_store_gate_names_a_real_home() {
         !code.contains(&in_memory),
         "and a real file, because the subject is page arithmetic on one",
     );
+}
+
+// ---------------------------------------------------------------------------
+// The date the sweep is given, and the session it is not allowed to remove
+// ---------------------------------------------------------------------------
+
+/// **F4 — a sweep boundary that is not a timestamp is refused before anything
+/// is offered.**
+///
+/// The comparison io-harness makes is **lexical**, against a
+/// `%Y-%m-%dT%H:%M:%fZ` text column, so any string sorting above `'2'` selects
+/// every session in the store. Two entirely plausible inputs do that, and
+/// neither looks wrong when the confirmation echoes it back:
+///
+/// - `2026-8-1`, an unpadded month, which sorts above `2026-08-28T…`
+/// - `yesterday`, or any word, because every letter sorts above `'2'`
+///
+/// **Both adversarial reviewers found this independently**, which is the
+/// strongest signal that gate gives.
+#[test]
+fn f4_a_boundary_that_is_not_a_timestamp_is_refused() {
+    use io_cli::store::boundary;
+
+    // The two that would have swept the whole store.
+    for wrong in [
+        "2026-8-1",
+        "yesterday",
+        "last-week",
+        "now",
+        "9",
+        "",
+        "2026/08/01",
+    ] {
+        let refused = boundary(wrong).expect_err(&format!("`{wrong}` must be refused"));
+        assert!(
+            refused.contains(wrong) || wrong.is_empty(),
+            "the refusal names what was typed: {refused}",
+        );
+    }
+
+    // A bare date is normalised to midnight, which is what the operator meant.
+    assert_eq!(
+        boundary("2026-08-01").expect("a bare date is accepted"),
+        "2026-08-01T00:00:00.000Z",
+    );
+    // A full stamp is taken as written.
+    assert_eq!(
+        boundary("2026-08-01T12:30:00.000Z").expect("a full stamp is accepted"),
+        "2026-08-01T12:30:00.000Z",
+    );
+
+    // **The property that matters: an accepted boundary never sorts above a real
+    // timestamp unless it is meant to.** A store's stamps look like this one.
+    let real = "2026-08-28T09:15:22.417Z";
+    assert!(
+        boundary("2026-08-01").expect("accepted").as_str() < real,
+        "a boundary before today must sort before today's sessions",
+    );
+    assert!(
+        boundary("2026-09-01").expect("accepted").as_str() > real,
+        "and one after it must sort after",
+    );
+}
+
+/// **The session io is running is refused, and the confirmation offers no way to
+/// do it.**
+///
+/// `/store` lists every session **with its root**, which is exactly what makes
+/// the operator's own workspace the recognisable one. io-harness refuses nothing
+/// — `delete_session` has no guard, the resumable-run refusal lives only in
+/// `sweep_sessions`, and no foreign keys are enforced — so the removal would
+/// succeed, the process would carry on writing turns into a session that no
+/// longer exists, and every later `/undo` and `/export` would report an empty
+/// session. A false report, from a session that is still running.
+///
+/// Found by both adversarial reviewers.
+#[test]
+fn the_live_session_cannot_be_removed() {
+    let (_dir, store) = on_disk();
+    let live = seed(&store, "/tmp/live", 3);
+    let other = seed(&store, "/tmp/other", 2);
+
+    assert_eq!(
+        io_cli::store::remove(&store, live, live).expect("not an error"),
+        io_cli::store::Removal::Live,
+        "the conversation this process is having is not removable",
+    );
+    assert!(
+        matches!(sized(&store, live), Ok(Sized::Holds(_))),
+        "and it is still in the store",
+    );
+
+    // The confirmation does not offer it either, so the refusal is visible before
+    // the keystroke rather than after it.
+    let held = sized(&store, live).expect("a size");
+    let (title, rows) = confirm_remove(live, &held, live);
+    assert!(title.contains("the conversation you are in"), "{title}");
+    assert_eq!(rows.len(), 1, "there is nothing to choose but leaving it");
+    assert_eq!(rows[0].label, LEAVE_IT);
+
+    // Any other session is unaffected.
+    assert!(matches!(
+        io_cli::store::remove(&store, other, live).expect("not an error"),
+        io_cli::store::Removal::Done(_)
+    ));
+}
+
+/// **A sweep says how many restore points went, as a removal does.**
+///
+/// `removed_report` has said it since it was written and the module preamble
+/// calls it the sentence that bites later. A sweep removes many sessions'
+/// restore points at once and said nothing, before or after. Found by the
+/// adversarial review.
+#[test]
+fn f4_the_sweep_report_names_the_restore_points_it_took() {
+    let (_dir, store) = on_disk();
+    seed(&store, "/tmp/one", 3);
+
+    let swept = sweep(&store, AFTER_EVERYTHING).expect("the sweep runs");
+    let report = swept_report(&swept).join("\n");
+
+    assert!(report.contains("swept"), "{report}");
+    if swept.pruned.restore_points > 0 {
+        assert!(
+            report.contains("restore point"),
+            "a sweep that took restore points has to say so: {report}",
+        );
+        assert!(
+            report.contains("memory did not"),
+            "and say what survived: {report}",
+        );
+    }
 }

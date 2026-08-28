@@ -233,15 +233,105 @@ impl Removed {
 ///
 /// Deleting a session the store does not have succeeds and reports nothing, which
 /// is io-harness's own behaviour and is not softened here.
-pub fn remove(store: &Store, session_id: i64) -> Result<Removed, Error> {
+pub fn remove(store: &Store, session_id: i64, live: i64) -> Result<Removal, Error> {
+    // Before anything is read, let alone deleted. See [`Removal`].
+    if session_id == live {
+        return Ok(Removal::Live);
+    }
     let before = store.store_size()?;
     let pruned = store.delete_session(session_id)?;
     let after = store.store_size()?;
-    Ok(Removed {
+    Ok(Removal::Done(Box::new(Removed {
         pruned,
         before,
         after,
-    })
+    })))
+}
+
+/// A timestamp the sweep may safely be given.
+///
+/// **This exists because the comparison is lexical and the blast radius is the
+/// whole store.** `Store::sweep_sessions` selects `WHERE created_at < ?1` against
+/// a `%Y-%m-%dT%H:%M:%fZ` **text** column, so any string sorting above `'2'`
+/// selects every session io-harness has ever written. Two entirely plausible
+/// inputs do that:
+///
+/// - `/store sweep 2026-8-1` — an unpadded month. `'2026-08-28T…' < '2026-8-1'`
+///   is true at index five, `'0'` against `'8'`, so *today's* sessions go too.
+/// - `/store sweep yesterday` — every ISO stamp starts with `'2'` and every
+///   letter sorts above it. The entire store, across every workspace.
+///
+/// Neither is a typo an operator would catch by reading the confirmation back,
+/// because the confirmation echoes the string they typed and it looks like what
+/// they meant. So the shape is checked here, before anything is offered.
+///
+/// Two spellings are accepted and one of them is normalised: a bare
+/// `YYYY-MM-DD`, which becomes midnight of that day, and a full
+/// `YYYY-MM-DDTHH:MM:SS(.mmm)Z` as the store writes them. Everything else is
+/// refused by name.
+///
+/// **No date library, and no clock.** This validates a *shape* — it does not ask
+/// whether the thirty-first of February exists, because io-harness's comparison
+/// does not either, and a `2026-02-31` boundary sorts exactly where an operator
+/// would expect it to. What it refuses is the class of input that means
+/// something entirely different from what was typed.
+pub fn boundary(input: &str) -> Result<String, String> {
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    let date = input.get(..10).unwrap_or_default();
+    let ok_date = date.len() == 10
+        && digits(&date[0..4])
+        && &date[4..5] == "-"
+        && digits(&date[5..7])
+        && &date[7..8] == "-"
+        && digits(&date[8..10]);
+    if !ok_date {
+        return Err(format!(
+            "`{input}` is not a date. The store compares timestamps as text, so a \
+             word or an unpadded month would sweep far more than you meant — write \
+             it as 2026-08-01, or in full as 2026-08-01T00:00:00.000Z"
+        ));
+    }
+    if input.len() == 10 {
+        // Midnight of that day, which is what "before the first of August" means
+        // to the person who typed it.
+        return Ok(format!("{date}T00:00:00.000Z"));
+    }
+    let rest = &input[10..];
+    let shaped = rest.len() >= 10
+        && rest.starts_with('T')
+        && rest.ends_with('Z')
+        && digits(&rest[1..3])
+        && &rest[3..4] == ":"
+        && digits(&rest[4..6])
+        && &rest[6..7] == ":"
+        && digits(&rest[7..9]);
+    if !shaped {
+        return Err(format!(
+            "`{input}` is not a timestamp the store would have written. Use \
+             2026-08-01, or the full form 2026-08-01T00:00:00.000Z"
+        ));
+    }
+    Ok(input.to_string())
+}
+
+/// Whether one session may be removed at all.
+///
+/// **An operator can see their own session on the `/store` page — with its root,
+/// which is the very thing that makes it recognisable — and there is nothing in
+/// io-harness to stop them deleting it.** `delete_session` refuses nothing; the
+/// resumable-run refusal lives only in `sweep_sessions`. No foreign keys are
+/// enforced, so the removal succeeds, the process carries on writing turn rows
+/// into a session that no longer exists, and every later `/undo` and `/export`
+/// reports an empty session — a false report, from a session that is running.
+///
+/// So the live session is refused here, by the one caller that knows which it
+/// is. This is io-cli's own rule and not io-harness's, and it is stated as such.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removal {
+    /// It went.
+    Done(Box<Removed>),
+    /// It is the conversation this process is having, and was not touched.
+    Live,
 }
 
 /// What a date sweep did.
@@ -428,6 +518,37 @@ pub fn committed(
             view.rows.len()
         )));
     }
+    // **The total and the list count different things, and the difference is
+    // real rather than a rounding.** `store_size().sessions` counts every row in
+    // `sessions`; the list comes from `crate::sessions::recent`, which walks runs
+    // back to sessions and therefore cannot see a session that was opened and
+    // never used — every `io` somebody started and quit out of. Those sessions
+    // are invisible here and are exactly what a sweep will remove, so the page
+    // says how many there are rather than letting the two numbers disagree in
+    // silence. Found by the adversarial review, not by a test.
+    let listed = view.rows.len() as u64;
+    if !view.cut && view.size.sessions > listed {
+        rows.push(crate::page::Row::caveat(format!(
+            "{} session{} held no run and {} not listed above — an `io` that was \
+             opened and never used. A sweep removes {} too",
+            view.size.sessions - listed,
+            if view.size.sessions - listed == 1 {
+                ""
+            } else {
+                "s"
+            },
+            if view.size.sessions - listed == 1 {
+                "is"
+            } else {
+                "are"
+            },
+            if view.size.sessions - listed == 1 {
+                "it"
+            } else {
+                "them"
+            },
+        )));
+    }
 
     rows.push(crate::page::Row::Blank);
     rows.push(crate::page::Row::note(
@@ -471,7 +592,17 @@ fn session_figures(sized: &Sized) -> String {
 /// something specific rather than of a keystroke. The restore-point sentence is
 /// here rather than in the report for the same reason: it is the fact an
 /// operator needs *before* they agree, not the one they discover afterwards.
-pub fn confirm_remove(id: i64, sized: &Sized) -> (String, Vec<crate::picker::Row>) {
+pub fn confirm_remove(id: i64, sized: &Sized, live: i64) -> (String, Vec<crate::picker::Row>) {
+    if id == live {
+        return (
+            format!("Session {id} is the conversation you are in"),
+            vec![crate::picker::Row::with_detail(
+                LEAVE_IT,
+                "io will not remove the session it is running; quit and remove it \
+                 from another one",
+            )],
+        );
+    }
     let title = match sized {
         Sized::Holds(size) => format!(
             "Remove session {id}? {} · {} turn{} · {} run{}",

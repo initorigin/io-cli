@@ -16,9 +16,15 @@
 //! emitted only inside `rewind_run_observed`** (`run.rs:804`). So in this
 //! product's entire history that event has never fired once. The same is true of
 //! `EventKind::Reverted`, which only `rewind_step_observed` emits (`run.rs:1011`).
-//! Pointing both at the observed forms is not a stylistic change: it is the
-//! difference between an undo that announces itself like every other thing this
-//! interface draws and one that happens in silence.
+//!
+//! **What that buys is not a line on screen, and an earlier draft of this file
+//! claimed it was.** Both kinds are `Disposition::Silent` in `crate::triage` and
+//! route to io-cli's own rewind summary — written from the value the call
+//! returned, which `crate::rewind` explains at length — so `src/events.rs` has
+//! no arm for either and correctly draws nothing. What the observed forms buy is
+//! that the events now **exist**: they reach `[[hook]]` observers, the
+//! `io exec --json` stream and the durable trace, none of which they had ever
+//! reached. Recorded because the adversarial review found the overclaim.
 //!
 //! # Three traps, and the middle one will bite an operator
 //!
@@ -54,7 +60,7 @@
 //! a refusal.
 
 use io_harness::tools::Workspace;
-use io_harness::{Error, Observer, Reverted, Rewind, Rewound, Store};
+use io_harness::{Error, Observer, Reverted, Rewind, Store};
 
 /// Which granularity an undo was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,16 +73,9 @@ pub enum Grain {
     Run,
 }
 
-impl Grain {
-    /// What to call it in a sentence.
-    pub fn label(&self) -> String {
-        match self {
-            Grain::File(path) => format!("the file {path}"),
-            Grain::Step(step) => format!("step {step}"),
-            Grain::Run => "the whole run".to_string(),
-        }
-    }
-}
+// `Grain` carries no `label()`. The confirmations build their own sentences —
+// `confirm_file` and `confirm_step` — and the run arm never renders a label at
+// all, so a method that formatted one would be reachable only from a test.
 
 /// Put one file back, from the snapshot taken before this run first wrote it.
 ///
@@ -108,20 +107,14 @@ pub fn one_step(
     io_harness::rewind_step_observed(workspace, store, run_id, step, observer)
 }
 
-/// Undo everything the run did, announcing it.
-///
-/// **The observed form, so `EventKind::Rewound` fires — for the first time in
-/// this product's history.** `src/rewind.rs` has called the plain `rewind_run`
-/// since 0.4.0, which is why the event has an arm in `src/events.rs` that has
-/// never been reached.
-pub fn whole_run(
-    workspace: &Workspace,
-    store: &Store,
-    run_id: i64,
-    observer: &dyn Observer,
-) -> Result<Rewound, Error> {
-    io_harness::rewind_run_observed(workspace, store, run_id, observer)
-}
+// **There is deliberately no `whole_run` here.** The whole-turn undo is
+// `crate::rewind::last_turn`, which does what this module cannot: it moves the
+// conversation head back, by compare-and-swap, and re-opens the session. A thin
+// wrapper over `rewind_run_observed` beside it would be a second entry point to
+// one act, and the first draft of this module shipped exactly that — public,
+// tested, and called by nothing. This codebase has shipped tested-but-unreachable
+// surfaces in 0.20.0, 0.21.0 and 0.26.0; the adversarial review caught this one
+// before it became the fourth.
 
 /// What one file's answer says, in the operator's words.
 ///
@@ -145,10 +138,22 @@ pub fn step_said(path: &str, answer: &Reverted) -> String {
     match answer {
         Reverted::Applied(_) => format!("{path} is back to what it was before that step"),
         Reverted::Stale(why) => format!("{path} is unchanged: {why}"),
-        // `Reverted` is `#[non_exhaustive]`-shaped in spirit — a third and fourth
-        // variant already exist — so the wildcard reports the honest conservative
-        // thing rather than guessing that something was applied.
-        other => format!("{path} is unchanged: {other:?}"),
+        // **`NoHunk` is the third variant and it is not exotic.** io-harness names
+        // it for a row written before hunks were kept, and for a file whose
+        // previous contents were not kept at all — over the snapshot cap, or not
+        // text. That is the same class `Rewind::NotKept` gets a written sentence
+        // for one function up, and it deserves one here rather than a Rust debug
+        // string with quotes in it. The first version of this function let it
+        // fall to a `{other:?}` wildcard, and the adversarial review found it.
+        Reverted::NoHunk(why) => format!(
+            "{path} is unchanged: no diff was stored for that step ({why}) — \
+             `/undo {path}` puts the whole file back instead"
+        ),
+        // `Reverted` may gain a fourth variant in a later io-harness. Reporting
+        // the conservative thing — nothing changed — is the arm that cannot
+        // mislead, because the alternative is claiming a restore this build did
+        // not understand.
+        _ => format!("{path} is unchanged: this build does not know that answer"),
     }
 }
 
