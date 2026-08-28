@@ -231,6 +231,23 @@ fn f2_the_catalogue_is_documented_rather_than_invented() {
              Either the key is invented or the example is out of date; both are this \
              release's problem."
         );
+
+        // **And the section it lives under, because the last segment alone stopped
+        // being a check.** `model` is the last segment of two of 0.26.0's routing
+        // keys and occurs dozens of times in that file, so a mistyped sub-table —
+        // `routing.escalate.model` — satisfied the assertion above and every other
+        // gate. A key nested two or more levels deep names its own table, and the
+        // table header is what an operator actually has to type.
+        if let Some(parent) = key.rsplit_once('.').map(|(head, _)| head) {
+            if parent.matches('.').count() >= 2 {
+                assert!(
+                    example.contains(&format!("[{parent}]")),
+                    "`{key}` sits under `[{parent}]`, and docs/config.example.toml \
+                     has no such table. The last segment matching somewhere in the \
+                     file is not evidence that the path is right."
+                );
+            }
+        }
     }
 }
 

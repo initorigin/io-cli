@@ -921,7 +921,9 @@ pub fn skills(
 /// So "off" is a real answer an operator can want and is not the same as "low",
 /// which buys a thinking budget of 1,024 tokens on Anthropic and sets
 /// `reasoning_effort` on the OpenAI wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Not `Copy` since the rejected word is carried, which is why every reader takes
+/// it by reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reasoning {
     /// Buy this much, for this turn and every turn after it.
     Buy(io_harness::Effort),
@@ -929,6 +931,15 @@ pub enum Reasoning {
     Off,
     /// Say what is in force, and change nothing.
     Report,
+    /// A word that is not a level, kept so it can be quoted back.
+    ///
+    /// **A fourth variant rather than falling back to [`Self::Report`], and the
+    /// difference is money.** Collapsing the two made `/effort lwo` — an operator
+    /// on `high` trying to cut what a turn costs — answer "every turn asks for high
+    /// reasoning", which reads as a state report rather than as a rejection: the
+    /// typo is invisible and the expensive level goes on being bought. The only
+    /// tell was a one-word difference between two sentences nobody was comparing.
+    Unknown(String),
 }
 
 /// What the driver should do about a slash command.
@@ -1787,13 +1798,24 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // the harness has no word for the absent case; it is an `Option`, not a
         // fourth variant.
         "effort" | "reasoning" => match input.split_whitespace().nth(1) {
-            Some("off" | "none") => Action::Effort(Reasoning::Off),
+            // Lowercased before the match, because `Effort::FromStr` trims and
+            // lowercases and this arm sits in front of it: matching `off`
+            // literally made `/effort OFF` fall through to a parse that fails,
+            // land on a report, and leave the level exactly where it was — while
+            // `/effort HIGH` worked, since the harness lowercases for itself.
+            // Two spellings of the same word behaving differently is the kind of
+            // asymmetry nobody reports and everybody trips on once.
+            Some(word) if matches!(word.to_ascii_lowercase().as_str(), "off" | "none") => {
+                Action::Effort(Reasoning::Off)
+            }
             Some(word) => match word.parse::<io_harness::Effort>() {
                 Ok(level) => Action::Effort(Reasoning::Buy(level)),
-                // An unrecognised word reports rather than guesses. Choosing the
-                // nearest level for `/effort hgih` would spend a turn's reasoning
-                // budget on a typo.
-                Err(_) => Action::Effort(Reasoning::Report),
+                // An unrecognised word is refused by name and never guessed at.
+                // Choosing the nearest level for `/effort hgih` would spend a
+                // turn's reasoning budget on a typo; reporting instead — which is
+                // what this did — hid the typo behind a sentence that reads like
+                // an answer.
+                Err(_) => Action::Effort(Reasoning::Unknown(word.to_string())),
             },
             None => Action::Effort(Reasoning::Report),
         },

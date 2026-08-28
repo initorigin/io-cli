@@ -328,11 +328,17 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
     // A section that names no rule leaves the contract's routing unset rather than
     // putting a default `Routing` on it; `routing::routing` owns that decision and
     // says why at length.
+    //
+    // **A refused section leaves the turn unrouted rather than killing it**, which
+    // is the same answer the gate block above gives an unusable criterion: the
+    // honest response to a rule that cannot be obeyed is a run with no routing plus
+    // a notice, never a turn that will not start. `routing::notice` is what puts
+    // that on screen, and it is the only place this product says why a section that
+    // is plainly in the operator's file is not doing anything.
     let contract = match crate::settings::stored(config)
         .0
         .and_then(|s| s.routing)
-        .as_ref()
-        .and_then(crate::routing::routing)
+        .and_then(|routing| crate::routing::routing(&routing).ok().flatten())
     {
         Some(routing) => contract.with_routing(routing),
         None => contract,

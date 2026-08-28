@@ -1484,6 +1484,15 @@ impl Status {
         // operator ever saw. 0.12.0's planning field, again, and 0.8.0's spend
         // field before it.
         counts.extend(self.cost_field());
+        // **The effort level is a count-side field, not a standing one, and the
+        // reason is arithmetic rather than taxonomy** — see the note beside
+        // `planning` below for what putting it there cost. Pushed last, so
+        // narrowing takes it before it takes any number: of everything on this row,
+        // a level the operator has just set and can read back by typing `/effort`
+        // is the one they can most afford to lose to a narrow terminal.
+        if let Some(effort) = self.effort {
+            counts.push(format!("effort {effort}"));
+        }
         // **Here as well as on `Status::line`, from the same method, and that is
         // deliberate rather than tidy.** This is the row the binary draws at an
         // ordinary prompt — `Status::render` takes the footer on any terminal
@@ -1565,17 +1574,18 @@ impl Status {
             }
             allowed.push(Span::styled("planning", muted));
         }
-        // Beside `planning` here as well as on `Status::line`, and out of the same
-        // field, for the reason that paragraph gives at length: the binary draws
-        // this footer at every ordinary prompt, so a standing choice added to
-        // `line` alone is a choice no operator ever sees. 0.12.0's planning field
-        // is the precedent and this release is not going to repeat it.
-        if let Some(effort) = self.effort {
-            if !allowed.is_empty() {
-                allowed.push(Span::styled(separator, muted));
-            }
-            allowed.push(Span::styled(format!("effort {effort}"), muted));
-        }
+        // **The effort level is NOT here, and 0.25.0 already paid for the lesson.**
+        // The obvious home for a standing choice is beside `planning`, on the
+        // argument that it describes the circumstances a turn works in rather than
+        // counting anything — which reads well and is wrong, because of how the two
+        // groups yield. `row` fits this right-hand group all or nothing, so adding
+        // `effort high` to it takes the group past what eighty columns can hold and
+        // the operator loses the posture and the containment word **together**, by
+        // typing `/effort high`. That is the failure
+        // `f4_a_full_counts_row_drops_a_counter_and_not_the_planning_phase` exists
+        // to prevent, and it is why `branch` was moved out of this group one
+        // release ago. The level goes into `counts` below, where narrowing takes
+        // one field at a time.
         // **`counts` and NOT the right-hand group, and this release measured why.**
         // The branch first went in beside the posture, on the argument that it
         // describes the circumstances the agent works in rather than counting

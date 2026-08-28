@@ -32,12 +32,12 @@ const CHEAPER: &str = "vendor/cheaper-model";
 fn both() -> Settings {
     Settings {
         escalate_after: Some(Escalation {
-            failures: 3,
-            model: STRONGER.to_string(),
+            failures: Some(3),
+            model: Some(STRONGER.to_string()),
         }),
         downshift_under: Some(Downshift {
-            bytes: 2_000,
-            model: CHEAPER.to_string(),
+            bytes: Some(2_000),
+            model: Some(CHEAPER.to_string()),
         }),
     }
 }
@@ -48,14 +48,16 @@ fn both() -> Settings {
 
 #[test]
 fn a_section_naming_both_rules_carries_both_exactly_as_written() {
-    let routing = routing::routing(&both()).expect("two rules are a routing");
+    let routing = routing::routing(&both())
+        .expect("two rules are obeyable")
+        .expect("two rules are a routing");
     assert_eq!(routing.escalate_after, Some((3, STRONGER.to_string())));
     assert_eq!(routing.downshift_under, Some((2_000, CHEAPER.to_string())));
 }
 
 #[test]
 fn a_section_that_names_no_rule_puts_no_routing_on_the_contract() {
-    assert_eq!(routing::routing(&Settings::default()), None);
+    assert_eq!(routing::routing(&Settings::default()), Ok(None));
 }
 
 #[test]
@@ -64,7 +66,7 @@ fn a_present_but_empty_section_puts_no_routing_on_the_contract() {
     assert_eq!(empty, Settings::default());
     assert_eq!(
         routing::routing(&empty),
-        None,
+        Ok(None),
         "an empty Routing is a value where there was none, and it changes the contract"
     );
 }
@@ -75,7 +77,9 @@ fn a_section_naming_only_escalation_carries_only_escalation() {
         downshift_under: None,
         ..both()
     };
-    let routing = routing::routing(&settings).expect("one rule is a routing");
+    let routing = routing::routing(&settings)
+        .expect("one rule is obeyable")
+        .expect("one rule is a routing");
     assert_eq!(routing.escalate_after, Some((3, STRONGER.to_string())));
     assert_eq!(routing.downshift_under, None);
 }
@@ -86,7 +90,9 @@ fn a_section_naming_only_downshift_carries_only_downshift() {
         escalate_after: None,
         ..both()
     };
-    let routing = routing::routing(&settings).expect("one rule is a routing");
+    let routing = routing::routing(&settings)
+        .expect("one rule is obeyable")
+        .expect("one rule is a routing");
     assert_eq!(routing.escalate_after, None);
     assert_eq!(routing.downshift_under, Some((2_000, CHEAPER.to_string())));
 }
@@ -97,14 +103,18 @@ fn a_section_naming_only_downshift_carries_only_downshift() {
 
 #[test]
 fn under_the_failure_threshold_a_small_run_is_asked_of_the_cheaper_model() {
-    let routing = routing::routing(&both()).expect("two rules are a routing");
+    let routing = routing::routing(&both())
+        .expect("two rules are obeyable")
+        .expect("two rules are a routing");
     assert_eq!(routing.model_for(0, 0), Some(CHEAPER));
     assert_eq!(routing.model_for(2, 1_999), Some(CHEAPER));
 }
 
 #[test]
 fn escalating_beats_downshifting_at_and_above_the_threshold() {
-    let routing = routing::routing(&both()).expect("two rules are a routing");
+    let routing = routing::routing(&both())
+        .expect("two rules are obeyable")
+        .expect("two rules are a routing");
     // Both conditions hold: three consecutive failures, and fewer bytes written
     // than the downshift bound. io-harness answers with the stronger model.
     assert_eq!(routing.model_for(3, 0), Some(STRONGER));
@@ -113,7 +123,9 @@ fn escalating_beats_downshifting_at_and_above_the_threshold() {
 
 #[test]
 fn neither_condition_met_leaves_the_requests_model_alone() {
-    let routing = routing::routing(&both()).expect("two rules are a routing");
+    let routing = routing::routing(&both())
+        .expect("two rules are obeyable")
+        .expect("two rules are a routing");
     assert_eq!(routing.model_for(2, 2_000), None);
     assert_eq!(routing.model_for(0, 10_000), None);
 }
@@ -192,8 +204,8 @@ fn the_description_states_escalation_before_downshift_and_names_both_rules() {
 fn a_single_failure_threshold_is_described_in_the_singular() {
     let settings = Settings {
         escalate_after: Some(Escalation {
-            failures: 1,
-            model: STRONGER.to_string(),
+            failures: Some(1),
+            model: Some(STRONGER.to_string()),
         }),
         downshift_under: None,
     };
@@ -237,13 +249,140 @@ model = "vendor/cheaper-model"
     assert_eq!(settings, both());
 }
 
+/// **A half rule parses and is refused, and the difference is the whole finding.**
+///
+/// These keys were required, which looked stricter and was far worse. A required
+/// field is a *deserialization* failure, so `failures = 3` with no `model` did not
+/// fail the rule — it failed `CliSettings`, and `settings::stored` then answered
+/// `None` for the whole `[app.io-cli]` section. The theme, the keys, the ceilings,
+/// the capabilities and the **verification gate** all silently reverted to their
+/// defaults, because `contract::criterion_for` gives up on that same `None`. A gate
+/// that stops gating without saying so is the most expensive failure this crate
+/// has, and it was one missing line in a configuration file away.
+///
+/// Worse, `/config` writes exactly one key per invocation, so **every** path
+/// through that surface to a routing rule passed through this state.
+///
+/// Found by the adversarial review. Sabotage: make either key required again —
+/// under which this test fails at the `expect`, because the section no longer
+/// parses at all.
 #[test]
-fn a_rule_missing_half_of_itself_is_refused_rather_than_defaulted() {
-    // A threshold with no model is half a rule. Defaulted, it would be a rule
-    // routing to the empty string; refused, the operator hears the key name.
-    let refused = toml::from_str::<Settings>("[escalate_after]\nfailures = 3\n");
+fn a_rule_missing_half_of_itself_parses_and_is_refused_by_name() {
+    let settings: Settings = toml::from_str("[escalate_after]\nfailures = 3\n")
+        .expect("half a rule must still parse, or it takes all of [app.io-cli] with it");
+
+    assert_eq!(
+        routing::routing(&settings),
+        Err(routing::Refusal::HalfARule {
+            rule: "escalate_after",
+            missing: "model",
+        }),
+    );
     assert!(
-        refused.is_err(),
-        "half a rule must not deserialize: {refused:?}"
+        routing::notice(&settings).is_some_and(|said| said.contains("half a rule")),
+        "the operator hears which key is missing",
+    );
+}
+
+/// **The three values that are writable and disastrous.**
+///
+/// io-harness obeys the thresholds literally (`contract.rs:1811-1822`), and none
+/// of these is a shape TOML can refuse:
+///
+/// * `failures = 0` satisfies `consecutive_gate_failures >= 0` at the first request
+///   of every run, so the escalation model is used unconditionally and the
+///   downshift — checked second — is never reached. An operator writing it means
+///   "escalate readily" and gets "never use the model I configured".
+/// * `bytes = 0` can never be true, so the rule is permanently inert.
+/// * An empty model sends every request of the run with no model id.
+///
+/// Found by the adversarial review, which noted that this file already named the
+/// empty-model outcome as the thing being avoided and the code then accepted it.
+#[test]
+fn a_threshold_that_could_only_misfire_is_refused() {
+    let escalating_at_zero = Settings {
+        escalate_after: Some(routing::Escalation {
+            failures: Some(0),
+            model: Some(STRONGER.to_string()),
+        }),
+        downshift_under: None,
+    };
+    assert_eq!(
+        routing::routing(&escalating_at_zero),
+        Err(routing::Refusal::EscalatesBeforeAnythingFailed),
+    );
+
+    let never_downshifts = Settings {
+        escalate_after: None,
+        downshift_under: Some(routing::Downshift {
+            bytes: Some(0),
+            model: Some(CHEAPER.to_string()),
+        }),
+    };
+    assert_eq!(
+        routing::routing(&never_downshifts),
+        Err(routing::Refusal::NeverDownshifts),
+    );
+
+    let nameless = Settings {
+        escalate_after: Some(routing::Escalation {
+            failures: Some(3),
+            model: Some("   ".to_string()),
+        }),
+        downshift_under: None,
+    };
+    assert_eq!(
+        routing::routing(&nameless),
+        Err(routing::Refusal::NoModel {
+            rule: "escalate_after"
+        }),
+    );
+}
+
+/// A refusal leaves the run unrouted, and every refusal has a sentence.
+///
+/// The pair of `contract::gate_notice`: a section that is plainly in the
+/// operator's file and is not doing anything has to say why, or the surface that
+/// lists it is lying by omission.
+#[test]
+fn every_refusal_says_which_key_is_wrong_and_that_the_turn_is_not_routed() {
+    for settings in [
+        Settings {
+            escalate_after: Some(routing::Escalation {
+                failures: Some(0),
+                model: Some(STRONGER.to_string()),
+            }),
+            downshift_under: None,
+        },
+        Settings {
+            escalate_after: None,
+            downshift_under: Some(routing::Downshift {
+                bytes: Some(0),
+                model: Some(CHEAPER.to_string()),
+            }),
+        },
+        Settings {
+            escalate_after: Some(routing::Escalation {
+                failures: Some(3),
+                model: None,
+            }),
+            downshift_under: None,
+        },
+    ] {
+        let said = routing::notice(&settings).expect("a refused section says why");
+        assert!(
+            said.contains("app.io-cli.routing"),
+            "a refusal names the section the operator has to open: {said}",
+        );
+        assert!(
+            said.contains("not routed"),
+            "a refusal says what the run does instead: {said}",
+        );
+    }
+
+    assert_eq!(
+        routing::notice(&both()),
+        None,
+        "an obeyable section has nothing to explain",
     );
 }

@@ -268,12 +268,12 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         // a key added to `routing::Settings` has to break something to be noticed.
         routing: Some(io_cli::routing::Settings {
             escalate_after: Some(io_cli::routing::Escalation {
-                failures: 3,
-                model: "a-stronger-model".into(),
+                failures: Some(3),
+                model: Some("a-stronger-model".into()),
             }),
             downshift_under: Some(io_cli::routing::Downshift {
-                bytes: 2_000,
-                model: "a-cheaper-model".into(),
+                bytes: Some(2_000),
+                model: Some("a-cheaper-model".into()),
             }),
         }),
     };

@@ -1711,6 +1711,88 @@ fn f11_the_branch_field_is_a_plain_name_and_costs_a_stated_number_of_columns() {
     }
 }
 
+/// **0.26.0 N2 — setting an effort level does not take the posture off the row.**
+///
+/// The sibling of `f11_a_branch_yields_before_the_standing_facts_at_eighty_columns`
+/// and it exists because this release very nearly repeated the defect that one was
+/// written for. `effort` was first pushed into the footer's right-hand group beside
+/// `planning`, on the argument that it is a standing choice rather than a counter —
+/// which reads well and is wrong, because `row` fits that group **all or nothing**.
+/// Measured on this fixture, `effort high` takes the group past what eighty columns
+/// can hold, so typing `/effort high` removed the posture, the containment mode and
+/// the planning phase together. `branch` was moved out of that group one release
+/// ago for exactly this reason.
+///
+/// **The wide arm is not optional.** At eighty columns with this fixture the level
+/// may yield, so an assertion made only there is equally true of a status line that
+/// never drew the field at all — which is how 0.25.0 shipped a vacuous gate over
+/// this very row. So one arm proves the field is drawn where there is room, and the
+/// other proves what it does not cost where there is not.
+///
+/// Sabotage: push the level into the `allowed` group instead — under which the
+/// narrow arm fails, because the posture and the containment word disappear
+/// together.
+#[test]
+fn n2_an_effort_level_yields_before_the_standing_facts_at_eighty_columns() {
+    use io_cli::status::Status;
+
+    // The branch arm's fixture, and deliberately **without** `planning`: with it
+    // on, this row's standing group already does not fit at eighty columns, so
+    // every assertion below would have held whether or not the effort level cost
+    // anything. The first version of this test had it on and failed for that
+    // reason rather than for a defect — a gate over a field it could not observe,
+    // caught this time before it shipped rather than a release later.
+    let fixture = || {
+        let mut status = Status::new("anthropic/claude-sonnet-4.5");
+        status.policy = Some("read-only".into());
+        status.containment = Some("workspace-write/macos-sandbox-exec".into());
+        status.steps = Some(6);
+        status
+    };
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+
+        // The control. Without it, everything below is equally true of a row that
+        // never carried the standing facts in the first place.
+        let bare = text_of(&fixture().footer(WIDTH, &theme)).join("\n");
+        for standing in ["read-only", "workspace-write/macos-sandbox-exec"] {
+            assert!(
+                bare.contains(standing),
+                "{set}: the row did not hold `{standing}` to begin with, so nothing \
+                 below measures anything: {bare:?}",
+            );
+        }
+
+        let mut level = fixture();
+        level.effort = Some(io_harness::Effort::High);
+
+        // Wide, where the row holds everything: the level is drawn at all.
+        let wide = text_of(&level.footer(200, &theme)).join("\n");
+        assert!(
+            wide.contains("effort high"),
+            "{set}: the level is not on the footer at any width: {wide:?}",
+        );
+
+        // Narrow, where it must not cost the standing facts.
+        let narrow = text_of(&level.footer(WIDTH, &theme)).join("\n");
+        for row in narrow.lines() {
+            assert!(
+                row.chars().count() <= WIDTH as usize,
+                "{set}: a footer row overflowed eighty columns: {row:?}",
+            );
+        }
+        for standing in ["read-only", "workspace-write/macos-sandbox-exec"] {
+            assert!(
+                narrow.contains(standing),
+                "{set}: setting an effort level took `{standing}` off the row — the \
+                 level belongs in the counters, which narrow one at a time, and not \
+                 in the group `row` keeps or drops whole: {narrow:?}",
+            );
+        }
+    }
+}
+
 /// **0.26.0 N2 — the effort level is drawn in both glyph sets and costs no glyph
 /// it does not have.**
 ///

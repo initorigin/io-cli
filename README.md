@@ -1327,9 +1327,13 @@ about it.** io-harness applies routing in its flat workspace loop only; a turn r
 under `[app.io-cli.containment]` takes each agent's model from that agent's own
 roster entry and never consults the rules. So for an operator who has configured
 containment, the section parses, is listed by `/config`, reaches the contract —
-and never fires. A session that has both says so at start, and a session with
-containment off says nothing, because a caveat attached to a feature that is
-working is how an operator learns to stop reading the notices. A turn taken with
+and never fires. A session that has both is told so at three moments: at start, when `/config`
+is opened on the keys themselves, and when `/contain on` is typed — which is the
+one that matters most, because that operator began uncontained, was told nothing
+because nothing applied, and has just moved into the mode where their rules do
+not fire. A session with containment off is told nothing, because a caveat
+attached to a feature that is working is how an operator learns to stop reading
+the notices. A turn taken with
 `/contain off` routes normally, and `io exec` uses the flat loop, so routing works
 there. Nothing in io-cli can close this: the loop that would have to consult the
 rules is the dependency's, and what this interface owes you meanwhile is the
@@ -1895,7 +1899,7 @@ Nine keys live there, and eight tables:
 | `[[app.io-cli.lsp]]` | language servers for this workspace. Merged with the top-level `[[lsp]]`, and wins a collision of ids. |
 | `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. |
 | `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](#verification-gates). |
-| `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start when both are configured. See [Which model a run asks](#which-model-a-run-asks). |
+| `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start, on `/config`, and when `/contain on` is typed. A rule that cannot be obeyed — half a rule, a threshold of zero, or an empty model — is refused by name and leaves the run unrouted. See [Which model a run asks](#which-model-a-run-asks). |
 | `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](#where-a-price-comes-from). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the

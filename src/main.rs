@@ -1008,6 +1008,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         .as_ref()
         .and_then(|stored| stored.routing.as_ref())
         .and_then(|routing| io_cli::routing::inert_under_containment(routing, contained));
+    let refused_routing = settings_in_force
+        .as_ref()
+        .and_then(|stored| stored.routing.as_ref())
+        .and_then(io_cli::routing::notice);
     let mut configuration = io_cli::reload::Configuration::new(
         session.root().to_path_buf(),
         config.clone(),
@@ -1017,9 +1021,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
     }
-    // Beside the containment notice, because it is a qualification of it.
+    // Beside the containment notice, because it is a qualification of it — and
+    // **`record` and not `say`**, which is the difference between a sentence that
+    // stays and one nobody reads. `App::say` writes `status.notice`, a single slot
+    // that `App::key` clears on the first keystroke, so a `say` here would first
+    // overwrite the containment notice immediately above (the two conditions are
+    // true in exactly the same case, since the disclosure only fires when
+    // contained) and would then be wiped by the operator's first character. This
+    // file already states that rule where the migration report is committed, and
+    // the `/config` and `/contain on` sites both got it right.
     if let Some(notice) = inert_routing {
-        app.say(Tone::Warning, notice);
+        app.record(Tone::Warning, notice);
+    }
+    // And a section that cannot be obeyed at all, said once at the start for the
+    // reason every other startup notice is: an operator meets this one without
+    // having asked a question.
+    if let Some(why) = refused_routing {
+        app.record(Tone::Refused, why);
     }
     // **The session no longer keeps a clock, because nothing shows one.** The
     // clock on screen belongs to the turn — it starts at zero when one starts and
@@ -1275,6 +1293,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                         .flatten(),
                                                     &capabilities,
                                                     &seen,
+                                                    effort,
                                                     run_id,
                                                     pending,
                                                 )
@@ -3063,6 +3082,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         if let Some(said) = io_cli::routing::describe(&routing) {
                             app.record(Tone::Muted, said);
                         }
+                        // **Why the section is not routing anything, if it is
+                        // not.** The pair of `contract::gate_notice`: this
+                        // surface lists the four routing keys, so a section
+                        // that is plainly in the operator's file and doing
+                        // nothing has to say why here or nowhere.
+                        if let Some(why) = io_cli::routing::notice(&routing) {
+                            app.record(Tone::Refused, why);
+                        }
                         // `contained` and not `containment.is_some()`: `/contain off`
                         // puts the session back on the flat loop, where the rules do
                         // fire, so a warning keyed on the configuration would go on
@@ -3353,7 +3380,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // `io_cli::app::reasoning_said` so it can be asserted; this arm
                 // holds the assignment and nothing else.
                 Action::Effort(said) => {
-                    if let Some(level) = io_cli::app::reasoning_of(said) {
+                    if let Some(level) = io_cli::app::reasoning_of(&said) {
                         effort = level;
                         // The status line carries the same value, not a second
                         // opinion about it. Set beside the assignment so the two
@@ -3362,7 +3389,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // the line drew the half nothing wrote.
                         app.status.effort = level;
                     }
-                    app.record(Tone::Muted, io_cli::app::reasoning_said(said, effort));
+                    // A word that is not a level is refused rather than
+                    // reported, so the tone is the refusal's.
+                    let tone = match said {
+                        io_cli::commands::Reasoning::Unknown(_) => Tone::Refused,
+                        _ => Tone::Muted,
+                    };
+                    app.record(tone, io_cli::app::reasoning_said(&said, effort));
                 }
                 Action::Contain(want) => match (&containment, want) {
                     // Nothing to switch. Said as the configuration gap it is,
@@ -4925,7 +4958,7 @@ async fn turn<P: Provider>(
             // conversational turn does not emit. The sentence is
             // `app::answered_said`'s, which also owns the decision that an unknown
             // kind reports as a run.
-            if let Some(said) = io_cli::app::answered_said(&result.kind) {
+            if let Some(said) = io_cli::app::answered_said(&result.kind, &result.outcome) {
                 app.record(Tone::Muted, said);
             }
         }
@@ -6236,6 +6269,10 @@ async fn resume_pending<P: Provider>(
     // through a new door. `tests/context_share.rs` counts the two against each
     // other so this cannot be forgotten on a path added later.
     seen: &io_cli::context::Seen,
+    // What `/effort` last said. A resumed run is a turn like any other and buys the
+    // same reasoning — see `contract::buying` at the bottom of this function for why
+    // this parameter exists at all.
+    effort: Option<io_harness::Effort>,
     run_id: i64,
     pending: io_cli::resume::Pending,
 ) -> Result<(), String> {
@@ -6323,6 +6360,15 @@ async fn resume_pending<P: Provider>(
         // planning phase back on for the continuation.
         None,
     );
+    // **The resumed run buys the same reasoning the session is buying**, and this
+    // is the second of the two sites that run a turn rather than read one.
+    // `contract::buying`'s own note counts three callers that build a contract
+    // nothing runs — the startup reading and the two reporting pages — and it
+    // undercounted: this is a fifth `contract::session` call site and it drives
+    // real completions. Without it, `/effort high` applied to every turn except
+    // the half of the work an operator came back to `/resume` and finish, while
+    // the status line went on saying `effort high`.
+    let continuing = io_cli::contract::buying(continuing, effort);
     let (observer, mut events) = bridge::channel();
     let canceller = observer.canceller();
     let (approver, mut asks) = approval::channel();

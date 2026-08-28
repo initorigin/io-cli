@@ -41,13 +41,23 @@ many bytes to disk. Escalation happens once and does not come back down, and it
 wins over downshifting where both apply — io-harness's rules, and it evaluates
 them, so io-cli holds no counter of its own.
 
+**A rule that could only misfire is refused by name.** Half a rule, `failures = 0`
+— which io-harness reads as "escalate before anything has failed", pinning every
+run to the escalation model from its first request — `bytes = 0`, which can never
+be true, and a model written as the empty string are each refused with the key
+named, and the run goes unrouted rather than obeying them. The two keys inside
+each rule are optional for the same reason: making them required meant a half
+rule failed to deserialize `[app.io-cli]` entirely, which silently took the
+theme, the keys, the ceilings, the capabilities and the verification gate with
+it.
+
 **Routing does not reach a contained turn, and this release says so rather than
 letting it be discovered.** io-harness applies routing in its flat workspace loop
 only; a turn run under `[app.io-cli.containment]` takes each agent's model from
 that agent's own roster entry and never consults the rules. For an operator with
 containment configured the section parses, is listed by `/config`, reaches the
-contract and never fires. A session with both is told at start, and a session
-without containment is told nothing, because a caveat attached to a working
+contract and never fires. A session with both is told at start, on `/config`, and
+when `/contain on` is typed, and a session without containment is told nothing, because a caveat attached to a working
 feature is how somebody learns to stop reading the notices. `io exec` uses the
 flat loop, so routing works there, and so does a turn taken with `/contain off`.
 There is no `require_primary` key: io-harness has the field, it gates on

@@ -733,8 +733,15 @@ fleet = "ctrl+f"
 # routing in its flat workspace loop only, and a contained turn takes each agent's
 # model from that agent's own definition without ever consulting them. The section
 # still parses, still shows in /config and still reaches the contract — it simply
-# never fires, and a session configured for both says so at start. `io exec` uses
-# the flat loop, and a turn taken with /contain off routes normally.
+# never fires, and a session configured for both is told so at start, on /config,
+# and when /contain on is typed. `io exec` uses the flat loop, and a turn taken
+# with /contain off routes normally.
+#
+# A RULE THAT COULD ONLY MISFIRE IS REFUSED BY NAME rather than obeyed: half a
+# rule, `failures = 0` (which io-harness reads as "escalate before anything has
+# failed", pinning every run to the escalation model from its first request),
+# `bytes = 0` (which can never be true), and a model written as the empty string.
+# The refusal names the key and says the turn is not routed.
 #
 # THERE IS NO `require_primary` KEY, AND THAT IS A DECISION. io-harness's own
 # Routing carries the field; it gates on Provider::reachable, a defaulted trait

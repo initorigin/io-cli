@@ -45,10 +45,23 @@
 //! (`escalate_after_failures`, `escalate_after_model`) because a rule is two
 //! numbers that only mean anything together: a threshold with no model and a
 //! model with no threshold are both half a rule, and a sub-table makes the pair
-//! the unit TOML itself enforces. Neither field carries a `#[serde(default)]`, so
-//! half a rule is a parse failure the operator hears about with the key named,
-//! rather than a threshold silently defaulting to zero — which would escalate on
-//! the very first gate attempt of every turn.
+//! the unit TOML itself enforces.
+//!
+//! **Both fields are nonetheless optional, and a half rule is refused rather than
+//! rejected.** Making them required looked like the stricter choice and was the
+//! more damaging one: a required field is a *deserialization* failure, so a
+//! threshold with no model did not fail the rule, it failed `CliSettings` — and
+//! `crate::settings::stored` then answered `None` for the whole `[app.io-cli]`
+//! section, taking the theme, the keys, the ceilings, the capabilities and the
+//! **verification gate** with it, silently. [`routing`] refuses the half rule by
+//! name instead, which is the shape [`crate::gates::Settings::criterion`] already
+//! uses, and [`notice`] is what says so on screen.
+//!
+//! The same function refuses the three values that are writable and disastrous:
+//! `failures = 0`, which io-harness reads as "escalate before anything has
+//! failed" and which therefore pins every run to the escalation model from its
+//! first request; `bytes = 0`, which can never be true; and a model named as the
+//! empty string, which would send every request of the run with no model id.
 //!
 //! # `require_primary` is not offered, and that is a decision
 //!
@@ -96,8 +109,10 @@ use serde::{Deserialize, Serialize};
 /// table is a table nobody reads — the section then names no rule, [`routing`]
 /// answers `None`, and the run behaves exactly as it did before the operator
 /// touched the file. Wrong, but not a run that reports success on work nobody
-/// checked. Inside each table the keys are required, so a typo *there* is a parse
-/// error with the key named, which is the loud half already.
+/// checked. Inside each table a typo is likewise a key nobody reads, and the half
+/// rule it leaves behind is refused by [`routing`] by name rather than by serde —
+/// see the module documentation for why the stricter-looking choice, making those
+/// keys required, was the more damaging one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// Move up to a stronger model after this many consecutive failed gates.
@@ -117,9 +132,23 @@ pub struct Escalation {
     /// rather than a choice made here (`contract.rs:1748`): a run that fails,
     /// recovers, and fails again much later is a run doing hard work, not a run
     /// that needs a bigger model.
-    pub failures: u32,
+    ///
+    /// **Optional, and that is a correction rather than a loosening.** It was
+    /// required, and a required field is a *deserialization* failure — so half a
+    /// rule did not fail the rule, it failed `CliSettings` entirely, and
+    /// `crate::settings::stored` then answered `None` for the whole `[app.io-cli]`
+    /// section. An operator who wrote a threshold and forgot the model silently
+    /// lost their theme, their keys, their ceilings, their capabilities and — worst
+    /// of all — their **verification gate**, because `contract::criterion_for`
+    /// gives up on the same `None`. A gate that stops gating without saying so is
+    /// the most expensive failure this crate has. Half a rule now parses and is
+    /// refused by name at [`routing`], which is the shape
+    /// [`crate::gates::Settings::criterion`] already uses.
+    #[serde(default)]
+    pub failures: Option<u32>,
     /// The model asked from then on.
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// The downward rule: `[app.io-cli.routing.downshift_under]`.
@@ -129,9 +158,84 @@ pub struct Downshift {
     ///
     /// Measured on what the run has already written to disk, not on what it
     /// planned to write — again io-harness's definition (`contract.rs:1759`).
-    pub bytes: u64,
+    ///
+    /// Optional for the reason [`Escalation::failures`] gives at length.
+    #[serde(default)]
+    pub bytes: Option<u64>,
     /// The model asked while the run is under that total.
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// A routing section that cannot be obeyed, and why.
+///
+/// The sibling of [`crate::gates::Refusal`] and it exists for the same reason: a
+/// mistake TOML itself cannot express has to be caught where the operator can be
+/// told about it, rather than reaching io-harness and changing every request of
+/// every run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// A threshold with no model, or a model with no threshold.
+    HalfARule {
+        /// `escalate_after` or `downshift_under`.
+        rule: &'static str,
+        /// The key that is missing.
+        missing: &'static str,
+    },
+    /// `failures = 0`, which escalates before anything has failed.
+    ///
+    /// io-harness compares `consecutive_gate_failures >= failures`
+    /// (`contract.rs:1813`), so zero is true at the first request of every run —
+    /// the stronger model is used unconditionally, from the start, and
+    /// `downshift_under` is never reached because escalation is checked first. An
+    /// operator writing it means "escalate readily" and gets "never use the model
+    /// I configured".
+    EscalatesBeforeAnythingFailed,
+    /// `bytes = 0`, which can never be true.
+    ///
+    /// `written < 0` is false for every run, so the rule is inert. Unlike the
+    /// above it costs nothing, and it is still refused rather than ignored: a rule
+    /// that silently does nothing is what the operator will not find when they
+    /// wonder why the cheap model never appears.
+    NeverDownshifts,
+    /// A model named as the empty string.
+    ///
+    /// `apply_routing` sets `request.model = Some("")` and every request of the run
+    /// goes to the vendor with an empty model id.
+    NoModel {
+        /// Which rule named it.
+        rule: &'static str,
+    },
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HalfARule { rule, missing } => write!(
+                f,
+                "[app.io-cli.routing.{rule}] names no `{missing}`, and a threshold \
+                 without a model is half a rule — this turn is not routed"
+            ),
+            Self::EscalatesBeforeAnythingFailed => write!(
+                f,
+                "[app.io-cli.routing.escalate_after] has `failures = 0`, which is \
+                 true before anything has failed — every run would start on the \
+                 escalation model and never reach the downshift. This turn is not \
+                 routed."
+            ),
+            Self::NeverDownshifts => write!(
+                f,
+                "[app.io-cli.routing.downshift_under] has `bytes = 0`, and a run \
+                 that has written fewer than zero bytes does not exist — the rule \
+                 could never fire. This turn is not routed."
+            ),
+            Self::NoModel { rule } => write!(
+                f,
+                "[app.io-cli.routing.{rule}] names an empty model, which would send \
+                 every request of the run with no model id — this turn is not routed"
+            ),
+        }
+    }
 }
 
 /// The section as the dependency's own type, ready for the contract, or `None`.
@@ -150,18 +254,67 @@ pub struct Downshift {
 /// [`io_harness::Routing`] is `#[non_exhaustive]` — see the module
 /// documentation. The builders are `#[must_use]` and consuming, so the chain
 /// below is the whole construction.
-pub fn routing(settings: &Settings) -> Option<io_harness::Routing> {
+/// **The two thresholds are checked rather than trusted**, because io-harness
+/// obeys them literally and each has a value that is both writable and disastrous.
+/// `failures = 0` satisfies `consecutive_gate_failures >= 0` at the first request
+/// of every run, so the escalation model is used unconditionally and the downshift
+/// — checked second — never runs at all. `bytes = 0` can never be true. An empty
+/// model sends every request with no model id. None of the three is a shape TOML
+/// can refuse, and all three are one keystroke from a plausible file.
+pub fn routing(settings: &Settings) -> Result<Option<io_harness::Routing>, Refusal> {
     let mut routing = io_harness::Routing::new();
     let mut asked = false;
     if let Some(escalation) = &settings.escalate_after {
-        routing = routing.escalate_after(escalation.failures, escalation.model.clone());
+        let failures = escalation.failures.ok_or(Refusal::HalfARule {
+            rule: "escalate_after",
+            missing: "failures",
+        })?;
+        let model = escalation.model.as_deref().ok_or(Refusal::HalfARule {
+            rule: "escalate_after",
+            missing: "model",
+        })?;
+        if failures == 0 {
+            return Err(Refusal::EscalatesBeforeAnythingFailed);
+        }
+        if model.trim().is_empty() {
+            return Err(Refusal::NoModel {
+                rule: "escalate_after",
+            });
+        }
+        routing = routing.escalate_after(failures, model.to_string());
         asked = true;
     }
     if let Some(downshift) = &settings.downshift_under {
-        routing = routing.downshift_under(downshift.bytes, downshift.model.clone());
+        let bytes = downshift.bytes.ok_or(Refusal::HalfARule {
+            rule: "downshift_under",
+            missing: "bytes",
+        })?;
+        let model = downshift.model.as_deref().ok_or(Refusal::HalfARule {
+            rule: "downshift_under",
+            missing: "model",
+        })?;
+        if bytes == 0 {
+            return Err(Refusal::NeverDownshifts);
+        }
+        if model.trim().is_empty() {
+            return Err(Refusal::NoModel {
+                rule: "downshift_under",
+            });
+        }
+        routing = routing.downshift_under(bytes, model.to_string());
         asked = true;
     }
-    asked.then_some(routing)
+    Ok(asked.then_some(routing))
+}
+
+/// Why the configured routing is not routing this run, if it is not.
+///
+/// The sibling of [`crate::contract::gate_notice`], and it exists for the reason
+/// that one does: a refusal is not a `Routing`, so the function that answers with a
+/// value cannot also be the one that explains itself.
+#[must_use]
+pub fn notice(settings: &Settings) -> Option<String> {
+    routing(settings).err().map(|refusal| refusal.to_string())
 }
 
 /// What the rules do, in one sentence, for `/config` and the startup notices.
@@ -183,7 +336,14 @@ pub fn routing(settings: &Settings) -> Option<io_harness::Routing> {
 /// on the plain renderer, under `NO_COLOR`, and through the ASCII glyph set, and
 /// a notice that arrives as a replacement character is a notice nobody reads.
 pub fn describe(settings: &Settings) -> Option<String> {
-    let mut sentence = String::from("routing is in force: this run asks ");
+    // **"asks for" and not "is in force", because this sentence is printed beside
+    // one that may contradict it.** `/config` records this and then, for a
+    // contained session, `inert_under_containment`'s warning that the rules will
+    // not fire — so a prefix asserting the rules are active made two adjacent
+    // lines disagree. What this function knows is what the operator *wrote*;
+    // whether it fires is the other function's subject. `/config` is also typed at
+    // an idle prompt, so "this run" named nothing.
+    let mut sentence = String::from("the routing rules ask for ");
     match (&settings.escalate_after, &settings.downshift_under) {
         (None, None) => return None,
         (Some(escalation), None) => {
@@ -213,11 +373,16 @@ pub fn describe(settings: &Settings) -> Option<String> {
 /// attempts" is a notice that reads as unfinished, and the surfaces this appears
 /// on are the ones an operator reads once and trusts.
 fn escalation_clause(escalation: &Escalation) -> String {
+    // A half rule is refused by `routing` before any caller reaches a sentence, so
+    // the fallbacks below describe a rule that cannot reach the contract. They are
+    // written rather than unwrapped because a surface that panics on a
+    // configuration file is worse than one that says "unset".
+    let failures = escalation.failures.unwrap_or_default();
     format!(
         "{} after {} consecutive failed gate attempt{}",
-        escalation.model,
-        escalation.failures,
-        if escalation.failures == 1 { "" } else { "s" },
+        escalation.model.as_deref().unwrap_or("an unnamed model"),
+        failures,
+        if failures == 1 { "" } else { "s" },
     )
 }
 
@@ -225,7 +390,8 @@ fn escalation_clause(escalation: &Escalation) -> String {
 fn downshift_clause(downshift: &Downshift) -> String {
     format!(
         "{} while it has written fewer than {} bytes",
-        downshift.model, downshift.bytes,
+        downshift.model.as_deref().unwrap_or("an unnamed model"),
+        downshift.bytes.unwrap_or_default(),
     )
 }
 

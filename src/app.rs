@@ -2386,10 +2386,28 @@ fn gate_said(
 /// `#[non_exhaustive]` (`session.rs:1434`), and the conservative arm is the one
 /// that says nothing: claiming a turn was answered when it may have used tools is
 /// the one error here that would mislead about what happened to somebody's files.
+///
+/// **`TurnKind::Reply` alone is not "answered", and reading it alone shipped a
+/// lie.** io-harness documents the second meaning in the variant itself
+/// (`session.rs:1440-1443`): a turn whose one completion *crossed the token
+/// ceiling and was refused rather than served* is also a `Reply`, because no run
+/// was opened either way and "`outcome` is what says how it ended". So an operator
+/// with `[run] max_tokens` set, whose question is refused at the budget, would have
+/// been told the turn was answered — with no answer anywhere on screen.
+///
+/// The guard is io-harness's own, copied deliberately rather than invented:
+/// `session.rs:1202` emits `EventKind::Answered` only
+/// `if kind == TurnKind::Reply && matches!(result.outcome, RunOutcome::Finished { .. })`,
+/// with the comment that announcing it otherwise "would be reporting a message
+/// nobody wrote". That is exactly this function's job, so it asks exactly that
+/// question.
 #[must_use]
-pub fn answered_said(kind: &io_harness::TurnKind) -> Option<String> {
-    match kind {
-        io_harness::TurnKind::Reply => Some(
+pub fn answered_said(
+    kind: &io_harness::TurnKind,
+    outcome: &io_harness::RunOutcome,
+) -> Option<String> {
+    match (kind, outcome) {
+        (io_harness::TurnKind::Reply, io_harness::RunOutcome::Finished { .. }) => Some(
             "answered without opening a run — one completion, no steps and no tools".to_string(),
         ),
         _ => None,
@@ -2408,11 +2426,14 @@ pub fn answered_said(kind: &io_harness::TurnKind) -> Option<String> {
 /// sabotaged, and this release's F1 turns on exactly the difference between a level
 /// that survives the turn and one that does not.
 #[must_use]
-pub fn reasoning_of(said: crate::commands::Reasoning) -> Option<Option<io_harness::Effort>> {
+pub fn reasoning_of(said: &crate::commands::Reasoning) -> Option<Option<io_harness::Effort>> {
     match said {
-        crate::commands::Reasoning::Buy(level) => Some(Some(level)),
+        crate::commands::Reasoning::Buy(level) => Some(Some(*level)),
         crate::commands::Reasoning::Off => Some(None),
-        crate::commands::Reasoning::Report => None,
+        // A question and a rejected word both leave the level exactly where it is.
+        // They say different things, which is [`reasoning_said`]'s job, not this
+        // one's.
+        crate::commands::Reasoning::Report | crate::commands::Reasoning::Unknown(_) => None,
     }
 }
 
@@ -2426,12 +2447,23 @@ pub fn reasoning_of(said: crate::commands::Reasoning) -> Option<Option<io_harnes
 /// field" is the fact — io-harness sends the pre-0.31.0 request body — and calling
 /// it "off" on screen would suggest a fourth setting between `low` and nothing.
 #[must_use]
-pub fn reasoning_said(said: crate::commands::Reasoning, now: Option<io_harness::Effort>) -> String {
+pub fn reasoning_said(
+    said: &crate::commands::Reasoning,
+    now: Option<io_harness::Effort>,
+) -> String {
     let level = match now {
         Some(level) => format!("{level} reasoning"),
         None => "no reasoning field, which is what this product sent before 0.26.0".to_string(),
     };
     match said {
+        // **A rejected word says so first**, and says the level it did not change
+        // second. Reporting alone read as an answer: an operator on `high` who
+        // typed `/effort lwo` to spend less was told "every turn asks for high
+        // reasoning" and went on paying for it, with the typo invisible.
+        crate::commands::Reasoning::Unknown(word) => format!(
+            "`{word}` is not a reasoning level — say low, medium, high, or off. \
+             Every turn still asks for {level}"
+        ),
         crate::commands::Reasoning::Report => {
             format!("every turn asks for {level}")
         }

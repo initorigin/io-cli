@@ -268,16 +268,33 @@ struct Fake {
     label: String,
     fail: Option<ProviderErrorKind>,
     calls: Arc<AtomicUsize>,
+    /// Whether this link would take an image.
+    ///
+    /// Settable because the trait's default is `false`, and a fixture where every
+    /// link answers `false` cannot tell a conjunction from a disjunction or from a
+    /// head-only read — the first version of the image test asserted `!all` over
+    /// two defaulted links and would have passed against any of the three.
+    images: bool,
 }
 
 /// A counter to read afterwards, and the link that increments it.
 fn link(label: &str, fail: Option<ProviderErrorKind>) -> (Fake, Arc<AtomicUsize>) {
+    accepting(label, fail, true)
+}
+
+/// A link that says whether it would take an image.
+fn accepting(
+    label: &str,
+    fail: Option<ProviderErrorKind>,
+    images: bool,
+) -> (Fake, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     (
         Fake {
             label: label.into(),
             fail,
             calls: Arc::clone(&calls),
+            images,
         },
         calls,
     )
@@ -313,6 +330,10 @@ impl Provider for Fake {
 
     fn endpoints(&self) -> Vec<&str> {
         vec![&self.label]
+    }
+
+    fn accepts_images(&self) -> bool {
+        self.images
     }
 }
 
@@ -518,14 +539,35 @@ fn f5_every_link_s_host_is_authorized_and_not_only_the_head_s() {
     assert_eq!(chain.endpoints(), vec!["first", "second"]);
 }
 
+/// **The conjunction, asserted as one rather than read off a default.**
+///
+/// io-harness's own rule for the same question, and the reason is that the
+/// fall-through is the one call where it matters: reporting the head's answer
+/// would let an image reach a link that cannot read it on exactly the call that
+/// went wrong.
+///
+/// The first version of this test built two links that both took the trait's
+/// default of `false` and asserted `!accepts_images()`. Every possible
+/// implementation passes that — `all`, `any`, and a head-only read alike — so it
+/// was a gate over nothing, which the adversarial review caught. The pair below is
+/// what makes it a gate: one mixed chain and one where every link agrees.
 #[test]
 fn f5_an_image_is_refused_unless_every_link_accepts_one() {
-    // The conjunction is io-harness's own rule for the same question, and the
-    // reason is that the fall-through is the one call where it matters.
-    let (first, _) = link("first", None);
-    let (second, _) = link("second", None);
-    let chain = Chain::of(vec![first, second]).expect("a chain");
-    // `Fake` takes the trait's default, which is `false`, so the conjunction is
-    // asserted rather than a default being read back.
-    assert!(!chain.accepts_images());
+    let (yes, _) = accepting("first", None, true);
+    let (no, _) = accepting("second", None, false);
+    let mixed = Chain::of(vec![yes, no]).expect("a chain");
+    assert!(
+        !mixed.accepts_images(),
+        "one link that cannot read an image is enough to refuse it before the run \
+         rather than midway through a fall-through",
+    );
+
+    let (one, _) = accepting("first", None, true);
+    let (two, _) = accepting("second", None, true);
+    let agreed = Chain::of(vec![one, two]).expect("a chain");
+    assert!(
+        agreed.accepts_images(),
+        "a chain whose links all accept images accepts them — without this arm the \
+         assertion above is satisfied by a function that always answers false",
+    );
 }

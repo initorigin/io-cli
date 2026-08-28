@@ -373,9 +373,40 @@ fn f7_the_driver_reads_the_turn_kind_rather_than_counting_steps() {
         .replace("\r\n", "\n");
 
     assert!(
-        text.contains("io_cli::app::answered_said(&result.kind)"),
+        text.contains("io_cli::app::answered_said(&result.kind, &result.outcome)"),
         "whether a turn was answered is a fact io-harness reports on \
-         `TurnResult::kind`, not something to infer from what the run did not do",
+         `TurnResult::kind` — read WITH the outcome, because a `Reply` also covers \
+         a completion refused at the token ceiling — and never something to infer \
+         from what the run did not do",
+    );
+}
+
+/// **F1 — every turn that runs buys the reasoning the session asked for.**
+///
+/// `contract::buying`'s own note counted three `contract::session` callers that
+/// build a contract nothing runs — and there are five sites, not four: the startup
+/// reading, the two reporting pages, the turn, and `resume_pending`, which drives
+/// real completions and was missed. The consequence was that `/effort high`
+/// applied to every turn except the half of the work an operator came back to
+/// `/resume` and finish, while the status line went on saying `effort high`.
+///
+/// **Counted, not `contains`.** The first version of this gate asked whether the
+/// call appeared at all, which one site satisfies forever — so it could never have
+/// caught the site that was missing. That is the vacuous-gate shape this suite has
+/// now recorded three times.
+#[test]
+fn f1_every_turn_that_runs_applies_the_effort_level() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    assert_eq!(
+        text.matches("io_cli::contract::buying(").count(),
+        2,
+        "two sites drive a turn — the ordinary one and the resumed one — and both \
+         buy the level the session asked for. A third `contract::session` caller \
+         that runs completions needs one too.",
     );
 }
 
@@ -489,15 +520,47 @@ fn f3_a_routing_section_reaches_the_contract_and_an_absent_one_leaves_it_unset()
 /// rather than inferred.
 #[test]
 fn f7_only_a_reply_is_reported_as_having_been_answered() {
+    let finished = io_harness::RunOutcome::Finished { steps: 0 };
+
     assert!(
-        io_cli::app::answered_said(&io_harness::TurnKind::Reply)
+        io_cli::app::answered_said(&io_harness::TurnKind::Reply, &finished)
             .is_some_and(|said| said.contains("without opening a run")),
         "a question that was only a question has to say so, or it arrives as silence",
     );
     assert_eq!(
-        io_cli::app::answered_said(&io_harness::TurnKind::Run),
+        io_cli::app::answered_said(&io_harness::TurnKind::Run, &finished),
         None,
         "an ordinary turn already accounts for itself",
+    );
+}
+
+/// **F7 — a `Reply` that said nothing is not an answer.**
+///
+/// `TurnKind::Reply` carries a second meaning io-harness documents on the variant
+/// itself (`session.rs:1440-1443`): a turn whose one completion crossed the token
+/// ceiling and was **refused rather than served** is also a `Reply`, because no run
+/// was opened either way. Reading the kind alone told an operator with
+/// `[run] max_tokens` set that their refused question had been answered — with no
+/// answer anywhere on screen and no mention of the budget.
+///
+/// Found by both adversarial reviewers independently, which is the strongest
+/// signal this gate produces.
+///
+/// The guard is io-harness's own, copied rather than invented: `session.rs:1202`
+/// emits its `Answered` event only for a `Reply` whose outcome is `Finished`.
+///
+/// Sabotage: drop the outcome from the match — under which only this test fails,
+/// and it fails by reporting a message nobody wrote.
+#[test]
+fn f7_a_reply_refused_at_the_token_ceiling_is_not_an_answer() {
+    assert_eq!(
+        io_cli::app::answered_said(
+            &io_harness::TurnKind::Reply,
+            &io_harness::RunOutcome::CostBudgetExceeded { steps: 0 },
+        ),
+        None,
+        "a completion refused at the budget was never served, so there is no \
+         answer to announce",
     );
 }
 

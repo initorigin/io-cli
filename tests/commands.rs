@@ -346,8 +346,48 @@ fn f1_effort_parses_three_levels_the_absence_and_the_question() {
     assert_eq!(parse("effort"), Action::Effort(Reasoning::Report));
     assert_eq!(
         parse("effort hgih"),
-        Action::Effort(Reasoning::Report),
-        "an unrecognised word reports rather than guessing at a level",
+        Action::Effort(Reasoning::Unknown("hgih".into())),
+        "an unrecognised word is refused by name rather than guessed at — and \
+         never quietly reported, which read as an answer and left an operator \
+         paying for the level they were trying to leave",
+    );
+    // **Both spellings of `off`, because only one of them used to work.**
+    // `Effort::FromStr` lowercases for itself, so `/effort HIGH` was fine while
+    // `/effort OFF` fell past the literal match, failed to parse, and reported —
+    // leaving the level exactly where it was. Two spellings of one word behaving
+    // differently is the asymmetry nobody reports and everybody hits once.
+    assert_eq!(parse("effort OFF"), Action::Effort(Reasoning::Off));
+    assert_eq!(parse("effort None"), Action::Effort(Reasoning::Off));
+    assert_eq!(
+        parse("effort HIGH"),
+        Action::Effort(Reasoning::Buy(io_harness::Effort::High)),
+    );
+}
+
+/// **F1 — a word that is not a level says so, and says what is still in force.**
+///
+/// Found by both adversarial reviewers. The old sentence for a rejected word was
+/// the *report* sentence, so `/effort lwo` — an operator on `high` trying to spend
+/// less — answered "every turn asks for high reasoning". That reads as
+/// confirmation, the typo is invisible, and the expensive level goes on being
+/// bought turn after turn.
+#[test]
+fn f1_a_word_that_is_not_a_level_is_refused_and_names_itself() {
+    use io_cli::app::reasoning_said;
+    use io_cli::commands::Reasoning;
+
+    let said = reasoning_said(
+        &Reasoning::Unknown("lwo".into()),
+        Some(io_harness::Effort::High),
+    );
+    assert!(said.contains("lwo"), "the word is quoted back: {said}");
+    assert!(
+        said.contains("not a reasoning level"),
+        "the operator is told it was refused rather than obeyed: {said}",
+    );
+    assert!(
+        said.contains("still asks for high"),
+        "and what is still in force, since nothing changed: {said}",
     );
 }
 
@@ -362,10 +402,10 @@ fn f1_asking_what_the_effort_is_does_not_change_it() {
     use io_cli::app::reasoning_of;
     use io_cli::commands::Reasoning;
 
-    assert_eq!(reasoning_of(Reasoning::Report), None);
-    assert_eq!(reasoning_of(Reasoning::Off), Some(None));
+    assert_eq!(reasoning_of(&Reasoning::Report), None);
+    assert_eq!(reasoning_of(&Reasoning::Off), Some(None));
     assert_eq!(
-        reasoning_of(Reasoning::Buy(io_harness::Effort::High)),
+        reasoning_of(&Reasoning::Buy(io_harness::Effort::High)),
         Some(Some(io_harness::Effort::High)),
     );
 }
@@ -382,7 +422,7 @@ fn f1_the_effort_line_names_the_level_now_in_force() {
     use io_cli::commands::Reasoning;
 
     let set = reasoning_said(
-        Reasoning::Buy(io_harness::Effort::High),
+        &Reasoning::Buy(io_harness::Effort::High),
         Some(io_harness::Effort::High),
     );
     assert!(set.contains("high"), "{set}");
@@ -391,14 +431,14 @@ fn f1_the_effort_line_names_the_level_now_in_force() {
         "a level set holds for later turns: {set}"
     );
 
-    let asked = reasoning_said(Reasoning::Report, Some(io_harness::Effort::Low));
+    let asked = reasoning_said(&Reasoning::Report, Some(io_harness::Effort::Low));
     assert!(asked.contains("low"), "{asked}");
     assert!(
         !asked.contains("from here"),
         "a question reports what is already true rather than announcing a change: {asked}",
     );
 
-    let none = reasoning_said(Reasoning::Off, None);
+    let none = reasoning_said(&Reasoning::Off, None);
     assert!(
         none.contains("no reasoning field"),
         "the absent case is the absence of the field, not a fourth level: {none}",
