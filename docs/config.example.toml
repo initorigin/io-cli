@@ -95,7 +95,8 @@ net = "deny"
 #   [instructions]         AGENTS.md and whatever else you point it at
 #   [[mcp]]                MCP servers. Merged with [[app.io-cli.mcp]] below.
 #   [[lsp]]                language servers. Merged with [[app.io-cli.lsp]].
-#   [[agent]]              the roster a fan-out draws its children from
+#   [[agent]]              the roster a fan-out draws its children from. 0.25.0
+#                          adds `worktree`; see the block below
 #   [web]                  provider-executed search and fetch
 #   [memory]               how much durable memory a run may keep
 #   [[plugin]]             capability bundles, declared by path. 0.20.0; see the
@@ -206,6 +207,44 @@ net = "deny"
 # id = "issues"
 # transport = "http"
 # url = "https://mcp.example.com/v1"
+
+# --- The agent roster (0.25.0) ----------------------------------------------
+#
+# io-harness's own section: the roster a contained turn's fan-out draws its
+# children from. `name` is what the parent asks for, and every other key narrows
+# that child against its parent — a `role`, a `model`, a `max_steps`, an
+# `effort`, and the two refusals `deny_write` and `deny_net`. An entry with
+# nothing but a name is exactly the child a bare spawn produced before the
+# roster existed.
+#
+# `worktree = true` GIVES ONE CHILD ITS OWN CHECKOUT. Every agent in a tree
+# shares one working directory otherwise, so two children editing the same file
+# are one overwriting the other. Set this and io-harness roots that child under
+# `.worktrees/` in the repository, on a new branch of the same name, created
+# before its first step. `/fleet` marks the rows whose definition asked for one.
+#
+# WHAT IT COSTS. Another checkout of the repository on disk, and a branch per
+# CHILD rather than per definition — two children of the same entry spawned in
+# the same step get one each, which is the collision this key exists to remove.
+# It also gives the spawn a new way to fail: no git, not a repository, or the
+# boundary above refusing that path, and then NO CHILD STARTS. Quietly sharing
+# the parent's tree would be the exact overwrite the key was set to prevent.
+#
+# AND NOTHING REMOVES ONE. Not io-harness, not io-cli, not the end of the run:
+# the worktree and its branch are still there when the tree finishes, because
+# removing either throws away the work the child was spawned to produce. So
+# `.worktrees/` accumulates until you clear it out yourself.
+#
+# [[agent]]
+# name = "reviewer"
+# role = "You read a diff and say what is wrong with it."
+# model = "anthropic/claude-haiku-4.5"
+# max_steps = 20
+# deny_write = true
+#
+# [[agent]]
+# name = "author"
+# worktree = true
 
 # --- Capability bundles (0.20.0) --------------------------------------------
 #

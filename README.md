@@ -468,6 +468,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/image` | draw an attached image again: /image 1 |
 | `/copy` | put the last answer on the system clipboard |
 | `/copy diff` | put the whole run's patch on the system clipboard |
+| `/commit` | ask the agent to describe this turn's work and commit it |
 
 **inspect**
 
@@ -495,6 +496,13 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
 | `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
 | `/import` | bring instructions, MCP servers, skills and a model across from another agent |
+
+`/commit` is new in 0.25.0 and sits under **this turn** beside `/copy` and `/copy
+diff` because it is the third thing you do with work that has just finished: one
+puts the answer somewhere, one puts the patch somewhere, and this one makes the
+patch permanent. Its description says *ask the agent* because that is literally
+what the word does — it sends a prompt, and the agent reviews, stages and writes
+the message. See [Git](#git).
 
 `/plugin` is new in 0.20.0 and sits beside those two because it is the third
 surface of the same kind: something a configuration file declares by name, whose
@@ -1209,6 +1217,106 @@ back with.
 `io exec` gains exit `6` for this — the agent finished and the work does not hold
 up. See [Exit status](#exit-status).
 
+## Git
+
+A gate says the work holds up. This says what becomes of it.
+
+The agent has had seven git built-ins on every workspace run since long before
+this interface existed: `git_status`, `git_diff`, `git_log`, `git_add`,
+`git_commit`, `git_branch` and `git_worktree`. They are io-harness's, and each is
+a fixed argv that can reach no other subcommand — there is no `push`, no `remote`
+and no `reset` among them. What was missing until 0.25.0 was any of it reaching
+you.
+
+**The branch the working tree is on is on the status line.** It is read out of
+`.git/HEAD` as text, because git writes it there in a format that has not changed
+in the lifetime of the tool and this program starts no process to ask — so it
+costs a file read, and it follows the agent when the agent switches branch. A
+detached head is drawn as a short object id rather than as nothing, and a
+directory that is not a repository draws no field at all: `io` runs in plenty of
+them and must not get worse there.
+
+**A commit the agent makes is committed into the scrollback** — the branch it
+landed on, the message the model wrote, and what git reported as touched. The
+diff is not drawn a second time. It is already on screen immediately above, from
+the step that wrote it, and drawing it twice would cost you the reason the block
+is there at all.
+
+**`/commit` hands this turn's work to the agent, and the agent writes the
+message.** io-cli runs no git and composes no subject line: the command sends a
+prompt asking it to review what changed with those tools, stage what belongs to
+this turn, and say what the change does and why. That is a billed turn against a
+real model, and it is why the row says *ask the agent* rather than promising a
+deterministic act.
+
+**`[run.commit_identity]` decides who the commit is authored as**, and io-cli
+reads that value rather than picking one. io-harness hands the name and email
+from that section to git on the commit invocation itself, and the section always
+resolves to something, so a repository with no identity of its own is told which
+default io-harness will use. You are told before the turn is spent, because the
+author of a commit is the one thing about it that cannot be corrected afterwards
+without rewriting history.
+
+### The refusal this repairs
+
+**Before 0.25.0 all seven tools were refused before they ran, for most operators,
+and nobody was ever asked.** io-harness's git spawn checks the `exec` policy
+itself and accepts only an outright allow. Every other gated act turns an *ask*
+into a question on your screen and waits for it; this one returns a refusal
+instead, so `ask` behaves exactly as `deny` does. `ask before writes` — the
+posture the wizard recommends, and the one this README recommends with it — sets
+`exec` to ask. That is the whole of the defect, and it is filed upstream as
+io-harness#214.
+
+What io-cli does about it is name the refusal and offer one rule: `exec` allowed
+for `git`, one binary, for this session. `/commit` asks that question *before* it
+spends the turn, because a commit the policy was always going to refuse still
+costs a real completion to discover. The rule goes through the same remembered
+layer as anything else you allow for a session, so it is exactly as strong as
+those and no stronger: it widens an asking default and cannot take back a deny
+from a layer beneath it. One binary name is also the narrowest grant that works —
+an `exec` pattern has no notion of a subcommand, so `git` says *this program may
+be spawned* and nothing about any other.
+
+**Under a posture that denies rather than asks, no rule is offered.** A rule is
+matched before a default, so the same allowance would work under `read only` too,
+and a keystroke that quietly defeats the one posture whose name is a promise is
+not a convenience. What you are told there is to change posture — a decision, and
+not a shortcut.
+
+### A checkout of its own
+
+Every agent in a tree shares one working directory, so two children editing the
+same file are one overwriting the other. `worktree = true` on an `[[agent]]` entry
+gives that child its own checkout instead:
+
+```toml
+[[agent]]
+name = "reviewer"
+worktree = true
+```
+
+io-harness roots it under `.worktrees/` in your repository, on a new branch of
+the same name, created before the child's first step. If the worktree cannot be
+made — no git, not a repository, the boundary refusing that path — the spawn
+fails with the reason and **no child starts**, rather than quietly sharing the
+parent's tree and reintroducing the collision the switch exists to remove.
+`/fleet` marks the rows whose roster entry asked for one. See [The
+fleet](#the-fleet).
+
+That mark is a property of the roster entry and not a directory. io-harness
+records a child's actual worktree path and hands it back to nobody, so a path
+drawn on that row could only be reconstructed — and a reconstruction is an
+address that is wrong the moment either side changes, which matters here because
+you would `cd` into it.
+
+**What none of this does.** Nothing removes a worktree and nothing deletes a
+branch: that is yours to do, because removing one throws away the work the child
+was spawned to produce. io-cli does not open a pull request, and the seven tools
+reach no remote at all. The work ends as commits on a branch in your own
+checkout, and what happens to it after that is a decision this program does not
+make for you.
+
 ## Pictures
 
 **Drag a picture onto the prompt, or copy it and paste.** That is the whole of
@@ -1771,7 +1879,10 @@ from 0.24.0**, which was the last of these to be named here and was named with i
 reason: it needed a surface of its own, and `/gates` is that surface. There is
 still no `[verify]` section, because there is none in io-harness's schema to
 apply — what a session carries comes from `[app.io-cli.gates]`, which is io-cli's
-own. See [Verification gates](#verification-gates).
+own. See [Verification gates](#verification-gates). **`[run.commit_identity]` is
+*read* from 0.25.0**: it has reached a turn's contract since 0.14.0 like every
+other section, and until there was a commit to author it was a value nothing in
+this interface had cause to look at. See [Git](#git).
 
 That leaves one key still unapplied, and it has a reason too: `run.templates` is
 the thirteenth `[run]` key, reachable only through its own accessor. It is not a
@@ -1789,6 +1900,15 @@ allowlist it found and writes no rule at all. Setting the boundary here is
 `Shift+Tab`, `/config`, or the `io-permissions` skill — three surfaces where you
 can see what you are granting. See [Bringing your setup
 across](#bringing-your-setup-across).
+
+**Git stops at your own checkout.** The seven built-ins the agent has are fixed
+argvs with no remote among them, so nothing here pushes, fetches or opens a pull
+request, and 0.25.0 adds no surface that does. Nothing removes a worktree or
+deletes a branch either — both throw away work, and both are yours to decide. And
+io-cli starts no git process of its own: the branch on the status line is a read
+of `.git/HEAD`, and `/commit` is a prompt. What lifts the tools when your posture
+refuses them is a permission rule, not a code path that runs git behind the
+policy. See [Git](#git).
 
 **Sixel is still absent**, because encoding it means palette quantisation and
 another dependency, for terminals that either speak one of the two protocols
