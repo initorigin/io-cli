@@ -319,6 +319,42 @@ fn f1_the_driver_reads_the_effort_level_rather_than_taking_it() {
     );
 }
 
+/// **F4 — the routing disclosure has callers, and `describe` has one at all.**
+///
+/// The third driver-text gate, and it exists because tracing callers found this
+/// release about to ship `routing::describe` with none — a public function
+/// reachable from no keystroke, no subcommand and no event arm, which is exactly
+/// what 0.20.0 shipped seven of behind 1,077 passing tests and what this release's
+/// own `risks` calls this codebase's proven blind spot. `tests/routing.rs` covered
+/// the function thoroughly and could not see that nothing called it.
+///
+/// Three call sites, because there are three moments an operator can be in this
+/// state: at session start, when they open the surface that edits the rules, and
+/// when they type `/contain on` and enter the state mid-session. The last was
+/// missing too.
+#[test]
+fn f4_the_routing_disclosure_is_reachable_from_the_driver() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    assert!(
+        text.contains("io_cli::routing::describe("),
+        "`routing::describe` says what the rules are and nothing calls it — a \
+         function no operator can reach is not a surface, it is dead code with \
+         tests",
+    );
+    assert_eq!(
+        text.matches("io_cli::routing::inert_under_containment(")
+            .count(),
+        3,
+        "the disclosure belongs at session start, on `/config` where the rules are \
+         edited, and on `/contain on`, which is the keystroke that puts an operator \
+         into the state it warns about",
+    );
+}
+
 /// **F7 — the driver asks the turn's own kind and never infers it.**
 ///
 /// The second driver-text gate, and the criterion's named sabotage is exactly what

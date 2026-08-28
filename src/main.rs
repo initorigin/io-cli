@@ -1000,12 +1000,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // majority — who have no containment at all — about a limitation that does not
     // apply to them. `routing::inert_under_containment` owns the condition; this is
     // its one caller.
+    // `contained` rather than `containment.is_some()`, which are equal here and stop
+    // being equal the moment the operator types `/contain off`. Keying the sentence
+    // on what the session is actually doing is what lets the same call answer at
+    // `/config` and after a `/contain` switch.
     let inert_routing = settings_in_force
         .as_ref()
         .and_then(|stored| stored.routing.as_ref())
-        .and_then(|routing| {
-            io_cli::routing::inert_under_containment(routing, containment.is_some())
-        });
+        .and_then(|routing| io_cli::routing::inert_under_containment(routing, contained));
     let mut configuration = io_cli::reload::Configuration::new(
         session.root().to_path_buf(),
         config.clone(),
@@ -3047,6 +3049,30 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Config(None) => {
+                    // **What the routing rules say, and where they will not fire**,
+                    // said on the surface that edits them. `/config` is where an
+                    // operator meets `[app.io-cli.routing]`, and a section they can
+                    // change here without being told it is inert for their session
+                    // is the defect this release exists partly to avoid. Read from
+                    // the configuration in force rather than the startup snapshot,
+                    // so an edit made this session is what is described.
+                    if let Some(routing) = io_cli::settings::stored(&config)
+                        .0
+                        .and_then(|stored| stored.routing)
+                    {
+                        if let Some(said) = io_cli::routing::describe(&routing) {
+                            app.record(Tone::Muted, said);
+                        }
+                        // `contained` and not `containment.is_some()`: `/contain off`
+                        // puts the session back on the flat loop, where the rules do
+                        // fire, so a warning keyed on the configuration would go on
+                        // being shown to an operator it no longer applies to.
+                        if let Some(notice) =
+                            io_cli::routing::inert_under_containment(&routing, contained)
+                        {
+                            app.record(Tone::Warning, notice);
+                        }
+                    }
                     let settings = io_cli::configure::settings(&config);
                     let mut paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
                     let mut rows = io_cli::configure::rows(&settings);
@@ -3369,6 +3395,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         contained = true;
                         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
                         app.record(Tone::Muted, notice);
+                        // **Turning containment on is entering the state the routing
+                        // disclosure warns about**, so it is said here as well as at
+                        // start. An operator who begins uncontained, reads nothing
+                        // about routing because nothing applied, and then types
+                        // `/contain on` has silently moved into the one mode where
+                        // their rules do not fire.
+                        if let Some(said) = io_cli::settings::stored(&config)
+                            .0
+                            .and_then(|stored| stored.routing)
+                            .as_ref()
+                            .and_then(|routing| {
+                                io_cli::routing::inert_under_containment(routing, contained)
+                            })
+                        {
+                            app.record(Tone::Warning, said);
+                        }
                     }
                     (Some(_), Some(false)) => {
                         contained = false;
