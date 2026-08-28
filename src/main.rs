@@ -1580,7 +1580,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             }
                         }
                         // Row 0 is "leave it", the default that does nothing —
-                        // the shape `/skills` and `/plugin` both already use.
+                        // the shape `/plugin` and `/provider` also use.
+                        //
+                        // **Corrected in 0.27.0: this comment named `/skills`,
+                        // and `/skills` is the one confirmation in this product
+                        // that does the opposite** — `Pick::SkillToggle` puts the
+                        // verb at row 0 and "leave it as it is" at row 1. That is
+                        // defensible there and only there, because a toggle is
+                        // reversible by repeating it and nothing is destroyed;
+                        // every confirmation that removes something puts the
+                        // declining row first. The comment was load-bearing
+                        // enough to be believed and repeated while `/store` was
+                        // designed, which is why it is corrected rather than
+                        // deleted.
                         // Row 2 is the edit verb, and it descends rather than
                         // acting: which key is half the decision, and the other
                         // half is a value only the operator can type.
@@ -2478,6 +2490,66 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                  listing is not shown",
                             ),
                         },
+                        // The three store confirmations, and all three share one
+                        // rule: **index 0 is `store::LEAVE_IT` and does nothing**.
+                        // Asserted on the index rather than on the label, because
+                        // a confirmation whose acting row drifted to the top is
+                        // the defect F5 exists to catch and a label comparison
+                        // would not see it.
+                        Pick::StoreRemove { id } => {
+                            if io_cli::store::acts(index) {
+                                match io_cli::store::remove(&store, *id) {
+                                    Ok(removed) => {
+                                        for line in io_cli::store::removed_report(&removed) {
+                                            app.record(Tone::Muted, line);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "session {id} was not removed: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::StoreSweep { date } => {
+                            if io_cli::store::acts(index) {
+                                match io_cli::store::sweep(&store, date) {
+                                    Ok(swept) => {
+                                        for line in io_cli::store::swept_report(&swept) {
+                                            app.record(Tone::Muted, line);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "the sweep did not run: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
+                        Pick::StoreCompact => {
+                            if io_cli::store::acts(index) {
+                                match io_cli::store::compact(&store) {
+                                    Ok(freed) => {
+                                        for line in io_cli::store::freed_report(&freed) {
+                                            app.record(Tone::Muted, line);
+                                        }
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "the store was not compacted: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
                     }
                     // `None` in every arm but the descent, so this closes the
                     // picker exactly as it always did and replaces it in the one
@@ -3622,6 +3694,73 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let lines = io_cli::stats::committed(&store, &app.theme, screen.width())?;
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
+                // The bare word reports and nothing else; every verb that changes
+                // the store descends into a confirmation whose row 0 does
+                // nothing. The reads that build each confirmation happen HERE,
+                // before the operator agrees, so the figures they are shown are
+                // the ones the operation is about to act on rather than a second
+                // reading taken afterwards.
+                Action::Store(None) => {
+                    let lines = io_cli::store::committed(&store, &app.theme, screen.width())?;
+                    screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
+                Action::Store(Some(keep)) => match keep {
+                    commands::Keep::Remove(id) => match io_cli::store::sized(&store, id) {
+                        Ok(sized) => {
+                            let (title, rows) = io_cli::store::confirm_remove(id, &sized);
+                            picker = Some((Picker::new(title, rows), Pick::StoreRemove { id }));
+                        }
+                        Err(error) => app.record(
+                            Tone::Error,
+                            format!(
+                                "the store could not be read: {}",
+                                io_cli::failure::said(&error)
+                            ),
+                        ),
+                    },
+                    // No read at all before this one, because there is nothing
+                    // readable: the set a date selects cannot be counted in
+                    // advance — see io-harness#216 and `US-IO-CLI-0.27.0-I02`.
+                    // The operator agrees to the rule and the report carries the
+                    // figures.
+                    commands::Keep::Sweep(date) => {
+                        let (title, rows) = io_cli::store::confirm_sweep(&date);
+                        picker = Some((Picker::new(title, rows), Pick::StoreSweep { date }));
+                    }
+                    commands::Keep::Compact => match store.store_size() {
+                        Ok(size) => {
+                            let (title, rows) = io_cli::store::confirm_compact(&size);
+                            picker = Some((Picker::new(title, rows), Pick::StoreCompact));
+                        }
+                        Err(error) => app.record(
+                            Tone::Error,
+                            format!(
+                                "the store could not be read: {}",
+                                io_cli::failure::said(&error)
+                            ),
+                        ),
+                    },
+                    // Three refusals, each naming what was missing. None of them
+                    // falls through to the page: an operator who typed a deletion
+                    // and was shown a report would believe the deletion happened.
+                    commands::Keep::NoId => app.record(
+                        Tone::Error,
+                        "/store rm needs a session id — `/store` lists them".to_string(),
+                    ),
+                    commands::Keep::NoDate => app.record(
+                        Tone::Error,
+                        "/store sweep needs a date, as the store writes them: \
+                         `/store sweep 2026-08-01`"
+                            .to_string(),
+                    ),
+                    commands::Keep::Unknown(word) => app.record(
+                        Tone::Error,
+                        format!(
+                            "/store does not know `{word}` — the verbs are `rm <id>`, \
+                             `sweep <date>` and `compact`"
+                        ),
+                    ),
+                },
                 // Reached only at an idle prompt: while a turn runs the driver's
                 // own key handler answers `/steer` before `parse` is ever called,
                 // because that is where the inbox lives. So this arm is the
@@ -5729,6 +5868,25 @@ enum Pick {
         at: io_cli::providers::At,
         first: bool,
     },
+    /// A confirmation over one session's removal. Row 0 is `store::LEAVE_IT` and
+    /// every other row acts — the shape `/mcp` remove established and the one
+    /// criterion F5 asserts by *index*, because a confirmation whose default
+    /// keystroke destroys something is the defect it exists to prevent.
+    StoreRemove {
+        /// The session the confirmation named, carried rather than re-read: the
+        /// figures the operator agreed to were read against this id.
+        id: i64,
+    },
+    /// A confirmation over a date sweep, carrying the boundary the operator was
+    /// shown. The counts are not here because they cannot be — see
+    /// io-harness#216.
+    StoreSweep {
+        /// The timestamp the sweep compares `sessions.created_at` against.
+        date: String,
+    },
+    /// A confirmation over a compaction. Carries nothing: the operation takes no
+    /// argument, and the figures it reports are read either side of the call.
+    StoreCompact,
     /// One directory of the workspace, in the order `list_dir` sorted it, so a
     /// chosen index reads straight back through `complete::pick`. The rows are
     /// last components rather than paths — see `complete::rows` for why — which

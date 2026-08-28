@@ -529,6 +529,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/skills` | every skill, shipped or yours: what it is for, whether it is on, and its file |
 | `/cost` | commit what this run, this session and this install have spent |
 | `/stats` | commit how the runs have gone: outcomes, first-try, gates, latency |
+| `/store` | commit what the run store holds; `rm <id>`, `sweep <date>` and `compact` change it |
 
 **configure**
 

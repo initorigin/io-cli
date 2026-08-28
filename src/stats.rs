@@ -236,7 +236,13 @@ fn tallies(tallies: Vec<io_harness::Tally>, empty: &str) -> Vec<Row> {
 ///
 /// Powers of 1024 and named as such: this is a file on a disk, and a reader
 /// comparing it against what `ls` said should not have to convert.
-fn bytes(count: u64) -> String {
+///
+/// **Public since 0.27.0 so [`crate::store`] can reuse it rather than write a
+/// second one.** Two spellings of the same quantity on two pages of one
+/// interface is the shape 0.25.0 recorded when one fact acquired two holders —
+/// and a store page reporting `8.2 MB` beside a stats page reporting `8.2 MiB`
+/// is that defect in its most readable form.
+pub fn bytes(count: u64) -> String {
     const UNITS: [(&str, u64); 4] = [
         ("GiB", 1024 * 1024 * 1024),
         ("MiB", 1024 * 1024),

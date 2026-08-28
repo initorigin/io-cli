@@ -98,6 +98,12 @@ fn the_commands_are_the_commands() {
             // this list, which is the rule every alias here follows.
             "/cost",
             "/stats",
+            // 0.27.0 — the third page about work already done, and the first that
+            // can also change it. Under **inspect** because that is what its bare
+            // form does, with every destructive verb behind a confirmation whose
+            // row 0 does nothing; it takes that group to nine and `/export` will
+            // take it to ten, the bound.
+            "/store",
             // 0.24.0 — beside `/stats` because `/stats` is the only other row
             // that says the word: that page counts how the gates went, and until
             // this release nothing in the product could say what a gate was. It
@@ -309,9 +315,10 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     // release growing a command and losing another.
     assert_eq!(
         COMMANDS.len(),
-        33,
-        "0.26.0 adds exactly one command, `/effort`, on top of the thirty-two \
-         0.25.0 shipped; a thirty-fourth here means one arrived unrecorded",
+        34,
+        "0.27.0 adds `/store` on top of the thirty-three 0.26.0 shipped, and will \
+         add `/export` and `/undo` before it is done; a number this gate does not \
+         name means one arrived unrecorded",
     );
 }
 

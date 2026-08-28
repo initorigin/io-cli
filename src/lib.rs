@@ -101,6 +101,7 @@ pub mod splash;
 pub mod stats;
 pub mod status;
 pub mod stdin;
+pub mod store;
 pub mod term;
 pub mod theme;
 pub mod transcript;
