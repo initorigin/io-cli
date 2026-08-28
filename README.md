@@ -493,6 +493,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
 | `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
+| `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
 | `/import` | bring instructions, MCP servers, skills and a model across from another agent |
 
 `/plugin` is new in 0.20.0 and sits beside those two because it is the third
@@ -504,6 +505,16 @@ bundles](#capability-bundles).
 here you use once: the others are returned to for the life of the install. It
 writes files, which is the whole reason it is under **configure**. See [Bringing
 your setup across](#bringing-your-setup-across).
+
+`/gates` is new in 0.24.0 and is under **configure** for that same reason and not
+because of what its first screen shows. It opens on the criterion in force and the
+last turn's verdict, which reads like an inspection — and then writes
+`[app.io-cli.gates]`, which is the one thing **inspect** promises it never does.
+That promise is worth more here than it is for a server list: a gate set by
+accident does not merely change what the next turn talks to, it can spend a whole
+extra turn against a real model deciding the first one was not finished. It sits
+before `/import` because it is one you come back to. See [Verification
+gates](#verification-gates).
 
 `/resume` does more than reopen from 0.23.0: each row says what that session's
 last run stopped on, and choosing one answers it. No command was added for that —
@@ -1100,6 +1111,88 @@ default. Bare `/plan` says which one you are in and changes nothing.
 `[app.io-cli.containment]`, so configuring a fan-out silently made every turn stop
 and propose first. If that is what you wanted, `/plan on` is where it lives now.
 
+## Verification gates
+
+**An agent that stops is not an agent that is done.** Every release before 0.24.0
+took the model's own word for it: the turn ended, the interface said so, and
+whether the tests still passed was a question you asked afterwards. A gate is
+where you say what "done" means *for this repository*, once, and the turn is not
+finished until the criterion passes or the retry budget is spent.
+
+`/gates` writes it and shows what the last turn was judged on. It is a section of
+your configuration file like any other, so it can also be typed by hand:
+
+```toml
+[app.io-cli.gates]
+command = ["cargo", "test", "--all"]
+retries = 1
+```
+
+There are three kinds and you get exactly one, because a `TaskContract` in
+io-harness holds one `Verification` and not a list. Naming none, or naming two, is
+refused where you can still see what you typed rather than silently picking a
+winner:
+
+- **A command** that must exit a status you name — zero unless you say otherwise.
+  It is an argv and never a shell line, because io-harness checks `argv[0]`
+  against your permission boundary and runs it without a shell. This is the cheap
+  kind: it costs a process, it is objective, and it is the same thing you would
+  have run yourself.
+- **A file** that must exist, and optionally must contain some text. Nearly free
+  and deliberately narrow — it answers "did the change actually get written down",
+  which is the failure a passing test suite is worst at catching.
+- **A rubric** a second model answers: a sentence saying what the work has to be,
+  judged by a reviewer you name.
+
+**io-cli holds no list of test commands.** Leave `command` empty and the one that
+runs is the one the repository's own toolchain proposes — io-harness detects that
+from the project, so a Rust checkout is offered a `cargo` line and a Node one is
+not. That detection is the dependency's, and it is deliberately not reimplemented
+here: a table of build tools inside this crate would be a second opinion that goes
+stale the first time somebody's project does not look like the ones it was written
+against.
+
+**The criterion is run by io-harness, in the sandbox, and not by io-cli.** That is
+not squeamishness. A criterion run from here could not be handed the cache
+directories a real run gets from the detected toolchain, so a `cargo test` gate
+would fail on a registry write that io-harness's own gate would have allowed. It
+also keeps a rule worth keeping: exactly one module in io-cli starts a process at
+all, and it is the one behind `!`.
+
+**`retries` defaults to 1, and `0` means report-only.** A failing gate sends the
+agent back to work with the failure text — the compiler's output, the missing
+file, the reviewer's sentence — because the failure *is* the instruction, and an
+agent told "it did not pass" without being told what did not pass is being asked
+to guess. One retry is the default because a retry is a whole turn against a real
+model and not a loop counter; if you want several, say so. Set `retries = 0` and
+the verdict is drawn and recorded and nothing is re-driven, which is what you want
+in a run you are watching and what you want in a run you are only measuring.
+
+**A rubric is a real billed completion on every gated turn.** Not on failures, not
+on the first one — every turn that carries the gate ends with a call to the
+reviewer, and that call costs what a call costs. This is the reason the three
+kinds are named in `/gates`'s own one-line description rather than left to the
+surface: two of them cost nothing but the time they take and one of them costs
+money, and that is the whole of the choice between them. The call is io-harness's,
+so it lands in the run's usage like any other and `/cost` counts it.
+
+**A rubric needs a `reviewer`, and it is refused without one.** io-harness answers
+a missing reviewer with a configuration error at run start — before the first
+billed call, on every turn, in a place on screen nowhere near the keystroke that
+caused it — so `/gates` refuses it while you are still looking at what you typed.
+The reviewer is also never defaulted to the model doing the work. A model marking
+its own paper is a decision rather than a convenience, and it is spelled
+`allow_self_review = true`; without it, naming the working model as the judge is
+the second refusal.
+
+**What a gate is not is a test runner.** io-cli does not discover your tests, does
+not parse their output, and does not decide what a passing suite looks like. It
+carries one criterion on the contract and reports the verdict io-harness came
+back with.
+
+`io exec` gains exit `6` for this — the agent finished and the work does not hold
+up. See [Exit status](#exit-status).
+
 ## Pictures
 
 **Drag a picture onto the prompt, or copy it and paste.** That is the whole of
@@ -1301,18 +1394,35 @@ what it already does with a policy refusal.
 | `3` | a ceiling was reached: steps, time, tokens, or the tree's shared budget |
 | `4` | the run stopped needing a human: it asked a question, proposed a plan, or was interrupted in the middle of a call |
 | `5` | it ended without finishing: stalled, escalated, or cancelled |
+| `6` | the agent finished and the work does not hold up: a gate you configured did not pass |
 
 A ceiling is `3` and not `0` because io-harness returns one as a *successful
 call* whose outcome says a limit was hit; a status read off the result alone
 would call a truncated run a finished one.
 
+**Exit `6` is new in 0.24.0 and it is the only one that is.** It says something no
+other row could: the run ended the way `0` ends, of its own accord, and then the
+criterion you set in [`[app.io-cli.gates]`](#verification-gates) failed anyway —
+the tests did not pass, the file was not written, the reviewer said no. It is not
+`1`, because nothing went wrong with the invocation; it is not `5`, because the
+agent did not stall or give up; and it is emphatically not `0`, which is the
+status a build script reads as permission to carry on. A run that never had a gate
+configured can never return it.
+
+**No exit code was renumbered, and `6` is the first one added since `io exec`
+shipped.** `0` through `5` have meant exactly what they mean in the table above
+since 0.5.0, and they mean it unchanged here: a script branching on them is a
+script this release did not break. What changes is that a script branching on `0`
+alone now has a sixth answer to handle, which is the point — before this release
+there was no status a gated run could return that said the work was not good
+enough, because there were no gates.
+
 **Exit `4` names the pause from 0.23.0, and the invocation that answers it.**
 The closing line used to name the run id and nothing else, which addressed
 none of the four pauses; it now names the question, plan or call the run stopped
-on and the `io resume` that decides it. No exit code was renumbered and none was
-added: the six have meant what they mean here since `io exec` shipped them in
-0.5.0, and `4` was given to a pause that could not yet be answered for exactly
-this release.
+on and the `io resume` that decides it. That release renumbered nothing and added
+nothing: `4` had been given to a pause that could not yet be answered for exactly
+that release.
 
 An approval is the one pause `io resume` cannot take: it is answered by the
 person the run asked, at the terminal it asked from, and there is no resume entry
@@ -1490,7 +1600,7 @@ bundles](#capability-bundles).
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.
 
-Eight keys live there, and six tables:
+Eight keys live there, and seven tables:
 
 | Key | Is |
 | --- | --- |
@@ -1507,6 +1617,7 @@ Eight keys live there, and six tables:
 | `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Merged with the top-level `[[mcp]]`, and wins a collision of ids. |
 | `[[app.io-cli.lsp]]` | language servers for this workspace. Merged with the top-level `[[lsp]]`, and wins a collision of ids. |
 | `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. |
+| `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](#verification-gates). |
 | `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](#where-a-price-comes-from). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
@@ -1639,11 +1750,16 @@ line beside what has been drawn against them.
 surface the omission was waiting on: `/plugin` for what a bundle brought and what
 was dropped, and io-harness's own refusal sentence for a hook a project file may
 not declare. **`[prices]` is read from 0.22.0**, which is the release that reads
-the provider-call rows it prices. That leaves one section and one key still
-unapplied, and each has a reason: there is no `[verify]` section to apply, and
-giving a session verification gates needs its own surface; and `run.templates` is
-the thirteenth `[run]` key, reachable only through its own accessor. Neither is a
-silent omission — this is where they are named.
+the provider-call rows it prices. **A contract carries a verification criterion
+from 0.24.0**, which was the last of these to be named here and was named with its
+reason: it needed a surface of its own, and `/gates` is that surface. There is
+still no `[verify]` section, because there is none in io-harness's schema to
+apply — what a session carries comes from `[app.io-cli.gates]`, which is io-cli's
+own. See [Verification gates](#verification-gates).
+
+That leaves one key still unapplied, and it has a reason too: `run.templates` is
+the thirteenth `[run]` key, reachable only through its own accessor. It is not a
+silent omission — this is where it is named.
 
 **A price is never invented, and a missing one is never a zero.** io-cli compiles
 no rates in and estimates nothing, so an install that has connected no provider
