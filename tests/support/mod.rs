@@ -430,6 +430,30 @@ impl Scripted {
             batches: Mutex::new(VecDeque::from(vec![batch])),
         }
     }
+
+    /// One batch per **step**, so a turn takes as many steps as there are slices.
+    ///
+    /// [`Scripted::writing`] puts every file in one batch, which is one step. A
+    /// test about undoing *one step* of a run needs the steps to be distinct, and
+    /// the only way to get that is to make the provider answer more than once —
+    /// io-harness's step boundary is a completion, not a tool call.
+    ///
+    /// Steps are numbered from one by the run loop, so `in_steps(&[a, b])` writes
+    /// `a` at step 1 and `b` at step 2.
+    pub fn in_steps(steps: &[&[(&str, &str)]]) -> Self {
+        let batches = steps
+            .iter()
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|(path, content)| write_call(path, content))
+                    .collect()
+            })
+            .collect::<Vec<Vec<ToolCall>>>();
+        Self {
+            batches: Mutex::new(VecDeque::from(batches)),
+        }
+    }
 }
 
 impl Provider for Scripted {

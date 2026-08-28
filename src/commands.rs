@@ -247,6 +247,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/contain",
         "run turns contained, so the agent can fan out: on, off, or ask",
     ),
+    // 0.27.0 — the undo that is the size of the mistake. The bare word is the
+    // whole run, which is what the rewind chord has always done; the two argued
+    // forms are what this release adds and are the ones an operator reaches for.
+    (
+        "/undo",
+        "put work back: `<path>` for one file, `step <n>` for one step, bare for the run",
+    ),
     (
         "/plan",
         "make turns propose a plan before they work: on, off, or ask",
@@ -268,6 +275,23 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "/stats",
         "commit how the runs have gone: outcomes, first-try, gates, latency",
+    ),
+    // 0.27.0 — the third page about work already done, and the first one that can
+    // also change it. The description names the three verbs rather than only the
+    // page, because a command whose bare form reports and whose argued forms
+    // delete is one an operator must be able to tell apart from the row.
+    (
+        "/store",
+        "commit what the run store holds; `rm <id>`, `sweep <date>` and `compact` change it",
+    ),
+    // Beside `/store` because the two answer the same question from opposite
+    // ends: that one is what the store is keeping, this one is how the work gets
+    // out. The description names both files, because markdown and a canonical
+    // trace are for two different readers and choosing between them is the whole
+    // decision.
+    (
+        "/export",
+        "write this conversation as markdown, or `trace` for a run's canonical trace",
     ),
     // Beside `/stats` because `/stats` is the only other row that says the word,
     // and the two are the halves of one thing: that page counts how the gates
@@ -376,9 +400,24 @@ pub const GROUPS: &[(Group, &[&str])] = &[
     // that met it — re-file what is in the wrong group, do not widen the bound —
     // and a correction that pays for itself is the correction working, not a
     // loophole in it.
+    // **`/contain` moved here in 0.27.0, and it is a correction rather than a way
+    // of making room** — the fourth time this sentence has been written, after
+    // 0.19.0's `/mcp` and `/provider`, 0.22.0's `/image` and `/copy`, and 0.26.0's
+    // `/profile`. `Turn` means a command acting on the work the turn just
+    // finished. `/contain on|off` acts on nothing that has happened: it decides
+    // whether every *later* turn is driven through the containment entry point,
+    // and it survives the turn that switched it. That is the identical argument
+    // that moved `/profile` one release ago, and `/contain` was the other command
+    // it applied to all along.
+    //
+    // It frees the slot `/undo` takes. `Turn` stood at ten of ten, and the rule
+    // this product wrote for itself when 0.25.0 filled it is to re-file what is in
+    // the wrong group rather than widen the bound.
     (
         Group::Session,
-        &["/clear", "/resume", "/fork", "/profile", "/setup", "/exit"],
+        &[
+            "/clear", "/resume", "/fork", "/profile", "/contain", "/setup", "/exit",
+        ],
     ),
     // **`/image`, `/copy` and `/copy diff` moved here in 0.22.0, and it is a
     // correction rather than a way of making room** — the same sentence 0.19.0
@@ -407,7 +446,12 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             // this session's and dies with it, for the reason the release contract
             // records under `open_questions`.
             "/effort",
-            "/contain",
+            // **`/undo` takes the slot `/contain` left.** It is the most
+            // `Turn`-shaped command in the product: it acts on the work the turn
+            // just finished, at whichever granularity the operator meant. See the
+            // note above `Group::Session` for why `/contain` was the one that
+            // moved rather than the bound.
+            "/undo",
             "/plan",
             "/steer",
             "/compact",
@@ -438,6 +482,14 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Inspect,
         &[
             "/help", "/status", "/context", "/expand", "/fleet", "/skills", "/cost", "/stats",
+            // 0.27.0 — the two that answer a question about work that has already
+            // happened rather than about the turn in flight, which is what this
+            // group means. `/store` is what the run store is holding; `/export`
+            // is that work taken somewhere else. They take `Inspect` to ten,
+            // which is the bound — so the next command that would fill this group
+            // re-files one that is in the wrong group rather than widening it,
+            // exactly as `Turn` did for `/undo` in this same release.
+            "/store", "/export",
         ],
     ),
     // **`/mcp` and `/provider` moved here in 0.19.0, and it is a correction rather
@@ -1214,6 +1266,64 @@ pub enum Action {
     /// that caused them. [`crate::gates::Refusal`] names both while the operator
     /// is still looking at what they typed.
     Gates,
+    /// Report what the run store holds, or change it.
+    ///
+    /// `None` is the page and changes nothing. Every `Some` is a verb, and every
+    /// verb that acts descends into a confirmation first — see [`Keep`], and
+    /// [`crate::store`] for why a removal and a compaction are different
+    /// questions with different costs.
+    Store(Option<Keep>),
+    /// Write the work out: the conversation as markdown, or one run's canonical
+    /// trace, verbatim.
+    ///
+    /// See [`Taken`]. The path is optional in both forms and a proposed one is
+    /// used when it is absent — proposed rather than imposed, and refused rather
+    /// than overwritten when something is already there.
+    Export(Taken),
+    /// Put work back, at the granularity the operator named.
+    ///
+    /// `Grain::Run` is what the rewind chord has always done and what a bare
+    /// `/undo` means. The other two are this release's, and both are public
+    /// io-harness calls this crate had never made.
+    Undo(crate::undo::Grain),
+    /// `/undo step` with no number, or a number that is not one.
+    ///
+    /// A variant rather than a fall-through to the whole run, which is the one
+    /// mistake this command must not make: an operator who typed a step and got
+    /// the entire run undone would have lost work they never asked to lose.
+    UndoNoStep,
+}
+
+/// Which export was asked for, and where it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Taken {
+    /// This session's conversation, as markdown.
+    Conversation(Option<String>),
+    /// The last run's canonical trace, exactly as io-harness produced
+    /// it.
+    Trace(Option<String>),
+}
+
+/// What `/store` was asked to do, once the page is not the answer.
+///
+/// The three refusal variants are variants rather than an `Err`, because they
+/// are answers this surface gives the operator in its own words. An unparseable
+/// verb must never fall through to the page: somebody who typed a delete and got
+/// a report would believe the delete had happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Keep {
+    /// Remove one session, by id.
+    Remove(i64),
+    /// Remove every session created strictly before this timestamp.
+    Sweep(String),
+    /// Return the free pages inside the file to the filesystem.
+    Compact,
+    /// `rm` with no id, or an id that is not a number.
+    NoId,
+    /// `sweep` with no date.
+    NoDate,
+    /// A word this command does not know.
+    Unknown(String),
 }
 
 /// What `/copy` was asked for.
@@ -1860,6 +1970,57 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         "usage" => Action::Cost,
         "cost" => Action::Cost,
         "stats" => Action::Stats,
+        // Three verbs behind one word, and the bare form is the only one that
+        // does not change anything. A rejected verb reports rather than falling
+        // through to the page: an operator who typed `/store swep 2026-08-01`
+        // meant to delete something, and quietly showing them a report would
+        // leave them believing they had.
+        "store" => {
+            let mut rest = input.split_whitespace().skip(1);
+            match rest.next() {
+                None => Action::Store(None),
+                Some("rm" | "remove" | "delete") => match rest.next().map(str::parse::<i64>) {
+                    Some(Ok(id)) => Action::Store(Some(Keep::Remove(id))),
+                    // A missing or unparseable id is named rather than defaulted.
+                    // There is no sensible default session to delete, and the one
+                    // that looks sensible — the current one — is the worst.
+                    _ => Action::Store(Some(Keep::NoId)),
+                },
+                Some("sweep") => match rest.next() {
+                    Some(date) => Action::Store(Some(Keep::Sweep(date.to_string()))),
+                    None => Action::Store(Some(Keep::NoDate)),
+                },
+                Some("compact" | "vacuum") => Action::Store(Some(Keep::Compact)),
+                Some(word) => Action::Store(Some(Keep::Unknown(word.to_string()))),
+            }
+        }
+        // `trace` is a word and everything else is a path, which is the one
+        // ambiguity worth naming: an operator who wants a file called `trace`
+        // types `./trace`. The alternative — a `--trace` flag — would be the only
+        // flag on any command in this product.
+        // `step` is a word and everything else is a path, the same shape `/export`
+        // takes for `trace`. A bare `/undo` is the whole run, which is what the
+        // rewind chord already means, so the word and the chord cannot disagree.
+        "undo" => {
+            let mut rest = input.split_whitespace().skip(1);
+            match rest.next() {
+                None => Action::Undo(crate::undo::Grain::Run),
+                Some("step") => match rest.next().map(str::parse::<u32>) {
+                    Some(Ok(step)) => Action::Undo(crate::undo::Grain::Step(step)),
+                    // Never a fall-through to the run. See `Action::UndoNoStep`.
+                    _ => Action::UndoNoStep,
+                },
+                Some(path) => Action::Undo(crate::undo::Grain::File(path.to_string())),
+            }
+        }
+        "export" => {
+            let mut rest = input.split_whitespace().skip(1);
+            match rest.next() {
+                Some("trace") => Action::Export(Taken::Trace(rest.next().map(str::to_string))),
+                Some(path) => Action::Export(Taken::Conversation(Some(path.to_string()))),
+                None => Action::Export(Taken::Conversation(None)),
+            }
+        }
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);
             match rest.next() {

@@ -924,7 +924,7 @@ async fn live_f13_work_survives_the_session() {
         "armed: {}",
         io_cli::rewind::armed_line(&about, &DARK.glyphs)
     );
-    let undone = io_cli::rewind::last_turn(&mut session, &store)
+    let undone = io_cli::rewind::last_turn(&mut session, &store, &io_harness::Ignore)
         .expect("the rewind runs")
         .expect("there was a turn to undo");
     for (tone, line) in io_cli::rewind::undone_lines(&undone, &DARK.glyphs) {
@@ -3393,5 +3393,239 @@ async fn live_f5_an_unreachable_primary_falls_through_to_the_provider_underneath
         served.is_some(),
         "a fall-through happened and `last_served` must name the link that \
          answered — it is what io-harness turns into `EventKind::FellBackTo`",
+    );
+}
+
+/// **O3 / F6 / F7 — an undo of a file a real agent actually wrote.**
+///
+/// The fixture tests build their restore points through io-harness's own run
+/// loop with a scripted provider, which is the right instrument for asserting
+/// the four answers. What no fixture can settle is whether a *real* model's
+/// `write_file` produces a snapshot this crate can rewind — that depends on the
+/// tool the model chooses, and a model may edit, patch or rewrite.
+///
+/// So this drives a real turn, asserts the file changed, then puts it back and
+/// asserts the bytes on disk are the ones that were there before the agent ran.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f6_f7_a_real_agents_write_is_put_back() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    let before = "the original line\n";
+    std::fs::write(root.join("subject.txt"), before).expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let result = session
+        .turn_steered(
+            "Replace the entire contents of subject.txt with exactly the word: replaced. \
+             Then say what you did in one sentence.",
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &observer,
+            &inbox,
+        )
+        .await
+        .expect("the turn runs");
+    println!("outcome: {:?}", result.outcome);
+
+    let after = std::fs::read_to_string(root.join("subject.txt")).expect("the file is there");
+    println!("after the turn: {after:?}");
+    assert_ne!(after, before, "the agent has to have changed something");
+
+    let head = session.head().expect("the turn is on the head");
+    let run_id = store
+        .session_turn(head)
+        .expect("readable")
+        .expect("there")
+        .run_id;
+
+    // The undo, through the same call `/undo <path>` makes.
+    let workspace = io_harness::tools::Workspace::new(root);
+    let answer =
+        io_cli::undo::one_file(&workspace, &store, run_id, "subject.txt").expect("the undo runs");
+    println!(
+        "the undo said: {}",
+        io_cli::undo::said("subject.txt", &answer)
+    );
+
+    assert!(
+        matches!(answer, io_harness::Rewind::Restored(_)),
+        "a real agent's write leaves a restore point this crate can use: {answer:?}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("subject.txt")).expect("still there"),
+        before,
+        "the bytes on disk are the ones that were there before the agent ran",
+    );
+
+    // And the whole-turn form emits the event that had never fired before
+    // 0.27.0 — through `rewind::last_turn`, which is the production path.
+    let watcher = Collector {
+        events: Arc::new(Mutex::new(Vec::new())),
+    };
+    let undone = io_cli::rewind::last_turn(&mut session, &store, &watcher)
+        .expect("the whole-turn undo runs");
+    println!("undone: {undone:?}");
+    let saw = watcher
+        .events
+        .lock()
+        .expect("not poisoned")
+        .iter()
+        .any(|event| matches!(event.kind, io_harness::EventKind::Rewound { .. }));
+    assert!(saw, "EventKind::Rewound reached the observer on a real run");
+}
+
+/// **O3 / F8 — an export of a conversation that actually happened.**
+///
+/// A fixture's trace is assembled from rows a test wrote. This asserts the
+/// export against a run a real model drove: the markdown carries the prompt and
+/// the reply that were really exchanged, and the trace file is byte-identical to
+/// what io-harness produced for that run.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f8_a_real_conversation_exports() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let prompt = "In one short sentence, say what a canonical trace is for.";
+    session
+        .turn_steered(
+            prompt, &provider, &store, &policy, &DenyAll, &observer, &inbox,
+        )
+        .await
+        .expect("the turn runs");
+
+    let markdown = io_cli::export::conversation(&store, &session)
+        .expect("readable")
+        .expect("a conversation that happened");
+    println!("--- exported markdown ---\n{markdown}");
+    assert!(
+        markdown.contains(prompt),
+        "the operator's own words are in the export",
+    );
+
+    let head = session.head().expect("a turn");
+    let run_id = store
+        .session_turn(head)
+        .expect("readable")
+        .expect("there")
+        .run_id;
+
+    let trace = io_cli::export::trace(&store, run_id).expect("a trace");
+    assert!(
+        !trace.is_empty(),
+        "a run that really happened has a trace; an empty one would make the \
+         byte comparison below vacuous, which is the defect this release found \
+         in its own fixture",
+    );
+
+    let workspace = io_harness::tools::Workspace::new(root);
+    let written = io_cli::export::write(&workspace, &io_cli::export::trace_path(run_id), &trace)
+        .expect("the trace is written");
+    let back = std::fs::read_to_string(root.join(&written.path)).expect("the file");
+    assert_eq!(
+        back,
+        store.canonical_trace(run_id).expect("readable"),
+        "the file on disk is io-harness's own string, byte for byte",
+    );
+}
+
+/// **O3 — whichever of the two conditional events a real run emits.**
+///
+/// `Speculated` fires only when a provider reports finished calls and something
+/// was actually started; `CacheMarked` only when a marked prefix advances.
+/// Neither can be provoked, so this **reports** rather than asserts: it prints
+/// what a real run emitted so the release record can say what was observed
+/// rather than what was hoped for.
+///
+/// The one thing it does assert is that if `Speculated` arrives with something
+/// discarded, the renderer draws a line for it — which is the arm 0.27.0 added.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f9_whichever_conditional_events_a_real_run_emits() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    for name in ["one.txt", "two.txt", "three.txt"] {
+        std::fs::write(root.join(name), format!("contents of {name}\n")).expect("a fixture file");
+    }
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    session
+        .turn_steered(
+            "Read one.txt, two.txt and three.txt, then tell me in one sentence what \
+             they have in common.",
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &observer,
+            &inbox,
+        )
+        .await
+        .expect("the turn runs");
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let mut drew = 0usize;
+    for event in &events {
+        match &event.kind {
+            io_harness::EventKind::Speculated {
+                started,
+                used,
+                discarded,
+            } => {
+                println!("live: Speculated started={started} used={used} discarded={discarded}");
+                if *discarded > 0 {
+                    let mut renderer = io_cli::events::Events::new(io_cli::theme::DARK);
+                    let lines = renderer.event(event, std::time::Duration::ZERO);
+                    assert!(
+                        !lines.is_empty(),
+                        "a real discarded read must draw the line 0.27.0 added",
+                    );
+                    drew += 1;
+                }
+            }
+            io_harness::EventKind::CacheMarked {
+                through_step,
+                prefix_bytes,
+            } => println!("live: CacheMarked through_step={through_step} bytes={prefix_bytes}"),
+            _ => {}
+        }
+    }
+    println!(
+        "live: drew {drew} speculation line(s) from {} events",
+        events.len()
     );
 }

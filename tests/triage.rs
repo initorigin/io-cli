@@ -254,11 +254,6 @@ fn a_status_or_silent_kind_commits_nothing() {
             host: "example.com:443".into(),
             permitted: true,
         },
-        EventKind::Speculated {
-            started: 2,
-            used: 1,
-            discarded: 1,
-        },
         EventKind::PluginDropped {
             plugin: "acme".into(),
             why: "manifest unreadable".into(),
@@ -371,4 +366,106 @@ fn the_dispositions_are_the_three_the_contract_names() {
         status + silent >= 20,
         "if almost everything is a line, nothing was triaged: {status} status, {silent} silent",
     );
+}
+
+/// **0.27.0 — the one silence that had no route, and now has a line.**
+///
+/// `speculated` routed to `io exec --json` and the durable trace, and both of
+/// those are places somebody goes deliberately, afterwards, already suspecting
+/// something. A route is meant to name where the fact reaches an operator who
+/// was *not* looking for it. The other eight silences reviewed in the same pass
+/// keep theirs, because they are better arguments than drawing would be — see
+/// `US-IO-CLI-0.27.0-I04`.
+#[test]
+fn f9_a_discarded_read_is_drawn_and_a_perfect_one_is_not() {
+    let mut events = Events::new(DARK);
+
+    assert_eq!(
+        triage::disposition("speculated"),
+        Some(Disposition::Line),
+        "speculated is a line since 0.27.0",
+    );
+
+    let lines = events.event(
+        &event(EventKind::Speculated {
+            started: 3,
+            used: 1,
+            discarded: 2,
+        }),
+        Duration::ZERO,
+    );
+    let text = lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect::<String>();
+    assert!(text.contains("read ahead"), "{text}");
+    assert!(text.contains('3'), "started is on the line: {text}");
+    assert!(text.contains('2'), "and so is what was thrown away: {text}");
+
+    // **A step that speculated perfectly has nothing to report.** io-harness
+    // emits this whenever `started > 0`, so without the guard every transcript
+    // would carry a line per step saying nothing went wrong — and a line that is
+    // always there is a line nobody reads.
+    let quiet = events.event(
+        &event(EventKind::Speculated {
+            started: 4,
+            used: 4,
+            discarded: 0,
+        }),
+        Duration::ZERO,
+    );
+    assert!(
+        quiet.is_empty(),
+        "nothing was discarded, so there is nothing to say: {quiet:?}",
+    );
+    assert_eq!(
+        events.unknown(),
+        0,
+        "declining an event is not the same as not knowing the kind",
+    );
+}
+
+/// **Every `Silent` route names a surface this product actually ships.**
+///
+/// A route is the whole justification for a silence: the fact is not on screen
+/// *because it reaches the operator another way*. Until this release that claim
+/// was prose nobody checked, and `speculated` is what a route looks like when it
+/// is wrong — it named two places a person only goes deliberately, afterwards.
+///
+/// So every route must name a command this build registers, or one of the two
+/// machine surfaces. A route naming a command that does not exist is a silence
+/// with nothing behind it.
+#[test]
+fn f9_every_silent_route_names_a_surface_that_exists() {
+    let commands: Vec<&str> = io_cli::commands::COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+
+    for (name, disposition, route) in triage::TRIAGE {
+        if *disposition != Disposition::Silent {
+            continue;
+        }
+        assert!(
+            !route.is_empty(),
+            "{name} is silent and says nothing about why"
+        );
+
+        // A route may name a command, one of the two machine surfaces, or a
+        // surface of this interface that is not a slash command — the overlay, a
+        // committed summary, the answer itself. The first is the one that can go
+        // stale, so it is the one that is checked: any `/word` a route names must
+        // be a command this build registers.
+        for word in route.split_whitespace() {
+            let candidate = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/');
+            if let Some(slash) = candidate.strip_prefix('/').map(|rest| format!("/{rest}")) {
+                if slash.len() > 1 {
+                    assert!(
+                        commands.contains(&slash.as_str()),
+                        "{name} routes to {slash}, which this build does not register",
+                    );
+                }
+            }
+        }
+    }
 }

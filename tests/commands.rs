@@ -84,6 +84,11 @@ fn the_commands_are_the_commands() {
             "/profile",
             "/effort",
             "/contain",
+            // 0.27.0 — the undo that is the size of the mistake, taking the
+            // `Turn` slot `/contain` left when it was re-filed into `Session`.
+            // `Turn` was ten of ten and the bound was not widened, which is the
+            // fourth time this product has made that correction.
+            "/undo",
             // 0.12.0 — the planning phase stopped being something
             // `[app.io-cli.containment]` switched on by accident, so it needs a
             // switch of its own.
@@ -98,6 +103,16 @@ fn the_commands_are_the_commands() {
             // this list, which is the rule every alias here follows.
             "/cost",
             "/stats",
+            // 0.27.0 — the third page about work already done, and the first that
+            // can also change it. Under **inspect** because that is what its bare
+            // form does, with every destructive verb behind a confirmation whose
+            // row 0 does nothing; it and `/export` take that group to ten, which
+            // is the bound.
+            "/store",
+            // 0.27.0 — the other end of the same question: `/store` is what is
+            // being kept, this is how the work gets out. It takes `Inspect` to
+            // ten, which is the bound.
+            "/export",
             // 0.24.0 — beside `/stats` because `/stats` is the only other row
             // that says the word: that page counts how the gates went, and until
             // this release nothing in the product could say what a gate was. It
@@ -309,9 +324,10 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     // release growing a command and losing another.
     assert_eq!(
         COMMANDS.len(),
-        33,
-        "0.26.0 adds exactly one command, `/effort`, on top of the thirty-two \
-         0.25.0 shipped; a thirty-fourth here means one arrived unrecorded",
+        36,
+        "0.27.0 adds exactly three commands — `/store`, `/export` and `/undo` — on \
+         top of the thirty-three 0.26.0 shipped; a thirty-seventh here means one \
+         arrived unrecorded",
     );
 }
 
@@ -328,7 +344,12 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
 #[test]
 fn f1_effort_parses_three_levels_the_absence_and_the_question() {
     use io_cli::commands::Reasoning;
-    let parse = |text: &str| commands::parse(text, &defaults(), &DARK);
+    // `parse` takes the word without its slash — the driver strips it before the
+    // call, which is why every other test in this file types `continue` rather
+    // than `/continue`. Written as a helper so the cases below read as the
+    // operator types them.
+    let parse =
+        |text: &str| commands::parse(text.strip_prefix('/').unwrap_or(text), &defaults(), &DARK);
 
     assert_eq!(
         parse("effort low"),
@@ -980,18 +1001,29 @@ fn the_writers_are_configure_commands_and_skills_is_the_inspection() {
         "`/skills` opens a list and writes nothing, which is what Inspect means",
     );
 
-    // The room the move made is real, not an accounting trick: Inspect is under
-    // the bound with a command to spare. `f13_no_group_is_longer_than_ten` is
-    // still the gate; this only says the release did not spend every seat it
-    // freed.
+    // **0.27.0 spends the last seat this move freed, and that is a decision
+    // rather than an oversight.** The 0.19.0 form of this assertion was
+    // `inspect < 10` — the release that made the room saying it had not used all
+    // of it. `/store` and `/export` take the group to exactly ten, which is the
+    // bound `f13_no_group_is_longer_than_ten` enforces, so the sentence this gate
+    // makes changes from *there is room left* to *the room is now gone*: the next
+    // command that would belong in `Inspect` re-files one that is in the wrong
+    // group rather than widening the bound, which is what `Turn` did for `/undo`
+    // in this same release and what 0.19.0, 0.22.0 and 0.26.0 each did before it.
+    //
+    // The equality is deliberate. `<= 10` would go on passing at nine and would
+    // stop saying anything the moment somebody removed a command; an exact ten
+    // fails in both directions and makes the next change a decision somebody
+    // records here.
     let inspect = GROUPS
         .iter()
         .find(|(group, _)| *group == Group::Inspect)
         .map(|(_, names)| names.len())
         .expect("Inspect is a group with commands in it");
-    assert!(
-        inspect < 10,
-        "Inspect holds {inspect}; the point of the move was to leave room",
+    assert_eq!(
+        inspect, 10,
+        "Inspect holds {inspect}; 0.27.0 filled it to the bound with `/store` and \
+         `/export`, so the next command here re-files rather than widens",
     );
 
     let rows = palette(&Templates::none(), &[]);
@@ -1442,5 +1474,105 @@ fn gates_is_a_configure_command_that_resolves_to_its_own_action() {
         palette_pick(&Templates::none(), &[], index),
         Some(Chosen::Command("/gates")),
         "`/gates`'s row is advertised and inert",
+    );
+}
+
+/// **The three new commands' argued forms, which had no gate at all.**
+///
+/// The adversarial review found that nothing in `tests/` typed `/store`,
+/// `/undo` or `/export` with an argument — so the release's most load-bearing
+/// decision, that an unparseable verb must **never** fall through to something
+/// destructive, was asserted nowhere.
+///
+/// Both refusal families exist for a stated reason and both are checked here:
+///
+/// - `Action::UndoNoStep` — *an operator who typed a step and got the entire run
+///   undone would have lost work they never asked to lose.*
+/// - `Keep::{NoId, NoDate, Unknown}` — *somebody who typed a delete and got a
+///   report would believe the delete had happened.*
+#[test]
+fn f10_an_unparseable_verb_never_falls_through_to_something_destructive() {
+    use io_cli::commands::{Keep, Taken};
+    use io_cli::undo::Grain;
+
+    // `parse` takes the word without its slash — the driver strips it before the
+    // call, which is why every other test in this file types `continue` rather
+    // than `/continue`. Written as a helper so the cases below read as the
+    // operator types them.
+    let parse =
+        |text: &str| commands::parse(text.strip_prefix('/').unwrap_or(text), &defaults(), &DARK);
+
+    // `/undo` — the one that must never become a whole-run undo.
+    assert_eq!(parse("/undo"), Action::Undo(Grain::Run));
+    assert_eq!(
+        parse("/undo src/a.rs"),
+        Action::Undo(Grain::File("src/a.rs".into())),
+    );
+    assert_eq!(parse("/undo step 4"), Action::Undo(Grain::Step(4)));
+    for wrong in [
+        "/undo step",
+        "/undo step -1",
+        "/undo step 3.5",
+        "/undo step nine",
+        "/undo step 99999999999999999999",
+        "/undo step 0x10",
+    ] {
+        assert_eq!(
+            parse(wrong),
+            Action::UndoNoStep,
+            "`{wrong}` must be refused by name and must never become Grain::Run",
+        );
+    }
+
+    // `/store` — the verbs, and the three refusals.
+    assert_eq!(parse("/store"), Action::Store(None));
+    assert_eq!(parse("/store rm 7"), Action::Store(Some(Keep::Remove(7))));
+    assert_eq!(parse("/store compact"), Action::Store(Some(Keep::Compact)));
+    assert_eq!(
+        parse("/store sweep 2026-08-01"),
+        Action::Store(Some(Keep::Sweep("2026-08-01".into()))),
+    );
+    for wrong in [
+        "/store rm",
+        "/store rm all",
+        "/store rm -1x",
+        "/store delete",
+    ] {
+        assert!(
+            matches!(parse(wrong), Action::Store(Some(Keep::NoId))),
+            "`{wrong}` must ask for an id rather than act: {:?}",
+            parse(wrong),
+        );
+    }
+    assert!(matches!(
+        parse("/store sweep"),
+        Action::Store(Some(Keep::NoDate))
+    ));
+    // The typo that matters: a near-miss verb must not reach the page, because a
+    // report where a deletion was asked for reads as a deletion that happened.
+    for typo in ["/store swep 2026-08-01", "/store purge", "/store vacume"] {
+        assert!(
+            matches!(parse(typo), Action::Store(Some(Keep::Unknown(_)))),
+            "`{typo}` must be named as unknown rather than showing the page: {:?}",
+            parse(typo),
+        );
+    }
+
+    // `/export` — `trace` is a word and everything else is a path.
+    assert_eq!(parse("/export"), Action::Export(Taken::Conversation(None)));
+    assert_eq!(
+        parse("/export notes.md"),
+        Action::Export(Taken::Conversation(Some("notes.md".into()))),
+    );
+    assert_eq!(parse("/export trace"), Action::Export(Taken::Trace(None)));
+    assert_eq!(
+        parse("/export trace run.txt"),
+        Action::Export(Taken::Trace(Some("run.txt".into()))),
+    );
+    // The documented ambiguity, and its documented escape.
+    assert_eq!(
+        parse("/export ./trace"),
+        Action::Export(Taken::Conversation(Some("./trace".into()))),
+        "a file literally called `trace` is reachable as `./trace`",
     );
 }
