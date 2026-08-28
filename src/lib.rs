@@ -51,6 +51,7 @@ pub mod failure;
 pub mod fanout;
 pub mod fleet;
 pub mod fuzzy;
+pub mod gates;
 pub mod glyphs;
 pub mod home;
 pub mod import;
