@@ -323,7 +323,7 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
 ///
 /// What a *reader* wants: the surfaces that report a verdict need to know which
 /// criterion was in force, and building a provider to tell them would resolve a
-/// credential for a question that does not need one. [`criterion_for`] is the
+/// credential for a question that does not need one. `criterion_for` is the
 /// half that also builds the reviewer, for the contract that will run it.
 ///
 /// This is what lets `io exec` fold the gate rows the same way a session does —
