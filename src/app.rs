@@ -318,6 +318,21 @@ pub struct App {
     /// says `custom` rather than naming one it is not, and the first press of the
     /// key moves to a posture the operator did choose.
     posture: Option<Posture>,
+    /// Whether this turn has already been told why its git tools did nothing.
+    ///
+    /// **One paragraph per turn, not one per refused call.** A model that reaches
+    /// for git under a posture that refuses it does not stop at the first refusal
+    /// — it reads the observation, tries `git_status` instead of `git_diff`, and
+    /// is refused again, five times in a step. The explanation is the same
+    /// sentence every time, and five copies of it push the transcript that
+    /// explains them off the screen. The per-call fact is already committed by
+    /// [`crate::events`], one refusal line each; this is the *reason*, and a
+    /// reason said twice is noise.
+    ///
+    /// Reset by [`App::started`], so the next turn is explained again — the
+    /// operator may have changed posture between them, and a flag that survived
+    /// the turn would silence the first refusal of a session that never heard it.
+    git_explained: bool,
 }
 
 impl App {
@@ -352,6 +367,7 @@ impl App {
             root: std::path::PathBuf::new(),
             diff_style: crate::settings::DiffStyle::default(),
             posture: None,
+            git_explained: false,
         }
     }
 
@@ -696,6 +712,55 @@ impl App {
         &self.remembered
     }
 
+    /// Allow `git` for the rest of this session.
+    ///
+    /// **The only door to this rule, and it exists because the ordinary one is
+    /// shut.** Every other entry in `remembered` arrives through
+    /// [`App::answer_approval`]: the policy said `Ask`, a question reached the
+    /// operator, and they answered it with *this session*. The harness's git
+    /// tools never take that path. `Git::run` refuses anything short of
+    /// `Effect::Allow` before an approver is consulted at all — see
+    /// [`crate::approval::refuses_git`] — so under the posture the wizard
+    /// recommends the seven git tools are refused without anyone ever being
+    /// asked, and there is no question for an answer to attach to. This method is
+    /// the answer with no question in front of it.
+    ///
+    /// Idempotent, and by value rather than by count: the rule is a fact about
+    /// the session and not a tally of how many times it was asked for. Pressing
+    /// the same key twice, or `/commit` reaching here after the refusal already
+    /// did, must leave one rule — a duplicate would be a second layer entry
+    /// saying exactly what the first says, which is a policy that is harder to
+    /// read and no more permissive.
+    pub fn allow_git(&mut self) {
+        let rule = crate::approval::git_allowance();
+        if !self.remembered.contains(&rule) {
+            self.remembered.push(rule);
+        }
+    }
+
+    /// Say which branch the tree is on.
+    ///
+    /// **Backed by [`Status`] rather than by a field of its own, and the reason is
+    /// worth stating because this release nearly shipped both.** The branch is
+    /// drawn on the status line and on the `/status` page, so `Status` has to hold
+    /// it; a second copy here would be a second answer to one question, and the
+    /// two would part company the first time either was set without the other —
+    /// which is the shape of the defect 0.17.0 found between `/context` and
+    /// `ctx N%`, where neither number was wrong and the pair was.
+    ///
+    /// So this is an accessor pair over one value. [`crate::repo::branch`] reads
+    /// `.git/HEAD` for the branch a session starts on; a `git_branch` call names
+    /// the branch a turn made, which no file read at the end can distinguish from
+    /// what was already true. Both arrive here.
+    pub fn set_branch(&mut self, branch: Option<String>) {
+        self.status.branch = branch;
+    }
+
+    /// The branch the tree is on, as this session last heard it.
+    pub fn branch(&self) -> Option<&str> {
+        self.status.branch.as_deref()
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }
@@ -728,6 +793,9 @@ impl App {
         // just finished can still open the pane and see what happened; it is the
         // *next* prompt that means those rows are no longer about anything.
         self.fleet.forget();
+        // A new turn is a new posture's worth of chances to be refused, and a new
+        // operator who has not read the last turn's paragraph. See `git_explained`.
+        self.git_explained = false;
         self.quits = 0;
         self.announce();
     }
@@ -1082,6 +1150,69 @@ impl App {
         // there is one counter and not two that can disagree.
         self.status.unknown = self.events.unknown();
         self.pending.extend(lines);
+        // Last, so the explanation lands *under* the refusal line `Events` just
+        // committed rather than above it. The order is the argument: the fact,
+        // then the reason for it.
+        self.note_git(&event.kind);
+    }
+
+    /// The git surface's share of an event.
+    ///
+    /// **Two facts, and neither of them arrives on the `/commit` path.** That is
+    /// the whole reason this is here and not in the command handler.
+    ///
+    /// A `git_branch` call names the branch it is making, and that name is the
+    /// only place the new branch appears — the file on disk says it afterwards,
+    /// but by then nothing distinguishes a branch the agent made from the one the
+    /// session opened on.
+    ///
+    /// A refusal of `exec git` reaches here from *any* of the seven git tools,
+    /// whoever reached for them. `/commit` refuses before it spends a turn, so a
+    /// commit the operator asked for never gets this far; what does get here is
+    /// the agent reaching for `git_status` or `git_branch` on its own initiative
+    /// mid-turn, being refused with no question raised — see [`App::allow_git`] —
+    /// and the operator watching a turn quietly achieve nothing. Explaining only
+    /// what `/commit` initiated would leave exactly that case silent, which is the
+    /// defect this release exists to repair.
+    fn note_git(&mut self, kind: &io_harness::EventKind) {
+        match kind {
+            // The target of a `git_branch` call *is* the branch name: io-harness
+            // announces a call with whichever conventional argument it carries,
+            // and `git_branch`'s is `name`. A call missing it falls back to the
+            // tool's own name, which is a malformed call rather than a branch —
+            // so an announcement that named nothing is skipped rather than
+            // recorded as a branch called `git_branch`.
+            io_harness::EventKind::ToolCall { name, target }
+                if name == io_harness::tools::GIT_BRANCH_TOOL
+                    && target != name
+                    && !target.trim().is_empty() =>
+            {
+                self.set_branch(Some(target.clone()));
+            }
+            // `"exec"` is io-harness's own word on the wire, and not
+            // [`crate::approval::act_word`]'s — that one reads `run`, for the
+            // operator. Matching the operator's vocabulary here would match
+            // nothing, forever, in silence.
+            io_harness::EventKind::Refused { act, target, .. }
+                if act == "exec" && target == crate::approval::GIT && !self.git_explained =>
+            {
+                self.git_explained = true;
+                let posture = match self.posture {
+                    Some(posture) => format!("the `{}` posture", posture.short()),
+                    None => "the policy in force".to_string(),
+                };
+                self.record(
+                    Tone::Refused,
+                    format!(
+                        "{posture} does not let the agent run `git`, and the harness's git \
+                         tools are refused outright rather than asked about — so nothing \
+                         stopped to ask you. Allowing `git` for this session is the one rule \
+                         that lifts it."
+                    ),
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Take an event from a run this session is **watching** rather than driving.
@@ -1122,6 +1253,33 @@ impl App {
             self.pending.push(Line::from(""));
             self.pending
                 .extend(crate::diff::cell(edit, &self.theme, width));
+        }
+    }
+
+    /// A commit, committed where it happened.
+    ///
+    /// Beside [`App::edits`] and shaped like it: the lines are already text — see
+    /// [`crate::commit::block`], which builds them without a theme so they can be
+    /// asserted without one — and the blank line above is the same one a diff
+    /// gets, because a commit is a block and reads as one under the tool cell that
+    /// produced it.
+    ///
+    /// Through `pending` rather than straight to the terminal, which is what keeps
+    /// the rewind arithmetic honest: [`App::take_pending`] is the one place rows
+    /// are counted into `turn_rows`, so a block that went round it would be rows
+    /// on screen that an undo could not erase.
+    /// The first line carries the tone and the rest do not, which is what stops
+    /// `ok:` from being stamped down the left of a commit body. One header and its
+    /// content is the shape every block in this transcript already has.
+    pub fn committed(&mut self, lines: Vec<String>) {
+        let mut lines = lines.into_iter();
+        let Some(header) = lines.next() else {
+            return;
+        };
+        self.pending.push(Line::from(""));
+        self.pending.push(self.theme.notice(Tone::Success, header));
+        for line in lines {
+            self.pending.push(self.theme.notice(Tone::Normal, line));
         }
     }
 
@@ -2283,5 +2441,167 @@ pub fn gate_retry(
              nothing further.\n\nChange the work so that the gate passes. Do not change the \
              gate itself."
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use io_harness::EventKind;
+
+    /// A refusal exactly as `Git::run` raises one: act `exec`, target the program
+    /// name, and no rule — the posture's own default decided.
+    fn git_refused() -> RunEvent {
+        RunEvent::new(
+            1,
+            1,
+            EventKind::Refused {
+                act: "exec".to_string(),
+                target: crate::approval::GIT.to_string(),
+                rule: None,
+                layer: None,
+            },
+        )
+    }
+
+    fn app() -> App {
+        let mut app = App::new(crate::theme::DARK, "m");
+        app.started();
+        app
+    }
+
+    fn text(app: &mut App) -> String {
+        app.take_pending()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// **F2's second half, and the arm its sabotage breaks.** The refusal arrives
+    /// as an event and nothing about it says `/commit`: this is the agent reaching
+    /// for a git tool on its own. Gating the explanation on the `/commit` path
+    /// leaves this silent, which is exactly the defect the release repairs.
+    #[test]
+    fn f2_an_unprompted_git_refusal_is_explained() {
+        let mut app = app();
+        app.event(&git_refused(), Duration::ZERO);
+        let said = text(&mut app);
+        assert!(
+            said.contains("run `git`") && said.contains("Allowing `git` for this session"),
+            "an unprompted git refusal said: {said:?}"
+        );
+    }
+
+    /// The posture is named, because "something refused this" is the sentence an
+    /// operator cannot act on.
+    #[test]
+    fn f2_the_explanation_names_the_posture_that_decided() {
+        let mut app = app();
+        app.set_posture(Some(Posture::AskWrites));
+        app.event(&git_refused(), Duration::ZERO);
+        assert!(text(&mut app).contains("`ask-writes` posture"));
+    }
+
+    /// A model refused once retries, and five refusals are five facts but one
+    /// reason. The per-call lines are `crate::events`'s and stay; the paragraph is
+    /// said once.
+    #[test]
+    fn f2_a_turn_that_retries_git_is_explained_once() {
+        let mut app = app();
+        for _ in 0..5 {
+            app.event(&git_refused(), Duration::ZERO);
+        }
+        assert_eq!(text(&mut app).matches("Allowing `git`").count(), 1);
+    }
+
+    /// And the next turn is explained again: the flag is about a turn, not about
+    /// the session.
+    #[test]
+    fn f2_the_next_turn_is_explained_again() {
+        let mut app = app();
+        app.event(&git_refused(), Duration::ZERO);
+        let _ = text(&mut app);
+        app.started();
+        app.event(&git_refused(), Duration::ZERO);
+        assert!(text(&mut app).contains("Allowing `git`"));
+    }
+
+    /// A refusal of something that is not git explains nothing about git.
+    #[test]
+    fn f2_another_act_is_not_a_git_refusal() {
+        let mut app = app();
+        app.event(
+            &RunEvent::new(
+                1,
+                1,
+                EventKind::Refused {
+                    act: "write".to_string(),
+                    target: "/etc/hosts".to_string(),
+                    rule: None,
+                    layer: None,
+                },
+            ),
+            Duration::ZERO,
+        );
+        assert!(!text(&mut app).contains("Allowing `git`"));
+    }
+
+    #[test]
+    fn f2_the_allowance_is_reachable_and_pushing_it_twice_leaves_one() {
+        let mut app = app();
+        app.allow_git();
+        app.allow_git();
+        assert_eq!(app.remembered(), [crate::approval::git_allowance()]);
+    }
+
+    #[test]
+    fn f2_a_branch_call_names_the_branch_it_made() {
+        let mut app = app();
+        app.event(
+            &RunEvent::new(
+                1,
+                1,
+                EventKind::ToolCall {
+                    name: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
+                    target: "feat/0.25.0".to_string(),
+                },
+            ),
+            Duration::ZERO,
+        );
+        assert_eq!(app.branch(), Some("feat/0.25.0"));
+    }
+
+    /// A `git_branch` announced with no `name` argument falls back to the tool's
+    /// own name. That is a malformed call, not a branch called `git_branch`.
+    #[test]
+    fn f2_a_nameless_branch_call_names_nothing() {
+        let mut app = app();
+        app.event(
+            &RunEvent::new(
+                1,
+                1,
+                EventKind::ToolCall {
+                    name: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
+                    target: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
+                },
+            ),
+            Duration::ZERO,
+        );
+        assert_eq!(app.branch(), None);
+    }
+
+    /// The block goes through `pending`, so `take_pending` counts its rows into
+    /// `turn_rows` and a rewind can erase what it drew.
+    #[test]
+    fn f2_a_commit_block_is_counted_by_the_rewind_arithmetic() {
+        let mut app = app();
+        app.committed(vec![
+            "committed on main".to_string(),
+            "  subject".to_string(),
+        ]);
+        assert_eq!(app.take_pending().len(), 3);
+        assert_eq!(app.turn_rows(), 3);
     }
 }
