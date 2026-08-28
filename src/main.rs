@@ -2532,6 +2532,26 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
+                        Pick::Export { path, content } => {
+                            if io_cli::store::acts(index) {
+                                let workspace = io_harness::tools::Workspace::with_policy(
+                                    session.root(),
+                                    policy.clone(),
+                                );
+                                match io_cli::export::write(&workspace, path, content) {
+                                    Ok(written) => {
+                                        app.record(Tone::Muted, io_cli::export::report(&written))
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!(
+                                            "{path} was not written: {}",
+                                            io_cli::failure::said(&error)
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
                         Pick::StoreCompact => {
                             if io_cli::store::acts(index) {
                                 match io_cli::store::compact(&store) {
@@ -3761,6 +3781,76 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         ),
                     ),
                 },
+                // Both halves build their content HERE, before the confirmation,
+                // so the operator agrees to a file that exists rather than to an
+                // intention. A build that fails says so and opens nothing.
+                Action::Export(taken) => {
+                    let workspace =
+                        io_harness::tools::Workspace::with_policy(session.root(), policy.clone());
+                    let built = match &taken {
+                        commands::Taken::Conversation(path) => {
+                            match io_cli::export::conversation(&store, session.id()) {
+                                Ok(Some(text)) => Ok(Some((
+                                    path.clone().unwrap_or_else(|| {
+                                        io_cli::export::conversation_path(session.id())
+                                    }),
+                                    text,
+                                    "conversation",
+                                ))),
+                                Ok(None) => Err(io_cli::export::Refused::Nothing.said()),
+                                Err(error) => Err(format!(
+                                    "the conversation could not be read: {}",
+                                    io_cli::failure::said(&error)
+                                )),
+                            }
+                        }
+                        commands::Taken::Trace(path) => {
+                            match last_run(&session, &store).map(|turn| turn.run_id) {
+                                Some(run_id) => match io_cli::export::trace(&store, run_id) {
+                                    Ok(json) => Ok(Some((
+                                        path.clone()
+                                            .unwrap_or_else(|| io_cli::export::trace_path(run_id)),
+                                        json,
+                                        "trace",
+                                    ))),
+                                    Err(error) => Err(format!(
+                                        "the trace could not be read: {}",
+                                        io_cli::failure::said(&error)
+                                    )),
+                                },
+                                None => Err(io_cli::export::Refused::Nothing.said()),
+                            }
+                        }
+                    };
+                    match built {
+                        Ok(Some((path, content, what))) => {
+                            // Asked before the confirmation, so an operator is
+                            // never shown a write that is going to be refused.
+                            match io_cli::export::occupied(&workspace, &path) {
+                                Ok(true) => app.record(
+                                    Tone::Error,
+                                    io_cli::export::Refused::Exists(path).said(),
+                                ),
+                                Ok(false) => {
+                                    let (title, rows) = io_cli::export::confirm(&path, what);
+                                    picker = Some((
+                                        Picker::new(title, rows),
+                                        Pick::Export { path, content },
+                                    ));
+                                }
+                                Err(error) => app.record(
+                                    Tone::Error,
+                                    format!(
+                                        "{path} could not be checked: {}",
+                                        io_cli::failure::said(&error)
+                                    ),
+                                ),
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(said) => app.record(Tone::Error, said),
+                    }
+                }
                 // Reached only at an idle prompt: while a turn runs the driver's
                 // own key handler answers `/steer` before `parse` is ever called,
                 // because that is where the inbox lives. So this arm is the
@@ -5887,6 +5977,19 @@ enum Pick {
     /// A confirmation over a compaction. Carries nothing: the operation takes no
     /// argument, and the figures it reports are read either side of the call.
     StoreCompact,
+    /// A confirmation over one export, carrying the bytes it will write.
+    ///
+    /// The content is built before the confirmation and carried rather than
+    /// rebuilt on acceptance, so the file written is the one the operator was
+    /// shown the size of — and so a store that stops answering between the two
+    /// keystrokes cannot turn an agreed export into a truncated file.
+    Export {
+        /// Where it goes, relative to the workspace root.
+        path: String,
+        /// Exactly what goes in it. For a trace this is io-harness's own string,
+        /// untouched.
+        content: String,
+    },
     /// One directory of the workspace, in the order `list_dir` sorted it, so a
     /// chosen index reads straight back through `complete::pick`. The rows are
     /// last components rather than paths — see `complete::rows` for why — which

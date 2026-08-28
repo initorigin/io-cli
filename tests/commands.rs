@@ -104,6 +104,10 @@ fn the_commands_are_the_commands() {
             // row 0 does nothing; it takes that group to nine and `/export` will
             // take it to ten, the bound.
             "/store",
+            // 0.27.0 — the other end of the same question: `/store` is what is
+            // being kept, this is how the work gets out. It takes `Inspect` to
+            // ten, which is the bound.
+            "/export",
             // 0.24.0 — beside `/stats` because `/stats` is the only other row
             // that says the word: that page counts how the gates went, and until
             // this release nothing in the product could say what a gate was. It
@@ -315,10 +319,10 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     // release growing a command and losing another.
     assert_eq!(
         COMMANDS.len(),
-        34,
-        "0.27.0 adds `/store` on top of the thirty-three 0.26.0 shipped, and will \
-         add `/export` and `/undo` before it is done; a number this gate does not \
-         name means one arrived unrecorded",
+        35,
+        "0.27.0 adds `/store` and `/export` on top of the thirty-three 0.26.0 \
+         shipped, and will add `/undo` before it is done; a number this gate does \
+         not name means one arrived unrecorded",
     );
 }
 
@@ -987,18 +991,29 @@ fn the_writers_are_configure_commands_and_skills_is_the_inspection() {
         "`/skills` opens a list and writes nothing, which is what Inspect means",
     );
 
-    // The room the move made is real, not an accounting trick: Inspect is under
-    // the bound with a command to spare. `f13_no_group_is_longer_than_ten` is
-    // still the gate; this only says the release did not spend every seat it
-    // freed.
+    // **0.27.0 spends the last seat this move freed, and that is a decision
+    // rather than an oversight.** The 0.19.0 form of this assertion was
+    // `inspect < 10` — the release that made the room saying it had not used all
+    // of it. `/store` and `/export` take the group to exactly ten, which is the
+    // bound `f13_no_group_is_longer_than_ten` enforces, so the sentence this gate
+    // makes changes from *there is room left* to *the room is now gone*: the next
+    // command that would belong in `Inspect` re-files one that is in the wrong
+    // group rather than widening the bound, which is what `Turn` did for `/undo`
+    // in this same release and what 0.19.0, 0.22.0 and 0.26.0 each did before it.
+    //
+    // The equality is deliberate. `<= 10` would go on passing at nine and would
+    // stop saying anything the moment somebody removed a command; an exact ten
+    // fails in both directions and makes the next change a decision somebody
+    // records here.
     let inspect = GROUPS
         .iter()
         .find(|(group, _)| *group == Group::Inspect)
         .map(|(_, names)| names.len())
         .expect("Inspect is a group with commands in it");
-    assert!(
-        inspect < 10,
-        "Inspect holds {inspect}; the point of the move was to leave room",
+    assert_eq!(
+        inspect, 10,
+        "Inspect holds {inspect}; 0.27.0 filled it to the bound with `/store` and \
+         `/export`, so the next command here re-files rather than widens",
     );
 
     let rows = palette(&Templates::none(), &[]);

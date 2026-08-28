@@ -62,6 +62,7 @@ pub mod edit;
 pub mod editor;
 pub mod events;
 pub mod exec;
+pub mod export;
 pub mod failure;
 pub mod fanout;
 pub mod fleet;
@@ -102,6 +103,7 @@ pub mod stats;
 pub mod status;
 pub mod stdin;
 pub mod store;
+
 pub mod term;
 pub mod theme;
 pub mod transcript;

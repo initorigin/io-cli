@@ -530,6 +530,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/cost` | commit what this run, this session and this install have spent |
 | `/stats` | commit how the runs have gone: outcomes, first-try, gates, latency |
 | `/store` | commit what the run store holds; `rm <id>`, `sweep <date>` and `compact` change it |
+| `/export` | write this conversation as markdown, or `trace` for a run's canonical trace |
 
 **configure**
 

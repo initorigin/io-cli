@@ -277,6 +277,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/store",
         "commit what the run store holds; `rm <id>`, `sweep <date>` and `compact` change it",
     ),
+    // Beside `/store` because the two answer the same question from opposite
+    // ends: that one is what the store is keeping, this one is how the work gets
+    // out. The description names both files, because markdown and a canonical
+    // trace are for two different readers and choosing between them is the whole
+    // decision.
+    (
+        "/export",
+        "write this conversation as markdown, or `trace` for a run's canonical trace",
+    ),
     // Beside `/stats` because `/stats` is the only other row that says the word,
     // and the two are the halves of one thing: that page counts how the gates
     // went, and until this release nothing in the product could say what a gate
@@ -453,7 +462,7 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             // which is the bound — so the next command that would fill this group
             // re-files one that is in the wrong group rather than widening it,
             // exactly as `Turn` did for `/undo` in this same release.
-            "/store",
+            "/store", "/export",
         ],
     ),
     // **`/mcp` and `/provider` moved here in 0.19.0, and it is a correction rather
@@ -1237,6 +1246,23 @@ pub enum Action {
     /// [`crate::store`] for why a removal and a compaction are different
     /// questions with different costs.
     Store(Option<Keep>),
+    /// Write the work out: the conversation as markdown, or one run's canonical
+    /// trace, verbatim.
+    ///
+    /// See [`Taken`]. The path is optional in both forms and a proposed one is
+    /// used when it is absent — proposed rather than imposed, and refused rather
+    /// than overwritten when something is already there.
+    Export(Taken),
+}
+
+/// Which export was asked for, and where it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Taken {
+    /// This session's conversation, as markdown.
+    Conversation(Option<String>),
+    /// The last run's canonical trace, exactly as io-harness produced
+    /// it.
+    Trace(Option<String>),
 }
 
 /// What `/store` was asked to do, once the page is not the answer.
@@ -1927,6 +1953,18 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
                 },
                 Some("compact" | "vacuum") => Action::Store(Some(Keep::Compact)),
                 Some(word) => Action::Store(Some(Keep::Unknown(word.to_string()))),
+            }
+        }
+        // `trace` is a word and everything else is a path, which is the one
+        // ambiguity worth naming: an operator who wants a file called `trace`
+        // types `./trace`. The alternative — a `--trace` flag — would be the only
+        // flag on any command in this product.
+        "export" => {
+            let mut rest = input.split_whitespace().skip(1);
+            match rest.next() {
+                Some("trace") => Action::Export(Taken::Trace(rest.next().map(str::to_string))),
+                Some(path) => Action::Export(Taken::Conversation(Some(path.to_string()))),
+                None => Action::Export(Taken::Conversation(None)),
             }
         }
         "config" | "settings" => {
