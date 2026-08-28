@@ -163,6 +163,24 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/copy diff",
         "put the whole run's patch on the system clipboard",
     ),
+    // Beside `/copy` and `/copy diff` because it is the third thing an operator
+    // does with the work a turn has just finished: one puts the answer somewhere,
+    // one puts the patch somewhere, and this one makes the patch permanent. Same
+    // subject, same moment, one row apart — which is the argument `GROUPS` already
+    // writes out for those two, and the reason this is filed under `Turn` rather
+    // than under the group that merely shows things.
+    //
+    // **The description says "ask the agent" because that is literally what
+    // happens.** io-cli runs no git: the word sends a prompt, and it is the agent
+    // that reviews what changed with io-harness's git tools, stages what belongs
+    // and writes the message — see [`crate::commit::prompt`]. A row reading
+    // "commit this turn's work" would promise a deterministic act and deliver a
+    // billed turn whose result the operator can still be surprised by, which is
+    // the one thing a command that writes to a repository must not do.
+    (
+        "/commit",
+        "ask the agent to describe this turn's work and commit it",
+    ),
     (
         "/config",
         "every setting, the value in force and the file that decided it",
@@ -268,16 +286,21 @@ pub const COMMANDS: &[(&str, &str)] = &[
 ///
 /// **Grouped by the operator's intent rather than by which part of the harness
 /// answers**, because the second is an implementation detail and the first is
-/// the only thing somebody scanning a list of thirty-one is holding in their
+/// the only thing somebody scanning a list of thirty-two is holding in their
 /// head.
 ///
 /// Four groups and none longer than ten, which is the bound `tests/commands.rs`
-/// asserts. A flat list of thirty-one is a list nobody reads; 0.16.0 is the
+/// asserts. A flat list of thirty-two is a list nobody reads; 0.16.0 is the
 /// release that grouped them, at twenty, and every release since has added to a
 /// group rather than to a list. **The count in this paragraph is the one number
 /// here that goes stale on its own** — it said twenty through 0.17.0, which had
 /// twenty-three, and twenty-six through 0.23.0, which had thirty — so it is
 /// written out rather than left as "a few".
+///
+/// **Two of the four groups are now at nine or better and `Turn` is at the bound
+/// itself**, which is 0.25.0's doing; what happens when the next command has
+/// nowhere to go is answered in the `/gates` note at the foot of [`GROUPS`] and
+/// is not re-decided here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
     /// The conversation itself: start one, leave one, come back to one.
@@ -364,6 +387,24 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/image",
             "/copy",
             "/copy diff",
+            // **`/commit` takes `Turn` to ten of ten, which is the bound.** It is
+            // here on the argument the note above this group already makes, and
+            // not on there being room:
+            // it acts on the work the turn just finished — the same subject
+            // `/image`, `/copy` and `/copy diff` have — and the thing a command
+            // acts *on* is what decides its group. It asks the store nothing,
+            // which is what `Inspect` means, and it writes no configuration file,
+            // which is what `Configure` means.
+            //
+            // So this group is full, and the answer for the next command that
+            // would fill one is already written down rather than owed: the
+            // `/gates` note under `Configure` below — `src/commands.rs:447-449` —
+            // pre-committed it when that group reached nine, and this is the
+            // release that has to keep it. Re-file what is in the wrong group; do not
+            // widen the bound. Two groups have now stood at the edge of it and
+            // neither release moved it, which is the whole value of having said so
+            // in advance.
+            "/commit",
         ],
     ),
     (
@@ -939,6 +980,26 @@ pub enum Action {
     Context,
     /// Put something on the system clipboard over OSC 52.
     Copy(Copied),
+    /// Ask the agent to describe the work this turn did, and to commit it.
+    ///
+    /// **A prompt and not a git invocation, and that difference is the whole of
+    /// what the word means.** This crate runs no git of its own — io-harness keeps
+    /// the engine private, and the one module here allowed to reach a subprocess
+    /// at all is [`crate::shell`] — so the action sends the sentence
+    /// [`crate::commit::prompt`] builds and the *agent* does the work: it reviews
+    /// what changed with io-harness's git tools, stages what belongs to this turn,
+    /// and writes the message. What comes back is a `git_commit` call, which
+    /// [`crate::commit::made_in`] reads because it is the only durable record that
+    /// a commit happened — no `EventKind` carries a message, a branch or an object
+    /// id, and no `Store` method returns one.
+    ///
+    /// **No argument, and that is a decision rather than an omission.** A commit
+    /// message is a subject, a blank line and a body; none of that is a word that
+    /// fits after a slash, and offering half of one would put io-cli back in the
+    /// business of writing the message — which is precisely what the command
+    /// exists not to do. So anything after the word is ignored, the way
+    /// `/model gpt-5` and `/gates` ignore theirs.
+    Commit,
     /// Put the whole conversation back into the scrollback.
     Transcript,
     /// Clear the screen and start a new conversation.
@@ -1792,6 +1853,16 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             Some("diff") | Some("patch") => Action::Copy(Copied::Diff),
             _ => Action::Copy(Copied::Answer),
         },
+        // **One spelling, and everything after it ignored.** `/ci` and `/save` are
+        // both words a hand might reach for and neither has been typed at this
+        // prompt yet, which is the rule `/status` and `/compact` already follow: a
+        // second name is a name to keep working forever in exchange for nothing.
+        //
+        // And no argument is read, not even the rest of the line. `/remember` takes
+        // the rest because the sentence IS the thing being stored; here the message
+        // is the agent's to write, and a half-typed subject picked up off the prompt
+        // would be io-cli writing it after all — see [`Action::Commit`].
+        "commit" => Action::Commit,
         unknown => {
             let mut lines = vec![theme.notice(
                 Tone::Warning,
