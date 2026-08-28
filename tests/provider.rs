@@ -426,6 +426,86 @@ async fn f6_a_bad_credential_on_the_head_does_not_spend_the_link_below_it() {
     );
 }
 
+/// What a caller learns about the chain `provider::build` handed it.
+///
+/// The only way to assert `build` itself. Everything above tests [`Chain`]
+/// directly, which cannot catch a `build` that assembles the wrong links — and
+/// "assembles the wrong links" is precisely F5's named sabotage, since dropping
+/// the head still produces a perfectly working chain of the operator's second
+/// choice.
+struct Probe;
+
+impl io_cli::provider::WithProvider for Probe {
+    /// The model the chain will ask first, and every host it may reach.
+    type Out = (String, usize);
+
+    async fn call<P: Provider>(
+        self,
+        make: impl Fn(&str) -> Result<P, String>,
+        model: String,
+    ) -> Self::Out {
+        let provider = make(&model).expect("the chain builds from two valid specs");
+        (
+            provider.model_hint().unwrap_or_default().to_string(),
+            provider.endpoints().len(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn f5_build_asks_the_operators_first_choice_first() {
+    // Two vendors rather than two of one, so the links are distinguishable by
+    // something other than the model name — and the credential is in the spec so
+    // no test has to touch the process environment to run.
+    let specs = vec![
+        io_harness::ProviderSpec::OpenRouter {
+            model: "head-model".into(),
+            api_key: Some("k".into()),
+        },
+        io_harness::ProviderSpec::Anthropic {
+            model: "tail-model".into(),
+            api_key: Some("k".into()),
+        },
+    ];
+
+    let (asked_first, hosts) = io_cli::provider::build(specs, None, Probe)
+        .await
+        .expect("a chain of two");
+
+    assert_eq!(
+        asked_first, "head-model",
+        "the head of the chain is the provider the operator wrote first; a chain \
+         folded from the tail alone answers every request from their second choice",
+    );
+    assert_eq!(
+        hosts, 2,
+        "every link's host reaches the egress policy, or a fall-through is a way \
+         to reach a host the policy never saw",
+    );
+}
+
+#[tokio::test]
+async fn f5_a_model_override_replaces_the_heads_model_and_not_the_tails() {
+    // `-m/--model` names one model, and a chain has several. Applying it to every
+    // link would ask a second vendor for a model id only the first one serves.
+    let specs = vec![
+        io_harness::ProviderSpec::OpenRouter {
+            model: "head-model".into(),
+            api_key: Some("k".into()),
+        },
+        io_harness::ProviderSpec::Anthropic {
+            model: "tail-model".into(),
+            api_key: Some("k".into()),
+        },
+    ];
+
+    let (asked_first, _) = io_cli::provider::build(specs, Some("chosen".into()), Probe)
+        .await
+        .expect("a chain of two");
+
+    assert_eq!(asked_first, "chosen");
+}
+
 #[test]
 fn f5_every_link_s_host_is_authorized_and_not_only_the_head_s() {
     // io-harness's egress policy is deny-by-default and authorizes the provider's

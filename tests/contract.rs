@@ -284,6 +284,65 @@ fn f2_nothing_configured_is_the_contract_the_session_built_before() {
     // reads it off the built contract, which is where it can actually be wrong.
 }
 
+/// **F1 — the effort level is read by each turn, never taken from the session.**
+///
+/// A driver-text gate, and it is here because there is no other instrument.
+/// Nothing under `tests/` links `src/main.rs`, so the difference between a posture
+/// and a one-shot — which is the whole of what `/effort` promises — lives in a
+/// binding this suite cannot call. The sibling `fold_next` is deliberately a
+/// `std::mem::take` two lines above it, so the wrong shape is not merely
+/// imaginable here: it is written out, correctly, immediately adjacent.
+///
+/// Weak, and the only one available. Four gates of this kind already exist in this
+/// file and in `tests/steer.rs` for the same reason.
+///
+/// Sabotage: change the argument to `std::mem::take(&mut effort)` — under which
+/// only this test fails, and it fails by making every level last exactly one turn
+/// while every other assertion about `/effort` stays green.
+#[test]
+fn f1_the_driver_reads_the_effort_level_rather_than_taking_it() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver).expect("the driver");
+    // Line endings normalised: a Windows checkout has `\r\n`, and slicing on a
+    // bare `\n` has now shipped a defect in a test twice — 0.19.0 and 0.23.0.
+    let text = text.replace("\r\n", "\n");
+
+    assert!(
+        !text.contains("std::mem::take(&mut effort)"),
+        "the effort level is a posture: taking it would spend the level on one \
+         turn, which is what `fold_next` beside it is supposed to be alone in doing",
+    );
+    assert!(
+        text.contains("io_cli::contract::buying(contract, effort)"),
+        "the level reaches the turn through `contract::buying`, which is where \
+         the decision is so that it can be asserted at all",
+    );
+}
+
+/// **F7 — the driver asks the turn's own kind and never infers it.**
+///
+/// The second driver-text gate, and the criterion's named sabotage is exactly what
+/// it forbids: a run cancelled before its first step also has zero steps and was
+/// not an answer, so a report derived from a step count would call an interrupted
+/// turn a conversation.
+///
+/// Sabotage: report on `result.outcome`'s step count instead — under which only
+/// this test fails, because `app::answered_said` would still be correct and simply
+/// never called.
+#[test]
+fn f7_the_driver_reads_the_turn_kind_rather_than_counting_steps() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver)
+        .expect("the driver")
+        .replace("\r\n", "\n");
+
+    assert!(
+        text.contains("io_cli::app::answered_said(&result.kind)"),
+        "whether a turn was answered is a fact io-harness reports on \
+         `TurnResult::kind`, not something to infer from what the run did not do",
+    );
+}
+
 /// **F8 — `conversational = false` makes a greeting a run, and absent changes
 /// nothing.**
 ///
