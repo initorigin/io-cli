@@ -305,6 +305,38 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
         }
         None => contract,
     };
+    // **The operator's own answer, and it outranks the gate's.** The block above
+    // sets classification on because a criterion would otherwise turn it off; this
+    // is the only place an operator can say what they actually want, so it is
+    // applied last and wins. `None` changes nothing at all — not
+    // `with_conversational_turns(true)`, which would be io-cli deciding for the
+    // ungated majority a question io-harness already answers for them, and would
+    // put a field on every contract that was not there before.
+    let contract = match crate::settings::stored(config)
+        .0
+        .and_then(|s| s.conversational)
+    {
+        Some(want) => contract.with_conversational_turns(want),
+        None => contract,
+    };
+    // **`[app.io-cli.routing]`, in `configured` and not in `session`, because
+    // `io exec` is where it matters most.** An unattended run is the one that
+    // cannot notice a model failing its gate four times and reach for a better
+    // one, and the headless arm uses io-harness's flat loop — the only loop that
+    // consults the rules at all (`run/step.rs:1097`).
+    //
+    // A section that names no rule leaves the contract's routing unset rather than
+    // putting a default `Routing` on it; `routing::routing` owns that decision and
+    // says why at length.
+    let contract = match crate::settings::stored(config)
+        .0
+        .and_then(|s| s.routing)
+        .as_ref()
+        .and_then(crate::routing::routing)
+    {
+        Some(routing) => contract.with_routing(routing),
+        None => contract,
+    };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.

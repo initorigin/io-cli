@@ -989,6 +989,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // it can carry has already been disclosed by `drive`, which is where that
     // read is documented as *the read that discloses*.
     let (settings_in_force, _) = settings::stored(&config);
+    // **The one thing a routing section cannot say about itself**, said before the
+    // configuration is handed on so it reads from the settings actually in force
+    // rather than from a copy of them. io-harness consults the rules only in its
+    // flat loop (`run/step.rs:1097`), so a contained turn parses them, carries them
+    // and never fires them.
+    //
+    // Conditional on the session actually being contained, and that is F4's whole
+    // point: warning every operator who wrote a routing section would tell the
+    // majority — who have no containment at all — about a limitation that does not
+    // apply to them. `routing::inert_under_containment` owns the condition; this is
+    // its one caller.
+    let inert_routing = settings_in_force
+        .as_ref()
+        .and_then(|stored| stored.routing.as_ref())
+        .and_then(|routing| {
+            io_cli::routing::inert_under_containment(routing, containment.is_some())
+        });
     let mut configuration = io_cli::reload::Configuration::new(
         session.root().to_path_buf(),
         config.clone(),
@@ -997,6 +1014,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     if let Some(caps) = &containment {
         let notice = settings::contained_notice(caps, app.theme.glyphs.dash);
         app.say(Tone::Muted, notice);
+    }
+    // Beside the containment notice, because it is a qualification of it.
+    if let Some(notice) = inert_routing {
+        app.say(Tone::Warning, notice);
     }
     // **The session no longer keeps a clock, because nothing shows one.** The
     // clock on screen belongs to the turn — it starts at zero when one starts and
@@ -4853,6 +4874,17 @@ async fn turn<P: Provider>(
                         app.theme.glyphs.dash
                     ),
                 );
+            }
+            // **A turn that was answered rather than run, said out loud at last.**
+            // io-harness has classified these since before this interface existed
+            // and io-cli has never read `TurnResult::kind`, so the commonest turn
+            // there is — a question that is only a question — arrived as silence:
+            // every line this product draws about a turn comes from events a
+            // conversational turn does not emit. The sentence is
+            // `app::answered_said`'s, which also owns the decision that an unknown
+            // kind reports as a run.
+            if let Some(said) = io_cli::app::answered_said(&result.kind) {
+                app.record(Tone::Muted, said);
             }
         }
     }

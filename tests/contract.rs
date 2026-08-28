@@ -284,6 +284,128 @@ fn f2_nothing_configured_is_the_contract_the_session_built_before() {
     // reads it off the built contract, which is where it can actually be wrong.
 }
 
+/// **F8 — `conversational = false` makes a greeting a run, and absent changes
+/// nothing.**
+///
+/// Both files, because an assertion on one of them cannot tell a wired key from a
+/// default. io-harness decides this for io-cli today —
+/// `contract.conversational.unwrap_or(matches!(contract.verify,
+/// Verification::None))` at `session.rs:1125-1127` — so with the key absent the
+/// contract must carry `None` and leave that decision where it is, and with the key
+/// present it must carry exactly what was written.
+///
+/// Sabotage: pass the key's value only when it is `true` — under which this fails
+/// on the `false` file, which is the only file anybody would write the key into.
+#[test]
+fn f8_the_conversational_key_reaches_the_contract_in_both_directions() {
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+
+    let built = |body: &str| {
+        let (dir, config) = discovered(&[("io.toml", body)]);
+        let root = dir.path().to_path_buf();
+        let contract = session(
+            "say hello",
+            root,
+            &config,
+            &Capabilities::default(),
+            responder.clone(),
+            None,
+        );
+        (dir, contract.conversational)
+    };
+
+    let (_empty, absent) = built("");
+    assert_eq!(
+        absent, None,
+        "with no key, the decision stays io-harness's — it is on for an ungated \
+         contract and io-cli must not restate that as a choice of its own",
+    );
+
+    let (_off, refused) = built("[app.io-cli]\nconversational = false\n");
+    assert_eq!(
+        refused,
+        Some(false),
+        "an operator who wants every prompt to open a run has asked for one",
+    );
+
+    let (_on, wanted) = built("[app.io-cli]\nconversational = true\n");
+    assert_eq!(wanted, Some(true));
+}
+
+/// **F3 — a routing section reaches the contract, and no section leaves it alone.**
+///
+/// The rules themselves are asserted in `tests/routing.rs` against
+/// `io_harness::Routing::model_for`, which is io-harness's own pure function and
+/// the only implementation of the decision. What belongs here is the seam: that
+/// what the operator wrote arrives on the contract, and that a file which names no
+/// rule does not put a default `Routing` where there was nothing.
+#[test]
+fn f3_a_routing_section_reaches_the_contract_and_an_absent_one_leaves_it_unset() {
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+    let (answerer, _questions) = io_cli::intent::channel();
+    let responder: Arc<dyn io_harness::Responder> = Arc::new(answerer);
+
+    let built = |body: &str| {
+        let (dir, config) = discovered(&[("io.toml", body)]);
+        let root = dir.path().to_path_buf();
+        let contract = session(
+            "bring the docs up to date",
+            root,
+            &config,
+            &Capabilities::default(),
+            responder.clone(),
+            None,
+        );
+        (dir, contract.routing)
+    };
+
+    let (_none, unset) = built("");
+    assert_eq!(unset, None, "a file with no rules asks for no routing");
+
+    let (_empty, still_unset) = built("[app.io-cli.routing]\n");
+    assert_eq!(
+        still_unset, None,
+        "a present but empty section names no rule, and a default `Routing` is a \
+         value where there was absence",
+    );
+
+    let (_both, routed) = built(
+        "[app.io-cli.routing.escalate_after]\nfailures = 3\nmodel = \"stronger\"\n\
+         [app.io-cli.routing.downshift_under]\nbytes = 2000\nmodel = \"cheaper\"\n",
+    );
+    let routed = routed.expect("a section naming both rules routes");
+    assert_eq!(routed.escalate_after, Some((3, "stronger".to_string())));
+    assert_eq!(routed.downshift_under, Some((2000, "cheaper".to_string())));
+}
+
+/// **F7 — a turn that was answered is reported as answered, and a run is not.**
+///
+/// The `Run` half is the one that must not move: every existing report about an
+/// ordinary turn stays byte-identical, so this arm answers `None` and the driver
+/// records nothing.
+///
+/// Sabotage: report `Reply` for any run whose step count is zero — under which this
+/// still passes and F7's live arm fails, because a turn cancelled before its first
+/// step also has zero steps and was not an answer. That is why the kind is read
+/// rather than inferred.
+#[test]
+fn f7_only_a_reply_is_reported_as_having_been_answered() {
+    assert!(
+        io_cli::app::answered_said(&io_harness::TurnKind::Reply)
+            .is_some_and(|said| said.contains("without opening a run")),
+        "a question that was only a question has to say so, or it arrives as silence",
+    );
+    assert_eq!(
+        io_cli::app::answered_said(&io_harness::TurnKind::Run),
+        None,
+        "an ordinary turn already accounts for itself",
+    );
+}
+
 /// **F1 — a session that never says `/effort` sends no reasoning field.**
 ///
 /// The absent case is not a fourth level. `TaskContract::effort` is an

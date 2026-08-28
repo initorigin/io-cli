@@ -2367,6 +2367,35 @@ fn gate_said(
         .or_else(|| (!last.detail.trim().is_empty()).then(|| last.detail.clone()))
 }
 
+/// The line a turn that was answered rather than run commits, if it was one.
+///
+/// **io-harness has answered questions conversationally for longer than this
+/// interface has existed, and this crate has never read the field that says so.**
+/// `session.rs:1125-1127` turns classification on whenever the contract carries
+/// `Verification::None`, which `TaskContract::workspace` does — so a greeting has
+/// always come back after one completion with **no steps row, no gate attempt, no
+/// checkpoint, no snapshot and no tool loop** (`run/step.rs:312-320`). What reached
+/// the operator was silence, because every line this product draws about a turn is
+/// drawn from events a conversational turn does not emit.
+///
+/// `None` for a run, which must stay byte-identical to what it was: an ordinary
+/// turn already accounts for itself and a second sentence saying it was a run
+/// would appear under every turn anybody ever takes.
+///
+/// **A kind this build does not know reports as a run.** `TurnKind` is
+/// `#[non_exhaustive]` (`session.rs:1434`), and the conservative arm is the one
+/// that says nothing: claiming a turn was answered when it may have used tools is
+/// the one error here that would mislead about what happened to somebody's files.
+#[must_use]
+pub fn answered_said(kind: &io_harness::TurnKind) -> Option<String> {
+    match kind {
+        io_harness::TurnKind::Reply => Some(
+            "answered without opening a run — one completion, no steps and no tools".to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// What `/effort` changes the session's level to, or `None` to change nothing.
 ///
 /// The outer `Option` is the question and the inner one is the answer, which reads
