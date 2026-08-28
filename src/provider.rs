@@ -510,13 +510,15 @@ pub async fn build<W: WithProvider>(
     model_override: Option<String>,
     with: W,
 ) -> Result<W::Out, String> {
-    let mut makers = Vec::new();
-    let mut models = Vec::new();
-    for spec in specs {
-        let (maker, model) = maker_for(spec)?;
-        makers.push(maker);
-        models.push(model);
-    }
+    // **Iterators and not a `for`, which is a rule rather than a taste.**
+    // `tests/dependencies.rs` refuses a loop in any file that calls a provider,
+    // because a loop beside a provider call is the shape of a second agent loop.
+    // The one loop this module is permitted is the chain's own over its links, and
+    // that gate now names it by path and holds it to iterating nothing else — so
+    // turning configuration into closures, which is what this does, has to be
+    // written without one.
+    let built: Result<Vec<(Maker, String)>, String> = specs.into_iter().map(maker_for).collect();
+    let (makers, mut models): (Vec<Maker>, Vec<String>) = built?.into_iter().unzip();
     let Some(head) = models.first().cloned() else {
         return Err("no provider is configured; run `io setup`".into());
     };
@@ -526,12 +528,14 @@ pub async fn build<W: WithProvider>(
     // leaves every fallback answering as its own entry says it should.
     let tail: Vec<String> = models.split_off(1);
     let make = move |name: &str| {
-        let mut links = Vec::with_capacity(makers.len());
-        links.push(makers[0](name)?);
-        for (maker, model) in makers[1..].iter().zip(tail.iter()) {
-            links.push(maker(model)?);
-        }
-        Chain::of(links).ok_or_else(|| "no provider is configured; run `io setup`".to_string())
+        let head = std::iter::once(makers[0](name)?);
+        let rest: Vec<Vendor> = makers[1..]
+            .iter()
+            .zip(tail.iter())
+            .map(|(maker, model)| maker(model))
+            .collect::<Result<_, String>>()?;
+        Chain::of(head.chain(rest).collect())
+            .ok_or_else(|| "no provider is configured; run `io setup`".to_string())
     };
     Ok(with.call(make, head).await)
 }

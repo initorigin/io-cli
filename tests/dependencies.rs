@@ -359,6 +359,39 @@ fn f7_no_source_file_loops_over_provider_responses() {
         );
     }
 
+    // **The 0.26.0 exemption, held to being a boundary.** `src/provider.rs` is the
+    // one file allowed a loop beside a provider call, because the chain asks each
+    // configured vendor in turn when the one before it failed. Two properties keep
+    // that from being an agent loop, and both are asserted rather than intended.
+    //
+    // First: every loop in the file iterates the chain's own links. A loop over
+    // anything else — steps, messages, attempts at the same vendor — is the shape
+    // this gate exists to refuse, and it would be refused here by name.
+    let forwarding_code = code_of(&forwarding);
+    for line in forwarding_code.lines().filter(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("for ")
+            || trimmed.starts_with("loop {")
+            || trimmed.starts_with("while ")
+    }) {
+        assert!(
+            line.contains("self.links.iter()"),
+            "src/provider.rs loops over something that is not the chain's links: \
+             `{}`. The exemption covers asking the next vendor and nothing else.",
+            line.trim(),
+        );
+    }
+
+    // Second: the decision to try another vendor is io-harness's own predicate.
+    // A condition written here would be this crate forming an opinion about which
+    // failures are worth retrying — which is the judgement that turns a fallover
+    // into a loop with a policy.
+    assert!(
+        forwarding.contains("kind.is_retryable()"),
+        "the chain must fall through on `ProviderErrorKind::is_retryable`, which is \
+         what io-harness's own `Fallback` and its own in-run retry both ask",
+    );
+
     let mut calls = Vec::new();
     for (path, text) in sources() {
         // The forwards are subtracted rather than the file being skipped, so the
@@ -377,22 +410,100 @@ fn f7_no_source_file_loops_over_provider_responses() {
         // A provider call and a loop in the same file is the shape of a second
         // agent loop. Asserted per file rather than per function on purpose: it is
         // coarse, and being coarse is what makes it hard to creep past.
-        for keyword in ["\n    loop {", "\n    while ", "\n    for "] {
-            assert!(
-                !text.contains(keyword),
-                "{} both calls a provider and contains a top-level `{}` — \
-                 which is what an agent loop looks like",
-                path.display(),
-                keyword.trim(),
-            );
+        //
+        // **0.26.0 amends this gate rather than relaxing it, and the amendment
+        // makes it stricter in the place it was weakest.** Until this release the
+        // three needles were anchored at four spaces, so they saw a loop written
+        // at the top level of a function and were blind to one written inside an
+        // `impl` — where an agent loop would actually be written. The release that
+        // introduced this crate's first loop around provider calls is the release
+        // that has to notice that, so the needles are now unanchored and every
+        // loop in a provider-calling file is seen.
+        //
+        // `src/provider.rs`'s chain is exempted BY PATH, and the exemption is a
+        // boundary rather than a hole: the assertions below it require that the
+        // only thing it loops over is its own list of links, and that the decision
+        // to try the next one is io-harness's `is_retryable` and not a predicate
+        // of this crate's. Iterating vendors on a failure the dependency has
+        // classified is not an agent loop — it never looks at a successful
+        // response, which the needles above already require.
+        //
+        // The shape is 0.7.0's amendment of the spawn ban and 0.17.0's of this
+        // gate, for the same reason both times.
+        //
+        // **Comments are stripped before the sweep looks**, which is the other
+        // half of unanchoring the needles. `while` and `for` are ordinary English
+        // words, and the first run of the wider gate refused `src/verify.rs` for
+        // three doc comments containing the word "while" — a gate that reads prose
+        // forbids a file from explaining itself, which this repository has now
+        // paid for in 0.16.0, 0.19.0 and twice in one wave in 0.25.0. The rule
+        // learned there is that the stripping belongs in the SWEEP and not only in
+        // the exception, so it is here.
+        let code = code_of(&text);
+        if path != delegating {
+            for keyword in ["loop {", "while ", "for "] {
+                assert!(
+                    !code.contains(keyword),
+                    "{} both calls a provider and contains a `{}` — \
+                     which is what an agent loop looks like",
+                    path.display(),
+                    keyword.trim(),
+                );
+            }
         }
     }
 
-    let total: usize = calls.iter().map(|(_, count)| count).sum();
+    // **The count is asserted over every file EXCEPT the delegating one, and that
+    // is 0.26.0's amendment.** Subtracting the provider module's calls one by one
+    // was how this held through 0.17.0, and it stopped being honest the moment the
+    // module gained a chain: `Vendor` delegates across four arms and `Chain` asks
+    // each link in turn, so the subtraction would have had to grow until it
+    // cancelled everything the file contains — a gate that goes vacuous without
+    // going red, which is the failure this suite has recorded twice.
+    //
+    // So the file is taken out of the count and held instead to the four
+    // properties above, each of which is specific and each of which fails loudly:
+    // its loops iterate only the chain's links, the decision to try another vendor
+    // is io-harness's own predicate, it never reads a response, and it forwards
+    // every completion method the trait declares. Those say what "no second agent
+    // loop" actually means here, where a number no longer can.
+    let elsewhere: usize = calls
+        .iter()
+        .filter(|(path, _)| path != &delegating)
+        .map(|(_, count)| count)
+        .sum();
     assert_eq!(
-        total, 1,
-        "io-cli should call a provider exactly once, for the wizard's verification \
-         handshake. Found {calls:?}",
+        elsewhere, 1,
+        "outside src/provider.rs, io-cli should call a provider exactly once — the \
+         wizard's verification handshake. Found {calls:?}",
+    );
+
+    // And the exempted file is still held to naming what it calls. Every call it
+    // makes is on a link of the chain, on the inner provider of a decorator, or on
+    // the arm of the vendor enum — never on a provider this module built in order
+    // to ask it something, which is what the count used to prevent.
+    //
+    // Counted on whitespace-squashed text rather than line by line, for the reason
+    // the forward count above already gives: rustfmt decides where a long call
+    // breaks, and an assertion about where a newline sits is an assertion about
+    // formatting. `link.complete_streaming_calls(..)` is split across three lines
+    // by rustfmt and was refused by the first, line-based version of this check.
+    let provider_module = code_of(&std::fs::read_to_string(&delegating).expect("the module"));
+    let squashed_module: String = provider_module
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let made = squashed_module.matches(".complete").count();
+    let named: usize = ["self.inner.complete", "p.complete", "link.complete"]
+        .iter()
+        .map(|receiver| squashed_module.matches(receiver).count())
+        .sum();
+    assert_eq!(
+        made, named,
+        "src/provider.rs makes {made} provider calls and only {named} of them are on \
+         a decorator's inner provider, a vendor arm or a chain link — the rest are \
+         this module asking a provider something of its own, which is what the count \
+         outside this file exists to prevent",
     );
 }
 
