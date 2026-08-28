@@ -26,6 +26,20 @@
 //! mid-flight exactly as an uncontained one can, and containment decides fan-out
 //! and nothing else. See [`queue`] for the surface an operator says it through.
 //!
+//! Since 0.25.0 the work a turn does can end as something somebody reviews. The
+//! harness has offered seven git built-ins on every workspace run since long
+//! before this interface existed, and this crate had never surfaced one of them:
+//! see [`repo`] for the branch the working tree is on, read from `.git/HEAD`
+//! rather than from a subprocess, and [`commit`] for what the agent committed and
+//! for the prompt `/commit` hands it.
+//!
+//! **The reason that capability was unreachable is a policy fact, not a rendering
+//! one.** The harness's git spawn treats an *asking* `exec` posture as a refusal
+//! rather than raising an approval, so under the posture the wizard recommends
+//! every one of the seven tools is refused before it runs and the operator is
+//! never asked. [`approval::git_allowance`] is the single rule that lifts it, and
+//! it names one binary.
+//!
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod app;
@@ -35,6 +49,7 @@ pub mod bridge;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;
+pub mod commit;
 pub mod compact;
 pub mod complete;
 pub mod composer;
@@ -71,6 +86,7 @@ pub mod providers;
 pub mod queue;
 pub mod recall;
 pub mod reload;
+pub mod repo;
 pub mod resume;
 pub mod reviewer;
 pub mod rewind;
