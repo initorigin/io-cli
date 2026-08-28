@@ -7,3 +7,8 @@ node_modules/
 # gate evidence are the maintainer's working notes, written by tooling rather
 # than by hand. They are not a contributor-facing surface and are never committed.
 .ultraship/
+
+# The live rehearsal harness, copied to the root from the gitignored evidence
+# directory to run `cargo test --test live`. It briefly entered history in
+# 0.24.0 because a `git add -A` ran while a copy was sitting here.
+/drive.py

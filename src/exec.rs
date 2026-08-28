@@ -62,6 +62,22 @@ pub const CEILING: u8 = 3;
 pub const PAUSED: u8 = 4;
 /// It ended without finishing.
 pub const UNFINISHED: u8 = 5;
+/// The agent finished and the work does not hold up.
+///
+/// Added in 0.24.0, the release that let an operator say what "done" means. It
+/// renumbers nothing: the six below have meant what they mean since 0.5.0, and
+/// this is the first ending this subcommand has ever been able to tell apart
+/// from them.
+///
+/// It cannot be decided by [`code`], because io-harness has no `RunOutcome`
+/// variant for a run whose criterion answered no. Such a run surfaces as
+/// `StepCapReached` — the criterion is re-evaluated after every step and the loop
+/// only ends early when it *passes*, so a gate that never passes spends the whole
+/// budget. (Not as `Finished`: that variant requires `Verification::None`, so a
+/// gated contract can never return it.) The verdict is therefore read from the
+/// store after the run and applied by [`verified_code`]. Reported upstream as
+/// io-harness#212.
+pub const UNVERIFIED: u8 = 6;
 
 /// The exit status for a run that reached the harness.
 ///
@@ -80,12 +96,15 @@ pub const UNFINISHED: u8 = 5;
 /// that claimed success or a crash would both be inventions.
 ///
 /// Two of the mappings are the release's research rather than its taste.
-/// `Finished` is `OK` because a contract with no verification criterion is what
-/// this subcommand always builds, so `Finished` — and never `Success` — is what
-/// a clean run returns; a table that treated only `Success` as zero would fail
-/// every successful run. And the four ceilings need codes at all only because the
-/// harness returns them as `Ok`, so a status read off the `Result` reports
-/// success on every one of them.
+/// `Finished` is `OK` because a contract with no verification criterion returns
+/// `Finished` and never `Success`, and a table that treated only `Success` as zero
+/// would fail every successful ungated run. **0.24.0 makes `Success` reachable
+/// and changes neither mapping**: an operator who configures `[app.io-cli.gates]`
+/// gets a real criterion on the contract from [`crate::contract::configured`], and
+/// a run that passes it comes back `Success`. Both still mean the run ended of its
+/// own accord, which is what `0` says. And the four ceilings need codes at all
+/// only because the harness returns them as `Ok`, so a status read off the
+/// `Result` reports success on every one of them.
 pub fn code(outcome: &RunOutcome) -> u8 {
     match outcome {
         RunOutcome::Success { .. } | RunOutcome::Finished { .. } => OK,
@@ -130,6 +149,29 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         | RunOutcome::Cancelled { .. } => UNFINISHED,
 
         _ => UNFINISHED,
+    }
+}
+
+/// The exit status once the operator's own criterion has had its say.
+///
+/// A wrapper around [`code`] rather than an arm inside it, and deliberately so.
+/// `tests/exec.rs` extracts that function's body by splitting on its exact
+/// signature line, and its table is a statement about `RunOutcome` alone — which
+/// carries no verification verdict. Putting this decision inside it would both
+/// reformat the one function a test reads as text and make a table about
+/// outcomes answer a question outcomes do not contain.
+///
+/// **Only a `GateOutcome::Failed` earns [`UNVERIFIED`].** A gate that
+/// `Errored` never answered at all — the criterion could not run, the reviewer
+/// returned nothing parsable, the program was refused — and reporting that as
+/// "the work does not hold up" would claim a judgement nobody made. Such a run
+/// keeps whatever its outcome maps to, which is the honest report that it ran
+/// and was not verified either way. A run with no criterion configured has no
+/// standing at all and is untouched.
+pub fn verified_code(outcome: &RunOutcome, standing: Option<&crate::gates::Standing>) -> u8 {
+    match standing {
+        Some(standing) if matches!(standing.outcome, io_harness::GateOutcome::Failed) => UNVERIFIED,
+        _ => code(outcome),
     }
 }
 
@@ -588,8 +630,87 @@ impl WithProvider for Headless {
         if let Some(parked) = parked(&result.outcome, result.run_id) {
             eprintln!("io: {parked}");
         }
-        Ok(code(&result.outcome))
+        // **A run that was meant to be gated and was not says so, on the arm where
+        // nobody is watching a screen.** A hand-edited section that refuses, or a
+        // reviewer that will not build, leaves the contract ungated — and until
+        // this line the only surfaces that reported it were `/gates` and the
+        // `/config` write, both of which need a terminal. An unattended job that
+        // silently stopped verifying is the exact failure this release exists to
+        // prevent, arriving through the release itself.
+        if let Some(notice) = crate::contract::gate_notice(&self.config) {
+            eprintln!("io: {notice}");
+        }
+        // **The criterion has the last word on the exit status, and it is read
+        // from the store rather than from the outcome.** io-harness has no
+        // `RunOutcome` variant for a run whose gate answered no, so a run that
+        // spent its budget failing one reports `StepCapReached` and a run that
+        // stopped early believing itself done reports `Finished` — `3` and `0`,
+        // neither of which is what happened. Reported upstream as
+        // io-harness#212.
+        let standing = gate_standing(
+            &self.store,
+            result.run_id,
+            &self.config,
+            self.session.root(),
+        );
+        if let Some(standing) = &standing {
+            eprintln!("io: {}", gate_line(standing));
+        }
+        Ok(verified_code(&result.outcome, standing.as_ref()))
     }
+}
+
+/// What a run's own gate attempts say, if it had a criterion at all.
+///
+/// **The criterion has to be resolved here, and reading the rows without it is
+/// how this release nearly shipped exit `6` for every operator alive.**
+/// io-harness evaluates the contract's criterion after every step on which the
+/// agent called a tool, and for `Verification::None` that evaluation is `false` —
+/// so an ungated run leaves `phase = "none", Failed` rows behind, and a naive
+/// read of them says the gate failed on a session that never had one.
+/// [`crate::gates::gate_attempts`] is the fold that drops them, and it is the same
+/// call the interactive arm makes: one path, not two.
+///
+/// It is also what makes a bare `file` criterion work headlessly at all. That one
+/// maps to `Verification::None`, so io-harness records nothing for it and io-cli
+/// answers it itself — without this the terminal would hold an operator to a
+/// standard that CI quietly ignored, which is the 0.14.0 asymmetry this product
+/// deleted once already.
+///
+/// A store that cannot be read answers `None`, which leaves the exit status
+/// exactly what it was before this release. A failure to read the verdict is not
+/// evidence that the work is bad.
+fn gate_standing(
+    store: &Store,
+    run_id: i64,
+    config: &Config,
+    root: &std::path::Path,
+) -> Option<crate::gates::Standing> {
+    let attempts = store.gate_attempts(run_id).ok()?;
+    let criterion = crate::contract::criterion_of(config);
+    crate::gates::standing(&crate::gates::gate_attempts(
+        attempts,
+        criterion.as_ref(),
+        root,
+    ))
+}
+
+/// One line for stderr naming what the gate did.
+///
+/// The phase is the harness's own word for the criterion that ran, and the
+/// outcome is `GateOutcome::as_str` passed through rather than re-spelled — a
+/// second vocabulary for the same fact is how two surfaces come to disagree.
+fn gate_line(standing: &crate::gates::Standing) -> String {
+    let attempt = if standing.attempt > 1 {
+        format!(" on attempt {}", standing.attempt)
+    } else {
+        String::new()
+    };
+    format!(
+        "the {} gate {}{attempt}",
+        standing.phase,
+        standing.outcome.as_str()
+    )
 }
 
 /// One row of `io resume --list`, or `None` for a run nothing is waiting on.
@@ -1109,6 +1230,15 @@ impl WithProvider for Resuming {
         if let Some(parked) = parked(&resumed.outcome, resumed.run_id) {
             eprintln!("io: {parked}");
         }
-        Ok(code(&resumed.outcome))
+        // A resumed run is gated by the same criterion the original was — the
+        // contract is rebuilt from the same configuration — so its exit status
+        // answers the same question. Reading the standing off the run this
+        // resume drove rather than off the original is the point: the whole
+        // reason to resume is that the work is not the same work any more.
+        let standing = gate_standing(&self.store, resumed.run_id, &self.config, &self.root);
+        if let Some(standing) = &standing {
+            eprintln!("io: {}", gate_line(standing));
+        }
+        Ok(verified_code(&resumed.outcome, standing.as_ref()))
     }
 }

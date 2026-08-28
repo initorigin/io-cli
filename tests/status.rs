@@ -2332,3 +2332,335 @@ fn the_cost_field_is_drawn_by_the_line_and_by_the_footer_alike() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 0.24.0 — the verification gate's standing on the status line.
+// ---------------------------------------------------------------------------
+
+/// A gated turn that failed its criterion and is being tried again.
+///
+/// The standing is a word the driver hands over rather than one this test
+/// invents a type for: `Status::gate` is plain data, so what a test can state
+/// about it is exactly what an operator would see.
+fn gated(standing: &str, attempt: Option<u32>) -> Status {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.gate = Some(standing.to_string());
+    status.gate_attempt = attempt;
+    status
+}
+
+/// **The standing reaches the terminal through BOTH renderers, out of one
+/// method.**
+///
+/// `Status::line` is the one-row form and has exactly one production caller —
+/// the fallback for a terminal under seven rows. `Status::footer` is the
+/// three-row form `Status::render` takes on everything taller, which is every
+/// real terminal. This file has shipped a field into one of them twice: 0.8.0's
+/// spend and 0.12.0's planning phase were each added to `line`, asserted against
+/// `line`, went green, and were nowhere on screen in a live capture.
+///
+/// The spelling is asserted against `Status::gate_field` rather than against a
+/// literal repeated per arm, so the one place that composes it is the one place a
+/// rename has to touch — a renderer that grew its own `format!` would fail here
+/// even if both forms happened to say something.
+///
+/// **And the standing is a word, so it survives every set.** The line is read in
+/// `MONO` as well, which is the theme `NO_COLOR` and `--plain` resolve to: a
+/// standing carried by a colour or a tick is a standing those readers do not
+/// have. The whole field is ASCII, so no glyph set can change it.
+///
+/// Sabotage: push `self.gate_field()` into `Status::fields` alone and drop the
+/// `counts.extend(self.gate_field())` from the footer — under which the
+/// `Status::line` arm below stays green and the binary shows nothing.
+#[test]
+fn the_gate_standing_is_drawn_by_the_line_and_by_the_footer_alike() {
+    for standing in ["passed", "failed", "errored", "running"] {
+        let status = gated(standing, None);
+        let spelling = status
+            .gate_field()
+            .expect("a configured criterion has a standing");
+        assert_eq!(
+            spelling,
+            format!("gate {standing}"),
+            "the standing is spelled once, plainly, and in the harness's own word",
+        );
+        for (renderer, text) in both_renderers(&status) {
+            assert!(
+                text.contains(&spelling),
+                "{renderer} does not say where the gate stands: {text:?}",
+            );
+        }
+    }
+
+    // Every character of it is ASCII, which is what makes the claim above true
+    // of a terminal that cannot draw braille as well as of one that can.
+    let status = gated("failed", Some(3));
+    let spelling = status.gate_field().expect("a standing");
+    assert!(
+        spelling.is_ascii(),
+        "the standing is not readable under the ASCII set: {spelling:?}",
+    );
+    let mono = status.line(200, &MONO).to_string();
+    assert!(
+        mono.contains(&spelling),
+        "the standing is gone from a terminal with no colour: {mono:?}",
+    );
+}
+
+/// **A gate with nothing behind it is absent rather than zero.**
+///
+/// Most sessions configure no criterion at all, and one of them has not passed a
+/// gate zero times — it has not been gated. So the field draws nothing: not
+/// `none`, not `gate 0`, not an empty label with a separator either side of it,
+/// which on this line is the same defect wearing a space. It is the rule
+/// `tokens`, `spend`, `bg N` and the queue depth are already held to.
+///
+/// Sabotage: render `self.gate.clone().unwrap_or_default()` — under which every
+/// ungated session carries a bare `gate` with nothing after it, and only this
+/// test fails.
+#[test]
+fn the_gate_field_with_nothing_behind_it_is_absent_rather_than_zero() {
+    let status = Status::new("opus-5");
+    assert_eq!(
+        status.gate_field(),
+        None,
+        "a session nobody asked to verify composed a standing",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            !text.contains("gate"),
+            "{renderer} drew a gate on a session with no criterion: {text:?}",
+        );
+        assert!(
+            !text.contains("attempt"),
+            "{renderer} counted attempts at a gate that does not exist: {text:?}",
+        );
+    }
+
+    // An attempt number with no standing beside it is a number about nothing,
+    // and it must not summon the field on its own — this is the state a driver
+    // leaves behind if it reports the retry before the verdict.
+    let mut counted = Status::new("opus-5");
+    counted.gate_attempt = Some(2);
+    assert_eq!(
+        counted.gate_field(),
+        None,
+        "an attempt count drew a gate that has no standing",
+    );
+    for (renderer, text) in both_renderers(&counted) {
+        assert!(
+            !text.contains("attempt"),
+            "{renderer} drew a retry count with no verdict behind it: {text:?}",
+        );
+    }
+}
+
+/// **The attempt number appears from the second attempt and never on the first.**
+///
+/// Every gate that ran at all ran once, so `attempt 1` would be on every gated
+/// line in the world and would tell an operator nothing — the argument
+/// `Budgets::in_force` already makes about io-cli's own step floor, which is a cap
+/// on every turn and therefore a ceiling nobody chose. What is worth the ten cells
+/// is that the turn is being *retried*: the criterion did not hold, the retry
+/// budget is being spent, and the agent is doing the work again.
+///
+/// The first arm asserts the absence of the word `attempt` outright rather than of
+/// the string `attempt 1`, because `attempt 1` is absent from a line reading
+/// `attempt 12` and an assertion satisfied by the bug is not an assertion.
+///
+/// Sabotage: drop the `attempt > 1` guard — under which every gated line carries
+/// `attempt 1`, the first arm of this test fails, and nothing else in the
+/// repository does.
+#[test]
+fn the_gate_attempt_is_drawn_only_from_the_second_attempt() {
+    for first in [None, Some(1)] {
+        let status = gated("failed", first);
+        assert_eq!(
+            status.gate_field().as_deref(),
+            Some("gate failed"),
+            "the first attempt is every gate's first attempt and is not news",
+        );
+        for (renderer, text) in both_renderers(&status) {
+            assert!(
+                !text.contains("attempt"),
+                "{renderer} numbered the attempt nobody needed numbering: {text:?}",
+            );
+        }
+    }
+
+    let status = gated("failed", Some(2));
+    let spelling = status.gate_field().expect("a retried gate has a standing");
+    assert_eq!(
+        spelling, "gate failed attempt 2",
+        "the retry is stated in words beside the standing it belongs to",
+    );
+    for (renderer, text) in both_renderers(&status) {
+        assert!(
+            text.contains(&spelling),
+            "{renderer} does not say the turn is being retried: {text:?}",
+        );
+    }
+
+    // And it keeps counting rather than sticking at two, which is what a
+    // hard-coded second attempt would look like from the outside.
+    assert_eq!(
+        gated("errored", Some(7)).gate_field().as_deref(),
+        Some("gate errored attempt 7"),
+    );
+}
+
+/// **A standing belongs to the turn that was gated and outlives no other.**
+///
+/// `Status::forget_run` clears the per-run facts when the conversation under the
+/// line changes — `/resume` onto another session, `/fork` away from this one, a
+/// rewind that undoes the turn that set one — and `Status::start_run` clears them
+/// when the operator simply types again, which is the path `forget_run` never
+/// sees. Both matter here for different reasons: a resumed conversation nobody
+/// ever gated would otherwise inherit `gate passed` and read as verified, and an
+/// ordinary second turn would spend its whole length under the first turn's
+/// verdict. This codebase has shipped exactly that with a per-turn field before.
+///
+/// The planning phase is set beside it so the test states the *difference* rather
+/// than half of it: a standing choice survives both, an account of one turn
+/// survives neither.
+///
+/// Sabotage: clear `gate` and leave `gate_attempt` standing — under which a later
+/// verdict on a later turn is drawn with the retry count of an earlier one, and
+/// the last assertion of each half is what catches it.
+#[test]
+fn the_gate_standing_does_not_outlive_the_turn_that_was_gated() {
+    for clear in [Status::forget_run as fn(&mut Status), Status::start_run] {
+        let mut status = gated("failed", Some(2));
+        // A standing choice, which is not a fact about the run and must survive.
+        status.planning = true;
+        for (renderer, text) in both_renderers(&status) {
+            assert!(
+                text.contains("gate failed attempt 2"),
+                "{renderer} never drew the standing this test is about: {text:?}",
+            );
+        }
+
+        clear(&mut status);
+
+        assert_eq!(status.gate, None, "the verdict outlived its turn");
+        assert_eq!(
+            status.gate_attempt, None,
+            "the retry count outlived the verdict it counted",
+        );
+        assert!(
+            status.planning,
+            "a standing choice was cleared with the run"
+        );
+        for (renderer, text) in both_renderers(&status) {
+            assert!(
+                !text.contains("gate"),
+                "{renderer} still reports the previous turn as gated: {text:?}",
+            );
+            assert!(
+                !text.contains("attempt"),
+                "{renderer} kept the previous turn's retry count: {text:?}",
+            );
+            assert!(
+                text.contains("planning"),
+                "{renderer} lost the mode the gate was not: {text:?}",
+            );
+        }
+    }
+}
+
+/// **The standing survives a width the counters do not, and the line still never
+/// wraps.**
+///
+/// Both renderers drop from the right, so position is priority, and the module
+/// states which way this one goes: a standing mode that stops the agent writing
+/// outranks what the last turn spent. A gate that has not passed is that fact from
+/// the other end — it is *why* the turn is not finished, and on a retry it is why
+/// the agent is doing the work a second time. So it sits right of the planning
+/// phase, which is a choice that holds after the turn ends, and left of every
+/// counter, which is an account of what the turn cost.
+///
+/// The order is asserted on `Status::fields` directly as well as through a
+/// rendered width, because an arithmetic assertion alone would move the day
+/// somebody adds a field five cells wider, and the claim being made is about
+/// order rather than about a hundred columns.
+///
+/// Sabotage: push the gate after `ctx` in `Status::fields` and after `steps` in
+/// the footer's counts — under which both forms still draw it at two hundred
+/// columns, every other test in this file stays green, and the one field that
+/// explains a turn that will not end is the first thing a narrow terminal gives
+/// up.
+#[test]
+fn the_gate_standing_survives_a_width_the_counters_do_not() {
+    let mut status = full_row();
+    status.gate = Some("failed".into());
+    status.gate_attempt = Some(2);
+
+    // Order first, where it is a claim about the list rather than about a width.
+    let fields = status.fields(&DARK);
+    let index = |needle: &str| {
+        fields
+            .iter()
+            .position(|field| field.text.contains(needle))
+            .unwrap_or_else(|| panic!("no field says {needle:?}: {fields:?}"))
+    };
+    assert!(
+        index("planning") < index("gate "),
+        "the standing outranked a choice that outlives the turn: {fields:?}",
+    );
+    assert!(
+        index("gate ") < index("6 steps")
+            && index("gate ") < index("26.9k tok")
+            && index("gate ") < index("ctx 23%"),
+        "a counter outranked the reason the turn is not finished: {fields:?}",
+    );
+
+    // Wide enough for everything, so the narrowing below is the only thing the
+    // arms after it can be failing on.
+    let wide = rendered(&status, 200);
+    for fact in ["gate failed attempt 2", "6 steps", "26.9k tok", "ctx 23%"] {
+        assert!(wide.contains(fact), "{fact:?} was never drawn: {wide:?}");
+    }
+
+    // A hundred columns, which is the width the 0.21.0 live capture was taken at
+    // and the one an ordinary terminal is most likely to be.
+    let narrowed = rendered(&status, 100);
+    assert!(narrowed.chars().count() <= 100, "{narrowed:?}");
+    assert!(!narrowed.contains('\n'), "the line wrapped: {narrowed:?}");
+    assert!(
+        narrowed.contains("gate failed attempt 2"),
+        "the standing went before the counters it outranks: {narrowed:?}",
+    );
+    for counter in ["6 steps", "26.9k tok", "ctx 23%"] {
+        assert!(
+            !narrowed.contains(counter),
+            "nothing was dropped, so this width proves nothing: {narrowed:?}",
+        );
+    }
+
+    // The footer narrows by its own mechanism — counters come off the right of
+    // the counts group until the right-hand group fits — so the same claim has to
+    // be made against it separately or half of it is untested.
+    let footer = footed(&status, 100);
+    assert!(
+        footer.contains("gate failed attempt 2") && footer.contains("planning"),
+        "the footer gave up the standing to keep a counter: {footer:?}",
+    );
+    assert!(
+        !footer.contains("6 steps"),
+        "the footer row fitted whole, so it proves nothing: {footer:?}",
+    );
+
+    // And at a width that holds one field, it is still the model. Everything this
+    // task adds goes before it and after everything else.
+    let cramped = rendered(&status, 40);
+    assert!(cramped.chars().count() <= 40, "{cramped:?}");
+    assert!(!cramped.contains('\n'), "the line wrapped: {cramped:?}");
+    assert!(
+        cramped.contains("anthropic/claude-sonnet-4.5"),
+        "the model is the last field to go: {cramped:?}",
+    );
+    assert!(
+        !cramped.contains("gate"),
+        "the gate outlasted the model: {cramped:?}",
+    );
+}

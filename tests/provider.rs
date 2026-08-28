@@ -43,6 +43,22 @@ const HANDSHAKE: &str = "verify.rs";
 /// below — without which this exemption would be a hole rather than a boundary.
 const PANEL: &str = "providers.rs";
 
+/// The verification gate's second model, excluded for the handshake's reason.
+///
+/// 0.24.0 lets an operator have a rubric judged by a model that is **not** the one
+/// doing the work, and `TaskContract::with_reviewer` takes an `Arc<dyn Reviewer>`
+/// built over a provider of its own. That is a third construction, like the
+/// wizard's ping: it never drives a turn, it is deliberately a different model
+/// from the session's, and merging it into `build`'s maker would mean the
+/// reviewer changing model whenever `/model` did — which is the one thing a second
+/// opinion must not do.
+///
+/// **This exemption was earned twice over.** The construction was written into
+/// `src/gates.rs` first and into `src/provider.rs` second, and this gate refused
+/// both. Excluded by name like the other two, and held to the distinction by
+/// [`f10_the_reviewer_judges_and_never_drives`] below.
+const REVIEW: &str = "reviewer.rs";
+
 fn sources() -> Vec<(PathBuf, String)> {
     fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
         for entry in std::fs::read_dir(dir).expect("src is readable").flatten() {
@@ -68,7 +84,9 @@ fn f10_each_provider_is_constructed_in_exactly_one_place() {
     for constructor in CONSTRUCTORS {
         let sites: Vec<(PathBuf, usize)> = sources
             .iter()
-            .filter(|(path, _)| !path.ends_with(HANDSHAKE) && !path.ends_with(PANEL))
+            .filter(|(path, _)| {
+                !path.ends_with(HANDSHAKE) && !path.ends_with(PANEL) && !path.ends_with(REVIEW)
+            })
             .map(|(path, text)| (path.clone(), text.matches(constructor).count()))
             .filter(|(_, count)| *count > 0)
             .collect();
@@ -76,9 +94,9 @@ fn f10_each_provider_is_constructed_in_exactly_one_place() {
         let total: usize = sites.iter().map(|(_, count)| count).sum();
         assert_eq!(
             total, 1,
-            "`{constructor}` should be written exactly once outside {HANDSHAKE} \
-             and {PANEL}, so that the interactive and the headless entry points \
-             cannot drift apart. Found {sites:?}",
+            "`{constructor}` should be written exactly once outside {HANDSHAKE}, \
+             {PANEL} and {REVIEW}, so that the interactive and the headless entry \
+             points cannot drift apart. Found {sites:?}",
         );
 
         // Naming the file as well as the count is what makes this fail while the
@@ -166,4 +184,68 @@ fn f10_both_entry_points_reach_a_provider_through_that_site() {
             "src/{entry} should reach a provider through `provider::build`",
         );
     }
+}
+
+/// The reviewer module judges work and never drives a turn.
+///
+/// Without this, excluding `reviewer.rs` from the construction count would be a
+/// hole rather than a boundary: anything at all could be built there and the gate
+/// would say nothing. The same shape as
+/// [`f10_the_panel_interrogates_presets_and_never_runs_one`], for the same reason.
+///
+/// Sabotage: give `src/reviewer.rs` a `WithProvider` impl or a `Session` — under
+/// which only this fails, and it fails by letting a second driving path grow
+/// inside the one exemption that was granted for not being one.
+#[test]
+fn f10_the_reviewer_judges_and_never_drives() {
+    let sources = sources();
+
+    let (_, text) = sources
+        .iter()
+        .find(|(path, _)| path.ends_with(REVIEW))
+        .expect("src/reviewer.rs exists, or the exemption above names nothing");
+
+    // It is what it claims to be: io-harness's own judge, built here and handed
+    // over. Without this the file could be exempt and empty of the one thing the
+    // exemption was granted for.
+    assert!(
+        text.contains("ModelReviewer"),
+        "src/reviewer.rs is exempted because it builds a reviewer; it names none",
+    );
+
+    // And it is nothing else. Each of these would make it a second path a turn
+    // could run on, which is exactly what the count exists to prevent.
+    for driving in [
+        "WithProvider",
+        "Watched",
+        "Session",
+        "Store",
+        "TaskContract",
+        "turn_bounded",
+        ".complete(",
+    ] {
+        assert!(
+            !text.contains(driving),
+            "src/reviewer.rs names `{driving}` — it is exempted from the one-site \
+             rule precisely because it never drives a turn",
+        );
+    }
+
+    // Reachable from the contract and from nowhere else, so the exemption cannot
+    // become a back door into the turn path.
+    let callers: Vec<String> = sources
+        .iter()
+        .filter(|(_, text)| text.contains("reviewer::build"))
+        .map(|(path, _)| {
+            path.file_name()
+                .expect("a file name")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        callers,
+        vec!["contract.rs".to_string()],
+        "the reviewer is built for the contract's criterion and for nothing else",
+    );
 }

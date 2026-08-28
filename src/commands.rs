@@ -247,21 +247,37 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/stats",
         "commit how the runs have gone: outcomes, first-try, gates, latency",
     ),
+    // Beside `/stats` because `/stats` is the only other row that says the word,
+    // and the two are the halves of one thing: that page counts how the gates
+    // went, and until this release nothing in the product could say what a gate
+    // *was*. An operator reading a gate column over a session that configured
+    // none is reading zeroes and cannot tell them from a gate that never failed.
+    //
+    // The three kinds are named in the description rather than left to the
+    // surface, because the choice between them is the whole decision — a command
+    // is free and objective, a file is nearly free and narrow, and a rubric is a
+    // billed completion on every gated turn. A row that said only "what done
+    // means" would hide the one of the three that costs money.
+    (
+        "/gates",
+        "the check a turn must pass before it is done: a command, a file, or a rubric",
+    ),
 ];
 
 /// What an operator is doing when they reach for a command.
 ///
 /// **Grouped by the operator's intent rather than by which part of the harness
 /// answers**, because the second is an implementation detail and the first is
-/// the only thing somebody scanning a list of twenty-six is holding in their
+/// the only thing somebody scanning a list of thirty-one is holding in their
 /// head.
 ///
 /// Four groups and none longer than ten, which is the bound `tests/commands.rs`
-/// asserts. A flat list of twenty-six is a list nobody reads; 0.16.0 is the
+/// asserts. A flat list of thirty-one is a list nobody reads; 0.16.0 is the
 /// release that grouped them, at twenty, and every release since has added to a
 /// group rather than to a list. **The count in this paragraph is the one number
 /// here that goes stale on its own** — it said twenty through 0.17.0, which had
-/// twenty-three — so it is written out rather than left as "a few".
+/// twenty-three, and twenty-six through 0.23.0, which had thirty — so it is
+/// written out rather than left as "a few".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
     /// The conversation itself: start one, leave one, come back to one.
@@ -376,6 +392,21 @@ pub const GROUPS: &[(Group, &[&str])] = &[
             "/mcp",
             "/provider",
             "/plugin",
+            // **`/gates` is here because it WRITES `[app.io-cli.gates]`, and that
+            // is the whole of the argument.** Its first screen reads the section
+            // back and says what the last turn's verdict was, which is the same
+            // first screen `/mcp` and `/provider` had when 0.19.0 filed them under
+            // `Inspect` — and the same mistake, for the same reason: an operator
+            // who opened it to look is one keystroke from changing what every
+            // later turn has to prove before it is allowed to finish. That is the
+            // sentence `Inspect` promises it will never say, and it is a louder
+            // sentence here than for a server list, because a gate an operator did
+            // not mean to set spends a whole extra turn against a real model.
+            //
+            // It takes `Configure` to nine of ten, so the next command that
+            // belongs here forces the same question 0.22.0 answered rather than
+            // dodged: re-file what is in the wrong group, do not widen the bound.
+            "/gates",
             // **`/import` writes files, so `Configure` is the only group it can
             // be in** — and `Inspect` is full at nine besides. It is last because
             // it is the one command here an operator uses once: the others are
@@ -1026,6 +1057,27 @@ pub enum Action {
     /// recorded. A key that was never on disk must not reach disk as a side
     /// effect of trying a new program.
     Import,
+    /// Say what "done" means for this repository, and write it down.
+    ///
+    /// **No argument, and that is a decision rather than an omission.** A
+    /// criterion is an argv, or a path and the text a file must contain, or a
+    /// whole sentence of rubric — see [`crate::gates::Criterion`] for the three.
+    /// None of those is a word that fits after a slash, and giving them one would
+    /// mean io-cli inventing a little language for a section io-harness already
+    /// spells in TOML: `/gates cargo test --all` is either a shell line this crate
+    /// would have to split — which is exactly what `Criterion::Command` refuses to
+    /// be, because io-harness matches `argv[0]` against the policy and runs no
+    /// shell — or an argv with nowhere to put the exit status it must report. So
+    /// the word opens the surface and anything after it is ignored, the way
+    /// `/model gpt-5` ignores its argument.
+    ///
+    /// **The surface is also the only place the two refusals can be seen.** A
+    /// rubric with no reviewer, and a reviewer that is the model doing the work,
+    /// are both `Error::Config` at run start in io-harness — before the first
+    /// billed call, on every turn, and disconnected on screen from the keystroke
+    /// that caused them. [`crate::gates::Refusal`] names both while the operator
+    /// is still looking at what they typed.
+    Gates,
 }
 
 /// What `/copy` was asked for.
@@ -1613,6 +1665,16 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // idea what this one calls things. Neither spelling is an alias for a
         // second screen: both open the one surface.
         "import" | "migrate" => Action::Import,
+        // `/gate` is admitted for the mirror of the reason `/plugins` and
+        // `/servers` are. A contract carries exactly one criterion, so the
+        // singular is what a hand reaches for at least as often as the plural,
+        // and refusing the other spelling teaches nobody anything. Neither
+        // spelling is an alias for a second screen: both open the one surface.
+        //
+        // `/verify` is deliberately not taken, under the rule that already
+        // refuses `/fold`: it is the word io-harness uses for the pillar
+        // internally, and nobody has typed it at this prompt.
+        "gates" | "gate" => Action::Gates,
         // **An alias earns no row of its own.** `/usage` is what an operator
         // coming from another agent types for "what is this costing me", and a
         // second row for one screen reads as a second screen — so this is

@@ -271,10 +271,135 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
         Some(hooks) => contract.with_tool_hooks(std::sync::Arc::new(hooks)),
         None => contract,
     };
+    // **The operator's own criterion, here rather than in [`session`], and the
+    // placement is the whole of F1.** A gate applied in the session's half would
+    // hold a terminal to a standard and let CI run to green with nothing checked
+    // — the 0.14.0 asymmetry again, and the one this release is least able to
+    // afford, because the headless arm is where an unverified success does the
+    // most damage.
+    //
+    // A refusal leaves the contract ungated on purpose. `/gates` refuses both
+    // mistakes at the moment the file is written (F5), so a section that still
+    // resolves to one here was hand-edited afterwards — and the honest response
+    // to an unusable criterion is a run with no gate plus a notice, never a run
+    // io-harness kills at start with `Error::Config` before the first billed
+    // call. [`gate_notice`] is what puts that on screen.
+    let contract = match criterion_for(config) {
+        Some((criterion, reviewer)) => {
+            let contract = contract.with_verification(criterion.verification());
+            let contract = match reviewer {
+                Some(reviewer) => contract.with_reviewer(reviewer),
+                None => contract,
+            };
+            // **A gate must not turn "hello" into a run, and by default it does.**
+            // io-harness infers whether a turn may be answered conversationally
+            // from `matches!(contract.verify, Verification::None)` — so attaching
+            // any criterion silently switches greeting handling off for the whole
+            // session, and every idle question becomes a full agent run that then
+            // runs the operator's test suite after each of its steps. The harness's
+            // own field documents this as the way back for exactly a surface like
+            // this one. Set only where a criterion was attached, so an operator
+            // with no gate reproduces the contract this crate built before the
+            // release, field for field, which is what `tests/contract.rs` asserts.
+            contract.with_conversational_turns(true)
+        }
+        None => contract,
+    };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.
     resolve_skills(contract)
+}
+
+/// The criterion this configuration resolves to, with its reviewer already built.
+///
+/// `None` covers every case in which the run must not be gated: no section, a
+/// section that names no criterion, a section that names two, and — the one that
+/// matters most — a review criterion whose reviewer cannot be constructed. **A
+/// `Verification::Review` reaching a contract with no reviewer beside it is
+/// `Error::Config` at run start, on every turn**, so the criterion and its
+/// reviewer are decided together here and either both go on or neither does.
+/// The criterion this configuration resolves to, with no reviewer built.
+///
+/// What a *reader* wants: the surfaces that report a verdict need to know which
+/// criterion was in force, and building a provider to tell them would resolve a
+/// credential for a question that does not need one. `criterion_for` is the
+/// half that also builds the reviewer, for the contract that will run it.
+///
+/// This is what lets `io exec` fold the gate rows the same way a session does —
+/// without it the headless arm reads io-harness's `phase = "none"` bookkeeping as
+/// a failed gate, and a bare `file` criterion is never evaluated at all.
+pub fn criterion_of(config: &Config) -> Option<crate::gates::Criterion> {
+    let gates = crate::settings::stored(config).0?.gates?;
+    let working = config
+        .provider_spec()
+        .map(crate::provider::model_of)
+        .unwrap_or_default();
+    gates.criterion(working).ok()?
+}
+
+fn criterion_for(
+    config: &Config,
+) -> Option<(
+    crate::gates::Criterion,
+    Option<std::sync::Arc<dyn io_harness::Reviewer>>,
+)> {
+    let gates = crate::settings::stored(config).0?.gates?;
+    // The model the work is done by, which is what the self-review refusal is
+    // decided against. An empty string means it is not knowable from here, and
+    // `Settings::criterion` treats that as "cannot clash" rather than guessing.
+    let working = config
+        .provider_spec()
+        .map(crate::provider::model_of)
+        .unwrap_or_default();
+    let criterion = gates.criterion(working).ok()??;
+    match &criterion {
+        crate::gates::Criterion::Review { reviewer, .. } => {
+            let spec = config.provider_spec()?;
+            let built = crate::reviewer::build(spec, reviewer).ok()?;
+            Some((criterion.clone(), Some(built)))
+        }
+        _ => Some((criterion, None)),
+    }
+}
+
+/// Why the configured criterion is not gating this run, if it is not.
+///
+/// Separate from [`configured`] because that function returns a contract and a
+/// refusal is not a contract. A surface calls this to say the one sentence an
+/// operator needs: the section is there, and it is not doing anything.
+pub fn gate_notice(config: &Config) -> Option<String> {
+    // **The commonest mistake is a value of the wrong shape, and it takes the
+    // whole table with it.** `command = "cargo test"` — a string where an array
+    // belongs — fails to deserialize `[app.io-cli]` entirely, so `stored` answers
+    // `(None, Some(complaint))`: no theme, no keys, no ceilings and no gate.
+    // Reading only `.0` and giving up would leave `/gates` saying "no gate is in
+    // force" while the section is plainly in the operator's file, which is the one
+    // surface they opened to ask why it is not running.
+    let (stored, complaint) = crate::settings::stored(config);
+    let Some(stored) = stored else {
+        return complaint;
+    };
+    let gates = stored.gates?;
+    let working = config
+        .provider_spec()
+        .map(crate::provider::model_of)
+        .unwrap_or_default();
+    match gates.criterion(working) {
+        Err(refusal) => Some(refusal.to_string()),
+        Ok(Some(crate::gates::Criterion::Review { reviewer, .. })) => {
+            match config.provider_spec() {
+                None => Some(format!(
+                "the gate asks {reviewer} to review the work, but no provider is configured to \
+                 reach it — this turn is not gated"
+            )),
+                Some(spec) => crate::reviewer::build(spec, &reviewer)
+                    .err()
+                    .map(|why| format!("the gate's reviewer could not be built: {why}")),
+            }
+        }
+        Ok(_) => None,
+    }
 }
 
 /// The hooks a run should be observed by, for the caller that installs the

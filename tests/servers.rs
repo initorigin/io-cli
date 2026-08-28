@@ -884,3 +884,189 @@ fn f6_a_shadowed_server_is_not_offered_for_editing_because_it_is_not_running() {
          array whole, so `docs` is not a server this workspace runs",
     );
 }
+
+// --- F10: the edit verb, reachable from a keystroke at last --------------------
+//
+// `servers::edit` has been in the library and tested since 0.21.0 with nothing
+// calling it — a limitation the product has *stated* since 0.21.0. 0.24.0 wires
+// it to `/mcp`, and the wiring is the part that can be got wrong: the value has
+// to survive a trip through a composer, and the entry has to be found again
+// afterwards by its own content rather than by the row index that showed it.
+
+/// The composer line `/mcp` writes carries the server's **id**, never its index.
+///
+/// **This is the assertion that stops 0.20.0's wrong delete being re-shipped one
+/// verb over.** `mcp[1].command` is a position in one file's `[[mcp]]` array; the
+/// operator is about to type a value into a composer any other keystroke can
+/// leave, and a file edited under them in between moves the array. So the line
+/// names the entry by the one stable thing about it, and the driver resolves the
+/// position again from the file's own bytes when the line comes back.
+///
+/// Sabotage: put `at.index()` in the composer line instead. The round trip still
+/// "works" on every one-server fixture and on this one — and silently edits the
+/// wrong entry the moment the array has moved, which is exactly the shape that
+/// survives every test written against a single-entry file.
+#[test]
+fn f10_the_edit_line_addresses_a_server_by_id_and_reresolves_its_position() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(
+        dir.path().join(io_harness::config::PROJECT_FILE),
+        TWO_SERVERS,
+    )
+    .expect("the project file");
+
+    // What the surface puts on the prompt, spelled exactly as the driver spells
+    // it — one constant, or the verb goes quietly dead the first time either half
+    // is retyped.
+    let line = format!("{}search.command", io_cli::app::SERVER_KEY);
+    let (id, key) = io_cli::app::server_key(&line).expect("the line names a server and a key");
+    assert_eq!(id, "search");
+    assert_eq!(key, "command");
+    assert!(
+        !line.contains('['),
+        "the line carries an id, not a position in an array"
+    );
+
+    // And the position comes from the file, not from the line.
+    let at = servers::declared_in(dir.path(), id).expect("the project file declares it");
+    assert_eq!(
+        at.index(),
+        1,
+        "`search` is the second entry, found by content"
+    );
+    assert_eq!(
+        at.scope,
+        Scope::Project,
+        "the scope comes from the lookup too, so the write needs no second question",
+    );
+
+    // An id with a dot in it still splits at the key, because the KEY is the part
+    // this crate knows the spelling of and a server may be called anything.
+    assert_eq!(
+        io_cli::app::server_key("mcp.some.dotted.id.url"),
+        Some(("some.dotted.id", "url")),
+    );
+    // And the shapes that are not an edit at all.
+    for not_one in ["mcp.", "mcp.docs", "app.io-cli.theme", "mcp.docs."] {
+        assert_eq!(
+            io_cli::app::server_key(not_one),
+            None,
+            "{not_one} is not an `mcp.<id>.<key>` line and must not be treated as one",
+        );
+    }
+}
+
+/// A key that is not one an `[[mcp]]` entry may carry is refused, not written.
+///
+/// **The refusal is the whole reason `servers::edit` returns an option.** `[[mcp]]`
+/// is not held to `deny_unknown_fields`, so `comand = "mcp-find"` is written,
+/// accepted by io-harness, and ignored — `configure::write`'s round trip parses it
+/// happily and the operator is told their change landed while the server goes on
+/// running the old command. There is no other write in this crate whose failure
+/// says nothing at all.
+#[test]
+fn f10_a_key_no_mcp_entry_carries_is_refused_rather_than_written() {
+    let at = At::of(Scope::User, TWO_SERVERS, "docs").expect("the fixture names `docs`");
+    assert!(
+        servers::edit(&at, "comand", "\"mcp-find\"").is_none(),
+        "a typo'd key must not become a line io-harness silently ignores",
+    );
+    for key in servers::KEYS {
+        assert!(
+            servers::edit(&at, key, "\"x\"").is_some(),
+            "{key} is an editable key and the verb must reach it",
+        );
+    }
+}
+
+/// What an operator typed becomes TOML, and the four kinds are four shapes.
+///
+/// **A composer hands over a person's typing, and `servers::edit` takes TOML
+/// source.** The spelling every call site reaches for — `format!("\"{typed}\"")` —
+/// is a parse error or a *different value* the moment the text carries a quote or
+/// a backslash, and a Windows command path is full of the second. So the assertion
+/// that matters is the one on a value with a backslash in it: a naive
+/// implementation passes every other case here.
+#[test]
+fn f10_a_typed_value_becomes_the_toml_its_key_needs() {
+    // A string, escaped. Nothing else in this test would catch a `format!`.
+    assert_eq!(
+        io_cli::app::server_value("command", r"C:\tools\mcp.exe"),
+        r#""C:\\tools\\mcp.exe""#,
+        "a backslash written raw is a different path, and a quote is a parse error",
+    );
+    assert_eq!(
+        io_cli::app::server_value("url", "https://example.test/mcp"),
+        "\"https://example.test/mcp\"",
+    );
+    // A list, written the way a person writes a command line. Asserted by shape
+    // rather than byte-for-byte: the spacing inside the brackets is `toml`'s own
+    // and an assertion on it would go blind the first time that crate reformatted.
+    let args = io_cli::app::server_value("args", "--index  ./idx");
+    assert!(
+        args.starts_with('[') && args.contains("\"--index\"") && args.contains("\"./idx\""),
+        "a command line becomes an array of arguments, not one string: {args}",
+    );
+    // A number stays a number: quoting it would be a string io-harness refuses.
+    assert_eq!(io_cli::app::server_value("timeout_secs", " 30 "), "30");
+    // An inline table has exactly one spelling and is passed through, so
+    // `edit::apply`'s own parse is what refuses a malformed one.
+    assert_eq!(
+        io_cli::app::server_value("env", "{ TOKEN = \"abc\" }"),
+        "{ TOKEN = \"abc\" }",
+    );
+
+    // End to end: the typing, the TOML, the edit, the file — and the file still
+    // parses, which is what a value that was quoted by hand would not guarantee.
+    let at = At::of(Scope::User, TWO_SERVERS, "docs").expect("the fixture names `docs`");
+    let edit = servers::edit(
+        &at,
+        "command",
+        &io_cli::app::server_value("command", r"C:\tools\mcp.exe"),
+    )
+    .expect("`command` is an editable key");
+    let after = io_cli::edit::apply(TWO_SERVERS, &[edit]).expect("the write parses back");
+    assert!(after.contains(r#"command = "C:\\tools\\mcp.exe""#));
+    assert!(
+        after.contains("command = \"mcp-search\""),
+        "the other entry is untouched",
+    );
+}
+
+/// The driver reaches the verb, and reaches it through `At`.
+///
+/// Nothing under `tests/` links `src/main.rs`, so the wiring is read as text —
+/// the instrument `tests/contract.rs` and `tests/context_share.rs` already use for
+/// exactly this. Two properties: the edit row exists at all, and the write is
+/// aimed at the scope the lookup returned rather than at a scope somebody picked.
+#[test]
+fn f10_the_driver_writes_into_the_scope_the_lookup_found() {
+    let driver = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("the driver");
+    // Whitespace removed, because rustfmt decides where a deeply nested call
+    // breaks and an assertion about where a newline sits would go blind the first
+    // time one of these gained an argument.
+    let flat: String = driver.chars().filter(|c| !c.is_whitespace()).collect();
+
+    assert!(
+        flat.contains("io_cli::servers::edit("),
+        "`servers::edit` is reachable from no keystroke, which is the limitation \
+         0.24.0 exists to remove",
+    );
+    assert!(
+        flat.contains("io_cli::servers::declared_in(&root,id)"),
+        "the entry is found again by its id when the composer line comes back",
+    );
+    assert!(
+        flat.contains("io_cli::configure::write(&root,at.scope,&[edit])"),
+        "the write goes to the scope the lookup returned; asking the operator \
+         which file would let them aim an index at a different file's array",
+    );
+    assert!(
+        flat.contains("io_cli::app::SERVER_KEY"),
+        "the composer line is built from the one constant the driver also matches \
+         on, so the verb cannot go dead by either half being retyped",
+    );
+}
