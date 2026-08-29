@@ -710,18 +710,18 @@ fn f6_a_key_no_mcp_entry_carries_is_refused_rather_than_written() {
     // happen here.
     let at = At::of(Scope::User, TWO_SERVERS, "docs").expect("the fixture names `docs`");
     assert!(servers::edit(&at, "comand", "\"mcp-find\"").is_none());
-    // **`enabled` is refused, and the reason changed under this assertion.**
-    // Until io-harness 0.70.0 there was no such key, and writing one would have
-    // been accepted by the file and ignored by the harness. There is one now, it
-    // is honoured, and `servers::servers` reads it — but writing it is 0.30.0's
-    // verb, along with the plugin one and the probe. So the refusal stands and
-    // its reason is no longer "no such key" but "not this release's verb": a
-    // surface that could switch a server off has to be able to switch it back on,
-    // and `KEYS` is what the panel offers rather than what the type has.
+    // **`enabled` is accepted, and this assertion was the opposite one release
+    // ago.** 0.29.0 refused it and said why: the key was real and honoured, but the
+    // release shipped no way to switch a server back on, and half a toggle is worse
+    // than none. 0.30.0 ships both halves — `servers::switch`, `mcp enable`,
+    // `mcp disable` and the `/mcp` keystroke — so the name is in `KEYS` and the
+    // refusal it was standing in for is gone. **The list gained one name; the check
+    // did not move**, which is what the `comand` assertion above still measures.
     assert!(
-        servers::edit(&at, "enabled", "false").is_none(),
-        "`enabled` is not in `KEYS`, so the panel does not write it; 0.29.0 reads \
-         and reports the state and 0.30.0 adds the verb",
+        servers::edit(&at, "enabled", "false").is_some(),
+        "`enabled` is io-harness's own key, honoured before a server is spawned, \
+         and 0.30.0 has both halves of the verb — refusing it now leaves an \
+         operator able to see a switched-off server and unable to switch one",
     );
     assert!(servers::edit(&at, "command", "\"mcp-find\"").is_some());
     for key in servers::KEYS {
