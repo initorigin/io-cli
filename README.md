@@ -26,9 +26,11 @@ if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 - [What this release is not](#what-this-release-is-not) · [Platform support](#platform-support) · [Stability](#stability)
 
 ![A session at rest: the IO CLI card in the terminal's own scrollback, carrying
-the version, the model, the permission posture and the workspace; a prompt below
-it; and a two-row footer under a rule, naming the state, the model and the clock
-on one row and the keys and the posture on the next.](docs/screenshot.png)
+the version and the tagline above the model, the permission posture and the
+workspace; a muted line saying this is a new conversation and the last one is
+still in /resume; an empty prompt below it; and a two-row footer under a rule,
+naming the state, the model and the clock on one row and the keys and the
+posture on the next.](docs/screenshot.png)
 
 ## What you get
 
