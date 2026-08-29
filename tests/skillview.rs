@@ -1072,13 +1072,24 @@ fn f1_the_session_acts_on_a_skill_verb_and_not_only_the_headless_door() {
         "the session has no arm for a skill verb, so `/skills add`, `/skills list` \
          and `/skills remove` parse, plan, and silently do nothing",
     );
-    assert!(
-        flat.contains("io_cli::skillview::install(&home, source)"),
-        "the session's skill arm does not install",
+    // **Counted, never `contains`.** Both verbs have two call sites — the session
+    // and the headless door — so a `contains` is satisfied by the headless one
+    // forever and says nothing about the arm this test exists for. The first
+    // version of this gate made exactly that mistake and its sabotage killed
+    // nothing; this product's own record calls counting the fix.
+    assert_eq!(
+        text.matches("io_cli::skillview::install(").count(),
+        2,
+        "installing a skill has {} call sites, not the two it must have — one on \
+         the session's arm and one on the headless door",
+        text.matches("io_cli::skillview::install(").count(),
     );
-    assert!(
-        flat.contains("io_cli::skillview::remove(&skill.path, &bundles)"),
-        "the session's skill arm does not remove",
+    assert_eq!(
+        text.matches("io_cli::skillview::remove(").count(),
+        3,
+        "removing a skill has {} call sites, not the three it must have — the \
+         session's typed arm, the headless door, and the `/skills` confirmation",
+        text.matches("io_cli::skillview::remove(").count(),
     );
     assert!(
         flat.contains(

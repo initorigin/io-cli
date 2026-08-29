@@ -455,6 +455,41 @@ fn f13_every_probe_outcome_is_its_own_sentence() {
     }
 }
 
+/// **F13's second arm, which had nowhere to run until this.**
+///
+/// The criterion's named sabotage is *"drop the `_` arm and match the five known
+/// variants with a catch-all that names one of them"*. Executing it killed
+/// **nothing**: `McpProbe` is `#[non_exhaustive]` and belongs to another crate, so
+/// no test can construct a variant this build does not know, and the arm is
+/// therefore unreachable from every behavioural assertion in this file — the one
+/// above builds its expected string from `servers::UNMODELLED` by hand for exactly
+/// that reason.
+///
+/// A criterion whose sabotage has no site is a criterion nobody is checking. The
+/// property here is about a branch that cannot be entered, so the only instrument
+/// left is the source, read as text — the same answer this product already gives
+/// for `src/main.rs`.
+///
+/// Sabotage: point the catch-all at any known state's sentence. Only this fails.
+#[test]
+fn f13_the_catch_all_names_no_state_this_build_knows() {
+    let source = std::fs::read_to_string("src/servers.rs").expect("the module");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let flat = code.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+    assert!(
+        flat.contains("_ => format!(\"`{id}`: {UNMODELLED}\")"),
+        "`servers::probed`'s catch-all no longer renders `UNMODELLED`. A newer \
+         io-harness reporting a state this build does not model would be described \
+         to the operator as one it does, and the repair they go off to make would \
+         be for a problem they do not have.",
+    );
+}
+
 /// **F13 — a disabled server is probed without being started.**
 ///
 /// This is the one probe assertion that reaches `io_harness::probe_mcp` for real,
