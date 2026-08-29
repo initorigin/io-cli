@@ -223,6 +223,40 @@ fn target_refuses_the_five_shapes_the_deleted_copy_allowed() {
     }
 }
 
+/// **io-cli defines no normaliser of its own, and this is the only thing that can
+/// fail if it grows one back.**
+///
+/// The five-shape test above asserts against `io_harness::net::target` — so it
+/// would go on passing if somebody reintroduced a private copy in `src/preflight.rs`
+/// and pointed `check` at it. That is a sabotage arm with nowhere to run, which is
+/// this product's recorded failure mode for a criterion nobody is actually
+/// checking, and the reason this gate reads the source as text: the property is
+/// *absence*, and absence has no call site to assert on.
+///
+/// Sabotage: put `fn target` back into `src/preflight.rs`. Only this fails.
+#[test]
+fn preflight_defines_no_normaliser_of_its_own() {
+    let source = std::fs::read_to_string("src/preflight.rs").expect("the module");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    assert!(
+        !code.contains("fn target"),
+        "`src/preflight.rs` defines a URL normaliser again. The copy it carried \
+         until 0.30.0 failed open on five shapes, including one that discarded the \
+         real host and reported a policy match for it — and the case table beside \
+         it enumerated seven refusals without containing any of the five. The only \
+         correct behaviour is io-harness's own function.",
+    );
+    assert!(
+        code.contains("use io_harness::net::target;"),
+        "the preflight no longer reaches io-harness's normaliser",
+    );
+}
+
 /// The bracketless twin of `https://[::1]:/x` was always refused, and that asymmetry is
 /// what made the IPv6 branch's bug invisible: the same shape, spelled two ways, gave two
 /// answers. Asserted together so neither can regress alone.
