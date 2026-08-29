@@ -1085,3 +1085,98 @@ fn f1_a_whole_section_is_written_once_and_refused_when_it_is_already_there() {
         "the refusal does not say what to do instead: {error}"
     );
 }
+
+// The adversarial pass over `Edit::unset`'s byte arithmetic, written as cases
+// rather than as a reading. One of the two review agents for this release died to
+// a rate limit before it reached this module, so these stand in for it — a
+// self-review finds different things from an independent one and is not a
+// substitute, but an unrun gate is worse than a narrower one.
+
+/// A CRLF file keeps its CRLF, and the cut does not strand a lone `\r`.
+///
+/// `Edit::unset` runs forward to the first `\n` at or after the value's end. On a
+/// Windows checkout that newline is preceded by `\r`, which belongs to the line
+/// being removed — a cut that stopped at the `\r` would leave it behind and put a
+/// bare carriage return in the middle of the next key's line.
+#[test]
+fn unset_takes_the_whole_line_on_a_crlf_file() {
+    let text = "[run]\r\nmax_steps = 8\r\nmax_tokens = 500\r\n";
+    let after = io_cli::edit::apply(text, &[io_cli::edit::Edit::unset("run.max_steps")])
+        .expect("the unset applies");
+
+    assert_eq!(after, "[run]\r\nmax_tokens = 500\r\n");
+    assert!(
+        !after.contains("\r\r") && !after.contains("\n\r\n"),
+        "a stray carriage return was left behind: {after:?}"
+    );
+    let config = io_harness::config::Config::from_toml(&after).expect("it still parses");
+    assert!(io_cli::edit::value_at(&after, "run.max_steps").is_none());
+    let _ = config;
+}
+
+/// The last key of a file with no trailing newline.
+///
+/// The forward scan finds no `\n` and falls back to `text.len()`. If that fallback
+/// were off by one the splice would panic on a range past the end, and it is the
+/// one input where the fallback is taken at all.
+#[test]
+fn unset_removes_the_last_key_of_a_file_that_does_not_end_in_a_newline() {
+    let text = "[run]\nmax_steps = 8\nmax_tokens = 500";
+    let after = io_cli::edit::apply(text, &[io_cli::edit::Edit::unset("run.max_tokens")])
+        .expect("the unset applies");
+
+    assert_eq!(after, "[run]\nmax_steps = 8\n");
+    assert!(io_cli::edit::value_at(&after, "run.max_tokens").is_none());
+    assert_eq!(
+        io_cli::edit::value_at(&after, "run.max_steps").as_deref(),
+        Some("8")
+    );
+}
+
+/// A value containing the bytes of a section header does not confuse the cut.
+///
+/// The scan works from the value's own span, so a `#` or a `[run]` inside a string
+/// is just text. Asserted because a line-oriented splicer that searched for those
+/// markers instead would cut in the wrong place, and this module is line-oriented.
+#[test]
+fn unset_is_not_confused_by_a_value_that_looks_like_syntax() {
+    let text = "[app.io-cli.gates]\n\
+                contains = \"[run] # not a header\"\n\
+                rubric = \"keep me\"\n";
+    let after = io_cli::edit::apply(
+        text,
+        &[io_cli::edit::Edit::unset("app.io-cli.gates.contains")],
+    )
+    .expect("the unset applies");
+
+    assert_eq!(after, "[app.io-cli.gates]\nrubric = \"keep me\"\n");
+    assert_eq!(
+        io_cli::edit::value_at(&after, "app.io-cli.gates.rubric").as_deref(),
+        Some("\"keep me\""),
+        "the sibling was disturbed by a value that contained a header"
+    );
+}
+
+/// Unsetting the only key of a section leaves the section standing and empty.
+///
+/// Deliberate rather than incidental: an empty `[run]` is legal TOML and still
+/// says the operator meant to configure the section. Removing the header would be
+/// `Edit::remove`'s job, and doing it here is the destructive ambiguity the two
+/// verbs are kept apart to prevent.
+#[test]
+fn unset_of_the_only_key_leaves_its_section_standing() {
+    let text = "[run]\nmax_steps = 8\n\n[memory]\nmax_entries = 5\n";
+    let after = io_cli::edit::apply(text, &[io_cli::edit::Edit::unset("run.max_steps")])
+        .expect("the unset applies");
+
+    assert!(
+        after.contains("[run]"),
+        "the header was taken too: {after:?}"
+    );
+    assert_eq!(
+        io_cli::edit::value_at(&after, "memory.max_entries").as_deref(),
+        Some("5"),
+        "the following section was disturbed"
+    );
+    io_harness::config::Config::from_toml(&after).expect("an empty section still parses");
+}
