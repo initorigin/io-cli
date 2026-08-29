@@ -811,3 +811,38 @@ fn f5_every_refusal_has_an_ascii_sentence_naming_the_key_to_change() {
         }
     }
 }
+
+/// **The retry admits the ending io-harness 0.70.0 invented for it.**
+///
+/// A driver-text gate, and the only kind available: `src/main.rs` is the `[[bin]]`
+/// and nothing under `tests/` can link it, so the set of outcomes handed to the
+/// gate driver is a `matches!` this suite cannot call.
+///
+/// 0.70.0 split the commonest failing-gate ending in two. A run that reached its
+/// step cap having failed its criterion was `RunOutcome::StepCapReached` and is now
+/// `RunOutcome::VerificationFailed`, which `exec::code` maps to `UNVERIFIED` rather
+/// than to `CEILING`. `RunOutcome` is `#[non_exhaustive]`, so the pin bump moved
+/// that run out of the admitted set **without breaking the build** — the retry
+/// would simply have stopped firing for the one ending 0.24.0 built it for, behind
+/// a green suite.
+///
+/// Sabotage: drop `| io_cli::exec::UNVERIFIED` from the `matches!` in `src/main.rs`.
+/// Only this test fails, and it fails naming the release that made the arm
+/// necessary.
+#[test]
+fn the_gate_retry_admits_a_run_that_failed_its_verification() {
+    let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(driver).expect("the driver");
+    // Line endings normalised: a Windows checkout has `\r\n`, and slicing on a
+    // bare `\n` has now shipped a defect in a test twice — 0.19.0 and 0.23.0.
+    let text = text.replace("\r\n", "\n");
+
+    assert!(
+        text.contains("io_cli::exec::OK | io_cli::exec::CEILING | io_cli::exec::UNVERIFIED"),
+        "the gate driver admits only the outcomes that mean the run reached its \
+         own end, and since io-harness 0.70.0 a run that failed its criterion at \
+         the step cap is one of them — `RunOutcome::VerificationFailed`, which \
+         `exec::code` answers `UNVERIFIED` for. Omitting it stops the retry \
+         firing for exactly the run it exists to retry",
+    );
+}

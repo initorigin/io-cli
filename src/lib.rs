@@ -40,6 +40,21 @@
 //! never asked. [`approval::git_allowance`] is the single rule that lifts it, and
 //! it names one binary.
 //!
+//! Since 0.29.0 a capability bundle can come from somewhere other than a path the
+//! operator typed. [`fetch`] resolves a name to a repository and clones it into
+//! the operator's own home, and it is the **only module besides [`shell`] that
+//! runs a program at all** — the harness owns git and publishes no way to run one
+//! of its subcommands, so there is no governed call to reach for and the
+//! alternative would have been an HTTP client. `tests/dependencies.rs` permits the
+//! two by exact path and holds each to properties it asserts rather than trusts.
+//!
+//! Everything that happens once a clone is on the disk is [`marketplace`] and not
+//! [`fetch`], deliberately: `src/fetch.rs` is held to properties asserted over its
+//! own text, so listing a marketplace, reading the two keys of a `plugin.toml` and
+//! deleting a directory — none of which needs a program — are kept outside that
+//! boundary. Both are driven from one place, [`manage`], so `/plugin marketplace
+//! add …` and `io plugin marketplace add …` are one reading of one sentence.
+//!
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod app;
@@ -65,6 +80,7 @@ pub mod exec;
 pub mod export;
 pub mod failure;
 pub mod fanout;
+pub mod fetch;
 pub mod fleet;
 pub mod fuzzy;
 pub mod gates;
@@ -76,6 +92,7 @@ pub mod keys;
 pub mod lock;
 pub mod manage;
 pub mod markdown;
+pub mod marketplace;
 pub mod memory;
 pub mod page;
 pub mod picker;

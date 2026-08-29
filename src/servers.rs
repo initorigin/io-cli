@@ -38,11 +38,25 @@
 //!
 //! # Two verbs this panel does not offer
 //!
-//! **Disable**, because `McpServer` is `id`, `transport` and `timeout_secs` and
-//! there is no key for it — and because the type is `#[serde(flatten)]`-based, an
-//! `enabled = false` invented here would be *accepted* by the file and *ignored*
-//! by the harness, so the server would start anyway. A panel that said "disabled"
-//! over a running server would be worse than one that does not offer the verb.
+//! **Disable — the verb, but no longer the fact.** Through io-harness 0.69.0 this
+//! paragraph said `McpServer` was `id`, `transport` and `timeout_secs`, that there
+//! was no key for it, and that an `enabled = false` invented here would be
+//! accepted by the file and ignored by the harness so the server would start
+//! anyway. **io-harness 0.70.0 falsified every clause of that**: `enabled` is a
+//! real public field (`mcp.rs:261`) defaulting to true, and it is honoured at the
+//! earliest possible point — a disabled server is never spawned, never dialled and
+//! never even checked against the policy (`mcp.rs:356`), and `probe_mcp` answers
+//! `McpProbe::Disabled` (`mcp.rs:747`).
+//!
+//! So the *state* is read and shown from 0.29.0, on [`Server::enabled`], for the
+//! reason [`crate::pluginview`] was given the same treatment in the same release:
+//! a capability missing from every listing reads exactly like one nobody ever
+//! declared, and an operator whose turns have quietly lost their tools has nowhere
+//! to look. **The keystroke that writes it is still not here** — that is 0.30.0's
+//! verb, along with the plugin one and the probe — and nothing in this crate puts
+//! `enabled` into an `[[mcp]]` table. What reaches this state is a file somebody
+//! hand-edited or a repository they cloned, which is exactly the case a listing
+//! exists to explain.
 //!
 //! **Reconnect**, because there is nothing to cycle: servers are attached per
 //! turn through `TaskContract::with_mcp`. What an operator means by it is "pick
@@ -112,6 +126,13 @@ impl Reached {
     }
 }
 
+/// What a server switched off in the file is called, on every surface.
+///
+/// One word, spelled once, so the panel and the two headless verbs cannot drift
+/// into describing one state three ways. It is deliberately the same word
+/// `io plugin list` prints for the same instruction in a `[[plugin]]` entry.
+pub const DISABLED: &str = "disabled";
+
 /// One row of the panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Server {
@@ -123,6 +144,16 @@ pub struct Server {
     pub decided: Decided,
     /// What the session has seen of it.
     pub state: Reached,
+    /// Whether the file lets it start at all.
+    ///
+    /// io-harness 0.70.0's `McpServer::enabled`, defaulting to true, so an entry
+    /// written before the key existed means what it always did. `false` is not a
+    /// failure and not a state the session reached — it is the file's own
+    /// instruction, honoured before anything is spawned, dialled or even checked
+    /// against the policy — which is why it is a field of its own beside
+    /// [`Server::state`] rather than a variant of [`Reached`]. A server that is
+    /// off has *no* state to have reached.
+    pub enabled: bool,
 }
 
 /// Per-server facts accumulated from the run's own events.
@@ -239,6 +270,7 @@ pub fn servers(config: &Config, observed: &Observed) -> Vec<Server> {
                     None => Decided::Default,
                 },
                 state: observed.of(&server.id),
+                enabled: server.enabled,
             }
         })
         .collect()
@@ -281,6 +313,16 @@ pub fn rows(servers: &[Server]) -> Vec<crate::picker::Row> {
                 } => format!("answered · {tools} tools used"),
                 Reached::Failed { tool } => format!("failed · {tool}"),
                 Reached::NotYet => "not reached this session".to_string(),
+            };
+            // **A switched-off server has no state to have reached**, so the
+            // instruction replaces the state rather than sitting beside it.
+            // "not reached this session" over a server the file switched off is
+            // true and reads as a server that simply has not been called yet,
+            // which is the one wrong answer available here.
+            let state = if server.enabled {
+                state
+            } else {
+                DISABLED.to_string()
             };
             crate::picker::Row::with_detail(
                 server.id.clone(),

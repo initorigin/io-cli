@@ -628,6 +628,10 @@ fn f6_a_server_with_args_and_env_round_trips_as_the_harness_s_own_type() {
             env,
         },
         timeout_secs: 30,
+        // io-harness 0.70.0's field. `true` is its own default, so an entry
+        // written without the key reads back as this — which is what makes the
+        // round-trip below an equality rather than a near miss.
+        enabled: true,
     };
 
     // ONE edit, therefore one `configure::write`: a server whose `args` arrived
@@ -660,6 +664,7 @@ fn f6_an_http_server_round_trips_with_its_headers() {
             headers,
         },
         timeout_secs: 90,
+        enabled: true,
     };
 
     let after = io_cli::edit::apply("", &[servers::add(&server)]).unwrap();
@@ -697,13 +702,26 @@ fn f6_a_key_no_mcp_entry_carries_is_refused_rather_than_written() {
     // THE SABOTAGE, and it is the quietest write in this crate. `comand = "…"`
     // would be spliced in, accepted by io-harness on `configure::write`'s round
     // trip, reported to the operator as written — and ignored by every turn
-    // after it. There is no later failure to catch it, so the refusal has to
+    // after it, because `[[mcp]]` is the one section exempt from
+    // `deny_unknown_fields`. (io-harness 0.70.0 added a near-miss check for
+    // `enabled` inside that table for exactly this reason, but it covers that one
+    // word and not a misspelled `command`.) There is no later failure to catch it,
+    // so the refusal has to
     // happen here.
     let at = At::of(Scope::User, TWO_SERVERS, "docs").expect("the fixture names `docs`");
     assert!(servers::edit(&at, "comand", "\"mcp-find\"").is_none());
+    // **`enabled` is refused, and the reason changed under this assertion.**
+    // Until io-harness 0.70.0 there was no such key, and writing one would have
+    // been accepted by the file and ignored by the harness. There is one now, it
+    // is honoured, and `servers::servers` reads it — but writing it is 0.30.0's
+    // verb, along with the plugin one and the probe. So the refusal stands and
+    // its reason is no longer "no such key" but "not this release's verb": a
+    // surface that could switch a server off has to be able to switch it back on,
+    // and `KEYS` is what the panel offers rather than what the type has.
     assert!(
         servers::edit(&at, "enabled", "false").is_none(),
-        "there is no `enabled` key; the module docs say why the verb is not offered",
+        "`enabled` is not in `KEYS`, so the panel does not write it; 0.29.0 reads \
+         and reports the state and 0.30.0 adds the verb",
     );
     assert!(servers::edit(&at, "command", "\"mcp-find\"").is_some());
     for key in servers::KEYS {
@@ -831,6 +849,10 @@ fn f6_the_file_a_row_names_is_the_file_its_position_is_read_from() {
             path: path.clone(),
         },
         state: Reached::NotYet,
+        // io-harness 0.70.0's field. `true` is its default, so this is the row
+        // an ordinary entry produces — and `declared_at` locates by id, which is
+        // why a switched-off server is still editable and still removable.
+        enabled: true,
     };
     let at = servers::declared_at(&row).expect("the file names `search`");
     assert_eq!(at.index(), 1);

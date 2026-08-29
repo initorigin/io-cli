@@ -507,11 +507,30 @@ fn f7_no_source_file_loops_over_provider_responses() {
     );
 }
 
-/// The one module 0.7.0 permits a spawn in. A **path**, not a name: a second
-/// `shell.rs` nested somewhere else in the tree would be a second spawn, which is
-/// exactly what is being prevented.
-fn spawning_module() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell.rs")
+/// The modules permitted a spawn: `src/shell.rs` since 0.7.0, `src/fetch.rs`
+/// since 0.29.0. A **set of exact paths**, and both halves of that are load
+/// bearing.
+///
+/// **Paths, not names**, because a second `shell.rs` nested somewhere else in the
+/// tree would be a second spawn, which is exactly what 0.7.0 was preventing.
+///
+/// **Exact, compared as a set — never a substring or a `contains` over the path's
+/// text**, which is the second sabotage F11 names. `src/fetching/anything.rs`
+/// matches no entry in this list and is refused; a gate written as
+/// `path.to_string_lossy().contains("fetch")` would admit it and go on passing
+/// while a third module spawned. The whole value of a permission list is that
+/// widening it is an edit somebody makes on purpose, and a substring match is a
+/// list that widens itself.
+///
+/// **Sorted here rather than at every call site.** `read_dir` hands entries back
+/// in whatever order the filesystem holds them, the lists compared against this
+/// one are sorted, and a test that passes on one machine and fails on another is
+/// worse than no test.
+fn spawning_modules() -> Vec<PathBuf> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut permitted = vec![src.join("fetch.rs"), src.join("shell.rs")];
+    permitted.sort();
+    permitted
 }
 
 #[test]
@@ -530,8 +549,27 @@ fn f7_no_source_file_runs_a_command_or_touches_the_network() {
     // That distinction is the whole argument, and it is why one permission does
     // not reopen the rest.
     //
-    // The network half is permitted nowhere at all, this module included.
-    let permitted = spawning_module();
+    // **0.29.0 amends this gate rather than relaxing it, and permits a second
+    // module: `src/fetch.rs`.** io-harness owns git and publishes no way to run a
+    // subcommand of it — `Git`, `Git::run` and `GitCmd` are `pub(crate)` there,
+    // and its own tests assert no argv it builds can carry `clone` — so a
+    // marketplace cannot be brought down through the dependency, and the only
+    // alternative to a spawn is an HTTP client with a TLS stack under it and a
+    // second network path beside io-harness's. That is a bigger hole in N1 than
+    // one more permitted path, and it is the trade the release record argues.
+    //
+    // The permission is a boundary rather than a hole, and the boundary is
+    // asserted twice below: `f10_the_fetch_spawns_git_and_builds_no_argument_out_
+    // of_a_string` holds the new module to the four properties F10 names, and
+    // `f5_the_spawn_is_unreachable_from_the_event_path` holds BOTH permitted
+    // modules to naming nothing the event stream carries. What is not relaxed by
+    // any of it: the aliased spellings below stay forbidden in every file, this
+    // one included, and a THIRD file naming the literal still fails — naming both
+    // permitted paths when it does, so the reader is told what the list is rather
+    // than left to find it.
+    //
+    // The network half is permitted nowhere at all, these modules included.
+    let permitted = spawning_modules();
     let mut spawns = Vec::new();
 
     for (path, text) in sources() {
@@ -573,19 +611,236 @@ fn f7_no_source_file_runs_a_command_or_touches_the_network() {
     // them, so every list this file compares is sorted first. A test that passes
     // on one machine and fails on another is worse than no test.
     spawns.sort();
+    assert!(
+        only_the_permitted_spawn(&spawns),
+        "a process spawn appears somewhere other than the two modules the release \
+         records argue for. Found {spawns:?}; exactly these are permitted, by exact \
+         path: {permitted:?} — one for the operator's own `!` line, one for the `git \
+         clone` that brings a marketplace down. Anywhere else is a tool \
+         implementation that no policy governs and no trace records.",
+    );
+}
+
+/// Is `found` **exactly** the permitted set?
+///
+/// A named predicate rather than an `assert_eq!` inline above, and the reason is
+/// the only reason: **F11's second sabotage needs somewhere to run.** That arm is
+/// "widen the permitted set to a substring match rather than a path set", and a
+/// widening like that makes this file *more* permissive — so nothing fails, and
+/// the gate goes vacuous without going red. There is no way to observe it from
+/// the call site, because the call site's own list is the thing being widened.
+///
+/// With the comparison named, `f11_the_permitted_spawn_set_is_exact_paths…` can
+/// hand it a near-miss set and watch it refuse. Rewrite this as a comparison of
+/// **modules** rather than of files — `p.file_stem()` matched as a prefix,
+/// `p.starts_with(q.with_extension(""))`, or any match over the path text with the
+/// extension dropped — and that test goes red naming the file it just admitted.
+/// Those are the widenings the list below discriminates, and they are the shapes a
+/// rewrite reaches for, because "the fetch module" is how a person says it.
+///
+/// **What the near-miss list does not catch, said here rather than implied.** A
+/// literal `found.iter().all(|p| permitted.iter().any(|q| p.starts_with(q)))`
+/// leaves that test green: `Path::starts_with` is component-wise, the permitted
+/// entries are files, and `src/fetching.rs`, `src/fetch_marketplace.rs`,
+/// `src/fetch/mod.rs` and `src/shell_out.rs` are every one of them refused by it
+/// too. It is a real weakening all the same — `all` stops requiring that each
+/// permitted module still be *present*, so a set that had lost one would pass —
+/// and the `==` in this function is the only thing that catches it. This doc named
+/// that rewrite as one the near-misses kill until 0.29.0; they never did, and
+/// naming a rewrite a gate cannot discriminate is the same vacuity in prose that
+/// 0.25.0 and 0.27.0 shipped in code.
+///
+/// This product has shipped a gate that could not fail in 0.25.0 and again in
+/// 0.27.0, and 0.28.0 recorded the rule it broke both times: enumerate the arms
+/// and check each has a site before trusting the set.
+fn only_the_permitted_spawn(found: &[PathBuf]) -> bool {
+    found == spawning_modules().as_slice()
+}
+
+/// **F11 — the permitted set is exact paths, and widening it is an edit somebody
+/// makes on purpose.**
+///
+/// The sibling arm of F11 — a third file naming the spawn — is already covered:
+/// `f7_no_source_file_runs_a_command_or_touches_the_network` sweeps `src/` and
+/// compares what it finds against the list. This one covers the arm that sweep
+/// cannot see, because a gate that has been widened refuses nothing and therefore
+/// fails nothing.
+///
+/// Each near-miss below shares a stem, a stem prefix or a module directory with a
+/// permitted path and is a different file. Under the exact comparison every one is
+/// refused; under a stem match, a stem-prefix match, or any comparison that drops
+/// the extension, at least one is admitted and this test fails naming it. A
+/// component-wise `Path::starts_with` is *not* among them — see the note on
+/// `only_the_permitted_spawn`, which says what does and does not catch that.
+#[test]
+fn f11_the_permitted_spawn_set_is_exact_paths_and_never_a_substring() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let permitted = spawning_modules();
+
+    // The control. Without it a predicate that answered `false` for everything
+    // would satisfy every assertion below while refusing the real modules too.
+    assert!(
+        only_the_permitted_spawn(&permitted),
+        "the permitted set does not admit itself, so nothing below means anything",
+    );
+
+    for near in [
+        // Its stem opens with the permitted stem, which is what a `file_stem`
+        // prefix match admits.
+        src.join("fetching.rs"),
+        // The permitted stem, whole, followed by a separator of its own — what an
+        // extension-dropped text match admits.
+        src.join("fetch_marketplace.rs"),
+        // A module directory named for the permitted file, which is what
+        // `p.starts_with(q.with_extension(""))` admits, and what a comparison of
+        // module names rather than of files admits.
+        src.join("fetch").join("mod.rs"),
+        // And the same three shapes against the other permitted module, so the
+        // property is asserted for both rather than for the new one only.
+        src.join("shell_out.rs"),
+    ] {
+        let mut widened = permitted.clone();
+        widened.push(near.clone());
+        widened.sort();
+        assert!(
+            !only_the_permitted_spawn(&widened),
+            "{} is admitted beside the permitted modules. The set is compared by \
+             exact path for exactly this reason: a substring, stem or prefix match \
+             is a permission list that widens itself, and a third module would then \
+             spawn while this file went on passing.",
+            near.display(),
+        );
+    }
+}
+
+/// **F10 — the four properties that keep 0.29.0's spawn exemption a boundary.**
+///
+/// The path in `spawning_modules` is the permission; this is what the permission
+/// is *for*, asserted over the module's own text so that a later edit which
+/// quietly widens it has to go red here.
+///
+/// 1. **One spawn, and its program is the literal `git`.** Asserted as a count and
+///    as the constant, because either alone is escapable: a second
+///    `Command::new` would be a second program with no argument about it, and a
+///    program read from a variable is how a spawn of git becomes a spawn of
+///    whatever the variable held.
+/// 2. **No shell.** Nothing in the file names one, so there is no line for a
+///    metacharacter in a repository name to be interpreted by.
+/// 3. **The argv is built by a function that never sees the repository name.**
+///    `argv(url: &str, into: &Path)` is handed a URL that `url()` assembled out of
+///    `HOST` and a `Named` `resolve()` has already held to its alphabet, and a
+///    destination path — and nothing else. The sabotage F10 names, an argv element
+///    interpolated from `named.repo`, cannot be written inside it without first
+///    widening that signature, so **the signature is the assertion**, and it is
+///    asserted below. Paired with the structural half: the argv reaches the spawn
+///    as the vector that pure function returned, in one `.args(…)`, so there is no
+///    per-argument builder call where an interpolation could hide and nothing that
+///    runs differs from what `tests/fetch.rs` asserts.
+///
+///    **The `format!` ban beside it is a backstop against an idiom, not the
+///    property, and this doc claimed otherwise until 0.29.0.** `src/fetch.rs`
+///    builds every string it produces with `String::push_str` — `url()` and
+///    `Fetched::sentence()` both — so an interpolation written in the module's own
+///    idiom passes a spelling ban without noticing it. The ban is kept because it
+///    is free and because `format!` is what a hurried edit reaches for; what
+///    actually holds the property is `resolve()`'s allow-list, asserted
+///    behaviourally in `tests/fetch.rs` by the test that a name which could become
+///    an argument or leave the directory is refused, and the five owned elements,
+///    asserted there by
+///    `f10_the_program_is_the_literal_git_and_the_argv_is_five_owned_elements`.
+///    A gate that names a sabotage it cannot catch is worse than one that states
+///    its limits, and this product has shipped the first kind three times.
+/// 4. **It names nothing the event stream carries** — asserted for both permitted
+///    modules in one loop by `f5_the_spawn_is_unreachable_from_the_event_path`,
+///    which is where the same property already lives for `src/shell.rs`.
+///
+/// Read against `code_of`, so the module is free to explain itself in prose. A
+/// gate that reads comments forbids a file from naming what it deliberately does
+/// not do, and this repository has now paid for that in 0.16.0, 0.19.0 and twice
+/// in one wave in 0.25.0.
+#[test]
+fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
+    let module = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fetch.rs");
+    let text = std::fs::read_to_string(&module)
+        .expect("src/fetch.rs exists; 0.29.0's spawn exemption is written for it");
+    let code = code_of(&text);
+
     assert_eq!(
-        spawns,
-        vec![permitted],
-        "a process spawn appears somewhere other than src/shell.rs. There is one \
-         module permitted to run a command and it is the one the release record \
-         argues for; anywhere else is a tool implementation that no policy governs \
-         and no trace records.",
+        code.matches("Command::new(").count(),
+        1,
+        "src/fetch.rs spawns more than once. The exemption is for a `git clone` and \
+         a second spawn is a second argument nobody has made.",
+    );
+    assert!(
+        code.contains("Command::new(PROGRAM)"),
+        "src/fetch.rs spawns something that is not the module's own constant. A \
+         program that comes from a variable is a spawn of whatever that variable \
+         held, and the permission was for git.",
+    );
+    assert!(
+        code.contains("pub const PROGRAM: &str = \"git\";"),
+        "the program constant is no longer the literal `git`, so the assertion \
+         above is watching a name that means something else",
+    );
+
+    for shellish in [
+        "/bin/sh",
+        "cmd.exe",
+        "COMSPEC",
+        "SHELL",
+        "powershell",
+        "bash",
+    ] {
+        assert!(
+            !code.contains(shellish),
+            "src/fetch.rs names `{shellish}`. The fetch runs one program directly; a \
+             shell between it and git would put every character of a repository name \
+             back into a grammar.",
+        );
+    }
+
+    // **The assertion the sabotage actually dies on.** An argv element built out
+    // of the repository name has to get at the repository name first, and the one
+    // function that builds the argv is handed a URL and a path. Widen it to take a
+    // `Named` — which is the first line of writing that sabotage — and this goes
+    // red naming the signature.
+    assert!(
+        code.contains("pub fn argv(url: &str, into: &Path) -> Vec<OsString>"),
+        "the argv builder no longer takes a URL and a destination and nothing \
+         else. F10's sabotage is an argv element interpolated from the repository \
+         name; that name reaches this function only through a wider signature, so \
+         the signature is what is pinned. If it genuinely has to change, the \
+         behavioural assertions in tests/fetch.rs are what must be re-argued \
+         first.",
+    );
+    // The backstop, and it is a backstop: this module builds every string it
+    // produces with `String::push_str`, so an interpolation written in its own
+    // idiom would pass this and die on the assertion above instead. Kept because
+    // `format!` is what a hurried edit reaches for and the check is free.
+    assert!(
+        !code.contains("format!"),
+        "src/fetch.rs builds a string with `format!`. The rule is written as an \
+         absence rather than as a review of each call so that there is nothing to \
+         argue about at the next edit — and it is the weaker half of F10's third \
+         property, not the whole of it.",
+    );
+    assert!(
+        !code.contains(".arg("),
+        "src/fetch.rs adds arguments one at a time. Every element goes through the \
+         pure `argv` function, in one `.args(…)`, so what runs is what \
+         tests/fetch.rs asserts — a per-argument builder is where an interpolation \
+         hides from both.",
+    );
+    assert!(
+        code.contains(".args(argv("),
+        "the spawn no longer takes its arguments from `argv`, so tests/fetch.rs is \
+         asserting the shape of a function nothing runs",
     );
 }
 
 /// F5 — and the half that a file list cannot state.
 ///
-/// Permitting the spawn in one module is the first half of the argument. The
+/// Permitting the spawn in a named module is the first half of the argument. The
 /// second is that nothing io-harness drives can reach it: the day a `RunEvent`
 /// handler can run a command is the day this crate has written a tool and the
 /// harness's policy has a hole in it, and that day would arrive without the test
@@ -597,10 +852,13 @@ fn f7_no_source_file_runs_a_command_or_touches_the_network() {
 ///
 /// Three facts, and together they are the reachability argument:
 ///
-/// 1. **The spawning module names nothing the event stream carries.** No
+/// 1. **Neither spawning module names anything the event stream carries.** No
 ///    `RunEvent`, no `EventKind`, no `Observer` — and no `Session` or `Store`
 ///    either, which is also what keeps a `!` line's output out of the trace. So
-///    it cannot itself *be* an event handler, whoever calls it.
+///    neither can itself *be* an event handler, whoever calls it. **Asserted over
+///    both permitted paths since 0.29.0**, in one loop rather than a copy: the
+///    property is what makes a spawn exemption survivable and a second module
+///    that was held to less would be the hole the first one was not.
 /// 2. **Nothing but the driver mentions the module.** The event path is
 ///    `bridge::Observer` → `App::event` → `Events::event` → `diff::cell`, and
 ///    none of those files may spell a call into it. Aliasing the module is the
@@ -612,33 +870,44 @@ fn f7_no_source_file_runs_a_command_or_touches_the_network() {
 ///    io-harness drives can produce one, so nothing io-harness drives can reach
 ///    the spawn. Counted with its opening parenthesis, which is what a
 ///    construction and a pattern have in common and a doc link does not.
+///
+/// **Facts 2 and 3 are about `src/shell.rs` and stay about `src/shell.rs`.** The
+/// module 0.29.0 adds has no reachability argument of this shape to make yet —
+/// nothing calls it, and when something does it will be a command surface rather
+/// than the driver — so this test admits its callers by not asserting over them,
+/// and says so here rather than leaving a reader to infer it from a needle. What
+/// it does NOT do is widen the shell's own rule: `shell::` is still spelled in one
+/// file, and that file is still the driver.
 #[test]
 fn f5_the_spawn_is_unreachable_from_the_event_path() {
-    let permitted = spawning_module();
-    let shell = std::fs::read_to_string(&permitted).expect("the spawning module");
-
-    for name in ["RunEvent", "EventKind", "Observer", "Session", "Store"] {
+    for module in spawning_modules() {
+        let text = std::fs::read_to_string(&module).expect("a spawning module");
+        for name in ["RunEvent", "EventKind", "Observer", "Session", "Store"] {
+            assert!(
+                !text.contains(name),
+                "{} names {name}. A module that can see the event stream, the \
+                 conversation or the trace is a module the agent can reach — or one \
+                 that can write something the agent did not do into a record of what \
+                 it did.",
+                module.display(),
+            );
+        }
         assert!(
-            !shell.contains(name),
-            "src/shell.rs names {name}. A module that can see the event stream, the \
-             conversation or the trace is a module the agent can reach — or one that \
-             can write the operator's own keystroke into a record of what the agent \
-             did.",
+            text.contains("std::process::Command"),
+            "{} is a module permitted to spawn, so it is a module that has to spell \
+             the spawn in full — otherwise the gate above is watching a string that \
+             is no longer there",
+            module.display(),
         );
     }
-    assert!(
-        shell.contains("std::process::Command"),
-        "src/shell.rs is the module permitted to spawn, so it is the module that has \
-         to spell the spawn in full — otherwise the gate above is watching a string \
-         that is no longer there",
-    );
 
+    let interactive = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell.rs");
     let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
     let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
     let mut callers = Vec::new();
     let mut builders = Vec::new();
     for (path, text) in sources() {
-        if path == permitted {
+        if path == interactive {
             continue;
         }
         if text.contains("shell::") || text.contains("use crate::shell") {

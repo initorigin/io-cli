@@ -743,31 +743,52 @@ pub fn session_policy(
 /// name is the whole vocabulary a rule about git has.
 pub const GIT: &str = "git";
 
-/// Will this policy refuse a git spawn?
-///
-/// `Ask` counts as a refusal here, and that is the entire point. Every other
-/// gated act in the harness turns `Effect::Ask` into a question for the
-/// [`Approver`]; git's spawn does not. `Git::run`, at `src/tools/git.rs:549-561`
-/// of io-harness 0.69.0, checks `self.policy.check(Act::Exec, &self.program)` and
-/// returns `Error::Refused` on **anything that is not `Allow`**, before any
-/// approver exists to be consulted. So the question a caller needs answered is
-/// not *does this ask* but *does this fall short of allow*, which is what this
-/// answers.
-pub fn refuses_git(policy: &io_harness::Policy) -> bool {
-    policy.check(Act::Exec, GIT).effect != Effect::Allow
-}
+// **`refuses_git` was here, and io-harness 0.70.0 both fixed the defect it
+// described and removed the reason it existed.**
+//
+// It answered `check(Act::Exec, GIT).effect != Effect::Allow`, and its doc
+// explained that `Ask` had to count as a refusal because `Git::run` returned
+// `Error::Refused` on anything short of `Allow` before any approver was
+// consulted — the behaviour io-cli 0.25.0 found and reported as io-harness#214.
+//
+// 0.70.0 closed that issue at all four sites carrying the comparison: `Ask` on
+// `Act::Exec` now raises an approval like every other gated act. So the
+// inequality this function was built on stopped describing anything — under the
+// posture the wizard recommends, git is *asked about* and then runs, and the
+// live arm that asserted a refusal came back with `refusals []`.
+//
+// It is deleted rather than corrected because it had **no production caller** —
+// only tests — and because the question it answered is now answered better by
+// observation than by prediction. [`crate::app::App::note_git`] fires on an
+// `EventKind::Refused` the harness actually emitted, so it cannot explain a
+// refusal that did not happen; and `crate::commit::asked` reads the verdict's
+// own `rule` field to decide whether the allowance can help. A predicate that
+// guessed at the answer in front of them was a sixth instance of the shape this
+// product has shipped five times: public, tested, and called by nothing.
+//
+// What the tests assert now is `check(Act::Exec, GIT).effect` itself, which is
+// the fact, and [`git_allowance`] below is unchanged: it is still what lifts a
+// `Deny` that came from a tier default rather than from a rule.
 
 /// The rule that lets the git tools run at all.
 ///
-/// [`crate::settings::Posture::AskWrites`] sets `exec: Effect::Ask`, and it is the
-/// posture the wizard recommends — so on the reading in [`refuses_git`] the seven
-/// git tools are refused, for most operators, without anyone ever being asked. The
-/// repair is a rule, not a special case in the spawn path: io-cli offers this
-/// through the same `remembered` layer [`effective_policy`] already builds, so a
-/// git allowance is exactly as strong as any other thing the operator allowed for
-/// the session — it widens an *asking* default and still cannot re-allow a deny
-/// from a layer beneath it, because layers add capability and never take a denial
-/// back.
+/// **The posture this was built for stopped needing it, and the one that still
+/// does is the other one.** [`crate::settings::Posture::AskWrites`] sets
+/// `exec: Effect::Ask`, and through io-harness 0.69.0 that was a hard refusal in
+/// the git spawn — the seven git tools refused for most operators without anyone
+/// ever being asked, which io-cli 0.25.0 reported as io-harness#214. 0.70.0 fixed
+/// it: an asking posture now raises an approval and git runs when the operator
+/// says so, with no rule needed.
+///
+/// What still reaches here is a posture whose `exec` is `Deny` — `read only` — and
+/// a deny is only liftable when it came from a **tier default** rather than from a
+/// rule, which is the discriminator `crate::commit::asked` reads off
+/// `Verdict::rule`. The repair is still a rule and not a special case in the spawn
+/// path: io-cli offers this through the same `remembered` layer
+/// [`effective_policy`] already builds, so a git allowance is exactly as strong as
+/// any other thing the operator allowed for the session — and it still cannot
+/// re-allow a deny from a layer beneath it, because layers add capability and
+/// never take a denial back.
 ///
 /// The pattern is one binary name. `Act::Exec` matching (see [`GIT`]) has no
 /// notion of a subcommand, so `"git"` is the narrowest expressible grant that

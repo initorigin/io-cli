@@ -2,10 +2,21 @@
 //!
 //! `/mcp add …` typed into a composer and `io mcp add …` typed at a shell are the
 //! same sentence arriving through two doors, and this module is the only room
-//! behind both of them. Every verb this release adds — `mcp add|list|get|edit|
-//! remove`, `plugin add|list|remove`, `config get|set|unset|list` — is turned into
-//! a [`Request`] here and into [`crate::edit::Edit`]s by [`plan`], and neither
-//! entry point is allowed a second reading of the same words.
+//! behind both of them. Every verb these releases add — `mcp add|list|get|edit|
+//! remove`, `plugin add|install|list|search|remove`, `plugin marketplace
+//! add|list|remove`,
+//! `config get|set|unset|list` — is turned into a [`Request`] here and into
+//! [`crate::edit::Edit`]s by [`plan`], and neither entry point is allowed a second
+//! reading of the same words.
+//!
+//! **One of them is turned into no edit at all, and that is not an exception to
+//! the rule above.** `plugin marketplace add|remove` changes the operator's disk
+//! rather than their configuration — there is no scope, no `[[…]]` entry and no
+//! value to spell — so [`plan`] answers `None` for it and the act itself is
+//! [`crate::marketplace`], one function each door calls. The parse is still the
+//! only reading of the words, which is what criterion F1 is about; what the two
+//! doors then differ in is where they *print*, which is all they have ever
+//! differed in.
 //!
 //! # Why the parse is not clap's
 //!
@@ -108,13 +119,60 @@ pub enum McpVerb {
 /// What `/plugin` and `io plugin` can be asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginVerb {
-    /// Declare a bundle directory.
+    /// Declare a bundle. `path` is the word as typed — **a directory or the name
+    /// of a bundle a marketplace holds** — and which of the two it was is decided
+    /// against the disk by [`crate::marketplace::chosen`] in [`plan`], never here:
+    /// a parse that judged it would be judging without having looked.
+    ///
+    /// Still a `PathBuf` for the one word, because the reading that wins in every
+    /// existing case is the path and a `String` here would make the common verb
+    /// convert at both call sites to serve the rarer one.
+    ///
+    /// **Which reading it was decides whether the entry is written on.** A
+    /// directory the operator typed is declared on, as it has been since 0.28.0; a
+    /// bundle out of a marketplace is a stranger's code and is declared
+    /// `enabled = false` so io-harness reads, parses and trust-checks it before
+    /// anything of it reaches a turn. See [`plan`] and
+    /// [`crate::marketplace::Chosen`].
     Add { path: PathBuf, scope: Scope },
     /// Every declared bundle, loaded and refused.
     List,
+    /// Every bundle in every added marketplace whose name or description carries
+    /// `text`. A read: it opens no file and writes none.
+    Search { text: String },
     /// Undeclare a bundle. No scope: the file that named it is the file the
     /// removal has to go to, and [`plan`] finds it.
     Remove { path: PathBuf },
+    /// The repositories bundles are fetched from.
+    ///
+    /// **A nested enum rather than three more variants here, and the argument is
+    /// the same one `pluginview` makes about a third list.** Every `match` on
+    /// this enum in the crate would otherwise grow three arms, and the next verb
+    /// added to either half is the one somebody forgets in one of them — the
+    /// `plan` arm below is a single line precisely because there is a single
+    /// variant to name. It also keeps the surface honest: a marketplace is
+    /// reached through `/plugin` because it holds plugins, not because it is a
+    /// fourth managed surface, and `Request` still has exactly three.
+    Marketplace(MarketVerb),
+}
+
+/// What `/plugin marketplace` and `io plugin marketplace` can be asked to do.
+///
+/// **Each verb carries a [`crate::fetch::Named`] rather than the text it was
+/// typed as.** `fetch::resolve` is the only place in this crate a marketplace name
+/// is judged — it is what refuses a leading `-`, a `..` and a whole URL — so
+/// carrying the judged value means nothing downstream can re-read the operator's
+/// string, and a name that reached [`plan`] or a driver unresolved would be a
+/// second reading with a second opinion about what a name may contain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarketVerb {
+    /// Clone it into the operator's own home.
+    Add(crate::fetch::Named),
+    /// Every marketplace already there, and what each holds.
+    List,
+    /// Delete the clone. **Never a `[[plugin]]` entry** — see
+    /// [`crate::marketplace::discard`], which is where criterion F3 lives.
+    Remove(crate::fetch::Named),
 }
 
 /// What `/config` and `io config` can be asked to do.
@@ -205,7 +263,9 @@ pub fn tokens(line: &str) -> Vec<String> {
 /// exactly what `io mcp add …` leaves after the binary name and exactly what
 /// [`tokens`] makes of `/mcp add …`. A leading `/` is tolerated here as well, so
 /// a caller that forgot to strip one gets the same reading rather than a refusal
-/// about a surface called `/mcp`.
+/// about a surface called `/mcp`. **`plugins` and `servers` are the same two
+/// surfaces spelled plural** and are folded onto `plugin` and `mcp` here — see the
+/// comment on the fold for why here and not in [`crate::commands`].
 ///
 /// Every `Err` is a sentence naming what was wrong and what is accepted instead.
 /// There is no bare "invalid argument" in this module: the operator is at a
@@ -221,6 +281,27 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
         );
     };
     let surface = surface.strip_prefix('/').unwrap_or(surface.as_str());
+    // **The plural is the same surface, and it is folded here rather than in the
+    // router.** [`crate::commands`] takes `/plugins` and `/servers` on purpose —
+    // the thing being listed is plural, so the plural is what a hand reaches for
+    // — and it routes those lines, whole, to this parse. Until 0.29.0 they arrived
+    // and were refused by the arm at the bottom as surfaces io does not manage, so
+    // `/plugins install x` was accepted by one module and refused by the next.
+    //
+    // Here rather than there because this is the only door **both** ways in go
+    // through: `io plugins install x` from a shell reaches this function without
+    // passing the router at all, and a fold written in the router would take the
+    // slash form and leave the argv form refused — which is the same disagreement
+    // moved rather than ended, and the one F6's byte comparison exists to forbid.
+    //
+    // The refusals below name the canonical spelling, which is the one the
+    // operator's next line may as well carry. An unknown word is not folded and is
+    // still echoed back as typed.
+    let surface = match surface {
+        "plugins" => "plugin",
+        "servers" => "mcp",
+        other => other,
+    };
     let verb = tokens.get(1).map(String::as_str);
     let args = scan(tokens.get(2..).unwrap_or(&[]))?;
 
@@ -244,10 +325,18 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
                 id: args.one_word("mcp remove", "the id of a configured server")?,
             }))
         }
-        ("plugin", Some("add")) => {
+        // **`install` is the same verb and not a second one.** It is the word an
+        // operator arriving from any other tool types for this, and the whole cost
+        // of admitting it is this pattern — one arm, one request, one refusal.
+        // Spelling it as a second variant would be two verbs to keep writing the
+        // same entry. The refusal below and `verbs` are updated together, always.
+        ("plugin", Some("add" | "install")) => {
             args.only("plugin add", &["scope"])?;
             Ok(Request::Plugin(PluginVerb::Add {
-                path: PathBuf::from(args.one_word("plugin add", "the directory of a bundle")?),
+                path: PathBuf::from(args.one_word(
+                    "plugin add",
+                    "the directory of a bundle, or the name of one a marketplace holds",
+                )?),
                 scope: args.scope()?,
             }))
         }
@@ -255,6 +344,23 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             args.nothing("plugin list")?;
             Ok(Request::Plugin(PluginVerb::List))
         }
+        ("plugin", Some("search")) => {
+            args.only("plugin search", &[])?;
+            Ok(Request::Plugin(PluginVerb::Search {
+                text: args.one_word(
+                    "plugin search",
+                    "some text to look for in every marketplace's bundles",
+                )?,
+            }))
+        }
+        // **Scanned from the sub-verb rather than from `args` above**, because
+        // `args` was sorted out of `tokens[2..]` and here `tokens[2]` is the verb
+        // itself: reading the name out of `args.positional[1]` would make
+        // `plugin marketplace list add` a listing with a stray word nobody
+        // refused. One extra `scan` is the price of the sub-verb having the same
+        // flag rules, the same `--` rule and the same refusals as every other
+        // verb in this module.
+        ("plugin", Some("marketplace")) => marketplace(tokens).map(Request::Plugin),
         ("plugin", Some("remove")) => {
             args.no_scope("plugin remove")?;
             args.only("plugin remove", &[])?;
@@ -295,12 +401,85 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
 }
 
 /// The verbs of one surface, for the sentence that refuses another word.
+///
+/// **Updated in the same edit as the reader above, always.** A refusal listing
+/// verbs the parse does not take, or omitting one it does, tells an operator at a
+/// terminal that a verb does not exist — which costs them the trip to the
+/// documentation this whole module's refusals exist to save.
 fn verbs(surface: &str) -> &'static str {
     match surface {
         "mcp" => "`add`, `list`, `get`, `edit` and `remove`",
-        "plugin" => "`add`, `list` and `remove`",
+        "plugin" => "`add` (also spelled `install`), `list`, `search`, `remove` and `marketplace`",
         _ => "`get`, `set`, `unset` and `list`",
     }
+}
+
+/// The verbs `plugin marketplace` takes. Named once, for the same reason.
+const MARKET_VERBS: &str = "`add <owner/repo>`, `list` and `remove <owner/repo>`";
+
+/// `plugin marketplace (add <owner/repo> | list | remove <owner/repo>)`.
+///
+/// The sub-verb is `tokens[2]` and its own words are `tokens[3..]`, scanned here
+/// so that a flag, a `--` or a second positional is refused by the same three
+/// helpers every other verb uses. None of the three takes a flag at all —
+/// including `--scope`, which is refused by [`Args::only`] with the rest, because
+/// a marketplace is not written into any configuration file and so has no scope to
+/// choose.
+fn marketplace(tokens: &[String]) -> Result<PluginVerb, String> {
+    let args = scan(tokens.get(3..).unwrap_or(&[]))?;
+    let verb = match tokens.get(2).map(String::as_str) {
+        Some("add") => {
+            args.only("plugin marketplace add", &[])?;
+            MarketVerb::Add(judged(&args.one_word(
+                "plugin marketplace add",
+                "the name of a marketplace, written `<owner>/<repo>`",
+            )?)?)
+        }
+        Some("list") => {
+            args.nothing("plugin marketplace list")?;
+            MarketVerb::List
+        }
+        Some("remove") => {
+            args.only("plugin marketplace remove", &[])?;
+            MarketVerb::Remove(judged(&args.one_word(
+                "plugin marketplace remove",
+                "the name of a marketplace, written `<owner>/<repo>`",
+            )?)?)
+        }
+        Some(unknown) => {
+            return Err(format!(
+                "`{unknown}` is not a verb `plugin marketplace` takes; it takes {MARKET_VERBS}"
+            ))
+        }
+        None => {
+            return Err(format!(
+                "`plugin marketplace` needs a verb after it; it takes {MARKET_VERBS}"
+            ))
+        }
+    };
+    Ok(PluginVerb::Marketplace(verb))
+}
+
+/// A marketplace name, judged by the one function that judges them.
+///
+/// [`crate::fetch::resolve`] is the whole rule — two ordinary path segments, no
+/// leading dash, no `..`, no third segment — and it is deliberately not repeated
+/// here. The refusal says what is accepted and *where it is fetched from*, because
+/// the single-forge ceiling is a stated bound rather than an oversight and an
+/// operator who pasted a URL from somewhere else has to be told which fact refused
+/// them.
+///
+/// Not called `named`: that name is already taken in this module by the flag-list
+/// renderer, and two functions one letter apart in purpose is how the wrong one
+/// gets called.
+fn judged(text: &str) -> Result<crate::fetch::Named, String> {
+    crate::fetch::resolve(text).ok_or_else(|| {
+        format!(
+            "`{text}` is not a marketplace name; a marketplace is a GitHub repository named \
+             `<owner>/<repo>`, as in `plugin marketplace add zeroonething/ultraship` — a whole \
+             URL, a local path and a name with a leading `-` or a `..` in it are all refused"
+        )
+    })
 }
 
 /// Turn a request into the file and the edits that carry it out.
@@ -313,7 +492,8 @@ fn verbs(surface: &str) -> &'static str {
 ///
 /// **Every write is one of the edits this crate already had**, and that is the
 /// constraint rather than an observation: `servers::add`, `servers::edit`,
-/// `servers::remove`, `pluginview::add`, `pluginview::remove`, `Edit::set` and
+/// `servers::remove`, `pluginview::add`, `pluginview::add_off`,
+/// `pluginview::remove`, `Edit::set` and
 /// `Edit::unset` are what the interactive surfaces write through, and a second
 /// path assembled here would be a second set of bytes to keep equal — which is
 /// the defect the whole module is arranged against.
@@ -373,15 +553,39 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             }
         }
         Request::Plugin(PluginVerb::Add { path, scope }) => {
-            let dir = resolve(root, path);
-            if let Some(refusal) = crate::pluginview::refusal(&dir) {
-                return Err(refusal);
-            }
+            // **Both readings of the word, decided in one place.** A directory
+            // carrying a manifest is a path and everything else is a name looked
+            // up across the marketplaces — the rule, and the refusal when neither
+            // reading holds, are `marketplace::chosen`'s so that this arm cannot
+            // grow a second opinion about which was meant. The marketplaces are
+            // read behind a closure, so an ordinary `plugin add ./bundles/x` still
+            // walks nothing but the directory it was given.
+            //
+            // `display()` gives back the word as typed: `path` is a `PathBuf` made
+            // out of one token and is never rendered from components.
+            let chosen = crate::marketplace::chosen(
+                &resolve(root, path),
+                || crate::marketplace::installed().unwrap_or_default(),
+                &path.display().to_string(),
+            )?;
+            let written = crate::pluginview::declared(root, chosen.dir());
             Plan {
                 scope: *scope,
-                edits: vec![crate::pluginview::add(&crate::pluginview::declared(
-                    root, &dir,
-                ))],
+                // **Which reading won decides which entry is written, and that is
+                // the whole of the disclosure rule.** A directory the operator
+                // typed is declared on, which is what `/plugin add ./bundles/x`
+                // has done since 0.28.0 and is not a thing to second-guess. A
+                // bundle resolved out of a marketplace is a stranger's code no one
+                // here has read, and it is declared `enabled = false` so that
+                // io-harness reads, parses, validates and trust-checks it — the
+                // only way it can, since it publishes no loader that takes a
+                // directory — before a single contribution reaches a turn.
+                // `Chosen::discloses` is the one place that question is answered.
+                edits: vec![if chosen.discloses() {
+                    crate::pluginview::add_off(&written)
+                } else {
+                    crate::pluginview::add(&written)
+                }],
             }
         }
         Request::Plugin(PluginVerb::Remove { path }) => {
@@ -412,8 +616,27 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             // operator's entire block. See `Edit::unset`.
             edits: vec![Edit::unset(key.clone())],
         },
+        // **A marketplace verb plans no write, and it is here beside the reads
+        // rather than given a shape of its own.** `add` and `remove` are not
+        // reads — they change the disk — but they change *the disk* and not a
+        // configuration file: there is no scope to choose, no `[[…]]` entry to
+        // splice and no [`Edit`] that could express either. A `Plan` carrying an
+        // empty edit list is the thing `Ok(None)` exists to prevent (see this
+        // function's own docs: `configure::write` would create the file, discover
+        // the whole tree and report a write that never happened), and a second
+        // member on `Plan` for "run this instead" would be the second write path
+        // this module forbids. So the act lives in [`crate::marketplace`], which
+        // both doors call and neither reimplements, and `plan` answers what is
+        // true of it here: **nothing is written to any configuration file**. That
+        // is also exactly criterion F3 — removing a marketplace cannot touch a
+        // `[[plugin]]` entry, because this function never builds one.
+        //
+        // `search` is here as an ordinary read: it opens the marketplaces on the
+        // disk rather than a configuration file, and it changes neither.
         Request::Mcp(McpVerb::List | McpVerb::Get { .. })
-        | Request::Plugin(PluginVerb::List)
+        | Request::Plugin(
+            PluginVerb::List | PluginVerb::Search { .. } | PluginVerb::Marketplace(_),
+        )
         | Request::Config(ConfigVerb::Get { .. } | ConfigVerb::List) => return Ok(None),
     };
     Ok(Some(plan))
@@ -822,13 +1045,16 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
     // silent no-op on an HTTP server (`io-harness-0.69.0/src/mcp.rs:267`) — a
     // constructor chain here would drop the arguments of half the servers it was
     // handed and say nothing.
+    // Asked of the harness rather than written as literals, the way `servers::add`
+    // asks it: the defaults are io-harness's, and a value copied into io-cli is one
+    // that goes stale in silence. `enabled` is io-harness 0.70.0's; an added server
+    // is on, and the flag has no keystroke here yet — see the known limitations.
+    let defaults = McpServer::stdio("", "");
     let mut server = McpServer {
         id,
         transport,
-        // Asked of the harness rather than written as a literal, the way
-        // `servers::add` asks it: the default is io-harness's, and a number
-        // copied into io-cli is one that goes stale in silence.
-        timeout_secs: McpServer::stdio("", "").timeout_secs,
+        timeout_secs: defaults.timeout_secs,
+        enabled: defaults.enabled,
     };
     if let Some(seconds) = args.one("timeout-secs")? {
         server.timeout_secs = timeout(seconds)?;
