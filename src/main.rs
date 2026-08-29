@@ -187,6 +187,30 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         return io_cli::exec::resume_main(args, config, root, cli.model).await;
     }
 
+    // **The three management subcommands leave by the same door, and before the
+    // terminal check for the same reason `io exec` does**: `io config list` in CI
+    // has no terminal and must not be refused for that. They open no session,
+    // start no run and touch no store — a configuration listing that had to build
+    // a contract first would be a listing nobody could put in a script.
+    //
+    // The tokens reach `manage::parse` exactly as clap received them; the parse,
+    // the plan and the refusals are all the library's, so this arm and the slash
+    // form below can only ever agree.
+    if let Some(words) = match &cli.command {
+        Some(Subcommand::Mcp(args)) => Some(("mcp", &args.words)),
+        Some(Subcommand::Plugin(args)) => Some(("plugin", &args.words)),
+        Some(Subcommand::Config(args)) => Some(("config", &args.words)),
+        _ => None,
+    } {
+        let (surface, rest) = words;
+        for line in report.drain(..) {
+            eprintln!("{line}");
+        }
+        let mut tokens = vec![surface.to_string()];
+        tokens.extend(rest.iter().cloned());
+        return manage_main(&root, &config, &tokens);
+    }
+
     // A session draws, so it needs a terminal to draw on, and saying so is better
     // than half-working. The check sits AFTER the subcommand is known rather than
     // before it, because `io exec` is the answer to a non-TTY stdout rather than a
@@ -3415,6 +3439,114 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         Tone::Muted,
                         "run `io setup` from the shell to change the configuration",
                     );
+                }
+                // **The same parse, the same plan, the same write as `io mcp …`.**
+                // Nothing is decided here: the tokens, the refusals and the scope
+                // are all `manage`'s, and this arm reports what it returned. That
+                // is what makes F6's byte comparison a property of the code rather
+                // than of two implementations agreeing today.
+                Action::Manage(line) => {
+                    let root = session.root().to_path_buf();
+                    let tokens = io_cli::manage::tokens(&line);
+                    match io_cli::manage::parse(&tokens)
+                        .and_then(|request| {
+                            io_cli::manage::plan(&root, &request)
+                                .map(|plan| (request, plan))
+                        }) {
+                        // The refusals are finished sentences naming what was
+                        // wrong and what is accepted, so they are printed as they
+                        // came rather than re-worded into a second opinion about
+                        // somebody else's rule.
+                        Err(refusal) => app.record(Tone::Refused, refusal),
+                        // A reading verb reaching here can only be `mcp get`: the
+                        // list verbs are routed to their own panels before `parse`
+                        // is asked, because a panel is a better answer in a session
+                        // than a text dump is. Answered from the configuration this
+                        // session is running on.
+                        Ok((io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Get { id }), None)) => {
+                            match io_cli::servers::servers(&config, &app.servers)
+                                .into_iter()
+                                .find(|server| server.id == id)
+                            {
+                                None => app.record(
+                                    Tone::Refused,
+                                    format!("no configuration file in force declares {id}"),
+                                ),
+                                Some(server) => app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} · {} · {}",
+                                        server.id,
+                                        server.transport,
+                                        server.decided.word()
+                                    ),
+                                ),
+                            }
+                        }
+                        Ok((_, None)) => {}
+                        Ok((request, Some(plan))) => {
+                            match io_cli::configure::write(&root, plan.scope, &plan.edits) {
+                                Err(refusal) => app.record(Tone::Refused, refusal),
+                                Ok(()) => {
+                                    match io_cli::configure::reload(&root) {
+                                        Ok((fresh, stored)) => {
+                                            capabilities =
+                                                io_cli::contract::Capabilities::stored(
+                                                    stored.as_ref(),
+                                                );
+                                            config = fresh;
+                                        }
+                                        Err(error) => app.record(Tone::Error, error),
+                                    }
+                                    app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "written to the {} file, in force from the next turn",
+                                            io_cli::configure::Decided::File {
+                                                scope: plan.scope,
+                                                path: Default::default(),
+                                            }
+                                            .word()
+                                        ),
+                                    );
+                                    // **The preflight after the write, never
+                                    // instead of it.** A server the policy will
+                                    // refuse is still written — the report is a
+                                    // disclosure, and making the file depend on
+                                    // the posture at the moment of typing is what
+                                    // F9's second sabotage arm describes.
+                                    if let io_cli::manage::Request::Mcp(
+                                        io_cli::manage::McpVerb::Add { server, .. },
+                                    ) = &request
+                                    {
+                                        // **The merged policy, not the file's
+                                        // alone.** The posture the operator chose
+                                        // replaces the tier defaults and the
+                                        // session's remembered allowances are a
+                                        // layer over both, so a preflight built on
+                                        // `Config::policy()` by itself would report
+                                        // a refusal for a server this very session
+                                        // has already been told to permit.
+                                        let policy = io_cli::approval::session_policy(
+                                            &config.policy().unwrap_or_default(),
+                                            app.posture(),
+                                            app.remembered(),
+                                        );
+                                        let report =
+                                            io_cli::preflight::check(server, &policy);
+                                        app.record(
+                                            if report.starts() {
+                                                Tone::Muted
+                                            } else {
+                                                Tone::Warning
+                                            },
+                                            io_cli::preflight::line(&report),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Action::Mcp => {
                     let list = io_cli::servers::servers(&config, &app.servers);
@@ -7092,6 +7224,105 @@ enum Pick {
 ///
 /// Every scope is offered whether or not its file exists yet, because writing a
 /// key into a scope for the first time is how this is used.
+/// `io mcp`, `io plugin` and `io config` — the argument forms, end to end.
+///
+/// **Nothing but the answer goes to stdout.** A listing is what a script reads, so
+/// prose about what happened, and the MCP policy preflight in particular, go to
+/// stderr where they cannot contaminate a pipe. The exit status says whether the
+/// operation *happened*: a refusal is non-zero, and a preflight that reports a
+/// server the policy will not start is **zero**, because the entry was written and
+/// the disclosure is not a veto.
+///
+/// Every decision is `crate::manage`'s. This function chooses no scope, spells no
+/// refusal and builds no edit — it prints what the library returned and writes
+/// what the library planned, so this arm and the slash form cannot disagree.
+fn manage_main(
+    root: &std::path::Path,
+    config: &io_harness::config::Config,
+    tokens: &[String],
+) -> Result<u8, String> {
+    let request = io_cli::manage::parse(tokens)?;
+    // The read verbs first: they plan no write at all, which is what
+    // `plan` answering `None` means.
+    match &request {
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::List) => {
+            for server in io_cli::servers::servers(config, &io_cli::servers::Observed::default()) {
+                println!(
+                    "{}\t{}\t{}",
+                    server.id,
+                    server.transport,
+                    server.decided.word()
+                );
+            }
+        }
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Get { id }) => {
+            let found = io_cli::servers::servers(config, &io_cli::servers::Observed::default())
+                .into_iter()
+                .find(|server| &server.id == id);
+            match found {
+                None => return Err(format!("no configuration file in force declares {id}")),
+                Some(server) => println!(
+                    "{}\t{}\t{}",
+                    server.id,
+                    server.transport,
+                    server.decided.word()
+                ),
+            }
+        }
+        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {
+            let view = io_cli::pluginview::view(config);
+            for listed in &view.plugins {
+                println!("{}\t{}", listed.id, listed.root.display());
+            }
+            for refused in &view.refused {
+                // stderr, because a refused bundle is not part of the list a
+                // script asked for — and it is exactly what an operator piping
+                // the list needs to see anyway.
+                eprintln!("{}: {}", refused.path.display(), refused.error);
+            }
+        }
+        io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::Get { key }) => {
+            let setting = io_cli::configure::setting(config, key);
+            println!(
+                "{}\t{}\t{}",
+                setting.path,
+                setting.value.as_deref().unwrap_or(""),
+                setting.decided.word()
+            );
+        }
+        io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::List) => {
+            // **The origin column, and it is not optional.** A headless listing
+            // that omitted it would be a second, weaker truth about the same
+            // configuration than the one `/config` tells — and the whole argument
+            // of that surface is that a value without its deciding file is half an
+            // answer. A key no file names prints `default` and no path.
+            for setting in io_cli::configure::settings(config) {
+                println!(
+                    "{}\t{}\t{}",
+                    setting.path,
+                    setting.value.as_deref().unwrap_or(""),
+                    setting.decided.word()
+                );
+            }
+        }
+        _ => {}
+    }
+    let Some(plan) = io_cli::manage::plan(root, &request)? else {
+        return Ok(io_cli::exec::OK);
+    };
+    io_cli::configure::write(root, plan.scope, &plan.edits)?;
+    // **The policy preflight, after the write and on stderr.** After, because the
+    // report is a disclosure and not a veto: refusing to write an entry because
+    // the policy in force would refuse it would make the file depend on the
+    // posture at the moment of typing. On stderr, and exiting zero, because the
+    // operation did happen.
+    if let io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Add { server, .. }) = &request {
+        let policy = config.policy().unwrap_or_default();
+        eprintln!("{}", io_cli::preflight::line(&io_cli::preflight::check(server, &policy)));
+    }
+    Ok(io_cli::exec::OK)
+}
+
 /// The values one setting can take, as a picker, or `None` when it has to be typed.
 ///
 /// **The kind decides, and every option comes from somewhere that cannot go
