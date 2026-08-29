@@ -198,9 +198,9 @@ fn f10_the_program_is_the_literal_git_and_the_argv_is_five_owned_elements() {
     // elements on some other spelling — this is the assertion that says none of
     // them contains a second argument.
     assert!(
-        !argv.iter().any(|element| element
-            .to_string_lossy()
-            .contains("clone --depth")),
+        !argv
+            .iter()
+            .any(|element| element.to_string_lossy().contains("clone --depth")),
         "two arguments have been joined into one element: {argv:?}",
     );
 }

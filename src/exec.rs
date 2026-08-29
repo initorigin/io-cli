@@ -201,9 +201,10 @@ pub fn describe(outcome: &RunOutcome) -> String {
         RunOutcome::Success { steps } => ("finished, and its verification passed", steps),
         RunOutcome::Finished { steps } => ("finished", steps),
         RunOutcome::StepCapReached { steps } => ("stopped at the step cap", steps),
-        RunOutcome::VerificationFailed { steps } => {
-            ("stopped at the step cap, and its verification failed", steps)
-        }
+        RunOutcome::VerificationFailed { steps } => (
+            "stopped at the step cap, and its verification failed",
+            steps,
+        ),
         RunOutcome::TimeBudgetExceeded { steps } => ("stopped at the time budget", steps),
         RunOutcome::CostBudgetExceeded { steps } => ("stopped at the token budget", steps),
         RunOutcome::BudgetCeilingReached { steps } => {

@@ -320,7 +320,11 @@ pub fn url(named: &Named) -> String {
 /// the answer [`crate::home::path`] gives for the same reason.
 #[must_use]
 pub fn at(named: &Named) -> Option<PathBuf> {
-    Some(crate::home::marketplaces()?.join(&named.owner).join(&named.repo))
+    Some(
+        crate::home::marketplaces()?
+            .join(&named.owner)
+            .join(&named.repo),
+    )
 }
 
 /// The argv, as five owned elements.

@@ -611,15 +611,88 @@ fn f7_no_source_file_runs_a_command_or_touches_the_network() {
     // them, so every list this file compares is sorted first. A test that passes
     // on one machine and fails on another is worse than no test.
     spawns.sort();
-    assert_eq!(
-        spawns,
-        permitted,
+    assert!(
+        only_the_permitted_spawn(&spawns),
         "a process spawn appears somewhere other than the two modules the release \
-         records argue for. Exactly these are permitted, by exact path: \
-         {permitted:?} — one for the operator's own `!` line, one for the `git \
+         records argue for. Found {spawns:?}; exactly these are permitted, by exact \
+         path: {permitted:?} — one for the operator's own `!` line, one for the `git \
          clone` that brings a marketplace down. Anywhere else is a tool \
          implementation that no policy governs and no trace records.",
     );
+}
+
+/// Is `found` **exactly** the permitted set?
+///
+/// A named predicate rather than an `assert_eq!` inline above, and the reason is
+/// the only reason: **F11's second sabotage needs somewhere to run.** That arm is
+/// "widen the permitted set to a substring match rather than a path set", and a
+/// widening like that makes this file *more* permissive — so nothing fails, and
+/// the gate goes vacuous without going red. There is no way to observe it from
+/// the call site, because the call site's own list is the thing being widened.
+///
+/// With the comparison named, `f11_the_permitted_spawn_set_is_exact_paths…` can
+/// hand it a near-miss set and watch it refuse. Rewrite this as
+/// `found.iter().all(|p| permitted.iter().any(|q| p.starts_with(q)))`, or as any
+/// `contains` over the path text, and that test goes red naming the file it just
+/// admitted.
+///
+/// This product has shipped a gate that could not fail in 0.25.0 and again in
+/// 0.27.0, and 0.28.0 recorded the rule it broke both times: enumerate the arms
+/// and check each has a site before trusting the set.
+fn only_the_permitted_spawn(found: &[PathBuf]) -> bool {
+    found == spawning_modules().as_slice()
+}
+
+/// **F11 — the permitted set is exact paths, and widening it is an edit somebody
+/// makes on purpose.**
+///
+/// The sibling arm of F11 — a third file naming the spawn — is already covered:
+/// `f7_no_source_file_runs_a_command_or_touches_the_network` sweeps `src/` and
+/// compares what it finds against the list. This one covers the arm that sweep
+/// cannot see, because a gate that has been widened refuses nothing and therefore
+/// fails nothing.
+///
+/// Each near-miss below shares a prefix, a stem or a parent with a permitted path
+/// and is a different file. Under the exact comparison every one is refused; under
+/// any substring, `starts_with` or stem match, at least one is admitted and this
+/// test fails naming it.
+#[test]
+fn f11_the_permitted_spawn_set_is_exact_paths_and_never_a_substring() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let permitted = spawning_modules();
+
+    // The control. Without it a predicate that answered `false` for everything
+    // would satisfy every assertion below while refusing the real modules too.
+    assert!(
+        only_the_permitted_spawn(&permitted),
+        "the permitted set does not admit itself, so nothing below means anything",
+    );
+
+    for near in [
+        // Shares the stem `fetch`, which is what a `contains` would match on.
+        src.join("fetching.rs"),
+        // Shares the whole stem as a prefix, which is what `starts_with` on the
+        // text would match on.
+        src.join("fetch_marketplace.rs"),
+        // A module directory whose parent is the permitted path's stem — what
+        // `starts_with` on the *path* would match on.
+        src.join("fetch").join("mod.rs"),
+        // And the same three shapes against the other permitted module, so the
+        // property is asserted for both rather than for the new one only.
+        src.join("shell_out.rs"),
+    ] {
+        let mut widened = permitted.clone();
+        widened.push(near.clone());
+        widened.sort();
+        assert!(
+            !only_the_permitted_spawn(&widened),
+            "{} is admitted beside the permitted modules. The set is compared by \
+             exact path for exactly this reason: a substring, stem or prefix match \
+             is a permission list that widens itself, and a third module would then \
+             spawn while this file went on passing.",
+            near.display(),
+        );
+    }
 }
 
 /// **F10 — the four properties that keep 0.29.0's spawn exemption a boundary.**
@@ -675,7 +748,14 @@ fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
          above is watching a name that means something else",
     );
 
-    for shellish in ["/bin/sh", "cmd.exe", "COMSPEC", "SHELL", "powershell", "bash"] {
+    for shellish in [
+        "/bin/sh",
+        "cmd.exe",
+        "COMSPEC",
+        "SHELL",
+        "powershell",
+        "bash",
+    ] {
         assert!(
             !code.contains(shellish),
             "src/fetch.rs names `{shellish}`. The fetch runs one program directly; a \

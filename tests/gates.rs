@@ -838,9 +838,7 @@ fn the_gate_retry_admits_a_run_that_failed_its_verification() {
     let text = text.replace("\r\n", "\n");
 
     assert!(
-        text.contains(
-            "io_cli::exec::OK | io_cli::exec::CEILING | io_cli::exec::UNVERIFIED"
-        ),
+        text.contains("io_cli::exec::OK | io_cli::exec::CEILING | io_cli::exec::UNVERIFIED"),
         "the gate driver admits only the outcomes that mean the run reached its \
          own end, and since io-harness 0.70.0 a run that failed its criterion at \
          the step cap is one of them — `RunOutcome::VerificationFailed`, which \
