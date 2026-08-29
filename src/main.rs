@@ -1838,11 +1838,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
-                        // The add verb, and the one row on this surface that is not
-                        // a bundle. It is checked first because `add_at` is past
-                        // the end of both lists and every branch below indexes into
-                        // one of them.
-                        Pick::Plugins { view: _, add_at } if index == *add_at => {
+                        // The two verb rows, and the only rows on this surface that
+                        // are not bundles. They are checked first because both sit
+                        // past the end of both lists and every branch below indexes
+                        // into one of them. Each is compared against **its own**
+                        // recorded index: neither is derived from the other, so a
+                        // row inserted between them cannot make one of these arms
+                        // answer for the other's row.
+                        Pick::Plugins { add_at, .. } if index == *add_at => {
                             let found = io_cli::pluginview::candidates(session.root());
                             if found.is_empty() {
                                 // **Naming where it looked.** "No bundles found" is
@@ -1880,6 +1883,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Picker::new("Add a bundle", rows),
                                     Pick::PluginAdd(found),
                                 ));
+                            }
+                        }
+                        // The marketplaces, behind their own row rather than mixed
+                        // into the list above: a marketplace is not a bundle, and a
+                        // list an operator chooses a bundle out of must not have
+                        // rows in it that are something else. `/plugin marketplace
+                        // list` opens this same surface through `Action::Manage`,
+                        // built by the same function, so the keystroke and the typed
+                        // line cannot draw two different lists.
+                        Pick::Plugins { market_at, .. } if index == *market_at => {
+                            match marketplaces_picker(screen.width(), &app.theme.glyphs) {
+                                Ok(surface) => descended = Some(surface),
+                                Err(refusal) => app.record(Tone::Refused, refusal),
                             }
                         }
                         // Row 0 is "leave it", so the candidate's own position is
@@ -1928,7 +1944,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
-                        Pick::Plugins { view, add_at: _ } => {
+                        Pick::Plugins { view, .. } => {
                             // **Answered from the reading the rows were drawn
                             // from, and `/skills` does the opposite on purpose.**
                             // There, a row names a file the operator may have
@@ -1941,7 +1957,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             //
                             // The split is `pluginview::rows`'s own: `view.plugins`
                             // first — loaded then switched off — refused after, no
-                            // headings, so the index is direct.
+                            // headings, so the index is direct. The two verb rows
+                            // past the end of both lists are answered by the guarded
+                            // arms above and never reach here.
                             if let Some(plugin) = view.plugins.get(index) {
                                 // `descended`, not `picker`: the assignment at the
                                 // end of this match installs it, while `kind`
@@ -2009,6 +2027,143 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         refused.error,
                                     ),
                                 );
+                            }
+                        }
+                        // The add row, and the one place in this release that asks
+                        // for free text. A marketplace is named `<owner>/<repo>`
+                        // and there is no list to choose one from — nothing on this
+                        // machine knows what exists on a forge — so the composer is
+                        // prefilled with the verb and the operator types the name,
+                        // which is `Pick::McpEdit`'s own shape and the same one
+                        // surface this product takes free text through. The line
+                        // then goes back through `manage::parse`, so a name typed
+                        // here is judged by the function that judges every other.
+                        Pick::Marketplaces { add_at, .. } if index == *add_at => {
+                            app.record(
+                                Tone::Muted,
+                                "a marketplace is a GitHub repository of capability bundles; \
+                                 type its `<owner>/<repo>` after the verb and press Enter"
+                                    .to_string(),
+                            );
+                            app.composer.set("/plugin marketplace add ");
+                        }
+                        // Index `i` is `markets[i]`, which is `marketplace::rows`'
+                        // positional contract, and the add row above is the only
+                        // row that is not one.
+                        Pick::Marketplaces { markets, .. } => {
+                            if let Some(market) = markets.get(index) {
+                                if market.bundles.is_empty() {
+                                    // Said before the pane opens rather than drawn
+                                    // as a row in it: a placeholder row inside the
+                                    // list would be an index that maps to no
+                                    // bundle, which is the whole class of defect
+                                    // this surface is arranged against.
+                                    app.record(
+                                        Tone::Muted,
+                                        format!(
+                                            "no directory in {} carries a {}; it may be laid out \
+                                             deeper than io walks, or it may not be a marketplace",
+                                            market.root.display(),
+                                            io_cli::pluginview::MANIFEST,
+                                        ),
+                                    );
+                                }
+                                let mut rows = io_cli::marketplace::bundle_rows(
+                                    market,
+                                    screen.width(),
+                                    &app.theme.glyphs,
+                                );
+                                // Taken before the row is pushed. See
+                                // `Pick::Marketplace`.
+                                let remove_at = rows.len();
+                                rows.push(Row::with_detail(
+                                    "remove this marketplace".to_string(),
+                                    "deletes the clone; no `[[plugin]]` entry is removed"
+                                        .to_string(),
+                                ));
+                                descended = Some((
+                                    Picker::new(market.name(), rows),
+                                    Pick::Marketplace {
+                                        market: market.clone(),
+                                        remove_at,
+                                    },
+                                ));
+                            }
+                        }
+                        Pick::Marketplace { market, remove_at } => {
+                            if index == *remove_at {
+                                // **What the removal costs, worked out before it is
+                                // offered and never after.** A bundle declared
+                                // straight out of this clone keeps its `[[plugin]]`
+                                // entry — which is F3 — and stops loading, which is
+                                // F3 read the other way round. Computed here rather
+                                // than in the confirmation's own arm because the
+                                // clone still exists at this point, so the entries
+                                // inside it can still be found.
+                                let inside = io_cli::marketplace::dependents(
+                                    &io_cli::pluginview::view(&config),
+                                    &market.root,
+                                );
+                                // `record` and never `say`: the footer is one slot
+                                // and is gone on the next keystroke, and this is a
+                                // consequence the operator has to still be able to
+                                // read after they have answered.
+                                if let Some(said) = io_cli::marketplace::warning(&inside) {
+                                    app.record(Tone::Warning, said);
+                                }
+                                descended = Some((
+                                    Picker::new(
+                                        format!("Remove {}?", market.name()),
+                                        vec![
+                                            // Row 0 declines, and it is
+                                            // `store::LEAVE_IT` rather than a
+                                            // literal so that the label and the
+                                            // `store::acts` test of it cannot drift.
+                                            Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                            Row::with_detail(
+                                                "delete the clone".to_string(),
+                                                format!(
+                                                    "removes {}; every `[[plugin]]` entry is left \
+                                                     exactly as it is",
+                                                    market.root.display()
+                                                ),
+                                            ),
+                                        ],
+                                    ),
+                                    Pick::MarketplaceRemove {
+                                        named: market.named.clone(),
+                                    },
+                                ));
+                            } else if let Some(bundle) = market.bundles.get(index) {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} — {} · {}",
+                                        bundle.label(),
+                                        bundle.line(),
+                                        bundle.dir.display(),
+                                    ),
+                                );
+                                // **Declared through the verb that already declares
+                                // a bundle, not through a second writer.** A
+                                // marketplace directory is a directory like any
+                                // other, so `plugin add <path>` writes the entry —
+                                // and it is the same parse, the same
+                                // `pluginview::refusal` and the same
+                                // `configure::write` every other declaration goes
+                                // through. A path prefilled here is one the
+                                // operator has just read on the row above it.
+                                app.composer
+                                    .set(&format!("/plugin add {}", bundle.dir.display()));
+                            }
+                        }
+                        Pick::MarketplaceRemove { named } => {
+                            // `store::acts` rather than `index == 1`: the decision
+                            // lives in the library, where a test can sabotage it,
+                            // and row 0 declines whatever it is called.
+                            if io_cli::store::acts(index) {
+                                let outcome = io_cli::marketplace::remove(named);
+                                app.record(tone_of(&outcome), outcome.said);
                             }
                         }
                         Pick::Skills(drawn) => {
@@ -3545,8 +3700,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // came rather than re-worded into a second opinion about
                         // somebody else's rule.
                         Err(refusal) => app.record(Tone::Refused, refusal),
-                        // A reading verb reaching here can only be `mcp get`: the
-                        // list verbs are routed to their own panels before `parse`
+                        // A reading verb reaching here can only be `mcp get` or one
+                        // of the marketplace verbs below: `/mcp`, `/plugin` and
+                        // `/config` are routed to their own panels before `parse`
                         // is asked, because a panel is a better answer in a session
                         // than a text dump is. Answered from the configuration this
                         // session is running on.
@@ -3573,6 +3729,57 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 ),
                             }
                         }
+                        // **The three verbs that change the disk and no file.**
+                        // `plan` answers `None` for all of them — there is no
+                        // scope, no `[[…]]` entry and no value to spell — so they
+                        // are acted on here, through the *same* `marketplace`
+                        // functions `marketplace_main` calls. Neither door
+                        // resolves a name, chooses a path or writes a sentence of
+                        // its own; what they differ in is where they print, which
+                        // is all the two doors have ever differed in.
+                        Ok((
+                            io_cli::manage::Request::Plugin(
+                                io_cli::manage::PluginVerb::Marketplace(verb),
+                            ),
+                            None,
+                            // By reference: every library call below takes a
+                            // `&Named`, so nothing is moved out of the parsed verb
+                            // and there is no clone to keep in step with it.
+                        )) => match &verb {
+                            // A panel rather than a text dump, which is what every
+                            // other list verb typed into a session gets — and it is
+                            // the panel the `/plugin` row opens, from one builder.
+                            io_cli::manage::MarketVerb::List => {
+                                match marketplaces_picker(screen.width(), &app.theme.glyphs) {
+                                    Ok(surface) => picker = Some(surface),
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                            io_cli::manage::MarketVerb::Add(named) => {
+                                // **`record` and never `say`.** A fetch that failed
+                                // carries git's own last line, and the footer is one
+                                // slot that the next keystroke takes back — this
+                                // product has shipped that defect twice.
+                                let outcome = io_cli::marketplace::add(named);
+                                app.record(tone_of(&outcome), outcome.said);
+                            }
+                            io_cli::manage::MarketVerb::Remove(named) => {
+                                // Worked out while the clone is still there. See
+                                // `Pick::Marketplace`, which asks the same question
+                                // before it offers the same removal.
+                                if let Some(clone) = io_cli::fetch::at(named) {
+                                    let inside = io_cli::marketplace::dependents(
+                                        &io_cli::pluginview::view(&config),
+                                        &clone,
+                                    );
+                                    if let Some(warned) = io_cli::marketplace::warning(&inside) {
+                                        app.record(Tone::Warning, warned);
+                                    }
+                                }
+                                let outcome = io_cli::marketplace::remove(named);
+                                app.record(tone_of(&outcome), outcome.said);
+                            }
+                        },
                         Ok((_, None)) => {}
                         Ok((request, Some(plan))) => {
                             match io_cli::configure::write(&root, plan.scope, &plan.edits) {
@@ -3930,14 +4137,33 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                     let mut rows =
                         io_cli::pluginview::rows(&view, screen.width(), &app.theme.glyphs);
-                    // Taken before the row is pushed, never worked out afterwards.
+                    // **Every index on this surface is taken as `rows.len()`
+                    // immediately before its own row is pushed, and never worked
+                    // out from another one.** The layout is now four ranges —
+                    // the loaded and switched-off bundles, the refused ones, the
+                    // add row, the marketplaces row — and 0.20.0 shipped a silent
+                    // wrong delete through exactly the arithmetic that a fifth
+                    // range would tempt somebody into writing here (`add_at + 1`).
                     // See `Pick::Plugins`.
                     let add_at = rows.len();
                     rows.push(Row::with_detail(
                         "add a bundle".to_string(),
                         "chooses a directory that carries a `plugin.toml`".to_string(),
                     ));
-                    picker = Some((Picker::new("Plugins", rows), Pick::Plugins { view, add_at }));
+                    let market_at = rows.len();
+                    rows.push(Row::with_detail(
+                        "marketplaces".to_string(),
+                        "the repositories bundles are fetched from: add, list and remove"
+                            .to_string(),
+                    ));
+                    picker = Some((
+                        Picker::new("Plugins", rows),
+                        Pick::Plugins {
+                            view,
+                            add_at,
+                            market_at,
+                        },
+                    ));
                 }
                 // **Everything is shown before anything is written, and the
                 // default for every item is no.** The plan is built whole here —
@@ -7240,15 +7466,25 @@ enum Pick {
     /// detail pane — every accessor is valid on one, and the pane opens on the row
     /// that says none of it is in this session.
     ///
-    /// `add_at` is where the add row sits, recorded by the code that built the rows
-    /// rather than recomputed here — `pluginview::rows` draws the loaded bundles
-    /// and then the refused ones, so the only number that cannot be wrong is the
-    /// length of what was already there. This is [`Pick::PluginEntry`]'s
-    /// `action_at` rule, and it is the rule because every index in this surface
-    /// addresses a list somewhere else.
+    /// `add_at` and `market_at` are where the two verb rows sit, each recorded by
+    /// the code that built the rows rather than recomputed here — `pluginview::rows`
+    /// draws the loaded bundles and then the refused ones, so the only number that
+    /// cannot be wrong is the length of what was already there. This is
+    /// [`Pick::PluginEntry`]'s `action_at` rule, and it is the rule because every
+    /// index in this surface addresses a list somewhere else.
+    ///
+    /// **`market_at` is a field and not `add_at + 1`.** The two rows happen to be
+    /// adjacent today; the arithmetic that assumes it is the arithmetic that
+    /// shipped a wrong delete in 0.20.0, and it survives the next row inserted
+    /// between them by being wrong rather than by failing.
+    ///
+    /// The four ranges, in order: `view.plugins[i]` for `i < plugins.len()`;
+    /// `view.refused[i - plugins.len()]` up to `add_at`; `add_at` itself; then
+    /// `market_at`.
     Plugins {
         view: io_cli::pluginview::View,
         add_at: usize,
+        market_at: usize,
     },
     /// The directories below the discovery root that carry a `plugin.toml`, with
     /// "leave it" at row 0.
@@ -7260,6 +7496,39 @@ enum Pick {
     /// only way a wrong one arrives — a candidate can lose its manifest between the
     /// row being drawn and this keystroke.
     PluginAdd(Vec<std::path::PathBuf>),
+    /// The marketplaces in `~/.io-cli/marketplaces`, in `marketplace::rows`' order.
+    ///
+    /// `add_at` is where the add row sits, taken from the length of the list's own
+    /// rows before it was pushed — the rule [`Pick::Plugins`] and
+    /// [`Pick::Provider`] both follow, and the rule because an index worked out
+    /// afterwards addresses a different list than the one on screen.
+    ///
+    /// The whole [`io_cli::marketplace::Market`] is carried rather than a name,
+    /// for [`Pick::Plugins`]' reason: descending has to show what the marketplace
+    /// holds, and re-walking the clone to answer a keystroke would be a second
+    /// reading of directories that can change between two of them.
+    Marketplaces {
+        markets: Vec<io_cli::marketplace::Market>,
+        add_at: usize,
+    },
+    /// One marketplace's bundles, in `marketplace::bundle_rows`' order, and the
+    /// one verb offered on the marketplace itself.
+    ///
+    /// `remove_at` is past the end of `market.bundles`, taken before the row was
+    /// pushed. Every other index in this variant addresses that list.
+    Marketplace {
+        market: io_cli::marketplace::Market,
+        remove_at: usize,
+    },
+    /// The confirmation that deletes one clone, with [`io_cli::store::LEAVE_IT`]
+    /// at row 0.
+    ///
+    /// The **name** is carried and never a row number or a path built here: the
+    /// removal resolves the destination through the same `<owner>/<repo>` layout
+    /// the fetch wrote, so the directory deleted is the directory added.
+    MarketplaceRemove {
+        named: io_cli::fetch::Named,
+    },
     /// One setting's values, as rows, with "leave it" at row 0.
     ///
     /// **The descent that ends free text.** Until 0.28.0 choosing a `/config` row
@@ -7435,6 +7704,13 @@ fn manage_main(
                 eprintln!("{}: {}", refused.path.display(), refused.error);
             }
         }
+        // **Answered here and returned from, because none of the three plans an
+        // edit.** A marketplace is a clone on the disk rather than a line in a
+        // configuration file, so `manage::plan` says `None` for all three and the
+        // fall-through below would exit zero having done nothing at all.
+        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Marketplace(verb)) => {
+            return marketplace_main(config, verb);
+        }
         io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::Get { key }) => {
             let setting = io_cli::configure::setting(config, key);
             println!(
@@ -7478,6 +7754,109 @@ fn manage_main(
         );
     }
     Ok(io_cli::exec::OK)
+}
+
+/// `io plugin marketplace add|list|remove` — the argument form.
+///
+/// **Every decision is `crate::marketplace`'s and every name has already been
+/// judged by `crate::manage`.** This function chooses no path, spells no refusal
+/// and resolves no name: it prints what the library answered. That is F1's whole
+/// property — the argv form has no branch of its own — and its named sabotage is
+/// exactly the code this function refuses to contain.
+///
+/// **`list` is the only verb that writes to stdout**, for the reason `manage_main`
+/// gives: a listing is what a script reads, and the sentence an `add` or a `remove`
+/// produces is prose about what happened. So the prose goes to stderr and the exit
+/// status carries whether it happened, which is the same contract every other verb
+/// in that function keeps.
+fn marketplace_main(
+    config: &io_harness::config::Config,
+    verb: &io_cli::manage::MarketVerb,
+) -> Result<u8, String> {
+    match verb {
+        io_cli::manage::MarketVerb::List => {
+            let markets = io_cli::marketplace::installed()
+                .ok_or_else(|| io_cli::marketplace::NOWHERE.to_string())?;
+            for market in &markets {
+                // The count of directories carrying a manifest, which is what a
+                // marketplace *is* to this product, beside the name it is removed
+                // by and the path it occupies. The bundles' own names and
+                // descriptions are what descending into one shows; a second row
+                // shape in one listing is a listing no script can read.
+                println!(
+                    "{}\t{}\t{}",
+                    market.name(),
+                    market.bundles.len(),
+                    market.root.display(),
+                );
+            }
+            Ok(io_cli::exec::OK)
+        }
+        io_cli::manage::MarketVerb::Add(named) => answered(&io_cli::marketplace::add(named)),
+        io_cli::manage::MarketVerb::Remove(named) => {
+            // **Before the clone goes, because afterwards the entries pointing
+            // into it name nothing that can be found.** The entries themselves are
+            // never touched — that is F3 — so this is the only place the operator
+            // is told what stops loading.
+            if let Some(clone) = io_cli::fetch::at(named) {
+                let inside =
+                    io_cli::marketplace::dependents(&io_cli::pluginview::view(config), &clone);
+                if let Some(warned) = io_cli::marketplace::warning(&inside) {
+                    eprintln!("{warned}");
+                }
+            }
+            answered(&io_cli::marketplace::remove(named))
+        }
+    }
+}
+
+/// One [`io_cli::marketplace::Outcome`], as the argv door's answer.
+///
+/// A refusal is an `Err` and therefore a non-zero exit; the two endings that are
+/// not refusals both exit zero, because "it is already here" is what the operator
+/// asked for and a script must not have to tell it from a failure.
+fn answered(outcome: &io_cli::marketplace::Outcome) -> Result<u8, String> {
+    if outcome.went == io_cli::marketplace::Went::Refused {
+        return Err(outcome.said.clone());
+    }
+    eprintln!("{}", outcome.said);
+    Ok(io_cli::exec::OK)
+}
+
+/// The marketplaces surface, built once for the two ways of reaching it.
+///
+/// The `/plugin` panel's own row and a typed `/plugin marketplace list` both come
+/// here, so the keystroke and the line cannot draw two different lists — the same
+/// reason `manage::parse` is one function.
+///
+/// `add_at` is taken from the length of the list's own rows before the add row is
+/// pushed. See [`Pick::Marketplaces`].
+fn marketplaces_picker(width: u16, glyphs: &Glyphs) -> Result<(Picker, Pick), String> {
+    let markets =
+        io_cli::marketplace::installed().ok_or_else(|| io_cli::marketplace::NOWHERE.to_string())?;
+    let mut rows = io_cli::marketplace::rows(&markets, width, glyphs);
+    let add_at = rows.len();
+    rows.push(Row::with_detail(
+        "add a marketplace".to_string(),
+        "clones `<owner>/<repo>` from GitHub into ~/.io-cli/marketplaces".to_string(),
+    ));
+    Ok((
+        Picker::new("Marketplaces", rows),
+        Pick::Marketplaces { markets, add_at },
+    ))
+}
+
+/// The tone one of the three endings is drawn in.
+///
+/// **`Already` is `Muted` and not `Refused`**, because a marketplace that is
+/// already here is what the operator asked for; drawing it as a refusal is the
+/// same conflation `Went` exists to prevent, told in colour.
+fn tone_of(outcome: &io_cli::marketplace::Outcome) -> Tone {
+    match outcome.went {
+        io_cli::marketplace::Went::Acted => Tone::Success,
+        io_cli::marketplace::Went::Already => Tone::Muted,
+        io_cli::marketplace::Went::Refused => Tone::Refused,
+    }
 }
 
 /// The models `preset` actually serves, spelled the way `preset` spells them.

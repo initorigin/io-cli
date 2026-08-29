@@ -574,7 +574,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/memory` | what io remembers: the instruction files, and the agent's own notes |
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
-| `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
+| `/plugin` | the capability bundles declared, the marketplaces they come from, and what failed |
 | `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
 | `/import` | bring instructions, MCP servers, skills and a model across from another agent |
 

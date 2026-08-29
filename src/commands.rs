@@ -221,15 +221,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
     // which is the argument for it being visible at all, and the argument for it
     // being under "configure" rather than "inspect".
     //
-    // **What it does not do is add one, and the description says "loaded" rather
-    // than implying otherwise.** Declaring a bundle means naming a directory,
-    // which is a path an operator types far more comfortably into their own file
-    // than into a picker; removing one means finding the right entry among three
-    // scope files, which is exactly the part a surface can do better than a
-    // person. So this does the second and not the first.
+    // **0.29.0 adds where a bundle comes from, and it is a verb inside this
+    // command rather than a command of its own.** `Configure` is nine of ten and
+    // the product has one free slot; a marketplace is not a tenth surface, it is
+    // the repository the bundles on this surface were fetched from, so it belongs
+    // under the list it feeds. `/plugin marketplace add|list|remove` is read by
+    // `manage::parse` — the same parse `io plugin marketplace …` goes through —
+    // and the picker offers the same three verbs without anything being typed.
     (
         "/plugin",
-        "the capability bundles loaded, what each contributed, and the ones that failed",
+        "the capability bundles declared, the marketplaces they come from, and what failed",
     ),
     (
         "/import",
@@ -1234,6 +1235,15 @@ pub enum Action {
     /// declared in the project file that contributes `[[hook]]` or `[[mcp]]` is
     /// refused **whole**, and the sentence is what names the two files it could
     /// move to instead.
+    ///
+    /// **Since 0.29.0 the panel also offers the marketplaces bundles come from.**
+    /// That is one extra row on this surface — the verbs live behind it, under
+    /// their own picker — and the same three verbs are typed as
+    /// `/plugin marketplace add|list|remove`, which routes to [`Action::Manage`]
+    /// and is therefore read by the same parse `io plugin marketplace …` goes
+    /// through. Nothing about a marketplace is written into a configuration file:
+    /// adding one clones a repository into `~/.io-cli/marketplaces` and removing
+    /// one deletes that clone, leaving every `[[plugin]]` entry exactly as it was.
     Plugin,
     /// Bring an operator's work across from another agent they already use.
     ///
@@ -1962,8 +1972,16 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // `/plugins` is admitted for the same reason `/servers` and `/providers`
         // are: the thing being listed is plural, so the plural is what a hand
         // reaches for, and refusing it teaches nothing.
+        // `marketplace` is here beside `add` and `remove` because it is the same
+        // kind of word: a verb with arguments, read by `manage::parse` and by
+        // nothing else. A bare `/plugin marketplace` reaches the parse too and is
+        // refused there by name — which is better than opening the bundle list
+        // over a line that asked for something else.
         "plugin" | "plugins"
-            if matches!(input.split_whitespace().nth(1), Some("add" | "remove")) =>
+            if matches!(
+                input.split_whitespace().nth(1),
+                Some("add" | "remove" | "marketplace")
+            ) =>
         {
             Action::Manage(input.to_string())
         }
