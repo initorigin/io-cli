@@ -2446,7 +2446,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 descended = Some((
                                     Picker::new(
                                         format!("{}?", skill.name),
-                                        vec![Row::new(verb), Row::new("leave it as it is")],
+                                        vec![
+                                            Row::new(verb),
+                                            Row::new("leave it as it is"),
+                                            // **The irreversible one, last and
+                                            // descending.** Turning a skill off is
+                                            // a rename this row undoes; removing it
+                                            // unlinks the file and nothing in this
+                                            // product brings it back, so it asks
+                                            // again rather than acting from here.
+                                            Row::with_detail(
+                                                "remove it for good".to_string(),
+                                                "deletes the file; turning it off \
+                                                 instead is reversible"
+                                                    .to_string(),
+                                            ),
+                                        ],
                                     ),
                                     Pick::SkillToggle {
                                         name: skill.name.clone(),
@@ -2462,12 +2477,80 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // that io-harness propagates at run start — every turn of
                         // the session dead. So the failure of a move is said, and
                         // nothing is written twice.
+                        Pick::SkillRemove { name, path } => {
+                            if io_cli::store::acts(index) {
+                                // The bundle list goes to the removal for the same
+                                // reason it goes to the move: the refusal lives
+                                // inside `skillview::remove`, so a second caller
+                                // cannot walk past it.
+                                match io_cli::skillview::remove(path, &bundle_skills(&config)) {
+                                    Ok(gone) => {
+                                        // The palette walks its list once at
+                                        // startup, and this is the second thing in
+                                        // the product that changes the directory
+                                        // under it. Leave it and `/` goes on
+                                        // offering a skill whose file is gone.
+                                        skills = io_cli::commands::skills(
+                                            &io_cli::home::path().unwrap_or_default(),
+                                            io_cli::contract::skills_dir(
+                                                &config,
+                                                &capabilities,
+                                                session.root().to_path_buf(),
+                                            )
+                                            .as_deref(),
+                                            &bundle_skills(&config),
+                                        )
+                                        // `.0` for the reason the sibling refresh
+                                        // below takes it: the second half is the
+                                        // startup complaint about a skills
+                                        // directory io-cli did not write into, and
+                                        // it is said once, at startup, by the code
+                                        // that knows the resolved directory.
+                                        .0;
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{name} is gone: {} is deleted",
+                                                gone.display()
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            } else {
+                                app.record(Tone::Muted, format!("{name} is unchanged"));
+                            }
+                        }
                         Pick::SkillToggle {
                             name,
                             path,
                             enabled,
                         } => {
-                            if index != 0 {
+                            if index == 2 {
+                                // **`store::LEAVE_IT` at row 0, and it is the
+                                // opposite way round from the picker above.** That
+                                // one puts its verb first because it is reversible
+                                // by the same row; this one deletes a file, so it
+                                // takes the product's confirmation shape — row 0
+                                // declines, `store::acts` decides, and the index is
+                                // what the test asserts.
+                                descended = Some((
+                                    Picker::new(
+                                        format!("Remove {name}?"),
+                                        vec![
+                                            Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                            Row::with_detail(
+                                                "remove it".to_string(),
+                                                format!("deletes {}", path.display()),
+                                            ),
+                                        ],
+                                    ),
+                                    Pick::SkillRemove {
+                                        name: name.clone(),
+                                        path: path.clone(),
+                                    },
+                                ));
+                            } else if index != 0 {
                                 app.record(Tone::Muted, format!("{name} is unchanged"));
                             } else {
                                 // **The bundle list goes to the move, not just to
@@ -8140,6 +8223,19 @@ enum Pick {
     /// position now. So the pair says which skill the operator actually read, and
     /// a row that is no longer there is answered with a sentence.
     Skills(Vec<(String, std::path::PathBuf)>),
+    /// The second question a deletion owes: are you sure.
+    ///
+    /// Two steps rather than one, for [`Pick::SkillToggle`]'s own reason turned
+    /// around — that picker changes a file on the way past because the row it sits
+    /// on undoes it, and this one cannot be undone by anything in this product.
+    ///
+    /// Row 0 is `store::LEAVE_IT` and `store::acts` decides, which is the shape
+    /// every destructive confirmation here takes and the one the test asserts **by
+    /// index** rather than by label.
+    SkillRemove {
+        name: String,
+        path: std::path::PathBuf,
+    },
     /// One skill, and the move that decides whether the model is offered it.
     ///
     /// **Two steps rather than one, and for the reason [`Pick::ConfigScope`]
@@ -8528,6 +8624,53 @@ async fn manage_main(
                     setting.value.as_deref().unwrap_or(""),
                     setting.decided.word()
                 );
+            }
+        }
+        // **The skill verbs run on the door, because `plan` answers `None` for
+        // them.** A skill is a markdown file in io-cli's own home and no
+        // configuration file declares one, so there is no `Edit` for any of this;
+        // the acts live in `skillview`, which the keystroke calls too, and neither
+        // door words an outcome for itself.
+        io_cli::manage::Request::Skill(verb) => {
+            let Some(home) = io_cli::home::path() else {
+                return Err(
+                    "there is no home on this machine to keep skills in; set `IO_CONFIG_HOME`"
+                        .to_string(),
+                );
+            };
+            let (stored, _) = io_cli::settings::stored(config);
+            let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
+            let view = skills_view(config, &capabilities, root);
+            match verb {
+                io_cli::manage::SkillVerb::Add { source } => {
+                    let at = io_cli::skillview::install(&home, source)?;
+                    println!("{}", at.display());
+                }
+                io_cli::manage::SkillVerb::List => {
+                    for skill in &view.skills {
+                        println!(
+                            "{}\t{}\t{}\t{}",
+                            skill.name,
+                            skill.origin.word(),
+                            if skill.enabled { "enabled" } else { "disabled" },
+                            skill.path.display(),
+                        );
+                    }
+                }
+                io_cli::manage::SkillVerb::Remove { name } => {
+                    // **By the resolved name, which is what the listing shows.**
+                    // Matching the file name here would ask for the one spelling
+                    // this surface never prints — a file called `mine.md` declaring
+                    // `name: io-mcp` is `io-mcp` everywhere it is addressed.
+                    let found = view.skills.iter().find(|skill| skill.name == *name);
+                    let Some(skill) = found else {
+                        return Err(format!(
+                            "no skill answers to `{name}`; `io skill list` names the ones that do"
+                        ));
+                    };
+                    let gone = io_cli::skillview::remove(&skill.path, &bundle_skills(config))?;
+                    println!("{}", gone.display());
+                }
             }
         }
         // **The probe runs on the door, because `plan` answers `None` for it.** It

@@ -2087,6 +2087,19 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             Action::Manage(input.to_string())
         }
         "mcp" | "servers" => Action::Mcp,
+        // **A verb after the word goes to the one parse both doors share**, the
+        // same shape `/mcp` and `/plugin` take. Bare `/skills` is still the panel,
+        // which is where an operator who does not yet know what they have goes;
+        // `/skills add <path>` is for the second time, for a line pasted out of a
+        // README, and for the operator who already knows the answer.
+        "skills" | "skill"
+            if matches!(
+                input.split_whitespace().nth(1),
+                Some("add" | "list" | "remove")
+            ) =>
+        {
+            Action::Manage(input.to_string())
+        }
         "skills" => Action::Skills,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile(profile_verb(input)),

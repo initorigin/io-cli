@@ -1,5 +1,6 @@
 //! `/skills` — what each skill is for, whose it is, whether it is on, and the
-//! file it lives in; with the two levers that turn one off and back on.
+//! file it lives in; with the levers that turn one off, turn it back on, put one
+//! there and take one away.
 //!
 //! The palette has listed skills since 0.10.0 and that is a launcher: it puts a
 //! name into the composer. This is the management surface, and the four facts it
@@ -85,6 +86,29 @@
 //! and moving their file into it — a bundle io-cli does not own, did not install
 //! and cannot put back. Both levers refuse, and they refuse *inside themselves*
 //! rather than at the call site; see [`disable`].
+//!
+//! # A skill arrives and leaves, and the two acts are not the two levers
+//!
+//! Until 0.30.0 the only thing in this crate that had ever written a skill file
+//! was [`crate::import`], driven by a foreign tool the crate happened to detect,
+//! so an operator with a skill of their own had no door at all — and nothing
+//! anywhere removed one. [`install`] and [`remove`] are that door, and they are
+//! deliberately a **copy** and an **unlink** rather than two more renames:
+//!
+//! * [`install`] copies, because the source is a file the operator still owns —
+//!   a repository, a download, a directory of their own — and a lever that
+//!   emptied it would be `/skills` deleting something outside the home in order
+//!   to put something inside it. It records nothing in
+//!   [`crate::skills::MANIFEST`], which is what makes the installed row read
+//!   `yours`: the manifest answers *are these the bytes io-cli last wrote*, and
+//!   these are not.
+//! * [`remove`] unlinks, because [`disable`] already is the reversible act. A
+//!   removal implemented as a rename would be a lever that promised deletion and
+//!   delivered a hidden copy, and the two would then be one verb under two names
+//!   on the surface whose whole subject is what is where.
+//!
+//! Both refuse a bundle's file, from inside themselves, for [`disable`]'s reason
+//! and by [`disable`]'s guard.
 //!
 //! Neither lever rewrites a byte of the file and neither touches `io.toml`. There
 //! is no `enabled` concept in the harness and no key for one in the configuration,
@@ -698,6 +722,109 @@ pub fn enable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
 /// uncanonicalised comparison answer "not a bundle" about a bundle. A path that
 /// will not canonicalise is compared as it stands: the file being gone is
 /// [`relocate`]'s error to report, not a reason to relax this.
+/// Copy the file at `source` into this home's skills directory. Answers with
+/// where it now is.
+///
+/// **A copy and never a move.** The source is a file the operator still owns — a
+/// repository, a download, a directory of their own — and a verb on `/skills`
+/// that emptied it would be this surface deleting something outside the home in
+/// order to put something inside it.
+///
+/// **It records nothing in [`skills::MANIFEST`], and that is what makes the row
+/// read `yours`.** The manifest answers one question — *are these the bytes io-cli
+/// last wrote?* — and for a file the operator brought, they are not. Recording it
+/// would make [`skills::wrote`] answer `true` and the listing would credit this
+/// crate with somebody else's work, which is the same misattribution
+/// [`crate::home::origin`] exists to prevent one level up.
+///
+/// Two refusals, and the second is the one that matters. A destination that
+/// already exists is refused rather than overwritten, because a skill file is
+/// prose somebody wrote and this verb has no undo. And a source whose **resolved
+/// name** is already claimed is refused even when its filename is free — that
+/// asymmetry is [`enable`]'s whole warning, reachable here in one keystroke: two
+/// files answering to one name make `Skills::discover` return `Err`, io-harness
+/// propagates it at run start, and every turn of the session is dead before the
+/// first completion, with `/skills` unable to help because its list comes from the
+/// call that just failed.
+pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
+    if !source.is_file() {
+        return Err(format!(
+            "{} is not a file; a skill is one markdown file with `name:` and \
+             `description:` in its frontmatter",
+            source.display()
+        ));
+    }
+    let Some(file_name) = source.file_name() else {
+        return Err(format!("{} has no file name", source.display()));
+    };
+
+    let dir = skills::dir(home);
+    // Made here for [`disable`]'s reason: the surface that first moves a file in
+    // is what creates it, `0700` like everything else under the home.
+    if let Err(error) = crate::home::create(&dir) {
+        return Err(format!("could not create {}: {error}", dir.display()));
+    }
+    let destination = dir.join(file_name);
+    if destination.exists() {
+        return Err(format!(
+            "{} is already there; remove it first, or rename the file you are \
+             installing",
+            destination.display()
+        ));
+    }
+
+    // The question the run will ask, asked before the file is in a position to
+    // make the run fail.
+    let (name, _) = describe(source);
+    if let Ok(found) = io_harness::Skills::discover(&dir) {
+        if found.get(&name).is_some() {
+            return Err(format!(
+                "a skill in {} already answers to `{name}`, which is the name in \
+                 {}'s frontmatter — two files answering to one name make every \
+                 turn of the next session fail before its first completion",
+                dir.display(),
+                source.display(),
+            ));
+        }
+    }
+
+    std::fs::copy(source, &destination)
+        .map_err(|error| format!("could not copy into {}: {error}", destination.display()))?;
+    Ok(destination)
+}
+
+/// Delete a skill's file. Answers with the path that is now gone.
+///
+/// **An unlink, and that is the whole difference from [`disable`].** Disable is
+/// the reversible act: it renames the file into `disabled/` and [`enable`] brings
+/// it back. A removal implemented as a second rename would be a verb that promised
+/// deletion and delivered a hidden copy — and the two would then be one act under
+/// two names, on the surface whose entire subject is what is where.
+///
+/// It refuses a bundle's file from inside itself, for [`disable`]'s reason and by
+/// [`disable`]'s guard: a bundle's skills are not io-cli's to delete, and the
+/// refusal lives here rather than at the call site so a second caller cannot walk
+/// past it.
+///
+/// The folder form is refused too, for [`disable`]'s reason: `<name>/SKILL.md` is
+/// one skill spread over a directory, and unlinking the file alone would leave the
+/// directory behind holding nothing that discovery can see.
+pub fn remove(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, String> {
+    if let Some(refusal) = refuse_bundle(path, bundles) {
+        return Err(refusal);
+    }
+    if is_bundle(path) {
+        return Err(format!(
+            "{} is a skill folder rather than a single file; delete the folder by \
+             hand to take it away",
+            path.display()
+        ));
+    }
+    std::fs::remove_file(path)
+        .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
 fn refuse_bundle(path: &Path, bundles: &[(String, PathBuf)]) -> Option<String> {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let (id, dir) = bundles.iter().find(|(_, dir)| {

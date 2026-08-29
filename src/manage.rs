@@ -91,6 +91,33 @@ pub enum Request {
     Plugin(PluginVerb),
     /// The settings.
     Config(ConfigVerb),
+    /// The skills in this home's own `skills/` directory.
+    Skill(SkillVerb),
+}
+
+/// What `/skills` and `io skill` can be asked to do.
+///
+/// **Three verbs and not five.** Turning a skill off and back on stays a
+/// keystroke: it is a rename inside a directory io-cli owns, it is reversible by
+/// the row that did it, and there is nothing for an argument form to name that
+/// the picker does not name better. Installing and removing are the two that take
+/// a value only the operator can author — a path they have and a name they choose
+/// — which is exactly the line `product.yaml` draws between a value that is
+/// chosen and one that is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillVerb {
+    /// Copy the file at `source` into this home's skills directory.
+    Add { source: std::path::PathBuf },
+    /// Every skill, whose it is, and whether it is on.
+    List,
+    /// Delete one by the name its frontmatter declares.
+    ///
+    /// The **resolved** name and not the file name, because that is what an
+    /// operator reads off `/skills` and what `Skills::discover` keys on. A file
+    /// called `mine.md` declaring `name: io-mcp` is `io-mcp` everywhere it is
+    /// addressed, and asking for the filename here would be asking for the one
+    /// spelling the surface never shows.
+    Remove { name: String },
 }
 
 /// What `/mcp` and `io mcp` can be asked to do.
@@ -310,8 +337,9 @@ pub fn tokens(line: &str) -> Vec<String> {
 pub fn parse(tokens: &[String]) -> Result<Request, String> {
     let Some(surface) = tokens.first() else {
         return Err(
-            "nothing was asked for; the surfaces are `mcp`, `plugin` and `config`, and \
-                    each takes a verb after it — `mcp add`, `plugin list`, `config set`"
+            "nothing was asked for; the surfaces are `mcp`, `plugin`, `skill` and `config`, \
+                    and each takes a verb after it — `mcp add`, `plugin list`, `skill add`, \
+                    `config set`"
                 .to_string(),
         );
     };
@@ -335,12 +363,40 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
     let surface = match surface {
         "plugins" => "plugin",
         "servers" => "mcp",
+        // `/skills` is the command and `io skill …` reads better in a shell, so
+        // both spellings fold here for the plural's own reason: the fold has to be
+        // on the door **both** ways in go through, or the argv form and the slash
+        // form end up disagreeing about a word.
+        "skills" => "skill",
         other => other,
     };
     let verb = tokens.get(1).map(String::as_str);
     let args = scan(tokens.get(2..).unwrap_or(&[]))?;
 
     match (surface, verb) {
+        // `no_scope` for the reason every skill verb has it: a skill is a file in
+        // io-cli's own home and no configuration file declares one, so a scope
+        // typed here would name something this surface does not write.
+        ("skill", Some("add")) => {
+            args.no_scope("skill add")?;
+            args.only("skill add", &[])?;
+            Ok(Request::Skill(SkillVerb::Add {
+                source: std::path::PathBuf::from(
+                    args.one_word("skill add", "the path of a skill file")?,
+                ),
+            }))
+        }
+        ("skill", Some("list")) => {
+            args.nothing("skill list")?;
+            Ok(Request::Skill(SkillVerb::List))
+        }
+        ("skill", Some("remove")) => {
+            args.no_scope("skill remove")?;
+            args.only("skill remove", &[])?;
+            Ok(Request::Skill(SkillVerb::Remove {
+                name: args.one_word("skill remove", "the name of an installed skill")?,
+            }))
+        }
         ("mcp", Some("add")) => mcp_add(&args).map(Request::Mcp),
         ("mcp", Some("list")) => {
             args.nothing("mcp list")?;
@@ -468,6 +524,7 @@ fn verbs(surface: &str) -> &'static str {
     match surface {
         "mcp" => "`add`, `list`, `get`, `edit`, `enable`, `disable`, `probe` and `remove`",
         "plugin" => "`add` (also spelled `install`), `list`, `search`, `remove` and `marketplace`",
+        "skill" => "`add <path>`, `list` and `remove <name>`",
         _ => "`get`, `set`, `unset` and `list`",
     }
 }
@@ -590,6 +647,14 @@ fn decided_scope(root: &Path, key: &str, asked: Option<Scope>) -> Scope {
 
 pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
     let plan = match request {
+        // **No skill verb plans an `Edit`, and none ever will.** A skill is a
+        // markdown file in io-cli's own home; no configuration file declares one,
+        // there is no `enabled` key for one in the harness, and `Plan` is a list of
+        // edits to somebody's `io.toml`. Installing copies a file and removing
+        // unlinks one — acts that happen on the door, in `skillview`, the way a
+        // probe does. `Ok(None)` is the honest answer and it is the same one every
+        // read verb here gives.
+        Request::Skill(_) => return Ok(None),
         Request::Mcp(McpVerb::Add { server, scope }) => Plan {
             scope: *scope,
             edits: vec![crate::servers::add(server)],
