@@ -1005,13 +1005,38 @@ fn f11_the_candidate_order_is_stable() {
     bundle(&root, "alpha", MINIMAL);
     bundle(&root, "bundles/rust-review", MINIMAL);
 
-    assert_eq!(pluginview::candidates(&root), pluginview::candidates(&root));
-    // Nearest first: depth leads, then the path.
+    // **`candidates(&root) == candidates(&root)` was here and asserted nothing**:
+    // the same pure call twice, over a function that ends in a sort. It could not
+    // fail, and "the order is stable" is not what it was checking. The order is a
+    // property of the sort key, so the sort key is what has to be pinned — both
+    // halves of it, because dropping the path tiebreak leaves the depth half
+    // sorted and lets same-depth rows follow whatever order `read_dir` happened
+    // to return on that machine.
     let found = pluginview::candidates(&root);
-    let depths: Vec<usize> = found.iter().map(|p| p.components().count()).collect();
+    let depths: Vec<usize> = found.iter().map(|path| path.components().count()).collect();
     let mut sorted = depths.clone();
     sorted.sort_unstable();
     assert_eq!(depths, sorted, "shallower bundles come first: {found:?}");
+
+    // The tiebreak: `alpha` and `zeta` sit at the same depth, so only the path
+    // half of the key can order them, and it must order them the same way twice.
+    let same_depth: Vec<String> = found
+        .iter()
+        .filter(|path| path.components().count() == found[0].components().count())
+        .map(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+    let mut expected = same_depth.clone();
+    expected.sort();
+    assert_eq!(
+        same_depth, expected,
+        "two bundles at one depth must be ordered by their path, or the row an operator picked \
+         yesterday is somewhere else today: {found:?}"
+    );
 }
 
 /// A bundle below the root is written relative, so a committed `io.toml` works for

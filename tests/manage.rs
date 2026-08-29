@@ -19,6 +19,14 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
 }
 
+/// `Config::discover` reads `IO_CONFIG` at call time, so two tests setting it at
+/// once would each see the other's file. Only the scope test needs it — every
+/// other test here parses rather than plans.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The server a request declares, for a test that is about the transport.
 fn server(request: &Request) -> &io_harness::McpServer {
     match request {
@@ -37,6 +45,135 @@ fn written(root: &Path, request: &Request) -> String {
         .expect("the request plans")
         .expect("a write, not a read");
     io_cli::edit::apply("", &plan.edits).expect("the edits apply to an empty file")
+}
+
+/// **F13, planned rather than parsed — the half that had no test at all.**
+///
+/// Every other `plan` call in this file passes `scope: None` against an empty
+/// temporary root, so only `decided_scope`'s `unwrap_or(Scope::User)` fallback
+/// ever ran: replacing the whole function with `|_, _, _| Scope::User` left the
+/// suite green, and `io config set x y --scope project` would have written the
+/// user file. The parse carrying `Some(Scope::Local)` is asserted elsewhere and is
+/// not the same claim.
+///
+/// Sabotage: drop the inheritance lookup — under which the first arm fails,
+/// because a key the project file decides would be written to the user file.
+#[test]
+fn f13_a_planned_config_write_inherits_the_deciding_file() {
+    let home = tempfile::tempdir().expect("a home outside the workspace");
+    let root = tempfile::tempdir().expect("a workspace");
+    // The user file is written OUTSIDE the workspace: a file inside it is
+    // project-scoped whatever variable names it.
+    std::fs::write(home.path().join("io.toml"), "[run]\nmax_steps = 10\n").unwrap();
+    std::fs::write(
+        root.path().join("io.toml"),
+        "[app.io-cli]\ntheme = \"dark\"\n",
+    )
+    .unwrap();
+
+    let guard = env_lock();
+    std::env::set_var("IO_CONFIG", home.path().join("io.toml"));
+
+    // A key the PROJECT file decides, with no `--scope`, goes back to it.
+    let inherited = manage::plan(
+        root.path(),
+        &manage::parse(&argv(&["config", "set", "app.io-cli.theme", "light"])).expect("it parses"),
+    )
+    .expect("it plans")
+    .expect("a write");
+    assert_eq!(
+        inherited.scope,
+        Scope::Project,
+        "a write with no `--scope` must go into the file already deciding the key, or a personal \
+         file silently shadows a committed one"
+    );
+
+    // A key the USER file decides goes back to that.
+    let user = manage::plan(
+        root.path(),
+        &manage::parse(&argv(&["config", "set", "run.max_steps", "20"])).expect("it parses"),
+    )
+    .expect("it plans")
+    .expect("a write");
+    assert_eq!(user.scope, Scope::User);
+
+    // An explicit `--scope` overrides the inheritance and moves the key.
+    let moved = manage::plan(
+        root.path(),
+        &manage::parse(&argv(&[
+            "config",
+            "set",
+            "app.io-cli.theme",
+            "light",
+            "--scope",
+            "local",
+        ]))
+        .expect("it parses"),
+    )
+    .expect("it plans")
+    .expect("a write");
+    assert_eq!(moved.scope, Scope::Local);
+
+    // And `unset` follows the same rule, since it is the same decision.
+    let unset = manage::plan(
+        root.path(),
+        &manage::parse(&argv(&["config", "unset", "app.io-cli.theme"])).expect("it parses"),
+    )
+    .expect("it plans")
+    .expect("a write");
+    assert_eq!(unset.scope, Scope::Project);
+
+    std::env::remove_var("IO_CONFIG");
+    drop(guard);
+}
+
+/// `--flag=value` and `--flag value` are the same flag.
+///
+/// Untested anywhere until now, while the module's own comment argued that a parse
+/// taking only one form "would be a parse that works on one surface" — a claim
+/// carried by prose alone. Deleting the inline branch makes `--url=https://x` a
+/// flag literally named `url=https://x`, refused as unknown.
+#[test]
+fn f8_a_flag_may_be_written_with_an_equals_sign() {
+    let spaced = manage::parse(&argv(&[
+        "mcp",
+        "add",
+        "linear",
+        "--url",
+        "https://mcp.linear.app/mcp",
+    ]))
+    .expect("the spaced form parses");
+    let joined = manage::parse(&argv(&[
+        "mcp",
+        "add",
+        "linear",
+        "--url=https://mcp.linear.app/mcp",
+    ]))
+    .expect("the joined form parses");
+    assert_eq!(spaced, joined, "the two spellings must be one flag");
+
+    // A value that itself contains `=` keeps every character after the FIRST one,
+    // which is what an `Authorization: Bearer …` header depends on.
+    let request = manage::parse(&argv(&[
+        "mcp",
+        "add",
+        "linear",
+        "--url",
+        "https://mcp.linear.app/mcp",
+        "--header=Authorization=Bearer abc=123",
+    ]))
+    .expect("a joined header parses");
+    match &server(&request).transport {
+        io_harness::McpTransport::Http { headers, .. } => assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer abc=123"),
+            "a header value must split at the first `=` and keep the rest"
+        ),
+        other => panic!("expected an HTTP server, got {other:?}"),
+    }
+
+    // An empty flag name is refused rather than being read as a flag called "".
+    assert!(manage::parse(&argv(&["mcp", "add", "linear", "--=x"])).is_err());
 }
 
 // --- F7: `--` ends io's own arguments ------------------------------------------
@@ -107,15 +244,23 @@ fn f7_the_slash_form_and_the_argv_form_are_one_token_slice() {
         argv(&["config", "set", "app.io-cli.gates.contains", "all green"])
     );
 
+    // **This compared `parse(X)` with `parse(X)` and was a tautology**, because
+    // the assertion above had already established that the two token slices are
+    // the same slice. Comparing the parse against the VALUE it must produce is
+    // what carries content: it fails if the tokeniser and the parser ever agree
+    // with each other about something wrong.
     let from_slash = manage::parse(&typed).expect("the slash form parses");
-    let from_shell = manage::parse(&argv(&[
-        "config",
-        "set",
-        "app.io-cli.gates.contains",
-        "all green",
-    ]))
-    .expect("the argv form parses");
-    assert_eq!(from_slash, from_shell);
+    assert_eq!(
+        from_slash,
+        manage::Request::Config(manage::ConfigVerb::Set {
+            key: "app.io-cli.gates.contains".to_string(),
+            // The quotes are the shell's and the tokeniser's to remove; what
+            // reaches the file is the TOML source for the words themselves.
+            value: "\"all green\"".to_string(),
+            scope: None,
+        }),
+        "the slash form must parse to the request the argv form does, and to this one"
+    );
 }
 
 // --- F8: the transport is decided by the form ----------------------------------
@@ -183,7 +328,19 @@ fn f8_neither_form_is_refused_with_both_shapes_shown() {
     let refusal =
         manage::parse(&argv(&["mcp", "add", "somewhere"])).expect_err("no form was given");
     assert!(refusal.contains("--url"), "{refusal}");
-    assert!(refusal.contains("--"), "{refusal}");
+    // **`contains("--")` was here and could never fail**, because `"--url"`
+    // contains it — so a refusal that stopped teaching the stdio form entirely
+    // would have kept this test green while the criterion it serves says *both*
+    // shapes are shown. The needle has to be the `--` that stands alone.
+    // Taken from the refusal's real bytes and starting after the markup: the
+    // sentence writes ``-- <command>`` inside backticks, so a needle of `"--"`
+    // split on whitespace never matches the token it is aiming at. That is the
+    // markup-inside-the-needle trap, and it is how a checker ends up checking
+    // nothing.
+    assert!(
+        refusal.contains("-- <command>"),
+        "the refusal must show the stdio form as its own shape, not only `--url`: {refusal}"
+    );
     assert!(refusal.contains("command"), "{refusal}");
     assert!(refusal.contains("somewhere"), "{refusal}");
 }

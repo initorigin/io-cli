@@ -907,6 +907,99 @@ fn f10_the_default_offered_is_the_variable_the_endpoint_already_reads() {
     std::env::remove_var(var);
 }
 
+/// **The model pickers narrow the reference catalogue, and offering it raw was a
+/// HIGH defect found by the adversarial review.**
+///
+/// `verify::served(None)` returns OpenRouter's own view of the entire field, with
+/// namespaced ids (`anthropic/claude-…`). Writing one of those into an
+/// `[[provider]]` entry of kind `anthropic` names a model that provider does not
+/// serve, and keys a price to something no provider call will match.
+/// `verify::named` is what narrows and re-spells it; the wizard has always called
+/// it and the two new pickers did not.
+///
+/// Asserted against the driver as text because the pickers live in `src/main.rs`,
+/// which nothing under `tests/` can link. The library half of the claim — that
+/// `named` really does re-spell — is asserted directly below it.
+///
+/// Sabotage: call `verify::served` from a picker without `verify::named` — under
+/// which this fails on the call count, which is the shape of the bug.
+#[test]
+fn f10_every_reader_of_the_catalogue_narrows_it_to_the_provider() {
+    let driver = std::fs::read_to_string("src/main.rs")
+        .expect("the driver is beside the tests")
+        .replace("\r\n", "\n");
+
+    // **`served(None)` and not every `served`.** A read passing a `source` is the
+    // price refresh, and narrowing THAT is the wrong thing: an operator who set
+    // `app.io-cli.prices.source_url` has pointed io-cli at their own endpoint's
+    // catalogue and every row of it is theirs — `src/verify.rs:85-95` records that
+    // the filter was once applied there and made the key inert. So the rule is
+    // about reads of the *reference* list, which is what `None` asks for.
+    let reference = driver.matches("verify::served(None)").count();
+    let named = driver.matches("verify::named(").count();
+    assert!(
+        reference > 0,
+        "the driver reads no reference catalogue at all, which cannot be right"
+    );
+    assert_eq!(
+        reference, named,
+        "{reference} read(s) of the reference catalogue and {named} call(s) to `verify::named`: \
+         a reference read without narrowing offers one vendor's namespaced ids as another \
+         vendor's models"
+    );
+
+    // And the two pickers go through the one helper rather than reading it
+    // themselves, so there is a single place the pairing can be got wrong.
+    assert!(
+        driver.contains("async fn catalogue_for("),
+        "the pickers should share one narrowing helper"
+    );
+}
+
+/// The library half: `named` really does re-spell, so the ids a picker offers are
+/// the ids the provider answers to.
+#[test]
+fn f10_the_reference_catalogue_is_respelled_for_the_provider_it_is_offered_for() {
+    let reference = vec![
+        io_harness::ModelInfo {
+            id: "anthropic/claude-sonnet-4".to_string(),
+            ..Default::default()
+        },
+        io_harness::ModelInfo {
+            id: "openai/gpt-5".to_string(),
+            ..Default::default()
+        },
+    ];
+
+    // OpenRouter's own catalogue is not a reference to it — it is the provider
+    // speaking for itself, so the namespaced ids stay.
+    let via_openrouter = io_cli::verify::named(
+        &io_harness::ProviderSpec::OpenRouter {
+            model: "x".to_string(),
+            api_key: None,
+        },
+        reference.clone(),
+    );
+    assert!(via_openrouter
+        .iter()
+        .any(|m| m.id == "anthropic/claude-sonnet-4"));
+
+    // Anthropic answers to the bare name and to nothing else.
+    let via_anthropic = io_cli::verify::named(
+        &io_harness::ProviderSpec::Anthropic {
+            model: "x".to_string(),
+            api_key: None,
+        },
+        reference,
+    );
+    let ids: Vec<&str> = via_anthropic.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["claude-sonnet-4"],
+        "the prefix must be stripped, and another vendor's models must not be offered"
+    );
+}
+
 /// F10's ordering, asserted against the driver as text.
 ///
 /// **The one gate that has to read `src/main.rs`, and it reads it because nothing

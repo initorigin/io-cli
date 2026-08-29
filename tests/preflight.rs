@@ -482,3 +482,54 @@ fn the_report_is_about_the_server_it_was_given() {
         preflight::line(&p),
     );
 }
+
+/// **The `None`-is-not-permission rule, asserted where it is actually decided.**
+///
+/// The library test above performs `config.policy().unwrap_or_default()` itself,
+/// so it proves what `Policy::default()` does and nothing about what the callers
+/// do. The real decision is in `src/main.rs`, which nothing under `tests/` can
+/// link — so the criterion's own sabotage, "read the `None` as permissive", had no
+/// executable site. That is the same gap `f14_the_headless_listing_prints_the_deciding_file`
+/// was written to close, and finding it here is why the audit of these tests was
+/// worth running.
+///
+/// It is the fail-open direction. `Config::policy()` answers `None` for a file
+/// with no `[policy]` section, and reading that as "nothing denies anything" makes
+/// the preflight report *permitted* for every server the runtime will refuse —
+/// the one thing this module's docs say it exists not to do.
+///
+/// Sabotage: change either call site to `unwrap_or_else(Policy::permissive)` —
+/// under which this fails and names the shape it found.
+#[test]
+fn f9_no_caller_reads_an_absent_policy_section_as_permission() {
+    let driver = std::fs::read_to_string("src/main.rs")
+        .expect("the driver is beside the tests")
+        .replace("\r\n", "\n");
+
+    // Counted rather than spot-checked: a fourth caller added later is how this
+    // comes back.
+    let defaulted = driver.matches("policy().unwrap_or_default()").count();
+    assert!(
+        defaulted >= 2,
+        "expected the preflight's callers to fall back to `Policy::default()`; found {defaulted}"
+    );
+    for forbidden in [
+        "policy().unwrap_or_else(Policy::permissive)",
+        "policy().unwrap_or_else(io_harness::Policy::permissive)",
+        "policy().unwrap_or(Policy::permissive())",
+    ] {
+        assert!(
+            !driver.contains(forbidden),
+            "the driver reads an absent `[policy]` section as permission (`{forbidden}`), so the \
+             preflight would report permitted for servers the runtime refuses"
+        );
+    }
+
+    // And the interactive caller answers from the merged policy rather than the
+    // file's alone — one built on the file would refuse a server this very
+    // session has already been told to allow.
+    assert!(
+        driver.contains("approval::session_policy("),
+        "the interactive preflight must answer from the merged policy"
+    );
+}

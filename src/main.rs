@@ -2326,11 +2326,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // edit — which is what F10 actually asks for.
                                 app.record(Tone::Muted, "reading the model catalogue…".to_string());
                                 paint(screen, &mut app)?;
-                                let models: Vec<String> = io_cli::verify::served(None)
-                                    .await
-                                    .into_iter()
-                                    .map(|model| model.id)
-                                    .collect();
+                                let models: Vec<String> = catalogue_for(&preset).await;
                                 if models.is_empty() {
                                     // Not fatal, and deliberately so: a catalogue
                                     // that cannot be read is a reason to make the
@@ -2545,17 +2541,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             if index == *model_at {
                                 app.record(Tone::Muted, "reading the model catalogue…".to_string());
                                 paint(screen, &mut app)?;
-                                let models: Vec<String> = io_cli::verify::served(None)
-                                    .await
-                                    .into_iter()
-                                    .map(|model| model.id)
-                                    .collect();
+                                let models: Vec<String> = catalogue_for(kind).await;
                                 if models.is_empty() {
                                     app.record(
                                         Tone::Muted,
                                         format!(
-                                            "no catalogue was served, so there is no list to \
-                                             choose {label}'s model from"
+                                            "no catalogue names {kind}'s models, so there is no \
+                                             list to choose {label}'s model from — a reference \
+                                             catalogue cannot say what a self-hosted or \
+                                             OpenAI-compatible endpoint serves"
                                         ),
                                     );
                                 } else {
@@ -7424,6 +7418,48 @@ fn manage_main(
         );
     }
     Ok(io_cli::exec::OK)
+}
+
+/// The models `preset` actually serves, spelled the way `preset` spells them.
+///
+/// **`verify::served` alone is the wrong list, and offering it raw was a defect
+/// this release nearly shipped.** What that call returns is the *reference*
+/// catalogue — OpenRouter's own view of the entire field, as `src/verify.rs:85-95`
+/// says out loud — so its ids are namespaced (`anthropic/claude-…`). Writing one
+/// of those into an `[[provider]]` entry of kind `anthropic` names a model
+/// Anthropic's own API does not serve, and stores a price under a key no provider
+/// call will ever match. `verify::named` exists for exactly this and the wizard
+/// has always used it (`Progress::Catalogue`, twice); these two pickers were the
+/// only readers of the catalogue that did not.
+///
+/// Both arguments to `spec_from` are placeholders, and that is safe rather than
+/// sloppy: `named` matches on the spec's *variant* and reads neither the model nor
+/// the credential, no request is made from this spec, and `spec_from` discards the
+/// key it is handed (`api_key: None`) precisely so a key never sits in a struct
+/// longer than it must. The real spec, with the chosen model, is built for the
+/// verification call afterwards.
+///
+/// Empty for anything outside the three vendors `FromEnv` covers — a reference
+/// list cannot say what a server it has never heard of serves, which is `named`'s
+/// own answer for a `Compatible` endpoint.
+async fn catalogue_for(preset: &str) -> Vec<String> {
+    let which = match preset {
+        "openrouter" => io_cli::cli::FromEnv::OpenRouter,
+        "anthropic" => io_cli::cli::FromEnv::Anthropic,
+        "openai" => io_cli::cli::FromEnv::OpenAi,
+        _ => return Vec::new(),
+    };
+    let Ok(shape) = io_cli::provider::spec_from(
+        which,
+        Some("placeholder".to_string()),
+        Some("placeholder".to_string()),
+    ) else {
+        return Vec::new();
+    };
+    ids(&io_cli::verify::named(
+        &shape,
+        io_cli::verify::served(None).await,
+    ))
 }
 
 /// The values one setting can take, as a picker, or `None` when it has to be typed.
