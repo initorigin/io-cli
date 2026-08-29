@@ -1190,6 +1190,15 @@ pub enum Action {
     Memory,
     /// Show the configured MCP servers and what the session has seen of them.
     Mcp,
+    /// A management verb typed as a line — `/mcp add …`, `/plugin remove …`,
+    /// `/config set …` — carried whole to [`crate::manage::parse`].
+    ///
+    /// **Whole and unparsed, which is the point.** Splitting it here would be a
+    /// second grammar beside `manage`'s, and two grammars for one verb is exactly
+    /// what F6 compares bytes to rule out. The line still carries its leading `/`;
+    /// `manage::tokens` strips it, so the slash form and `io mcp …` cannot even
+    /// disagree about that.
+    Manage(String),
     /// List every skill — the five io-cli ships and the operator's own — with
     /// what it is for, whose it is, whether it is on, and the file it lives in.
     ///
@@ -1898,6 +1907,27 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // exchange for nothing, which is the rule `/status` and `/compact`
         // already follow.
         "memory" => Action::Memory,
+        // **A bare word opens the panel; a word with a verb after it goes to the
+        // one parse.** `/mcp add semlith -- semlith --store … mcp` and
+        // `io mcp add semlith -- …` are the same line reaching the same
+        // `manage::parse`, which is what makes F6's byte comparison a property of
+        // the code rather than of two implementations happening to agree today.
+        // The whole line travels, `/` and all: `manage::tokens` strips it, so the
+        // two doors cannot even disagree about that.
+        // **Only the verbs that write.** `/mcp list` in a session is the panel —
+        // which is a better answer than a text dump, and the one this surface has
+        // always given — while `io mcp list` is the listing a script reads. Two
+        // media for one reading, not two decisions: the write verbs, where a
+        // disagreement would land in an operator's file, all go through the one
+        // parse.
+        "mcp" | "servers"
+            if matches!(
+                input.split_whitespace().nth(1),
+                Some("add" | "edit" | "remove" | "get")
+            ) =>
+        {
+            Action::Manage(input.to_string())
+        }
         "mcp" | "servers" => Action::Mcp,
         "skills" => Action::Skills,
         "provider" | "providers" => Action::Provider,
@@ -1932,6 +1962,11 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // `/plugins` is admitted for the same reason `/servers` and `/providers`
         // are: the thing being listed is plural, so the plural is what a hand
         // reaches for, and refusing it teaches nothing.
+        "plugin" | "plugins"
+            if matches!(input.split_whitespace().nth(1), Some("add" | "remove")) =>
+        {
+            Action::Manage(input.to_string())
+        }
         "plugin" | "plugins" => Action::Plugin,
         // `/migrate` is admitted because it is the other word for this act, and
         // an operator arriving from another tool is by definition someone with no
@@ -2019,6 +2054,44 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
                 Some("trace") => Action::Export(Taken::Trace(rest.next().map(str::to_string))),
                 Some(path) => Action::Export(Taken::Conversation(Some(path.to_string()))),
                 None => Action::Export(Taken::Conversation(None)),
+            }
+        }
+        // **The two verbs that WRITE go to the one parse; the shorthand stays.**
+        // `/config set X Y` and `/config unset X` reach the same `manage::parse`
+        // `io config set|unset` reaches, so the two doors cannot disagree about
+        // what lands in a file. The two that read are answered below by the arms
+        // that have always answered them.
+        //
+        // `/config <key> <value>` — no verb — is the shorthand this surface has
+        // always had and is what `/mcp`'s edit row and `/gates` still put in the
+        // composer; it keeps its own arm below rather than being rewritten into a
+        // verb the operator did not type.
+        "config" | "settings"
+            if matches!(input.split_whitespace().nth(1), Some("set" | "unset")) =>
+        {
+            Action::Manage(input.to_string())
+        }
+        // **`get` and `list` are answered by the arms that already answer them,
+        // and routing them anywhere else was a silent write.** Without this,
+        // `/config get run.max_steps` fell through to the shorthand below and was
+        // read as the key `get` with the value `run.max_steps` — so a question
+        // wrote a key called `get` into the operator's file. `/config list` was
+        // read as a question about a key named `list`.
+        //
+        // They do not go to `manage` either: in a session the answer to `list` is
+        // the panel and the answer to `get` is the sentence this surface has
+        // always given, and `io config get|list` is the same reading printed for a
+        // script. Two media for one reading — the rule the `/mcp` and `/plugin`
+        // guards above follow.
+        "config" | "settings" if input.split_whitespace().nth(1) == Some("list") => {
+            Action::Config(None)
+        }
+        "config" | "settings" if input.split_whitespace().nth(1) == Some("get") => {
+            match input.split_whitespace().nth(2) {
+                Some(key) => Action::Config(Some((key.to_string(), String::new()))),
+                // `get` with nothing after it is the panel, not a question about
+                // an empty key.
+                None => Action::Config(None),
             }
         }
         "config" | "settings" => {

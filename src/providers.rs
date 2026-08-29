@@ -50,6 +50,32 @@
 //! round trip and roll back, which is a good failure — but [`add`] takes an
 //! [`Endpoint`] whose two `compatible` shapes are separate variants, so the entry
 //! that fails cannot be constructed at all.
+//!
+//! # Changing a link rather than replacing it
+//!
+//! A key rotates and a model is renamed, and until [`edit`] existed neither was
+//! reachable from this surface: an operator whose `OPENROUTER_API_KEY` changed
+//! could add a link, promote it, demote it and remove it, and to change one word
+//! of one had to open `io.toml`. [`edit`] is `servers::edit`'s twin — one key of
+//! one addressed entry, `value` as TOML source — and it is deliberately narrower
+//! than `ProviderSpec` is wide: [`KEYS`] is `model` and `api_key` and nothing
+//! else. `kind`, `preset` and `base_url` are the link's **identity**, and an
+//! entry that reaches a different vendor is a different link; [`remove`] and
+//! [`add`] say that out loud, and they cannot leave behind the both-bases entry
+//! `preset = "groq"` written over a `base_url` entry would be.
+//!
+//! # The three shapes a credential has, and which one is the default
+//!
+//! [`Key`] is the write side of [`Credential`]: the same three shapes the file
+//! format already has, spelled as a choice rather than as a string a caller
+//! assembles. **[`Key::Environment`] is the default that matters** — it is the
+//! only one of the three under which `io.toml` never holds the secret at all.
+//! [`variable`] names the environment variable a given endpoint would read and
+//! [`variable_is_set`] says whether it currently has one, so a caller can offer
+//! "use `$OPENROUTER_API_KEY`, which is already set" as the row that is already
+//! selected. Neither of them, and nothing else in this module, ever returns the
+//! variable's contents: what is being decided is *where a key lives*, and that
+//! question is answerable without reading one.
 
 use io_harness::config::{Config, Scope};
 use io_harness::{Compatible, ProviderSpec};
@@ -492,6 +518,231 @@ impl Endpoint<'_> {
     }
 }
 
+/// How a new or changed credential is supplied — the write side of
+/// [`Credential`].
+///
+/// The same three shapes the file format already has, offered as a choice rather
+/// than as a string every call site assembles for itself. A caller that built the
+/// text by hand would be one `format!` away from writing `${env:GROQ_API_KEY}`
+/// without the braces, or a literal where an indirection was meant, and the
+/// second of those is a secret in a file the operator did not ask to hold one.
+///
+/// **[`Key::Environment`] is the shape to default to.** It is the only one under
+/// which the key is never in `io.toml` — nothing to leak in a screenshot, a
+/// backup, a `git add -A`, or a support paste. The other two are what an operator
+/// asks for, and a literal is what they should have to ask for twice.
+///
+/// It is `Copy` and borrows its text, because a credential should live in this
+/// process for as long as it takes to write it and no longer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Key<'a> {
+    /// No key in the file, so the endpoint's own environment variable answers.
+    ///
+    /// **What that means depends on the endpoint, and the difference is not
+    /// cosmetic.** For `openrouter`, `anthropic` and `openai` io-harness reads
+    /// the vendor's variable itself when `api_key` is absent, so the shape is a
+    /// key that is *not written*. For a `compatible` entry there is no variable
+    /// to fall back to — io-harness says so in the variant's own documentation —
+    /// so the same intention has to be written as `${env:…}`, and an absent key
+    /// there means an endpoint that needs none. [`Key::written`] resolves that,
+    /// once, rather than leaving every caller to know it.
+    Environment,
+    /// A `${env:VAR}` or `${file:PATH}` reference, written literally.
+    ///
+    /// io-harness substitutes it as it parses, and **errors outright when the
+    /// variable is unset** — so a reference to a name that does not exist is
+    /// refused by [`crate::configure::write`]'s round trip and rolled back.
+    Indirect(&'a str),
+    /// The key itself, written into the file.
+    ///
+    /// The shape that puts a secret on disk. Nothing here refuses it — an
+    /// operator with no environment to lean on is a real operator — but it is the
+    /// shape a caller must have been told to write, naming the file it lands in.
+    Literal(&'a str),
+}
+
+// **Hand-written, because `derive(Debug)` on this type prints the key.** A
+// `Key` is one `{:?}` away from a log line, a panic message, or an
+// `assert_eq!` failure in somebody's CI output, and a derived `Debug` would put
+// the literal in all three. The variant is the part worth seeing; the bytes are
+// never the part worth seeing.
+impl std::fmt::Debug for Key<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Key::Environment => f.write_str("Environment"),
+            // The variable's NAME is information and its contents are not, which
+            // is the same line `Credential::Indirect` and `configure::redact`
+            // already draw.
+            Key::Indirect(text) => write!(f, "Indirect({text:?})"),
+            Key::Literal(_) => f.write_str("Literal(<redacted>)"),
+        }
+    }
+}
+
+impl Key<'_> {
+    /// What [`add`] writes as `api_key`, or `None` for no `api_key` line at all.
+    ///
+    /// The one place the `Environment` split above is resolved. For the three
+    /// vendor kinds it is `None`, which is the absence io-harness reads as "use
+    /// my own variable". For a preset it is `${env:VAR}` for the variable
+    /// [`variable`] names — because a `compatible` entry has no fallback, and an
+    /// absent key there would silently be an unauthenticated request rather than
+    /// an authenticated one. For a bare `base_url`, and for the local runtimes,
+    /// there is no variable to name and `None` is the honest answer: those are
+    /// the endpoints that genuinely need no key.
+    pub fn written(&self, endpoint: Endpoint<'_>) -> Option<String> {
+        match self {
+            Key::Environment => match endpoint {
+                Endpoint::OpenRouter | Endpoint::Anthropic | Endpoint::OpenAi => None,
+                Endpoint::Preset(_) | Endpoint::BaseUrl(_) => {
+                    variable(endpoint).map(|var| format!("${{env:{var}}}"))
+                }
+            },
+            Key::Indirect(text) => Some((*text).to_string()),
+            Key::Literal(key) => Some((*key).to_string()),
+        }
+    }
+
+    /// What [`edit`] takes as `value` — TOML source, and `""` to unset.
+    ///
+    /// The pair to [`Key::written`] for an entry that already exists, and it is
+    /// two lines rather than a note at the call site for one reason: the caller
+    /// holding a `Key` has a Rust string and [`edit`] takes TOML, and the
+    /// obvious bridge — `format!("\"{key}\"")` — is either a parse error or a
+    /// different value the moment the key carries a quote or a backslash.
+    ///
+    /// An empty result is not an empty key. See [`edit`]: it is the request to
+    /// take the line away.
+    pub fn source(&self, endpoint: Endpoint<'_>) -> String {
+        self.written(endpoint)
+            .map(|text| quoted(&text))
+            .unwrap_or_default()
+    }
+}
+
+/// The environment variable an endpoint's credential would come from.
+///
+/// For the three vendor kinds these are io-harness's own — the names its
+/// `from_env` constructors read, which is why a shell that already works with the
+/// harness works here — and [`crate::provider::key_for`] falls back to exactly
+/// these.
+///
+/// For a preset the name is **derived**, `<PRESET>_API_KEY`, and that is a
+/// deliberate choice over a hand-kept table of thirteen. io-harness has no
+/// variable for `compatible` at all, so there is nothing here for a table to be
+/// checked against, and a list nothing can disagree with is decoration that goes
+/// stale in silence — the same argument [`PRESETS`] answers by being provable.
+/// The derivation matches what io-harness's own documentation writes
+/// (`config.rs:430` spells `${env:GROQ_API_KEY}`), and it is an *offer*: a
+/// vendor whose variable is spelled differently is one [`Key::Indirect`] away,
+/// and [`variable_is_set`] means a name nobody's shell carries is never the
+/// default that gets taken.
+///
+/// `None` where there is no variable to name — the eight local runtimes and a
+/// bare `base_url`, which need no credential at all.
+pub fn variable(endpoint: Endpoint<'_>) -> Option<String> {
+    match endpoint {
+        Endpoint::OpenRouter => Some("OPENROUTER_API_KEY".to_string()),
+        Endpoint::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
+        Endpoint::OpenAi => Some("OPENAI_API_KEY".to_string()),
+        Endpoint::Preset(name) if !is_local(name) => Some(format!(
+            "{}_API_KEY",
+            name.to_uppercase()
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        )),
+        Endpoint::Preset(_) | Endpoint::BaseUrl(_) => None,
+    }
+}
+
+/// Whether `variable` currently holds a non-empty value.
+///
+/// **Whether, and never what.** This is the whole of what the surface above it
+/// needs: an offer reads "use `$OPENROUTER_API_KEY`, which is already set", and
+/// the sentence is complete without the key ever entering this process — let
+/// alone a row, a log line or a `{:?}`. Returning the value would put a secret
+/// into every caller that only wanted to know whether to preselect a row.
+///
+/// Empty counts as unset, for the reason [`edit`] refuses to write one: an empty
+/// key is a key [`crate::provider::key_for`] hands back as valid, and every
+/// request then fails authentication with nothing to read.
+pub fn variable_is_set(variable: &str) -> bool {
+    std::env::var(variable).is_ok_and(|value| !value.trim().is_empty())
+}
+
+/// The keys of a `[[provider]]` entry [`edit`] will change.
+///
+/// **Narrower than `ProviderSpec` is wide, on purpose.** The variant carries
+/// seven fields; two of them are what an operator wants to change about a link
+/// they already have, and the other five are either its identity or a setting no
+/// verb on this surface asks for:
+///
+/// - `model` — renamed, deprecated, or simply the wrong one. The common edit.
+/// - `api_key` — rotated. The edit this surface existed without, and the one an
+///   operator was opening `io.toml` by hand to make.
+/// - `kind`, `preset`, `base_url` — the link's **identity**. An entry pointed at
+///   a different vendor is a different link, and [`remove`] plus [`add`] says so
+///   in words. Allowing them here would also make the one entry io-harness
+///   refuses expressible again: a `preset` written onto a `base_url` entry names
+///   both bases, which fails at load by index (`config.rs:456`) — a loud failure,
+///   but a loud failure produced by a control that looked like renaming a field.
+/// - `auth`, `name`, `reference_prices` — nothing asks for them, and the last
+///   turns on an outbound request to a host the file did not name. A control
+///   that does that belongs on the surface that shows what it costs.
+///
+/// Unlike `servers::KEYS` this list is not the only thing standing between a
+/// typo and a silently ignored key — `[[provider]]` *is* held to
+/// `deny_unknown_fields`, so `modle = "…"` is refused at load and
+/// [`crate::configure::write`] rolls it back. The `const` is here so a caller
+/// cannot spell a key at all, and so the five omissions above are a decision with
+/// a reason written beside it rather than an accident of what got implemented.
+///
+/// ponytail: no `base_url` even for an entry that already has one. Add it when
+/// a moved gateway is a thing an operator actually reports, and pair it with the
+/// exactly-one check [`Endpoint`] enforces at add time.
+pub const KEYS: &[&str] = &["model", "api_key"];
+
+/// The edit that changes one key of the entry at `at`.
+///
+/// `value` is TOML **source**, the way [`crate::edit::Edit::set`] takes it —
+/// `"\"gpt-4o\""`, `"\"${env:GROQ_API_KEY}\""`. Build it with [`Key::source`] or
+/// [`crate::servers::quoted`] rather than a format string: `api_key` is pasted
+/// text, and a raw newline or a backslash inside a hand-built basic string is a
+/// parse error rather than a value.
+///
+/// `None` for a key that is not one of [`KEYS`], so a caller cannot invent one.
+///
+/// # An empty value unsets the key, and only `api_key` may be unset
+///
+/// **`api_key` with an empty `value` deletes the line rather than writing an
+/// empty string**, through [`crate::edit::Edit::unset`]. This is the one place
+/// the distinction is load-bearing: moving a link back from a written literal to
+/// its environment variable means the key must be *absent*, because that absence
+/// is exactly what io-harness reads as "use the vendor's own variable".
+/// `api_key = ""` is not that. It is a key that is set, to nothing:
+/// [`crate::provider::key_for`] returns it as a valid credential, the request
+/// carries an empty bearer token, and the vendor answers 401 for a reason no
+/// message in this program will ever name. Both spellings of empty — no text at
+/// all, and the TOML source `""` — are read as the unset, because the second is
+/// precisely what a caller building a value from a cleared input field produces.
+///
+/// `model` cannot be unset, and gets `None` for an empty value rather than an
+/// edit: it is required on every variant, so removing it makes an entry that no
+/// longer loads. That is caught on the round trip and rolled back, but a verb
+/// that can only ever fail is better refused where it is spelled.
+pub fn edit(at: &At, key: &str, value: &str) -> Option<Edit> {
+    if !KEYS.contains(&key) {
+        return None;
+    }
+    let path = format!("provider[{}].{key}", at.index);
+    let trimmed = value.trim();
+    let empty = trimmed.is_empty() || trimmed == "\"\"" || trimmed == "''";
+    match (key, empty) {
+        ("api_key", true) => Some(Edit::unset(path)),
+        (_, true) => None,
+        _ => Some(Edit::set(path, value.to_string())),
+    }
+}
+
 /// The edit that appends a provider to the end of the chain.
 ///
 /// Last, because the end of an array of tables is the end of the chain and the
@@ -499,7 +750,10 @@ impl Endpoint<'_> {
 /// change which vendor the next turn bills to, which is not what "add" says.
 ///
 /// `api_key` is written as given, so `Some("${env:GROQ_API_KEY}")` is how a
-/// credential is named without being copied into the file. **io-harness resolves
+/// credential is named without being copied into the file — and [`Key::written`]
+/// is what a caller holding a chosen shape should build that argument with,
+/// because "from the environment" is an absent key for a vendor kind and an
+/// `${env:…}` for a preset. **io-harness resolves
 /// that at parse time and fails outright when the variable is unset**, so a
 /// reference to a name that does not exist is refused by
 /// [`crate::configure::write`]'s round trip and rolled back — the file is never

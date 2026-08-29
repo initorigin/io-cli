@@ -553,3 +553,379 @@ fn f10_a_profile_that_is_not_there_reports_the_harness_s_own_sentence() {
         "io-cli re-worded the harness's refusal: {err}"
     );
 }
+
+// F1 — every key has a kind, and only the named exceptions permit free text.
+
+/// Every catalogue key resolves to a kind, and the failure names the key.
+///
+/// Sabotage: add a key to `CATALOGUE` without a kind. Under it only this test
+/// fails, and it fails by naming the key — a count would say a number is wrong and
+/// leave someone to find which one.
+#[test]
+fn f1_every_catalogue_key_has_a_kind() {
+    let missing: Vec<&str> = configure::CATALOGUE
+        .iter()
+        .copied()
+        .filter(|key| configure::kind_of(key).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these catalogue keys have no value kind: {missing:?}"
+    );
+}
+
+/// The keys that stay free text are exactly three, written out.
+///
+/// A literal rather than a count, so a key that drifted into free text is named
+/// rather than merely changing a number. Free text is the state this release
+/// exists to remove, so growing this set has to be a deliberate act.
+#[test]
+fn f1_only_three_keys_are_authored_text() {
+    let mut text: Vec<&str> = configure::CATALOGUE
+        .iter()
+        .copied()
+        .filter(|key| configure::kind_of(key) == Some(configure::Kind::Text))
+        .collect();
+    text.sort_unstable();
+    // Sorted on both sides, so this asserts the set and not the ordering of a
+    // constant it does not own — and it is a written-out literal, so a key that
+    // drifted into free text is named by the failure.
+    assert_eq!(
+        text,
+        vec![
+            "app.io-cli.gates.contains",
+            "app.io-cli.gates.rubric",
+            "app.io-cli.prices.source_url",
+        ]
+    );
+}
+
+/// `app.io-cli.gates.command` is a list and not text.
+///
+/// Sabotage: classify it as authored text. Under it this test fails, and the
+/// surface writes a bare string into a key io-harness reads as `Vec<String>` —
+/// a value the harness cannot read back at all.
+#[test]
+fn f1_the_command_key_is_the_one_list() {
+    let lists: Vec<&str> = configure::CATALOGUE
+        .iter()
+        .copied()
+        .filter(|key| configure::kind_of(key) == Some(configure::Kind::List))
+        .collect();
+    assert_eq!(lists, vec!["app.io-cli.gates.command"]);
+}
+
+/// `prices.as_of` is written by machinery and is never offered for typing.
+#[test]
+fn f1_the_dated_price_table_is_machine_written() {
+    assert_eq!(
+        configure::kind_of("prices.as_of"),
+        Some(configure::Kind::Machine)
+    );
+    let machine: Vec<&str> = configure::CATALOGUE
+        .iter()
+        .copied()
+        .filter(|key| configure::kind_of(key) == Some(configure::Kind::Machine))
+        .collect();
+    assert_eq!(machine, vec!["prices.as_of"]);
+}
+
+/// A key no catalogue entry names has no kind, and that is deliberate.
+///
+/// `settings` lists keys an operator wrote that io-cli does not know about; a kind
+/// guessed for one of those would be io-cli inventing a schema.
+#[test]
+fn f1_an_unknown_key_has_no_kind() {
+    assert_eq!(configure::kind_of("something.nobody.declared"), None);
+}
+
+/// The one signed number is the only signed number.
+#[test]
+fn f1_only_the_expected_exit_status_is_signed() {
+    let signed: Vec<&str> = configure::CATALOGUE
+        .iter()
+        .copied()
+        .filter(|key| configure::kind_of(key) == Some(configure::Kind::Number { signed: true }))
+        .collect();
+    assert_eq!(signed, vec!["app.io-cli.gates.expect_exit"]);
+}
+
+// F2 — the enum kinds agree with the dependency rather than with a literal.
+
+/// The effects are the dependency's three, and each one round-trips through
+/// io-harness's own deserializer.
+///
+/// The census itself is a build break — `Effect` is not `#[non_exhaustive]`, so
+/// `configure::effects`'s array and match both fail on a variant change. What this
+/// adds is the half the build cannot catch: the *spellings* are serde's
+/// `rename_all`, io-harness exposes no `as_str` for `Effect`, and a rename would
+/// leave io-cli compiling and writing a word the schema rejects.
+///
+/// Sabotage: add a fourth effect to io-cli's list. Under it F2 fails, because the
+/// dependency knows three.
+#[test]
+fn f2_the_effects_are_the_dependency_s_own() {
+    let effects = configure::effects();
+    assert_eq!(effects, vec!["allow", "ask", "deny"]);
+    for word in &effects {
+        let text = format!("[policy]\ndefaults = {{ read = \"{word}\" }}\n");
+        assert!(
+            Config::from_toml(&text).is_ok(),
+            "io-harness refuses the effect io-cli offers: {word}"
+        );
+    }
+}
+
+/// The exec modes are spelled by io-harness, not by io-cli.
+///
+/// Weaker than the effects' guarantee and the difference is the dependency's:
+/// `ExecMode` **is** `#[non_exhaustive]` (`sandbox.rs:379`), so a variant added
+/// later falls into a required wildcard and cannot break this build. What is
+/// assertable is that every spelling comes from `ExecMode::as_str` and that
+/// io-harness accepts each one.
+#[test]
+fn f2_the_exec_modes_are_spelled_by_the_dependency() {
+    let modes = configure::exec_modes();
+    assert_eq!(modes, vec!["read-only", "workspace-write", "full-access"]);
+    // **In the user scope, because `Config::from_toml` parses as the PROJECT
+    // scope and `full-access` is refused there.** io-harness's `PROJECT_WIDENING`
+    // (`config.rs:1759-1769`) refuses five (key, value) pairs in a committed file,
+    // `sandbox.mode = "full-access"` among them, because `io.toml` arrives with a
+    // `git clone`. Every mode io-cli offers is a mode io-harness accepts *somewhere*,
+    // and that is what this asserts; where each one is legal is
+    // `f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another` below.
+    for mode in &modes {
+        let s = scopes(&format!("[sandbox]\nmode = \"{mode}\"\n"), "", "");
+        assert_eq!(
+            s.config()
+                .sandbox()
+                .expect("a sandbox section")
+                .mode
+                .as_str(),
+            mode,
+            "io-harness refuses the mode io-cli offers: {mode}"
+        );
+    }
+    // Every spelling is the variant's own, never io-cli's.
+    for mode in [
+        io_harness::ExecMode::ReadOnly,
+        io_harness::ExecMode::WorkspaceWrite,
+        io_harness::ExecMode::FullAccess,
+    ] {
+        assert!(
+            modes.contains(&mode.as_str().to_string()),
+            "{} is a variant with no row",
+            mode.as_str()
+        );
+    }
+}
+
+/// The five values a committed file may not carry are exactly io-harness's five.
+///
+/// **The whole file is refused, not the key**, because `refuse_widening` runs
+/// before deserialization — so an operator who picks one of these on a key their
+/// project `io.toml` decides gets a configuration that no longer parses. A menu
+/// that offered it without saying so would be a menu that lies.
+///
+/// Round-tripped through the dependency in both directions, so a pair io-harness
+/// adds or drops is caught here rather than by an operator: every value io-cli
+/// calls widening must actually be refused, and the narrowing value of each of the
+/// same keys must actually be accepted.
+///
+/// Sabotage: drop `sandbox.mode`/`full-access` from `widens_project`. Under it this
+/// test fails, and the surface goes back to offering the one value that breaks the
+/// file it is about to be written into.
+#[test]
+fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
+    let widening = [
+        (
+            "policy.defaults.exec",
+            "allow",
+            "[policy]\ndefaults = { exec = \"allow\" }\n",
+        ),
+        (
+            "policy.defaults.net",
+            "allow",
+            "[policy]\ndefaults = { net = \"allow\" }\n",
+        ),
+        (
+            "sandbox.allow_network",
+            "true",
+            "[sandbox]\nallow_network = true\n",
+        ),
+        (
+            "sandbox.force_floor",
+            "false",
+            "[sandbox]\nforce_floor = false\n",
+        ),
+        (
+            "sandbox.mode",
+            "full-access",
+            "[sandbox]\nmode = \"full-access\"\n",
+        ),
+    ];
+    for (key, value, project) in widening {
+        assert!(
+            configure::widens_project(key, value),
+            "{key} = {value} widens and io-cli does not say so"
+        );
+        // The dependency's own answer, at the scope `from_toml` parses as.
+        let refusal = Config::from_toml(project)
+            .expect_err("io-harness must refuse this in a committed file")
+            .to_string();
+        assert!(
+            refusal.contains("widens"),
+            "io-harness refused {key} for another reason: {refusal}"
+        );
+        // And the same text is accepted where it is the operator's own file.
+        let s = scopes(project, "", "");
+        let _ = s.config();
+    }
+    // The narrowing values of the same keys stay legal in a committed file, which
+    // is what the scope is for — and are not marked.
+    for (key, value, project) in [
+        (
+            "policy.defaults.exec",
+            "deny",
+            "[policy]\ndefaults = { exec = \"deny\" }\n",
+        ),
+        (
+            "sandbox.mode",
+            "read-only",
+            "[sandbox]\nmode = \"read-only\"\n",
+        ),
+        (
+            "sandbox.allow_network",
+            "false",
+            "[sandbox]\nallow_network = false\n",
+        ),
+    ] {
+        assert!(
+            !configure::widens_project(key, value),
+            "{key} = {value} narrows and must not be marked"
+        );
+        assert!(
+            Config::from_toml(project).is_ok(),
+            "io-harness refuses a narrowing value in a committed file: {key}"
+        );
+    }
+}
+
+/// A mode this build does not know is reported, not dropped.
+///
+/// Sabotage: make the wildcard omit the row. Under it F2 fails — and it fails on
+/// the only failure mode a `#[non_exhaustive]` enum leaves available, a menu
+/// quietly missing an option nobody can detect.
+#[test]
+fn f2_a_known_mode_is_labelled_by_its_own_name() {
+    for mode in [
+        io_harness::ExecMode::ReadOnly,
+        io_harness::ExecMode::WorkspaceWrite,
+        io_harness::ExecMode::FullAccess,
+    ] {
+        assert_eq!(configure::exec_mode_label(mode), mode.as_str());
+    }
+}
+
+// F4 — the number ladder is one-two-five, anchored on the value in force.
+
+/// The rungs are 1, 2, 5 at each magnitude and nothing else.
+#[test]
+fn f4_the_ladder_is_one_two_five() {
+    let rungs = configure::ladder(Some(8), false);
+    for rung in &rungs {
+        if *rung == 0 || *rung == 8 {
+            continue;
+        }
+        let mut value = rung.abs();
+        while value % 10 == 0 {
+            value /= 10;
+        }
+        assert!(
+            matches!(value, 1 | 2 | 5),
+            "{rung} is not a one-two-five rung"
+        );
+    }
+}
+
+/// Stepping up lands on the next rung and stepping down reverses it exactly.
+#[test]
+fn f4_stepping_up_and_down_are_inverses() {
+    let rungs = {
+        let mut sorted = configure::ladder(Some(200), false);
+        sorted.sort_unstable();
+        sorted
+    };
+    let at = rungs
+        .iter()
+        .position(|rung| *rung == 200)
+        .expect("the value in force is a rung");
+    let up = rungs[at + 1];
+    let down = rungs[at - 1];
+    assert_eq!(up, 500);
+    assert_eq!(down, 100);
+    // And back again.
+    let mut around = configure::ladder(Some(up), false);
+    around.sort_unstable();
+    let back = around
+        .iter()
+        .position(|rung| *rung == up)
+        .expect("the new value is a rung");
+    assert_eq!(around[back - 1], 200);
+}
+
+/// The value in force is always on the ladder, even when it is not a rung.
+///
+/// A list that silently omits what the file currently says is a list an operator
+/// cannot find their own setting in.
+#[test]
+fn f4_an_odd_value_in_force_is_still_offered() {
+    assert!(configure::ladder(Some(12_345), false).contains(&12_345));
+}
+
+/// The nearest rungs come first, because that is the change an operator wants.
+#[test]
+fn f4_the_ladder_is_ordered_from_the_value_in_force() {
+    let rungs = configure::ladder(Some(200), false);
+    assert_eq!(rungs.first(), Some(&200));
+    // The two either side lead, in the order their distance puts them.
+    assert!(
+        rungs[1..3].contains(&100) && rungs[1..3].contains(&500),
+        "the neighbours must be the next rows: {:?}",
+        &rungs[..4]
+    );
+}
+
+/// A key with no value in any file ladders from 1.
+///
+/// The audit's finding, not a corner case: there is no per-key io-harness default
+/// to anchor on for *any* number key, so this is the ordinary state. An empty
+/// picker was the alternative and a surface whose argument is that a value is
+/// chosen cannot offer nothing.
+///
+/// Sabotage: offer an anchor row for `run.max_steps`. Under it F4 fails, because
+/// `TaskContract::new` says 8 and `TaskContract::workspace` says 12 and neither is
+/// "the default".
+#[test]
+fn f4_an_unset_key_ladders_from_one() {
+    let rungs = configure::ladder(None, false);
+    assert_eq!(rungs.first(), Some(&1));
+    assert!(!rungs.is_empty());
+}
+
+/// A signed key ladders through zero into the negatives.
+#[test]
+fn f4_a_signed_key_reaches_below_zero() {
+    let rungs = configure::ladder(Some(0), true);
+    assert!(rungs.contains(&0));
+    assert!(rungs.contains(&-1), "a signed ladder reaches below zero");
+    assert!(rungs.contains(&1));
+    // And an unsigned one never does.
+    assert!(!configure::ladder(Some(0), false).iter().any(|r| *r < 0));
+}
+
+/// Zero is reachable on an unsigned key, because zero is a legal ceiling.
+#[test]
+fn f4_zero_is_a_rung() {
+    assert!(configure::ladder(Some(1), false).contains(&0));
+}

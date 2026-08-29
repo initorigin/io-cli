@@ -79,6 +79,38 @@ pub enum Command {
     /// question, decide its plan, or say what happened to the call it stopped
     /// mid-way through.
     Resume(Resume),
+    /// Add, list, inspect, change or remove an MCP server, without opening a
+    /// session.
+    Mcp(Manage),
+    /// Add, list or remove a capability bundle, without opening a session.
+    Plugin(Manage),
+    /// Read or write one configuration key, without opening a session.
+    Config(Manage),
+}
+
+/// The three management subcommands' arguments, handed through untouched.
+///
+/// **Every token, verbatim, straight to `crate::manage::parse`** — which is what
+/// makes `io mcp add …` and `/mcp add …` one parse rather than two that agree
+/// today. clap is deliberately given no schema for what is inside: a second
+/// grammar expressed in `#[arg]` attributes is precisely the second
+/// implementation F6 compares bytes to rule out.
+///
+/// `trailing_var_arg` and `allow_hyphen_values` are both load-bearing and neither
+/// is optional. Without them clap consumes `--store` in
+/// `io mcp add semlith -- semlith --store <path> mcp` as an unknown flag of io's
+/// own and the line dies before `manage` sees it — F7's whole subject. Nothing in
+/// `manage.rs` can compensate; the tokens have to arrive intact.
+///
+/// The flags are not documented here on purpose. `io mcp --help` shows this
+/// paragraph and `manage`'s refusals name the accepted shapes at the point of
+/// getting one wrong, which is where an operator is actually looking; a flag list
+/// repeated in a doc comment is a second place for the grammar to drift.
+#[derive(Debug, clap::Args)]
+pub struct Manage {
+    /// The verb and its arguments — `add semlith -- semlith --store <path> mcp`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub words: Vec<String>,
 }
 
 /// `io exec` — the headless entry point.
