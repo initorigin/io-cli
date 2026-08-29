@@ -669,15 +669,23 @@ fn n4_every_row_fits_eighty_columns_in_both_glyph_sets() {
 
 /// A `[[plugin]]` entry naming `path`, spelled as a TOML basic string.
 ///
-/// The backslash escaping is not decoration: `pluginview::add` writes the value
-/// through `quoted` for the same reason, and an unescaped absolute Windows path in
+/// The escaping is not decoration: `pluginview::add` writes the value through
+/// `quoted` for the same reason, and an unescaped absolute Windows path in
 /// `path = "C:\Users\..."` is a different path or a parse error. A fixture that
 /// wrote `format!("path = \"{}\"", ...)` would be green on Unix and would test the
 /// wrong string on the one platform the escaping exists for.
+///
+/// **Both of `quoted`'s escapes, in `quoted`'s order.** A directory name may hold a
+/// `"` as legally as a `\` — the directories inside a clone are named by whoever
+/// wrote the clone — and a fixture that escaped only the backslash would write a
+/// `path` value that ends early and a file that does not parse.
 fn declaration(path: &Path) -> String {
     format!(
         "[[plugin]]\npath = \"{}\"\n\n",
-        path.display().to_string().replace('\\', "\\\\")
+        path.display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
     )
 }
 
@@ -756,6 +764,52 @@ fn declared_at_matches_a_relative_declaration_and_an_absolute_one_alike() {
         pluginview::declared_at(&absolute, &resolved),
         Some((io_harness::config::Scope::Local, 0)),
         "an absolute declaration is compared as written",
+    );
+}
+
+/// **What `quoted` wrote is what `declared_at` reads back, escapes and all.**
+///
+/// The write half escapes `\` and `"` into a TOML basic string; until 0.29.0 the
+/// read half was `raw.trim().trim_matches('"')`, which decodes nothing. So a bundle
+/// whose directory name holds either character was written one way and read back as
+/// a different path — and the directories inside a marketplace clone are named by
+/// whoever wrote the clone, not by `resolve`, whose alphabet governs only
+/// `<owner>/<repo>`. What shipped was `/plugin remove` refusing a row that is
+/// plainly on screen, with the generic "no configuration file declares …" sentence
+/// rather than the real reason.
+///
+/// Sabotage: read the value back with `PathBuf::from(raw.trim().trim_matches('"'))`
+/// and compare paths, which is the shape this replaced. Under it the quoted name
+/// below comes back with its escape still in it — and its two trailing quotes
+/// trimmed off as well — so `declared_at` answers `None` for an entry it wrote
+/// itself, and only this test fails.
+///
+/// The plain sibling is asserted in the same test so the failure is a decoding one
+/// rather than a fixture that stopped writing a readable file at all.
+#[test]
+fn declared_at_reads_back_the_escapes_that_quoted_wrote() {
+    let (_dir, root) = root();
+    // A `"` rather than a `\`: both are escaped by `quoted` and both were lost by
+    // the old read, and a quote is a legal directory name on every platform this
+    // ships to while a backslash inside one component is Unix-only.
+    let quoted_name = root.join("bundles").join("a\"b");
+    let plain = root.join("bundles").join("plain");
+    std::fs::write(
+        root.join(LOCAL_FILE),
+        format!("{}{}", declaration(&plain), declaration(&quoted_name)),
+    )
+    .expect("the configuration");
+
+    assert_eq!(
+        pluginview::declared_at(&root, &plain),
+        Some((io_harness::config::Scope::Local, 0)),
+        "the ordinary entry is not found either, so the fixture is the problem",
+    );
+    assert_eq!(
+        pluginview::declared_at(&root, &quoted_name),
+        Some((io_harness::config::Scope::Local, 1)),
+        "an entry this surface wrote itself cannot be found again, so `/plugin \
+         remove` refuses a bundle that is on the panel",
     );
 }
 
@@ -1082,16 +1136,283 @@ fn f11_an_added_bundle_loads_through_the_harness() {
 
     let config = Config::discover(&root).expect("the written file loads");
     let view = pluginview::view(&config);
+    // By id, for the reason `listed` below states: `Config::discover` layers the
+    // user file of whoever is running the suite over this root, and a length or a
+    // whole-list comparison would answer about their bundles as well as this one.
     assert!(
-        view.refused.is_empty(),
+        !view
+            .refused
+            .iter()
+            .any(|refused| refused.id == "rust-review"),
         "the added bundle must not be refused: {:?}",
         view.refused
     );
-    assert_eq!(
+    assert!(
+        view.plugins.iter().any(|p| p.id == "rust-review"),
+        "the added bundle did not load: {:?}",
         view.plugins
             .iter()
             .map(|p| p.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["rust-review"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F7 — a bundle declared `enabled = false` is declared, off, and visible
+// ---------------------------------------------------------------------------
+//
+// io-harness 0.70.0 splits what a configuration declared into three buckets:
+// `Plugins::iter` is what loaded, `Plugins::dropped` is what was refused, and
+// `Plugins::disabled` is what was written `enabled = false` — read, parsed, held
+// to the whole trust rule, contributing nothing. `Plugins::len` and
+// `Plugins::is_empty` say so in their own rustdoc: they answer about the loaded
+// bucket alone.
+//
+// Everything below is about the half of F7 that io-cli owns. The declining verb
+// that writes the key is a separate criterion; these tests write the key by hand,
+// which is also how an operator with an editor arrives at this state, and assert
+// that `/plugin` can see it. A bundle absent from every listing reads exactly like
+// one nobody ever declared — and until 0.29.0 `pluginview::view` read `iter()` and
+// `dropped()` and nothing else, so it was absent from every listing io-cli has.
+
+/// The id every F7 fixture declares, named once so the assertions below can key on
+/// it instead of counting.
+const OFF: &str = "rust-review";
+
+/// The row `/plugin` drew for `id`, or a failure naming what it drew instead.
+///
+/// **By id and never by index or by count**, which is the rule `tests/marketplace.rs`
+/// states for itself and which these fixtures need for the same reason:
+/// `Config::discover` layers the operator's own user file over this root, so a
+/// developer whose `~/.io-cli/io.toml` declares a bundle adds rows this fixture
+/// never wrote. `pluginview::view` chains the loaded bundles **ahead** of the
+/// switched-off ones, so on such a machine `view.plugins[0]` is that developer's
+/// bundle and an assertion about the flag fails while F7 itself holds — a red suite
+/// for a reason that has nothing to do with the criterion, on the machine where the
+/// change is being written and nowhere on CI.
+///
+/// Addressing by id keeps every failure meaning intact rather than weakening it:
+/// this panics where the bundle is absent, which is F7's first sabotage, and the
+/// caller still reads the flag off the row, which is its second.
+fn listed<'a>(view: &'a pluginview::View, id: &str) -> &'a pluginview::Listed {
+    view.plugins
+        .iter()
+        .find(|row| row.id == id)
+        .unwrap_or_else(|| {
+            panic!(
+                "`{id}` is on no list `/plugin` draws, so the panel says nothing about \
+                 an `io.toml` that declares it; listed: {:?}",
+                view.plugins
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        })
+}
+
+/// A configuration declaring `path` as a bundle switched off, and nothing else.
+fn declaring_off(root: &Path, path: &str) {
+    std::fs::write(
+        root.join(LOCAL_FILE),
+        format!("[[plugin]]\npath = \"{path}\"\nenabled = false\n"),
+    )
+    .expect("the configuration");
+}
+
+/// **F7, the visibility half.** A configuration declaring exactly one bundle, off,
+/// is not a configuration with no bundles — `View::is_empty` is `false` and the
+/// bundle is in the list, flagged.
+///
+/// The three assertions are three different claims and each one can fail alone:
+/// io-harness put the bundle on `disabled()` rather than loading or dropping it,
+/// io-cli carried that bucket into the view, and `is_empty` therefore answers for
+/// a declaration rather than for a load.
+///
+/// Sabotage: drop the `.chain(plugins.disabled()…)` from `pluginview::view`. Under
+/// it `view.plugins` is empty, `View::is_empty` returns `true`, and `/plugin`
+/// prints "no capability bundles are declared yet" over an `io.toml` declaring
+/// one — which is the false sentence `src/pluginview.rs`'s module docs exist to
+/// end, told about a bundle the operator switched off themselves and can switch
+/// back on in one keystroke if they can see it.
+///
+/// Second sabotage: mark the disabled bundles `enabled: true` in `view`. Under it
+/// this test still passes on `is_empty` and fails on the flag — which is the
+/// assertion that makes the flag load-bearing rather than decorative, since
+/// `bundle_skills` in `src/main.rs` filters the skills palette on it.
+///
+/// Every bucket is addressed by id rather than by length, for the reason [`listed`]
+/// states: `Config::discover` layers the user file of whoever is running the suite.
+#[test]
+fn f7_a_configuration_declaring_only_a_switched_off_bundle_is_not_empty() {
+    let (_dir, root) = root();
+    bundle(&root, "bundles/rust-review", MINIMAL);
+    declaring_off(&root, "bundles/rust-review");
+
+    let config = Config::discover(&root).expect("a switched-off bundle is not a broken file");
+    let plugins = config.plugins();
+
+    // io-harness's three buckets, asserted where they are — so a change of
+    // bucket in a future pin fails here rather than somewhere downstream.
+    assert!(
+        !plugins.names().contains(&OFF),
+        "a switched-off bundle loaded: {:?}",
+        plugins.names(),
+    );
+    assert!(
+        !plugins.dropped().iter().any(|d| d.id == OFF),
+        "`enabled = false` was treated as a failure rather than a choice: {:?}",
+        plugins
+            .dropped()
+            .iter()
+            .map(|d| d.error.clone())
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        plugins.disabled().iter().any(|p| p.id() == OFF),
+        "the bundle is in none of the three buckets, so io-harness lost it: {:?}",
+        plugins
+            .disabled()
+            .iter()
+            .map(io_harness::Plugin::id)
+            .collect::<Vec<_>>(),
+    );
+
+    // And io-cli's surface, which is what the criterion is about. `listed` fails
+    // by name where the bundle is on no list at all.
+    let view = pluginview::view(&config);
+    let off = listed(&view, OFF);
+    assert!(
+        !view.refused.iter().any(|refused| refused.id == OFF),
+        "a switched-off bundle was carried as a refusal, which tells the operator \
+         to fix something that is not broken: {:?}",
+        view.refused,
+    );
+    assert!(
+        !off.enabled,
+        "the bundle is listed as loaded, so nothing on this surface says the \
+         operator switched it off",
+    );
+    assert!(
+        !view.is_empty(),
+        "`View::is_empty` is true for a configuration declaring a bundle",
+    );
+}
+
+/// **F7 rendering.** The switched-off bundle draws under its own mark, with the
+/// state leading the row rather than a list of contributions this session has not
+/// got.
+///
+/// Sabotage, either half: drop the disabled bucket from `pluginview::view` and
+/// there is no row at all — the row lookup fails by name before the mark is read.
+/// Draw the row under `LOADED_MARK` and the list says the bundle is contributing
+/// while `Config::plugins()` says it contributes nothing, which is two surfaces
+/// disagreeing about one bundle in the one direction an operator cannot detect:
+/// the panel is the only place they look.
+///
+/// The row is found by its label rather than taken at index zero, for the reason
+/// [`listed`] states — the suite runs on machines whose user file declares bundles
+/// of their own, and those draw rows too.
+#[test]
+fn f7_a_switched_off_bundle_draws_under_its_own_mark() {
+    let (_dir, root) = root();
+    bundle(&root, "bundles/rust-review", MINIMAL);
+    declaring_off(&root, "bundles/rust-review");
+    let config = Config::discover(&root).expect("the configuration loads");
+    let view = pluginview::view(&config);
+
+    for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
+        // Wide enough that nothing is shortened, so the words below are compared
+        // rather than prefix-matched.
+        let rows = pluginview::rows(&view, 400, glyphs);
+        let row = rows.iter().find(|row| row.label == OFF).unwrap_or_else(|| {
+            panic!(
+                "{}: the declared bundle drew no row; drawn: {:?}",
+                glyphs.name,
+                rows.iter().map(|row| row.label.clone()).collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            row.mark,
+            Some(pluginview::DISABLED_MARK),
+            "{}: the switched-off bundle is not marked apart from a loaded one",
+            glyphs.name,
+        );
+        assert_ne!(
+            pluginview::DISABLED_MARK,
+            pluginview::LOADED_MARK,
+            "the two states share a mark, so the row cannot say which it is",
+        );
+        assert_ne!(
+            pluginview::DISABLED_MARK,
+            pluginview::REFUSED_MARK,
+            "a switched-off bundle wears the mark that means something is broken",
+        );
+
+        let detail = row
+            .detail
+            .clone()
+            .expect("a switched-off bundle has a detail");
+        assert_eq!(
+            detail.split(glyphs.separator).next(),
+            Some("switched off"),
+            "{}: the row leads with what the bundle contributed, which it did \
+             not: {detail}",
+            glyphs.name,
+        );
+        assert!(
+            detail.contains("skills, templates, agents, policy"),
+            "{}: what switching it back on would bring is not on the row: {detail}",
+            glyphs.name,
+        );
+    }
+}
+
+/// **F7, and the bug the flag exists to stop.** A switched-off bundle is on the
+/// list and on no turn: nothing it declares reaches the contract, and its skills
+/// directory is still readable — so the flag, not an absent field, is the only
+/// thing keeping it out of the `/skills` palette.
+///
+/// Sabotage: drop the `.filter(|listed| listed.enabled)` from `bundle_skills` in
+/// `src/main.rs`. Under it `/skills` offers the model a skill from a bundle
+/// `TaskContract::discover_skills` never folded in, and the run fails on a name
+/// the surface said was there. That filter is not visible from an integration
+/// test — `bundle_skills` is private to the binary — so what is asserted here is
+/// the fact that makes it necessary: `Listed::skills` is `Some` for a bundle
+/// contributing nothing.
+#[test]
+fn f7_a_switched_off_bundle_reaches_no_turn_while_its_directories_still_read() {
+    let (_dir, root) = root();
+    bundle(&root, "bundles/rust-review", MINIMAL);
+    declaring_off(&root, "bundles/rust-review");
+    let config = Config::discover(&root).expect("the configuration loads");
+
+    let contract = io_cli::contract::configured("review this", root.clone(), &config);
+    assert!(
+        contract.agents.get("rust-review__reviewer").is_none(),
+        "a switched-off bundle put an agent on the contract: {:?}",
+        contract.agents.names(),
+    );
+    assert!(
+        !contract.plugins.names().contains(&OFF),
+        "`contract.plugins` is what `discover_skills` folds a bundle's skills in \
+         from, and a switched-off bundle is in it: {:?}",
+        contract.plugins.names(),
+    );
+
+    // By id rather than by index, for the reason `listed` states: the user file of
+    // whoever is running the suite is layered over this root and its bundles are
+    // chained ahead of the switched-off ones.
+    let view = pluginview::view(&config);
+    let off = listed(&view, OFF);
+    assert!(
+        off.skills.is_some(),
+        "the switched-off bundle's skills directory did not read, so this test \
+         would pass for the wrong reason and `bundle_skills` would look safe",
+    );
+    assert_eq!(
+        off.agents,
+        vec!["rust-review__reviewer"],
+        "io-harness namespaces a switched-off bundle's names too, so the detail \
+         pane can say what switching it on would bring",
     );
 }

@@ -39,6 +39,34 @@ const FILE: &str = "io.toml";
 /// only way an operator finds out where to put a skill without reading a document.
 const SKILLS: &str = "skills";
 
+/// The marketplaces directory, created with the home for the reason [`SKILLS`] is.
+///
+/// A marketplace is a git repository the operator named, cloned to
+/// `<home>/marketplaces/<owner>/<repo>` — two levels, so two owners may carry a
+/// repository of the same name and neither has to be qualified on disk.
+///
+/// Created here as well as by [`crate::fetch`], which has to make it anyway
+/// because [`adopt`] does nothing at all for an operator who named their own
+/// location. What creating it here buys is the same thing `skills/` buys: an
+/// operator who opens their own home finds the directory before they have added
+/// anything to it, which is how they learn where marketplaces go without reading a
+/// document.
+const MARKETPLACES: &str = "marketplaces";
+
+/// Where a clone is assembled before it becomes a marketplace.
+///
+/// **Dot-named, and deliberately outside [`MARKETPLACES`].** What is in here is by
+/// definition unfinished: a process killed in the middle of a clone leaves a
+/// directory holding part of somebody's repository, and if that directory sat
+/// under `marketplaces/` it would be walked as an `<owner>` and its contents
+/// counted as bundles. Outside it, nothing walks it and the worst a kill can leave
+/// is wasted disk that the next fetch removes.
+///
+/// Not created by [`adopt`]: it exists only while a fetch is in flight, and a home
+/// carrying an empty `.fetching` would be one more thing for an operator to
+/// wonder about — the same argument that keeps [`MEMORY`] out of [`adopt`].
+const STAGING: &str = ".fetching";
+
 /// The operator's own guidance file, beside the configuration file it belongs to.
 ///
 /// Named here rather than in [`crate::memory`] because the name is a fact about
@@ -175,6 +203,34 @@ pub fn path() -> Option<PathBuf> {
     Some(operator()?.join(DIR))
 }
 
+/// Where marketplaces are cloned to, whether or not the directory exists yet.
+///
+/// Derived from [`path`] rather than from [`in_force`], the way
+/// [`crate::contract::skills_dir`] derives the default skills directory
+/// (`src/contract.rs:528`): a marketplace is io-cli's own cache of other people's
+/// repositories, and an operator who pointed `$IO_CONFIG_HOME` somewhere else
+/// moved their *configuration*. Following that variable here would put the clones
+/// wherever the configuration is and leave the ones already fetched invisible.
+///
+/// **The directory is not promised to exist.** [`adopt`] returns `None` without
+/// creating anything whenever either variable is set, so every caller creates it
+/// rather than assuming — which [`crate::fetch::clone`] does on the way past.
+#[must_use]
+pub fn marketplaces() -> Option<PathBuf> {
+    Some(path()?.join(MARKETPLACES))
+}
+
+/// Where a clone is assembled before it is renamed into [`marketplaces`].
+///
+/// Same home, so the rename that finishes a fetch is a same-filesystem rename with
+/// no cross-device case to fall back from — which is the whole reason this is here
+/// rather than in the platform's temporary directory, where `/tmp` on a Linux box
+/// is routinely a different filesystem from `$HOME`.
+#[must_use]
+pub fn staging() -> Option<PathBuf> {
+    Some(path()?.join(STAGING))
+}
+
 /// What the operator named, before anything of io-cli's own is set.
 ///
 /// [`adopt`] decides on this and nothing else: a variable that is there at all is
@@ -272,6 +328,10 @@ pub fn adopt() -> Option<Report> {
     // is a home with no skills in it, while a home that could not be created at
     // all is a product with nowhere to live.
     let _ = create(&home.join(SKILLS));
+    // The same best-effort, non-fatal shape, and for the same reason: a home
+    // without a marketplaces directory is a home nobody has added a marketplace
+    // to yet, and `crate::fetch` makes it when somebody does.
+    let _ = create(&home.join(MARKETPLACES));
 
     let mut report = Report {
         home: home.clone(),

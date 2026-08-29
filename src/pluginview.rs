@@ -32,16 +32,55 @@
 //! to fit a row, with the mark that says so; [`Refused::error`] holds it whole,
 //! and the driver prints it whole beneath the list.
 //!
-//! # Hooks cannot be listed, and this file says so on screen
+//! # A switched-off bundle is declared, and this surface says so
 //!
-//! There is no `Plugin::hooks()` and `Hook` is `pub(crate)`. A bundle's hooks are
-//! applied — [`io_harness::Plugins::apply_to_hooks`] installs them — and there is
-//! no API by which io-cli can name one, count them, or say what any of them runs.
-//! The string `"hooks"` from [`io_harness::Plugin::contributions`] is the entire
-//! honest signal, and [`detail`] draws exactly that: a row saying hooks were
-//! declared and that io-cli cannot say what they do. **The alternative was to omit
-//! the row**, which reads as a bundle with no hooks — the one reading that is
-//! actually false, on the contribution kind that runs programs.
+//! io-harness 0.70.0 splits what a configuration declared into **three** buckets
+//! rather than two: `Plugins::iter` is what loaded, `Plugins::dropped` is what was
+//! refused, and [`io_harness::Plugins::disabled`] is what was written
+//! `enabled = false` — read, parsed, held to the whole trust rule, and
+//! contributing nothing to any of the six kinds. That is a third *state*, never a
+//! second kind of failure: everything on `dropped` is something an operator has to
+//! fix, and a switched-off bundle is doing exactly what the file asked of it.
+//!
+//! **It is listed, under its own mark, and it counts against [`View::is_empty`].**
+//! Before 0.29.0 [`view`] read `iter()` and `dropped()` and nothing else, so a
+//! configuration declaring three bundles switched off drew an empty list and
+//! `/plugin` said *no capability bundles are declared yet* — the section above,
+//! inverted: a capability missing from every listing reads exactly like one nobody
+//! ever wrote down, and the operator's own `enabled = false` is the one edit they
+//! can undo in a keystroke if they can see it. What a switched-off bundle *would*
+//! bring is drawn beside it for the same reason — the question an operator
+//! switching one back on has is what comes back.
+//!
+//! **The state rides on [`Listed::enabled`] rather than a third list**, because
+//! every index on this surface addresses a list somewhere else and a third one is
+//! a third off-by-one — the shape of the silent wrong delete 0.20.0 shipped in
+//! [`rows`]. The cost is one caller that has to remember the flag:
+//! `src/main.rs`'s `bundle_skills` builds the `/skills` palette off [`view`],
+//! because `Plugins::skill_dirs` is `pub(crate)`, and it filters on
+//! [`Listed::enabled`] so a switched-off bundle's skills are not offered to a
+//! model that cannot reach them.
+//!
+//! # Hooks cannot be listed *from here*, and this file says so on screen
+//!
+//! There is no `Plugin::hooks()` and `Hook` is `pub(crate)` (filed upstream as
+//! io-harness#223). A bundle's hooks are applied — [`io_harness::Plugins::apply_to_hooks`]
+//! installs them — and there is no accessor by which this module can name one,
+//! count them, or say what any of them runs. The string `"hooks"` from
+//! [`io_harness::Plugin::contributions`] is the entire honest signal off the typed
+//! API, and [`detail`] draws exactly that when it is handed nothing better: a row
+//! saying hooks were declared and that io-cli cannot say what they do. **The
+//! alternative was to omit the row**, which reads as a bundle with no hooks — the
+//! one reading that is actually false, on the contribution kind that runs
+//! programs.
+//!
+//! **A caller that has read the manifest may hand [`detail`] the pairs**, and the
+//! marketplace disclosure does exactly that: consenting to a stranger's bundle on
+//! the word `hooks` is consenting to programs nobody named. The reading is
+//! [`crate::marketplace::hooks`]' and never this module's — see the section below
+//! — and it is display only: what is installed, and whether it may be, stays
+//! io-harness's parse and io-harness's trust rule. Both branches go when #223
+//! lands.
 //!
 //! # The names drawn here are already namespaced, and that is the point
 //!
@@ -83,6 +122,15 @@ pub const LOADED_MARK: &str = "+";
 /// The mark on a bundle that was declared and did not load. See [`LOADED_MARK`].
 pub const REFUSED_MARK: &str = "!";
 
+/// The mark on a bundle declared `enabled = false`. See [`LOADED_MARK`].
+///
+/// `-` against `+`, which is the one pairing that needs no legend: it is the same
+/// opposition [`crate::commands`] draws between present and absent, it is one
+/// ASCII character in both glyph sets, and it cannot be confused with the `!` that
+/// means a bundle is broken — the distinction the whole third state exists to
+/// draw, since a switched-off bundle is nothing for the operator to fix.
+pub const DISABLED_MARK: &str = "-";
+
 /// The narrowest a bundle's root may be drawn at, before its separator.
 ///
 /// Twenty cells is `...bundles/rust-review` — the last segments and the mark
@@ -92,7 +140,8 @@ pub const REFUSED_MARK: &str = "!";
 /// lose a fact, and may not draw one that cannot be read.
 const ROOT_FLOOR: usize = 20;
 
-/// One bundle that loaded, as `/plugin` lists it.
+/// One bundle io-harness read, as `/plugin` lists it — loaded, or declared and
+/// switched off.
 ///
 /// Everything is owned and copied out of the borrowed [`io_harness::Plugin`],
 /// because `Config::plugins()` returns a fresh value that re-read the disk: the
@@ -102,7 +151,23 @@ const ROOT_FLOOR: usize = 20;
 pub struct Listed {
     /// The manifest's `name`, which is also what every contribution below is
     /// namespaced by.
+    ///
+    /// **Unique among the loaded bundles and not across the whole list.**
+    /// io-harness reserves an id only for a bundle it switched on, so two
+    /// bundles declared `enabled = false` may share one — which is exactly the
+    /// swap the flag exists for, `tools-v1` off beside `tools-v2` on. Nothing
+    /// here may key on it; [`Listed::root`] is what identifies a bundle.
     pub id: String,
+    /// Whether the `[[plugin]]` entry that declared it said so, or said
+    /// `enabled = false` (io-harness 0.70.0, and absent means on).
+    ///
+    /// **False means this bundle contributed nothing at all** — not its skills,
+    /// not its agents, not its servers, not its hooks — while every field below
+    /// still reads, because io-harness parses and validates a switched-off bundle
+    /// in full. So they describe what switching it back on would bring, and a
+    /// caller that installs any of them must check this first. See the module
+    /// docs and `bundle_skills` in `src/main.rs`.
+    pub enabled: bool,
     /// The manifest's one line for a human, if it carried one.
     pub description: Option<String>,
     /// The bundle's own version. **Documentation and nothing else** — io-harness
@@ -154,8 +219,14 @@ pub struct Refused {
 /// a refused bundle sits beside four that loaded and both facts are true at once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
-    /// The bundles that loaded, in the order they were declared — which is the
-    /// order their policy layers stack and their contributions are applied in.
+    /// The bundles io-harness read: the loaded ones first, in the order they were
+    /// declared — which is the order their policy layers stack and their
+    /// contributions are applied in — and then the ones declared
+    /// `enabled = false`, each flagged by [`Listed::enabled`].
+    ///
+    /// **One list and a flag, not two lists.** See the module docs: a third list
+    /// is a third index, and every index on this surface addresses a list
+    /// somewhere else.
     pub plugins: Vec<Listed>,
     /// The bundles that did not, with the reason each one did not.
     pub refused: Vec<Refused>,
@@ -169,13 +240,59 @@ impl View {
     /// surface that read it alone would tell an operator with a broken manifest
     /// that they have no plugins — which is the false sentence this module exists
     /// to stop being told.
+    ///
+    /// **And a configuration whose only bundle is switched off has declared one
+    /// too**, which is the same sentence with a different cause: `disabled()` is
+    /// a third bucket `Plugins::is_empty` is equally silent about. Those bundles
+    /// are in `plugins` flagged rather than in a list of their own, so this
+    /// answers `false` for them without a third clause — and the sabotage that
+    /// finds a regression here is dropping `disabled()` from [`view`], not
+    /// editing this line.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty() && self.refused.is_empty()
     }
 }
 
-/// Every bundle this configuration declared, loaded and refused.
+/// One [`io_harness::Plugin`], copied out with the state io-harness kept in the
+/// bucket it put it in.
+///
+/// `enabled` is an argument rather than something read off the plugin because
+/// there is nothing on `Plugin` to read: the flag lives on the `[[plugin]]` entry
+/// as `Declaration::enabled`, which is `pub(crate)`, and the *only* public signal
+/// of it is which of `Plugins::iter` and `Plugins::disabled` a bundle came back
+/// on. So the bucket is the fact, and [`view`] is the one place it is recorded.
+fn copy_out(plugin: &io_harness::Plugin, enabled: bool) -> Listed {
+    Listed {
+        id: plugin.id().to_string(),
+        enabled,
+        description: plugin.description().map(str::to_string),
+        version: plugin.version().map(str::to_string),
+        root: plugin.root().to_path_buf(),
+        contributions: plugin.contributions(),
+        skills: plugin.skills_dir(),
+        templates: plugin.templates_dir(),
+        agents: plugin.agents().iter().map(|def| def.name.clone()).collect(),
+        servers: plugin
+            .mcp_servers()
+            .iter()
+            .map(|server| server.id.clone())
+            .collect(),
+        layers: plugin
+            .policy_layers()
+            .iter()
+            .map(|layer| layer.name.clone())
+            .collect(),
+    }
+}
+
+/// Every bundle this configuration declared: loaded, switched off, and refused.
+///
+/// **All three of io-harness's buckets, and the third one is why this function
+/// changed in 0.29.0.** `Plugins::iter` is the loaded set alone — its own rustdoc
+/// says so of `len` and `is_empty` — so a `view` reading it and `dropped()` was
+/// blind to every bundle an operator had declared `enabled = false`, and drew them
+/// nowhere at all. See the module docs.
 ///
 /// Infallible, because [`io_harness::Config::plugins`] is: it re-reads every
 /// declared directory from disk on the call and reports what it could not read
@@ -186,28 +303,17 @@ impl View {
 pub fn view(config: &io_harness::Config) -> View {
     let plugins = config.plugins();
     View {
+        // Loaded first and switched off after, which is the order [`rows`] draws
+        // and the order the positional contract there is written against.
         plugins: plugins
             .iter()
-            .map(|plugin| Listed {
-                id: plugin.id().to_string(),
-                description: plugin.description().map(str::to_string),
-                version: plugin.version().map(str::to_string),
-                root: plugin.root().to_path_buf(),
-                contributions: plugin.contributions(),
-                skills: plugin.skills_dir(),
-                templates: plugin.templates_dir(),
-                agents: plugin.agents().iter().map(|def| def.name.clone()).collect(),
-                servers: plugin
-                    .mcp_servers()
+            .map(|plugin| copy_out(plugin, true))
+            .chain(
+                plugins
+                    .disabled()
                     .iter()
-                    .map(|server| server.id.clone())
-                    .collect(),
-                layers: plugin
-                    .policy_layers()
-                    .iter()
-                    .map(|layer| layer.name.clone())
-                    .collect(),
-            })
+                    .map(|plugin| copy_out(plugin, false)),
+            )
             .collect(),
         refused: plugins
             .dropped()
@@ -223,8 +329,8 @@ pub fn view(config: &io_harness::Config) -> View {
 
 /// The picker rows for the whole list, fitted for a terminal this wide.
 ///
-/// **One row per bundle, loaded first and refused after, and no headings.** The
-/// picker hands a chosen index straight back into the caller's own list, so a
+/// **One row per bundle, `view.plugins` first and refused after, and no
+/// headings.** The picker hands a chosen index straight back into the list, so a
 /// heading row is an index that maps to no bundle — [`crate::commands`] carries a
 /// parallel vector of `Held::Nothing` to survive that, and this surface has two
 /// lists to index rather than one. So the contract is positional and written down:
@@ -232,6 +338,13 @@ pub fn view(config: &io_harness::Config) -> View {
 /// `view.refused[i - view.plugins.len()]` after it.** The mark, not a heading,
 /// says which — and unlike a heading it survives a typed query, which is exactly
 /// when a refused bundle is hardest to tell from a loaded one.
+///
+/// **A bundle declared `enabled = false` is inside `view.plugins` and so is inside
+/// that first range**, drawn under [`DISABLED_MARK`] with the state leading its
+/// detail. Three marks and still two ranges: the switched-off bundles are a state
+/// the operator chose, not a second failure list, and giving them a range of their
+/// own would have added a third arm to every index calculation on this surface for
+/// nothing.
 ///
 /// # The narrow form, and what gives way in it
 ///
@@ -262,7 +375,21 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         // is one fact — the list of kinds — and punctuating it with the same run
         // that divides the row would read as five fields.
         let mut detail = plugin.contributions.join(", ");
-        if detail.is_empty() {
+        if !plugin.enabled {
+            // **The state leads the row, and the mark is not left to carry it
+            // alone.** A single character says which bucket a row came from; it
+            // does not say that `skills, agents` is a list of things this session
+            // does *not* have. Reading the kinds first on a switched-off bundle is
+            // the one wrong sentence this row can tell, so the words go in front
+            // of them — two words and not a clause, because the contributions are
+            // unconditional here and every cell spent in front of them is a cell
+            // the eighty-column row (N4) has to find somewhere else.
+            detail = if detail.is_empty() {
+                "switched off".to_string()
+            } else {
+                format!("switched off{separator}{detail}")
+            };
+        } else if detail.is_empty() {
             // A manifest with a `name` and nothing else. Loaded, contributing
             // nothing, and saying so is the whole point of the row.
             detail = "contributes nothing".to_string();
@@ -299,7 +426,15 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
             ));
         }
 
-        out.push(Row::marked(LOADED_MARK, plugin.id.clone(), detail));
+        out.push(Row::marked(
+            if plugin.enabled {
+                LOADED_MARK
+            } else {
+                DISABLED_MARK
+            },
+            plugin.id.clone(),
+            detail,
+        ));
     }
 
     for refused in &view.refused {
@@ -330,7 +465,32 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
 ///
 /// Every name is drawn **namespaced, exactly as io-harness rewrote it** — see the
 /// module docs.
-pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
+///
+/// A switched-off bundle gets the same groups with one row above them saying that
+/// none of it is in this session. Every accessor is valid on one — io-harness
+/// parses and validates a disabled bundle in full — so the groups are true about
+/// the *directory* and false about the *session*, and the row above them is what
+/// makes the pane say which. See [`Listed::enabled`].
+///
+/// # `hooks` is the one group this module cannot read for itself
+///
+/// Every other group above comes off a [`io_harness::Plugin`] accessor. There is
+/// none for hooks — `Hook` is `pub(crate)` and `contributions()` reports only that
+/// they exist (io-harness#223) — and this module opens no `plugin.toml`, so the
+/// pairs are an argument: `(event, command)` in the manifest's own order, read by
+/// [`crate::marketplace::hooks`], which is the one file in this crate whose job is
+/// reading somebody else's manifest.
+///
+/// **An empty slice keeps the honest placeholder** rather than drawing no group.
+/// A caller that has not read the manifest knows only that hooks were declared,
+/// and a bundle drawn with no hooks group reads as a bundle with no hooks — the
+/// one reading that is false, on the contribution kind that runs programs.
+pub fn detail(
+    plugin: &Listed,
+    width: u16,
+    glyphs: &Glyphs,
+    hooks: &[(String, String)],
+) -> Vec<Row> {
     // The picker's own arithmetic again: marker and gap, with no detail column to
     // budget for on the rows that are a path.
     let room = (width as usize).saturating_sub(4);
@@ -352,7 +512,24 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         out.push(Row::heading("mcp servers"));
         out.extend(plugin.servers.iter().map(|id| Row::new(id.clone())));
     }
-    if plugin.contributions.contains(&"hooks") {
+    if !hooks.is_empty() {
+        // **One row per hook, naming the event and the command.** A bundle's hooks
+        // are the contribution that runs programs, and "hooks" is the one word on
+        // this pane that tells an operator nothing about what they are consenting
+        // to. The pairs were read out of the manifest by the caller — see this
+        // function's own docs and io-harness#223.
+        out.push(Row::heading("hooks"));
+        out.extend(hooks.iter().map(|(event, command)| {
+            Row::with_detail(
+                event.clone(),
+                fit(
+                    command,
+                    room.saturating_sub(event.chars().count() + 2),
+                    glyphs,
+                ),
+            )
+        }));
+    } else if plugin.contributions.contains(&"hooks") {
         out.push(Row::heading("hooks"));
         // **The whole of what io-cli knows, stated as the whole of what it
         // knows.** There is no accessor and `Hook` is `pub(crate)`, so the count,
@@ -383,6 +560,28 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         // in the list; this is the row that says the list entry is all there is.
         out.push(Row::new("this bundle contributes nothing"));
     }
+    if !plugin.enabled {
+        // **First, because every row under it is false without it.** io-harness
+        // parses and validates a switched-off bundle in full, so the groups above
+        // are the real agents, servers and layers of a real directory — and this
+        // session has none of them. A pane that opened on `agents` over a bundle
+        // contributing no agent is the same silent wrong reading the module docs
+        // exist to end, told the other way round. `insert` rather than a branch
+        // around the build: the groups are what switching it on brings back, and
+        // an operator deciding whether to do that needs to see them.
+        out.insert(
+            0,
+            Row::with_detail(
+                "switched off",
+                fit(
+                    "this bundle's `[[plugin]]` entry says `enabled = false`, so none of what \
+                     follows is in this session; it is what switching it back on would bring",
+                    room.saturating_sub("switched off".chars().count() + 2),
+                    glyphs,
+                ),
+            ),
+        );
+    }
     out
 }
 
@@ -402,6 +601,104 @@ pub fn add(dir: &Path) -> crate::edit::Edit {
         "plugin",
         format!("path = {}", quoted(&dir.display().to_string())),
     )
+}
+
+/// What writing an `enabled` key into a `[[plugin]]` costs an older binary.
+///
+/// **`enabled` on a `[[plugin]]` is io-harness 0.70.0's, and 0.69.0 does not
+/// ignore it — it refuses the whole file.** The `[[mcp]]` case is the opposite and
+/// that is exactly why this has to be said out loud: an operator who has seen a
+/// forward-compatible key before will assume this one is too. A shared `io.toml`
+/// or a second machine on the older binary loses every setting in the file, not
+/// the bundle.
+pub const OLDER_BINARY: &str =
+    "this writes an `enabled` key into a `[[plugin]]` entry, which is io-harness 0.70.0's: an \
+     io-cli built against 0.69.0 refuses the whole configuration file rather than ignoring the \
+     key";
+
+/// The edit that declares a bundle **switched off**.
+///
+/// [`add`]'s entry with one more line, and the two are kept apart rather than
+/// folded into a flag because they answer two different questions. `add` is what
+/// `/plugin add ./bundles/x` writes: the operator named a directory they have,
+/// and a bundle declared off would be a surface second-guessing them. This is what
+/// a **marketplace** install writes, and the `enabled = false` is the whole of the
+/// disclosure mechanism: io-harness publishes no loader that takes a directory —
+/// `load_one` is private and `Plugins::load` is `pub(crate)` — so the only way to
+/// have it read, parse, validate and trust-check a stranger's bundle is to declare
+/// it, and the only way to declare it without running it is this key. The bundle
+/// then arrives on [`io_harness::Plugins::disabled`], contributing nothing, with
+/// every accessor valid; consent is [`enable`].
+///
+/// **An appended entry carries as many keys as it is given.**
+/// [`crate::edit::Edit::append`] writes `[[plugin]]` and then the body verbatim,
+/// so the second line needs no second edit and no second write — which matters,
+/// because a bundle that was declared on and switched off afterwards would have
+/// been loadable for the width of one round trip.
+///
+/// Says [`OLDER_BINARY`] to the operator at the moment of writing. That sentence
+/// is a constant rather than a line at the call site so the two doors cannot word
+/// it differently and a test can name it.
+pub fn add_off(dir: &Path) -> crate::edit::Edit {
+    crate::edit::Edit::append(
+        "plugin",
+        format!(
+            "path = {}\nenabled = false",
+            quoted(&dir.display().to_string())
+        ),
+    )
+}
+
+/// The edit that switches the `index`-th declared bundle on.
+///
+/// **One key and no other byte of the file.** [`crate::edit::Edit::set`] resolves
+/// `plugin[N].enabled` through the same splitter every other path goes through —
+/// `plugin[N]` is the section, `enabled` is the key — and replaces the value's own
+/// span, so the path this entry declares, every sibling entry, every comment and
+/// every unrelated section come through untouched. Rewriting the entry instead
+/// would be the same configuration expressed in different bytes, and an operator
+/// who diffs their `io.toml` after consenting would see io-cli reformat a file
+/// they never asked it to touch.
+///
+/// `index` is an index into the file's `[[plugin]]` array, with [`remove`]'s own
+/// warning: it is not a row number from [`rows`].
+pub fn enable(index: usize) -> crate::edit::Edit {
+    crate::edit::Edit::set(format!("plugin[{index}].enabled"), "true")
+}
+
+/// The last `[[plugin]]` entry of a configuration file, when it was declared off.
+///
+/// **The evidence of what was just written, rather than a second reading of what
+/// was meant.** [`crate::edit::Edit::append`] puts a new entry at the end of the
+/// document, so the highest index in the file is the entry the write that just
+/// returned created — and whether it carries `enabled = false` is what separates a
+/// marketplace install, which owes a disclosure, from an ordinary
+/// `/plugin add ./bundles/x`, which does not. Asking the file means the driver
+/// re-decides nothing: `marketplace::chosen` made that call once, in
+/// `manage::plan`, and this reads the result of it.
+///
+/// `None` for a file with no `[[plugin]]` array, and for a last entry that carries
+/// no `enabled` key or carries one that is not `false`.
+#[must_use]
+pub fn declared_off(text: &str) -> Option<(usize, PathBuf)> {
+    // Walked until a gap, which is what `value_at` reports by returning `None` —
+    // an array of tables is contiguous, so the first miss is the end of it. The
+    // same walk `declared_at` makes, for the same reason.
+    let mut last = None;
+    for index in 0.. {
+        let Some(raw) = crate::edit::value_at(text, &format!("plugin[{index}].path")) else {
+            break;
+        };
+        // Decoded by the inverse of the function that wrote it, for the reason
+        // `unquoted` states: the path this hands back is opened to read the
+        // bundle's hooks, and a path with an escape still in it opens a different
+        // manifest — or nothing, and the disclosure then fails closed on a generic
+        // sentence rather than on the real reason.
+        last = Some((index, PathBuf::from(unquoted(&raw))));
+    }
+    let (index, path) = last?;
+    let enabled = crate::edit::value_at(text, &format!("plugin[{index}].enabled"))?;
+    (enabled.trim() == "false").then_some((index, path))
 }
 
 /// The manifest every bundle has, and the one file this surface can check before
@@ -555,6 +852,15 @@ pub fn remove(index: usize) -> crate::edit::Edit {
 /// removing something. Deleting the wrong `[[plugin]]` entry is silent: the
 /// operator loses a bundle they never mentioned and finds out when its skills stop
 /// being offered.
+///
+/// The value is **decoded before it is compared**, by the inverse of the function
+/// that wrote it — see `unquoted`. Until 0.29.0 it was `trim_matches('"')`, which
+/// undoes no escape at all, so a bundle at `plugins/a\b` — legal on Linux, and a
+/// directory inside a clone is named by whoever wrote the clone rather than by
+/// [`crate::fetch::resolve`], whose alphabet governs only `<owner>/<repo>` — was
+/// written with its backslash doubled and read back with it still doubled: a
+/// different path, matched against nothing, and `/plugin remove` refusing a row
+/// that is plainly on screen.
 pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Scope, usize)> {
     use io_harness::config::Scope;
     for scope in [Scope::Local, Scope::Project, Scope::User] {
@@ -571,7 +877,7 @@ pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Sc
             let Some(raw) = crate::edit::value_at(&text, &format!("plugin[{index}].path")) else {
                 break;
             };
-            let declared = PathBuf::from(raw.trim().trim_matches('"'));
+            let declared = PathBuf::from(unquoted(&raw));
             let resolved = if declared.is_absolute() {
                 declared.clone()
             } else {
@@ -592,9 +898,52 @@ pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Sc
 /// asked for on its own, and because this crate writes VALUES. It earns its keep
 /// on Windows, where a bundle's path is full of backslashes that a bare `"{}"`
 /// would hand to the parser as escapes.
+///
+/// Its inverse is `unquoted`, and the two are edited together — a write escaping
+/// something the read does not undo is a path that comes back as a different path.
 fn quoted(text: &str) -> String {
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
+}
+
+/// The inverse of [`quoted`]: the path back out of the value a file holds.
+///
+/// **The read half of this module did not exist until 0.29.0.** Both readers —
+/// [`declared_at`] and [`declared_off`] — took the value's bytes and stripped the
+/// surrounding quotes with `trim_matches('"')`, which undoes no escape, so every
+/// path `quoted` had escaped came back doubled. On Windows the doubled separators
+/// collapse and nothing shows; on Linux a bundle directory named `a\b` or `a"b` —
+/// and the directories inside a clone are named by whoever wrote the clone — came
+/// back as a directory that does not exist.
+///
+/// **Exactly `quoted`'s two escapes, undone, and no others.** A full TOML
+/// basic-string decoder — the newline, tab and unicode escapes among them — would
+/// be a second and wider
+/// grammar for a string this module spelled itself, and TOML's grammar belongs to
+/// `src/edit.rs` by rule (`tests/dependencies.rs`). A hand-written entry carrying
+/// an escape `quoted` never writes therefore still comes back with the escape
+/// consumed rather than expanded, which is a path that names nothing and is
+/// reported as one — the same outcome as before, on a value neither reader is for.
+///
+/// `unquoted(&quoted(text)) == text` for every `text`, which is the property the
+/// unit test below asserts and the only one either caller needs.
+fn unquoted(raw: &str) -> String {
+    let inner = raw.trim();
+    let inner = inner.strip_prefix('"').unwrap_or(inner);
+    let inner = inner.strip_suffix('"').unwrap_or(inner);
+    let mut out = String::with_capacity(inner.len());
+    let mut glyphs = inner.chars();
+    while let Some(glyph) = glyphs.next() {
+        // A backslash takes the character after it literally, which undoes both of
+        // `quoted`'s escapes in one arm. A trailing lone backslash — which `quoted`
+        // cannot have written — keeps itself rather than vanishing.
+        out.push(if glyph == '\\' {
+            glyphs.next().unwrap_or('\\')
+        } else {
+            glyph
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -606,6 +955,7 @@ mod tests {
     fn listed() -> Listed {
         Listed {
             id: "rust-review".to_string(),
+            enabled: true,
             description: Some("Everything our Rust reviews need.".to_string()),
             version: Some("1.2.0".to_string()),
             root: PathBuf::from("/Users/someone/code/io-cli/bundles/rust-review"),
@@ -692,6 +1042,115 @@ mod tests {
         assert!(detail.starts_with("contributes nothing"), "{detail}");
     }
 
+    /// The three states are three marks, and a switched-off bundle leads with the
+    /// state rather than with a list of contributions this session does not have.
+    ///
+    /// Sabotage: draw the disabled rows under `LOADED_MARK`. Under it the list
+    /// says four bundles are loaded when one of them contributes nothing, and the
+    /// operator's `enabled = false` is invisible on the surface that exists to
+    /// show what is declared.
+    #[test]
+    fn a_switched_off_bundle_is_marked_apart_from_both_loaded_and_refused() {
+        let mut off = listed();
+        off.id = "tools-v1".to_string();
+        off.enabled = false;
+        let view = View {
+            plugins: vec![listed(), off],
+            refused: vec![Refused {
+                id: "empty".to_string(),
+                path: PathBuf::from("/repo/bundles/empty"),
+                error: "/repo/bundles/empty: no plugin.toml".to_string(),
+            }],
+        };
+        for glyphs in [&UNICODE, &ASCII] {
+            let rows = rows(&view, 200, glyphs);
+            assert_eq!(rows.len(), 3, "{}", glyphs.name);
+            // Three states, three marks, and no two of them the same — which is
+            // the whole of what a mark on this surface has to do.
+            assert_eq!(rows[0].mark, Some(LOADED_MARK), "{}", glyphs.name);
+            assert_eq!(rows[1].mark, Some(DISABLED_MARK), "{}", glyphs.name);
+            assert_eq!(rows[2].mark, Some(REFUSED_MARK), "{}", glyphs.name);
+            assert_eq!(rows[1].label, "tools-v1", "{}", glyphs.name);
+            let detail = rows[1]
+                .detail
+                .clone()
+                .expect("a disabled bundle has detail");
+            assert_eq!(
+                detail.split(glyphs.separator).next(),
+                Some("switched off"),
+                "{}: the state is not the first field of the row: {detail}",
+                glyphs.name,
+            );
+            assert!(
+                detail.contains("skills, agents, hooks, policy"),
+                "{}: what switching it back on would bring is not on the row: {detail}",
+                glyphs.name,
+            );
+        }
+    }
+
+    /// A switched-off bundle with nothing to contribute says only that it is off,
+    /// rather than saying it twice in two different phrasings.
+    #[test]
+    fn a_switched_off_bundle_with_no_contributions_says_only_that_it_is_off() {
+        let mut off = listed();
+        off.enabled = false;
+        off.contributions = Vec::new();
+        let rows = rows(&view_of(off), 120, &UNICODE);
+        let detail = rows[0]
+            .detail
+            .clone()
+            .expect("a disabled bundle has detail");
+        assert!(detail.starts_with("switched off"), "{detail}");
+        assert!(
+            !detail.contains("contributes nothing"),
+            "the loaded-and-empty phrasing is drawn over a bundle it is not \
+             about: {detail}",
+        );
+    }
+
+    /// The detail pane of a switched-off bundle opens on the fact that none of it
+    /// is in the session, above the groups that would otherwise read as a list of
+    /// what this session has.
+    ///
+    /// Sabotage: drop the `insert(0, …)`. Under it the pane opens on `skills` and
+    /// a namespaced agent name for a bundle contributing neither, which is the
+    /// module's own silent-wrong-reading defect told the other way round.
+    #[test]
+    fn the_detail_view_of_a_switched_off_bundle_says_none_of_it_is_in_the_session() {
+        let mut off = listed();
+        off.enabled = false;
+        for glyphs in [&UNICODE, &ASCII] {
+            let rows = detail(&off, 120, glyphs, &[]);
+            assert_eq!(rows[0].label, "switched off", "{}", glyphs.name);
+            let said = rows[0]
+                .detail
+                .clone()
+                .expect("the switched-off row explains itself");
+            assert!(
+                said.contains("enabled = false"),
+                "{}: the row names the key an operator would edit: {said}",
+                glyphs.name,
+            );
+            // And the groups are still drawn, because they are what switching it
+            // back on brings back.
+            assert!(
+                rows.iter().any(|row| row.label == "agents"),
+                "{}: the contributions are still shown",
+                glyphs.name,
+            );
+            // The loaded pane has no such row, so the sentence is never drawn over
+            // a bundle it is not true of.
+            assert!(
+                detail(&listed(), 120, glyphs, &[])
+                    .iter()
+                    .all(|row| row.label != "switched off"),
+                "{}",
+                glyphs.name,
+            );
+        }
+    }
+
     #[test]
     fn a_refused_bundle_is_marked_apart_and_carries_the_harness_sentence() {
         let sentence = "/repo/bundles/empty: no plugin.toml; a plugin is a directory with a \
@@ -763,7 +1222,7 @@ mod tests {
     #[test]
     fn the_detail_view_groups_what_a_bundle_contributed() {
         for glyphs in [&UNICODE, &ASCII] {
-            let rows = detail(&listed(), 100, glyphs);
+            let rows = detail(&listed(), 100, glyphs, &[]);
             let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
             assert!(labels.contains(&"skills"), "{}: {labels:?}", glyphs.name);
             assert!(labels.contains(&"agents"), "{}: {labels:?}", glyphs.name);
@@ -792,7 +1251,7 @@ mod tests {
 
     #[test]
     fn hooks_are_declared_as_unlistable_rather_than_omitted() {
-        let rows = detail(&listed(), 120, &UNICODE);
+        let rows = detail(&listed(), 120, &UNICODE, &[]);
         let position = rows
             .iter()
             .position(|row| row.label == "hooks")
@@ -811,7 +1270,7 @@ mod tests {
         // never drawn over a bundle it is not true of.
         let mut quiet = listed();
         quiet.contributions = vec!["skills"];
-        assert!(detail(&quiet, 120, &UNICODE)
+        assert!(detail(&quiet, 120, &UNICODE, &[])
             .iter()
             .all(|row| row.label != "hooks"));
     }
@@ -820,6 +1279,7 @@ mod tests {
     fn a_bundle_with_nothing_listable_still_draws_a_row() {
         let plugin = Listed {
             id: "bare".to_string(),
+            enabled: true,
             description: None,
             version: None,
             root: PathBuf::from("/repo/bare"),
@@ -830,7 +1290,7 @@ mod tests {
             servers: Vec::new(),
             layers: Vec::new(),
         };
-        let rows = detail(&plugin, 80, &ASCII);
+        let rows = detail(&plugin, 80, &ASCII, &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].label, "this bundle contributes nothing");
     }
@@ -847,11 +1307,83 @@ mod tests {
         );
     }
 
+    /// The disclosing declaration carries both keys in one appended entry, so a
+    /// bundle is never loadable for the width of a round trip, and the consent is
+    /// a `set` on the entry's own `enabled` key rather than a second entry.
+    #[test]
+    fn the_disclosing_edits_declare_off_in_one_entry_and_consent_with_one_key() {
+        assert_eq!(
+            add_off(Path::new("bundles/rust-review")),
+            crate::edit::Edit::append("plugin", "path = \"bundles/rust-review\"\nenabled = false")
+        );
+        assert_eq!(
+            enable(3),
+            crate::edit::Edit::set("plugin[3].enabled", "true")
+        );
+    }
+
+    /// `declared_off` answers about the entry `append` just wrote — the last one —
+    /// and says nothing about a bundle switched off earlier in the file.
+    #[test]
+    fn declared_off_reads_the_last_entry_and_only_when_it_is_off() {
+        let earlier = "[[plugin]]\npath = \"a\"\nenabled = false\n\n\
+                       [[plugin]]\npath = \"b\"\n";
+        assert_eq!(
+            declared_off(earlier),
+            None,
+            "a bundle the operator switched off weeks ago was read as the one just \
+             written, so an ordinary `plugin add` would disclose somebody else's entry",
+        );
+        let written = crate::edit::apply(earlier, &[add_off(Path::new("c"))])
+            .expect("the disclosing entry applies");
+        assert_eq!(declared_off(&written), Some((2, PathBuf::from("c"))));
+        assert_eq!(declared_off("run.max_steps = 30\n"), None);
+    }
+
     #[test]
     fn a_windows_path_is_escaped_rather_than_handed_over_as_escapes() {
         assert_eq!(
             add(Path::new(r"C:\bundles\rust-review")),
             crate::edit::Edit::append("plugin", r#"path = "C:\\bundles\\rust-review""#)
+        );
+    }
+
+    /// **What `quoted` wrote is what the readers read back, escape for escape.**
+    ///
+    /// Both readers took the value's bytes and stripped its quotes with
+    /// `trim_matches('"')` until 0.29.0, which undoes nothing — so every path with
+    /// a `\` or a `"` in it came back doubled, and `declared_off` handed a path
+    /// like that to the manifest read that decides what an install discloses.
+    ///
+    /// Sabotage: put `raw.trim().trim_matches('"')` back in either reader. The
+    /// round trip below fails on the first two cases — and the second is the one
+    /// `trim_matches` mangles twice over, since it takes the escaped quote's
+    /// backslash off the end along with the closing quote.
+    #[test]
+    fn a_path_survives_being_written_and_read_back() {
+        for text in [
+            r"/Users/someone/plugins/a\b",
+            "/Users/someone/plugins/a\"b",
+            r"C:\bundles\rust-review",
+            "bundles/rust-review",
+            "",
+        ] {
+            assert_eq!(
+                unquoted(&quoted(text)),
+                text,
+                "the write and the read disagree about {text:?}, so a bundle is \
+                 declared at one path and looked for at another",
+            );
+        }
+
+        // And through the reader an install actually uses, which is where the
+        // wrong path becomes a different manifest.
+        let written = crate::edit::apply("", &[add_off(Path::new(r"plugins/a\b"))])
+            .expect("the disclosing entry applies");
+        assert_eq!(
+            declared_off(&written),
+            Some((0, PathBuf::from(r"plugins/a\b"))),
+            "the entry that was just written cannot be read back: {written}",
         );
     }
 

@@ -183,21 +183,35 @@ fn a_posture_is_recognised_from_the_defaults_it_is() {
     );
 }
 
-/// **F1.** The posture the wizard recommends refuses git, and refuses it where no
-/// approver is reachable: `Git::run` (io-harness 0.69.0, `src/tools/git.rs:549`)
-/// treats every effect that is not `Allow` as a hard refusal. Asserted as
-/// `!= Allow` rather than `== Ask`, because that inequality is the whole predicate
-/// upstream applies.
+/// **F1, rewritten by io-harness 0.70.0 and kept because the fact still matters.**
+///
+/// Through 0.69.0 this asserted that the recommended posture *refused* git, and
+/// refused it where no approver was reachable: `Git::run` treated every effect
+/// short of `Allow` as a hard refusal, which io-cli 0.25.0 reported as
+/// io-harness#214. **0.70.0 closed that**, at all four sites carrying the
+/// comparison, so an asking posture now raises an ordinary approval.
+///
+/// What is asserted now is the thing that did not change: the recommended posture
+/// does not hand git out. It **asks**, which is a different answer from both
+/// `Allow` and `Deny` and is the whole of what the fix bought — so `== Ask` is the
+/// assertion, where the old one was `!= Allow`. That inequality was written
+/// because it was "the whole predicate upstream applies"; upstream applies a
+/// three-way match now, and an assertion that still read `!= Allow` would pass
+/// just as happily if the effect became `Deny`.
+///
+/// The live arm is what proves the other half — that the approval is really
+/// raised and the spawn really happens — because only a real run has an approver
+/// in it.
 #[test]
-fn f1_an_asking_posture_refuses_git_before_anyone_is_asked() {
+fn f1_an_asking_posture_asks_about_git_rather_than_allowing_it() {
     let base = Policy::default();
     let policy = approval::session_policy(&base, Some(Posture::AskWrites), &[]);
-    assert_ne!(
+    assert_eq!(
         policy.check(Act::Exec, "git").effect,
-        Effect::Allow,
-        "the recommended posture leaves git short of allow, which upstream refuses",
+        Effect::Ask,
+        "the recommended posture asks about git: not allowed outright, and — since \
+         io-harness 0.70.0 — not refused with nobody consulted either",
     );
-    assert!(approval::refuses_git(&policy));
 }
 
 /// **F1.** The repair, offered through the mechanism that already exists for
@@ -211,7 +225,6 @@ fn f1_the_git_allowance_turns_that_refusal_into_an_allow() {
         Effect::Allow,
         "with the allowance in force the seven git tools may spawn",
     );
-    assert!(!approval::refuses_git(&policy));
 }
 
 /// **F1, and the half the sabotage attacks.** One rule, one program. An
@@ -249,6 +262,5 @@ fn f1_a_denied_exec_is_still_denied_after_the_git_allowance() {
             "{:?}: the allowance re-opened a spawn a layer had denied",
             posture,
         );
-        assert!(approval::refuses_git(&policy));
     }
 }

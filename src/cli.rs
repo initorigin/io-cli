@@ -82,7 +82,8 @@ pub enum Command {
     /// Add, list, inspect, change or remove an MCP server, without opening a
     /// session.
     Mcp(Manage),
-    /// Add, list or remove a capability bundle, without opening a session.
+    /// Add, list, search for or remove a capability bundle, and manage the
+    /// marketplaces bundles come from, without opening a session.
     Plugin(Manage),
     /// Read or write one configuration key, without opening a session.
     Config(Manage),

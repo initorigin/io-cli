@@ -9,8 +9,12 @@
 //! in 0.24.0.
 //!
 //! **Nothing here spawns anything.** `tests/dependencies.rs` permits a process
-//! spawn in `src/shell.rs` alone, identified by path, and that assertion is
-//! unamended by this release. That gate matches raw text, comments included, so
+//! spawn in two modules, identified by exact path — `src/shell.rs` since 0.7.0
+//! for the operator's own `!` line, and `src/fetch.rs` since 0.29.0 for the `git
+//! clone` that brings a marketplace down — and this module is neither of them.
+//! (That sentence said "`src/shell.rs` alone, unamended by this release" until
+//! 0.29.0, which amended it. A doc claim about a gate goes stale in the release
+//! that changes the gate, not later.) That gate matches raw text, comments included, so
 //! the forbidden name is not spelled out here either — not even to say this module
 //! does not use it, which is a sentence that reddens the gate it is describing.
 //! A branch name does not need a subprocess anyway: git writes it into `.git/HEAD`

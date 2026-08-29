@@ -714,16 +714,26 @@ impl App {
 
     /// Allow `git` for the rest of this session.
     ///
-    /// **The only door to this rule, and it exists because the ordinary one is
-    /// shut.** Every other entry in `remembered` arrives through
+    /// **The only door to this rule, and the reason it exists narrowed under
+    /// io-harness 0.70.0.** Every other entry in `remembered` arrives through
     /// [`App::answer_approval`]: the policy said `Ask`, a question reached the
-    /// operator, and they answered it with *this session*. The harness's git
-    /// tools never take that path. `Git::run` refuses anything short of
-    /// `Effect::Allow` before an approver is consulted at all — see
-    /// [`crate::approval::refuses_git`] — so under the posture the wizard
-    /// recommends the seven git tools are refused without anyone ever being
-    /// asked, and there is no question for an answer to attach to. This method is
-    /// the answer with no question in front of it.
+    /// operator, and they answered it with *this session*.
+    ///
+    /// Through 0.69.0 the harness's git tools never took that path — `Git::run`
+    /// refused anything short of `Effect::Allow` before an approver was consulted
+    /// at all, so under the posture the wizard recommends the seven git tools were
+    /// refused without anyone being asked. io-cli 0.25.0 found that and reported it
+    /// as io-harness#214, and **0.70.0 closed it**: an asking posture now raises an
+    /// ordinary approval, so that operator gets a question and this method is not
+    /// what answers it.
+    ///
+    /// What is left is the posture whose `exec` is a **deny** — `read only` — where
+    /// there is still no question for an answer to attach to. This method remains
+    /// the answer with no question in front of it, for the case where the deny came
+    /// from a tier default rather than from a rule; `crate::commit::asked` reads
+    /// `Verdict::rule` to tell those apart, because under a deny *rule* the
+    /// allowance can never win and offering it would print advice that can never be
+    /// taken.
     ///
     /// Idempotent, and by value rather than by count: the rule is a fact about
     /// the session and not a tally of how many times it was asked for. Pressing

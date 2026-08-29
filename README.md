@@ -20,15 +20,17 @@ if this crate ever grows an HTTP client, a TLS stack, a database or a sandbox.
 
 - [Install](#install) · [First run](#first-run) · [Bringing your setup across](#bringing-your-setup-across) · [While it works](#while-it-works)
 - [Keys](#keys) · [Commands](#commands) · [What it costs](#what-it-costs) · [Configuration](#configuration)
-- [Capability bundles](#capability-bundles) · [Hooks](#hooks) · [The fleet](#the-fleet)
+- [Capability bundles](#capability-bundles) · [Marketplaces](#marketplaces) · [Hooks](#hooks) · [The fleet](#the-fleet)
 - [Pictures](#pictures) · [Documents](#documents) · [Background jobs](#background-jobs)
 - [Reading it without seeing it](#reading-it-without-seeing-it) · [Headless](#headless)
 - [What this release is not](#what-this-release-is-not) · [Platform support](#platform-support) · [Stability](#stability)
 
 ![A session at rest: the IO CLI card in the terminal's own scrollback, carrying
-the version, the model, the permission posture and the workspace; a prompt below
-it; and a two-row footer under a rule, naming the state, the model and the clock
-on one row and the keys and the posture on the next.](docs/screenshot.png)
+the version and the tagline above the model, the permission posture and the
+workspace; a muted line saying this is a new conversation and the last one is
+still in /resume; an empty prompt below it; and a two-row footer under a rule,
+naming the state, the model and the clock on one row and the keys and the
+posture on the next.](docs/screenshot.png)
 
 ## What you get
 
@@ -574,7 +576,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/memory` | what io remembers: the instruction files, and the agent's own notes |
 | `/mcp` | the MCP servers configured, and what this session has seen of each |
 | `/provider` | the providers configured, in the order a turn tries them |
-| `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
+| `/plugin` | the capability bundles declared, the marketplaces they come from, and what failed |
 | `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
 | `/import` | bring instructions, MCP servers, skills and a model across from another agent |
 
@@ -1040,9 +1042,11 @@ path = "~/bundles/rust-review"
 ```
 
 That is a declaration and never a scan. There is no directory io walks looking
-for bundles, no registry it fetches from, and nothing that loads by being present
-on disk — declaring one is the whole of installing one, and deleting the line is
-the whole of removing one.
+for bundles and nothing that loads by being present on disk — declaring one is
+the whole of installing one, and deleting the line is the whole of removing one.
+There is still no registry either; from 0.29.0 there are
+[marketplaces](#marketplaces), which are repositories you name and clone, and
+installing out of one writes exactly the entry above.
 
 One directory can hand over six kinds of thing at once: skills, prompt templates,
 `[[agent]]` definitions for a fan-out to draw children from, `[[mcp]]` servers,
@@ -1062,6 +1066,15 @@ manifest, unparseable TOML, an unusable id or a contribution its scope may not
 make is dropped, recorded, and otherwise silently absent while every other bundle
 loads. A bundle you believe is running can be gone for a week. This is where that
 week ends.
+
+**From 0.29.0 there is a third list, for the same reason.** io-harness 0.70.0
+lets an entry say `enabled = false`, and a bundle written that way is read,
+parsed and held to the whole trust rule while contributing nothing. It is a
+state, not a failure — it is doing exactly what your file asked — so it is drawn
+under its own mark with what switching it back on would bring, rather than
+beside the ones you have to fix. It counts as declared, too: a configuration
+whose bundles are all switched off is no longer reported as declaring none, which
+is the sentence above inverted and just as misleading.
 
 **And a bundle can be stopped from the same list.** The last row under a bundle's
 contributions removes its `[[plugin]]` entry, after a confirmation that names the
@@ -1103,7 +1116,74 @@ is no API by which this program can count them or say what any of them runs.
 `/plugin` therefore draws a row saying the bundle contributed hooks and that io
 cannot say what they do. The alternative was to leave the row out, which reads as
 a bundle with no hooks — the one reading that is false, on the contribution kind
-that runs programs.
+that runs programs. **The one place io does name them is a marketplace install**,
+below, where it reads them out of the manifest itself — because that is the one
+moment you are being asked to accept a directory you have not read. Reported
+upstream as io-harness#223; the reading goes when the accessor arrives.
+
+## Marketplaces
+
+**A marketplace is a git repository you name.** It is cloned into your own home
+and walked for directories carrying a `plugin.toml`:
+
+```
+/plugin marketplace add zeroonething/ultraship
+/plugin marketplace list
+/plugin marketplace remove zeroonething/ultraship
+```
+
+The same words work from a shell — `io plugin marketplace add …` — through one
+parse. There is no index file to write and none to disagree with the directories
+it describes, and io operates no registry: it hosts nothing, curates nothing and
+ranks nothing. The fetch is a `git` invocation and nothing else, so this adds no
+HTTP client and no network path beside io-harness's. A machine with no `git` is
+told so by name, and installing from a directory you already have is unaffected.
+
+Installing is the verb you already had:
+
+```
+/plugin add ultraship
+/plugin install ultraship               # the same verb, another word
+/plugin add ultraship@zeroonething/ultraship   # when two marketplaces carry it
+/plugin search review
+```
+
+**A bare name two marketplaces carry is refused**, naming both qualified
+spellings. They are two strangers' repositories, and installing whichever the
+walk reached first is installing code you did not choose.
+
+**Removing a marketplace removes the clone and nothing else.** A bundle you
+declared out of it keeps its `[[plugin]]` entry — a cache being emptied is not a
+reason to undo a decision you made about your configuration. What io owes you
+instead is the consequence, so it names the bundles that will stop loading before
+it deletes anything.
+
+### What a bundle is allowed to do is shown before it is allowed to do it
+
+A bundle contributes to four subsystems at once, and until 0.29.0 every one you
+declared came from a directory you had read. A marketplace removes that reading,
+so the install puts it back.
+
+The entry is written **`enabled = false`** first. io-harness then reads, parses,
+validates and trust-checks the bundle for real — there is no public way to ask it
+about a directory that no configuration declares — and hands it back contributing
+nothing at all. What you are shown is what io-harness parsed: the skills and
+template directories, the agents, the MCP servers and the policy layers, in the
+**namespaced** names you will actually see in a trace and type to spawn an agent.
+A bundle io-harness would refuse is refused at that point, in its own words,
+before you are asked anything.
+
+Saying yes changes one key. Saying no leaves the bundle declared, switched off,
+and listed in `/plugin` — visible, and one keystroke from being switched on if
+you change your mind.
+
+Hooks are named here too, read from the manifest, because `enabled = false` is
+still not enough to make io-harness tell you what a hook runs. Consenting on the
+bare word "hooks" is consenting to programs nobody named.
+
+**Writing `enabled` costs something and io says so at the time.** An io-cli built
+against io-harness 0.69.0 does not know the key and refuses the *whole file*
+rather than ignoring it. Remove the `enabled` keys before downgrading.
 
 ## Hooks
 
@@ -1445,26 +1525,34 @@ default io-harness will use. You are told before the turn is spent, because the
 author of a commit is the one thing about it that cannot be corrected afterwards
 without rewriting history.
 
-### The refusal this repairs
+### The refusal this repairs — and the half of it that is now fixed upstream
 
-**Before 0.25.0 all seven tools were refused before they ran, for most operators,
-and nobody was ever asked.** io-harness's git spawn checks the `exec` policy
-itself and accepts only an outright allow. Every other gated act turns an *ask*
-into a question on your screen and waits for it; this one returns a refusal
-instead, so `ask` behaves exactly as `deny` does. `ask before writes` — the
-posture the wizard recommends, and the one this README recommends with it — sets
-`exec` to ask. That is the whole of the defect, and it is filed upstream as
-io-harness#214.
+**Through io-harness 0.69.0, all seven tools were refused before they ran, for
+most operators, and nobody was ever asked.** io-harness's git spawn checked the
+`exec` policy itself and accepted only an outright allow. Every other gated act
+turned an *ask* into a question on your screen and waited for it; this one
+returned a refusal instead, so `ask` behaved exactly as `deny` did — and `ask
+before writes`, the posture the wizard recommends, sets `exec` to ask. io-cli
+0.25.0 found that and filed it as io-harness#214.
 
-What io-cli does about it is name the refusal and offer one rule: `exec` allowed
-for `git`, one binary, for this session. `/commit` asks that question *before* it
-spends the turn, because a commit the policy was always going to refuse still
-costs a real completion to discover. The rule goes through the same remembered
-layer as anything else you allow for a session, so it is exactly as strong as
-those and no stronger: it widens an asking default and cannot take back a deny
-from a layer beneath it. One binary name is also the narrowest grant that works —
-an `exec` pattern has no notion of a subcommand, so `git` says *this program may
-be spawned* and nothing about any other.
+**io-harness 0.70.0 closed it, and 0.29.0 pins 0.70.0.** An asking posture now
+raises an ordinary approval: you get the question, and git runs if you say so.
+If you run the recommended posture, none of the rest of this section applies to
+you any more.
+
+What is left is `read only`, where `exec` is a **deny** and there is still no
+question for you to answer. There io-cli names the refusal and offers one rule:
+`exec` allowed for `git`, one binary, for this session. `/commit` asks that
+*before* it spends the turn, because a commit the policy was always going to
+refuse still costs a real completion to discover. The rule goes through the same
+remembered layer as anything else you allow for a session, so it is exactly as
+strong as those and no stronger — and it is offered **only** where the deny came
+from the posture's own default rather than from a rule somebody wrote, because a
+later layer can add capability but can never take back a denial. Offering it
+against a deny rule would be advice that can never be taken. One binary name is
+also the narrowest grant that works: an `exec` pattern has no notion of a
+subcommand, so `git` says *this program may be spawned* and nothing about any
+other.
 
 **Under a posture that denies rather than asks, no rule is offered.** A rule is
 matched before a default, so the same allowance would work under `read only` too,
@@ -1861,8 +1949,15 @@ io mcp edit semlith --timeout-secs 30
 io mcp remove semlith
 
 io plugin add ./bundles/rust-review
+io plugin add ultraship                       # or a name from a marketplace
+io plugin install ultraship                   # the same verb
+io plugin search review
 io plugin list
 io plugin remove ./bundles/rust-review
+
+io plugin marketplace add zeroonething/ultraship
+io plugin marketplace list
+io plugin marketplace remove zeroonething/ultraship
 
 io config get run.max_steps
 io config set run.max_steps 40
@@ -1906,6 +2001,13 @@ higher. `mcp edit`, `mcp remove` and `plugin remove` take no `--scope` at all an
 refuse one by name — the change goes to the file that declares the entry, and a
 scope chosen here would aim a position counted in one file's array at another
 file's.
+
+**`io plugin add <name>` from a marketplace declares the bundle and stops there.**
+It writes the entry switched off, prints the disclosure to standard error, and
+exits zero; switching it on is `/plugin`, in a session, where there is somebody to
+ask. There is deliberately no `--yes`: consent to a stranger's code is not a flag
+a script sets on your behalf. A path you already have is unaffected — `io plugin
+add ./bundles/rust-review` behaves exactly as it did.
 
 **`io config list` prints the origin column**, tab-separated after the value:
 `user`, `project`, `local`, or `default` for a key no file names. There is no flag
@@ -2217,6 +2319,19 @@ written absolute. A bundle deeper than three directories, or outside the root
 entirely, is named outright — `/plugin add <path>`, or `io plugin add <path>` from
 a shell — and is refused by the same check rather than by a shallower one. See
 [Capability bundles](#capability-bundles).
+
+**From 0.29.0 the same verb also takes a name.** `/plugin add ultraship` installs
+a bundle out of a marketplace you have added, and `ultraship@zeroonething/ultraship`
+says which one where two carry that name — a bare name two marketplaces carry is
+refused rather than resolved, because taking the first match installs code you did
+not choose. `install` is accepted as the same verb. **A word is a path if it
+resolves to a directory carrying a manifest, and a name otherwise**: the rule asks
+the disk rather than the spelling, so one word cannot mean a directory on a machine
+that has one and a marketplace bundle on a machine that does not.
+
+Installing by name **declares the bundle switched off and shows you what it would
+bring before it brings it** — see [Marketplaces](#marketplaces). Installing by
+path does not: that directory is one you already have.
 
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.

@@ -42,9 +42,11 @@
 //!
 //! **Naming the holder cannot mean naming the operating system's process.**
 //! `tests/dependencies.rs` asserts the direct dependency set in both directions
-//! and forbids `nix` outright, and a process spawn is permitted only in
-//! `crate::shell`, which may not name a `Store` and is callable only from the
-//! driver. (Spelled that way round deliberately: that gate sweeps the raw text
+//! and forbids `nix` outright, and a process spawn is permitted only in the two
+//! modules that gate names by exact path — `crate::shell`, which may not name a
+//! `Store` and is callable only from the driver, and from 0.29.0 `crate::fetch`,
+//! which may not name one either and knows nothing of a session. Neither is this
+//! module. (Spelled that way round deliberately: that gate sweeps the raw text
 //! of every source file for the type's full name, comments included, so a module
 //! that wrote it out to say it was *not* spawning would be listed as a module
 //! that spawns.) So there is no `kill(pid, 0)`, no `ps` and no `tasklist`, and
