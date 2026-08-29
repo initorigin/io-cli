@@ -1764,7 +1764,97 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
-                        Pick::Plugins(view) => {
+                        // The add verb, and the one row on this surface that is not
+                        // a bundle. It is checked first because `add_at` is past
+                        // the end of both lists and every branch below indexes into
+                        // one of them.
+                        Pick::Plugins { view: _, add_at } if index == *add_at => {
+                            let found = io_cli::pluginview::candidates(session.root());
+                            if found.is_empty() {
+                                // **Naming where it looked.** "No bundles found" is
+                                // a sentence an operator cannot act on; the depth
+                                // and the root are what tell them their bundle is
+                                // outside the walk rather than unreadable.
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "no directory below {} carries a {}; a bundle kept \
+                                         elsewhere is declared with a `[[plugin]]` entry naming \
+                                         its path",
+                                        session.root().display(),
+                                        io_cli::pluginview::MANIFEST,
+                                    ),
+                                );
+                            } else {
+                                let mut rows = vec![Row::new("leave it".to_string())];
+                                for dir in &found {
+                                    rows.push(Row::with_detail(
+                                        io_cli::pluginview::declared(session.root(), dir)
+                                            .display()
+                                            .to_string(),
+                                        format!(
+                                            "declares it in the {} scope, from the next turn",
+                                            io_cli::configure::Decided::File {
+                                                scope: io_harness::config::Scope::User,
+                                                path: Default::default(),
+                                            }
+                                            .word()
+                                        ),
+                                    ));
+                                }
+                                descended = Some((
+                                    Picker::new("Add a bundle", rows),
+                                    Pick::PluginAdd(found),
+                                ));
+                            }
+                        }
+                        // Row 0 is "leave it", so the candidate's own position is
+                        // one less — bound to its own name rather than to `index`,
+                        // which is how a confirmation acts on the wrong row.
+                        Pick::PluginAdd(found) => {
+                            if let Some(dir) = index.checked_sub(1).and_then(|at| found.get(at)) {
+                                // **Checked here and not only when the rows were
+                                // built.** A candidate can lose its manifest between
+                                // the row being drawn and this keystroke, and the
+                                // entry io-harness would then drop is silent — which
+                                // is the state `pluginview`'s module docs exist to
+                                // end, not to reproduce.
+                                match io_cli::pluginview::refusal(dir) {
+                                    Some(refusal) => app.record(Tone::Refused, refusal),
+                                    None => {
+                                        let written =
+                                            io_cli::pluginview::declared(session.root(), dir);
+                                        let edit = io_cli::pluginview::add(&written);
+                                        // The user scope, because a new entry has no
+                                        // file already deciding it — and stated
+                                        // rather than assumed, which is the rule
+                                        // every write in this release follows.
+                                        match io_cli::configure::write(
+                                            session.root(),
+                                            io_harness::config::Scope::User,
+                                            &[edit],
+                                        ) {
+                                            Ok(()) => app.record(
+                                                Tone::Success,
+                                                format!(
+                                                    "{} is declared in the {} scope; what it \
+                                                     contributes is in `/plugin`, and it is in \
+                                                     force from the next turn",
+                                                    written.display(),
+                                                    io_cli::configure::Decided::File {
+                                                        scope: io_harness::config::Scope::User,
+                                                        path: Default::default(),
+                                                    }
+                                                    .word()
+                                                ),
+                                            ),
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Pick::Plugins { view, add_at: _ } => {
                             // **Answered from the reading the rows were drawn
                             // from, and `/skills` does the opposite on purpose.**
                             // There, a row names a file the operator may have
@@ -3118,25 +3208,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         );
                     }
                     if view.is_empty() {
-                        // Naming the file rather than the concept: an operator who
-                        // has never declared a bundle needs to know where the
-                        // entry goes, and one who has needs to know io-cli read
-                        // the file they meant.
+                        // **Said before the picker opens, not instead of it.**
+                        // Until 0.28.0 this branch was the whole answer for an
+                        // operator with no bundles, and it named a `[[plugin]]`
+                        // entry they then had to go and write by hand — which is
+                        // the shape this release exists to remove. The sentence
+                        // stays because it is still true and still orienting; what
+                        // changes is that the surface now offers the verb instead
+                        // of describing the file.
                         app.record(
                             Tone::Muted,
-                            "no capability bundles are declared; add one with a \
-                             `[[plugin]]` entry naming its directory"
-                                .to_string(),
+                            "no capability bundles are declared yet".to_string(),
                         );
-                    } else {
-                        picker = Some((
-                            Picker::new(
-                                "Plugins",
-                                io_cli::pluginview::rows(&view, screen.width(), &app.theme.glyphs),
-                            ),
-                            Pick::Plugins(view),
-                        ));
                     }
+                    let mut rows =
+                        io_cli::pluginview::rows(&view, screen.width(), &app.theme.glyphs);
+                    // Taken before the row is pushed, never worked out afterwards.
+                    // See `Pick::Plugins`.
+                    let add_at = rows.len();
+                    rows.push(Row::with_detail(
+                        "add a bundle".to_string(),
+                        "chooses a directory that carries a `plugin.toml`".to_string(),
+                    ));
+                    picker = Some((Picker::new("Plugins", rows), Pick::Plugins { view, add_at }));
                 }
                 // **Everything is shown before anything is written, and the
                 // default for every item is no.** The plan is built whole here —
@@ -6342,7 +6436,27 @@ enum Pick {
     /// A refused bundle is in here too, and choosing one shows io-harness's
     /// sentence rather than a detail pane: there is nothing to descend into,
     /// because the bundle contributed nothing at all.
-    Plugins(io_cli::pluginview::View),
+    ///
+    /// `add_at` is where the add row sits, recorded by the code that built the rows
+    /// rather than recomputed here — `pluginview::rows` draws the loaded bundles
+    /// and then the refused ones, so the only number that cannot be wrong is the
+    /// length of what was already there. This is [`Pick::PluginEntry`]'s
+    /// `action_at` rule, and it is the rule because every index in this surface
+    /// addresses a list somewhere else.
+    Plugins {
+        view: io_cli::pluginview::View,
+        add_at: usize,
+    },
+    /// The directories below the discovery root that carry a `plugin.toml`, with
+    /// "leave it" at row 0.
+    ///
+    /// **A list rather than a prefilled composer**, which is the verb's whole
+    /// argument: a path typed from memory is a path that gets mistyped into an
+    /// entry io-harness then silently drops. A directory that is not a bundle is
+    /// still refused by name on the way through, because the typed path is not the
+    /// only way a wrong one arrives — a candidate can lose its manifest between the
+    /// row being drawn and this keystroke.
+    PluginAdd(Vec<std::path::PathBuf>),
     /// One bundle's contributions, and the one thing that can be done about it.
     ///
     /// `bundle` is the resolved directory, which is the only thing a row on screen

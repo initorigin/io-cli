@@ -404,6 +404,121 @@ pub fn add(dir: &Path) -> crate::edit::Edit {
     )
 }
 
+/// The manifest every bundle has, and the one file this surface can check before
+/// writing anything.
+///
+/// **io-harness's own constant, re-exported rather than spelled.** The name a
+/// directory is recognised by is the dependency's to state; a literal here would
+/// go on matching `plugin.toml` through a release that renamed it, and every check
+/// below would then answer confidently about a file io-harness no longer reads.
+pub const MANIFEST: &str = io_harness::PLUGIN_FILE;
+
+/// How deep [`candidates`] looks for a bundle below the discovery root.
+///
+/// Three, because a bundle is conventionally vendored one or two directories down
+/// — `bundles/rust-review`, `vendor/plugins/rust-review` — and a walk that keeps
+/// going is a walk that reads a whole `target/` on a settings screen. An operator
+/// whose bundle lives deeper still has the typed path, which is refused by the
+/// same check rather than by a shallower one.
+const DEPTH: usize = 3;
+
+/// Why `dir` is not a bundle, or `None` when it is one.
+///
+/// **The check before the write, and the reason it exists is that io-harness has
+/// no error path for this.** `Config::plugins()` is infallible and a `[[plugin]]`
+/// entry naming a directory with no manifest is *dropped* — recorded and otherwise
+/// silently absent — so an entry written without this check produces exactly the
+/// state the module docs above call a bundle an operator believes is loaded and
+/// which is silently absent for a week. The refusal names the directory and the
+/// file it looked for, because "not a bundle" tells an operator nothing about what
+/// to do next.
+///
+/// Deliberately the *only* thing checked. Whether the manifest parses, declares a
+/// usable `name`, or may make its contributions in the scope it is being declared
+/// in are all io-harness's questions, and it answers them with sentences this
+/// surface carries verbatim rather than paraphrasing. Existence is the one part
+/// io-harness cannot report before the entry exists.
+#[must_use]
+pub fn refusal(dir: &Path) -> Option<String> {
+    if dir.join(MANIFEST).is_file() {
+        return None;
+    }
+    Some(if dir.is_dir() {
+        format!(
+            "{} has no {MANIFEST}, so it is not a capability bundle; nothing was written",
+            dir.display()
+        )
+    } else {
+        format!("{} is not a directory; nothing was written", dir.display())
+    })
+}
+
+/// The directories below `root` that carry a [`MANIFEST`], nearest first.
+///
+/// **A list to choose from rather than a path to remember, which is the whole
+/// point of the verb.** The alternative — a composer prefilled with `/plugin add `
+/// — asks an operator to type a path they have to go and look up, and mistypes it
+/// into an entry that is then silently dropped.
+///
+/// Ordered by depth and then by path so the answer is stable between two calls on
+/// one machine, which is what makes the row an operator picked yesterday the row
+/// in the same place today. `target`, `node_modules` and every dotted directory
+/// are skipped: none of them is somewhere a person puts a bundle, and `target` is
+/// the one that would make this walk expensive.
+#[must_use]
+pub fn candidates(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut frontier = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = frontier.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            if path.join(MANIFEST).is_file() {
+                found.push(path.clone());
+            }
+            if depth + 1 < DEPTH {
+                frontier.push((path, depth + 1));
+            }
+        }
+    }
+    found.sort_by_key(|path| (path.components().count(), path.clone()));
+    found
+}
+
+/// How a chosen directory is written into the entry.
+///
+/// Relative to `root` when it sits below it, absolute otherwise — and that is not
+/// a tidying preference, it is the difference between a bundle a repository can
+/// share and one only this machine can load. [`add`] writes the path as given and
+/// a relative one resolves against the discovery root, so a `bundles/rust-review`
+/// in a committed `io.toml` works for everyone who clones it while this machine's
+/// `/Users/…/bundles/rust-review` works for nobody else.
+#[must_use]
+pub fn declared(root: &Path, dir: &Path) -> PathBuf {
+    dir.strip_prefix(root).map_or_else(
+        |_| dir.to_path_buf(),
+        |relative| {
+            // A directory that *is* the root strips to nothing, and an empty path
+            // in an entry names no directory at all.
+            if relative.as_os_str().is_empty() {
+                dir.to_path_buf()
+            } else {
+                relative.to_path_buf()
+            }
+        },
+    )
+}
+
 /// The edit that removes the `index`-th declared bundle whole.
 ///
 /// By index rather than by id, because the id is the *manifest's* and the entry is

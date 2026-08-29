@@ -873,3 +873,194 @@ fn declared_at_is_none_where_no_file_declares_a_plugin_array() {
         None,
     );
 }
+
+// F11 — `/plugin add` refuses a directory that is not a bundle, before writing.
+//
+// The whole criterion turns on the word *before*. io-harness has no error path
+// here: `Config::plugins()` is infallible and an entry naming a directory with no
+// manifest is dropped — recorded and otherwise silently absent — so an add that
+// wrote first and discovered afterwards would produce exactly the state
+// `src/pluginview.rs:15-24` says this surface exists to end.
+
+/// A directory with no manifest is named and refused.
+///
+/// Sabotage: write the `[[plugin]]` entry and let `io_harness::Plugins` drop it.
+/// Under it this test fails, and it fails by producing the silently-absent bundle
+/// the module docs open with.
+#[test]
+fn f11_a_directory_with_no_manifest_is_refused_by_name() {
+    let (_guard, root) = root();
+    let plain = root.join("not-a-bundle");
+    std::fs::create_dir_all(&plain).expect("the directory");
+
+    let refusal = pluginview::refusal(&plain).expect("a directory with no manifest is refused");
+    // Named, because "not a bundle" tells an operator nothing about what to do.
+    assert!(
+        refusal.contains(&plain.display().to_string()),
+        "the refusal must name the directory: {refusal}"
+    );
+    assert!(
+        refusal.contains(pluginview::MANIFEST),
+        "the refusal must name the file it looked for: {refusal}"
+    );
+    // And it must say nothing was written, because nothing was.
+    assert!(
+        refusal.contains("nothing was written"),
+        "the refusal must say the file is unchanged: {refusal}"
+    );
+}
+
+/// A path that is not a directory at all is refused, and differently.
+///
+/// A file and an empty directory are two different mistakes and the sentence that
+/// fixes one does not fix the other.
+#[test]
+fn f11_a_path_that_is_not_a_directory_is_refused_as_one() {
+    let (_guard, root) = root();
+    let file = root.join("plugin.toml");
+    std::fs::write(&file, "name = \"x\"").expect("the file");
+
+    let refusal = pluginview::refusal(&file).expect("a file is refused");
+    assert!(
+        refusal.contains("is not a directory"),
+        "a file must be refused as a file: {refusal}"
+    );
+}
+
+/// A directory that is a bundle is accepted.
+#[test]
+fn f11_a_bundle_directory_is_not_refused() {
+    let (_guard, root) = root();
+    let dir = bundle(&root, "bundles/rust-review", MINIMAL);
+
+    assert_eq!(pluginview::refusal(&dir), None);
+}
+
+/// The candidates are the directories that carry a manifest, and nothing else.
+///
+/// Sabotage: return every directory below the root. Under it this test fails on
+/// the plain directory, and the surface offers rows that are all refused when
+/// chosen — a menu whose entries do not work.
+#[test]
+fn f11_candidates_are_the_directories_carrying_a_manifest() {
+    let (_guard, root) = root();
+    let review = bundle(&root, "bundles/rust-review", MINIMAL);
+    std::fs::create_dir_all(root.join("bundles/notes")).expect("a plain directory");
+
+    let found = pluginview::candidates(&root);
+    assert!(found.contains(&review), "the bundle must be offered: {found:?}");
+    assert!(
+        !found.contains(&root.join("bundles/notes")),
+        "a directory with no manifest must not be offered: {found:?}"
+    );
+}
+
+/// `target`, `node_modules` and dotted directories are not walked.
+///
+/// Not a tidiness preference: `target` is the one that makes this walk expensive,
+/// and it is walked on a settings screen where an operator is waiting.
+#[test]
+fn f11_the_candidate_walk_skips_the_directories_nobody_keeps_a_bundle_in() {
+    let (_guard, root) = root();
+    let kept = bundle(&root, "bundles/rust-review", MINIMAL);
+    bundle(&root, "target/debug/rust-review", MINIMAL);
+    bundle(&root, "node_modules/rust-review", MINIMAL);
+    bundle(&root, ".cache/rust-review", MINIMAL);
+
+    let found = pluginview::candidates(&root);
+    assert_eq!(
+        found,
+        vec![kept],
+        "only the bundle outside the skipped directories is offered"
+    );
+}
+
+/// The walk is bounded, and a bundle below the bound is not offered.
+///
+/// Asserted so the bound is a decision rather than an accident: an operator whose
+/// bundle sits deeper has the typed path, and it is refused by the same check.
+#[test]
+fn f11_the_candidate_walk_is_bounded() {
+    let (_guard, root) = root();
+    let near = bundle(&root, "bundles/rust-review", MINIMAL);
+    bundle(&root, "a/b/c/d/deep", MINIMAL);
+
+    let found = pluginview::candidates(&root);
+    assert!(found.contains(&near));
+    assert!(
+        !found.contains(&root.join("a/b/c/d/deep")),
+        "a bundle below the depth bound is not walked to: {found:?}"
+    );
+}
+
+/// The candidate order is stable, so the row an operator picked yesterday is the
+/// row in the same place today.
+#[test]
+fn f11_the_candidate_order_is_stable() {
+    let (_guard, root) = root();
+    bundle(&root, "zeta", MINIMAL);
+    bundle(&root, "alpha", MINIMAL);
+    bundle(&root, "bundles/rust-review", MINIMAL);
+
+    assert_eq!(pluginview::candidates(&root), pluginview::candidates(&root));
+    // Nearest first: depth leads, then the path.
+    let found = pluginview::candidates(&root);
+    let depths: Vec<usize> = found.iter().map(|p| p.components().count()).collect();
+    let mut sorted = depths.clone();
+    sorted.sort_unstable();
+    assert_eq!(depths, sorted, "shallower bundles come first: {found:?}");
+}
+
+/// A bundle below the root is written relative, so a committed `io.toml` works for
+/// everyone who clones it.
+///
+/// Sabotage: always write the absolute path. Under it this test fails, and the
+/// entry it writes names a directory that exists on exactly one machine.
+#[test]
+fn f11_a_bundle_below_the_root_is_declared_relative() {
+    let (_guard, root) = root();
+    let dir = bundle(&root, "bundles/rust-review", MINIMAL);
+
+    assert_eq!(
+        pluginview::declared(&root, &dir),
+        Path::new("bundles/rust-review"),
+    );
+}
+
+/// A bundle outside the root keeps its absolute path, because a relative one would
+/// resolve against the discovery root and name somewhere else entirely.
+#[test]
+fn f11_a_bundle_outside_the_root_is_declared_absolute() {
+    let (_elsewhere_guard, elsewhere) = root();
+    let (_guard, here) = root();
+    let dir = bundle(&elsewhere, "rust-review", MINIMAL);
+
+    assert_eq!(pluginview::declared(&here, &dir), dir);
+}
+
+/// The written entry re-reads as a loaded bundle through io-harness's own reader.
+///
+/// The end-to-end half of F11: the check passed, the edit applied, and the thing
+/// the operator was promised is what `Config::plugins()` reports.
+#[test]
+fn f11_an_added_bundle_loads_through_the_harness() {
+    let (_guard, root) = root();
+    let dir = bundle(&root, "bundles/rust-review", MINIMAL);
+    assert_eq!(pluginview::refusal(&dir), None);
+
+    let written = pluginview::declared(&root, &dir);
+    let text = io_cli::edit::apply("", &[pluginview::add(&written)]).expect("the edit applies");
+    std::fs::write(root.join(PROJECT_FILE), &text).expect("the project file");
+
+    let config = Config::discover(&root).expect("the written file loads");
+    let view = pluginview::view(&config);
+    assert!(
+        view.refused.is_empty(),
+        "the added bundle must not be refused: {:?}",
+        view.refused
+    );
+    assert_eq!(
+        view.plugins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        vec!["rust-review"],
+    );
+}
