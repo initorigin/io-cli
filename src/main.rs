@@ -3729,6 +3729,32 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 ),
                             }
                         }
+                        // **Every marketplace, one line each, through the same
+                        // function the argument door prints.** `record` and never
+                        // `say`: a search answers with as many lines as it found
+                        // and the footer is one slot the next keystroke takes back.
+                        Ok((
+                            io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Search {
+                                text,
+                            }),
+                            None,
+                        )) => match io_cli::marketplace::installed() {
+                            None => {
+                                app.record(Tone::Refused, io_cli::marketplace::NOWHERE.to_string());
+                            }
+                            Some(markets) => {
+                                let hits = io_cli::marketplace::matching(&markets, &text);
+                                if hits.is_empty() {
+                                    app.record(
+                                        Tone::Muted,
+                                        format!("no bundle in any marketplace matches `{text}`"),
+                                    );
+                                }
+                                for hit in hits {
+                                    app.record(Tone::Muted, hit);
+                                }
+                            }
+                        },
                         // **The three verbs that change the disk and no file.**
                         // `plan` answers `None` for all of them — there is no
                         // scope, no `[[…]]` entry and no value to spell — so they
@@ -7702,6 +7728,20 @@ fn manage_main(
                 // script asked for — and it is exactly what an operator piping
                 // the list needs to see anyway.
                 eprintln!("{}: {}", refused.path.display(), refused.error);
+            }
+        }
+        // **One line per hit, and every marketplace is read.** The line is
+        // `marketplace::matching`'s, so the two doors cannot describe a hit
+        // differently, and its first field is the qualified spelling `plugin add`
+        // takes — a script piping this has the thing to install, not a name it has
+        // to go and disambiguate. Nothing at all is printed for no hits: a listing
+        // verb that wrote prose to stdout would put a sentence in the middle of
+        // somebody's pipeline.
+        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Search { text }) => {
+            let markets = io_cli::marketplace::installed()
+                .ok_or_else(|| io_cli::marketplace::NOWHERE.to_string())?;
+            for hit in io_cli::marketplace::matching(&markets, text) {
+                println!("{hit}");
             }
         }
         // **Answered here and returned from, because none of the three plans an

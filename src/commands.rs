@@ -1977,10 +1977,13 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // nothing else. A bare `/plugin marketplace` reaches the parse too and is
         // refused there by name — which is better than opening the bundle list
         // over a line that asked for something else.
+        // `install` is `add`'s other spelling and `search` is a read across the
+        // marketplaces; both are `manage::parse`'s words, so both route here rather
+        // than opening the panel over a line that asked for something else.
         "plugin" | "plugins"
             if matches!(
                 input.split_whitespace().nth(1),
-                Some("add" | "remove" | "marketplace")
+                Some("add" | "install" | "remove" | "search" | "marketplace")
             ) =>
         {
             Action::Manage(input.to_string())

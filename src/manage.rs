@@ -3,7 +3,8 @@
 //! `/mcp add …` typed into a composer and `io mcp add …` typed at a shell are the
 //! same sentence arriving through two doors, and this module is the only room
 //! behind both of them. Every verb these releases add — `mcp add|list|get|edit|
-//! remove`, `plugin add|list|remove`, `plugin marketplace add|list|remove`,
+//! remove`, `plugin add|install|list|search|remove`, `plugin marketplace
+//! add|list|remove`,
 //! `config get|set|unset|list` — is turned into a [`Request`] here and into
 //! [`crate::edit::Edit`]s by [`plan`], and neither entry point is allowed a second
 //! reading of the same words.
@@ -118,10 +119,20 @@ pub enum McpVerb {
 /// What `/plugin` and `io plugin` can be asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginVerb {
-    /// Declare a bundle directory.
+    /// Declare a bundle. `path` is the word as typed — **a directory or the name
+    /// of a bundle a marketplace holds** — and which of the two it was is decided
+    /// against the disk by [`crate::marketplace::chosen`] in [`plan`], never here:
+    /// a parse that judged it would be judging without having looked.
+    ///
+    /// Still a `PathBuf` for the one word, because the reading that wins in every
+    /// existing case is the path and a `String` here would make the common verb
+    /// convert at both call sites to serve the rarer one.
     Add { path: PathBuf, scope: Scope },
     /// Every declared bundle, loaded and refused.
     List,
+    /// Every bundle in every added marketplace whose name or description carries
+    /// `text`. A read: it opens no file and writes none.
+    Search { text: String },
     /// Undeclare a bundle. No scope: the file that named it is the file the
     /// removal has to go to, and [`plan`] finds it.
     Remove { path: PathBuf },
@@ -284,16 +295,33 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
                 id: args.one_word("mcp remove", "the id of a configured server")?,
             }))
         }
-        ("plugin", Some("add")) => {
+        // **`install` is the same verb and not a second one.** It is the word an
+        // operator arriving from any other tool types for this, and the whole cost
+        // of admitting it is this pattern — one arm, one request, one refusal.
+        // Spelling it as a second variant would be two verbs to keep writing the
+        // same entry. The refusal below and `verbs` are updated together, always.
+        ("plugin", Some("add" | "install")) => {
             args.only("plugin add", &["scope"])?;
             Ok(Request::Plugin(PluginVerb::Add {
-                path: PathBuf::from(args.one_word("plugin add", "the directory of a bundle")?),
+                path: PathBuf::from(args.one_word(
+                    "plugin add",
+                    "the directory of a bundle, or the name of one a marketplace holds",
+                )?),
                 scope: args.scope()?,
             }))
         }
         ("plugin", Some("list")) => {
             args.nothing("plugin list")?;
             Ok(Request::Plugin(PluginVerb::List))
+        }
+        ("plugin", Some("search")) => {
+            args.only("plugin search", &[])?;
+            Ok(Request::Plugin(PluginVerb::Search {
+                text: args.one_word(
+                    "plugin search",
+                    "some text to look for in every marketplace's bundles",
+                )?,
+            }))
         }
         // **Scanned from the sub-verb rather than from `args` above**, because
         // `args` was sorted out of `tokens[2..]` and here `tokens[2]` is the verb
@@ -351,7 +379,7 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
 fn verbs(surface: &str) -> &'static str {
     match surface {
         "mcp" => "`add`, `list`, `get`, `edit` and `remove`",
-        "plugin" => "`add`, `list`, `remove` and `marketplace`",
+        "plugin" => "`add` (also spelled `install`), `list`, `search`, `remove` and `marketplace`",
         _ => "`get`, `set`, `unset` and `list`",
     }
 }
@@ -494,10 +522,21 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             }
         }
         Request::Plugin(PluginVerb::Add { path, scope }) => {
-            let dir = resolve(root, path);
-            if let Some(refusal) = crate::pluginview::refusal(&dir) {
-                return Err(refusal);
-            }
+            // **Both readings of the word, decided in one place.** A directory
+            // carrying a manifest is a path and everything else is a name looked
+            // up across the marketplaces — the rule, and the refusal when neither
+            // reading holds, are `marketplace::chosen`'s so that this arm cannot
+            // grow a second opinion about which was meant. The marketplaces are
+            // read behind a closure, so an ordinary `plugin add ./bundles/x` still
+            // walks nothing but the directory it was given.
+            //
+            // `display()` gives back the word as typed: `path` is a `PathBuf` made
+            // out of one token and is never rendered from components.
+            let dir = crate::marketplace::chosen(
+                &resolve(root, path),
+                || crate::marketplace::installed().unwrap_or_default(),
+                &path.display().to_string(),
+            )?;
             Plan {
                 scope: *scope,
                 edits: vec![crate::pluginview::add(&crate::pluginview::declared(
@@ -547,8 +586,13 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
         // true of it here: **nothing is written to any configuration file**. That
         // is also exactly criterion F3 — removing a marketplace cannot touch a
         // `[[plugin]]` entry, because this function never builds one.
+        //
+        // `search` is here as an ordinary read: it opens the marketplaces on the
+        // disk rather than a configuration file, and it changes neither.
         Request::Mcp(McpVerb::List | McpVerb::Get { .. })
-        | Request::Plugin(PluginVerb::List | PluginVerb::Marketplace(_))
+        | Request::Plugin(
+            PluginVerb::List | PluginVerb::Search { .. } | PluginVerb::Marketplace(_),
+        )
         | Request::Config(ConfigVerb::Get { .. } | ConfigVerb::List) => return Ok(None),
     };
     Ok(Some(plan))

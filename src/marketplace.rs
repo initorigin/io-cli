@@ -44,6 +44,26 @@
 //! absence `pluginview`'s module docs exist to end. It is listed under its
 //! directory's own name, with [`Bundle::line`] saying the manifest did not name it.
 //!
+//! # A bundle is asked for by name, and the disk decides which reading that was
+//!
+//! `plugin add <word>` took a path and from 0.29.0 it takes a name as well, which
+//! is one verb with two readings of one word. [`chosen`] is the whole rule and it
+//! asks the disk rather than the spelling: a word that resolves to a directory
+//! carrying a manifest is a path, and every other word is a name looked up with
+//! [`locate`]. A rule keyed on a `/` or a leading `.` would make one word mean
+//! different things in different working directories; this one cannot, and a real
+//! relative path can never become unreachable under it.
+//!
+//! **A bare name two marketplaces carry is refused.** They are two repositories'
+//! code, and resolving to whichever the walk reached first installs something the
+//! operator did not choose — so the refusal spells `<name>@<owner>/<repo>` for each
+//! of them instead. [`matching`] is the same lists read the other way round, and it
+//! reads *every* marketplace: a second one is added precisely because the first did
+//! not hold what was wanted.
+//!
+//! Nothing here writes: [`chosen`] answers with a directory and the entry is
+//! written by [`crate::pluginview::add`], the edit `/plugin add` already had.
+//!
 //! # Removing a marketplace removes a clone and nothing else
 //!
 //! [`discard`] deletes a directory. It does not touch a `[[plugin]]` entry, it
@@ -530,6 +550,160 @@ pub fn warning(inside: &[PathBuf]) -> Option<String> {
             .join(", "),
     );
     Some(said)
+}
+
+// --- asking for a bundle by name ----------------------------------------------
+
+/// A query split into `<name>` and the `@<marketplace>` that qualifies it.
+///
+/// `rsplit_once`, so the **last** `@` is the separator: a bundle whose own name
+/// carries one is still reachable, and the qualifier is the part nothing else can
+/// contain. A query with nothing on one side of the `@` — `@thing`, `thing@` — is
+/// read as a whole name rather than as half a qualification, because the half that
+/// is missing is the half that would decide, and guessing it is how a name resolves
+/// to a marketplace nobody asked for.
+fn asked(query: &str) -> (&str, Option<&str>) {
+    match query.rsplit_once('@') {
+        Some((name, market)) if !name.is_empty() && !market.is_empty() => (name, Some(market)),
+        _ => (query, None),
+    }
+}
+
+/// The directory of the bundle called `query`, across every marketplace here.
+///
+/// The name is [`Bundle::label`]'s — the manifest's `name`, and a nameless
+/// manifest's directory — because that is the word the listing drew and therefore
+/// the word an operator has to type. A qualifier is matched against **both**
+/// spellings of a marketplace, `<owner>/<repo>` and the repository alone, since the
+/// second is what a hand reaches for and the first is what is always unique.
+///
+/// **Two marketplaces carrying one name is a refusal and never a first match**, and
+/// that is F4's named sabotage. The two bundles are two different repositories'
+/// code: resolving to whichever the walk happened to reach first installs something
+/// the operator did not choose, silently, under a name they believed meant one
+/// thing. The refusal spells both qualified forms, so the fix is a paste rather
+/// than a lookup.
+pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
+    let (name, qualifier) = asked(query);
+    let hits: Vec<(&Market, &Bundle)> = markets
+        .iter()
+        .flat_map(|market| market.bundles.iter().map(move |bundle| (market, bundle)))
+        .filter(|(market, bundle)| {
+            bundle.label() == name
+                && qualifier
+                    .is_none_or(|which| which == market.name() || which == market.named.repo)
+        })
+        .collect();
+    match hits.as_slice() {
+        [(_, bundle)] => Ok(bundle.dir.clone()),
+        [] => Err(unheld(markets, query)),
+        several => {
+            let spellings = several
+                .iter()
+                .map(|(market, _)| format!("`{name}@{}`", market.name()))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            Err(format!(
+                "{} marketplaces here hold a bundle called `{name}`, and installing whichever \
+                 was found first would install code you did not choose; say which one: {spellings}",
+                several.len()
+            ))
+        }
+    }
+}
+
+/// What to say when no marketplace holds the name that was asked for.
+///
+/// The list of what *is* here is the whole point of the sentence: a bare "not
+/// found" over a set of clones an operator fetched weeks ago leaves them running
+/// `plugin marketplace list` and then descending into each one. Every bundle is
+/// named in the qualified form, which is the form that always resolves.
+fn unheld(markets: &[Market], query: &str) -> String {
+    let held: Vec<String> = markets
+        .iter()
+        .flat_map(|market| {
+            market
+                .bundles
+                .iter()
+                .map(move |bundle| format!("`{}@{}`", bundle.label(), market.name()))
+        })
+        .collect();
+    if held.is_empty() {
+        return format!(
+            "no marketplace here holds a bundle called `{query}`, and no marketplace here holds \
+             any bundle at all; `plugin marketplace add <owner>/<repo>` fetches one"
+        );
+    }
+    format!(
+        "no marketplace here holds a bundle called `{query}`; the bundles that are here are {}",
+        held.join(", ")
+    )
+}
+
+/// Which directory `plugin add <word>` means: the path, or the bundle of that name.
+///
+/// **The rule is one question asked of the disk, and it is asked of the path
+/// first.** A word is a path when it resolves to a directory carrying a
+/// [`MANIFEST`] — which is [`crate::pluginview::refusal`]'s own check, the one this
+/// verb already had to pass before it wrote anything — and it is a name in every
+/// other case. Nothing about the *shape* of the word is read: a rule keyed on a
+/// `/`, a leading `.` or an extension would make `plugin add rust-review` mean a
+/// directory on a machine that has one and a marketplace bundle on a machine that
+/// does not, which is the same word doing two things depending on the operator's
+/// working directory. Asking the disk cannot drift, and it cannot make a real
+/// relative path unusable: a directory that is a bundle is always read as one.
+///
+/// The two readings' refusals are joined rather than chosen between, because by the
+/// time both have failed io-cli genuinely does not know which the operator meant,
+/// and picking one to report is picking which half of the answer to hide.
+///
+/// `markets` is a closure so that an ordinary `plugin add ./bundles/rust-review`
+/// walks no marketplace at all — the tree is only read once the path has already
+/// failed.
+pub fn chosen(
+    dir: &Path,
+    markets: impl FnOnce() -> Vec<Market>,
+    text: &str,
+) -> Result<PathBuf, String> {
+    match crate::pluginview::refusal(dir) {
+        None => Ok(dir.to_path_buf()),
+        Some(refused) => {
+            locate(&markets(), text).map_err(|missing| format!("{refused} — {missing}"))
+        }
+    }
+}
+
+/// Every bundle whose name or description carries `text`, in [`markets`]' order.
+///
+/// **Across every marketplace, and F5's named sabotage is stopping at the first
+/// one.** An operator adds a second marketplace precisely because the first did not
+/// have what they needed, so a search that never reaches it answers "nothing" about
+/// the one repository they fetched for this.
+///
+/// Matched case-insensitively over the label and the description, because a
+/// description is a sentence somebody wrote for a human and the name is a
+/// lowercase identifier — a case-sensitive search over the pair finds one or the
+/// other and never both.
+///
+/// One finished line each, and the first field is the **qualified spelling**, which
+/// is exactly what `plugin add` takes: the answer to "what is out there" is then
+/// also the thing to paste, with no second lookup to work out which marketplace the
+/// hit came from.
+#[must_use]
+pub fn matching(markets: &[Market], text: &str) -> Vec<String> {
+    let needle = text.to_lowercase();
+    markets
+        .iter()
+        .flat_map(|market| market.bundles.iter().map(move |bundle| (market, bundle)))
+        .filter(|(_, bundle)| {
+            bundle.label().to_lowercase().contains(&needle)
+                || bundle
+                    .description
+                    .as_deref()
+                    .is_some_and(|said| said.to_lowercase().contains(&needle))
+        })
+        .map(|(market, bundle)| format!("{}@{} · {}", bundle.label(), market.name(), bundle.line()))
+        .collect()
 }
 
 // --- the three that reach the operator's home ---------------------------------
