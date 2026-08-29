@@ -1145,6 +1145,44 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             continue;
         }
 
+        // **The one key a picker does not own, and only on one surface.** A
+        // horizontal arrow over a `/config` row cycles that row's value where it
+        // stands, which is the whole reason the binding is an arrow: the picker
+        // consumes every printable character as a fuzzy filter, so Space — the
+        // obvious key — would toggle a setting in the middle of a two-word query.
+        // `Left`/`Right` reach the picker's `_ => Outcome::Idle` arm and do
+        // nothing there, so intercepting them takes no behaviour away from any
+        // other surface.
+        //
+        // Handled before `open.key(key)` rather than inside `Picker`, so the
+        // picker stays a generic list and the nine other call sites keep the
+        // keyboard they had.
+        if let Some((open, Pick::Config(paths))) = picker.as_mut() {
+            let step = match key.code {
+                KeyCode::Right => Some(true),
+                KeyCode::Left => Some(false),
+                _ => None,
+            };
+            if let Some(forward) = step {
+                let row = open.selection();
+                let chosen = row.and_then(|row| paths.get(row)).cloned();
+                if let Some(key_name) = chosen.filter(|name| {
+                    name.as_str() != io_cli::configure::REFRESH_PRICES
+                }) {
+                    cycle_setting(
+                        session.root(),
+                        &mut config,
+                        &mut app,
+                        &key_name,
+                        forward,
+                        open,
+                        row.unwrap_or(0),
+                    );
+                }
+                paint(screen, &mut app)?;
+                continue;
+            }
+        }
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
@@ -2219,9 +2257,120 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Err(error) => app.record(Tone::Error, error),
                                 }
                             }
-                            Some(key) => app.composer.set(&format!("/config {key} ")),
+                            // **The prefill is gone, and that is the release.**
+                            // A key whose values are knowable descends into them;
+                            // a key whose value no menu can hold still goes to the
+                            // composer, but says the shape it wants and shows a
+                            // worked example first. Nothing opens a bare composer
+                            // line any more, which is F12.
+                            Some(key) => {
+                                let key = key.to_string();
+                                match value_rows(session.root(), &config, &key) {
+                                    Some(descent) => descended = Some(descent),
+                                    None => {
+                                        if let Some(shape) =
+                                            io_cli::configure::shape_of(&key, &config)
+                                        {
+                                            app.record(Tone::Muted, shape);
+                                        }
+                                        app.composer.set(&format!("/config {key} "));
+                                    }
+                                }
+                            }
                             None => {}
                         },
+                        // Row 0 is "leave it", the default and the same shape every
+                        // other confirmation on this surface uses.
+                        Pick::ConfigValue {
+                            key,
+                            kind,
+                            values,
+                            scope,
+                            unset_at,
+                            elsewhere_at,
+                        } => {
+                            let root = session.root().to_path_buf();
+                            if index == *elsewhere_at {
+                                // The scope picker, for an operator moving a key
+                                // between files rather than changing its value.
+                                // The current value travels with it, so the move
+                                // does not also ask them to retype what they had.
+                                let current = io_cli::configure::setting(&config, key)
+                                    .value
+                                    .unwrap_or_default();
+                                descended =
+                                    Some(write_where(&root, key.clone(), current));
+                            } else if index == *unset_at {
+                                match io_cli::configure::write(
+                                    &root,
+                                    *scope,
+                                    &[io_cli::edit::Edit::unset(key.clone())],
+                                ) {
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(&root) {
+                                            Ok((fresh, _)) => config = fresh,
+                                            Err(error) => app.record(Tone::Error, error),
+                                        }
+                                        // **The key is gone, so the origin column
+                                        // says `default` and names no path.**
+                                        // Writing the default's text instead would
+                                        // attribute a crate default to a file the
+                                        // operator never wrote it in, which is the
+                                        // lie `configure`'s own module docs open
+                                        // with.
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{key} is no longer set in any file; io-harness's \
+                                                 own default is in force from the next turn"
+                                            ),
+                                        );
+                                    }
+                                }
+                            } else if let Some(value) =
+                                index.checked_sub(1).and_then(|at| values.get(at))
+                            {
+                                if *scope == io_harness::config::Scope::Project
+                                    && io_cli::configure::widens_project(key, value)
+                                {
+                                    app.record(
+                                        Tone::Refused,
+                                        format!(
+                                            "{key} is decided by the project file, and a committed \
+                                             file may not set it to {value} — io-harness refuses \
+                                             the whole file for it, not just the key"
+                                        ),
+                                    );
+                                } else {
+                                    let edit = io_cli::edit::Edit::set(
+                                        key.clone(),
+                                        io_cli::configure::spell_value(kind, value),
+                                    );
+                                    match io_cli::configure::write(&root, *scope, &[edit]) {
+                                        Err(refusal) => app.record(Tone::Refused, refusal),
+                                        Ok(()) => {
+                                            match io_cli::configure::reload(&root) {
+                                                Ok((fresh, _)) => config = fresh,
+                                                Err(error) => app.record(Tone::Error, error),
+                                            }
+                                            app.record(
+                                                Tone::Success,
+                                                format!(
+                                                    "{key} is {value}, in the {} scope, from the \
+                                                     next turn",
+                                                    io_cli::configure::Decided::File {
+                                                        scope: *scope,
+                                                        path: Default::default(),
+                                                    }
+                                                    .word()
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // The gates surface. Every row but the first names a key
                         // and goes to the composer, which is `/config`'s own
                         // shape and reaches `/config`'s own write — the value of
@@ -6457,6 +6606,27 @@ enum Pick {
     /// only way a wrong one arrives — a candidate can lose its manifest between the
     /// row being drawn and this keystroke.
     PluginAdd(Vec<std::path::PathBuf>),
+    /// One setting's values, as rows, with "leave it" at row 0.
+    ///
+    /// **The descent that ends free text.** Until 0.28.0 choosing a `/config` row
+    /// prefilled the composer with the key and left the value to be guessed out of
+    /// a set the pinned dependency has made public. `values` is that set, obtained
+    /// by kind; `unset_at` is the row that removes the key rather than writing a
+    /// default's text into a file the operator never wrote it in; `elsewhere_at`
+    /// opens the scope picker, because a write inherits the deciding file and an
+    /// operator moving a key between files still needs a way to say so.
+    ///
+    /// `scope` is where the write lands, resolved when the rows were built rather
+    /// than recomputed on the keystroke — the same rule every other confirmation on
+    /// this surface follows, so the file named in the title is the file written to.
+    ConfigValue {
+        key: String,
+        kind: io_cli::configure::Kind,
+        values: Vec<String>,
+        scope: io_harness::config::Scope,
+        unset_at: usize,
+        elsewhere_at: usize,
+    },
     /// One bundle's contributions, and the one thing that can be done about it.
     ///
     /// `bundle` is the resolved directory, which is the only thing a row on screen
@@ -6540,6 +6710,207 @@ enum Pick {
 ///
 /// Every scope is offered whether or not its file exists yet, because writing a
 /// key into a scope for the first time is how this is used.
+/// The values one setting can take, as a picker, or `None` when it has to be typed.
+///
+/// **The kind decides, and every option comes from somewhere that cannot go
+/// stale**: the effects and exec modes from io-harness's own types, a number from
+/// the ladder built around the value in force, a model from `[prices.models]`
+/// already in the file, a file from the workspace. Nothing here is a per-key table
+/// and nothing here reaches the network.
+///
+/// `None` means the value is genuinely unofferable — a substring, a rubric, a URL,
+/// a command — and the caller states the shape and shows an example instead.
+fn value_rows(
+    root: &std::path::Path,
+    config: &io_harness::config::Config,
+    key: &str,
+) -> Option<(Picker, Pick)> {
+    let kind = io_cli::configure::kind_of(key)?;
+    let setting = io_cli::configure::setting(config, key);
+    let current = setting.value.clone();
+    let bare = current
+        .as_deref()
+        .map(|value| value.trim().trim_matches('"').to_string());
+    let values: Vec<String> = match &kind {
+        io_cli::configure::Kind::Flag => vec!["true".to_string(), "false".to_string()],
+        io_cli::configure::Kind::Choice(options) => options.clone(),
+        io_cli::configure::Kind::Number { signed } => {
+            let anchor = bare.as_deref().and_then(|value| value.parse::<i64>().ok());
+            io_cli::configure::ladder(anchor, *signed)
+                .into_iter()
+                .map(|rung| rung.to_string())
+                .collect()
+        }
+        io_cli::configure::Kind::Model => io_cli::configure::priced_models(root),
+        io_cli::configure::Kind::File => {
+            // The workspace, through the completion the composer's `@` already
+            // opens, so one reader answers "which files may be offered" for both
+            // and the policy that hides a file hides it in both places.
+            let policy = io_harness::Policy::default();
+            io_cli::complete::entries(root, &policy, "")
+                .ok()
+                .map(|(found, _)| {
+                    found
+                        .iter()
+                        .map(|entry| entry.path.clone())
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default()
+        }
+        // Typed, and the caller says what shape.
+        io_cli::configure::Kind::List
+        | io_cli::configure::Kind::Text
+        | io_cli::configure::Kind::Machine => return None,
+    };
+    let (scope, inherited) = io_cli::configure::destination(config, key);
+    let word = io_cli::configure::Decided::File {
+        scope,
+        path: Default::default(),
+    };
+    let mut rows = vec![Row::new("leave it".to_string())];
+    for value in &values {
+        // The value in force is marked rather than omitted or reordered: a list
+        // that hid what the file currently says is a list an operator cannot find
+        // their own setting in.
+        let detail = if bare.as_deref() == Some(value.as_str()) {
+            format!("in force now, from the {} scope", setting.decided.word())
+        } else {
+            String::new()
+        };
+        rows.push(Row::with_detail(value.clone(), detail));
+    }
+    let unset_at = rows.len();
+    rows.push(Row::with_detail(
+        "unset it".to_string(),
+        "removes the key, so io-harness's own default is in force and the origin says `default`"
+            .to_string(),
+    ));
+    let elsewhere_at = rows.len();
+    rows.push(Row::with_detail(
+        "write it to another file…".to_string(),
+        "moves the key between the three scopes".to_string(),
+    ));
+    // **The scope is in the title, so it is stated before the choice and not
+    // after it.** A write inherits the file already deciding the key; answering
+    // "the user scope" every time would silently shadow a committed project
+    // setting with a personal one.
+    let title = if inherited {
+        format!("{key} — writes to the {} file, which decides it", word.word())
+    } else {
+        format!("{key} — no file names it, so this writes to the {} file", word.word())
+    };
+    Some((
+        Picker::new(title, rows),
+        Pick::ConfigValue {
+            key: key.to_string(),
+            kind,
+            values,
+            scope,
+            unset_at,
+            elsewhere_at,
+        },
+    ))
+}
+
+/// Cycle one `/config` row's value where it stands, and redraw the list around it.
+///
+/// **Every decision here is a library call**; what is in this function is the
+/// wiring, which is all this file may hold. `configure::cycled` decides whether
+/// the kind can be cycled at all and what the next value is, `configure::
+/// destination` decides which file it lands in, `configure::spell_value` decides
+/// how it is written, and `configure::widens_project` decides whether that file
+/// will accept it.
+///
+/// The row is rebuilt from a re-read configuration rather than patched in place,
+/// so the value and the origin column on screen are the file's own answer and not
+/// this function's account of what it just did. `selecting` keeps the marker on
+/// the row the operator is holding an arrow on.
+#[allow(clippy::too_many_arguments)]
+fn cycle_setting(
+    root: &std::path::Path,
+    config: &mut io_harness::config::Config,
+    app: &mut io_cli::app::App,
+    key: &str,
+    forward: bool,
+    open: &mut Picker,
+    selecting: usize,
+) {
+    let Some(kind) = io_cli::configure::kind_of(key) else {
+        // A key the catalogue does not name has no kind and cannot be cycled.
+        // Silence would read as a broken key, so it says what to do instead.
+        app.record(
+            Tone::Muted,
+            format!("{key} is not a key io-cli knows the values of; press Enter to type one"),
+        );
+        return;
+    };
+    let setting = io_cli::configure::setting(config, key);
+    let Some(next) = io_cli::configure::cycled(&kind, setting.value.as_deref(), forward) else {
+        app.record(
+            Tone::Muted,
+            format!("{key} is chosen from a list rather than cycled; press Enter to open it"),
+        );
+        return;
+    };
+    let (scope, inherited) = io_cli::configure::destination(config, key);
+    // **Said before it is attempted, because the cost is not one key.**
+    // `refuse_widening` runs before deserialization, so a widening value in a
+    // committed file makes the whole file stop parsing rather than that setting
+    // being rejected. `write` would catch it and report io-harness's own sentence
+    // — this reports it without touching the file at all.
+    if scope == io_harness::config::Scope::Project
+        && io_cli::configure::widens_project(key, &next)
+    {
+        app.record(
+            Tone::Refused,
+            format!(
+                "{key} is decided by the project file, and a committed file may not set it to \
+                 {next} — io-harness refuses the whole file for it, not just the key. Choose \
+                 another value, or move the key to another file with `/config {key} {next}`."
+            ),
+        );
+        return;
+    }
+    let was = setting.value.clone().unwrap_or_else(|| "default".to_string());
+    let edit = io_cli::edit::Edit::set(key, io_cli::configure::spell_value(&kind, &next));
+    match io_cli::configure::write(root, scope, &[edit]) {
+        Err(refusal) => app.record(Tone::Refused, refusal),
+        Ok(()) => {
+            match io_cli::configure::reload(root) {
+                Ok((fresh, _)) => *config = fresh,
+                Err(error) => app.record(Tone::Error, error),
+            }
+            let settings = io_cli::configure::settings(config);
+            let mut rows = io_cli::configure::rows(&settings);
+            rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
+                config,
+                "prices.as_of",
+            )));
+            open.set_rows(rows, selecting);
+            // **`record`, not `say`.** A one-slot footer notice is overwritten by
+            // the next arrow press, and an operator cycling through four values
+            // would end with three of the four changes unrecorded anywhere. This
+            // is the rule 0.26.0 wrote down and 0.27.0 shipped a violation of.
+            app.record(
+                Tone::Success,
+                format!(
+                    "{key}: {was} → {next}, in the {} scope{}",
+                    io_cli::configure::Decided::File {
+                        scope,
+                        path: Default::default(),
+                    }
+                    .word(),
+                    if inherited {
+                        ", which already decided it"
+                    } else {
+                        ", which is where a key no file named goes"
+                    }
+                ),
+            );
+        }
+    }
+}
+
 fn write_where(root: &std::path::Path, key: String, value: String) -> (Picker, Pick) {
     let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
         io_harness::config::Scope::User,

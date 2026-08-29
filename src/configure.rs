@@ -458,6 +458,189 @@ pub fn ladder(current: Option<i64>, signed: bool) -> Vec<i64> {
     ordered.into_iter().map(|(_, rung)| rung).collect()
 }
 
+/// The next value along, for a kind that can be cycled where it stands.
+///
+/// **Booleans and closed enums only, and a number deliberately not.** A number's
+/// ladder cannot be shown on the row it is being changed on, and a held arrow
+/// would write the file once per key repeat; it descends into a value picker
+/// instead. So this answers `None` for every other kind, and the caller's arrow
+/// does nothing rather than doing something invisible.
+///
+/// **The keys are horizontal arrows because they are not printable.**
+/// `crate::picker::Picker` consumes every printable character as a fuzzy filter
+/// (`src/picker.rs:423-430`), so the obvious binding — Space — cannot be used: a
+/// two-word query contains one, and binding it would toggle a setting in the
+/// middle of typing a search. `Left` and `Right` fall to the picker's `_ =>
+/// Outcome::Idle` arm and are the only free keys that read as "the value beside
+/// this one".
+///
+/// `current` is the value in force as the file spells it, or `None` for a key no
+/// file names. An unset boolean cycles to `true` first, because the operator
+/// reached for the arrow in order to change something.
+#[must_use]
+pub fn cycled(kind: &Kind, current: Option<&str>, forward: bool) -> Option<String> {
+    let options: Vec<String> = match kind {
+        Kind::Flag => vec!["false".to_string(), "true".to_string()],
+        Kind::Choice(options) => options.clone(),
+        _ => return None,
+    };
+    let bare = current.map(|value| value.trim().trim_matches('"'));
+    let at = bare.and_then(|value| options.iter().position(|option| option == value));
+    let next = match at {
+        // Wrapping, because a closed set has no end to fall off: an operator
+        // arrowing past the last option means the first one.
+        Some(at) if forward => (at + 1) % options.len(),
+        Some(at) => (at + options.len() - 1) % options.len(),
+        // A key no file names, or one holding a value this build does not know.
+        // Either way there is no position to step from, so the two directions
+        // enter the list at its two ends — forward at the last option, backward at
+        // the first. For a boolean that means the first press of `Right` turns it
+        // on, which is what an operator reaching for the arrow on an unset flag
+        // meant; for a closed enum it is simply symmetric, and one more press
+        // reaches everything either way.
+        None if forward => options.len() - 1,
+        None => 0,
+    };
+    options.get(next).cloned()
+}
+
+/// A value as TOML spells it for that kind.
+///
+/// **The serialized value, never the label**, which is the difference F3's own
+/// sabotage turns on: writing `dark` unquoted where a string belongs produces a
+/// file io-harness refuses, and a check that quoted back the bytes just written
+/// would pass anyway. A boolean and a number are bare; everything else is a basic
+/// string; a list goes through [`crate::edit::array`], which is the one renderer
+/// that already knows how.
+#[must_use]
+pub fn spell_value(kind: &Kind, value: &str) -> String {
+    let bare = value.trim().trim_matches('"');
+    match kind {
+        Kind::Flag | Kind::Number { .. } => bare.to_string(),
+        Kind::List => {
+            let words: Vec<&str> = bare.split_whitespace().collect();
+            crate::edit::array(&words)
+        }
+        _ => format!("\"{bare}\""),
+    }
+}
+
+/// The shape a typed value must take, and a worked example of one.
+///
+/// **What remains typed is only what no menu can hold**, and each of those has to
+/// say what it wants before it asks. A composer opened with a bare key and no
+/// candidates is the state this release exists to remove; where the value genuinely
+/// cannot be offered, the next best thing is a sentence naming the shape and one
+/// line showing it.
+///
+/// `None` for a kind that is chosen rather than typed — those descend into their
+/// values and never reach a composer.
+#[must_use]
+pub fn shape_of(key: &str, config: &Config) -> Option<String> {
+    let said = match key {
+        "app.io-cli.gates.command" => {
+            "a command line, split on spaces into a list — for example: cargo test --all"
+        }
+        "app.io-cli.gates.contains" => {
+            "a substring to look for in what the command printed — for example: test result: ok"
+        }
+        "app.io-cli.gates.rubric" => {
+            "a sentence a reviewer model judges the turn against — for example: every public \
+             item changed in this turn carries a doc comment"
+        }
+        "app.io-cli.prices.source_url" => {
+            "a URL returning a model catalogue — for example: https://openrouter.ai/api/v1/models"
+        }
+        "prices.as_of" => {
+            "written by the price refresh rather than typed; use the last row of `/config` to \
+             re-read the catalogue"
+        }
+        // A key the catalogue does not name. Its shape is the operator's own
+        // business — io-cli has no schema for it and inventing one here would be
+        // this module claiming to know a key it does not.
+        _ => return None,
+    };
+    let setting = setting(config, key);
+    Some(match setting.value {
+        Some(value) => format!("{key} is {value} ({}); {said}", setting.decided.word()),
+        None => format!("{key} is not set; {said}"),
+    })
+}
+
+/// The models `[prices.models]` names, across every scope, sorted and deduplicated.
+///
+/// **Quoted from the files rather than read from the dependency, because the
+/// dependency has no reader.** `io_harness::pricing::PriceTable`'s whole public
+/// API is `new`, `with`, `with_tiers`, `as_of`, `price` and `tiers` — it can
+/// answer what one named model costs and cannot say which models it holds. So a
+/// surface offering "choose a model you have prices for" has to read the section
+/// itself. This is the same act `Setting::value` already performs for a section
+/// io-harness exposes no accessor for: the origin says which file, and the text is
+/// what that file says. Filed upstream as a gap.
+///
+/// **No network call, ever.** A settings screen that reached for a catalogue would
+/// be spending an operator's money to draw a menu; where no priced section exists
+/// the caller says so and offers the refresh row that already acts.
+///
+/// Every scope rather than the deciding one, because `[prices.models]` is a table
+/// the scopes merge key by key — a model priced in the user file and another in
+/// the project file are both priced for this session.
+#[must_use]
+pub fn priced_models(root: &std::path::Path) -> Vec<String> {
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for scope in [Scope::User, Scope::Project, Scope::Local] {
+        let Some(path) = scope_path(root, scope) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut inside = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                // A header ends the previous table and may open this one. Both
+                // spellings io-harness accepts, since a `[prices.models]` and a
+                // dotted `[prices]`/`models` are the same table to a TOML reader
+                // and only the header form appears here.
+                inside = line == "[prices.models]";
+                continue;
+            }
+            if !inside || line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((name, _)) = line.split_once('=') {
+                let name = name.trim().trim_matches('"').trim();
+                if !name.is_empty() {
+                    found.insert(name.to_string());
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// Which file a change to `key` should be written into, and whether that was
+/// inherited from the file already deciding it.
+///
+/// **A write goes where the key already lives.** Asking every time costs more than
+/// the change did — the value was chosen in one keystroke — and answering "the
+/// user scope" every time is worse than asking: it silently shadows a committed
+/// project setting with a personal one, which is the change an operator is least
+/// able to see afterwards. A key no file names has nothing to inherit and goes to
+/// the operator's own file.
+///
+/// The boolean is what lets the confirmation say *which* file and *why*, so the
+/// scope is stated either way and never assumed silently. An explicit choice
+/// overrides it and moves the key between files.
+#[must_use]
+pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
+    match setting(config, key).decided {
+        Decided::File { scope, .. } => (scope, true),
+        Decided::Default => (Scope::User, false),
+    }
+}
+
 /// Whether writing `value` to `key` would be refused in a **project-scoped** file.
 ///
 /// io-harness refuses five (key, value) pairs in a committed `io.toml`
