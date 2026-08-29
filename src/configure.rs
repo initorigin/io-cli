@@ -199,6 +199,297 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.routing.downshift_under.model",
 ];
 
+/// How a value for a key is obtained.
+///
+/// **The kind says how a value is *obtained*, never what it means.** io-harness
+/// owns discovery, layering and validation, and a surface that started deciding
+/// what a setting does would be a second configuration parser disagreeing with the
+/// first. What this answers is only: can the options be shown, and in what shape.
+///
+/// Until 0.28.0 every one of the thirty-seven keys was typed blind — `/config`
+/// prefilled the key and left the value to an operator whatever its kind, so
+/// setting `policy.defaults.write` meant guessing a value out of a set the pinned
+/// dependency has made public. Asking someone to type a value you could have
+/// offered, and could have proven, is the defect this exists to remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// `true` or `false`.
+    Flag,
+    /// A closed set, whose members are the dependency's own. See [`effects`] and
+    /// [`exec_modes`] for how each set is obtained and what that guarantees.
+    Choice(Vec<String>),
+    /// A whole number, chosen from the ladder [`ladder`] builds.
+    ///
+    /// `signed` because `app.io-cli.gates.expect_exit` is an `i32` and a process
+    /// may legitimately be expected to exit on a negative status; every other
+    /// number key here counts something and cannot go below zero.
+    Number { signed: bool },
+    /// A model name, chosen from `[prices.models]` already in the file. **Never a
+    /// network call**: a settings screen that reached for the network to draw a
+    /// list would be spending an operator's money to render a menu.
+    Model,
+    /// A path, chosen from the workspace.
+    File,
+    /// A list of strings, written through [`crate::edit::array`].
+    ///
+    /// Exactly one key — `app.io-cli.gates.command` is `Option<Vec<String>>`
+    /// (`src/gates.rs:84`) — and it has its own kind rather than being folded into
+    /// [`Kind::Text`] because a scalar written to that key is a value io-harness
+    /// cannot read back. The generic "type a value" editor this release replaces
+    /// would have written exactly that.
+    List,
+    /// Text no menu can hold: a substring to look for, a rubric, a URL. Three keys.
+    Text,
+    /// Written by machinery, not by a person, and so never offered for typing.
+    ///
+    /// One key, `prices.as_of`. It is in the catalogue because a date an operator
+    /// cannot see is a claim with no expiry they cannot check — but it is a fact to
+    /// read, and the act beside it is [`REFRESH_PRICES`].
+    Machine,
+}
+
+/// The `Effect` variants, spelled as the file spells them.
+///
+/// **This is a build-breaking census and it can be, because `Effect` is not
+/// `#[non_exhaustive]`** (`io-harness-0.69.0/src/policy.rs:91-97`). The array
+/// names every variant and the `match` covers every variant, so a variant *added*
+/// by a later io-harness fails the match and a variant *removed* fails the array.
+/// Either way this crate stops compiling rather than shipping a menu that quietly
+/// omits an option — and an option that was never offered is one an operator
+/// cannot detect, which is why that guarantee is worth a function.
+///
+/// **The one thing it does not catch** is a rename: the strings are serde's
+/// `rename_all = "snake_case"` of the variant names, and io-harness exposes no
+/// `as_str` for `Effect` the way it does for [`exec_modes`], so io-cli has to
+/// spell them. A dependency that renamed `Allow` to `Permit` would leave this
+/// compiling and writing a word the schema rejects. `tests/configure.rs` closes
+/// that by round-tripping each string through io-harness's own deserializer.
+#[must_use]
+pub fn effects() -> Vec<String> {
+    [
+        io_harness::Effect::Allow,
+        io_harness::Effect::Ask,
+        io_harness::Effect::Deny,
+    ]
+    .iter()
+    .map(|effect| {
+        match effect {
+            io_harness::Effect::Allow => "allow",
+            io_harness::Effect::Ask => "ask",
+            io_harness::Effect::Deny => "deny",
+        }
+        .to_string()
+    })
+    .collect()
+}
+
+/// The `ExecMode` variants, spelled by io-harness itself.
+///
+/// **A weaker guarantee than [`effects`]'s, and the difference is the
+/// dependency's and not a choice made here.** `ExecMode` *is* `#[non_exhaustive]`
+/// (`io-harness-0.69.0/src/sandbox.rs:379`), so rustc requires a wildcard arm on
+/// any match over it and a variant added by a later io-harness would fall into
+/// that wildcard silently — compiling green while the menu omits the new mode.
+/// Only a *removal* breaks the build here.
+///
+/// So what is asserted is what is obtainable: the spelling of every variant comes
+/// from `ExecMode::as_str` (`sandbox.rs:400`) rather than from io-cli, so a rename
+/// cannot slip through; and [`exec_mode_label`] reports an unknown mode rather
+/// than dropping it. An issue asking io-harness for variant enumeration on both
+/// enums is filed with this release — `strum` is not an answer, being forbidden by
+/// io-harness's own NF2 and by this crate's no-new-dependency constraint.
+#[must_use]
+pub fn exec_modes() -> Vec<String> {
+    [
+        io_harness::ExecMode::ReadOnly,
+        io_harness::ExecMode::WorkspaceWrite,
+        io_harness::ExecMode::FullAccess,
+    ]
+    .iter()
+    .map(|mode| mode.as_str().to_string())
+    .collect()
+}
+
+/// How a mode reads on the surface, including one this build has never heard of.
+///
+/// The mitigation [`exec_modes`] describes. A wildcard that omits is the defect; a
+/// wildcard that says so is the most a `#[non_exhaustive]` enum allows, and it
+/// turns "the menu is missing an option" — which nobody can see — into a row that
+/// names the mode and admits io-cli does not know it.
+#[must_use]
+pub fn exec_mode_label(mode: io_harness::ExecMode) -> String {
+    match mode {
+        io_harness::ExecMode::ReadOnly
+        | io_harness::ExecMode::WorkspaceWrite
+        | io_harness::ExecMode::FullAccess => mode.as_str().to_string(),
+        _ => format!(
+            "{} — this build of io-cli does not know this mode; it is io-harness's and it is in \
+             force",
+            mode.as_str()
+        ),
+    }
+}
+
+/// The kind of a catalogue key, or `None` for a key no catalogue entry names.
+///
+/// `None` is not a gap to fill in: [`settings`] deliberately lists keys an
+/// operator wrote which this catalogue does not know about, and a kind guessed for
+/// one of those would be io-cli inventing a schema. Such a key stays readable and
+/// is edited as text.
+#[must_use]
+pub fn kind_of(key: &str) -> Option<Kind> {
+    Some(match key {
+        // The boundary. Four acts, one set of effects.
+        "policy.defaults.read"
+        | "policy.defaults.write"
+        | "policy.defaults.exec"
+        | "policy.defaults.net" => Kind::Choice(effects()),
+        "sandbox.mode" => Kind::Choice(exec_modes()),
+        // io-cli's own closed sets. Unlike the two above these are this crate's to
+        // define, so the literal is the schema rather than a copy of one.
+        "app.io-cli.theme" => Kind::Choice(vec!["dark".into(), "light".into()]),
+        "app.io-cli.diff" => Kind::Choice(vec!["unified".into(), "minimal".into()]),
+        "app.io-cli.glyphs" => Kind::Choice(vec!["unicode".into(), "ascii".into()]),
+        "sandbox.allow_network"
+        | "sandbox.force_floor"
+        | "app.io-cli.plain"
+        | "app.io-cli.detached_spawns"
+        | "app.io-cli.gates.allow_self_review"
+        | "app.io-cli.conversational" => Kind::Flag,
+        // The one signed number: a process may be expected to exit negative.
+        "app.io-cli.gates.expect_exit" => Kind::Number { signed: true },
+        "run.max_steps"
+        | "run.max_tokens"
+        | "run.max_duration_secs"
+        | "run.max_retries"
+        | "run.exec_timeout_secs"
+        | "memory.max_entries"
+        | "memory.max_chars"
+        | "memory.max_entry_chars"
+        | "app.io-cli.max_parallel_reads"
+        | "app.io-cli.spawn_background_after_secs"
+        | "app.io-cli.gates.retries"
+        | "app.io-cli.routing.escalate_after.failures"
+        | "app.io-cli.routing.downshift_under.bytes" => Kind::Number { signed: false },
+        "app.io-cli.gates.reviewer"
+        | "app.io-cli.routing.escalate_after.model"
+        | "app.io-cli.routing.downshift_under.model" => Kind::Model,
+        "app.io-cli.gates.file" => Kind::File,
+        "app.io-cli.gates.command" => Kind::List,
+        "app.io-cli.gates.contains"
+        | "app.io-cli.gates.rubric"
+        | "app.io-cli.prices.source_url" => Kind::Text,
+        "prices.as_of" => Kind::Machine,
+        _ => return None,
+    })
+}
+
+/// The one-two-five ladder around `current`, nearest first.
+///
+/// **Anchored on the value in force, and that is the audit's finding rather than a
+/// preference.** The plan for this release said the ladder would be anchored on
+/// io-harness's own default for the key. There is no such thing to read:
+/// `run.max_tokens` and `run.max_duration_secs` are `None` in both `TaskContract`
+/// constructors (`contract.rs:652,730`), `run.max_steps` is 8 in one and 12 in the
+/// other (`:650,:728`) so neither is "the default", the `[run]` section is a
+/// private struct with no getter, and `io_harness::Defaults` is the policy tier
+/// defaults under a colliding name. So the anchor is the value the operator
+/// actually has — which is also the value they are reasoning from.
+///
+/// `None` — a key no file names — ladders from 1. The alternative was an empty
+/// picker saying so, and a surface whose whole argument is that a value is chosen
+/// rather than typed cannot have a state in which it offers nothing.
+///
+/// The ladder is 1, 2, 5 at each magnitude, which is why it needs no per-key step
+/// table to go stale and invents no bound the dependency does not expose. A signed
+/// key ladders through zero into the negatives.
+#[must_use]
+pub fn ladder(current: Option<i64>, signed: bool) -> Vec<i64> {
+    let mut rungs: Vec<i64> = Vec::new();
+    let mut magnitude: i64 = 1;
+    // Ten magnitudes covers 1 to 5,000,000,000 — past `memory.max_chars` and past
+    // any token ceiling a provider sells — and stops well short of `i64`'s edge,
+    // so the multiplication below cannot overflow.
+    for _ in 0..10 {
+        for step in [1_i64, 2, 5] {
+            rungs.push(step * magnitude);
+        }
+        magnitude = magnitude.saturating_mul(10);
+    }
+    if signed {
+        let mut whole: Vec<i64> = rungs.iter().rev().map(|rung| -rung).collect();
+        whole.push(0);
+        whole.extend(rungs);
+        rungs = whole;
+    } else {
+        rungs.insert(0, 0);
+    }
+    // The value in force is a rung whether or not it sits on the ladder, because a
+    // list that silently omits what the file currently says is a list an operator
+    // cannot find their own setting in.
+    if let Some(value) = current {
+        if !rungs.contains(&value) {
+            rungs.push(value);
+        }
+    }
+    rungs.sort_unstable();
+    rungs.dedup();
+    // Nearest the anchor first: the rung an operator wants is almost always the one
+    // either side of where they are, and a list starting at zero buries it.
+    //
+    // **Distance along the ladder, never numeric distance**, and the first attempt
+    // at this got it wrong in a way only a test caught. The rungs are logarithmic,
+    // so from 200 the arithmetic neighbours are 100, 50, 20 — every rung *below* —
+    // and 500, the one step up an operator is most likely to want, sorts ninth. A
+    // ladder ordered by subtraction is a ladder that only goes down.
+    let anchor = current.unwrap_or(1);
+    let at = rungs
+        .iter()
+        .position(|rung| *rung == anchor)
+        // A value in force is always pushed above, so this only runs for `None`,
+        // where the anchor is 1 and always present. Kept total rather than
+        // unwrapped: a panic on a settings screen is never the right answer.
+        .unwrap_or(0);
+    // The list is sorted and deduplicated, so a rung's index *is* its position on
+    // the ladder — taken here, before the reorder, because a key that read the list
+    // it is reordering would be reading positions that have already moved.
+    let mut ordered: Vec<(usize, i64)> = rungs.into_iter().enumerate().collect();
+    ordered.sort_by_key(|(position, rung)| (position.abs_diff(at), *rung));
+    ordered.into_iter().map(|(_, rung)| rung).collect()
+}
+
+/// Whether writing `value` to `key` would be refused in a **project-scoped** file.
+///
+/// io-harness refuses five (key, value) pairs in a committed `io.toml`
+/// (`PROJECT_WIDENING`, `io-harness-0.69.0/src/config.rs:1759-1769`): the two acts
+/// defaulted to `allow`, egress re-opened inside the sandbox, the portable floor
+/// switched off, and the widest exec mode. The narrowing value of each stays legal,
+/// which is what the scope is for.
+///
+/// **Mirrored here because a menu that offers a value the destination file will
+/// refuse is a menu that lies, and the cost is not one key.** `refuse_widening`
+/// runs before deserialization, so the refusal takes the *whole file*: an operator
+/// who picks `full-access` on a key their project `io.toml` decides does not get a
+/// rejected setting, they get a configuration that no longer parses. `write`
+/// already re-reads and refuses with io-harness's own sentence — this is what lets
+/// the row say so beforehand instead.
+///
+/// The pairs are io-harness's and are spelled here because it exposes no reader for
+/// them; `tests/configure.rs` round-trips each one through `Config::from_toml`, so a
+/// pair the dependency adds or drops is caught by the gate rather than by an
+/// operator.
+#[must_use]
+pub fn widens_project(key: &str, value: &str) -> bool {
+    matches!(
+        (key, value.trim().trim_matches('"')),
+        ("policy.defaults.exec", "allow")
+            | ("policy.defaults.net", "allow")
+            | ("sandbox.allow_network", "true")
+            | ("sandbox.force_floor", "false")
+            | ("sandbox.mode", "full-access")
+    )
+}
+
 /// The `/config` row that re-reads the price catalogue.
 ///
 /// **A row rather than a key, because it is an act and not a setting.** Every
