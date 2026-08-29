@@ -36,31 +36,56 @@
 //! bound on what is offered, and the two numbers are drawn as two numbers: one
 //! replacing the other would answer a question nobody asked.
 //!
-//! # Two verbs this panel does not offer
+//! # Disable, and why the write that was refused in 0.29.0 is correct in 0.30.0
 //!
-//! **Disable — the verb, but no longer the fact.** Through io-harness 0.69.0 this
-//! paragraph said `McpServer` was `id`, `transport` and `timeout_secs`, that there
-//! was no key for it, and that an `enabled = false` invented here would be
-//! accepted by the file and ignored by the harness so the server would start
-//! anyway. **io-harness 0.70.0 falsified every clause of that**: `enabled` is a
-//! real public field (`mcp.rs:261`) defaulting to true, and it is honoured at the
-//! earliest possible point — a disabled server is never spawned, never dialled and
-//! never even checked against the policy (`mcp.rs:356`), and `probe_mcp` answers
-//! `McpProbe::Disabled` (`mcp.rs:747`).
+//! Through io-harness 0.69.0 this paragraph said `McpServer` was `id`, `transport`
+//! and `timeout_secs`, that there was no key for it, and that an `enabled = false`
+//! invented here would be accepted by the file and ignored by the harness so the
+//! server would start anyway. **io-harness 0.70.0 falsified every clause of that**:
+//! `enabled` is a real public field (`mcp.rs:261`) defaulting to true, and it is
+//! honoured at the earliest possible point — a disabled server is never spawned,
+//! never dialled and never even checked against the policy (`mcp.rs:356`), and
+//! [`io_harness::probe_mcp`] answers `McpProbe::Disabled` (`mcp.rs:892`).
 //!
-//! So the *state* is read and shown from 0.29.0, on [`Server::enabled`], for the
-//! reason [`crate::pluginview`] was given the same treatment in the same release:
-//! a capability missing from every listing reads exactly like one nobody ever
+//! So 0.29.0 read and drew the *state*, on [`Server::enabled`], for the reason
+//! [`crate::pluginview`] was given the same treatment in the same release: a
+//! capability missing from every listing reads exactly like one nobody ever
 //! declared, and an operator whose turns have quietly lost their tools has nowhere
-//! to look. **The keystroke that writes it is still not here** — that is 0.30.0's
-//! verb, along with the plugin one and the probe — and nothing in this crate puts
-//! `enabled` into an `[[mcp]]` table. What reaches this state is a file somebody
-//! hand-edited or a repository they cloned, which is exactly the case a listing
-//! exists to explain.
+//! to look. It shipped **no writer**, and `tests/servers.rs` asserted the refusal —
+//! not because the key was unwritable but because half a verb is worse than none:
+//! a surface that can switch a server off has to be able to switch it back on, and
+//! neither door could.
+//!
+//! **0.30.0 adds both halves, so the refusal has nothing left to protect.**
+//! `enabled` is in [`KEYS`], [`switch`] is the edit both doors build, and what the
+//! `KEYS` check was actually guarding is untouched: it still refuses every key
+//! [`McpServer`] does not carry. The list gained **one name**, and that is the only
+//! safe way to widen it — a check relaxed to accept anything would hand the
+//! exemption below a misspelling to write, and there is no later failure to catch
+//! one.
+//!
+//! **What writing it costs an older binary is not what the plugin key costs, and
+//! the two sentences are deliberately different.** See [`OLDER_BINARY`] beside
+//! [`crate::pluginview::OLDER_BINARY`]: a 0.69.0 binary *refuses the whole file*
+//! over `enabled` in a `[[plugin]]`, and *silently ignores it* in an `[[mcp]]` —
+//! running a server the operator switched off. One is loud and total, the other is
+//! quiet and exactly the failure mode this module exists to close.
+//!
+//! # One verb this panel still does not offer
 //!
 //! **Reconnect**, because there is nothing to cycle: servers are attached per
 //! turn through `TaskContract::with_mcp`. What an operator means by it is "pick
 //! up the edit I just made", and that is what the next turn does.
+//!
+//! # A probe is not the observation beside it
+//!
+//! [`probe`] goes and looks: it spawns or dials the server, completes an MCP
+//! handshake and shuts it down again. [`Observed`] does the opposite — it folds
+//! events a *run* emitted and asserts nothing that did not happen on its own. So a
+//! probe writes nothing into [`Observed`] and takes no `&mut` to one, and
+//! [`Reached::NotYet`] and `McpProbe::Unreachable` are rendered in words that
+//! cannot be mistaken for each other. "Nobody has called it yet" and "io-cli called
+//! it and got nothing" are different facts, and only the second is a fault.
 //!
 //! # The write half, and the one number it must not be handed
 //!
@@ -90,7 +115,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use io_harness::config::{Config, Scope};
-use io_harness::{EventKind, McpServer, McpTransport};
+use io_harness::{EventKind, McpProbe, McpServer, McpTransport, Policy};
 
 use crate::configure::Decided;
 
@@ -112,6 +137,11 @@ pub enum Reached {
     /// **Not a failure.** It is the state every server is in before the first
     /// turn runs, and the state a server stays in for a whole session that never
     /// needed it.
+    ///
+    /// **Not `McpProbe::Unreachable` either**, and [`probed`] words the two so
+    /// that neither can be read as the other: this is nobody having called the
+    /// server, and that is io-cli having called it and got nothing back. A probe
+    /// never writes this state and this state never renders as a probe's.
     NotYet,
 }
 
@@ -441,6 +471,14 @@ pub fn declared_in(root: &Path, id: &str) -> Option<At> {
 /// `[[mcp]]` is not held to `deny_unknown_fields`, so `comand = "…"` is written,
 /// accepted, and ignored. The one write in this crate whose failure says nothing
 /// at all is the one worth spending a `const` on.
+///
+/// **0.30.0 added one name to it and did not relax the check.** `enabled` is
+/// io-harness 0.70.0's own field and 0.29.0 refused it only because the release
+/// shipped no way to switch a server back on; both halves exist now, so the name
+/// is listed. Widening [`edit`] to accept *any* key instead would be the same
+/// change to look at and the opposite change to live with: the exemption above
+/// means a misspelling would then be written, parsed, reported as landed, and
+/// ignored by every turn after it.
 pub const KEYS: &[&str] = &[
     "id",
     "transport",
@@ -452,7 +490,48 @@ pub const KEYS: &[&str] = &[
     "url",
     "headers",
     "timeout_secs",
+    // Whether io-harness starts it at all. io-harness 0.70.0's, honoured before
+    // the process or the socket exists.
+    "enabled",
 ];
+
+/// What writing an `enabled` key into an `[[mcp]]` entry costs an older binary.
+///
+/// **The mirror image of [`crate::pluginview::OLDER_BINARY`], and the dangerous
+/// half of the pair.** `enabled` on a `[[plugin]]` makes an io-cli built against
+/// io-harness 0.69.0 refuse the whole configuration file: loud, total, and
+/// impossible to miss. `[[mcp]]` is one of the two sections that binary exempts
+/// from `deny_unknown_fields`, so the same key there is **read, accepted and
+/// ignored** — and the server the operator switched off starts and runs, on that
+/// machine, with nothing on any surface saying so.
+///
+/// So the two sentences are two constants. One string used for both would be
+/// telling an operator on the quiet path that they will notice.
+pub const OLDER_BINARY: &str =
+    "this writes an `enabled` key into an `[[mcp]]` entry, which is io-harness 0.70.0's: an io-cli \
+     built against 0.69.0 does not refuse it — it ignores the key and starts the server anyway, \
+     with nothing said";
+
+/// The edit that switches the server at `at` on or off.
+///
+/// **One key and no other byte of the file**, for the reason
+/// [`crate::pluginview::enable`] gives about the sibling section:
+/// [`crate::edit::Edit::set`] replaces the value's own span, so the transport, the
+/// arguments, the environment, every sibling entry and every comment come through
+/// untouched. An operator who diffs their `io.toml` afterwards sees one word
+/// change. **The entry is never removed** — a server switched off is one the file
+/// still declares, which is the whole difference between this verb and
+/// [`remove`].
+///
+/// The one write both doors build, so `io mcp disable <id>` and the `/mcp`
+/// keystroke cannot produce different bytes. Says [`OLDER_BINARY`] to whoever is
+/// about to be shown a sentence about it.
+pub fn switch(at: &At, on: bool) -> crate::edit::Edit {
+    // `true`/`false` bare rather than through `quoted`: `enabled` is a TOML
+    // boolean, and `enabled = "false"` is a string io-harness refuses on
+    // `configure::write`'s round trip.
+    crate::edit::Edit::set(format!("mcp[{}].enabled", at.index), on.to_string())
+}
 
 /// The edit that adds a whole server.
 ///
@@ -530,6 +609,135 @@ pub fn edit(at: &At, key: &str, value: &str) -> Option<crate::edit::Edit> {
 /// The edit that removes the entry at `at`, whole.
 pub fn remove(at: &At) -> crate::edit::Edit {
     crate::edit::Edit::remove(format!("mcp[{}]", at.index))
+}
+
+/// Try one configured server for real, and report what came back.
+///
+/// **[`crate::preflight`] asks the policy; this one goes and looks.** The preflight
+/// is a pure question put to [`Policy`] and answers before anything exists, which
+/// is right at the moment a server is *added*. It cannot tell an operator whether
+/// the command is on this machine's path or whether the far end speaks MCP, and
+/// those are the two things they are actually asking when a server they configured
+/// contributes nothing. [`io_harness::probe_mcp`] answers all of it: it makes the
+/// same policy check the run makes, in the same order, **before** spawning or
+/// dialling; it really does spawn or dial and complete the handshake; it shuts the
+/// server down on every path that started one; and it is bounded by the server's
+/// own `timeout_secs`.
+///
+/// It returns no `Result` of its own — every failure is a variant of
+/// [`McpProbe`] — so the only error here is the one io-harness cannot have an
+/// opinion about: an id no configuration file in force declares.
+///
+/// **Nothing is folded into [`Observed`].** A probe is io-cli reaching out on its
+/// own, and `Observed` is what a *run* was seen to do; a probe that wrote into it
+/// would put a fact no turn produced under a heading that says a turn did. That is
+/// enforced by this signature taking no `&mut Observed` rather than by a rule
+/// somebody has to remember.
+pub async fn probe(config: &Config, id: &str, policy: &Policy) -> Result<McpProbe, String> {
+    let server = config
+        .mcp_servers()
+        .iter()
+        .find(|server| server.id == id)
+        .ok_or_else(|| {
+            format!(
+                "no configuration file in force declares an MCP server called `{id}`, so there is \
+                 nothing to probe; `mcp list` shows the ones that are configured"
+            )
+        })?;
+    Ok(io_harness::probe_mcp(server, policy).await)
+}
+
+/// What [`probed`] says about a state this build of io-cli has no arm for.
+///
+/// **[`McpProbe`] is `#[non_exhaustive]` and that is a promise, not a formality**:
+/// io-harness's own rustdoc names the case it expects to add — a server that
+/// answers but speaks a protocol version the crate will not talk. A `_` arm that
+/// re-used one of the five known sentences would report that as something it is
+/// not, and the operator would go and fix the wrong thing. So the unknown state is
+/// spelled as unknown, and it names the repair that actually applies.
+///
+/// A `const` so a test can assert that no known variant renders it, and that it
+/// renders no known variant's words.
+pub const UNMODELLED: &str =
+    "a newer io-harness reported an outcome this build of io-cli does not model, so there is \
+     nothing here that can be said about it — upgrade io-cli rather than reading it as one of \
+     the states this build knows";
+
+/// The sentence a probe comes to, for the operator who asked for it.
+///
+/// Six outcomes and six sentences, because the whole value of [`McpProbe`] is that
+/// they are different answers with different repairs: a refusal needs a policy
+/// rule, a failed spawn needs the command fixed, a silent host needs somebody to
+/// look at the host, and a switched-off server needs nothing at all. "It did not
+/// work" is the report that costs a turn to act on.
+///
+/// **`Unreachable` is worded so it cannot be read as [`Reached::NotYet`].** That
+/// state means no turn has called the server yet and is explicitly *not* a failure;
+/// this one means io-cli went and looked and got nothing. See the module docs.
+pub fn probed(id: &str, probe: &McpProbe) -> String {
+    match probe {
+        // Nothing was spawned, nothing was dialled, and the policy was not even
+        // consulted — the same thing a run does with it, which is why this is not
+        // reported as a failure to start.
+        McpProbe::Disabled => format!(
+            "`{id}` is {DISABLED} in the configuration, so nothing was started and nothing was \
+             asked of the policy",
+        ),
+        // All four fields, because they are two different repairs: `act` and
+        // `target` say what to allow, `rule` and `layer` say what denied it.
+        McpProbe::Refused {
+            act,
+            target,
+            rule,
+            layer,
+        } => format!(
+            "`{id}` was refused before it was started: the policy refuses {act} on `{target}`, by \
+             {}",
+            decided_by(rule.as_deref(), layer.as_deref()),
+        ),
+        // The policy allowed it and the program is not there. The fix is the
+        // command, and the server was never reached at all.
+        McpProbe::NotStarted { reason } => format!(
+            "`{id}` did not start: {reason}. The policy allowed it, so what is wrong is the \
+             command",
+        ),
+        // It started, or the URL was allowed, and the far end gave nothing back.
+        McpProbe::Unreachable { reason } => format!(
+            "io-cli called `{id}` and it did not answer: {reason}. The command and the policy are \
+             both fine; the far end is not",
+        ),
+        McpProbe::TimedOut { secs } => format!(
+            "io-cli called `{id}` and it stayed silent for {secs}s, which is its own \
+             `timeout_secs`",
+        ),
+        // The namespaced names, because those are what the model would see and
+        // what the policy would decide on — the bare ones the server sent appear
+        // nowhere a rule can name them.
+        McpProbe::Answered { tools } if tools.is_empty() => {
+            format!("`{id}` answered and offers no tools at all")
+        }
+        McpProbe::Answered { tools } => format!(
+            "`{id}` answered and offers {} tools: {}",
+            tools.len(),
+            tools.join(", "),
+        ),
+        // **Required, and it must not name a state this build knows.** See
+        // [`UNMODELLED`].
+        _ => format!("`{id}`: {UNMODELLED}"),
+    }
+}
+
+/// Who decided a refusal: the rule and its layer, or a default with no rule.
+///
+/// The same shape [`crate::preflight`] prints for the question it asks earlier, and
+/// spelled again here rather than shared because that one is private to a module
+/// whose input is a `Preflight` and this one's is io-harness's own two `Option`s.
+fn decided_by(rule: Option<&str>, layer: Option<&str>) -> String {
+    match (rule, layer) {
+        (Some(rule), Some(layer)) => format!("the rule `{rule}` in the `{layer}` layer"),
+        (Some(rule), None) => format!("the rule `{rule}`"),
+        (None, _) => "the policy's own default for that act (no rule matched)".to_string(),
+    }
 }
 
 /// A TOML basic string, escaped.

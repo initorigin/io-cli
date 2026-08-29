@@ -114,6 +114,25 @@ pub enum McpVerb {
     },
     /// Take one entry away, whole.
     Remove { id: String },
+    /// Let io-harness start it again — `enabled = true`.
+    Enable { id: String },
+    /// Stop io-harness starting it — `enabled = false`.
+    ///
+    /// **Not [`McpVerb::Remove`], and the pair is deliberate.** A removal takes the
+    /// `[[mcp]]` entry away and the operator re-types the whole server to get it
+    /// back; this changes one word and leaves every other key of the entry exactly
+    /// as it was, so `mcp list` still shows the server and says it is off. Both go
+    /// through [`crate::servers::switch`], which is also what the `/mcp` keystroke
+    /// builds — one write, so the two doors cannot produce different bytes.
+    Disable { id: String },
+    /// Start it, once, on its own, and report what happened —
+    /// [`crate::servers::probe`] over [`io_harness::probe_mcp`].
+    ///
+    /// A read as far as this module is concerned: it writes no configuration file,
+    /// so [`plan`] answers `None` for it and each door runs the probe itself. It is
+    /// not a *cheap* read — it spawns or dials a real server — but nothing about
+    /// the operator's files changes, which is what a `Plan` is about.
+    Probe { id: String },
 }
 
 /// What `/plugin` and `io plugin` can be asked to do.
@@ -334,6 +353,29 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             }))
         }
         ("mcp", Some("edit")) => mcp_edit(&args).map(Request::Mcp),
+        // **One arm for the pair, because they are one verb with a value.** Two
+        // arms would be two spellings of the same three refusals, and the one that
+        // got less attention is the one that would stop refusing a `--scope`.
+        // `no_scope` for `remove`'s reason: the entry lives in exactly one file and
+        // io finds it by name, so a scope typed here would aim a position counted
+        // in one file's array at another file's.
+        ("mcp", Some(word @ ("enable" | "disable"))) => {
+            let named = format!("mcp {word}");
+            args.no_scope(&named)?;
+            args.only(&named, &[])?;
+            let id = args.one_word(&named, "the id of a configured server")?;
+            Ok(Request::Mcp(if word == "enable" {
+                McpVerb::Enable { id }
+            } else {
+                McpVerb::Disable { id }
+            }))
+        }
+        ("mcp", Some("probe")) => {
+            args.only("mcp probe", &[])?;
+            Ok(Request::Mcp(McpVerb::Probe {
+                id: args.one_word("mcp probe", "the id of a configured server")?,
+            }))
+        }
         ("mcp", Some("remove")) => {
             args.no_scope("mcp remove")?;
             args.only("mcp remove", &[])?;
@@ -424,7 +466,7 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
 /// documentation this whole module's refusals exist to save.
 fn verbs(surface: &str) -> &'static str {
     match surface {
-        "mcp" => "`add`, `list`, `get`, `edit` and `remove`",
+        "mcp" => "`add`, `list`, `get`, `edit`, `enable`, `disable`, `probe` and `remove`",
         "plugin" => "`add` (also spelled `install`), `list`, `search`, `remove` and `marketplace`",
         _ => "`get`, `set`, `unset` and `list`",
     }
@@ -580,6 +622,11 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 disclosure: None,
             }
         }
+        // **The entry is found and then edited, never removed and re-added.**
+        // `servers::switch` is the one write, shared with the `/mcp` keystroke, so
+        // whichever door was typed the file gains the same four bytes.
+        Request::Mcp(McpVerb::Enable { id }) => switched(root, id, true)?,
+        Request::Mcp(McpVerb::Disable { id }) => switched(root, id, false)?,
         Request::Plugin(PluginVerb::Add { path, scope }) => {
             // **Both readings of the word, decided in one place.** A directory
             // carrying a manifest is a path and everything else is a name looked
@@ -677,13 +724,34 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
         //
         // `search` is here as an ordinary read: it opens the marketplaces on the
         // disk rather than a configuration file, and it changes neither.
-        Request::Mcp(McpVerb::List | McpVerb::Get { .. })
+        //
+        // **`mcp probe` is here, and it is the one read in this list that does
+        // something.** It spawns or dials a real server and shuts it down again —
+        // but it changes no configuration file, and a `Plan` is about a file. There
+        // is no `Edit` that could express "go and look", and a `Plan` carrying an
+        // empty edit list is what `Ok(None)` exists to prevent. So each door runs
+        // `servers::probe` itself, through the one entry point, and prints
+        // `servers::probed`'s one sentence.
+        Request::Mcp(McpVerb::List | McpVerb::Get { .. } | McpVerb::Probe { .. })
         | Request::Plugin(
             PluginVerb::List | PluginVerb::Search { .. } | PluginVerb::Marketplace(_),
         )
         | Request::Config(ConfigVerb::Get { .. } | ConfigVerb::List) => return Ok(None),
     };
     Ok(Some(plan))
+}
+
+/// The plan `mcp enable` and `mcp disable` both come to.
+///
+/// One function because they are one write with a different value, and the file is
+/// found the same way either way — by id, in whichever scope declares the entry.
+fn switched(root: &Path, id: &str, on: bool) -> Result<Plan, String> {
+    let at = declared_server(root, id)?;
+    Ok(Plan {
+        scope: at.scope,
+        edits: vec![crate::servers::switch(&at, on)],
+        disclosure: None,
+    })
 }
 
 /// Where the deciding file declares the server called `id`.

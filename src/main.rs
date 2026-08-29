@@ -208,7 +208,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         }
         let mut tokens = vec![surface.to_string()];
         tokens.extend(rest.iter().cloned());
-        return manage_main(&root, &config, &tokens);
+        return manage_main(&root, &config, &tokens).await;
     }
 
     // A session draws, so it needs a terminal to draw on, and saying so is better
@@ -1632,6 +1632,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             .to_string(),
                                     ),
                                     Some(at) => {
+                                        // Read once, here, and carried on the
+                                        // `Pick`. The label and the value the
+                                        // handler writes come from this one
+                                        // reading, so they cannot disagree.
+                                        let on = server.enabled;
                                         descended = Some((
                                             Picker::new(
                                                 format!("{}?", server.id),
@@ -1642,11 +1647,28 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                         "change one setting",
                                                         io_cli::servers::KEYS.join(", "),
                                                     ),
+                                                    // **The reversible verb, beside
+                                                    // the one that is not.** Removing
+                                                    // takes the entry and everything
+                                                    // the operator typed into it;
+                                                    // this changes one word and
+                                                    // leaves the server configured,
+                                                    // listed, and one keystroke from
+                                                    // coming back.
+                                                    Row::with_detail(
+                                                        if on {
+                                                            "switch it off"
+                                                        } else {
+                                                            "switch it back on"
+                                                        },
+                                                        io_cli::servers::OLDER_BINARY,
+                                                    ),
                                                 ],
                                             ),
                                             Pick::McpRemove {
                                                 id: server.id.clone(),
                                                 at,
+                                                enabled: on,
                                             },
                                         ));
                                     }
@@ -1670,7 +1692,53 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // Row 2 is the edit verb, and it descends rather than
                         // acting: which key is half the decision, and the other
                         // half is a value only the operator can type.
-                        Pick::McpRemove { id, at } => {
+                        Pick::McpRemove { id, at, enabled } => {
+                            // Row 3 — the toggle. `servers::switch` is the same
+                            // function `io mcp disable <id>` reaches through
+                            // `manage::plan`, so the two doors write identical
+                            // bytes and neither is the real one. `!*enabled` is
+                            // the state read when the row was drawn, never a
+                            // second reading of the file.
+                            if index == 3 {
+                                let edit = io_cli::servers::switch(at, !*enabled);
+                                match io_cli::configure::write(session.root(), at.scope, &[edit]) {
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!(
+                                                    "{id} was switched but the configuration \
+                                                     would not read back: {error}"
+                                                ),
+                                            ),
+                                        }
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{id} is {}; it is still configured, and the \
+                                                 change is in force from the next turn",
+                                                if *enabled { "switched off" } else { "on again" },
+                                            ),
+                                        );
+                                        // `record` and never `say`: this is the
+                                        // half an operator has to still be able to
+                                        // read, and the footer is one slot the next
+                                        // keystroke takes back.
+                                        app.record(
+                                            Tone::Muted,
+                                            io_cli::servers::OLDER_BINARY.to_string(),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
                             if index == 2 {
                                 descended = Some((
                                     Picker::new(
@@ -1760,7 +1828,63 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             enabled,
                             action_at,
                         } => {
-                            // Every row but one is a fact to read.
+                            // Every row but the last two is a fact to read. The two
+                            // that act are the removal at `action_at` and the
+                            // toggle immediately after it.
+                            //
+                            // **The toggle acts here rather than descending**, and
+                            // that asymmetry with the removal beside it is
+                            // deliberate: removing takes the operator's entry and
+                            // everything they typed into it, and this changes one
+                            // word that the same row switches straight back. A
+                            // confirmation is owed to an act that cannot be undone
+                            // in a keystroke; asking for one here would be asking
+                            // twice for something reversible.
+                            if index == *action_at + 1 {
+                                match io_cli::pluginview::declared_at(session.root(), bundle) {
+                                    Some((scope, at)) => {
+                                        let edit = if *enabled {
+                                            io_cli::pluginview::disable(at)
+                                        } else {
+                                            io_cli::pluginview::enable(at)
+                                        };
+                                        match io_cli::configure::write(
+                                            session.root(),
+                                            scope,
+                                            &[edit],
+                                        ) {
+                                            Ok(()) => {
+                                                app.record(
+                                                    Tone::Success,
+                                                    format!(
+                                                        "{id} is {}; its entry and its directory \
+                                                         are both untouched, and the change is in \
+                                                         force from the next turn",
+                                                        if *enabled {
+                                                            "switched off"
+                                                        } else {
+                                                            "on again"
+                                                        },
+                                                    ),
+                                                );
+                                                app.record(
+                                                    Tone::Muted,
+                                                    io_cli::pluginview::OLDER_BINARY.to_string(),
+                                                );
+                                            }
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                        }
+                                    }
+                                    None => app.record(
+                                        Tone::Refused,
+                                        format!(
+                                            "no `[[plugin]]` entry in any scope names {}; \
+                                             nothing was switched",
+                                            bundle.display()
+                                        ),
+                                    ),
+                                }
+                            }
                             if index == *action_at {
                                 // **One act, one wording, and the flag decides it
                                 // once.** The row this descends from already says
@@ -2063,6 +2187,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     }
                                     .to_string(),
                                     "removes its `[[plugin]]` entry".to_string(),
+                                ));
+                                // **The reversible verb, beside the one that is
+                                // not**, at `action_at + 1`. Removing takes the
+                                // entry; this changes one word and leaves the
+                                // bundle declared, listed under its own mark, and
+                                // one keystroke from coming back. Pushed after
+                                // `action_at` was taken, so the removal's index is
+                                // still the length of what was already there.
+                                rows.push(Row::with_detail(
+                                    if plugin.enabled {
+                                        "switch it off"
+                                    } else {
+                                        "switch it back on"
+                                    }
+                                    .to_string(),
+                                    io_cli::pluginview::OLDER_BINARY.to_string(),
                                 ));
                                 descended = Some((
                                     Picker::new(plugin.id.clone(), rows),
@@ -3263,10 +3403,37 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // nothing to open: the file is markdown an operator
                             // edits in their own editor, and `/remember` is the
                             // one writer this product gives it.
-                            Some(io_cli::commands::Held::File(file)) => app.record(
-                                Tone::Muted,
-                                io_cli::commands::instruction_said(file, &app.theme.glyphs),
-                            ),
+                            Some(io_cli::commands::Held::File(file)) => {
+                                app.record(
+                                    Tone::Muted,
+                                    io_cli::commands::instruction_said(file, &app.theme.glyphs),
+                                );
+                                // **The file's own bullets, addressable at last.**
+                                // Through 0.29.0 this row printed a sentence and
+                                // stopped, with a comment saying there was nothing
+                                // to open because the file is markdown an operator
+                                // edits elsewhere and `/remember` is the one writer
+                                // this product gives it. That was true and it was
+                                // half a surface: a list this interface can grow is
+                                // a list it should be able to prune.
+                                let notes = io_cli::memory::notes(session.root(), file.scope);
+                                if notes.is_empty() {
+                                    app.record(
+                                        Tone::Muted,
+                                        "it holds no bullets, so there is nothing here to \
+                                         change; `/remember` writes one"
+                                            .to_string(),
+                                    );
+                                } else {
+                                    descended = Some((
+                                        Picker::new(
+                                            io_cli::memory::file_name(file.scope).to_string(),
+                                            io_cli::commands::note_rows(&notes),
+                                        ),
+                                        Pick::Instruction(notes),
+                                    ));
+                                }
+                            }
                             // A note has two verbs on it and a picker has one
                             // Enter, so the row descends into them — the same
                             // replace-in-place `Pick::Complete` uses, and the
@@ -3296,6 +3463,107 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `io_cli::commands`, so what an outcome is called is a
                         // decision a test can stand on rather than a string in a
                         // file nothing links.
+                        Pick::Instruction(notes) => {
+                            if let Some(note) = notes.get(index) {
+                                // **The note's own text goes into the composer.**
+                                // Editing needs typed input and this interface has
+                                // exactly one place to type; putting the current
+                                // text there means "replace it" starts from what is
+                                // there rather than from nothing, which is the
+                                // difference between editing a note and retyping
+                                // it. `/remember` already establishes the order —
+                                // type the line, then pick the file.
+                                app.composer.set(&note.text);
+                                let carried = note.carries();
+                                descended = Some((
+                                    Picker::new(
+                                        format!("line {}?", note.numbered()),
+                                        vec![
+                                            Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                            Row::with_detail(
+                                                "replace it with what is in the prompt".to_string(),
+                                                "the line's indent and its `-` are the file's and \
+                                                 are not touched"
+                                                    .to_string(),
+                                            ),
+                                            Row::with_detail(
+                                                "forget it".to_string(),
+                                                if carried == 0 {
+                                                    "removes this line and leaves every other \
+                                                     byte of the file alone"
+                                                        .to_string()
+                                                } else {
+                                                    // The `import` shape, said out
+                                                    // loud on the screen where the
+                                                    // operator commits to it.
+                                                    format!(
+                                                        "removes this line only; the {carried} \
+                                                         line{} under it stay, and stay in every \
+                                                         prompt",
+                                                        if carried == 1 { "" } else { "s" },
+                                                    )
+                                                },
+                                            ),
+                                        ],
+                                    ),
+                                    Pick::InstructionVerb(note.clone()),
+                                ));
+                            }
+                        }
+                        Pick::InstructionVerb(note) => {
+                            let root = session.root().to_path_buf();
+                            if index == 1 {
+                                let replacement = app.composer.text();
+                                match io_cli::memory::amend(&root, note, &replacement) {
+                                    Ok(path) => {
+                                        app.composer.clear();
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "line {} of {} is replaced; it is in force from \
+                                                 the next turn",
+                                                note.numbered(),
+                                                path.display(),
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                            if index == 2 {
+                                match io_cli::memory::forget(&root, note) {
+                                    Ok(path) => app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "line {} of {} is gone; every other byte of the file \
+                                             is unchanged",
+                                            note.numbered(),
+                                            path.display(),
+                                        ),
+                                    ),
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                        }
+                        // Index 0 is `store::LEAVE_IT` and does nothing, asserted on
+                        // the index rather than the label everywhere this shape is
+                        // used in the product.
+                        Pick::Unforget { key, restore } => {
+                            if io_cli::store::acts(index) {
+                                let root = session.root().to_path_buf();
+                                match io_cli::recall::unforget(&store, &root, *restore) {
+                                    Ok(keys) => {
+                                        let (tone, said) =
+                                            io_cli::commands::unforgotten_said(key, &keys);
+                                        app.record(tone, said);
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!("{key} was not put back: {error}"),
+                                    ),
+                                }
+                            }
+                        }
                         Pick::Remembered { scope, key, verbs } => {
                             if let Some(verb) = verbs.get(index) {
                                 let root = session.root().to_path_buf();
@@ -3326,6 +3594,51 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                     &app.theme.glyphs,
                                                 );
                                                 app.record(tone, said);
+                                                // **The restore id is spent here or
+                                                // it is spent nowhere.**
+                                                // `forgotten_said` names the run
+                                                // holding the way back, and through
+                                                // 0.29.0 that sentence was the end
+                                                // of it: the operator was told a way
+                                                // back existed and handed nothing to
+                                                // take it with, while
+                                                // `recall::unforget` sat public,
+                                                // tested and called by no keystroke.
+                                                //
+                                                // Offered rather than taken — they
+                                                // asked to forget it — and
+                                                // `store::acts` decides it the way
+                                                // it decides every confirmation in
+                                                // this product: row 0 declines.
+                                                if let io_cli::recall::Forgotten::Removed {
+                                                    restore,
+                                                } = outcome
+                                                {
+                                                    descended = Some((
+                                                        Picker::new(
+                                                            format!("{key} is withdrawn"),
+                                                            vec![
+                                                                Row::with_detail(
+                                                                    io_cli::store::LEAVE_IT
+                                                                        .to_string(),
+                                                                    "the withdrawal stands"
+                                                                        .to_string(),
+                                                                ),
+                                                                Row::with_detail(
+                                                                    "put it back".to_string(),
+                                                                    format!(
+                                                                        "restores it from run \
+                                                                         {restore}'s restore point"
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        Pick::Unforget {
+                                                            key: key.clone(),
+                                                            restore,
+                                                        },
+                                                    ));
+                                                }
                                             }
                                             Err(error) => app.record(
                                                 Tone::Error,
@@ -4428,21 +4741,194 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         Pick::Provider { add_at },
                     ));
                 }
-                Action::Profile => {
+                Action::Profile(io_cli::commands::ProfileVerb::List) => {
                     let names = io_cli::configure::profiles(&config);
                     if names.is_empty() {
-                        // The "not configured" shape again: an absent section is
-                        // not an error, and `[profile.<name>]` is io-harness's
-                        // own spelling rather than something to explain here.
+                        // **An empty list is now an offer rather than a full
+                        // stop.** An absent section is not an error, and
+                        // `[profile.<name>]` is io-harness's own spelling — but
+                        // until 0.30.0 this sentence was the whole of the surface
+                        // for the operator who had never written one, which is
+                        // exactly the operator a create verb is for.
                         app.record(
                             Tone::Muted,
-                            "this configuration declares no `[profile.<name>]` sections",
+                            "this configuration declares no `[profile.<name>]` sections; \
+                             `/profile create <name>` writes one",
                         );
                     } else {
                         let rows: Vec<Row> =
                             names.iter().map(|name| Row::new(name.clone())).collect();
                         picker = Some((Picker::new("Which profile?", rows), Pick::Profile(names)));
                     }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Create(name)) => {
+                    match io_cli::configure::create_profile(&name) {
+                        Err(refusal) => app.record(Tone::Refused, refusal),
+                        Ok(edit) => {
+                            // **User scope, and stated.** A profile has no key
+                            // already deciding it — that is what makes it new — so
+                            // the scope rule's "user scope when no file names it"
+                            // arm is the one that applies. It is also the only
+                            // honest default: a project `io.toml` is committed, and
+                            // writing somebody's personal profile into a shared file
+                            // is a decision they did not make.
+                            let scope = io_harness::config::Scope::User;
+                            match io_cli::configure::write(session.root(), scope, &[edit]) {
+                                Err(refusal) => app.record(Tone::Refused, refusal),
+                                Ok(()) => {
+                                    match io_cli::configure::reload(session.root()) {
+                                        Ok((fresh, stored)) => {
+                                            capabilities = io_cli::contract::Capabilities::stored(
+                                                stored.as_ref(),
+                                            );
+                                            config = fresh;
+                                        }
+                                        Err(error) => app.record(Tone::Error, error),
+                                    }
+                                    app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "`[profile.{}]` is written to the {} file; it is empty \
+                                             until `/config --scope user` puts keys in it, and \
+                                             `/profile` switches to it",
+                                            name.trim(),
+                                            io_cli::configure::Decided::File {
+                                                scope,
+                                                path: Default::default(),
+                                            }
+                                            .word()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Remove(name)) => {
+                    let name = name.trim().to_string();
+                    if name.is_empty() {
+                        app.record(
+                            Tone::Refused,
+                            "`/profile remove` needs the name of a profile".to_string(),
+                        );
+                    } else {
+                        // **Removed from the file that declares it**, found by
+                        // reading each source rather than assumed to be the user
+                        // scope — a profile may perfectly well live in a project
+                        // file, and removing it from somewhere else would report a
+                        // successful write that removed nothing. Highest
+                        // precedence first, which is the order `Config` layers.
+                        let found = config.sources().iter().rev().find_map(|(scope, path)| {
+                            let text = std::fs::read_to_string(path).ok()?;
+                            io_cli::configure::remove_profile(&text, &name)
+                                .ok()
+                                .map(|edits| (*scope, edits))
+                        });
+                        match found {
+                            None => app.record(
+                                Tone::Refused,
+                                format!(
+                                    "no configuration file in force declares `[profile.{name}]`; \
+                                     the ones that are declared are {}",
+                                    match io_cli::configure::profiles(&config).as_slice() {
+                                        [] => "none at all".to_string(),
+                                        names => names
+                                            .iter()
+                                            .map(|found| format!("`{found}`"))
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    }
+                                ),
+                            ),
+                            Some((scope, edits)) => {
+                                let headers = edits.len();
+                                match io_cli::configure::write(session.root(), scope, &edits) {
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(Tone::Error, error),
+                                        }
+                                        // The header count, because a profile with
+                                        // sub-tables is more than one section and an
+                                        // operator who wrote `[profile.x.run]` should
+                                        // see that it went too.
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "`[profile.{name}]` is removed from the {} file \
+                                                 ({headers} section{}); every other byte of it is \
+                                                 unchanged",
+                                                io_cli::configure::Decided::File {
+                                                    scope,
+                                                    path: Default::default(),
+                                                }
+                                                .word(),
+                                                if headers == 1 { "" } else { "s" },
+                                            ),
+                                        );
+                                        if profile.as_deref() == Some(name.as_str()) {
+                                            // The overlay in force was this
+                                            // profile's. Leaving the name set would
+                                            // put a profile that no longer exists on
+                                            // the status line and fail at the next
+                                            // turn boundary.
+                                            profile = None;
+                                            app.record(
+                                                Tone::Muted,
+                                                "it was the profile in force, so this session is \
+                                                 back to no profile"
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Clear) => {
+                    if profile.is_none() {
+                        app.record(Tone::Muted, "no profile is in force".to_string());
+                    } else {
+                        // **Nothing is written, because nothing was.** A switch is
+                        // a session overlay; clearing it is re-discovering the
+                        // files without one, which is what the next turn boundary
+                        // would have done anyway had the name not been kept.
+                        match io_cli::configure::reload(session.root()) {
+                            Ok((fresh, stored)) => {
+                                capabilities =
+                                    io_cli::contract::Capabilities::stored(stored.as_ref());
+                                config = fresh;
+                                profile = None;
+                                app.record(
+                                    Tone::Success,
+                                    "no profile is in force from the next turn; nothing was \
+                                     written"
+                                        .to_string(),
+                                );
+                            }
+                            Err(error) => app.record(Tone::Error, error),
+                        }
+                    }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Unknown(word)) => {
+                    // Refused by name and never guessed at, which is `/effort`'s
+                    // rule for the same reason: choosing the nearest verb here
+                    // would remove a profile the operator did not name.
+                    app.record(
+                        Tone::Refused,
+                        format!(
+                            "`{word}` is not something `/profile` does; the verbs are `create`, \
+                             `remove` and `clear`, and `/profile` on its own switches"
+                        ),
+                    );
                 }
                 Action::Config(None) => {
                     // **What the routing rules say, and where they will not fire**,
@@ -4657,7 +5143,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // fifth `contract::session` call, which `tests/contract.rs`
                     // counts and fails at five. It is the same reason `/compact`
                     // reads `opening.compaction`.
-                    let remembered = io_cli::recall::view(&store, &root, &opening, None);
+                    // **The run whose trace to read, and through 0.29.0 this was
+                    // `None`.** `recall::view` has always taken an `Option<i64>`
+                    // and the only caller in this file never named a run, so
+                    // `View::trace` was empty in production and the evictions, pin
+                    // refusals and recalls io-harness records as `ContextEvent`
+                    // rows — the three that emit no `EventKind` at all, and so
+                    // have no other witness anywhere — had never once reached an
+                    // operator. `recall::trace`, `kind_label`, `Happened` and
+                    // `Noted` were all public, all tested, and all unreachable
+                    // behind this one argument.
+                    //
+                    // The session's own last turn, which is the anchor `/undo` and
+                    // `/export` already take: not a guess about which run was
+                    // meant, and `None` before the first turn, which is the honest
+                    // empty rather than somebody else's history.
+                    let ran = last_run(&session, &store).map(|turn| turn.run_id);
+                    let remembered = io_cli::recall::view(&store, &root, &opening, ran);
                     // A store that will not answer loses the second list and
                     // keeps the first. The two halves have nothing to do with
                     // each other — one is markdown on disk — and dropping the
@@ -4666,6 +5168,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let (entries, cut) = match &remembered {
                         Ok(view) => {
                             for note in io_cli::commands::memory_notes(view, &app.theme.glyphs) {
+                                app.record(Tone::Muted, note);
+                            }
+                            for note in io_cli::commands::trace_notes(view, &app.theme.glyphs) {
                                 app.record(Tone::Muted, note);
                             }
                             (view.entries.clone(), view.draws_cut)
@@ -7463,6 +7968,14 @@ enum Pick {
     McpRemove {
         id: String,
         at: io_cli::servers::At,
+        /// Whether the file currently lets this server start.
+        ///
+        /// Carried from the row the operator chose, so the toggle's **label** and
+        /// the **value it writes** are decided once, from one reading. Working the
+        /// state out again in the handler would be a second reading of a file that
+        /// may have changed in between, and the two could disagree — offering
+        /// "switch it off" and then writing `true`.
+        enabled: bool,
     },
     /// One link of the provider chain, and where it is declared. `first` decides
     /// whether promoting it is offered at all: a control that is drawn and does
@@ -7740,7 +8253,7 @@ enum Pick {
         unset_at: usize,
         elsewhere_at: usize,
     },
-    /// One bundle's contributions, and the one thing that can be done about it.
+    /// One bundle's contributions, and the two things that can be done about it.
     ///
     /// `bundle` is the resolved directory, which is the only thing a row on screen
     /// and an entry in a file genuinely share — `Config::plugins()` reports neither
@@ -7748,7 +8261,11 @@ enum Pick {
     /// is what `pluginview::declared_at` matches on to find the entry.
     ///
     /// `action_at` is where the removal row sits, recorded by the code that built
-    /// the rows rather than recomputed here.
+    /// the rows rather than recomputed here. **Since 0.30.0 the toggle sits
+    /// immediately after it, at `action_at + 1`**, and it is pushed *after*
+    /// `action_at` is taken — so the removal's index stays the length of what was
+    /// already there, which is what makes it impossible to get wrong. The two act;
+    /// every row before them is a fact to read.
     ///
     /// `enabled` is `pluginview::Listed::enabled`, carried so the confirmation
     /// below words the act the same way the row that opened it did. A bundle
@@ -7837,6 +8354,29 @@ enum Pick {
         key: String,
         verbs: Vec<io_cli::commands::Verb>,
     },
+    /// One instruction file's bullets, in the order they sit in the file.
+    ///
+    /// The `Note`s are carried whole rather than re-read on the next keystroke,
+    /// because a note carries the text it was drawn from and `memory::amend` and
+    /// `memory::forget` compare that against what is on the line now. Re-reading
+    /// here would refresh the very staleness they exist to catch.
+    Instruction(Vec<io_cli::memory::Note>),
+    /// The two verbs on one note, and the note they act on.
+    ///
+    /// A picker has one Enter and a note has two verbs, so the row descends — the
+    /// same shape `Pick::Remembered` takes for the agent's own memory beside it.
+    InstructionVerb(io_cli::memory::Note),
+    /// The way back out of a withdrawal, held between the keystroke that made it
+    /// and the one that may take it.
+    ///
+    /// `restore` is `recall::forget`'s own answer and is never re-derived here:
+    /// that function's note names the two other run ids that look right and says
+    /// what each of them would restore instead, which is a different set of
+    /// entries and a silent one.
+    Unforget {
+        key: String,
+        restore: i64,
+    },
 }
 
 /// The picker that asks which file a `key = value` write goes into.
@@ -7862,7 +8402,12 @@ enum Pick {
 /// Every decision is `crate::manage`'s. This function chooses no scope, spells no
 /// refusal and builds no edit — it prints what the library returned and writes
 /// what the library planned, so this arm and the slash form cannot disagree.
-fn manage_main(
+// **Async since 0.30.0, and only because of `probe`.** Every other verb here reads
+// or writes a file. A probe starts somebody's server, completes the MCP handshake
+// and asks it for its tools, which is `io_harness::probe_mcp` and is async — so the
+// door is async rather than blocking on a runtime of its own inside a program that
+// already has one.
+async fn manage_main(
     root: &std::path::Path,
     config: &io_harness::config::Config,
     tokens: &[String],
@@ -7985,6 +8530,20 @@ fn manage_main(
                 );
             }
         }
+        // **The probe runs on the door, because `plan` answers `None` for it.** It
+        // changes no configuration file — there is no `Edit` for "go and look" — so
+        // the act lives in `servers::probe`, which both doors call, and the sentence
+        // is `servers::probed`'s, so neither door words an outcome for itself.
+        //
+        // It is the one verb here that starts somebody else's program. io-harness
+        // checks the policy before it spawns or dials, and shuts the server down on
+        // every path that started one; io-cli adds no timeout and no retry of its
+        // own.
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Probe { id }) => {
+            let policy = config.policy().unwrap_or_default();
+            let probe = io_cli::servers::probe(config, id, &policy).await?;
+            println!("{}", io_cli::servers::probed(id, &probe));
+        }
         _ => {}
     }
     let Some(plan) = io_cli::manage::plan(root, &request)? else {
@@ -8032,6 +8591,22 @@ fn manage_main(
             "{}",
             io_cli::preflight::line(&io_cli::preflight::check(server, &policy))
         );
+    }
+    // **What the key costs an older binary, on stderr, after the write.** Same shape
+    // as the preflight above and for the same reason: a disclosure, not a veto.
+    //
+    // The sentence is `servers::OLDER_BINARY` and **not**
+    // `pluginview::OLDER_BINARY`, because the two costs are opposite and only one of
+    // them is silent. A `[[plugin]]` carrying `enabled` makes the whole file
+    // unreadable to an io-harness 0.69.0 binary, which is loud and self-announcing. A
+    // `[[mcp]]` one is *ignored* by that binary — so the server the operator just
+    // switched off starts anyway, and nothing anywhere says so. Reusing one string
+    // for both would put the reassuring half in front of the dangerous case.
+    if let io_cli::manage::Request::Mcp(
+        io_cli::manage::McpVerb::Enable { .. } | io_cli::manage::McpVerb::Disable { .. },
+    ) = &request
+    {
+        eprintln!("{}", io_cli::servers::OLDER_BINARY);
     }
     Ok(io_cli::exec::OK)
 }

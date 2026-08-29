@@ -702,6 +702,31 @@ pub fn enable(index: usize) -> crate::edit::Edit {
     crate::edit::Edit::set(format!("plugin[{index}].enabled"), "true")
 }
 
+/// The edit that switches the `index`-th declared bundle **off**.
+///
+/// [`enable`]'s write with the other value, and everything that function says
+/// about one key and no other byte holds here word for word.
+///
+/// **It is not [`remove`], and the difference is the whole verb.** A removal takes
+/// the `[[plugin]]` entry away: the bundle stops being declared, disappears from
+/// [`rows`] entirely, and switching it back on means finding the directory again
+/// and typing the path. This leaves the entry exactly where it is with one word
+/// changed, so the bundle goes on being listed — under [`DISABLED_MARK`], with
+/// "switched off" leading its detail — and the way back on is the same keystroke
+/// again. An operator who wanted a bundle *gone* has `remove`; one who wanted it
+/// *quiet* had nothing until this.
+///
+/// Says [`OLDER_BINARY`] to the operator at the moment of writing, for the reason
+/// [`add_off`] does — and that sentence is the `[[plugin]]` one, which is not
+/// [`crate::servers::OLDER_BINARY`]. A 0.69.0 binary refuses this whole file; it
+/// ignores the same key in an `[[mcp]]` entry and runs the server.
+///
+/// `index` is an index into the file's `[[plugin]]` array, with [`remove`]'s own
+/// warning: it is not a row number from [`rows`].
+pub fn disable(index: usize) -> crate::edit::Edit {
+    crate::edit::Edit::set(format!("plugin[{index}].enabled"), "false")
+}
+
 /// The last `[[plugin]]` entry of a configuration file, when it was declared off.
 ///
 /// **The evidence of what was just written, rather than a second reading of what
