@@ -30,15 +30,25 @@
 //!
 //! # Why this crate computes the answer instead of asking for it
 //!
-//! `authorize_spawn`, `NetGuard` and `net::target` are all `pub(crate)`. There is
-//! no embedder-reachable call that answers "would this server start", so the only
-//! ways to know are to run a turn and find out, or to ask the same question of the
-//! same public [`Policy`] the harness will ask it of. This module does the second:
-//! every verdict here comes from `Policy::check`, which *is* `Policy::explain`
+//! `authorize_spawn` and `NetGuard` are `pub(crate)`. There is no
+//! embedder-reachable call that answers "would this server start", so the only ways
+//! to know are to run a turn and find out, or to ask the same question of the same
+//! public [`Policy`] the harness will ask it of. This module does the second: every
+//! verdict here comes from `Policy::check`, which *is* `Policy::explain`
 //! (`src/policy.rs:594-596`) and is therefore the same function that enforces.
-//! Nothing about permission is decided in this file. What is reproduced here is one
-//! string transform — see [`target`] — and that copy is the module's whole risk
-//! surface.
+//! Nothing about permission is decided in this file.
+//!
+//! **Nothing is reproduced here either, as of io-harness 0.71.0.** Until then this
+//! module carried its own copy of `net::target`, because that function was
+//! `pub(crate)`. The copy's own documentation said it could drift silently, and it
+//! had: it was byte-for-byte the pre-0.71.0 implementation, which fails open on five
+//! URL shapes — `https://user@/x`, `https://[]/x`, `https://[::1]:/x`,
+//! `https://[/x`, and worst `https://[::1]evil.com/x`, where the bracket branch
+//! takes `[::1]` as the host, discards the real authority, and hands back a target a
+//! policy allowing `[::1]` will match. io-harness#221 made the function public and
+//! fixed all five; io-cli now calls it. **A permission check must only ever fail
+//! closed, and the deleted copy failed open**, which is why the deletion is a
+//! security fix rather than a tidy-up.
 //!
 //! # It is a disclosure, not a veto
 //!
@@ -77,74 +87,8 @@
 //! tighten defaults and a deny is absolute across layers, so a hidden layer cannot
 //! turn a refusal here into a start there.
 
+use io_harness::net::target;
 use io_harness::{Act, Effect, McpServer, McpTransport, Policy};
-
-/// The policy target for `url`: its host and port as `host:port`.
-///
-/// **This is a deliberate copy of io-harness's `net::target`** (0.69.0,
-/// `src/net.rs:187-219`), which is `pub(crate)` and therefore unreachable from
-/// here. It is not a re-derivation of "how to parse a URL" and must never become
-/// one: the only correct behaviour is whatever that function does, including the
-/// parts a URL library would do differently.
-///
-/// **It can drift from its original silently.** Nothing links the two — no trait,
-/// no test upstream can fail on this crate's behalf, and a `patch` release of
-/// io-harness that tightened the authority split would leave this file compiling,
-/// passing, and answering a question the runtime answers differently. A drift that
-/// makes this stricter costs a false refusal in a report; a drift that makes it
-/// looser makes the preflight lie. That is why `tests/preflight.rs` enumerates the
-/// cases — the scheme table, the userinfo drop, both IPv6 spellings, every shape
-/// that returns `None` — instead of asserting one happy path. The gate is the
-/// enumeration; a single `https://example.com` assertion would pass against almost
-/// any URL parser ever written and prove nothing about this one.
-///
-/// The rules, as upstream states and implements them:
-///
-/// * split once on `://`; no `://` at all is `None`.
-/// * the authority ends at the first `/`, `?` or `#`, and an empty authority is
-///   `None`.
-/// * userinfo before an `@` is dropped — credentials are not part of the host.
-/// * the port is filled from the scheme when the URL omits it: `https`/`wss` → 443,
-///   `http`/`ws` → 80. **Any other scheme is `None`**, because it never opens a
-///   connection the net act governs.
-/// * an IPv6 literal keeps its brackets (`[::1]` → `[::1]:443`), which is what makes
-///   the trailing `:port` split unambiguous.
-///
-/// A `None` is not permission to proceed. See [`check`], which turns it into a
-/// refusal for the same reason `NetGuard::check` does.
-pub fn target(url: &str) -> Option<String> {
-    let (scheme, rest) = url.split_once("://")?;
-    // Authority ends at the first '/', '?', or '#'.
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .filter(|a| !a.is_empty())?;
-    // Drop any userinfo; credentials are not part of the host.
-    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-
-    let default_port = match scheme.to_ascii_lowercase().as_str() {
-        "https" | "wss" => "443",
-        "http" | "ws" => "80",
-        _ => return None,
-    };
-
-    if let Some(close) = hostport.strip_prefix('[').and_then(|_| hostport.find(']')) {
-        // IPv6 literal: [::1] or [::1]:8080
-        let host = &hostport[..=close];
-        return match hostport[close + 1..].strip_prefix(':') {
-            Some(port) if !port.is_empty() => Some(format!("{host}:{port}")),
-            _ => Some(format!("{host}:{default_port}")),
-        };
-    }
-
-    match hostport.split_once(':') {
-        Some((host, port)) if !host.is_empty() && !port.is_empty() => {
-            Some(format!("{host}:{port}"))
-        }
-        Some(_) => None,
-        None => Some(format!("{hostport}:{default_port}")),
-    }
-}
 
 /// What the policy said about starting one server.
 ///
@@ -232,7 +176,7 @@ impl Preflight {
 /// Both branches ask the same public `Policy::check` the harness asks, with the
 /// same act and the same target spelling, so a verdict here is the verdict there.
 ///
-/// **The `None` from [`target`] is a refusal and not an absence.** `NetGuard::check`
+/// **The `None` from [`io_harness::net::target`] is a refusal and not an absence.** `NetGuard::check`
 /// refuses an unparseable target outright (`net.rs:275-284`) — "an unchecked
 /// connection is exactly what this guard exists to prevent". Reporting it as
 /// "nothing to check" would print *permitted* for a server the runtime is certain to
