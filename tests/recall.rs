@@ -569,6 +569,189 @@ async fn f8_eviction_refusal_and_recall_are_read_from_the_trace() {
         view.trace.iter().any(|n| n.happened == Happened::Recalled),
         "the second run recalled too",
     );
+
+    // --- 0.30.0 F6: the same three, through `view`, for a real run id --------
+    //
+    // Not a second fixture. Producing a genuine eviction, a genuine refusal and a
+    // genuine recall costs two scripted turns of io-harness's own run loop, and
+    // this test has already paid for them — so the criterion that `View::trace`
+    // carries all three for a run that produced them is asserted here, against the
+    // run that produced them.
+    let ran =
+        recall::view(&store, workspace.path(), &task, Some(first.run_id)).expect("the view reads");
+    assert!(
+        !ran.trace.is_empty(),
+        "SABOTAGE: this is the arm that reddens when the caller goes back to \
+         passing `None`, which is what io-cli shipped through 0.29.0 — an empty \
+         trace beside a store that had been evicting, refusing and recalling all \
+         along",
+    );
+    for expected in [Happened::Evicted, Happened::Refused, Happened::Recalled] {
+        assert!(
+            ran.trace.iter().any(|note| note.happened == expected),
+            "the run {expected:?} something and the view does not say so; \
+             `View::trace` is the only place any of the three exists, because \
+             io-harness emits no `EventKind` for them",
+        );
+    }
+    assert!(
+        details(&ran.trace, Happened::Evicted)[0].contains("beta"),
+        "io-harness's own sentence rides through the view and not only through \
+         `trace` — a page that said a note had been dropped without naming which \
+         one would be telling an operator to go and look for it",
+    );
+
+    // The shipped behaviour, stated rather than assumed: `None` really is empty,
+    // so the assertion above is a test of the run id reaching the call and not of
+    // the fixture being lively.
+    assert!(
+        recall::view(&store, workspace.path(), &task, None)
+            .expect("the view reads")
+            .trace
+            .is_empty(),
+        "`None` is a view with no trace, deliberately — which is exactly why the \
+         driver passing it made the whole trace half of this module unreachable",
+    );
+
+    assert_eq!(
+        [Happened::Evicted, Happened::Refused, Happened::Recalled].map(Happened::label),
+        ["evicted", "refused", "recalled"],
+        "each has a word, and it is `refused` rather than `failed`: the write did \
+         not fail, io-harness declined it because an operator had pinned the entry \
+         — which is the pin working. A reader told it failed goes looking for a \
+         broken store.",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.30.0 F5 and F6 — the driver gates
+//
+// **The `f6_` and `f8_` tests above are 0.29.0's criteria and are not these.**
+// Criteria are numbered per release, so the two tests below carry the release in
+// their names and nothing else in this file does.
+//
+// Both criteria assert something about `src/main.rs`, which nothing under
+// `tests/` links: `[[bin]] name = "io"` is a separate compilation and a test
+// binary cannot call into it. The established answer in this repository is a
+// driver-text gate — see `tests/contract.rs:303`, `:336`, `:369` and
+// `tests/context_share.rs:526` — and it is weak in exactly one way, which is why
+// the comments come off first.
+// ---------------------------------------------------------------------------
+
+/// `src/main.rs`, with every comment taken off before anything is matched.
+///
+/// **Copied from `tests/structure.rs:137` rather than shared, because a test
+/// binary cannot import another's helper**, and the reason it exists is worth
+/// repeating: 0.14.0 shipped a gate that asserted the driver contained
+/// `EventKind::Dialed` and was satisfied by a *comment* naming it — a green test
+/// over code that had none of it. Every patch these two gates are written against
+/// carries a paragraph of prose naming the very calls they assert on, so without
+/// the stripping they would pass on the prose alone.
+fn driver_without_comments() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(path).expect("the driver is readable");
+    text.lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **0.30.0 F5 — a forgotten agent memory is restored.**
+///
+/// `recall::forget` has returned a restore id since 0.29.0 and `recall::unforget`
+/// has been able to spend one for just as long. Nothing in `src/` ever did:
+/// `commands::forgotten_said` formatted the id into a sentence — *run 42 holds the
+/// way back* — and the id then went out of scope. The operator was told there was
+/// a way back and given no way to take it, which is worse than not offering one.
+///
+/// Counted rather than `contains`, which is this suite's recorded vacuous-gate
+/// shape: one call satisfies a `contains` forever, so it could never catch the
+/// site going missing again.
+///
+/// Sabotage: drop the call site and keep `tests/recall.rs`'s
+/// `f7_forgetting_removes_the_entry_and_leaves_a_way_back`, which drives
+/// `recall::unforget` for real and would stay green over a function no keystroke
+/// reaches — which is precisely the tested-but-uncalled shape this product has now
+/// shipped in more than one release.
+#[test]
+fn v0_30_0_f5_the_driver_spends_the_restore_id_rather_than_only_printing_it() {
+    let text = driver_without_comments();
+    // **Whitespace-collapsed before the pattern match, and that is not a
+    // weakening.** `rustfmt` decides where a pattern breaks across lines from the
+    // indent it happens to sit at, so a gate matching the source bytes of a
+    // destructuring asserts the formatter's arithmetic as much as the code's
+    // meaning — it goes red when somebody wraps an unrelated block one level
+    // deeper. What is being asserted is that the driver destructures the id out of
+    // `forget`'s own answer, and that survives collapsing runs of whitespace to
+    // one space.
+    let flat = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+    assert_eq!(
+        text.matches("io_cli::recall::unforget(").count(),
+        1,
+        "exactly one keystroke puts a withdrawn note back, and it is in code \
+         rather than in a sentence about code",
+    );
+    assert!(
+        flat.contains("io_cli::recall::Forgotten::Removed { restore, } = outcome")
+            || flat.contains("io_cli::recall::Forgotten::Removed { restore } = outcome"),
+        "the id is the one `recall::forget` just answered with and never a run id \
+         found some other way — `recall::forget`'s own note gives the two \
+         plausible wrong ids and what each of them restores instead",
+    );
+    assert!(
+        text.contains("Pick::Unforget {"),
+        "and it is spent through a confirmation rather than immediately: the \
+         operator asked to forget the note, so putting it back is a second \
+         question and `store::acts` decides it the way it decides every other \
+         one — row 0 declines",
+    );
+}
+
+/// **0.30.0 F6 — `/memory` shows what the store recorded about the run.**
+///
+/// The library side has been right since 0.29.0 and unreachable for just as long:
+/// `recall::view`'s `run` parameter is an `Option<i64>` and the one caller in
+/// `src/main.rs` passed `None`, so `View::trace` was empty in production, and
+/// `recall::trace`, `Happened` and `Noted` were reachable from `tests/recall.rs`
+/// and from nowhere an operator could stand.
+///
+/// **The `None` is the shipped behaviour, so this gate is red before the driver is
+/// wired and green after** — it is not a description of what the driver already
+/// does. The first assertion is the criterion's named sabotage written out: put
+/// `None` back and it fails on its own, without the other two.
+#[test]
+fn v0_30_0_f6_the_driver_reads_the_trace_of_the_run_the_session_just_ran() {
+    let text = driver_without_comments();
+
+    assert!(
+        !text.contains("&opening, None)"),
+        "SABOTAGE: `recall::view(.., &opening, None)` is what shipped, and it is \
+         the whole defect — every eviction, refusal and recall the store holds is \
+         read by a function the operator can never reach",
+    );
+    assert!(
+        text.contains("io_cli::recall::view(&store, &root, &opening, ran)"),
+        "the run id reaches the view, and it is the session's own last turn: \
+         `last_run` is the same anchor `/undo`, `/export` and the gate report \
+         already take, so `/memory` cannot be looking at a different run from the \
+         rest of the surface",
+    );
+    assert!(
+        text.contains("last_run(&session, &store).map(|turn| turn.run_id)"),
+        "read from the session's transcript rather than carried in a variable \
+         that a resumed or forked session would have left stale",
+    );
+    assert!(
+        text.contains("io_cli::commands::trace_notes("),
+        "and the rows are drawn — a `View::trace` that is populated and never \
+         rendered is the same defect one layer up, and the sentence lives in \
+         `io_cli::commands` because nothing under `tests/` can drive one written \
+         in the driver",
+    );
 }
 
 // ---------------------------------------------------------------------------

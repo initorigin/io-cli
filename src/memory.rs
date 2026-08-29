@@ -37,14 +37,23 @@
 //! business is settled, and [`view`] is how a surface reports the outcome
 //! honestly rather than optimistically.
 //!
-//! # Appending, and why it is spelled out
+//! # Appending, editing, and the one rule all three verbs follow
 //!
-//! Everything here is an append. These files are the operator's own prose — a
-//! person wrote them, another agent may have written into them, and a release of
-//! this crate rewriting one is a release that eats somebody's notes. So the file
-//! is opened for append rather than read-modify-written, and the only byte this
-//! module ever adds ahead of its own bullet is a newline the previous author left
-//! off.
+//! Through 0.29.0 everything here was an append and this paragraph said so. It no
+//! longer is: [`amend`] replaces one line and [`forget`] removes one. What has not
+//! changed is why the paragraph exists. These files are the operator's own prose —
+//! a person wrote them, another agent may have written into them, and a release of
+//! this crate rewriting one is a release that eats somebody's notes.
+//!
+//! So the rule the two new verbs follow is **splice, never rewrite**: the file is
+//! read as bytes, exactly one byte range is replaced, and every other byte is
+//! written back as it was found — the indent somebody used, the `*` they wrote
+//! where this module writes `-`, the `\r\n` a Windows checkout holds, and a last
+//! line with no newline after it. A rewrite assembled from the parsed lines is the
+//! obvious implementation and it normalises all four in silence. [`remember`] is
+//! still an append, and its `prelude` is the same rule reached from the other end:
+//! the only byte it ever adds ahead of its own bullet is a newline the previous
+//! author left off.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -183,6 +192,270 @@ pub fn remember(root: &Path, scope: Scope, line: &str) -> Result<PathBuf, String
     writeln!(file, "{prelude}- {text}").map_err(|error| format!("{}: {error}", path.display()))?;
 
     Ok(path)
+}
+
+// ---------------------------------------------------------------------------
+// Reading the bullets back, and the two verbs on one of them
+// ---------------------------------------------------------------------------
+
+/// One bullet in one guidance file, and the address of the line it is on.
+///
+/// **The address is read back out of the file's own bytes and is never a row
+/// index**, which is the shape [`crate::servers::At`] already has for the same
+/// reason: the list a surface draws is not the list in the file. The header is
+/// not a bullet, the blank line under it is not a bullet, and a picker filters —
+/// so "the third row" and "the third line" name different lines, and acting on
+/// the difference edits somebody else's instruction. `line` is therefore private
+/// and [`notes`] is the only thing that can make one.
+///
+/// [`scope`](Note::scope) rides along for the second half of that: `AGENTS.md`
+/// and `IO.md` are different files that both have a line 4, and a position lifted
+/// from one and applied to the other would be a write into a file the operator
+/// was not looking at.
+///
+/// `text` is carried for a third reason, and it is the one that survives a race:
+/// the file can be edited — by hand, by another agent, by a second io — between
+/// the page being drawn and the verb being chosen. [`amend`] and [`forget`]
+/// compare it against what is on that line now and refuse when the two differ, so
+/// a stale address is a refusal rather than a silently mangled note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    /// Which of the three files holds it, and therefore who else reads it.
+    pub scope: Scope,
+    /// The bullet's own text: the indent and the `-` are the file's, not the
+    /// note's, and neither is offered for editing.
+    pub text: String,
+    /// Where the line is, counting from zero. Private — see the type note.
+    line: usize,
+    /// How many lines below this bullet belong to it as a lazy continuation.
+    ///
+    /// **Zero for almost every note, and very much not zero for the ones
+    /// [`crate::import`] writes.** `import` brings a foreign tool's whole
+    /// instructions file across in a *single* [`remember`] call: one bullet
+    /// reading `imported from …:` followed by the entire document at column zero.
+    /// Markdown treats every following non-blank, non-bullet line as part of that
+    /// list item, so it is one note — and [`forget`] on it removes one *line*,
+    /// leaving the imported document behind as loose prose that is still read into
+    /// every prompt and no longer inside any list item.
+    ///
+    /// Recorded rather than fixed by widening `forget`, because a verb that
+    /// sometimes deletes one line and sometimes deletes four hundred is a worse
+    /// answer than a surface that says which one this is.
+    carries: usize,
+}
+
+impl Note {
+    /// The line's number as an editor counts them, for a sentence that names it.
+    ///
+    /// From one, because the only reader of this number is a person with the file
+    /// open somewhere else, and every editor ever written counts from one.
+    #[must_use]
+    pub fn numbered(&self) -> usize {
+        self.line + 1
+    }
+
+    /// How many further lines this bullet carries with it — see the field.
+    ///
+    /// A surface offering [`forget`] on a note where this is non-zero is offering
+    /// a verb that does a fraction of what it looks like it does, and has to say
+    /// so.
+    #[must_use]
+    pub fn carries(&self) -> usize {
+        self.carries
+    }
+}
+
+/// The bullets one scope's file holds, each one addressable.
+///
+/// Empty for a file that is not there, and empty for one this process cannot
+/// read — the same answer [`view`] gives, for the same reason: [`Instruction`]
+/// already reports `exists` beside this list, and a second opinion about whether
+/// the file is there is a second thing that has to be kept in agreement.
+///
+/// **Only bullets are notes.** The header this module writes, the blank lines
+/// around it and whatever else a person put in the file are not offered: a
+/// surface that let an operator "edit" the file's own heading would be a text
+/// editor, and this is a list of instructions. [`Instruction::lines`] still
+/// counts every line, and the two numbers are allowed to differ because they
+/// answer different questions.
+#[must_use]
+pub fn notes(root: &Path, scope: Scope) -> Vec<Note> {
+    let Some(path) = path(root, scope) else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+
+    let lines = spans(&text);
+    // A line that is neither blank nor a bullet of its own belongs to the bullet
+    // above it — markdown's lazy continuation, and the shape `import` writes.
+    let continues = |span: &std::ops::Range<usize>| {
+        let body = content(&text, span);
+        let line = &text[body.start..body.end];
+        !line.trim().is_empty() && bullet(line).is_none()
+    };
+
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(line, span)| {
+            let body = content(&text, span);
+            let from = bullet(&text[body.start..body.end])?;
+            Some(Note {
+                scope,
+                text: text[body.start + from..body.end].to_string(),
+                line,
+                carries: lines
+                    .iter()
+                    .skip(line + 1)
+                    .take_while(|s| continues(s))
+                    .count(),
+            })
+        })
+        .collect()
+}
+
+/// Replace one note's text, leaving every other byte of the file alone.
+///
+/// The indent, the marker and the line ending are the file's own bytes and are
+/// not touched: a note somebody wrote as `  * check the lockfile` stays indented
+/// and stays a `*`, because this module is editing an instruction and not
+/// reformatting a document it did not write.
+///
+/// Refuses a replacement that is empty or nothing but whitespace, for the reason
+/// [`remember`] refuses one: a note quietly blanked reports success and leaves the
+/// operator with a bullet that says nothing. Refuses one holding a line break
+/// too — a note is a line, and a replacement that split it in two would put a line
+/// in the file that [`notes`] cannot address.
+pub fn amend(root: &Path, note: &Note, line: &str) -> Result<PathBuf, String> {
+    let text = line.trim();
+    if text.is_empty() {
+        return Err("there is nothing to remember".to_string());
+    }
+    if text.contains('\n') {
+        return Err("a note is one line, and that one holds a line break".to_string());
+    }
+    splice(root, note, Some(text))
+}
+
+/// Remove one note's line entirely, leaving every other byte of the file alone.
+///
+/// The line and its terminator go together, so the bullet above it does not
+/// acquire a blank line and the file does not grow one. Everything else — the
+/// header, the prose, every sibling bullet — is the bytes that were there.
+pub fn forget(root: &Path, note: &Note) -> Result<PathBuf, String> {
+    splice(root, note, None)
+}
+
+/// The one write both verbs go through: replace one byte range, keep the rest.
+///
+/// `Some(text)` replaces the note's own text and keeps its line; `None` takes the
+/// line and its terminator away.
+///
+/// **The file is spliced, never rebuilt.** Reading it into lines, changing one and
+/// writing them back joined is the obvious implementation, and it silently
+/// normalises four things this crate has no business normalising: a `\r\n`
+/// checkout, a last line with no newline after it, an indent, and a `*` written
+/// where this module writes `-`. Two of those change what io-harness reads at the
+/// start of every run, and none of them would show up as an error.
+///
+/// Refuses when the line has moved. See [`Note`]: the address is only as good as
+/// the read it came from, and the file is one a person and another agent are both
+/// entitled to be editing.
+fn splice(root: &Path, note: &Note, replacement: Option<&str>) -> Result<PathBuf, String> {
+    let path = path(root, note.scope)
+        .ok_or_else(|| "there is no path for that scope on this machine".to_string())?;
+    // ponytail: the whole file, for the same reason `remember` reads the whole
+    // file to look at its last byte — these are guidance files a person maintains
+    // by hand, and they are kilobytes. Read once and written once, so nothing
+    // here can half-write a file.
+    let mut text =
+        std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+
+    // Built up front rather than in three closures, so the sentence an operator
+    // reads is one sentence and not three that drifted apart.
+    let stale = format!(
+        "{} line {} no longer says `{}`, so nothing was written — it has been edited since \
+         the page was drawn",
+        path.display(),
+        note.numbered(),
+        note.text,
+    );
+
+    let span = spans(&text)
+        .get(note.line)
+        .cloned()
+        .ok_or_else(|| stale.clone())?;
+    let body = content(&text, &span);
+    let from = body.start + bullet(&text[body.start..body.end]).ok_or_else(|| stale.clone())?;
+    if text[from..body.end] != *note.text {
+        return Err(stale);
+    }
+
+    match replacement {
+        Some(line) => text.replace_range(from..body.end, line),
+        None => text.replace_range(span, ""),
+    }
+    std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// Every line of `text` as a byte range **including its terminator**.
+///
+/// `split_inclusive` rather than `lines`, because the terminator is exactly the
+/// byte a splice must not invent or drop. It also counts the way `lines` counts —
+/// a file ending in one newline has one line, not two — so a [`Note`]'s line
+/// number and [`Instruction::lines`] are numbers in the same system.
+fn spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut at = 0;
+    text.split_inclusive('\n')
+        .map(|line| {
+            let span = at..at + line.len();
+            at = span.end;
+            span
+        })
+        .collect()
+}
+
+/// One line's range with its terminator taken off, whichever of the two it is.
+///
+/// `\r\n` and `\n` both, and neither invented: a file that had no newline on its
+/// last line still has none afterwards, which is the fixture the splice rule
+/// exists for.
+fn content(text: &str, span: &std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let mut end = span.end;
+    if text[span.start..end].ends_with('\n') {
+        end -= 1;
+        if text[span.start..end].ends_with('\r') {
+            end -= 1;
+        }
+    }
+    span.start..end
+}
+
+/// Where a markdown bullet's own text starts, if the line is a bullet at all.
+///
+/// `-`, `*` or `+` after any indent, then whitespace or the end of the line —
+/// which is markdown's own rule and is what keeps `---` and a word like
+/// `-Werror` out of the list. The three markers rather than the one this module
+/// writes, because the operator's file is the operator's: a list they wrote with
+/// `*` is a list, and offering them only the bullets io wrote would be a surface
+/// that hides half the file it is claiming to show.
+///
+/// ponytail: no block state, so a `- like this` inside a fenced code block reads
+/// as a bullet. It is offered for editing and edits correctly; it is only listed
+/// where it should not be. Track the fences if an operator's file ever turns up
+/// in a bug report over it.
+fn bullet(line: &str) -> Option<usize> {
+    let space = |c: char| c == ' ' || c == '\t';
+    let body = line.trim_start_matches(space);
+    let indent = line.len() - body.len();
+    let after = body.strip_prefix(['-', '*', '+'])?;
+    if !after.is_empty() && !after.starts_with(space) {
+        return None;
+    }
+    Some(indent + 1 + (after.len() - after.trim_start_matches(space).len()))
 }
 
 // ---------------------------------------------------------------------------
