@@ -32,6 +32,35 @@
 //! to fit a row, with the mark that says so; [`Refused::error`] holds it whole,
 //! and the driver prints it whole beneath the list.
 //!
+//! # A switched-off bundle is declared, and this surface says so
+//!
+//! io-harness 0.70.0 splits what a configuration declared into **three** buckets
+//! rather than two: `Plugins::iter` is what loaded, `Plugins::dropped` is what was
+//! refused, and [`io_harness::Plugins::disabled`] is what was written
+//! `enabled = false` — read, parsed, held to the whole trust rule, and
+//! contributing nothing to any of the six kinds. That is a third *state*, never a
+//! second kind of failure: everything on `dropped` is something an operator has to
+//! fix, and a switched-off bundle is doing exactly what the file asked of it.
+//!
+//! **It is listed, under its own mark, and it counts against [`View::is_empty`].**
+//! Before 0.29.0 [`view`] read `iter()` and `dropped()` and nothing else, so a
+//! configuration declaring three bundles switched off drew an empty list and
+//! `/plugin` said *no capability bundles are declared yet* — the section above,
+//! inverted: a capability missing from every listing reads exactly like one nobody
+//! ever wrote down, and the operator's own `enabled = false` is the one edit they
+//! can undo in a keystroke if they can see it. What a switched-off bundle *would*
+//! bring is drawn beside it for the same reason — the question an operator
+//! switching one back on has is what comes back.
+//!
+//! **The state rides on [`Listed::enabled`] rather than a third list**, because
+//! every index on this surface addresses a list somewhere else and a third one is
+//! a third off-by-one — the shape of the silent wrong delete 0.20.0 shipped in
+//! [`rows`]. The cost is one caller that has to remember the flag:
+//! `src/main.rs`'s `bundle_skills` builds the `/skills` palette off [`view`],
+//! because `Plugins::skill_dirs` is `pub(crate)`, and it filters on
+//! [`Listed::enabled`] so a switched-off bundle's skills are not offered to a
+//! model that cannot reach them.
+//!
 //! # Hooks cannot be listed, and this file says so on screen
 //!
 //! There is no `Plugin::hooks()` and `Hook` is `pub(crate)`. A bundle's hooks are
@@ -83,6 +112,15 @@ pub const LOADED_MARK: &str = "+";
 /// The mark on a bundle that was declared and did not load. See [`LOADED_MARK`].
 pub const REFUSED_MARK: &str = "!";
 
+/// The mark on a bundle declared `enabled = false`. See [`LOADED_MARK`].
+///
+/// `-` against `+`, which is the one pairing that needs no legend: it is the same
+/// opposition [`crate::commands`] draws between present and absent, it is one
+/// ASCII character in both glyph sets, and it cannot be confused with the `!` that
+/// means a bundle is broken — the distinction the whole third state exists to
+/// draw, since a switched-off bundle is nothing for the operator to fix.
+pub const DISABLED_MARK: &str = "-";
+
 /// The narrowest a bundle's root may be drawn at, before its separator.
 ///
 /// Twenty cells is `...bundles/rust-review` — the last segments and the mark
@@ -92,7 +130,8 @@ pub const REFUSED_MARK: &str = "!";
 /// lose a fact, and may not draw one that cannot be read.
 const ROOT_FLOOR: usize = 20;
 
-/// One bundle that loaded, as `/plugin` lists it.
+/// One bundle io-harness read, as `/plugin` lists it — loaded, or declared and
+/// switched off.
 ///
 /// Everything is owned and copied out of the borrowed [`io_harness::Plugin`],
 /// because `Config::plugins()` returns a fresh value that re-read the disk: the
@@ -102,7 +141,23 @@ const ROOT_FLOOR: usize = 20;
 pub struct Listed {
     /// The manifest's `name`, which is also what every contribution below is
     /// namespaced by.
+    ///
+    /// **Unique among the loaded bundles and not across the whole list.**
+    /// io-harness reserves an id only for a bundle it switched on, so two
+    /// bundles declared `enabled = false` may share one — which is exactly the
+    /// swap the flag exists for, `tools-v1` off beside `tools-v2` on. Nothing
+    /// here may key on it; [`Listed::root`] is what identifies a bundle.
     pub id: String,
+    /// Whether the `[[plugin]]` entry that declared it said so, or said
+    /// `enabled = false` (io-harness 0.70.0, and absent means on).
+    ///
+    /// **False means this bundle contributed nothing at all** — not its skills,
+    /// not its agents, not its servers, not its hooks — while every field below
+    /// still reads, because io-harness parses and validates a switched-off bundle
+    /// in full. So they describe what switching it back on would bring, and a
+    /// caller that installs any of them must check this first. See the module
+    /// docs and `bundle_skills` in `src/main.rs`.
+    pub enabled: bool,
     /// The manifest's one line for a human, if it carried one.
     pub description: Option<String>,
     /// The bundle's own version. **Documentation and nothing else** — io-harness
@@ -154,8 +209,14 @@ pub struct Refused {
 /// a refused bundle sits beside four that loaded and both facts are true at once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct View {
-    /// The bundles that loaded, in the order they were declared — which is the
-    /// order their policy layers stack and their contributions are applied in.
+    /// The bundles io-harness read: the loaded ones first, in the order they were
+    /// declared — which is the order their policy layers stack and their
+    /// contributions are applied in — and then the ones declared
+    /// `enabled = false`, each flagged by [`Listed::enabled`].
+    ///
+    /// **One list and a flag, not two lists.** See the module docs: a third list
+    /// is a third index, and every index on this surface addresses a list
+    /// somewhere else.
     pub plugins: Vec<Listed>,
     /// The bundles that did not, with the reason each one did not.
     pub refused: Vec<Refused>,
@@ -169,13 +230,59 @@ impl View {
     /// surface that read it alone would tell an operator with a broken manifest
     /// that they have no plugins — which is the false sentence this module exists
     /// to stop being told.
+    ///
+    /// **And a configuration whose only bundle is switched off has declared one
+    /// too**, which is the same sentence with a different cause: `disabled()` is
+    /// a third bucket `Plugins::is_empty` is equally silent about. Those bundles
+    /// are in `plugins` flagged rather than in a list of their own, so this
+    /// answers `false` for them without a third clause — and the sabotage that
+    /// finds a regression here is dropping `disabled()` from [`view`], not
+    /// editing this line.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty() && self.refused.is_empty()
     }
 }
 
-/// Every bundle this configuration declared, loaded and refused.
+/// One [`io_harness::Plugin`], copied out with the state io-harness kept in the
+/// bucket it put it in.
+///
+/// `enabled` is an argument rather than something read off the plugin because
+/// there is nothing on `Plugin` to read: the flag lives on the `[[plugin]]` entry
+/// as `Declaration::enabled`, which is `pub(crate)`, and the *only* public signal
+/// of it is which of `Plugins::iter` and `Plugins::disabled` a bundle came back
+/// on. So the bucket is the fact, and [`view`] is the one place it is recorded.
+fn copy_out(plugin: &io_harness::Plugin, enabled: bool) -> Listed {
+    Listed {
+        id: plugin.id().to_string(),
+        enabled,
+        description: plugin.description().map(str::to_string),
+        version: plugin.version().map(str::to_string),
+        root: plugin.root().to_path_buf(),
+        contributions: plugin.contributions(),
+        skills: plugin.skills_dir(),
+        templates: plugin.templates_dir(),
+        agents: plugin.agents().iter().map(|def| def.name.clone()).collect(),
+        servers: plugin
+            .mcp_servers()
+            .iter()
+            .map(|server| server.id.clone())
+            .collect(),
+        layers: plugin
+            .policy_layers()
+            .iter()
+            .map(|layer| layer.name.clone())
+            .collect(),
+    }
+}
+
+/// Every bundle this configuration declared: loaded, switched off, and refused.
+///
+/// **All three of io-harness's buckets, and the third one is why this function
+/// changed in 0.29.0.** `Plugins::iter` is the loaded set alone — its own rustdoc
+/// says so of `len` and `is_empty` — so a `view` reading it and `dropped()` was
+/// blind to every bundle an operator had declared `enabled = false`, and drew them
+/// nowhere at all. See the module docs.
 ///
 /// Infallible, because [`io_harness::Config::plugins`] is: it re-reads every
 /// declared directory from disk on the call and reports what it could not read
@@ -186,28 +293,17 @@ impl View {
 pub fn view(config: &io_harness::Config) -> View {
     let plugins = config.plugins();
     View {
+        // Loaded first and switched off after, which is the order [`rows`] draws
+        // and the order the positional contract there is written against.
         plugins: plugins
             .iter()
-            .map(|plugin| Listed {
-                id: plugin.id().to_string(),
-                description: plugin.description().map(str::to_string),
-                version: plugin.version().map(str::to_string),
-                root: plugin.root().to_path_buf(),
-                contributions: plugin.contributions(),
-                skills: plugin.skills_dir(),
-                templates: plugin.templates_dir(),
-                agents: plugin.agents().iter().map(|def| def.name.clone()).collect(),
-                servers: plugin
-                    .mcp_servers()
+            .map(|plugin| copy_out(plugin, true))
+            .chain(
+                plugins
+                    .disabled()
                     .iter()
-                    .map(|server| server.id.clone())
-                    .collect(),
-                layers: plugin
-                    .policy_layers()
-                    .iter()
-                    .map(|layer| layer.name.clone())
-                    .collect(),
-            })
+                    .map(|plugin| copy_out(plugin, false)),
+            )
             .collect(),
         refused: plugins
             .dropped()
@@ -223,8 +319,8 @@ pub fn view(config: &io_harness::Config) -> View {
 
 /// The picker rows for the whole list, fitted for a terminal this wide.
 ///
-/// **One row per bundle, loaded first and refused after, and no headings.** The
-/// picker hands a chosen index straight back into the caller's own list, so a
+/// **One row per bundle, `view.plugins` first and refused after, and no
+/// headings.** The picker hands a chosen index straight back into the list, so a
 /// heading row is an index that maps to no bundle — [`crate::commands`] carries a
 /// parallel vector of `Held::Nothing` to survive that, and this surface has two
 /// lists to index rather than one. So the contract is positional and written down:
@@ -232,6 +328,13 @@ pub fn view(config: &io_harness::Config) -> View {
 /// `view.refused[i - view.plugins.len()]` after it.** The mark, not a heading,
 /// says which — and unlike a heading it survives a typed query, which is exactly
 /// when a refused bundle is hardest to tell from a loaded one.
+///
+/// **A bundle declared `enabled = false` is inside `view.plugins` and so is inside
+/// that first range**, drawn under [`DISABLED_MARK`] with the state leading its
+/// detail. Three marks and still two ranges: the switched-off bundles are a state
+/// the operator chose, not a second failure list, and giving them a range of their
+/// own would have added a third arm to every index calculation on this surface for
+/// nothing.
 ///
 /// # The narrow form, and what gives way in it
 ///
@@ -262,7 +365,21 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         // is one fact — the list of kinds — and punctuating it with the same run
         // that divides the row would read as five fields.
         let mut detail = plugin.contributions.join(", ");
-        if detail.is_empty() {
+        if !plugin.enabled {
+            // **The state leads the row, and the mark is not left to carry it
+            // alone.** A single character says which bucket a row came from; it
+            // does not say that `skills, agents` is a list of things this session
+            // does *not* have. Reading the kinds first on a switched-off bundle is
+            // the one wrong sentence this row can tell, so the words go in front
+            // of them — two words and not a clause, because the contributions are
+            // unconditional here and every cell spent in front of them is a cell
+            // the eighty-column row (N4) has to find somewhere else.
+            detail = if detail.is_empty() {
+                "switched off".to_string()
+            } else {
+                format!("switched off{separator}{detail}")
+            };
+        } else if detail.is_empty() {
             // A manifest with a `name` and nothing else. Loaded, contributing
             // nothing, and saying so is the whole point of the row.
             detail = "contributes nothing".to_string();
@@ -299,7 +416,15 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
             ));
         }
 
-        out.push(Row::marked(LOADED_MARK, plugin.id.clone(), detail));
+        out.push(Row::marked(
+            if plugin.enabled {
+                LOADED_MARK
+            } else {
+                DISABLED_MARK
+            },
+            plugin.id.clone(),
+            detail,
+        ));
     }
 
     for refused in &view.refused {
@@ -330,6 +455,12 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
 ///
 /// Every name is drawn **namespaced, exactly as io-harness rewrote it** — see the
 /// module docs.
+///
+/// A switched-off bundle gets the same groups with one row above them saying that
+/// none of it is in this session. Every accessor is valid on one — io-harness
+/// parses and validates a disabled bundle in full — so the groups are true about
+/// the *directory* and false about the *session*, and the row above them is what
+/// makes the pane say which. See [`Listed::enabled`].
 pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
     // The picker's own arithmetic again: marker and gap, with no detail column to
     // budget for on the rows that are a path.
@@ -382,6 +513,28 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         // A manifest that declared a name and nothing else. It loaded, so it is
         // in the list; this is the row that says the list entry is all there is.
         out.push(Row::new("this bundle contributes nothing"));
+    }
+    if !plugin.enabled {
+        // **First, because every row under it is false without it.** io-harness
+        // parses and validates a switched-off bundle in full, so the groups above
+        // are the real agents, servers and layers of a real directory — and this
+        // session has none of them. A pane that opened on `agents` over a bundle
+        // contributing no agent is the same silent wrong reading the module docs
+        // exist to end, told the other way round. `insert` rather than a branch
+        // around the build: the groups are what switching it on brings back, and
+        // an operator deciding whether to do that needs to see them.
+        out.insert(
+            0,
+            Row::with_detail(
+                "switched off",
+                fit(
+                    "this bundle's `[[plugin]]` entry says `enabled = false`, so none of what \
+                     follows is in this session; it is what switching it back on would bring",
+                    room.saturating_sub("switched off".chars().count() + 2),
+                    glyphs,
+                ),
+            ),
+        );
     }
     out
 }
@@ -606,6 +759,7 @@ mod tests {
     fn listed() -> Listed {
         Listed {
             id: "rust-review".to_string(),
+            enabled: true,
             description: Some("Everything our Rust reviews need.".to_string()),
             version: Some("1.2.0".to_string()),
             root: PathBuf::from("/Users/someone/code/io-cli/bundles/rust-review"),
@@ -690,6 +844,115 @@ mod tests {
         let rows = rows(&view_of(plugin), 120, &UNICODE);
         let detail = rows[0].detail.clone().expect("a listed bundle has detail");
         assert!(detail.starts_with("contributes nothing"), "{detail}");
+    }
+
+    /// The three states are three marks, and a switched-off bundle leads with the
+    /// state rather than with a list of contributions this session does not have.
+    ///
+    /// Sabotage: draw the disabled rows under `LOADED_MARK`. Under it the list
+    /// says four bundles are loaded when one of them contributes nothing, and the
+    /// operator's `enabled = false` is invisible on the surface that exists to
+    /// show what is declared.
+    #[test]
+    fn a_switched_off_bundle_is_marked_apart_from_both_loaded_and_refused() {
+        let mut off = listed();
+        off.id = "tools-v1".to_string();
+        off.enabled = false;
+        let view = View {
+            plugins: vec![listed(), off],
+            refused: vec![Refused {
+                id: "empty".to_string(),
+                path: PathBuf::from("/repo/bundles/empty"),
+                error: "/repo/bundles/empty: no plugin.toml".to_string(),
+            }],
+        };
+        for glyphs in [&UNICODE, &ASCII] {
+            let rows = rows(&view, 200, glyphs);
+            assert_eq!(rows.len(), 3, "{}", glyphs.name);
+            // Three states, three marks, and no two of them the same — which is
+            // the whole of what a mark on this surface has to do.
+            assert_eq!(rows[0].mark, Some(LOADED_MARK), "{}", glyphs.name);
+            assert_eq!(rows[1].mark, Some(DISABLED_MARK), "{}", glyphs.name);
+            assert_eq!(rows[2].mark, Some(REFUSED_MARK), "{}", glyphs.name);
+            assert_eq!(rows[1].label, "tools-v1", "{}", glyphs.name);
+            let detail = rows[1]
+                .detail
+                .clone()
+                .expect("a disabled bundle has detail");
+            assert_eq!(
+                detail.split(glyphs.separator).next(),
+                Some("switched off"),
+                "{}: the state is not the first field of the row: {detail}",
+                glyphs.name,
+            );
+            assert!(
+                detail.contains("skills, agents, hooks, policy"),
+                "{}: what switching it back on would bring is not on the row: {detail}",
+                glyphs.name,
+            );
+        }
+    }
+
+    /// A switched-off bundle with nothing to contribute says only that it is off,
+    /// rather than saying it twice in two different phrasings.
+    #[test]
+    fn a_switched_off_bundle_with_no_contributions_says_only_that_it_is_off() {
+        let mut off = listed();
+        off.enabled = false;
+        off.contributions = Vec::new();
+        let rows = rows(&view_of(off), 120, &UNICODE);
+        let detail = rows[0]
+            .detail
+            .clone()
+            .expect("a disabled bundle has detail");
+        assert!(detail.starts_with("switched off"), "{detail}");
+        assert!(
+            !detail.contains("contributes nothing"),
+            "the loaded-and-empty phrasing is drawn over a bundle it is not \
+             about: {detail}",
+        );
+    }
+
+    /// The detail pane of a switched-off bundle opens on the fact that none of it
+    /// is in the session, above the groups that would otherwise read as a list of
+    /// what this session has.
+    ///
+    /// Sabotage: drop the `insert(0, …)`. Under it the pane opens on `skills` and
+    /// a namespaced agent name for a bundle contributing neither, which is the
+    /// module's own silent-wrong-reading defect told the other way round.
+    #[test]
+    fn the_detail_view_of_a_switched_off_bundle_says_none_of_it_is_in_the_session() {
+        let mut off = listed();
+        off.enabled = false;
+        for glyphs in [&UNICODE, &ASCII] {
+            let rows = detail(&off, 120, glyphs);
+            assert_eq!(rows[0].label, "switched off", "{}", glyphs.name);
+            let said = rows[0]
+                .detail
+                .clone()
+                .expect("the switched-off row explains itself");
+            assert!(
+                said.contains("enabled = false"),
+                "{}: the row names the key an operator would edit: {said}",
+                glyphs.name,
+            );
+            // And the groups are still drawn, because they are what switching it
+            // back on brings back.
+            assert!(
+                rows.iter().any(|row| row.label == "agents"),
+                "{}: the contributions are still shown",
+                glyphs.name,
+            );
+            // The loaded pane has no such row, so the sentence is never drawn over
+            // a bundle it is not true of.
+            assert!(
+                detail(&listed(), 120, glyphs)
+                    .iter()
+                    .all(|row| row.label != "switched off"),
+                "{}",
+                glyphs.name,
+            );
+        }
     }
 
     #[test]
@@ -820,6 +1083,7 @@ mod tests {
     fn a_bundle_with_nothing_listable_still_draws_a_row() {
         let plugin = Listed {
             id: "bare".to_string(),
+            enabled: true,
             description: None,
             version: None,
             root: PathBuf::from("/repo/bare"),

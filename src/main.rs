@@ -728,10 +728,22 @@ fn import_rows(
 /// A bundle that declares no skills directory is absent rather than present and
 /// empty: it contributed nothing here, and a row saying so would be a row about
 /// the absence of a thing the operator never asked for.
+///
+/// **And neither is a bundle declared `enabled = false`, which is the one thing
+/// reading off `pluginview` costs.** From 0.29.0 `view().plugins` carries the
+/// switched-off bundles too, so that `/plugin` can show an operator what they
+/// declared — io-harness's own `Plugins::iter` never did, and `skill_dirs` is
+/// built off it. The filter is what keeps the two readings the same: a
+/// switched-off bundle contributes nothing to a turn, so offering the model its
+/// skills would put a name in the palette that `discover_skills` never folded in,
+/// and the run would fail on a skill the surface said was there. It would also
+/// make `/plugin` report a missing skills directory as a per-turn error for a
+/// bundle no turn touches.
 fn bundle_skills(config: &Config) -> Vec<(String, std::path::PathBuf)> {
     io_cli::pluginview::view(config)
         .plugins
         .into_iter()
+        .filter(|listed| listed.enabled)
         .filter_map(|listed| listed.skills.map(|dir| (listed.id, dir)))
         .collect()
 }
@@ -1927,8 +1939,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // and re-reading would answer a different question
                             // than the one the operator asked by choosing a row.
                             //
-                            // The split is `pluginview::rows`'s own: loaded first,
-                            // refused after, no headings, so the index is direct.
+                            // The split is `pluginview::rows`'s own: `view.plugins`
+                            // first — loaded then switched off — refused after, no
+                            // headings, so the index is direct.
                             if let Some(plugin) = view.plugins.get(index) {
                                 // `descended`, not `picker`: the assignment at the
                                 // end of this match installs it, while `kind`
@@ -1955,7 +1968,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // was already there, which cannot be wrong.
                                 let action_at = rows.len();
                                 rows.push(Row::with_detail(
-                                    "stop loading this bundle".to_string(),
+                                    // A switched-off bundle is not loading, so
+                                    // offering to stop loading it names an action
+                                    // nobody can take. The entry is what both
+                                    // verbs actually remove.
+                                    if plugin.enabled {
+                                        "stop loading this bundle"
+                                    } else {
+                                        "stop declaring this bundle"
+                                    }
+                                    .to_string(),
                                     "removes its `[[plugin]]` entry".to_string(),
                                 ));
                                 descended = Some((
@@ -3893,6 +3915,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // stays because it is still true and still orienting; what
                         // changes is that the surface now offers the verb instead
                         // of describing the file.
+                        //
+                        // **And in 0.29.0 it stopped being told to operators it
+                        // was false for.** `View::is_empty` reads all three of
+                        // io-harness's buckets from `pluginview::view`, so a
+                        // configuration whose bundles are all declared
+                        // `enabled = false` no longer gets "nothing is declared"
+                        // printed over a file declaring several — it gets the
+                        // list, under `pluginview::DISABLED_MARK`.
                         app.record(
                             Tone::Muted,
                             "no capability bundles are declared yet".to_string(),
@@ -7205,6 +7235,11 @@ enum Pick {
     /// sentence rather than a detail pane: there is nothing to descend into,
     /// because the bundle contributed nothing at all.
     ///
+    /// A bundle declared `enabled = false` is in `view.plugins` beside the loaded
+    /// ones, flagged by `pluginview::Listed::enabled`, and descends into the same
+    /// detail pane — every accessor is valid on one, and the pane opens on the row
+    /// that says none of it is in this session.
+    ///
     /// `add_at` is where the add row sits, recorded by the code that built the rows
     /// rather than recomputed here — `pluginview::rows` draws the loaded bundles
     /// and then the refused ones, so the only number that cannot be wrong is the
@@ -7377,7 +7412,21 @@ fn manage_main(
         io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {
             let view = io_cli::pluginview::view(config);
             for listed in &view.plugins {
-                println!("{}\t{}", listed.id, listed.root.display());
+                // **A third column, and it is not decoration.** From 0.29.0 this
+                // list carries the bundles declared `enabled = false` as well as
+                // the ones that loaded — the same three buckets `/plugin` draws,
+                // because a headless listing that showed fewer bundles than the
+                // panel would be a second, weaker truth about one configuration.
+                // A row without the state would then say a switched-off bundle is
+                // contributing, which is worse than omitting it. Appended rather
+                // than inserted, so a script reading the two columns this verb has
+                // always printed keeps reading them.
+                println!(
+                    "{}\t{}\t{}",
+                    listed.id,
+                    listed.root.display(),
+                    if listed.enabled { "loaded" } else { "disabled" },
+                );
             }
             for refused in &view.refused {
                 // stderr, because a refused bundle is not part of the list a
