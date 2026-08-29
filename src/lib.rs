@@ -74,6 +74,7 @@ pub mod import;
 pub mod intent;
 pub mod keys;
 pub mod lock;
+pub mod manage;
 pub mod markdown;
 pub mod memory;
 pub mod page;
