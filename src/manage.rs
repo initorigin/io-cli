@@ -504,12 +504,13 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             "`{unknown}` is not a verb `{surface}` takes; it takes {}",
             verbs(surface)
         )),
-        ("mcp" | "plugin" | "config", None) => Err(format!(
+        ("mcp" | "plugin" | "config" | "skill", None) => Err(format!(
             "`{surface}` needs a verb after it; it takes {}",
             verbs(surface)
         )),
         (unknown, _) => Err(format!(
-            "`{unknown}` is not a surface io manages; they are `mcp`, `plugin` and `config`"
+            "`{unknown}` is not a surface io manages; they are `mcp`, `plugin`, `skill` and \
+             `config`"
         )),
     }
 }

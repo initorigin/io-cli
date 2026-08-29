@@ -867,3 +867,56 @@ fn f14_the_headless_listing_prints_the_deciding_file() {
         "the policy preflight reached stdout, which puts prose in a pipe a script is reading"
     );
 }
+
+/// **Every surface `manage::parse` accepts is a subcommand `clap` will route.**
+///
+/// 0.30.0 shipped `io skill add` in the README, the CHANGELOG and
+/// `manage::verbs`, with a working parse, a working plan and a working arm in the
+/// session — and clap answering `error: unrecognized subcommand 'skill'`, because
+/// the door is the `Subcommand` enum in `src/cli.rs` and nothing had added it
+/// there. Every one of the 1,609 tests passed: they all entered through
+/// `manage::parse`, which is downstream of the routing that was missing.
+///
+/// **Found by running the published binary, not by the suite.** This is the gate
+/// that makes the next one cheaper — it asks clap itself what it will accept,
+/// rather than reading `src/cli.rs` as text, so it cannot be satisfied by a
+/// comment.
+///
+/// Sabotage: delete `Skill(Manage)` from `cli::Subcommand`. Only this fails.
+#[test]
+fn every_managed_surface_has_a_subcommand_clap_will_route() {
+    use clap::CommandFactory as _;
+
+    let command = io_cli::cli::Cli::command();
+    let routed: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+
+    for surface in ["mcp", "plugin", "config", "skill"] {
+        assert!(
+            routed.iter().any(|name| name == surface),
+            "`manage::parse` accepts `{surface}` and clap does not route it, so \
+             `io {surface} …` answers `unrecognized subcommand` for a verb the \
+             product documents. clap routes: {routed:?}",
+        );
+        // And the surface really is one the parse accepts — otherwise this test
+        // would pass by asserting a name nothing else knows.
+        let refusal = manage::parse(&[surface.to_string()])
+            .expect_err("a bare surface with no verb is refused");
+        // **The needle is the refusal's real words.** The first version of this
+        // assertion looked for "io does not manage" and the sentence says "is not
+        // a surface io manages", so it passed over exactly the state it was written
+        // to catch — clap routing a surface the parse then rejects. Taken from the
+        // bytes, which is this repository's own rule about prose needles.
+        assert!(
+            !refusal.contains("is not a surface io manages"),
+            "`{surface}` is routed by clap but is not a surface `manage::parse` \
+             knows, so the door opens onto a refusal: {refusal}",
+        );
+        assert!(
+            refusal.contains("needs a verb after it"),
+            "a bare `{surface}` should ask for a verb: {refusal}",
+        );
+    }
+}
