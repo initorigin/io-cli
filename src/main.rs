@@ -6082,11 +6082,22 @@ async fn turn<P: Provider>(
     // `StepCapReached` — that is what 0.24.0's own live arm recorded, `Failed` at
     // attempt six. Excluding ceilings would mean the commonest failing-gate ending
     // was never judged and never retried, which is the opposite of the intent.
+    //
+    // **`UNVERIFIED` counts for that same reason, and io-harness 0.70.0 is why it
+    // has to be named here.** That release split the ending above in two: a run
+    // that reached its cap having failed its criterion is now
+    // `RunOutcome::VerificationFailed` rather than `StepCapReached`, so it maps to
+    // `UNVERIFIED` and not to `CEILING`. The paragraph above describes exactly the
+    // run that moved. Admitting only `OK | CEILING` after the pin bump would have
+    // stopped the retry firing for the one ending it was built for — silently,
+    // behind a green build, because `RunOutcome` is `#[non_exhaustive]`.
+    // `code` can only answer `UNVERIFIED` for that variant; the store-derived
+    // verdict is `verified_code`'s and does not reach this call.
     let ran = match &outcome {
         Some(Ok(result))
             if matches!(
                 io_cli::exec::code(&result.outcome),
-                io_cli::exec::OK | io_cli::exec::CEILING
+                io_cli::exec::OK | io_cli::exec::CEILING | io_cli::exec::UNVERIFIED
             ) =>
         {
             Some(result.run_id)

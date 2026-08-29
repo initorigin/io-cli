@@ -69,14 +69,20 @@ pub const UNFINISHED: u8 = 5;
 /// this is the first ending this subcommand has ever been able to tell apart
 /// from them.
 ///
-/// It cannot be decided by [`code`], because io-harness has no `RunOutcome`
-/// variant for a run whose criterion answered no. Such a run surfaces as
-/// `StepCapReached` — the criterion is re-evaluated after every step and the loop
-/// only ends early when it *passes*, so a gate that never passes spends the whole
-/// budget. (Not as `Finished`: that variant requires `Verification::None`, so a
-/// gated contract can never return it.) The verdict is therefore read from the
-/// store after the run and applied by [`verified_code`]. Reported upstream as
-/// io-harness#212.
+/// **io-harness#212 is closed, and 0.70.0 is where this code stops being an
+/// inference.** Until that release the harness had no `RunOutcome` variant for a
+/// run whose criterion answered no: such a run surfaced as `StepCapReached` —
+/// the criterion is re-evaluated after every step and the loop only ends early
+/// when it *passes*, so a gate that never passes spends the whole budget — and
+/// the verdict had to be read from the store afterwards by [`verified_code`].
+/// 0.70.0 adds `RunOutcome::VerificationFailed { steps }` for exactly that run,
+/// and narrows `StepCapReached` to mean only that nothing judged the work.
+///
+/// So [`code`] now decides it directly, and [`verified_code`] stays as the
+/// second route rather than the only one. **The two must agree, and they do:**
+/// both answer this constant. Keeping the store route is not redundancy — a
+/// gate can fail on a run that ended for some other reason entirely, and only
+/// the recorded `GateOutcome` sees that one.
 pub const UNVERIFIED: u8 = 6;
 
 /// The exit status for a run that reached the harness.
@@ -117,6 +123,17 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         | RunOutcome::TimeBudgetExceeded { .. }
         | RunOutcome::CostBudgetExceeded { .. }
         | RunOutcome::BudgetCeilingReached { .. } => CEILING,
+
+        // io-harness 0.70.0, and it is this crate's own issue #212 coming back
+        // implemented. It is **not** a ceiling: the run did reach its step cap,
+        // but the fact worth reporting is that the work was judged and did not
+        // hold up, which is what `UNVERIFIED` has meant since 0.24.0. Mapping it
+        // to `CEILING` would move exactly the runs that code was invented for
+        // from 6 to 3 on a pin bump — a published exit table changing meaning
+        // underneath an operator's CI. `StepCapReached` above now means only
+        // that nothing judged the work, which is why the two can be told apart
+        // here at all.
+        RunOutcome::VerificationFailed { .. } => UNVERIFIED,
 
         // `AwaitingApproval` stays unreachable from here while approvals are
         // denied rather than deferred; the other two are reachable, because a
@@ -184,6 +201,9 @@ pub fn describe(outcome: &RunOutcome) -> String {
         RunOutcome::Success { steps } => ("finished, and its verification passed", steps),
         RunOutcome::Finished { steps } => ("finished", steps),
         RunOutcome::StepCapReached { steps } => ("stopped at the step cap", steps),
+        RunOutcome::VerificationFailed { steps } => {
+            ("stopped at the step cap, and its verification failed", steps)
+        }
         RunOutcome::TimeBudgetExceeded { steps } => ("stopped at the time budget", steps),
         RunOutcome::CostBudgetExceeded { steps } => ("stopped at the token budget", steps),
         RunOutcome::BudgetCeilingReached { steps } => {
