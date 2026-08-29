@@ -515,6 +515,383 @@ input = 1.0
     );
 }
 
+/// The fixture with one line taken out of it, rebuilt line by line.
+///
+/// Byte-exact, and that is the only assertion worth making about an unset: a
+/// `contains` check passes for a writer that reordered the file, dropped a
+/// comment or rewrote the whitespace, which is every failure this module exists
+/// to prevent. Every line of the fixture ends in a newline and there is no `\r`
+/// in one, so splitting and rejoining reproduces the file exactly.
+fn without_line(text: &str, line: &str) -> String {
+    let mut kept = String::new();
+    let mut found = false;
+    for each in text.lines() {
+        if each == line {
+            found = true;
+            continue;
+        }
+        kept.push_str(each);
+        kept.push('\n');
+    }
+    assert!(found, "the fixture has no line {line:?} to take out");
+    kept
+}
+
+/// **Unset deletes one key's line and leaves every other byte where it was.**
+///
+/// The destructive failure mode is not deleting the wrong key, it is deleting
+/// the right key and taking the section with it — a cut that ran from the key to
+/// the next header, or from the section's header to the key, would satisfy any
+/// assertion that only asks whether the key is gone. So the whole document is
+/// compared, byte for byte, against itself with exactly one line removed.
+///
+/// Sabotage: cut from `region.start` rather than from the key's own line, or run
+/// forward to `region.body.end` rather than to the newline after the value, and
+/// the sibling key, the header or the blank-line rhythm goes with it.
+#[test]
+fn f1_an_unset_takes_one_line_and_leaves_the_section_standing() {
+    let after = edit::apply(OPERATORS_FILE, &[Edit::unset("run.max_tokens")]).unwrap();
+
+    assert_eq!(
+        after,
+        without_line(OPERATORS_FILE, "max_tokens = 100000"),
+        "unsetting one key changed bytes that were not on its line:\n{after}"
+    );
+
+    // Named one at a time, so a failure says which kind of loss happened.
+    assert!(
+        after.contains("[run]"),
+        "the enclosing section header went too"
+    );
+    assert!(
+        after.contains("max_steps = 30   # deliberately low while I am debugging"),
+        "the sibling key lost its inline comment, or its spacing"
+    );
+    assert!(
+        after.contains("# My io configuration."),
+        "the header comment was lost"
+    );
+    assert!(after.contains("[[agent]]"), "a later section moved");
+
+    // And the absence is a real absence: the key falls back to its default
+    // rather than being shadowed by an empty value left in its place.
+    assert_eq!(edit::value_at(&after, "run.max_tokens"), None);
+    assert_eq!(
+        edit::value_at(&after, "run.max_steps").as_deref(),
+        Some("30"),
+        "the sibling's value moved"
+    );
+}
+
+#[test]
+fn f1_an_unset_reaches_a_key_in_a_nested_section_by_its_full_path() {
+    // `[app.io-cli]` is two segments and the key is a third, so this fails for a
+    // resolver that treats the last dot as the only separator.
+    let after = edit::apply(OPERATORS_FILE, &[Edit::unset("app.io-cli.theme")]).unwrap();
+
+    assert_eq!(after, without_line(OPERATORS_FILE, "theme = \"dark\""));
+    assert!(
+        after.contains("[app.io-cli]"),
+        "the section header went with its last key:\n{after}"
+    );
+    // A section with nothing in it is still a section, and still parses.
+    let parsed: toml::Value = toml::from_str(&after).expect("the result parses");
+    assert!(parsed["app"]["io-cli"].get("theme").is_none());
+}
+
+#[test]
+fn f1_an_unset_reaches_a_top_level_key_by_its_bare_name() {
+    const TOP: &str = "\
+# what this file is for
+name = \"my project\"
+version = \"1\"
+
+[run]
+max_steps = 30
+";
+    let after = edit::apply(TOP, &[Edit::unset("name")]).unwrap();
+
+    assert_eq!(after, without_line(TOP, "name = \"my project\""));
+    assert!(
+        after.contains("# what this file is for"),
+        "the comment above the file's first key was taken with it:\n{after}"
+    );
+    assert!(
+        after.contains("version = \"1\""),
+        "a top-level sibling was lost"
+    );
+}
+
+/// **A key that is not there is refused by name, not passed over.**
+///
+/// A caller that asks to remove a setting and is told nothing believes the
+/// setting was removed. So an unset that found nothing says so, in the same
+/// shape [`Edit::remove`]'s refusal has, and names the path it was given.
+#[test]
+fn f1_an_unset_of_a_key_the_file_does_not_have_is_refused_by_name() {
+    // The section is there and the key is not.
+    let err = edit::apply(OPERATORS_FILE, &[Edit::unset("run.max_retries")]).unwrap_err();
+    assert!(
+        err.contains("run.max_retries") && err.contains("unset"),
+        "the refusal does not name the path it refused: {err}"
+    );
+
+    // Neither the section nor the key is there, which is a different arm.
+    let missing = edit::apply(OPERATORS_FILE, &[Edit::unset("memory.max_rows")]).unwrap_err();
+    assert!(
+        missing.contains("memory.max_rows"),
+        "the refusal does not name the path it refused: {missing}"
+    );
+
+    // Nothing partial: a batch with one bad edit in it writes nothing at all.
+    let batch = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::unset("run.max_retries"),
+            Edit::set("run.max_steps", "45"),
+        ],
+    )
+    .unwrap_err();
+    assert!(!batch.is_empty());
+}
+
+/// **`remove` names a section and `unset` names a key, and neither answers for
+/// the other.**
+///
+/// `remove` finds a REGION by matching a header, so `run.max_steps` looks for a
+/// `[run.max_steps]` header and finds none — and that refusal has to survive,
+/// because a `remove` that fell back to deleting a key line when it could not
+/// find a section would make the two constructors interchangeable at the call
+/// site and the difference between them is one setting against one whole block.
+/// The mirror holds too: `unset` given a section path finds no key of that name.
+///
+/// Sabotage: give either arm a fallback into the other, and one of these two
+/// halves stops erroring.
+#[test]
+fn f1_remove_will_not_delete_a_key_and_unset_will_not_delete_a_section() {
+    let err = edit::apply(OPERATORS_FILE, &[Edit::remove("run.max_steps")]).unwrap_err();
+    assert!(
+        err.contains("run.max_steps") && err.contains("remove"),
+        "`remove` deleted a key line, or refused without naming what it refused: {err}"
+    );
+
+    let mirror = edit::apply(OPERATORS_FILE, &[Edit::unset("run")]).unwrap_err();
+    assert!(
+        mirror.contains("run") && mirror.contains("unset"),
+        "`unset` deleted a whole section, or refused without naming it: {mirror}"
+    );
+
+    // And `remove` still does its own job, so the assertion above is about the
+    // key path rather than about `remove` being broken.
+    let removed = edit::apply(OPERATORS_FILE, &[Edit::remove("run")]).unwrap();
+    assert!(!removed.contains("[run]"));
+    assert!(!removed.contains("max_steps"));
+}
+
+#[test]
+fn f1_an_unset_leaves_the_comments_and_blank_lines_around_it() {
+    // The comment above a key is an operator's sentence about a decision, and
+    // the blank line below it is the rhythm they typed. Neither is on the key's
+    // line, so neither goes.
+    const DOCUMENTED: &str = "\
+[run]
+# raised while the model was being slow
+max_steps = 30
+
+# tokens: this ceiling is what the budget allows
+max_tokens = 100000
+
+[instructions]
+files = [\"AGENTS.md\"]
+";
+    let after = edit::apply(DOCUMENTED, &[Edit::unset("run.max_steps")]).unwrap();
+
+    assert_eq!(
+        after,
+        without_line(DOCUMENTED, "max_steps = 30"),
+        "an unset moved bytes that were not on the key's line:\n{after:?}"
+    );
+    assert!(
+        after.contains("# raised while the model was being slow"),
+        "the comment above the removed key went with it"
+    );
+    assert!(
+        after.contains("# tokens: this ceiling is what the budget allows"),
+        "the comment below the removed key went with it"
+    );
+    assert!(!after.contains("max_steps"), "the key survived the unset");
+
+    // The inline comment on the removed line itself DOES go, because it is a
+    // note about the key that is leaving.
+    let inline = edit::apply(OPERATORS_FILE, &[Edit::unset("run.max_steps")]).unwrap();
+    assert!(
+        !inline.contains("# deliberately low while I am debugging"),
+        "the removed key's own inline comment was left behind as an orphan:\n{inline}"
+    );
+}
+
+/// **A value spelled across several lines takes every one of them.**
+///
+/// The span is the value's, so a cut that ran from the key's line to the first
+/// newline would delete `files = [` and leave the array's rows and its closing
+/// bracket stranded in the file. That does not parse, which is the good case;
+/// the bad case is the `"""` block, where the leftover `[run]` line inside the
+/// prose becomes a section header and the rest of the file lands inside it.
+///
+/// Sabotage: run the cut forward from the value's START rather than its end, and
+/// both halves of this test fail — the first as a refusal, the second as a file
+/// that parses into a different configuration.
+#[test]
+fn f1_an_unset_of_a_multi_line_value_takes_the_whole_value() {
+    const SPREAD: &str = "\
+[instructions]
+files = [
+  \"AGENTS.md\",
+  \"CONTRIBUTING.md\",
+]
+text = \"\"\"
+[run]
+this is prose, not a section
+\"\"\"
+mode = \"append\"
+";
+
+    let array = edit::apply(SPREAD, &[Edit::unset("instructions.files")]).unwrap();
+    assert!(
+        !array.contains("AGENTS.md"),
+        "the array's first row survived"
+    );
+    assert!(
+        !array.contains("CONTRIBUTING.md"),
+        "only the first line of the array was deleted:\n{array}"
+    );
+    assert!(
+        !array.contains("\n]"),
+        "the array's closing bracket was stranded:\n{array}"
+    );
+    assert!(
+        array.contains("mode = \"append\""),
+        "a sibling key was lost"
+    );
+    assert!(
+        array.contains("this is prose, not a section"),
+        "the multi-line string below the array was damaged:\n{array}"
+    );
+
+    let block = edit::apply(SPREAD, &[Edit::unset("instructions.text")]).unwrap();
+    assert!(
+        !block.contains("this is prose, not a section"),
+        "the body of the multi-line string was left behind:\n{block}"
+    );
+    assert!(block.contains("AGENTS.md"), "the array above it was lost");
+    assert!(
+        block.contains("mode = \"append\""),
+        "a sibling key was lost"
+    );
+    // The tell that nothing was stranded: the `[run]` line inside the prose did
+    // not become a section header.
+    let parsed: toml::Value = toml::from_str(&block).expect("the result parses");
+    assert!(
+        parsed.get("run").is_none(),
+        "a fragment of the deleted string became a section:\n{block}"
+    );
+}
+
+/// **An unset in a batch resolves against the same document every other edit
+/// does, and takes more bytes than any of them.**
+///
+/// [`edit::apply`] walks the headers once and resolves every edit against the
+/// document as it was *before* the batch, then splices right to left so an
+/// earlier cut cannot invalidate a later offset. An unset is the widest cut in
+/// the module — a whole line rather than a value's span — so it is the one that
+/// can swallow another edit's landing place: unsetting a section's LAST key puts
+/// the range's end exactly at the point where a `set` of a new key into that
+/// section wants to insert.
+///
+/// Sabotage: sort the splices ascending, or apply them as they were pushed, and
+/// the new key lands inside the deleted range or the deletion runs off the end
+/// of a string that has already grown.
+#[test]
+fn f1_an_unset_and_another_edit_share_one_pass_without_disturbing_each_other() {
+    let after = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::unset("run.max_tokens"),
+            Edit::set("app.io-cli.theme", "\"light\""),
+        ],
+    )
+    .unwrap();
+
+    assert!(!after.contains("max_tokens"), "the unset did not happen");
+    assert!(
+        after.contains("theme = \"light\""),
+        "the set did not happen"
+    );
+    assert!(
+        after.contains("max_steps = 30   # deliberately low while I am debugging"),
+        "the batch disturbed a line neither edit named:\n{after}"
+    );
+
+    // Order in the slice must not decide the result.
+    let swapped = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::set("app.io-cli.theme", "\"light\""),
+            Edit::unset("run.max_tokens"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(after, swapped, "the batch's result depends on edit order");
+
+    // The touching case: the unset takes the last line of `[run]`, and the new
+    // key is inserted at the byte where that line ended.
+    let touching = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::unset("run.max_tokens"),
+            Edit::set("run.max_retries", "3"),
+        ],
+    )
+    .unwrap();
+    assert!(
+        !touching.contains("max_tokens"),
+        "the insertion re-created the line that was unset:\n{touching}"
+    );
+    assert!(
+        touching.contains("max_retries = 3"),
+        "the new key was deleted by the unset beside it:\n{touching}"
+    );
+    let inserted = touching.find("max_retries").unwrap();
+    let agent = touching.find("[[agent]]").unwrap();
+    assert!(
+        inserted < agent,
+        "the new key landed outside `[run]`:\n{touching}"
+    );
+
+    // And the one batch that has no reading worth guessing at is refused rather
+    // than resolved: two edits on one path describe two overlapping splices of
+    // the same line, computed against offsets that no longer hold once either
+    // has been applied.
+    let conflict = edit::apply(
+        OPERATORS_FILE,
+        &[
+            Edit::unset("run.max_steps"),
+            Edit::set("run.max_steps", "45"),
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        conflict.contains("run.max_steps"),
+        "the refusal does not name the path both edits claimed: {conflict}"
+    );
+    assert!(
+        edit::apply(OPERATORS_FILE, &[Edit::set("run.max_steps", "45")])
+            .unwrap()
+            .contains("max_steps = 45"),
+        "the guard refuses a batch that has only one edit on the path"
+    );
+}
+
 /// **A section's trailing comment run belongs to the section BELOW it.**
 ///
 /// A region's `body.end` is the first byte of the NEXT header, so splicing

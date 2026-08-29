@@ -74,6 +74,8 @@ enum Kind {
     Section,
     /// Remove a whole `[[path]]` entry, or a `[path]` section, bytes and all.
     Remove,
+    /// Delete one `key = value` line, leaving the section around it standing.
+    Unset,
     /// Move one `[[path]]` entry to another position in its array.
     Move,
 }
@@ -145,6 +147,62 @@ impl Edit {
         }
     }
 
+    /// Delete the single `key = value` line at `path`.
+    ///
+    /// **A different verb from [`Edit::remove`], and keeping the two apart is
+    /// the whole of the design.** `remove` takes a REGION away — a `[section]`
+    /// or one `[[array]]` entry, header and body and every unmodelled key
+    /// inside it — and it finds that region by matching a header, so it has
+    /// never been able to name a key: asked for `run.max_steps` it looks for a
+    /// `[run.max_steps]` header, finds none, and refuses. One verb that deleted
+    /// a key when it found a key and a whole section when it found a section
+    /// would read as the same call at every call site, and the two outcomes are
+    /// the difference between clearing one setting and deleting an operator's
+    /// entire `[run]` block. Callers of this module are one keystroke from a
+    /// file somebody's runs depend on, so the ambiguity is settled by which
+    /// constructor was written rather than by what the document happened to
+    /// hold — and a path that names the wrong kind of thing is an error instead
+    /// of a larger deletion than anyone asked for.
+    ///
+    /// **Unset, not set-to-empty.** What a caller wants here is the ABSENCE of
+    /// the key: an io-harness setting the file does not carry falls back to its
+    /// default or to the layer below, and `key = ""` is a value that shadows
+    /// both. So the line goes and nothing is left in its place.
+    ///
+    /// The whole physical line goes, from its first byte to the newline after
+    /// the value, which takes an inline comment on that line with it — that
+    /// comment is a note about the key that is leaving. Nothing else moves: the
+    /// section header survives even when its last key is unset, and every
+    /// sibling key, blank line and comment around the deleted line is copied
+    /// through byte for byte, the same preservation property every other edit
+    /// in this module keeps.
+    ///
+    /// **A value spelled across more than one line takes all of its lines.**
+    /// The span this works from is the value's, and the cut runs to the end of
+    /// it, so an array written over four lines or a `"""` block leaves nothing
+    /// behind. Cutting only the first line would strand the rest of the value
+    /// as a fragment and turn a deletion into a file that no longer parses,
+    /// which is the one outcome a writer must never reach quietly.
+    ///
+    /// `path` is resolved the way [`value_at`] resolves it, through the same
+    /// `segments` splitter, so a key written `c = 1` inside `[a.b]` is `a.b.c`
+    /// and a top-level key is its own bare name. An unindexed path names entry
+    /// 0 of an array of tables, as [`Edit::set`] does: TOML forbids one table
+    /// from carrying a key twice, so `[[array]]` entries are the only way one
+    /// path can address two lines in a document, and the index is how a caller
+    /// picks between them.
+    ///
+    /// A key the file does not carry is refused by name rather than passed over
+    /// in silence, because a caller told nothing after asking for a removal
+    /// will believe the removal happened.
+    pub fn unset(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            value: String::new(),
+            kind: Kind::Unset,
+        }
+    }
+
     /// Move the `from`-th entry of the `[[path]]` array to position `to`.
     ///
     /// **Order is meaning for an array of tables, and for `[[provider]]` it is
@@ -205,6 +263,30 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
             return Err(format!(
                 "`{}` is not a TOML value, so `{}` was not written and the file is unchanged",
                 edit.value, edit.path
+            ));
+        }
+    }
+
+    // **An unset and another edit on the same path cannot share a batch**, and
+    // this is the one place that can see both. Every edit here is resolved
+    // against the document as it was BEFORE the batch, and an unset resolves to
+    // a whole line rather than a value's span — so a `set` on the same key
+    // resolves to a range *inside* the range the unset is about to take away.
+    // Two overlapping splices against stale offsets do not produce a compromise,
+    // they produce whichever bytes the arithmetic lands on, and on a short
+    // replacement they run off the end of the string and panic in a function
+    // whose whole promise is that a refused edit leaves the file alone. There is
+    // no reading of "delete this key and also write it" worth guessing at, so it
+    // is named and refused. The scan is quadratic in the edit count and gated on
+    // there being an unset at all, which keeps a four-hundred-key price fill at
+    // no cost.
+    for edit in edits.iter().filter(|e| e.kind == Kind::Unset) {
+        if edits.iter().filter(|other| other.path == edit.path).count() > 1 {
+            return Err(format!(
+                "`{}` is unset and edited in the same batch, so nothing was written — \
+                 every edit is resolved against the file as it was before the batch, \
+                 and an unset takes the whole line the other edit was going to land on",
+                edit.path
             ));
         }
     }
@@ -345,6 +427,62 @@ pub fn apply(text: &str, edits: &[Edit]) -> Result<String, String> {
                 // header, and the lines just above it document the next section
                 // rather than this one. See [`removal_end`].
                 splices.push((region.start..removal_end(text, &region.body), String::new()));
+                continue;
+            }
+            Kind::Unset => {
+                // The same resolution `value_at` does, because a verb that
+                // deletes a key has to reach exactly the key a reader would have
+                // been shown — a second path resolver would eventually disagree
+                // with this one, and the disagreement would surface as a deleted
+                // line nobody named.
+                let (table_path, key) = split_path(&edit.path)?;
+                let region = regions
+                    .iter()
+                    .find(|r| r.path == table_path.names && r.index == table_path.index);
+                let absent = || format!("there is no `{}` to unset in this file", edit.path);
+
+                let region = match region {
+                    Some(region) => region,
+                    None => {
+                        // No such section. Before reporting the key as absent,
+                        // ask the parsed document — a dotted key or a key inside
+                        // an inline table IS in the file, in a shape that has no
+                        // line of its own to take away, and "there is no such
+                        // key" would be a sentence the caller cannot act on.
+                        if resolve(&parsed, &table_path.names, &key).is_some() {
+                            return Err(dotted_refusal(&edit.path));
+                        }
+                        return Err(absent());
+                    }
+                };
+
+                let body = &text[region.body.clone()];
+                let flat: BTreeMap<String, Spanned<toml::Value>> = toml::from_str(body)
+                    .map_err(|e| format!("the `{}` section does not parse: {e}", edit.path))?;
+                let span = flat.get(&key).ok_or_else(absent)?.span();
+                let absolute = region.body.start + span.start..region.body.start + span.end;
+
+                // Measurement 4 again, and it matters more here than it does to
+                // a `set`: a dotted key reports the KEY's span, so a cut around
+                // it would take the line `a.b = 1` away when `a.c` was what the
+                // caller asked to be rid of.
+                let found = &text[absolute.clone()];
+                if toml::from_str::<toml::value::Table>(&format!("probe = {found}")).is_err() {
+                    return Err(dotted_refusal(&edit.path));
+                }
+
+                // The span covers the value alone, and what has to go is the
+                // line carrying it: back to the start of the line the key is
+                // written on, forward past the newline that ends the value's
+                // last line. Running forward from the value's END rather than
+                // from its start is what makes a multi-line array or a `"""`
+                // block leave whole, and what stops this from stranding half a
+                // value in a file that then does not parse.
+                let start = text[..absolute.start].rfind('\n').map_or(0, |at| at + 1);
+                let end = text[absolute.end..]
+                    .find('\n')
+                    .map_or(text.len(), |at| absolute.end + at + 1);
+                splices.push((start..end, String::new()));
                 continue;
             }
             Kind::Set => {}
