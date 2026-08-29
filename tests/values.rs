@@ -188,8 +188,8 @@ fn f12_a_stated_shape_shows_an_example() {
         "app.io-cli.gates.rubric",
         "app.io-cli.prices.source_url",
     ] {
-        let said = configure::shape_of(key, &config)
-            .unwrap_or_else(|| panic!("{key} states no shape"));
+        let said =
+            configure::shape_of(key, &config).unwrap_or_else(|| panic!("{key} states no shape"));
         assert!(
             said.contains("for example:"),
             "{key} states a shape with no worked example: {said}"
@@ -359,5 +359,9 @@ fn n4_the_picker_filter_still_owns_the_space() {
             io_cli::picker::Outcome::Idle
         ));
     }
-    assert_eq!(picker.selected(), before, "an arrow must not move the marker");
+    assert_eq!(
+        picker.selected(),
+        before,
+        "an arrow must not move the marker"
+    );
 }

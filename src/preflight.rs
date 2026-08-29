@@ -217,11 +217,10 @@ impl Preflight {
     /// whichever transport lost the coin toss, which is why the asymmetry is
     /// expressed here once, keyed on the act the harness itself keys on.
     pub fn starts(&self) -> bool {
-        match (self.act, self.outcome) {
-            (Act::Exec, Outcome::Permitted) => true,
-            (Act::Net, Outcome::Permitted | Outcome::Ask) => true,
-            _ => false,
-        }
+        matches!(
+            (self.act, self.outcome),
+            (Act::Exec, Outcome::Permitted) | (Act::Net, Outcome::Permitted | Outcome::Ask)
+        )
     }
 }
 
@@ -258,7 +257,7 @@ pub fn check(server: &McpServer, policy: &Policy) -> Preflight {
                     outcome: Outcome::Unresolvable,
                     rule: None,
                     layer: None,
-                }
+                };
             }
         },
     };

@@ -697,7 +697,11 @@ fn f2_the_exec_modes_are_spelled_by_the_dependency() {
     for mode in &modes {
         let s = scopes(&format!("[sandbox]\nmode = \"{mode}\"\n"), "", "");
         assert_eq!(
-            s.config().sandbox().expect("a sandbox section").mode.as_str(),
+            s.config()
+                .sandbox()
+                .expect("a sandbox section")
+                .mode
+                .as_str(),
             mode,
             "io-harness refuses the mode io-cli offers: {mode}"
         );
@@ -734,11 +738,31 @@ fn f2_the_exec_modes_are_spelled_by_the_dependency() {
 #[test]
 fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
     let widening = [
-        ("policy.defaults.exec", "allow", "[policy]\ndefaults = { exec = \"allow\" }\n"),
-        ("policy.defaults.net", "allow", "[policy]\ndefaults = { net = \"allow\" }\n"),
-        ("sandbox.allow_network", "true", "[sandbox]\nallow_network = true\n"),
-        ("sandbox.force_floor", "false", "[sandbox]\nforce_floor = false\n"),
-        ("sandbox.mode", "full-access", "[sandbox]\nmode = \"full-access\"\n"),
+        (
+            "policy.defaults.exec",
+            "allow",
+            "[policy]\ndefaults = { exec = \"allow\" }\n",
+        ),
+        (
+            "policy.defaults.net",
+            "allow",
+            "[policy]\ndefaults = { net = \"allow\" }\n",
+        ),
+        (
+            "sandbox.allow_network",
+            "true",
+            "[sandbox]\nallow_network = true\n",
+        ),
+        (
+            "sandbox.force_floor",
+            "false",
+            "[sandbox]\nforce_floor = false\n",
+        ),
+        (
+            "sandbox.mode",
+            "full-access",
+            "[sandbox]\nmode = \"full-access\"\n",
+        ),
     ];
     for (key, value, project) in widening {
         assert!(
@@ -760,9 +784,21 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
     // The narrowing values of the same keys stay legal in a committed file, which
     // is what the scope is for — and are not marked.
     for (key, value, project) in [
-        ("policy.defaults.exec", "deny", "[policy]\ndefaults = { exec = \"deny\" }\n"),
-        ("sandbox.mode", "read-only", "[sandbox]\nmode = \"read-only\"\n"),
-        ("sandbox.allow_network", "false", "[sandbox]\nallow_network = false\n"),
+        (
+            "policy.defaults.exec",
+            "deny",
+            "[policy]\ndefaults = { exec = \"deny\" }\n",
+        ),
+        (
+            "sandbox.mode",
+            "read-only",
+            "[sandbox]\nmode = \"read-only\"\n",
+        ),
+        (
+            "sandbox.allow_network",
+            "false",
+            "[sandbox]\nallow_network = false\n",
+        ),
     ] {
         assert!(
             !configure::widens_project(key, value),

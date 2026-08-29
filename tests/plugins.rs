@@ -948,7 +948,10 @@ fn f11_candidates_are_the_directories_carrying_a_manifest() {
     std::fs::create_dir_all(root.join("bundles/notes")).expect("a plain directory");
 
     let found = pluginview::candidates(&root);
-    assert!(found.contains(&review), "the bundle must be offered: {found:?}");
+    assert!(
+        found.contains(&review),
+        "the bundle must be offered: {found:?}"
+    );
     assert!(
         !found.contains(&root.join("bundles/notes")),
         "a directory with no manifest must not be offered: {found:?}"
@@ -1060,7 +1063,10 @@ fn f11_an_added_bundle_loads_through_the_harness() {
         view.refused
     );
     assert_eq!(
-        view.plugins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        view.plugins
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["rust-review"],
     );
 }

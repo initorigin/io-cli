@@ -556,8 +556,12 @@ fn f10_editing_a_model_changes_one_key_and_leaves_the_file_alone() {
     // fail here — and each of those is what a surface that rebuilt the array
     // from io-cli's model of it would do, silently, on every edit.
     let at = At::of(Scope::User, THREE, 1).expect("the middle link");
-    let edit = providers::edit(&at, "model", &io_cli::servers::quoted("llama-3.1-8b-instant"))
-        .expect("`model` is one of the keys this surface changes");
+    let edit = providers::edit(
+        &at,
+        "model",
+        &io_cli::servers::quoted("llama-3.1-8b-instant"),
+    )
+    .expect("`model` is one of the keys this surface changes");
     let after = io_cli::edit::apply(THREE, &[edit]).unwrap();
 
     assert_eq!(
@@ -569,7 +573,10 @@ fn f10_editing_a_model_changes_one_key_and_leaves_the_file_alone() {
     // And io-harness reads back the link the operator meant, in its own place.
     let chain = providers::chain(&config(&after).config);
     assert_eq!(chain[1].model, "llama-3.1-8b-instant");
-    assert_eq!(chain[1].kind, "groq", "the edit changed the entry's identity");
+    assert_eq!(
+        chain[1].kind, "groq",
+        "the edit changed the entry's identity"
+    );
     assert_eq!(chain[0].kind, "openrouter");
     assert_eq!(chain[2].model, "llama3.2");
     assert_eq!(
@@ -611,7 +618,9 @@ fn f10_a_credential_is_written_in_whichever_of_the_three_shapes_was_chosen() {
     // for io-harness to fall back to here, so an absent key would be an
     // unauthenticated request rather than an authenticated one.
     assert_eq!(
-        Key::Environment.written(Endpoint::Preset("groq")).as_deref(),
+        Key::Environment
+            .written(Endpoint::Preset("groq"))
+            .as_deref(),
         Some("${env:GROQ_API_KEY}"),
     );
     // Except where there is genuinely no credential to name.
@@ -704,7 +713,10 @@ fn f10_unsetting_a_credential_deletes_the_line_rather_than_emptying_it() {
         "the key is still in the file: {after}",
     );
     assert!(!after.contains("api_key"), "{after}");
-    assert!(!after.contains("supersecret"), "the literal survived: {after}");
+    assert!(
+        !after.contains("supersecret"),
+        "the literal survived: {after}"
+    );
 
     // And the entry is still a link, which is the half a deletion could break:
     // `unset` takes one line and leaves the `[[provider]]` around it standing.

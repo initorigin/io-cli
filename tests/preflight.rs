@@ -130,7 +130,10 @@ fn target_drops_the_userinfo() {
 /// port `1`.
 #[test]
 fn target_keeps_the_brackets_on_an_ipv6_literal() {
-    assert_eq!(preflight::target("https://[::1]").as_deref(), Some("[::1]:443"));
+    assert_eq!(
+        preflight::target("https://[::1]").as_deref(),
+        Some("[::1]:443")
+    );
     assert_eq!(
         preflight::target("http://[::1]:8080/mcp").as_deref(),
         Some("[::1]:8080"),
@@ -319,8 +322,14 @@ fn an_unresolvable_url_is_a_refusal_and_never_a_start() {
             !p.starts(),
             "{url}: `NetGuard::check` returns `Error::Refused` for this, so it does not start",
         );
-        assert_eq!(p.target, url, "the URL as written is what the refusal carries");
-        assert_eq!(p.rule, None, "no rule decided it — there was nothing to check");
+        assert_eq!(
+            p.target, url,
+            "the URL as written is what the refusal carries"
+        );
+        assert_eq!(
+            p.rule, None,
+            "no rule decided it — there was nothing to check"
+        );
         assert_eq!(p.layer, None);
 
         let line = preflight::line(&p);

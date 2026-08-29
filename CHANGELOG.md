@@ -6,6 +6,79 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-29
+
+Every list this interface can prune, it can now grow; and every setting whose
+values are knowable is chosen rather than typed.
+
+**All thirty-seven settings stop being free text.** Until now, choosing a row in
+`/config` prefilled the composer with the key and left the value to be guessed —
+so an operator setting `policy.defaults.write` was being asked to type a value
+out of a set the pinned dependency has made public. A boolean is now toggled, a
+closed enum cycled, a number chosen from a one-two-five ladder, a model taken
+from `[prices.models]` already in the file, and a file taken from the workspace.
+What is still typed is only what no menu can hold — a substring, a rubric, a URL,
+a command — and each of those states the shape it wants and shows a worked
+example before it asks.
+
+**Horizontal arrows cycle a value where it stands, and it cannot be the
+spacebar.** Every picker in this product consumes printable characters as a
+fuzzy filter, so Space would toggle a setting in the middle of a two-word query.
+The arrows were already free.
+
+**Unsetting a key removes it, rather than writing a default's text into your
+file.** This needed a new write primitive: `Edit::remove` takes a whole
+`[section]` or `[[array]]` entry and errors on a key path, and nothing in the
+codebase deleted a single `key = value` line. Writing the default's text instead
+would have attributed a crate default to a file you never wrote it in — a lie a
+reader cannot detect, and the exact one `/config`'s origin column exists to
+prevent. After an unset, the origin column says `default` and names no file.
+
+**A write goes into the file that already decides the key**, stated in the
+confirmation, rather than asking every time or silently choosing your own file.
+Answering "the user scope" every time would shadow a committed project setting
+with a personal one, which is the change you are least able to see afterwards.
+
+**`/provider`, `/mcp` and `/plugin` each gained the verb they never had.**
+`servers::add` had been written and tested seven times over while reachable from
+no keystroke at all; `pluginview::add` had no caller whatsoever. `/provider` also
+gains the edit it has never had — until now a rotated API key meant opening a
+file.
+
+**Adding an MCP server says whether it will be allowed to start.** A stdio server
+starts under an `Act::Exec` check on its binary and an HTTP one under an
+`Act::Net` check on its host, so a server the policy refuses dies before its
+process exists. io now reports that at the moment of adding and names the rule
+and the layer that decided it, instead of leaving it to be found on the next run.
+The report is a disclosure and not a veto: the entry is written either way and
+the command exits zero, because configuring a server before writing the rule that
+lets it run is an ordinary order to do things in.
+
+**Note that HTTP servers are refused by default.** Every permission posture sets
+`net` to deny, so `io mcp add --url …` will report a refusal until a rule names
+the host. That is the boundary working, and the report says how to open it.
+
+**Every verb has an argument form, and both forms share one parse.**
+
+```
+io mcp add semlith -- semlith --store /path/to/.semlith mcp
+io mcp add --transport http linear-server https://mcp.linear.app/mcp
+io plugin add ./bundles/rust-review
+io config set policy.defaults.write ask
+io config unset app.io-cli.plain
+io config list
+```
+
+`io mcp`, `io plugin` and `io config` open no session, start no run and touch no
+store, so they work in CI. `io config list` prints the origin column, because a
+value without its deciding file is half an answer and the headless surface must
+not tell a weaker truth than the interactive one. A line written for another
+harness — `--transport http` before the id, with the URL as a positional — is
+accepted through the same parse rather than a second branch.
+
+**No command was added.** Everything here is a verb inside a command that already
+existed.
+
 ## [0.27.0] - 2026-08-28
 
 The store stops being something you cannot see, undo stops being

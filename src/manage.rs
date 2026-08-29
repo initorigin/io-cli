@@ -133,10 +133,7 @@ pub enum ConfigVerb {
         scope: Option<Scope>,
     },
     /// Delete one key's line, so the layer below it decides again.
-    Unset {
-        key: String,
-        scope: Option<Scope>,
-    },
+    Unset { key: String, scope: Option<Scope> },
     /// Every key this surface offers.
     List,
 }

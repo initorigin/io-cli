@@ -325,9 +325,48 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     assert_eq!(
         COMMANDS.len(),
         36,
-        "0.27.0 adds exactly three commands — `/store`, `/export` and `/undo` — on \
-         top of the thirty-three 0.26.0 shipped; a thirty-seventh here means one \
-         arrived unrecorded",
+        "0.28.0 adds NO command — every verb it adds is a verb inside a command \
+         that already exists, and `io mcp|plugin|config` are binary subcommands in \
+         `src/cli.rs` rather than slash commands. A thirty-seventh here means one \
+         arrived unrecorded, on top of the thirty-six 0.27.0 shipped",
+    );
+}
+
+/// **The palette did not grow, and no group was re-filed.**
+///
+/// The other half of the assertion above, and the reason it is worth its own
+/// test: `f13_no_group_is_longer_than_ten` caps a group at ten, and occupancy is
+/// Session 7, Turn 10, Inspect 10, Configure 9 — **one free slot in the whole
+/// product.** A release that added three commands would have had to re-file the
+/// groups, which is a change to a surface nobody asked to change. Growing the
+/// palette has to be a deliberate act rather than a side effect of adding a verb.
+///
+/// Sabotage: add a command to `COMMANDS` and put it in a group. Under it this
+/// fails on the occupancy it was given, naming the group that moved.
+#[test]
+fn o2_the_palette_did_not_grow_and_no_group_was_refiled() {
+    use io_cli::commands::{Group, GROUPS};
+
+    let occupancy: Vec<(Group, usize)> = GROUPS
+        .iter()
+        .map(|(group, names)| (*group, names.len()))
+        .collect();
+    let total: usize = occupancy.iter().map(|(_, count)| count).sum();
+    assert_eq!(
+        total,
+        COMMANDS.len(),
+        "every command is in exactly one group, so the group sizes must sum to the inventory"
+    );
+    // The occupancy this release inherited and must leave alone. A written-out
+    // literal rather than a bound, so a group that grew while another shrank is
+    // named rather than cancelling out.
+    let mut sizes: Vec<usize> = occupancy.iter().map(|(_, count)| *count).collect();
+    sizes.sort_unstable();
+    assert_eq!(
+        sizes,
+        vec![7, 9, 10, 10],
+        "0.28.0 re-files no group; the occupancy is Session 7, Configure 9, Turn 10, Inspect 10, \
+         and there is exactly one free slot in the product"
     );
 }
 

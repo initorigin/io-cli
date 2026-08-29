@@ -1190,9 +1190,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             if let Some(forward) = step {
                 let row = open.selection();
                 let chosen = row.and_then(|row| paths.get(row)).cloned();
-                if let Some(key_name) = chosen.filter(|name| {
-                    name.as_str() != io_cli::configure::REFRESH_PRICES
-                }) {
+                if let Some(key_name) =
+                    chosen.filter(|name| name.as_str() != io_cli::configure::REFRESH_PRICES)
+                {
                     cycle_setting(
                         session.root(),
                         &mut config,
@@ -2144,12 +2144,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             let ready: Vec<String> = ["openrouter", "anthropic", "openai"]
                                 .into_iter()
                                 .filter(|preset| {
-                                    io_cli::providers::variable(io_cli::providers::Endpoint::Preset(
-                                        preset,
-                                    ))
-                                    .is_some_and(|name| {
-                                        io_cli::providers::variable_is_set(&name)
-                                    })
+                                    io_cli::providers::variable(
+                                        io_cli::providers::Endpoint::Preset(preset),
+                                    )
+                                    .is_some_and(|name| io_cli::providers::variable_is_set(&name))
                                 })
                                 .map(str::to_string)
                                 .collect();
@@ -2294,10 +2292,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // a credential nor a model, so the list comes
                                 // first and the check follows it, still before any
                                 // edit — which is what F10 actually asks for.
-                                app.record(
-                                    Tone::Muted,
-                                    "reading the model catalogue…".to_string(),
-                                );
+                                app.record(Tone::Muted, "reading the model catalogue…".to_string());
                                 paint(screen, &mut app)?;
                                 let models: Vec<String> = io_cli::verify::served(None)
                                     .await
@@ -2394,10 +2389,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 let (scope, edit) = match at {
                                     // A change to a link that already exists goes
                                     // into the file that already carries it.
-                                    Some(at) => (
-                                        at.scope,
-                                        io_cli::providers::edit(at, "model", model),
-                                    ),
+                                    Some(at) => {
+                                        (at.scope, io_cli::providers::edit(at, "model", model))
+                                    }
                                     // A new link goes to the user scope and is
                                     // written with the credential shape that needs
                                     // no secret in the file: no `api_key` for a
@@ -2426,9 +2420,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             Ok(()) => {
                                                 match io_cli::configure::reload(&root) {
                                                     Ok((fresh, _)) => config = fresh,
-                                                    Err(error) => {
-                                                        app.record(Tone::Error, error)
-                                                    }
+                                                    Err(error) => app.record(Tone::Error, error),
                                                 }
                                                 // **Where it landed in the chain,
                                                 // said before it matters.** A new
@@ -2437,8 +2429,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 // force — an operator who added one
                                                 // expecting it to answer the next
                                                 // turn needs to be told it will not.
-                                                let place =
-                                                    io_cli::providers::chain(&config).len();
+                                                let place = io_cli::providers::chain(&config).len();
                                                 app.record(
                                                     Tone::Success,
                                                     match at {
@@ -2479,10 +2470,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // The model row descends rather than writing, so it is
                             // taken before the edit is worked out.
                             if index == *model_at {
-                                app.record(
-                                    Tone::Muted,
-                                    "reading the model catalogue…".to_string(),
-                                );
+                                app.record(Tone::Muted, "reading the model catalogue…".to_string());
                                 paint(screen, &mut app)?;
                                 let models: Vec<String> = io_cli::verify::served(None)
                                     .await
@@ -2502,9 +2490,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         Picker::new(
                                             format!("Which model for {label}?"),
                                             std::iter::once(Row::new("leave it".to_string()))
-                                                .chain(
-                                                    models.iter().map(|m| Row::new(m.clone())),
-                                                )
+                                                .chain(models.iter().map(|m| Row::new(m.clone())))
                                                 .collect(),
                                         ),
                                         Pick::ProviderModel {
@@ -2651,8 +2637,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 let current = io_cli::configure::setting(&config, key)
                                     .value
                                     .unwrap_or_default();
-                                descended =
-                                    Some(write_where(&root, key.clone(), current));
+                                descended = Some(write_where(&root, key.clone(), current));
                             } else if index == *unset_at {
                                 match io_cli::configure::write(
                                     &root,
@@ -3448,11 +3433,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Manage(line) => {
                     let root = session.root().to_path_buf();
                     let tokens = io_cli::manage::tokens(&line);
-                    match io_cli::manage::parse(&tokens)
-                        .and_then(|request| {
-                            io_cli::manage::plan(&root, &request)
-                                .map(|plan| (request, plan))
-                        }) {
+                    match io_cli::manage::parse(&tokens).and_then(|request| {
+                        io_cli::manage::plan(&root, &request).map(|plan| (request, plan))
+                    }) {
                         // The refusals are finished sentences naming what was
                         // wrong and what is accepted, so they are printed as they
                         // came rather than re-worded into a second opinion about
@@ -3463,7 +3446,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // is asked, because a panel is a better answer in a session
                         // than a text dump is. Answered from the configuration this
                         // session is running on.
-                        Ok((io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Get { id }), None)) => {
+                        Ok((
+                            io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Get { id }),
+                            None,
+                        )) => {
                             match io_cli::servers::servers(&config, &app.servers)
                                 .into_iter()
                                 .find(|server| server.id == id)
@@ -3490,10 +3476,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 Ok(()) => {
                                     match io_cli::configure::reload(&root) {
                                         Ok((fresh, stored)) => {
-                                            capabilities =
-                                                io_cli::contract::Capabilities::stored(
-                                                    stored.as_ref(),
-                                                );
+                                            capabilities = io_cli::contract::Capabilities::stored(
+                                                stored.as_ref(),
+                                            );
                                             config = fresh;
                                         }
                                         Err(error) => app.record(Tone::Error, error),
@@ -3532,8 +3517,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             app.posture(),
                                             app.remembered(),
                                         );
-                                        let report =
-                                            io_cli::preflight::check(server, &policy);
+                                        let report = io_cli::preflight::check(server, &policy);
                                         app.record(
                                             if report.starts() {
                                                 Tone::Muted
@@ -7318,7 +7302,10 @@ fn manage_main(
     // operation did happen.
     if let io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Add { server, .. }) = &request {
         let policy = config.policy().unwrap_or_default();
-        eprintln!("{}", io_cli::preflight::line(&io_cli::preflight::check(server, &policy)));
+        eprintln!(
+            "{}",
+            io_cli::preflight::line(&io_cli::preflight::check(server, &policy))
+        );
     }
     Ok(io_cli::exec::OK)
 }
@@ -7408,9 +7395,15 @@ fn value_rows(
     // "the user scope" every time would silently shadow a committed project
     // setting with a personal one.
     let title = if inherited {
-        format!("{key} — writes to the {} file, which decides it", word.word())
+        format!(
+            "{key} — writes to the {} file, which decides it",
+            word.word()
+        )
     } else {
-        format!("{key} — no file names it, so this writes to the {} file", word.word())
+        format!(
+            "{key} — no file names it, so this writes to the {} file",
+            word.word()
+        )
     };
     Some((
         Picker::new(title, rows),
@@ -7471,8 +7464,7 @@ fn cycle_setting(
     // committed file makes the whole file stop parsing rather than that setting
     // being rejected. `write` would catch it and report io-harness's own sentence
     // — this reports it without touching the file at all.
-    if scope == io_harness::config::Scope::Project
-        && io_cli::configure::widens_project(key, &next)
+    if scope == io_harness::config::Scope::Project && io_cli::configure::widens_project(key, &next)
     {
         app.record(
             Tone::Refused,
@@ -7484,7 +7476,10 @@ fn cycle_setting(
         );
         return;
     }
-    let was = setting.value.clone().unwrap_or_else(|| "default".to_string());
+    let was = setting
+        .value
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let edit = io_cli::edit::Edit::set(key, io_cli::configure::spell_value(&kind, &next));
     match io_cli::configure::write(root, scope, &[edit]) {
         Err(refusal) => app.record(Tone::Refused, refusal),
