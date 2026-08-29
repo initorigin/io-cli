@@ -207,6 +207,22 @@ pub struct Plan {
     pub scope: Scope,
     /// What to write, applied together or not at all.
     pub edits: Vec<Edit>,
+    /// What the operator has to be shown **before** [`crate::configure::write`]
+    /// is called, and consent to.
+    ///
+    /// `Some` for exactly one request: `plugin add <name>` resolved out of a
+    /// marketplace, which is a stranger's directory nobody on this machine has
+    /// read. It is already the whole answer — [`plan`] got it from
+    /// [`crate::marketplace::disclosure`], which is `io_harness::Plugins::inspect`
+    /// — so a driver holding it has nothing left to decide and no second reading
+    /// to get wrong.
+    ///
+    /// **A door that ignores it writes an unconsented entry**, which is why it is
+    /// a field on the `Plan` rather than a second call the driver has to remember:
+    /// the edits and the disclosure that earns them travel together. A bundle
+    /// io-harness would refuse never reaches here at all — `plan` answers `Err`
+    /// with io-harness's own sentence and there is no `Plan` to write.
+    pub disclosure: Option<crate::marketplace::Disclosure>,
 }
 
 /// The tokens of a slash line, as a shell would have handed them to `io`.
@@ -492,11 +508,20 @@ fn judged(text: &str) -> Result<crate::fetch::Named, String> {
 ///
 /// **Every write is one of the edits this crate already had**, and that is the
 /// constraint rather than an observation: `servers::add`, `servers::edit`,
-/// `servers::remove`, `pluginview::add`, `pluginview::add_off`,
-/// `pluginview::remove`, `Edit::set` and
+/// `servers::remove`, `pluginview::add`, `pluginview::remove`, `Edit::set` and
 /// `Edit::unset` are what the interactive surfaces write through, and a second
 /// path assembled here would be a second set of bytes to keep equal — which is
 /// the defect the whole module is arranged against.
+///
+/// **`Err` is also how a bundle is refused before anything is written.** A
+/// `plugin add <name>` resolved out of a marketplace runs
+/// `io_harness::Plugins::inspect` here, so a manifest io-harness would drop — a
+/// bad id, a `[[hook]]` in a committed file, a `${env:}` substitution — ends the
+/// request with io-harness's own sentence and no `Plan` at all. Neither door can
+/// therefore write first and find out afterwards, which is what both of them did
+/// through 0.29.0. What a bundle it *accepts* would bring rides on
+/// [`Plan::disclosure`], for the door to show and get consent for before it calls
+/// [`crate::configure::write`].
 ///
 /// The scope of a change to something that **already exists** is not the
 /// operator's to choose: it is the file that declares it, found by
@@ -526,6 +551,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
         Request::Mcp(McpVerb::Add { server, scope }) => Plan {
             scope: *scope,
             edits: vec![crate::servers::add(server)],
+            disclosure: None,
         },
         Request::Mcp(McpVerb::Edit { id, key, value }) => {
             let at = declared_server(root, id)?;
@@ -543,6 +569,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             Plan {
                 scope: at.scope,
                 edits: vec![edit],
+                disclosure: None,
             }
         }
         Request::Mcp(McpVerb::Remove { id }) => {
@@ -550,6 +577,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             Plan {
                 scope: at.scope,
                 edits: vec![crate::servers::remove(&at)],
+                disclosure: None,
             }
         }
         Request::Plugin(PluginVerb::Add { path, scope }) => {
@@ -569,23 +597,36 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 &path.display().to_string(),
             )?;
             let written = crate::pluginview::declared(root, chosen.dir());
+            // **Which reading won decides whether anything is disclosed, and that
+            // is the whole of the rule.** A directory the operator typed is
+            // declared without ceremony, which is what `/plugin add ./bundles/x`
+            // has done since 0.28.0 and is not a thing to second-guess. A bundle
+            // resolved out of a marketplace is a stranger's code nobody here has
+            // read, so io-harness reads, parses, validates and trust-checks it
+            // **now** — `Plugins::inspect`, 0.71.0 — and a refusal is this
+            // function's `Err`, in io-harness's own sentence, with the operator's
+            // configuration file never opened.
+            //
+            // `Chosen::discloses` is the one place that question is answered, and
+            // the scope handed to `inspect` is the scope this `Plan` is about to
+            // be written into: a `[[hook]]` is the bundle's own business in a
+            // user-scope file and is refused whole in a committed one, and an
+            // install that inspected at the wrong scope would disclose a bundle
+            // that then dropped, or refuse one that would have loaded.
+            let disclosure = chosen
+                .discloses()
+                .then(|| crate::marketplace::disclosure(*scope, chosen.dir()))
+                .transpose()?;
             Plan {
                 scope: *scope,
-                // **Which reading won decides which entry is written, and that is
-                // the whole of the disclosure rule.** A directory the operator
-                // typed is declared on, which is what `/plugin add ./bundles/x`
-                // has done since 0.28.0 and is not a thing to second-guess. A
-                // bundle resolved out of a marketplace is a stranger's code no one
-                // here has read, and it is declared `enabled = false` so that
-                // io-harness reads, parses, validates and trust-checks it — the
-                // only way it can, since it publishes no loader that takes a
-                // directory — before a single contribution reaches a turn.
-                // `Chosen::discloses` is the one place that question is answered.
-                edits: vec![if chosen.discloses() {
-                    crate::pluginview::add_off(&written)
-                } else {
-                    crate::pluginview::add(&written)
-                }],
+                // One entry, switched on, written once. Through 0.29.0 a
+                // marketplace bundle was written `enabled = false` first and
+                // switched on afterwards, because declaring it was the only way to
+                // have io-harness read it at all; `inspect` has replaced that
+                // round trip, so there is no longer an entry in the file that the
+                // operator has not agreed to. See `pluginview::add_off`.
+                edits: vec![crate::pluginview::add(&written)],
+                disclosure,
             }
         }
         Request::Plugin(PluginVerb::Remove { path }) => {
@@ -600,11 +641,13 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             Plan {
                 scope,
                 edits: vec![crate::pluginview::remove(index)],
+                disclosure: None,
             }
         }
         Request::Config(ConfigVerb::Set { key, value, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
             edits: vec![Edit::set(key.clone(), value.clone())],
+            disclosure: None,
         },
         Request::Config(ConfigVerb::Unset { key, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
@@ -615,6 +658,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             // for a key whose name happens to be a section's, delete the
             // operator's entire block. See `Edit::unset`.
             edits: vec![Edit::unset(key.clone())],
+            disclosure: None,
         },
         // **A marketplace verb plans no write, and it is here beside the reads
         // rather than given a shape of its own.** `add` and `remove` are not

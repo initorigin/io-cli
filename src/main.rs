@@ -1858,47 +1858,40 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `index`, for `Pick::PluginRemove`'s reason: the outer
                         // `index` is the row that was chosen and the entry's own
                         // position in the file is a different number entirely.
-                        Pick::PluginEnable {
-                            id,
-                            scope,
-                            index: at,
-                        } => {
+                        Pick::PluginInstall { id, scope, edits } => {
                             if io_cli::store::acts(index) {
-                                // **One key.** `pluginview::enable` is an
-                                // `Edit::set` on `plugin[at].enabled`, so the path
-                                // this entry declares, every sibling entry and
-                                // every unrelated section come through byte for
-                                // byte — see `src/edit.rs`, which replaces a
-                                // value's own span and copies the rest.
-                                match io_cli::configure::write(
-                                    session.root(),
-                                    *scope,
-                                    &[io_cli::pluginview::enable(*at)],
-                                ) {
+                                // **The write happens here and nowhere earlier.**
+                                // `edits` is `manage::plan`'s own single
+                                // `pluginview::add`, so the entry lands switched
+                                // on, in one append, and every unrelated section
+                                // comes through byte for byte — see `src/edit.rs`,
+                                // which splices a span and copies the rest.
+                                match io_cli::configure::write(session.root(), *scope, edits) {
                                     Ok(()) => app.record(
                                         Tone::Success,
                                         format!(
-                                            "{id} is switched on; what it contributes is in \
+                                            "{id} is installed; what it contributes is in \
                                              `/plugin`, and it is in force from the next turn",
                                         ),
                                     ),
                                     Err(refusal) => app.record(Tone::Refused, refusal),
                                 }
                             } else {
-                                // **Declined leaves it declared, off and visible**,
-                                // and saying so is the whole difference between a
-                                // decline and a bundle that quietly went away. The
-                                // entry is not removed: `/plugin` lists it under
-                                // `pluginview::DISABLED_MARK` with what switching
-                                // it on would bring, which is the one edit an
-                                // operator can undo in a keystroke if they can see
-                                // it.
+                                // **Declining leaves the operator's file untouched**,
+                                // which is new in 0.30.0 and is the point of the
+                                // change. 0.29.0 had to write the entry switched off
+                                // before io-harness would read the bundle at all, so
+                                // a decline left a `[[plugin]]` behind and the honest
+                                // sentence was "declared and switched off".
+                                // `Plugins::inspect` validates a directory with
+                                // nothing on disk naming it, so there is now nothing
+                                // to leave behind and nothing to undo.
                                 app.record(
                                     Tone::Muted,
                                     format!(
-                                        "{id} is left declared and switched off — nothing of it \
-                                         is in this session; `/plugin` lists it, and switching it \
-                                         on there is one keystroke",
+                                        "{id} was not installed — nothing was written, and the \
+                                         clone is still under `/plugin marketplace` if you want \
+                                         to look at it again",
                                     ),
                                 );
                             }
@@ -2037,18 +2030,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // A bundle is several *lists* — its agents, its
                                 // servers, its policy layers — and a sentence
                                 // holding three lists is a sentence nobody reads.
-                                // The hooks by name where the manifest is still
-                                // readable, and `pluginview`'s honest placeholder
-                                // where it is not — `hooks` answers an empty
-                                // slice for a directory it cannot open, which is
-                                // the same fact the placeholder states. Read
-                                // here rather than in `pluginview`, which opens
-                                // no manifest by rule.
+                                // The hooks come off the `Plugin` io-harness
+                                // parsed, carried on `Listed` by `copy_out`.
+                                // Until io-harness 0.71.0 this line read the
+                                // manifest again through `marketplace::hooks`,
+                                // because `Plugin` had an accessor for every
+                                // contribution kind except the one that runs
+                                // programs; io-harness#223 closed that and the
+                                // second reader is gone.
                                 let mut rows = io_cli::pluginview::detail(
                                     plugin,
                                     screen.width(),
                                     &app.theme.glyphs,
-                                    &io_cli::marketplace::hooks(&plugin.root),
                                 );
                                 // **The action's index is taken before the row is
                                 // pushed, never worked out afterwards.** Every
@@ -3906,6 +3899,66 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             }
                         },
                         Ok((_, None)) => {}
+                        // **A plan carrying a disclosure has not been written, and
+                        // this arm exists so that it cannot be.** `manage::plan`
+                        // fills `disclosure` for exactly one request — `plugin add
+                        // <name>` resolved out of a marketplace — by running
+                        // `io_harness::Plugins::inspect` over the clone, so
+                        // io-harness has already read, parsed, validated and
+                        // trust-checked the bundle with no declaration existing
+                        // anywhere on disk. A bundle it refuses never reaches this
+                        // arm at all: `plan` returns `Err` and builds no `Plan`,
+                        // which makes "nothing is written for a bundle that would be
+                        // refused" a property of the library rather than of this
+                        // driver remembering to check.
+                        //
+                        // Guarded rather than nested inside the arm below, so the
+                        // write path keeps exactly the shape it had.
+                        Ok((_, Some(plan))) if plan.disclosure.is_some() => {
+                            let disclosure = plan
+                                .disclosure
+                                .as_ref()
+                                .expect("the guard on this arm just tested it");
+                            app.record(
+                                Tone::Muted,
+                                format!(
+                                    "{} is not installed. This is what io-harness parsed out of \
+                                     it, and nothing has been written to your configuration:",
+                                    disclosure.id,
+                                ),
+                            );
+                            // `record` and never `say`: the footer is one slot the
+                            // next keystroke takes back, and this is the thing the
+                            // operator is answering about.
+                            for line in disclosure.said(&app.theme.glyphs) {
+                                app.record(Tone::Muted, line);
+                            }
+                            picker = Some((
+                                Picker::new(
+                                    format!("Install {}?", disclosure.id),
+                                    vec![
+                                        Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                        Row::with_detail(
+                                            "install it".to_string(),
+                                            format!(
+                                                "appends one `[[plugin]]` entry to the {} file \
+                                                 and changes no other byte of it",
+                                                io_cli::configure::Decided::File {
+                                                    scope: plan.scope,
+                                                    path: Default::default(),
+                                                }
+                                                .word()
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                                Pick::PluginInstall {
+                                    id: disclosure.id.clone(),
+                                    scope: plan.scope,
+                                    edits: plan.edits.clone(),
+                                },
+                            ));
+                        }
                         Ok((request, Some(plan))) => {
                             match io_cli::configure::write(&root, plan.scope, &plan.edits) {
                                 Err(refusal) => app.record(Tone::Refused, refusal),
@@ -3919,128 +3972,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         }
                                         Err(error) => app.record(Tone::Error, error),
                                     }
-                                    // **The entry that was just appended, read
-                                    // back out of the file rather than re-decided
-                                    // here.** `pluginview::declared_off` answers
-                                    // `Some` only for a last `[[plugin]]` carrying
-                                    // `enabled = false`, which is what
-                                    // `manage::plan` writes for a bundle resolved
-                                    // out of a marketplace and never for a
-                                    // directory the operator typed. So the driver
-                                    // asks no second time which reading the word
-                                    // had: `marketplace::chosen` decided that once,
-                                    // in the library, and this is its result.
-                                    let disclosing = matches!(
-                                        &request,
-                                        io_cli::manage::Request::Plugin(
-                                            io_cli::manage::PluginVerb::Add { .. }
-                                        )
-                                    )
-                                    .then(|| io_cli::configure::scope_path(&root, plan.scope))
-                                    .flatten()
-                                    .and_then(|path| std::fs::read_to_string(path).ok())
-                                    .and_then(|text| io_cli::pluginview::declared_off(&text));
-
-                                    match &disclosing {
-                                        // **Not "in force from the next turn".** A
-                                        // bundle written switched off is in force
-                                        // from no turn at all, and this is the
-                                        // sentence an operator would read as
-                                        // "installed".
-                                        Some(_) => app.record(
-                                            Tone::Warning,
-                                            io_cli::pluginview::OLDER_BINARY,
-                                        ),
-                                        None => app.record(
-                                            Tone::Success,
-                                            format!(
-                                                "written to the {} file, in force from the next \
-                                                 turn",
-                                                io_cli::configure::Decided::File {
-                                                    scope: plan.scope,
-                                                    path: Default::default(),
-                                                }
-                                                .word()
-                                            ),
-                                        ),
-                                    }
-                                    if let Some((at, declared)) = disclosing {
-                                        // A `[[plugin]] path` is relative to the
-                                        // discovery root, which is
-                                        // `pluginview::declared_at`'s own rule.
-                                        let dir = if declared.is_absolute() {
-                                            declared
-                                        } else {
-                                            root.join(declared)
-                                        };
-                                        let hooks = io_cli::marketplace::hooks(&dir);
-                                        match io_cli::marketplace::disclosure(
-                                            &io_cli::pluginview::view(&config),
-                                            &dir,
-                                            &hooks,
-                                            screen.width(),
-                                            &app.theme.glyphs,
-                                        ) {
-                                            // **Refused at re-discovery, before
-                                            // consent, in io-harness's own
-                                            // sentence.** Nothing is offered to
-                                            // switch on, because nothing would
-                                            // load — and the entry is left
-                                            // declared and off, where `/plugin`
-                                            // lists it under its own mark.
-                                            Err(refusal) => {
-                                                app.record(Tone::Refused, refusal);
+                                    // **Every plan that reaches this arm is one the
+                                    // operator has already consented to**, either
+                                    // by typing the command that produced it or by
+                                    // choosing "install it" on the arm above, which
+                                    // is where a marketplace bundle's write happens
+                                    // now. There is no longer a second reading to
+                                    // recover here: 0.29.0 read the file back with
+                                    // `pluginview::declared_off` to find out whether
+                                    // the entry it had just appended was one it had
+                                    // written switched off, and that whole round trip
+                                    // existed only because io-harness published no
+                                    // way to validate a bundle without declaring it.
+                                    app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "written to the {} file, in force from the next turn",
+                                            io_cli::configure::Decided::File {
+                                                scope: plan.scope,
+                                                path: Default::default(),
                                             }
-                                            Ok(disclosure) => {
-                                                app.record(
-                                                    Tone::Muted,
-                                                    format!(
-                                                        "{} is declared and switched off; \
-                                                         io-harness read, parsed and trust-checked \
-                                                         it, and it contributes nothing until it \
-                                                         is switched on",
-                                                        disclosure.id,
-                                                    ),
-                                                );
-                                                // `record` and never `say`: the
-                                                // footer is one slot the next
-                                                // keystroke takes back, and this
-                                                // is what the operator is
-                                                // answering about.
-                                                for line in &disclosure.said {
-                                                    app.record(Tone::Muted, line.clone());
-                                                }
-                                                picker = Some((
-                                                    Picker::new(
-                                                        format!("Switch on {}?", disclosure.id),
-                                                        vec![
-                                                            Row::new(
-                                                                io_cli::store::LEAVE_IT.to_string(),
-                                                            ),
-                                                            Row::with_detail(
-                                                                "switch it on".to_string(),
-                                                                format!(
-                                                                    "sets `plugin[{at}].enabled = \
-                                                                     true` in the {} file and \
-                                                                     changes no other byte of it",
-                                                                    io_cli::configure::Decided::File {
-                                                                        scope: plan.scope,
-                                                                        path: Default::default(),
-                                                                    }
-                                                                    .word()
-                                                                ),
-                                                            ),
-                                                        ],
-                                                    ),
-                                                    Pick::PluginEnable {
-                                                        id: disclosure.id,
-                                                        scope: plan.scope,
-                                                        index: at,
-                                                    },
-                                                ));
-                                            }
-                                        }
-                                    }
+                                            .word()
+                                        ),
+                                    );
                                     // **The preflight after the write, never
                                     // instead of it.** A server the policy will
                                     // refuse is still written — the report is a
@@ -7815,13 +7769,17 @@ enum Pick {
     /// confirmation past index 0 acts (`store::acts`) and a fact drawn as a row is
     /// a fact an operator can consent with by arrowing onto it.
     ///
-    /// `index` is a position in the file's `[[plugin]]` array — `pluginview::enable`
-    /// sets exactly `plugin[index].enabled` — and never a row number, which is
-    /// [`Pick::PluginRemove`]'s own warning.
-    PluginEnable {
+    /// `edits` is the whole of what consent performs — `manage::plan` built it and
+    /// nothing here decides any part of it again. **Nothing has been written when
+    /// this picker opens**, which is the difference from 0.29.0: that release wrote
+    /// the entry switched off in order to make io-harness read the bundle at all,
+    /// so declining left a `[[plugin]]` entry behind. `Plugins::inspect` reads and
+    /// validates the directory with no declaration on disk, so a decline here
+    /// leaves the operator's file untouched byte for byte.
+    PluginInstall {
         id: String,
         scope: io_harness::config::Scope,
-        index: usize,
+        edits: Vec<io_cli::edit::Edit>,
     },
     /// The second half of removing a bundle: which entry, and are you sure.
     ///
@@ -8032,6 +7990,36 @@ fn manage_main(
     let Some(plan) = io_cli::manage::plan(root, &request)? else {
         return Ok(io_cli::exec::OK);
     };
+    // **The disclosure comes before the write on this door too, and the typed
+    // command is the consent.** `manage::plan` fills `disclosure` only for a
+    // `plugin add <name>` resolved out of a marketplace, and it fills it from
+    // `io_harness::Plugins::inspect` — so a bundle io-harness refuses returned `Err`
+    // from `plan` above and nothing reached this line.
+    //
+    // What an operator gets here is therefore the same six contribution kinds the
+    // session shows, on stderr, before anything is written; and then the install
+    // happens, because they named this bundle in the command they typed. A `--yes`
+    // was considered and refused for the reason it was refused in 0.29.0: it is a
+    // second reading of the word "consent" on a surface a script drives. The
+    // alternative — disclose and write nothing — was rejected because it leaves
+    // `io plugin add` unable to install anything at all, which is not a door.
+    //
+    // ASCII and `u16::MAX`: this goes down a pipe, not onto a terminal whose width
+    // and font are known.
+    if let Some(disclosure) = &plan.disclosure {
+        eprintln!(
+            "{} — io-harness read, parsed and trust-checked this bundle. It contributes:",
+            disclosure.id,
+        );
+        for line in disclosure.said(&io_cli::glyphs::ASCII) {
+            eprintln!("{line}");
+        }
+        eprintln!(
+            "installing it now: naming a bundle on this door is the consent, and there is \
+             nobody here to ask. `/plugin remove {}` takes it back out.",
+            disclosure.id,
+        );
+    }
     io_cli::configure::write(root, plan.scope, &plan.edits)?;
     // **The policy preflight, after the write and on stderr.** After, because the
     // report is a disclosure and not a veto: refusing to write an entry because
@@ -8044,56 +8032,6 @@ fn manage_main(
             "{}",
             io_cli::preflight::line(&io_cli::preflight::check(server, &policy))
         );
-    }
-    // **A marketplace install stops at declared-and-off on this door, and says
-    // so.** The entry is written `enabled = false` by the same `plan` the session
-    // uses, and the consent that flips it is a confirmation — which this door does
-    // not have and must not invent: a `--yes` here would be a second reading of the
-    // word "consent" on a surface a script drives. So the disclosure goes to
-    // stderr, exactly as the MCP preflight does and for the same reason (the write
-    // did happen, so the status is zero), and the operator switches it on in
-    // `/plugin`. An operator who has read the directory themselves has the path
-    // form, which is the reading that declares a bundle on.
-    if matches!(
-        &request,
-        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Add { .. })
-    ) {
-        if let Some((at, declared)) = io_cli::configure::scope_path(root, plan.scope)
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| io_cli::pluginview::declared_off(&text))
-        {
-            eprintln!("{}", io_cli::pluginview::OLDER_BINARY);
-            let dir = if declared.is_absolute() {
-                declared
-            } else {
-                root.join(declared)
-            };
-            let fresh = io_harness::config::Config::discover(root)
-                .map_err(|error| format!("the written file did not re-read: {error}"))?;
-            match io_cli::marketplace::disclosure(
-                &io_cli::pluginview::view(&fresh),
-                &dir,
-                &io_cli::marketplace::hooks(&dir),
-                // Wide enough that nothing is shortened, and the ASCII set,
-                // because this goes down a pipe rather than onto a terminal
-                // whose width and font are known.
-                u16::MAX,
-                &io_cli::glyphs::ASCII,
-            ) {
-                Err(refusal) => eprintln!("{refusal}"),
-                Ok(disclosure) => {
-                    eprintln!(
-                        "{} is declared and switched off; io-harness read, parsed and \
-                         trust-checked it, and it contributes nothing until `plugin[{at}].enabled` \
-                         is true",
-                        disclosure.id,
-                    );
-                    for line in &disclosure.said {
-                        eprintln!("{line}");
-                    }
-                }
-            }
-        }
     }
     Ok(io_cli::exec::OK)
 }
@@ -8274,7 +8212,7 @@ fn value_rows(
                 .map(|rung| rung.to_string())
                 .collect()
         }
-        io_cli::configure::Kind::Model => io_cli::configure::priced_models(root),
+        io_cli::configure::Kind::Model => io_cli::configure::priced_models(config),
         io_cli::configure::Kind::File => {
             // The workspace, through the completion the composer's `@` already
             // opens, so one reader answers "which files may be offered" for both

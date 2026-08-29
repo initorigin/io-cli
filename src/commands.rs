@@ -1222,13 +1222,14 @@ pub enum Action {
     /// List the capability bundles a `[[plugin]]` entry declared: what each one
     /// contributed, and what each dropped bundle failed on.
     ///
-    /// **What can honestly be shown is bounded by what io-harness makes public,
-    /// and the surface says so rather than implying more.** A bundle's agents,
-    /// MCP servers and policy layers are all readable and are listed by the names
-    /// io-harness namespaced them to. Its **hooks are not**: there is no
-    /// `Plugin::hooks()` and `Hook` is `pub(crate)`, so the word `hooks` from
-    /// `Plugin::contributions()` is the entire signal available — the bundle
-    /// declared some, and io-cli cannot say how many or what they run.
+    /// **Every fact shown is io-harness's own, and since 0.71.0 that includes the
+    /// hooks.** A bundle's agents, MCP servers and policy layers are listed by the
+    /// names io-harness namespaced them to, and its hooks — the contribution kind
+    /// that runs programs — are listed one row each, naming the event and the
+    /// argv, off `Plugin::hooks()` and `Hook`'s accessors. Through 0.29.0 there
+    /// was no such accessor and this pane could only draw the word `hooks` from
+    /// `Plugin::contributions()`, which told an operator that a bundle spawned
+    /// something and nothing about what.
     ///
     /// A dropped bundle carries io-harness's own sentence, re-worded by nobody.
     /// That matters most for the one an operator will actually hit: a bundle
