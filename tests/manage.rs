@@ -635,3 +635,78 @@ fn every_refusal_names_what_was_wrong_and_what_is_accepted() {
         );
     }
 }
+
+/// F14 — the headless listing prints the origin column, asserted against the
+/// driver as text.
+///
+/// **This gate exists because listing the criteria found F14's sabotage had no
+/// site.** "Drop the origin column from the listing" is the arm the criterion
+/// names, and the listing is rendered in `manage_main` inside `src/main.rs`, which
+/// nothing under `tests/` can link. Every other criterion in this release has a
+/// library gate; this one had none, and a criterion whose sabotage cannot be
+/// executed is a criterion that is not being checked. That is the 0.23.0 shape —
+/// three HIGH defects all in `src/main.rs`, invisible to 1,215 passing tests.
+///
+/// A weak instrument, and the only one available. It is the same one
+/// `tests/providers.rs`'s ordering gate and `tests/context_share.rs` already use.
+///
+/// Sabotage: drop `setting.decided.word()` from the `ConfigVerb::List` arm — under
+/// which this fails, and the headless answer starts disagreeing with `/config`
+/// about which file decided a value.
+#[test]
+fn f14_the_headless_listing_prints_the_deciding_file() {
+    // Normalised: a Windows checkout has `\r\n`, and a gate that sliced on `"\n"`
+    // matched nothing and panicked on a green product in 0.19.0 and 0.23.0.
+    let driver = std::fs::read_to_string("src/main.rs")
+        .expect("the driver is beside the tests")
+        .replace("\r\n", "\n");
+    let at = driver
+        .find("fn manage_main(")
+        .expect("the argument forms are answered by `manage_main`");
+    let body = &driver[at..];
+    let end = body
+        .find("\n/// The values one setting can take")
+        .unwrap_or(body.len());
+    let body = &body[..end];
+
+    let list = body
+        .find("ConfigVerb::List")
+        .expect("`io config list` must be answered");
+    let rest = &body[list..];
+    // The arm ends at the next match arm.
+    let arm_end = rest.find("_ => {}").unwrap_or(rest.len());
+    let arm = &rest[..arm_end];
+    assert!(
+        arm.contains("decided.word()"),
+        "`io config list` does not print the deciding file, so the headless answer \
+         disagrees with `/config` about the same configuration"
+    );
+    assert!(
+        arm.contains("configure::settings"),
+        "the listing must come from the same reader `/config` draws, or the two \
+         surfaces can list different keys"
+    );
+
+    // And the preflight disclosure goes to stderr, not stdout: a listing being
+    // piped must not have prose in it. F14 says a preflight refusal is not a
+    // failed operation, so it also must not change the exit status.
+    let preflight = body
+        .find("preflight::line")
+        .expect("an MCP add reports the policy preflight");
+    // The statement, not the line: `cargo fmt` puts the macro's arguments on
+    // their own lines, so a one-line window sees the argument and never the
+    // macro. The 200 bytes before the call are that statement and its comment.
+    let statement = &body[preflight.saturating_sub(200)..preflight];
+    assert!(
+        statement.contains("eprintln!"),
+        "the policy preflight must go to stderr, where it cannot contaminate a listing; \
+         the 200 bytes before the call were: {statement:?}"
+    );
+    assert!(
+        // `eprintln!` ends in `println!`, so the stdout macro has to be looked for
+        // with the stderr one taken out first — a needle that matches its own
+        // opposite is a gate that can never fail.
+        !statement.replace("eprintln!", "").contains("println!("),
+        "the policy preflight reached stdout, which puts prose in a pipe a script is reading"
+    );
+}
