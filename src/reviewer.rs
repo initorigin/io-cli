@@ -102,11 +102,16 @@ pub fn build(spec: &ProviderSpec, model: &str) -> Result<Arc<dyn Reviewer>, Stri
         // seen cannot be built into a reviewer, and refusing where the operator is
         // still looking at what they typed is the whole point of refusing at all.
         //
-        // **The spec is never formatted into the message.** Every variant holds
-        // `api_key: Option<String>` verbatim and `ProviderSpec` derives `Debug`,
-        // so `{other:?}` would put the operator's credential into a refusal that
-        // this crate then records into the scrollback. That is the same trap
-        // `Printable`'s hand-written `Debug` exists to avoid two files away.
+        // **The spec is never formatted into the message**, and it stays that way
+        // now that it no longer has to be. Every variant holds `api_key:
+        // Option<String>` verbatim, and until io-harness 0.71.0 `ProviderSpec`
+        // derived `Debug`, so `{other:?}` would have put the operator's credential
+        // into a refusal this crate then records into the scrollback. 0.71.0
+        // replaced that derive with a hand-written `Debug` that renders a set key
+        // as `<redacted>`, so the trap is closed upstream — but a refusal naming
+        // the provider kind is the better sentence regardless, and not formatting
+        // a secret-bearing type is not a habit worth relaxing because one version
+        // of one dependency made it safe.
         _ => Err(
             "this release does not know how to review with that kind of provider yet".to_string(),
         ),

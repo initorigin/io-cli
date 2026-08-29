@@ -169,10 +169,12 @@ refer to earlier output by where it is on the screen — it has scrolled.";
 /// is rendered in an eighty-column pane whose earlier output has scrolled, which
 /// is false of `io exec --json`.
 ///
-/// **The step cap is no longer one of them.** A headless run took io-harness's
-/// own twelve, so `io exec` ended `error: step_cap_reached` under half-finished
-/// work with nobody watching — the same defect [`MAX_STEPS`] exists to fix in a
-/// session, made worse rather than better by the run being unattended.
+/// **The step cap is no longer one of them.** A headless run took io-harness's own
+/// [`io_harness::DEFAULT_WORKSPACE_MAX_STEPS`] — twelve, and nameable as of
+/// io-harness 0.71.0 rather than a literal read out of a constructor — so
+/// `io exec` ended `error: step_cap_reached` under half-finished work with nobody
+/// watching, the same defect [`MAX_STEPS`] exists to fix in a session, made worse
+/// rather than better by the run being unattended.
 ///
 /// The order of the calls below is the order of precedence, weakest to
 /// strongest:

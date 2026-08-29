@@ -382,8 +382,16 @@ pub fn refusal(text: &str) -> Option<String> {
 /// It was handed `app.io-cli.prices.models`, io-cli's record of its own last write
 /// — which is absent for a hand-written `[prices]`, absent for every install that
 /// predates this release, and absent on the first fill. So `existing` was zero in
-/// exactly the cases the guard exists for, and the guard was off. `PriceTable` has
-/// no length, but the file has a row per model and can simply be counted.
+/// exactly the cases the guard exists for, and the guard was off. The file has a
+/// row per model and can simply be counted.
+///
+/// **`PriceTable::len` exists since io-harness 0.71.0 and is deliberately not used
+/// here.** It answers about the *merged* table `Config::prices` builds out of all
+/// three scopes; this function answers about **one file's own text**, which is what
+/// [`Catalogue::too_short`] needs — the guard is comparing a candidate write
+/// against the rows it would replace in that same file. Swapping in the merged
+/// count would make a short write look safe whenever another scope happened to
+/// price enough models, which is the failure the guard exists to catch.
 pub fn priced_in(text: &str) -> usize {
     let Ok(document) = text.parse::<toml::Value>() else {
         return 0;
