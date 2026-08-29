@@ -250,7 +250,7 @@ pub fn wrote(home: &Path, name: &str, path: &Path) -> bool {
 /// case — `disabled/` is created by the first disable and never before. Resolved
 /// through [`crate::skillview::describe`] rather than from the file stem, because
 /// the stem and the name are exactly the two things this release keeps apart.
-fn disabled_names(disabled: &Path) -> Vec<String> {
+pub(crate) fn disabled_names(disabled: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(disabled) else {
         return Vec::new();
     };

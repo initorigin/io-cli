@@ -1044,6 +1044,56 @@ fn f3_a_bundles_skill_is_not_ours_to_remove() {
     assert!(theirs.exists(), "and the file is still there");
 }
 
+/// **F1, the half a green suite cannot see.** The *session* acts on a skill verb,
+/// not only the headless door.
+///
+/// This is the gate for the release's worst defect, found by the adversarial
+/// review and by nothing else. `manage::plan` answers `Ok(None)` for every skill
+/// verb — a skill is a file, not a configuration edit — and the session's
+/// `Action::Manage` match ended in `Ok((_, None)) => {}`. So `/skills add
+/// ./x.md`, `/skills list` and `/skills remove x` typed at the prompt parsed
+/// correctly, planned correctly, and then did **nothing at all**: no file copied,
+/// no output, no refusal. The acts existed only in `manage_main`, which a session
+/// never calls. Every one of the 1,600 tests passed, and the README documented the
+/// verbs as working.
+///
+/// The same hole swallowed `/mcp probe`, which is asserted here beside it because
+/// it is the same shape and the same arm.
+///
+/// Sabotage: delete either arm from `src/main.rs`. Nothing else in the suite goes
+/// red.
+#[test]
+fn f1_the_session_acts_on_a_skill_verb_and_not_only_the_headless_door() {
+    let text = std::fs::read_to_string("src/main.rs").expect("the driver");
+    let flat = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+    assert!(
+        flat.contains("Ok((io_cli::manage::Request::Skill(verb), None))"),
+        "the session has no arm for a skill verb, so `/skills add`, `/skills list` \
+         and `/skills remove` parse, plan, and silently do nothing",
+    );
+    assert!(
+        flat.contains("io_cli::skillview::install(&home, source)"),
+        "the session's skill arm does not install",
+    );
+    assert!(
+        flat.contains("io_cli::skillview::remove(&skill.path, &bundles)"),
+        "the session's skill arm does not remove",
+    );
+    assert!(
+        flat.contains(
+            "Ok(( io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Probe { id }), None, ))"
+        ),
+        "the session has no arm for `/mcp probe`, so it parses and does nothing",
+    );
+    assert_eq!(
+        text.matches("io_cli::servers::probe(").count(),
+        2,
+        "a probe has exactly two call sites — the session and the headless door — \
+         so neither can be the only one",
+    );
+}
+
 /// **F2, the confirmation.** The driver puts `store::LEAVE_IT` at row 0 and
 /// decides with `store::acts`, asserted **by index**.
 ///

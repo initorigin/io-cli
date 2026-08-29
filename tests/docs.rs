@@ -1103,28 +1103,40 @@ fn f19_no_source_cites_an_io_harness_this_crate_does_not_pin() {
     let wanted = format!("io-harness-{pinned}/");
     let mut stale: Vec<String> = Vec::new();
 
-    let dir = repo().join("src");
-    for entry in std::fs::read_dir(&dir).expect("src/") {
-        let path = entry.expect("a directory entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
+    // **Recursive, and every citation on a line rather than the first.** Both were
+    // holes in the first version of this gate: `find` returns one match, so a line
+    // carrying two citations was checked once and the second could name any version
+    // at all; and a flat `read_dir` covers `src/` only for as long as `src/` stays
+    // flat, which is not a property anybody is maintaining.
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut dirs = vec![repo().join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                files.push(path);
+            }
         }
-        let text = std::fs::read_to_string(&path).expect("a source file");
+    }
+    files.sort();
+
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("a source file");
         for (number, line) in text.lines().enumerate() {
             // Only the `io-harness-<version>/` form, which is a path into a
             // vendored source tree. A bare "io-harness 0.70.0" is history — a
             // sentence about when something changed — and is not a citation.
-            let Some(at) = line.find("io-harness-") else {
-                continue;
-            };
-            let cited = &line[at..];
-            if !cited.starts_with(&wanted) {
-                stale.push(format!(
-                    "{}:{}: {}",
-                    path.file_name().unwrap_or_default().to_string_lossy(),
-                    number + 1,
-                    line.trim(),
-                ));
+            for (at, _) in line.match_indices("io-harness-") {
+                if !line[at..].starts_with(&wanted) {
+                    stale.push(format!(
+                        "{}:{}: {}",
+                        path.strip_prefix(repo()).unwrap_or(path).display(),
+                        number + 1,
+                        line.trim(),
+                    ));
+                }
             }
         }
     }

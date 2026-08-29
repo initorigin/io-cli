@@ -1891,7 +1891,10 @@ pub fn trace_notes(view: &crate::recall::View, glyphs: &crate::glyphs::Glyphs) -
 /// inside any list item. An operator offered "forget this" over a row that will
 /// remove one line of four hundred is being offered a verb that does a fraction of
 /// what it looks like it does.
-pub fn note_rows(notes: &[crate::memory::Note]) -> Vec<crate::picker::Row> {
+pub fn note_rows(
+    notes: &[crate::memory::Note],
+    glyphs: &crate::glyphs::Glyphs,
+) -> Vec<crate::picker::Row> {
     notes
         .iter()
         .map(|note| {
@@ -1905,7 +1908,7 @@ pub fn note_rows(notes: &[crate::memory::Note]) -> Vec<crate::picker::Row> {
                         "line {} {} carries {carried} more line{} that forgetting it will leave \
                          behind",
                         note.numbered(),
-                        crate::glyphs::ASCII.dash,
+                        glyphs.dash,
                         if carried == 1 { "" } else { "s" },
                     )
                 },
@@ -2015,7 +2018,10 @@ fn profile_verb(input: &str) -> ProfileVerb {
         "clear" | "none" | "off" => ProfileVerb::Clear,
         "create" | "new" => ProfileVerb::Create(name),
         "remove" | "delete" => ProfileVerb::Remove(name),
-        other => ProfileVerb::Unknown(other.to_string()),
+        // **`verb` and not the lowercased match subject.** The refusal quotes this
+        // back, and quoting `fast` at somebody who typed `Fast` sends them looking
+        // for a word they did not write.
+        _ => ProfileVerb::Unknown(verb.to_string()),
     }
 }
 
@@ -2101,7 +2107,11 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         {
             Action::Manage(input.to_string())
         }
-        "skills" => Action::Skills,
+        // Both spellings open the panel, matching `/mcp` and `/servers`. Admitting
+        // `skill` only when it carries a verb would make `/skill add x` work and
+        // `/skill` fall through to the unknown-command path, which is a worse
+        // answer than either.
+        "skills" | "skill" => Action::Skills,
         "provider" | "providers" => Action::Provider,
         "profile" | "profiles" => Action::Profile(profile_verb(input)),
         // `Effort` carries `FromStr`, so the three levels are spelled io-harness's

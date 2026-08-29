@@ -652,38 +652,24 @@ pub const OLDER_BINARY: &str =
 
 /// The edit that declares a bundle **switched off**.
 ///
-/// [`add`]'s entry with one more line, for an operator who wants a bundle
-/// declared and not running.
-///
-/// **It is no longer what a marketplace install writes, and 0.71.0 is why.**
-/// Through 0.29.0 this key was the whole disclosure mechanism: io-harness
-/// published no loader that took a directory, so the only way to have a stranger's
-/// bundle read, parsed, validated and trust-checked was to *declare* it, and the
-/// only way to declare it without running it was `enabled = false`. Writing into
-/// an operator's configuration file to find out whether the file should have been
-/// written is a round trip that leaves a refused bundle's entry behind, and
-/// [`io_harness::Plugins::inspect`] ends it — the install now validates first and
-/// writes once, on consent, through [`add`]. See
-/// [`crate::marketplace::disclosure`].
-///
-/// **An appended entry carries as many keys as it is given.**
-/// [`crate::edit::Edit::append`] writes `[[plugin]]` and then the body verbatim,
-/// so the second line needs no second edit and no second write — which matters,
-/// because a bundle that was declared on and switched off afterwards would have
-/// been loadable for the width of one round trip.
-///
-/// Says [`OLDER_BINARY`] to the operator at the moment of writing. That sentence
-/// is a constant rather than a line at the call site so the two doors cannot word
-/// it differently and a test can name it.
-pub fn add_off(dir: &Path) -> crate::edit::Edit {
-    crate::edit::Edit::append(
-        "plugin",
-        format!(
-            "path = {}\nenabled = false",
-            quoted(&dir.display().to_string())
-        ),
-    )
-}
+// **`add_off` and `declared_off` were deleted in 0.30.0.**
+//
+// Through 0.29.0 a marketplace install wrote `[[plugin]] enabled = false` and
+// then read the entry back, because io-harness published no loader that took a
+// directory: the only way to have a stranger's bundle read, parsed, validated
+// and trust-checked was to *declare* it, and the only way to declare it without
+// running it was that key. `add_off` wrote it and `declared_off` recovered which
+// entry had just been written.
+//
+// `io_harness::Plugins::inspect` (0.71.0, io-harness#224) validates a directory
+// with nothing on disk naming it, so the install validates first and writes once,
+// on consent, through [`add`] — and both functions lost their only callers in the
+// same change. They are deleted rather than left `pub`, because a public function
+// no keystroke reaches is the defect shape this product has shipped six times, and
+// this release closed five of them.
+//
+// `tests/marketplace.rs` still asserts that `src/manage.rs` names no `add_off`;
+// it now asserts the stronger thing, that nothing does.
 
 /// The edit that switches the `index`-th declared bundle on.
 ///
@@ -716,8 +702,8 @@ pub fn enable(index: usize) -> crate::edit::Edit {
 /// again. An operator who wanted a bundle *gone* has `remove`; one who wanted it
 /// *quiet* had nothing until this.
 ///
-/// Says [`OLDER_BINARY`] to the operator at the moment of writing, for the reason
-/// [`add_off`] does — and that sentence is the `[[plugin]]` one, which is not
+/// Says [`OLDER_BINARY`] to the operator at the moment of writing — and that
+/// sentence is the `[[plugin]]` one, which is not
 /// [`crate::servers::OLDER_BINARY`]. A 0.69.0 binary refuses this whole file; it
 /// ignores the same key in an `[[mcp]]` entry and runs the server.
 ///
@@ -725,41 +711,6 @@ pub fn enable(index: usize) -> crate::edit::Edit {
 /// warning: it is not a row number from [`rows`].
 pub fn disable(index: usize) -> crate::edit::Edit {
     crate::edit::Edit::set(format!("plugin[{index}].enabled"), "false")
-}
-
-/// The last `[[plugin]]` entry of a configuration file, when it was declared off.
-///
-/// **The evidence of what was just written, rather than a second reading of what
-/// was meant.** [`crate::edit::Edit::append`] puts a new entry at the end of the
-/// document, so the highest index in the file is the entry the write that just
-/// returned created — and whether it carries `enabled = false` is what separates a
-/// marketplace install, which owes a disclosure, from an ordinary
-/// `/plugin add ./bundles/x`, which does not. Asking the file means the driver
-/// re-decides nothing: `marketplace::chosen` made that call once, in
-/// `manage::plan`, and this reads the result of it.
-///
-/// `None` for a file with no `[[plugin]]` array, and for a last entry that carries
-/// no `enabled` key or carries one that is not `false`.
-#[must_use]
-pub fn declared_off(text: &str) -> Option<(usize, PathBuf)> {
-    // Walked until a gap, which is what `value_at` reports by returning `None` —
-    // an array of tables is contiguous, so the first miss is the end of it. The
-    // same walk `declared_at` makes, for the same reason.
-    let mut last = None;
-    for index in 0.. {
-        let Some(raw) = crate::edit::value_at(text, &format!("plugin[{index}].path")) else {
-            break;
-        };
-        // Decoded by the inverse of the function that wrote it, for the reason
-        // `unquoted` states: the path this hands back is opened to read the
-        // bundle's hooks, and a path with an escape still in it opens a different
-        // manifest — or nothing, and the disclosure then fails closed on a generic
-        // sentence rather than on the real reason.
-        last = Some((index, PathBuf::from(unquoted(&raw))));
-    }
-    let (index, path) = last?;
-    let enabled = crate::edit::value_at(text, &format!("plugin[{index}].enabled"))?;
-    (enabled.trim() == "false").then_some((index, path))
 }
 
 /// The manifest every bundle has, and the one file this surface can check before
@@ -969,8 +920,9 @@ fn quoted(text: &str) -> String {
 
 /// The inverse of [`quoted`]: the path back out of the value a file holds.
 ///
-/// **The read half of this module did not exist until 0.29.0.** Both readers —
-/// [`declared_at`] and [`declared_off`] — took the value's bytes and stripped the
+/// **The read half of this module did not exist until 0.29.0.** Both readers of
+/// the day — [`declared_at`], and a `declared_off` deleted in 0.30.0 — took the
+/// value's bytes and stripped the
 /// surrounding quotes with `trim_matches('"')`, which undoes no escape, so every
 /// path `quoted` had escaped came back doubled. On Windows the doubled separators
 /// collapse and nothing shows; on Linux a bundle directory named `a\b` or `a"b` —
@@ -1381,37 +1333,28 @@ mod tests {
         );
     }
 
-    /// The disclosing declaration carries both keys in one appended entry, so a
-    /// bundle is never loadable for the width of a round trip, and the consent is
-    /// a `set` on the entry's own `enabled` key rather than a second entry.
+    /// An install writes **one** entry, switched on, and the toggle is a `set` on
+    /// that entry's own key rather than a second entry.
+    ///
+    /// The 0.29.0 form of this test asserted a `path = …\nenabled = false` append,
+    /// because the install had to declare a bundle off in order to have io-harness
+    /// read it at all. `Plugins::inspect` removed that round trip, so an install is
+    /// one plain `add` and the `enabled` key appears only when somebody switches a
+    /// bundle off on purpose.
     #[test]
-    fn the_disclosing_edits_declare_off_in_one_entry_and_consent_with_one_key() {
+    fn an_install_declares_one_entry_and_the_toggle_is_one_key() {
         assert_eq!(
-            add_off(Path::new("bundles/rust-review")),
-            crate::edit::Edit::append("plugin", "path = \"bundles/rust-review\"\nenabled = false")
+            add(Path::new("bundles/rust-review")),
+            crate::edit::Edit::append("plugin", "path = \"bundles/rust-review\"")
         );
         assert_eq!(
             enable(3),
             crate::edit::Edit::set("plugin[3].enabled", "true")
         );
-    }
-
-    /// `declared_off` answers about the entry `append` just wrote — the last one —
-    /// and says nothing about a bundle switched off earlier in the file.
-    #[test]
-    fn declared_off_reads_the_last_entry_and_only_when_it_is_off() {
-        let earlier = "[[plugin]]\npath = \"a\"\nenabled = false\n\n\
-                       [[plugin]]\npath = \"b\"\n";
         assert_eq!(
-            declared_off(earlier),
-            None,
-            "a bundle the operator switched off weeks ago was read as the one just \
-             written, so an ordinary `plugin add` would disclose somebody else's entry",
+            disable(3),
+            crate::edit::Edit::set("plugin[3].enabled", "false")
         );
-        let written = crate::edit::apply(earlier, &[add_off(Path::new("c"))])
-            .expect("the disclosing entry applies");
-        assert_eq!(declared_off(&written), Some((2, PathBuf::from("c"))));
-        assert_eq!(declared_off("run.max_steps = 30\n"), None);
     }
 
     #[test]
@@ -1451,13 +1394,21 @@ mod tests {
         }
 
         // And through the reader an install actually uses, which is where the
-        // wrong path becomes a different manifest.
-        let written = crate::edit::apply("", &[add_off(Path::new(r"plugins/a\b"))])
-            .expect("the disclosing entry applies");
+        // wrong path becomes a different manifest. `declared_at` rather than the
+        // deleted `declared_off`: the round trip being asserted is the same one —
+        // write a path, find that entry again by it — and it is now the only reader
+        // that makes it.
+        let written =
+            crate::edit::apply("", &[add(Path::new(r"plugins/a\b"))]).expect("the entry applies");
         assert_eq!(
-            declared_off(&written),
-            Some((0, PathBuf::from(r"plugins/a\b"))),
+            crate::edit::value_at(&written, "plugin[0].path").as_deref(),
+            Some(quoted(r"plugins/a\b").as_str()),
             "the entry that was just written cannot be read back: {written}",
+        );
+        assert_eq!(
+            unquoted(&crate::edit::value_at(&written, "plugin[0].path").unwrap_or_default()),
+            r"plugins/a\b",
+            "and decoding it does not give back the path it was written from",
         );
     }
 

@@ -85,6 +85,39 @@ pub const UNFINISHED: u8 = 5;
 /// the recorded `GateOutcome` sees that one.
 pub const UNVERIFIED: u8 = 6;
 
+/// The exit status for `io mcp probe`.
+///
+/// **A probe that came back with nothing must not exit zero**, and until this
+/// function existed it did: the sentence on stdout was right and the status was
+/// `0` for every outcome, so a script could tell an answering server from a dead
+/// one only by parsing prose. Found by running the built binary against a real
+/// server, not by a test — every offline gate was green, because every offline
+/// gate asserted the sentence.
+///
+/// Three statuses rather than two, and the third earns its place: a server the
+/// **policy** refused is a different problem from one that was asked and did not
+/// answer. The first is fixed by editing a rule and the second by fixing the
+/// server, and a script that retries is right to retry only one of them.
+///
+/// * [`OK`] — it answered.
+/// * [`REFUSED`] — the policy would not let it start. Nothing was spawned or
+///   dialled.
+/// * [`FAILED`] — everything else: switched off, would not start, unreachable,
+///   timed out, or a state a newer io-harness reports that this build does not
+///   model.
+///
+/// The `_` arm is mandatory: `McpProbe` is `#[non_exhaustive]`. It answers
+/// `FAILED` because "this build does not know what happened" is not a success,
+/// and the sentence beside it says so in words.
+#[must_use]
+pub fn probe_code(probe: &io_harness::McpProbe) -> u8 {
+    match probe {
+        io_harness::McpProbe::Answered { .. } => OK,
+        io_harness::McpProbe::Refused { .. } => REFUSED,
+        _ => FAILED,
+    }
+}
+
 /// The exit status for a run that reached the harness.
 ///
 /// **The `_` arm is mandatory now, and it is not free.** Until io-harness 0.64

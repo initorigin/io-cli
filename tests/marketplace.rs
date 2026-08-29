@@ -1853,6 +1853,20 @@ fn f16_and_f17_have_one_reader_and_one_validator() {
          operator's file is written before io-harness has been asked whether the \
          bundle would load at all",
     );
+    // **The stronger form, once the function itself was deleted.** Asserting that
+    // one module does not *call* `add_off` stops being much of a gate the moment
+    // nothing anywhere can: a sabotage restoring the round trip would have to write
+    // the function back first, and this is what fails when it does. The pair is
+    // kept rather than replaced — the call-site count is what fails if somebody
+    // reintroduces it and wires it in one step.
+    assert_eq!(
+        code_of("src/pluginview.rs").matches("fn add_off").count(),
+        0,
+        "`pluginview::add_off` is back. It wrote `enabled = false` so that \
+         io-harness would read a bundle at all, which `Plugins::inspect` made \
+         unnecessary in 0.30.0 — and it was the last thing that wrote to an \
+         operator's configuration before they had consented to anything",
+    );
     assert_eq!(
         planner.matches("marketplace::disclosure(").count(),
         1,

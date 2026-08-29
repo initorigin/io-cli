@@ -762,16 +762,63 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
     // The question the run will ask, asked before the file is in a position to
     // make the run fail.
     let (name, _) = describe(source);
-    if let Ok(found) = io_harness::Skills::discover(&dir) {
-        if found.get(&name).is_some() {
-            return Err(format!(
-                "a skill in {} already answers to `{name}`, which is the name in \
-                 {}'s frontmatter — two files answering to one name make every \
-                 turn of the next session fail before its first completion",
-                dir.display(),
-                source.display(),
-            ));
-        }
+
+    // **A directory that will not discover is a refusal, never a skipped check.**
+    // `discover` errors on a set above the ceiling, on two files already sharing a
+    // name, and on an unreadable entry — every one of those is a home that is
+    // already broken, and installing into it without a name check deepens exactly
+    // the state that kills every turn of the next session. It cannot error merely
+    // for being empty: `home::create` above guarantees the directory exists, and
+    // an existing empty directory discovers to an empty set.
+    let found = io_harness::Skills::discover(&dir).map_err(|error| {
+        format!(
+            "{} does not discover, so io-cli cannot tell whether `{name}` is \
+             already claimed, and will not add to a directory that is already \
+             failing: {error}",
+            dir.display(),
+        )
+    })?;
+    if found.get(&name).is_some() {
+        return Err(format!(
+            "a skill in {} already answers to `{name}`, which is the name in \
+             {}'s frontmatter — two files answering to one name make every \
+             turn of the next session fail before its first completion",
+            dir.display(),
+            source.display(),
+        ));
+    }
+
+    // **And the disabled set, which discovery cannot see by design.** A skill in
+    // `disabled/` is invisible to `Skills::discover` — that absence *is* the
+    // off-switch — so a name check that asked only the harness would let this
+    // install claim a name a parked skill holds. The operator would then never be
+    // able to turn that one back on: [`enable`] refuses a name already claimed,
+    // and it would refuse forever. `crate::skills::install` has consulted the
+    // disabled set for this reason since 0.21.0 and this must agree with it.
+    if crate::skills::disabled_names(&dir.join(skills::DISABLED))
+        .iter()
+        .any(|held| held == &name)
+    {
+        return Err(format!(
+            "a skill switched off in {}/{} already answers to `{name}`; installing \
+             this would mean that one could never be turned back on",
+            dir.display(),
+            skills::DISABLED,
+        ));
+    }
+
+    // **Counted before the write, because `discover` rejects the whole set above
+    // the ceiling rather than truncating it** — so one file too many costs the
+    // operator every skill they had, and `/skills` could not be used to undo it,
+    // because its own list comes from the call that would then be failing.
+    if found.len() >= io_harness::skills::MAX_SKILLS {
+        return Err(format!(
+            "{} already holds {} skills, which is io-harness's ceiling; one more \
+             would make the whole directory fail to discover and take every skill \
+             in it out of the next session",
+            dir.display(),
+            io_harness::skills::MAX_SKILLS,
+        ));
     }
 
     std::fs::copy(source, &destination)

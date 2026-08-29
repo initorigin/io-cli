@@ -1150,16 +1150,20 @@ string unchanged rather than a prettier short form, because it is what a refusal
 will name, what a tool call will name, and what you will type to spawn the agent.
 A shorter name here would be a third spelling of the same thing.
 
-**Hooks are the one contribution io cannot itemise, and the row says so.**
-io-harness applies a bundle's hooks and keeps its `Hook` type private, so there
-is no API by which this program can count them or say what any of them runs.
-`/plugin` therefore draws a row saying the bundle contributed hooks and that io
-cannot say what they do. The alternative was to leave the row out, which reads as
-a bundle with no hooks — the one reading that is false, on the contribution kind
-that runs programs. **The one place io does name them is a marketplace install**,
-below, where it reads them out of the manifest itself — because that is the one
-moment you are being asked to accept a directory you have not read. Reported
-upstream as io-harness#223; the reading goes when the accessor arrives.
+**Hooks are named, everywhere, from 0.30.0.** Each one gets a row: the event it
+fires on, or the tool call it sits in front of, and the command it runs. This is
+the contribution kind that runs programs, so it is the one you most need itemised
+and it was the one io could not itemise: io-harness kept its `Hook` type private,
+so through 0.29.0 `/plugin` drew a row saying the bundle contributed hooks and
+that io could not say what they do, and only a marketplace install named them —
+by reading the manifest itself, which is a second opinion about somebody else's
+file.
+
+io-harness 0.71.0 closed that (io-harness#223, reported by this project). Both
+surfaces now read `Plugin::hooks()`, so what you are shown is what the harness
+parsed rather than what io-cli made of the same bytes — and it sees two shapes
+the hand-written reader could not: an inline `hook = [{…}]` array, and a
+`[[hook]]` header with a comment after it.
 
 ## Marketplaces
 
