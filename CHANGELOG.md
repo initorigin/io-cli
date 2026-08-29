@@ -6,6 +6,123 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-30
+
+The rest of the verb matrix closes: after this release there is nothing io
+manages that you have to open a file to change.
+
+### Security
+
+**`io mcp add --url …` could report a URL as permitted that the runtime refuses.**
+The preflight carried io-cli's own copy of io-harness's URL normaliser, because
+that function was not public. The copy failed open on five shapes —
+`https://user@/x`, `https://[]/x`, `https://[::1]:/x`, `https://[/x`, and worst
+`https://[::1]evil.com/x`, where the bracket branch took `[::1]` as the host,
+dropped `evil.com`, and reported *permitted, `[::1]:443`* for a URL that connects
+to `evil.com`. A policy allowing loopback would have looked like it covered it.
+io-harness 0.71.0 made `net::target` public and fixed all five; io-cli now calls
+it and the copy is deleted. Affects 0.28.0 and 0.29.0. Nothing was ever dialled by
+io-cli itself — the report was wrong, not the connection — but a permission check
+must only ever fail closed.
+
+**`{:?}` on a configuration no longer prints your keys.** io-harness up to and
+including 0.70.0 printed resolved secrets through a derived `Debug` on `Config`,
+`File` and `ProviderSpec`; 0.71.0 replaces the derive on ten types with
+hand-written redacting ones. io-cli never formatted those types into a message, so
+nothing was leaked from here, but every io-cli before this one shipped against a
+version that could.
+
+### Added
+
+- **`/skills add <path>` and `/skills remove`**, with `io skill add|list|remove`
+  through the same parse. Installing **copies** — the file you named stays yours —
+  and records nothing, so it lists as yours. A destination that exists is refused
+  rather than overwritten, and a file whose `name:` is already claimed is refused
+  even when its filename is free, because two skills answering to one name make
+  every turn of the next session fail before its first completion. Until now the
+  only thing that had ever written a skill file was `/import`.
+- **`/memory` edits and forgets an instruction note**, by line. Both splice the
+  file, so your indent, your `*`, a `\r\n` and a last line with no newline all
+  survive. A note changed underneath you is refused rather than overwritten. A
+  note that carries a continuation body — which is how `/import` brings another
+  tool's whole file across — says on its own row how many lines forgetting it will
+  leave behind.
+- **A forgotten agent memory can be put back.** `/memory`'s forget has returned a
+  restore point since 0.29.0 and printed it in a sentence; nothing could spend it.
+  Now a confirmation offers it.
+- **`/memory` shows what the run recorded** — evictions, pin refusals and recalls.
+  These emit no event of their own, so this page is their only witness, and it had
+  always been asked for the empty case.
+- **`/profile create|remove|clear`.** Creating refuses a name already taken;
+  removing takes `[profile.x]` **and every sub-table under it**, so
+  `[profile.x.run]` cannot be orphaned; clearing goes back to no profile. The list
+  also now sees profiles declared in any scope rather than only the last file —
+  switching to one always worked, so the list was wrong rather than narrow.
+- **`io mcp enable|disable <id>` and a toggle row on `/mcp`.** A server can be
+  switched off without being removed, which is a state io-harness has honoured and
+  io-cli could only ever read.
+- **A switch-off row on `/plugin`**, beside the removal that was previously the
+  only way to stop a bundle loading.
+- **`/mcp probe <id>` and `io mcp probe <id>`.** Starts a configured server the way
+  a run would — same policy check, so a refused server is refused here and names
+  the rule and layer — completes the handshake, lists the tools it offers, and
+  shuts it down. Disabled, refused, unreachable, timed out and answering are five
+  sentences, not one.
+
+### Changed
+
+- **io-harness `0.70` → `0.71.0`**, which closes six issues this project filed:
+  #218 (`Effect::ALL`, `ExecMode::ALL`, `Effect::as_str`), #219 (the named step and
+  retry defaults), #220 (`PriceTable::models`), #221 (`net::target` public and
+  fixed), #223 (`Plugin::hooks`) and #224 (`Plugins::inspect`). Each closure
+  retired a copy io-cli had shipped around the gap, so this release deletes about
+  as much as it adds.
+- **A marketplace install no longer writes before it discloses.** 0.29.0 had to
+  declare a bundle `enabled = false` to make io-harness read it at all;
+  `Plugins::inspect` reads and fully validates a directory with nothing on disk
+  naming it. A bundle io-harness would refuse now leaves your configuration file
+  byte for byte unchanged, and declining leaves nothing behind.
+- **Hook rows come from io-harness.** `Plugin::hooks()` replaces io-cli's own
+  reader of somebody else's manifest, and it sees two shapes that reader could
+  not — an inline `hook = [{…}]` array and a `[[hook]]` header with a trailing
+  comment.
+- `io plugin add <name>` from a shell now **installs**, printing the full
+  disclosure to stderr first. Naming a bundle on that door is the consent; there is
+  nobody there to ask, and a `--yes` would be a second reading of the word.
+
+### Fixed
+
+- **The model picker was empty for a whole legal price-table shape.** `/config` on
+  a model key scraped the files for a literal `[prices.models]` header, so a table
+  written as `[prices.models."gpt-4.1"]` — which io-cli itself names as a supported
+  shape — offered no models at all. It now asks `PriceTable` what it prices.
+- **Opening the model picker no longer re-runs your credential commands.** The
+  fix above re-read the configuration, and reading it resolves `${cmd:}` — which
+  for a key fetched from a keychain is a Touch-ID prompt raised to draw a menu.
+  Caught before release.
+- **A `[[mcp]]` entry's `enabled` written through `/config` was quoted**, producing
+  `enabled = "false"`, which io-harness refuses. It failed closed, so nothing was
+  lost, but the surface offered a key it could not write.
+- Twelve source comments cited line numbers inside io-harness versions this project
+  no longer pins — three of them five pins old. All re-verified against 0.71.0, and
+  a test now fails on any citation into a version `Cargo.lock` does not name.
+- A broken intra-doc link shipped in 0.29.0 (`preflight.rs` linked an item that
+  release deleted), which means 0.29.0's own record of a clean documentation gate
+  was wrong.
+
+### Migration
+
+An `enabled` key in your configuration cannot be read by an io-cli built against
+io-harness 0.69.0, **and the two halves fail in opposite directions**: in a
+`[[plugin]]` entry that binary refuses the whole file, loudly; in an `[[mcp]]`
+entry it *ignores the key and starts the server anyway*, silently. io-cli says
+which, at the moment it writes either.
+
+A plugin manifest may no longer carry a `${env:}`, `${file:}` or `${cmd:}`
+substitution, in any scope — io-harness 0.71.0 refuses all three, where only
+`${cmd:}` was refused before. Write the value out literally. A bundle is a third
+party's directory, and there is deliberately no opt-out.
+
 ## [0.29.0] - 2026-08-29
 
 A plugin can come from somewhere other than a directory you already had — and you

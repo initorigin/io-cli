@@ -336,6 +336,22 @@ same session — io re-reads the configuration for every turn, so an edit you ma
 in your own editor counts too, and a file that stops parsing leaves the last good
 one in force rather than ending the session.
 
+**A line can be changed and taken back, from 0.30.0.** `/memory`, choose an
+instruction file, and it lists the bullets in it with their line numbers. Picking
+one puts its text in the prompt: edit it there and choose *replace it with what is
+in the prompt*, or choose *forget it*. Both splice the file — the indent you used,
+the `*` you wrote where io writes `-`, a `\r\n` from a Windows checkout and a last
+line with no newline after it all survive, because a rewrite assembled from parsed
+lines normalises all four in silence. A note that changed underneath you since the
+list was drawn is refused rather than overwritten.
+
+One case is called out on the row itself: `/import` brings another tool's whole
+instructions file across as a *single* bullet with the document beneath it, and
+markdown counts all of that as one list item. Forgetting that note removes the
+bullet and leaves the document, so the row says how many lines it will leave
+behind. Before 0.30.0, `/remember` could add a line and nothing anywhere could
+change or remove one.
+
 ### Answered without opening a run
 
 **A prompt that is only a question is answered in one completion**, with no steps,
@@ -531,7 +547,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/clear` | start a new conversation; this one stays in /resume |
 | `/resume` | reopen an earlier session and answer whatever its last run is waiting on |
 | `/fork` | continue from an earlier turn of this conversation |
-| `/profile` | switch to a named profile from the configuration, for this session |
+| `/profile` | switch to a named profile for this session, or create, remove and clear one |
 | `/setup` | run the first-run wizard again |
 | `/exit` | leave |
 
@@ -560,7 +576,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/context` | what is in the model's window, read from the request that carried the turn |
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/fleet` | show the children this turn has spawned |
-| `/skills` | every skill, shipped or yours: what it is for, whether it is on, and its file |
+| `/skills` | every skill, shipped or yours: what it is for, whether it is on, and its file; add and remove one |
 | `/cost` | commit what this run, this session and this install have spent |
 | `/stats` | commit how the runs have gone: outcomes, first-try, gates, latency |
 | `/store` | commit what the run store holds; `rm <id>`, `sweep <date>` and `compact` change it |
@@ -573,8 +589,8 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/config` | every setting, the value in force and the file that decided it |
 | `/theme` | change the theme for this session |
 | `/remember` | remember a line of guidance, in the scope you choose |
-| `/memory` | what io remembers: the instruction files, and the agent's own notes |
-| `/mcp` | the MCP servers configured, and what this session has seen of each |
+| `/memory` | what io remembers: the instruction files and the agent's own notes, each editable |
+| `/mcp` | the MCP servers configured, what this session has seen of each, and whether one answers |
 | `/provider` | the providers configured, in the order a turn tries them |
 | `/plugin` | the capability bundles declared, the marketplaces they come from, and what failed |
 | `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
@@ -590,10 +606,20 @@ the other half now. No row was added above because none was wanted: a verb belon
 to the surface that already owns the list, and a second row for one screen reads
 as a second screen — the rule `/usage` follows below.
 
+**0.30.0 closes the rest of it, and adds no command either.** A skill can be put
+there and taken away (`/skills add`, `/skills remove`, `io skill …`); an
+instruction note can be changed and forgotten (`/memory`); a profile can be
+created, removed and cleared (`/profile create|remove|clear`); an MCP server and a
+capability bundle can each be switched **off without being removed**, which until
+now was the one state you could see and not write; and a configured server can be
+started on request to report whether it actually answers. After this release there
+is nothing io manages that you have to open a file to change.
+
 Which of them is typed and which is a row is not arbitrary. The verbs `add`,
-`edit`, `remove` and `get` on `/mcp`, `add` and `remove` on `/plugin`, and `set`
-and `unset` on `/config` are read by the same parse `io mcp`, `io plugin` and
-`io config` are, so a line typed in the composer and the same line typed at a
+`edit`, `remove`, `get`, `enable`, `disable` and `probe` on `/mcp`, `add` and
+`remove` on `/plugin`, `add`, `list` and `remove` on `/skills`, and `set` and
+`unset` on `/config` are read by the same parse `io mcp`, `io plugin`, `io skill`
+and `io config` are, so a line typed in the composer and the same line typed at a
 shell produce identical bytes rather than two readings that agree today. A bare
 `/mcp` or `/plugin` still opens its panel, because a
 panel is a better answer in a session than a text dump is, and `/config <key>`
@@ -939,12 +965,26 @@ it — the same things you would do to any other markdown file in a directory yo
 own. There is no registry, no index and no remote source; the five are carried
 in the binary and written out the first time io has a home to put them in.
 
-**Delete one and it stays deleted.** `rm ~/.io-cli/skills/io-mcp.md` is the way
-to be rid of a shipped skill for good: io remembers that it wrote that name, so
-it does not put the file back on the next start. A skill added in a *later*
-version has no such record, so upgrading still brings you the new ones. If you
-only want one out of the way for now, turn it off instead — that is reversible
-and `/skills` does it for you.
+**Delete one and it stays deleted.** `/skills`, choose it, *remove it for good*
+— or `io skill remove io-mcp` from a shell — is the way to be rid of a shipped
+skill: io remembers that it wrote that name, so it does not put the file back on
+the next start. `rm ~/.io-cli/skills/io-mcp.md` does exactly the same thing, and
+always has. A skill added in a *later* version has no such record, so upgrading
+still brings you the new ones. If you only want one out of the way for now, turn
+it off instead — that is reversible and `/skills` does it for you.
+
+**And you can put one there.** `/skills add ./my-skill.md`, or `io skill add
+./my-skill.md`, copies a skill file of your own into `~/.io-cli/skills` and
+lists it as yours from the next turn. It is a **copy**: the file you named stays
+where it is and stays yours. Two things are refused rather than done quietly — a
+destination that already exists, because a skill is prose somebody wrote and
+there is no undo, and a file whose `name:` is already claimed by another skill,
+because two names resolving to one skill is the fatal case described below. A
+bundle's skill is not yours to add or remove, and says so.
+
+Until 0.30.0 the only thing that had ever written into that directory was
+`/import`, following a tool io happened to detect. If you had written a skill
+yourself, there was no door.
 
 **Each of them ends in a change you see before it lands.** A skill instructs the
 model in what io can already do and which surface does it, so what comes back is
@@ -1932,12 +1972,21 @@ anything.
 
 ### Managing the configuration without a session
 
-`io mcp`, `io plugin` and `io config` are new in 0.28.0 and do from a shell what
-`/mcp`, `/plugin` and `/config` do inside a session. They open no session, start
-no run and touch no store — a configuration listing that had to build a task
-contract before it could print is a listing nobody can put in a script — and they
-are answered before the terminal check, so `io config list` works in CI where an
-interactive session is refused for having no terminal.
+`io mcp`, `io plugin` and `io config` are new in 0.28.0, `io skill` joins them in
+0.30.0, and they do from a shell what `/mcp`, `/plugin`, `/config` and `/skills`
+do inside a session. They open no session, start no run and touch no store — a
+configuration listing that had to build a task contract before it could print is a
+listing nobody can put in a script — and they are answered before the terminal
+check, so `io config list` works in CI where an interactive session is refused for
+having no terminal.
+
+`io mcp probe` is the exception to "start no run", and deliberately: it is the one
+verb here that finds out rather than reports. It starts the server the way a run
+would — under the same policy check, so a server your policy refuses is refused
+here too, naming the rule and the layer — completes the MCP handshake, asks what
+tools it offers, and shuts it down again. Disabled, refused, unreachable, timed
+out and answering are five different sentences rather than one, because the thing
+you want to know when a server is not working is *which* of those it is.
 
 ```sh
 io mcp add semlith -- semlith --store /path/to/.semlith mcp
@@ -1946,7 +1995,14 @@ io mcp add --transport http linear-server https://mcp.linear.app/mcp
 io mcp list
 io mcp get semlith
 io mcp edit semlith --timeout-secs 30
+io mcp disable semlith                        # still configured, not started
+io mcp enable semlith
+io mcp probe semlith                          # start it and ask what it offers
 io mcp remove semlith
+
+io skill add ./my-skill.md
+io skill list
+io skill remove my-skill
 
 io plugin add ./bundles/rust-review
 io plugin add ultraship                       # or a name from a marketplace

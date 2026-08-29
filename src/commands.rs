@@ -194,7 +194,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/memory",
-        "what io remembers: the instruction files, and the agent's own notes",
+        "what io remembers: the instruction files and the agent's own notes, each editable",
     ),
     // Beside `/memory` because the two answer the halves of one question: that
     // one says what io was *told*, this one says what it was *taught*. A skill is
@@ -204,11 +204,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     // that read one.
     (
         "/skills",
-        "every skill, shipped or yours: what it is for, whether it is on, and its file",
+        "every skill, shipped or yours: what it is for, whether it is on, and its file; add and remove one",
     ),
     (
         "/mcp",
-        "the MCP servers configured, and what this session has seen of each",
+        "the MCP servers configured, what this session has seen of each, and whether one answers",
     ),
     (
         "/provider",
@@ -238,7 +238,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/profile",
-        "switch to a named profile from the configuration, for this session",
+        "switch to a named profile for this session, or create, remove and clear one",
     ),
     (
         "/effort",
