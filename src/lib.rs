@@ -81,6 +81,7 @@ pub mod picker;
 pub mod picture;
 pub mod plan;
 pub mod pluginview;
+pub mod preflight;
 pub mod prices;
 pub mod provider;
 pub mod providers;
