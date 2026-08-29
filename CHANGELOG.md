@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-08-30
+
+### Fixed
+
+**`io skill` did not exist.** 0.30.0 documented `io skill add|list|remove` in the
+README and the CHANGELOG, and shipped a working parse, a working plan, a working
+arm in the session — and a binary that answered `error: unrecognized subcommand
+'skill'`. The argv door is the `Subcommand` enum in `src/cli.rs`, and nothing had
+added `skill` to it; `manage::parse`'s own list of surfaces was missing it too, so
+even once clap routed the word the parse refused it.
+
+Every one of 0.30.0's 1,609 tests passed over this, because they all enter through
+`manage::parse` and the routing that was missing sits in front of it. It was found
+by running the published artifact, which is the last gate and the only one that
+sees the product as a user meets it.
+
+`io skill add ./x.md`, `io skill list` and `io skill remove <name>` now work.
+`/skills add …` in a session was never affected — that path does not go through
+clap.
+
+A test now asks `clap` itself which subcommands it will route and compares that
+against the surfaces `manage::parse` accepts, so the two cannot disagree again.
+
 ## [0.30.0] - 2026-08-30
 
 The rest of the verb matrix closes: after this release there is nothing io

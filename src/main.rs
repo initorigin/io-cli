@@ -200,6 +200,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         Some(Subcommand::Mcp(args)) => Some(("mcp", &args.words)),
         Some(Subcommand::Plugin(args)) => Some(("plugin", &args.words)),
         Some(Subcommand::Config(args)) => Some(("config", &args.words)),
+        Some(Subcommand::Skill(args)) => Some(("skill", &args.words)),
         _ => None,
     } {
         let (surface, rest) = words;

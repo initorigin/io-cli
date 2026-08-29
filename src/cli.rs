@@ -87,6 +87,16 @@ pub enum Command {
     Plugin(Manage),
     /// Read or write one configuration key, without opening a session.
     Config(Manage),
+    /// Install, list or remove a skill, without opening a session.
+    ///
+    /// **Missing until 0.30.1, and `io skill add` did not exist because of it.**
+    /// `manage::parse` accepted the surface, `manage::plan` answered for it and
+    /// the session's own arm ran it — but clap knows only the subcommands named
+    /// in this enum, so the argv door answered `unrecognized subcommand 'skill'`
+    /// for a verb the README and the CHANGELOG both documented. Nothing under
+    /// `tests/` links `src/main.rs` and nothing tested clap's routing, so the
+    /// whole suite was green over a door that did not open.
+    Skill(Manage),
 }
 
 /// The three management subcommands' arguments, handed through untouched.
