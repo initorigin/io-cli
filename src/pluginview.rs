@@ -650,8 +650,6 @@ pub const OLDER_BINARY: &str =
      io-cli built against 0.69.0 refuses the whole configuration file rather than ignoring the \
      key";
 
-/// The edit that declares a bundle **switched off**.
-///
 // **`add_off` and `declared_off` were deleted in 0.30.0.**
 //
 // Through 0.29.0 a marketplace install wrote `[[plugin]] enabled = false` and
