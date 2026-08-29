@@ -194,7 +194,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/memory",
-        "what io remembers: the instruction files, and the agent's own notes",
+        "what io remembers: the instruction files and the agent's own notes, each editable",
     ),
     // Beside `/memory` because the two answer the halves of one question: that
     // one says what io was *told*, this one says what it was *taught*. A skill is
@@ -204,11 +204,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     // that read one.
     (
         "/skills",
-        "every skill, shipped or yours: what it is for, whether it is on, and its file",
+        "every skill, shipped or yours: what it is for, whether it is on, and its file; add and remove one",
     ),
     (
         "/mcp",
-        "the MCP servers configured, and what this session has seen of each",
+        "the MCP servers configured, what this session has seen of each, and whether one answers",
     ),
     (
         "/provider",
@@ -238,7 +238,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/profile",
-        "switch to a named profile from the configuration, for this session",
+        "switch to a named profile for this session, or create, remove and clear one",
     ),
     (
         "/effort",
@@ -1212,8 +1212,14 @@ pub enum Action {
     Skills,
     /// Show the provider chain, in the order a turn tries it.
     Provider,
-    /// List the named profiles, and switch to one for this session.
-    Profile,
+    /// List the named profiles and switch to one for this session — and, since
+    /// 0.30.0, create one, remove one, or clear the switch.
+    ///
+    /// Bare `/profile` is the picker, which is where an operator who does not yet
+    /// know what their profiles are called goes. The verbs exist because the
+    /// picker cannot carry a name the operator is inventing: a value only they can
+    /// author is typed, and the surface states the shape and prefills the composer.
+    Profile(ProfileVerb),
     /// Say how much reasoning the next turn should buy, or report what is in force.
     ///
     /// The word is spelled the way `/contain on` is: an argument on the existing
@@ -1222,13 +1228,14 @@ pub enum Action {
     /// List the capability bundles a `[[plugin]]` entry declared: what each one
     /// contributed, and what each dropped bundle failed on.
     ///
-    /// **What can honestly be shown is bounded by what io-harness makes public,
-    /// and the surface says so rather than implying more.** A bundle's agents,
-    /// MCP servers and policy layers are all readable and are listed by the names
-    /// io-harness namespaced them to. Its **hooks are not**: there is no
-    /// `Plugin::hooks()` and `Hook` is `pub(crate)`, so the word `hooks` from
-    /// `Plugin::contributions()` is the entire signal available — the bundle
-    /// declared some, and io-cli cannot say how many or what they run.
+    /// **Every fact shown is io-harness's own, and since 0.71.0 that includes the
+    /// hooks.** A bundle's agents, MCP servers and policy layers are listed by the
+    /// names io-harness namespaced them to, and its hooks — the contribution kind
+    /// that runs programs — are listed one row each, naming the event and the
+    /// argv, off `Plugin::hooks()` and `Hook`'s accessors. Through 0.29.0 there
+    /// was no such accessor and this pane could only draw the word `hooks` from
+    /// `Plugin::contributions()`, which told an operator that a bundle spawned
+    /// something and nothing about what.
     ///
     /// A dropped bundle carries io-harness's own sentence, re-worded by nobody.
     /// That matters most for the one an operator will actually hit: a bundle
@@ -1391,7 +1398,7 @@ pub const READ_MARK: &str = "+";
 /// The case this page exists for. A file that is there and is not read looks,
 /// from everywhere else in this product, exactly like one that is read: nothing
 /// warns, and a missing or skipped instruction file is passed over in silence
-/// (`io-harness-0.69.0/src/config.rs:1886`, `:1892`).
+/// (`read_instructions`, `io-harness-0.71.0/src/config.rs:2111`).
 pub const UNREAD_MARK: &str = "-";
 
 /// What one row of the memory page stands for.
@@ -1607,7 +1614,8 @@ pub fn memory_notes(view: &crate::recall::View, glyphs: &crate::glyphs::Glyphs) 
 /// writing: a file that exists and is not read. It names what would make it
 /// read rather than only reporting the fact, because `[instructions] files`
 /// **replaces** the default list rather than adding to it
-/// (`io-harness-0.69.0/src/config.rs:1879-1882`) and there is nothing on any
+/// (`DEFAULT_INSTRUCTIONS`, `io-harness-0.71.0/src/config.rs:159`, read at
+/// `:2120`) and there is nothing on any
 /// other surface to pull on.
 pub fn instruction_said(
     file: &crate::memory::Instruction,
@@ -1811,6 +1819,104 @@ pub fn forgotten_said(
     }
 }
 
+/// What putting a withdrawn memory back actually put back.
+///
+/// **An empty answer is a refusal and never a success.** [`crate::recall::unforget`]
+/// returns the keys the rewind genuinely restored, and reporting "restored" over an
+/// empty slice is the same lie [`forgotten_said`]'s own refusal arm exists to
+/// prevent — the operator would be told the note is back and find it gone.
+pub fn unforgotten_said(key: &str, restored: &[String]) -> (Tone, String) {
+    if restored.is_empty() {
+        return (
+            Tone::Refused,
+            format!(
+                "{key} was not put back: that restore point no longer holds it, and nothing \
+                 was changed"
+            ),
+        );
+    }
+    (
+        Tone::Success,
+        format!(
+            "{key} is back, with {} entr{} restored from that run",
+            restored.len(),
+            if restored.len() == 1 { "y" } else { "ies" },
+        ),
+    )
+}
+
+/// What the store recorded about memory during one run.
+///
+/// The three io-harness announces nowhere else — an eviction, a pin refusal and a
+/// recall ([`crate::recall::Happened`]) — which is why they are read from
+/// `Store::context_events` and never from the observer stream: **none of the three
+/// emits an `EventKind` at all**, so this page is their only witness.
+///
+/// Committed rather than said, like [`memory_notes`] beside it: they are facts
+/// about a run that outlive the keystroke, and the footer's one row would show only
+/// the last of them.
+///
+/// Empty when the session has not run a turn — nothing has had the chance to
+/// happen, which is not the same as nothing having happened.
+pub fn trace_notes(view: &crate::recall::View, glyphs: &crate::glyphs::Glyphs) -> Vec<String> {
+    view.trace
+        .iter()
+        .map(|note| match &note.detail {
+            Some(detail) => format!(
+                "step {} {} {}{}{detail}",
+                note.step,
+                glyphs.dash,
+                note.happened.label(),
+                glyphs.separator,
+            ),
+            None => format!(
+                "step {} {} {}",
+                note.step,
+                glyphs.dash,
+                note.happened.label()
+            ),
+        })
+        .collect()
+}
+
+/// The rows for one instruction file's notes.
+///
+/// The note's own text is the label, because content comes before metadata on
+/// every line in this product, and the line number rides the detail column.
+///
+/// **A note carrying a continuation body says so, and that is not decoration.**
+/// [`crate::import`] writes a foreign tool's entire instructions file as one
+/// bullet plus the document beneath it, so `forget` on that note removes the
+/// bullet and orphans the document — still read into every prompt, no longer
+/// inside any list item. An operator offered "forget this" over a row that will
+/// remove one line of four hundred is being offered a verb that does a fraction of
+/// what it looks like it does.
+pub fn note_rows(
+    notes: &[crate::memory::Note],
+    glyphs: &crate::glyphs::Glyphs,
+) -> Vec<crate::picker::Row> {
+    notes
+        .iter()
+        .map(|note| {
+            let carried = note.carries();
+            crate::picker::Row::with_detail(
+                note.text.clone(),
+                if carried == 0 {
+                    format!("line {}", note.numbered())
+                } else {
+                    format!(
+                        "line {} {} carries {carried} more line{} that forgetting it will leave \
+                         behind",
+                        note.numbered(),
+                        glyphs.dash,
+                        if carried == 1 { "" } else { "s" },
+                    )
+                },
+            )
+        })
+        .collect()
+}
+
 /// The key table as this session actually behaves.
 ///
 /// **`/help` renders this, never [`KEYS`] directly, and that is the whole point
@@ -1875,6 +1981,50 @@ pub fn rows(keys: &Keys, newline: Newline) -> Vec<(String, String)> {
 /// when it attached. It is here rather than inside [`help`] or [`rows`] so that
 /// everything downstream of it is a pure function of the value, which is the
 /// property `tests/keyboard.rs` drives both ways.
+/// What `/profile` was asked to do.
+///
+/// A closed set, refused by name rather than guessed at. `/profile fast` is
+/// **not** a switch to `fast`: a bare word here would make a profile called
+/// `clear` unswitchable and a typo into a silent no-op, and the picker already
+/// answers "switch to one of these" better than typing does. The same reasoning
+/// `/effort` gives for refusing `hgih` instead of choosing the nearest level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileVerb {
+    /// Bare `/profile` — the picker over the declared names.
+    List,
+    /// `/profile create <name>`. The name is everything after the verb, trimmed,
+    /// so a profile may be called `slow ci` without quoting.
+    Create(String),
+    /// `/profile remove <name>`.
+    Remove(String),
+    /// `/profile clear` — back to no profile, writing nothing.
+    Clear,
+    /// A word that is none of the above, carried so the refusal can name it.
+    Unknown(String),
+}
+
+/// The verb on a `/profile` line, and the name it names.
+fn profile_verb(input: &str) -> ProfileVerb {
+    let mut words = input.split_whitespace();
+    // The command itself.
+    let _ = words.next();
+    let Some(verb) = words.next() else {
+        return ProfileVerb::List;
+    };
+    let name = words.collect::<Vec<&str>>().join(" ");
+    match verb.to_ascii_lowercase().as_str() {
+        // Lowercased first, for the reason `/effort` records: matching literally
+        // made one spelling of a word work and another fall through silently.
+        "clear" | "none" | "off" => ProfileVerb::Clear,
+        "create" | "new" => ProfileVerb::Create(name),
+        "remove" | "delete" => ProfileVerb::Remove(name),
+        // **`verb` and not the lowercased match subject.** The refusal quotes this
+        // back, and quoting `fast` at somebody who typed `Fast` sends them looking
+        // for a word they did not write.
+        _ => ProfileVerb::Unknown(verb.to_string()),
+    }
+}
+
 pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
     match input.split_whitespace().next().unwrap_or("help") {
         "help" | "?" => Action::Print(help(keys, theme, Newline::here())),
@@ -1938,15 +2088,32 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         "mcp" | "servers"
             if matches!(
                 input.split_whitespace().nth(1),
-                Some("add" | "edit" | "remove" | "get")
+                Some("add" | "edit" | "remove" | "get" | "enable" | "disable" | "probe")
             ) =>
         {
             Action::Manage(input.to_string())
         }
         "mcp" | "servers" => Action::Mcp,
-        "skills" => Action::Skills,
+        // **A verb after the word goes to the one parse both doors share**, the
+        // same shape `/mcp` and `/plugin` take. Bare `/skills` is still the panel,
+        // which is where an operator who does not yet know what they have goes;
+        // `/skills add <path>` is for the second time, for a line pasted out of a
+        // README, and for the operator who already knows the answer.
+        "skills" | "skill"
+            if matches!(
+                input.split_whitespace().nth(1),
+                Some("add" | "list" | "remove")
+            ) =>
+        {
+            Action::Manage(input.to_string())
+        }
+        // Both spellings open the panel, matching `/mcp` and `/servers`. Admitting
+        // `skill` only when it carries a verb would make `/skill add x` work and
+        // `/skill` fall through to the unknown-command path, which is a worse
+        // answer than either.
+        "skills" | "skill" => Action::Skills,
         "provider" | "providers" => Action::Provider,
-        "profile" | "profiles" => Action::Profile,
+        "profile" | "profiles" => Action::Profile(profile_verb(input)),
         // `Effort` carries `FromStr`, so the three levels are spelled io-harness's
         // way rather than this crate's — a second spelling of `low` would be a
         // second vocabulary for one wire field. "off" is handled beside it because

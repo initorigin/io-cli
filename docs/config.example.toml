@@ -239,6 +239,27 @@ net = "deny"
 # id = "issues"
 # transport = "http"
 # url = "https://mcp.example.com/v1"
+#
+# `enabled` (io-harness 0.70.0, absent means true) declares a server WITHOUT
+# starting it. io-harness skips it at connect, so no process is spawned and no
+# socket is dialled, and every other key of the entry is kept — which is what
+# makes this different from removing it.
+#
+# WRITING THIS KEY COSTS AN OLDER BINARY SOMETHING, AND IT IS THE QUIET KIND.
+# An io-cli built against io-harness 0.69.0 does not refuse an `[[mcp]]` entry
+# carrying `enabled` — it IGNORES the key and starts the server anyway. The
+# `[[plugin]]` version of the same key fails the other way, refusing the whole
+# file; that one announces itself and this one does not.
+#
+# From 0.30.0 `/mcp` has a toggle row and `io mcp enable|disable <id>` writes the
+# same bytes, so this is not a key you have to type. `io mcp probe <id>` starts a
+# configured server on request and reports what it offers.
+#
+# [[mcp]]
+# id = "staging"
+# transport = "stdio"
+# command = "staging-mcp"
+# enabled = false
 
 # --- The agent roster (0.25.0) ----------------------------------------------
 #

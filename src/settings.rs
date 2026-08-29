@@ -224,11 +224,17 @@ pub struct PriceSettings {
     /// How many models the last read priced.
     ///
     /// **Bookkeeping io-harness does not model, which is what this section is
-    /// for.** `PriceTable` has no length and no iterator — it answers `price(model)`
-    /// and nothing else — so io-cli cannot count what it holds by asking it. The
-    /// count is needed twice: to say on `/cost` how many models the rates cover,
-    /// and to refuse a refetch that comes back far shorter than what it would
-    /// replace, which is the one failure in this area that loses money quietly.
+    /// for.** The count is needed twice: to say on `/cost` how many models the
+    /// rates cover, and to refuse a refetch that comes back far shorter than what
+    /// it would replace, which is the one failure in this area that loses money
+    /// quietly.
+    ///
+    /// **io-harness 0.71.0 gave `PriceTable` `models()`, `len()` and `is_empty()`
+    /// (io-harness#220), and this field survives them.** Those answer what the
+    /// merged table holds *now*; this records what one particular read priced *at
+    /// the time it was written*, which is the only thing a later refetch can be
+    /// compared against. A live count cannot play that role — by the time the
+    /// comparison is made it is a count of the very table being replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<usize>,
 }

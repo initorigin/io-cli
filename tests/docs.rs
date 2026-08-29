@@ -1056,3 +1056,96 @@ fn the_readme_says_which_pause_cannot_be_resumed() {
         "the README should offer /fork, which is what an ended turn leaves you",
     );
 }
+
+// ---------------------------------------------------------------------------
+// 0.30.0 F19 — every claim a module makes about io-harness is true of the
+// io-harness that is pinned.
+// ---------------------------------------------------------------------------
+
+/// The io-harness version `Cargo.lock` actually pins.
+///
+/// Read from the lock and never from `Cargo.toml`, for the reason the release
+/// process records: the manifest states a *requirement* (`"0.71"`) and the lock
+/// states the *resolution* (`0.71.0`), and a source comment citing a line number
+/// is citing the file that was resolved.
+fn pinned_harness() -> String {
+    let lock = read("Cargo.lock");
+    let at = lock
+        .find("name = \"io-harness\"")
+        .expect("io-harness is in the lock file");
+    let rest = &lock[at..];
+    let line = rest
+        .lines()
+        .find(|line| line.starts_with("version = "))
+        .expect("the pinned version follows the name");
+    line.trim_start_matches("version = ")
+        .trim_matches('"')
+        .to_string()
+}
+
+/// **No source file cites a line inside an io-harness this crate does not pin.**
+///
+/// This is the mechanical half of the doc-truth sweep, and it exists because the
+/// expensive half is not mechanical at all. Nine citations of the form
+/// `io-harness-0.69.0/src/config.rs:1888` were still in the tree at 0.30.0, two
+/// pins after that version — each one a line number that had moved, in a file
+/// whose contents had changed, presented to the next reader as a fact they could
+/// go and check.
+///
+/// A citation into the pinned version can still be *wrong*; a citation into a
+/// version that is not pinned cannot even be checked. This gate catches the second
+/// kind, which is the kind that accumulates silently.
+///
+/// Sabotage: put back any one of the nine. It names the file and the version.
+#[test]
+fn f19_no_source_cites_an_io_harness_this_crate_does_not_pin() {
+    let pinned = pinned_harness();
+    let wanted = format!("io-harness-{pinned}/");
+    let mut stale: Vec<String> = Vec::new();
+
+    // **Recursive, and every citation on a line rather than the first.** Both were
+    // holes in the first version of this gate: `find` returns one match, so a line
+    // carrying two citations was checked once and the second could name any version
+    // at all; and a flat `read_dir` covers `src/` only for as long as `src/` stays
+    // flat, which is not a property anybody is maintaining.
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut dirs = vec![repo().join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("a source file");
+        for (number, line) in text.lines().enumerate() {
+            // Only the `io-harness-<version>/` form, which is a path into a
+            // vendored source tree. A bare "io-harness 0.70.0" is history — a
+            // sentence about when something changed — and is not a citation.
+            for (at, _) in line.match_indices("io-harness-") {
+                if !line[at..].starts_with(&wanted) {
+                    stale.push(format!(
+                        "{}:{}: {}",
+                        path.strip_prefix(repo()).unwrap_or(path).display(),
+                        number + 1,
+                        line.trim(),
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        stale.is_empty(),
+        "these cite a line inside an io-harness that is not pinned (the pin is \
+         {pinned}), so the line numbers are unverifiable and the surrounding \
+         claims are unchecked:\n{}",
+        stale.join("\n"),
+    );
+}

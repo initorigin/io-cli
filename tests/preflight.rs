@@ -2,14 +2,20 @@
 //!
 //! Two things are asserted here and they fail for different reasons.
 //!
-//! **The normaliser is a copy, so it is tested as a copy.** `io_cli::preflight::target`
-//! reproduces io-harness's `pub(crate) net::target`, and nothing in either crate can
-//! notice the day the two stop agreeing. A happy-path assertion — `https://example.com`
-//! becomes `example.com:443` — passes against essentially any URL parser ever written,
-//! so it would go on passing through a rewrite that changed every answer that matters.
-//! What is enumerated below instead is the case table: the scheme defaults, every shape
-//! that must return `None`, the userinfo drop, and both IPv6 spellings. Each of those is
-//! a line of the original that a re-derivation would get differently.
+//! **The normaliser is no longer a copy, and these tests are why the copy had to go.**
+//! Until 0.30.0 `io_cli::preflight::target` reproduced io-harness's then-`pub(crate)`
+//! `net::target`, and nothing in either crate could notice the day the two stopped
+//! agreeing. They had already stopped: the copy was byte-for-byte the pre-0.71.0
+//! implementation, which **fails open on five URL shapes**. The case table below was
+//! supposed to be the guard against exactly that, and it enumerated seven refusal cases
+//! without containing a single one of the five — a hole the size of the defect. io-cli
+//! now calls `io_harness::net::target`, and what is asserted here is the contract this
+//! crate depends on rather than an implementation it owns.
+//!
+//! A happy-path assertion — `https://example.com` becomes `example.com:443` — passes
+//! against essentially any URL parser ever written, so the case table stays: the scheme
+//! defaults, every shape that must return `None`, the userinfo drop, both IPv6
+//! spellings, and now the five that used to fail open.
 //!
 //! **The verdict half is asserted through `io_harness::Policy`, never through a rendered
 //! string alone.** The policy is built the way a session builds it —
@@ -20,8 +26,9 @@
 //! conclusion is the failure this whole module exists to prevent.
 //!
 //! The load-bearing case is [`an_unresolvable_url_is_a_refusal_and_never_a_start`].
-//! `NetGuard::check` refuses a URL it cannot resolve (io-harness 0.69.0,
-//! `src/net.rs:275-284`) before it consults the policy at all. Reading that `None` as
+//! `NetGuard::check` refuses a URL it cannot resolve before it consults the policy at
+//! all, and io-harness 0.71.0 writes that on `target` itself: *"If you copy this
+//! function, copy the `None` handling with it: every `None` is a deny."* Reading it as
 //! "nothing to check, so nothing objects" is a one-character mistake that reports
 //! *permitted* for a server the runtime is certain to refuse — the preflight lying in
 //! the only direction that costs a turn.
@@ -29,6 +36,7 @@
 use io_cli::approval;
 use io_cli::preflight::{self, Outcome, Preflight};
 use io_cli::settings::Posture;
+use io_harness::net::target;
 use io_harness::{Act, Config, Effect, McpServer, Policy, Rule};
 
 /// A stdio server named `id` spawning `command`.
@@ -51,7 +59,9 @@ fn remembered(act: Act, effect: Effect, pattern: &str) -> Rule {
 }
 
 // ---------------------------------------------------------------------------
-// The normaliser. One assertion per line of the function it copies.
+// The normaliser. One assertion per line of the contract io-cli depends on —
+// it is io-harness's function now, not a copy, and these are the properties
+// this crate would be wrong without.
 // ---------------------------------------------------------------------------
 
 /// The port is filled from the scheme, and all four schemes that reach a host are
@@ -60,19 +70,19 @@ fn remembered(act: Act, effect: Effect, pattern: &str) -> Rule {
 #[test]
 fn target_fills_the_port_from_the_scheme() {
     assert_eq!(
-        preflight::target("https://mcp.example.com").as_deref(),
+        target("https://mcp.example.com").as_deref(),
         Some("mcp.example.com:443"),
     );
     assert_eq!(
-        preflight::target("http://mcp.example.com").as_deref(),
+        target("http://mcp.example.com").as_deref(),
         Some("mcp.example.com:80"),
     );
     assert_eq!(
-        preflight::target("wss://mcp.example.com").as_deref(),
+        target("wss://mcp.example.com").as_deref(),
         Some("mcp.example.com:443"),
     );
     assert_eq!(
-        preflight::target("ws://mcp.example.com").as_deref(),
+        target("ws://mcp.example.com").as_deref(),
         Some("mcp.example.com:80"),
     );
 }
@@ -83,11 +93,11 @@ fn target_fills_the_port_from_the_scheme() {
 #[test]
 fn target_keeps_a_port_the_url_states() {
     assert_eq!(
-        preflight::target("https://mcp.example.com:8443").as_deref(),
+        target("https://mcp.example.com:8443").as_deref(),
         Some("mcp.example.com:8443"),
     );
     assert_eq!(
-        preflight::target("http://127.0.0.1:3000/mcp").as_deref(),
+        target("http://127.0.0.1:3000/mcp").as_deref(),
         Some("127.0.0.1:3000"),
     );
 }
@@ -103,7 +113,7 @@ fn target_stops_at_the_path_the_query_and_the_fragment() {
         "https://mcp.example.com#frag",
     ] {
         assert_eq!(
-            preflight::target(url).as_deref(),
+            target(url).as_deref(),
             Some("mcp.example.com:443"),
             "the authority ends before the first `/`, `?` or `#`: {url}",
         );
@@ -116,11 +126,11 @@ fn target_stops_at_the_path_the_query_and_the_fragment() {
 #[test]
 fn target_drops_the_userinfo() {
     assert_eq!(
-        preflight::target("https://user:pw@mcp.example.com/mcp").as_deref(),
+        target("https://user:pw@mcp.example.com/mcp").as_deref(),
         Some("mcp.example.com:443"),
     );
     assert_eq!(
-        preflight::target("https://token@mcp.example.com").as_deref(),
+        target("https://token@mcp.example.com").as_deref(),
         Some("mcp.example.com:443"),
     );
 }
@@ -130,16 +140,13 @@ fn target_drops_the_userinfo() {
 /// port `1`.
 #[test]
 fn target_keeps_the_brackets_on_an_ipv6_literal() {
+    assert_eq!(target("https://[::1]").as_deref(), Some("[::1]:443"));
     assert_eq!(
-        preflight::target("https://[::1]").as_deref(),
-        Some("[::1]:443")
-    );
-    assert_eq!(
-        preflight::target("http://[::1]:8080/mcp").as_deref(),
+        target("http://[::1]:8080/mcp").as_deref(),
         Some("[::1]:8080"),
     );
     assert_eq!(
-        preflight::target("https://[2001:db8::1]").as_deref(),
+        target("https://[2001:db8::1]").as_deref(),
         Some("[2001:db8::1]:443"),
     );
 }
@@ -156,7 +163,7 @@ fn target_refuses_a_scheme_that_never_dials() {
         "HTTPX://mcp.example.com",
     ] {
         assert_eq!(
-            preflight::target(url),
+            target(url),
             None,
             "only http, https, ws and wss resolve to a host: {url}",
         );
@@ -177,8 +184,94 @@ fn target_refuses_input_with_no_authority() {
         "https://?q=1",
         "https://:443",
     ] {
-        assert_eq!(preflight::target(url), None, "there is no host in {url:?}");
+        assert_eq!(target(url), None, "there is no host in {url:?}");
     }
+}
+
+/// **The five shapes io-cli's deleted copy failed open on.**
+///
+/// Every one of these came back `Some` from the copy this crate carried until 0.30.0,
+/// and a `Some` is a target a permissive policy may then allow. They are listed with
+/// the wrong answer each used to give, because the wrong answer is the point: four of
+/// them invent a host out of nothing, and the fifth substitutes a *different* host than
+/// the one the URL dials.
+///
+/// `https://[::1]evil.com/x` is the one that matters most. The bracket branch found the
+/// closing `]` at index 4, took `[::1]` as the host, and dropped `evil.com` on the floor
+/// — so the preflight reported "permitted, `[::1]:443`" for a URL that connects to
+/// `evil.com`, and an operator who had allowed loopback would have been told their own
+/// rule covered it.
+///
+/// This test is the guard that was missing. The case table beside it enumerated seven
+/// refusals and contained none of these, which is how a copy documented as able to
+/// "drift silently" drifted for two releases without a single red test.
+#[test]
+fn target_refuses_the_five_shapes_the_deleted_copy_allowed() {
+    for (url, used_to_return) in [
+        ("https://user@/x", ":443"),
+        ("https://[]/x", "[]:443"),
+        ("https://[::1]:/x", "[::1]:443"),
+        ("https://[::1]evil.com/x", "[::1]:443"),
+        ("https://[/x", "[:443"),
+    ] {
+        assert_eq!(
+            target(url),
+            None,
+            "{url:?} must be a refusal; io-cli's deleted copy answered {used_to_return:?}, \
+             and a Some here is a target a policy can allow",
+        );
+    }
+}
+
+/// **io-cli defines no normaliser of its own, and this is the only thing that can
+/// fail if it grows one back.**
+///
+/// The five-shape test above asserts against `io_harness::net::target` — so it
+/// would go on passing if somebody reintroduced a private copy in `src/preflight.rs`
+/// and pointed `check` at it. That is a sabotage arm with nowhere to run, which is
+/// this product's recorded failure mode for a criterion nobody is actually
+/// checking, and the reason this gate reads the source as text: the property is
+/// *absence*, and absence has no call site to assert on.
+///
+/// Sabotage: put `fn target` back into `src/preflight.rs`. Only this fails.
+#[test]
+fn preflight_defines_no_normaliser_of_its_own() {
+    let source = std::fs::read_to_string("src/preflight.rs").expect("the module");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    assert!(
+        !code.contains("fn target"),
+        "`src/preflight.rs` defines a URL normaliser again. The copy it carried \
+         until 0.30.0 failed open on five shapes, including one that discarded the \
+         real host and reported a policy match for it — and the case table beside \
+         it enumerated seven refusals without containing any of the five. The only \
+         correct behaviour is io-harness's own function.",
+    );
+    assert!(
+        code.contains("use io_harness::net::target;"),
+        "the preflight no longer reaches io-harness's normaliser",
+    );
+}
+
+/// The bracketless twin of `https://[::1]:/x` was always refused, and that asymmetry is
+/// what made the IPv6 branch's bug invisible: the same shape, spelled two ways, gave two
+/// answers. Asserted together so neither can regress alone.
+#[test]
+fn an_empty_port_is_refused_in_both_spellings() {
+    assert_eq!(
+        target("https://host:/x"),
+        None,
+        "bracketless, always refused"
+    );
+    assert_eq!(
+        target("https://[::1]:/x"),
+        None,
+        "bracketed, refused only since io-harness 0.71.0",
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -208,7 +208,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         }
         let mut tokens = vec![surface.to_string()];
         tokens.extend(rest.iter().cloned());
-        return manage_main(&root, &config, &tokens);
+        return manage_main(&root, &config, &tokens).await;
     }
 
     // A session draws, so it needs a terminal to draw on, and saying so is better
@@ -1632,6 +1632,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             .to_string(),
                                     ),
                                     Some(at) => {
+                                        // Read once, here, and carried on the
+                                        // `Pick`. The label and the value the
+                                        // handler writes come from this one
+                                        // reading, so they cannot disagree.
+                                        let on = server.enabled;
                                         descended = Some((
                                             Picker::new(
                                                 format!("{}?", server.id),
@@ -1642,11 +1647,28 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                         "change one setting",
                                                         io_cli::servers::KEYS.join(", "),
                                                     ),
+                                                    // **The reversible verb, beside
+                                                    // the one that is not.** Removing
+                                                    // takes the entry and everything
+                                                    // the operator typed into it;
+                                                    // this changes one word and
+                                                    // leaves the server configured,
+                                                    // listed, and one keystroke from
+                                                    // coming back.
+                                                    Row::with_detail(
+                                                        if on {
+                                                            "switch it off"
+                                                        } else {
+                                                            "switch it back on"
+                                                        },
+                                                        io_cli::servers::OLDER_BINARY,
+                                                    ),
                                                 ],
                                             ),
                                             Pick::McpRemove {
                                                 id: server.id.clone(),
                                                 at,
+                                                enabled: on,
                                             },
                                         ));
                                     }
@@ -1670,7 +1692,53 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // Row 2 is the edit verb, and it descends rather than
                         // acting: which key is half the decision, and the other
                         // half is a value only the operator can type.
-                        Pick::McpRemove { id, at } => {
+                        Pick::McpRemove { id, at, enabled } => {
+                            // Row 3 — the toggle. `servers::switch` is the same
+                            // function `io mcp disable <id>` reaches through
+                            // `manage::plan`, so the two doors write identical
+                            // bytes and neither is the real one. `!*enabled` is
+                            // the state read when the row was drawn, never a
+                            // second reading of the file.
+                            if index == 3 {
+                                let edit = io_cli::servers::switch(at, !*enabled);
+                                match io_cli::configure::write(session.root(), at.scope, &[edit]) {
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(
+                                                Tone::Error,
+                                                format!(
+                                                    "{id} was switched but the configuration \
+                                                     would not read back: {error}"
+                                                ),
+                                            ),
+                                        }
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{id} is {}; it is still configured, and the \
+                                                 change is in force from the next turn",
+                                                if *enabled { "switched off" } else { "on again" },
+                                            ),
+                                        );
+                                        // `record` and never `say`: this is the
+                                        // half an operator has to still be able to
+                                        // read, and the footer is one slot the next
+                                        // keystroke takes back.
+                                        app.record(
+                                            Tone::Muted,
+                                            io_cli::servers::OLDER_BINARY.to_string(),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
                             if index == 2 {
                                 descended = Some((
                                     Picker::new(
@@ -1760,7 +1828,91 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             enabled,
                             action_at,
                         } => {
-                            // Every row but one is a fact to read.
+                            // Every row but the last two is a fact to read. The two
+                            // that act are the removal at `action_at` and the
+                            // toggle immediately after it.
+                            //
+                            // **The toggle acts here rather than descending**, and
+                            // that asymmetry with the removal beside it is
+                            // deliberate: removing takes the operator's entry and
+                            // everything they typed into it, and this changes one
+                            // word that the same row switches straight back. A
+                            // confirmation is owed to an act that cannot be undone
+                            // in a keystroke; asking for one here would be asking
+                            // twice for something reversible.
+                            if index == *action_at + 1 {
+                                match io_cli::pluginview::declared_at(session.root(), bundle) {
+                                    Some((scope, at)) => {
+                                        let edit = if *enabled {
+                                            io_cli::pluginview::disable(at)
+                                        } else {
+                                            io_cli::pluginview::enable(at)
+                                        };
+                                        match io_cli::configure::write(
+                                            session.root(),
+                                            scope,
+                                            &[edit],
+                                        ) {
+                                            Ok(()) => {
+                                                // **Re-read, or the second `/plugin`
+                                                // of the same turn decides from
+                                                // stale state.** `Pick::PluginEntry`
+                                                // carries `enabled` from when the
+                                                // row was drawn, and the row is
+                                                // drawn from `config`. Without this
+                                                // the surface goes on offering
+                                                // "switch it off" for a bundle
+                                                // already off, writes `false` over
+                                                // `false`, and reports it switched
+                                                // off a second time — leaving
+                                                // "switch it back on" unreachable
+                                                // until the next turn. `/mcp`'s
+                                                // toggle has always reloaded, which
+                                                // is why that one is
+                                                // self-consistent and this was not.
+                                                match io_cli::configure::reload(session.root()) {
+                                                    Ok((fresh, stored)) => {
+                                                        capabilities =
+                                                            io_cli::contract::Capabilities::stored(
+                                                                stored.as_ref(),
+                                                            );
+                                                        config = fresh;
+                                                    }
+                                                    Err(error) => {
+                                                        app.record(Tone::Error, error);
+                                                    }
+                                                }
+                                                app.record(
+                                                    Tone::Success,
+                                                    format!(
+                                                        "{id} is {}; its entry and its directory \
+                                                         are both untouched, and the change is in \
+                                                         force from the next turn",
+                                                        if *enabled {
+                                                            "switched off"
+                                                        } else {
+                                                            "on again"
+                                                        },
+                                                    ),
+                                                );
+                                                app.record(
+                                                    Tone::Muted,
+                                                    io_cli::pluginview::OLDER_BINARY.to_string(),
+                                                );
+                                            }
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                        }
+                                    }
+                                    None => app.record(
+                                        Tone::Refused,
+                                        format!(
+                                            "no `[[plugin]]` entry in any scope names {}; \
+                                             nothing was switched",
+                                            bundle.display()
+                                        ),
+                                    ),
+                                }
+                            }
                             if index == *action_at {
                                 // **One act, one wording, and the flag decides it
                                 // once.** The row this descends from already says
@@ -1858,47 +2010,63 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `index`, for `Pick::PluginRemove`'s reason: the outer
                         // `index` is the row that was chosen and the entry's own
                         // position in the file is a different number entirely.
-                        Pick::PluginEnable {
-                            id,
-                            scope,
-                            index: at,
-                        } => {
+                        Pick::PluginInstall { id, scope, edits } => {
                             if io_cli::store::acts(index) {
-                                // **One key.** `pluginview::enable` is an
-                                // `Edit::set` on `plugin[at].enabled`, so the path
-                                // this entry declares, every sibling entry and
-                                // every unrelated section come through byte for
-                                // byte — see `src/edit.rs`, which replaces a
-                                // value's own span and copies the rest.
-                                match io_cli::configure::write(
-                                    session.root(),
-                                    *scope,
-                                    &[io_cli::pluginview::enable(*at)],
-                                ) {
-                                    Ok(()) => app.record(
-                                        Tone::Success,
-                                        format!(
-                                            "{id} is switched on; what it contributes is in \
-                                             `/plugin`, and it is in force from the next turn",
-                                        ),
-                                    ),
+                                // **The write happens here and nowhere earlier.**
+                                // `edits` is `manage::plan`'s own single
+                                // `pluginview::add`, so the entry lands switched
+                                // on, in one append, and every unrelated section
+                                // comes through byte for byte — see `src/edit.rs`,
+                                // which splices a span and copies the rest.
+                                match io_cli::configure::write(session.root(), *scope, edits) {
+                                    Ok(()) => {
+                                        // **Re-read, or `/plugin` will not list what
+                                        // was just installed.** `Action::Plugin`
+                                        // builds its view from the in-memory
+                                        // `config`, which is otherwise refreshed
+                                        // only at a turn boundary — so without this
+                                        // the success sentence below points at a
+                                        // surface that still knows nothing about
+                                        // the bundle. 0.29.0 did not have this bug
+                                        // because the write happened in the arm
+                                        // that reloads; the disclosure arm returns
+                                        // before reaching it.
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(Tone::Error, error),
+                                        }
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{id} is installed; what it contributes is in \
+                                                 `/plugin`, and it is in force from the next turn",
+                                            ),
+                                        );
+                                    }
                                     Err(refusal) => app.record(Tone::Refused, refusal),
                                 }
                             } else {
-                                // **Declined leaves it declared, off and visible**,
-                                // and saying so is the whole difference between a
-                                // decline and a bundle that quietly went away. The
-                                // entry is not removed: `/plugin` lists it under
-                                // `pluginview::DISABLED_MARK` with what switching
-                                // it on would bring, which is the one edit an
-                                // operator can undo in a keystroke if they can see
-                                // it.
+                                // **Declining leaves the operator's file untouched**,
+                                // which is new in 0.30.0 and is the point of the
+                                // change. 0.29.0 had to write the entry switched off
+                                // before io-harness would read the bundle at all, so
+                                // a decline left a `[[plugin]]` behind and the honest
+                                // sentence was "declared and switched off".
+                                // `Plugins::inspect` validates a directory with
+                                // nothing on disk naming it, so there is now nothing
+                                // to leave behind and nothing to undo.
                                 app.record(
                                     Tone::Muted,
                                     format!(
-                                        "{id} is left declared and switched off — nothing of it \
-                                         is in this session; `/plugin` lists it, and switching it \
-                                         on there is one keystroke",
+                                        "{id} was not installed — nothing was written, and the \
+                                         clone is still under `/plugin marketplace` if you want \
+                                         to look at it again",
                                     ),
                                 );
                             }
@@ -2037,18 +2205,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // A bundle is several *lists* — its agents, its
                                 // servers, its policy layers — and a sentence
                                 // holding three lists is a sentence nobody reads.
-                                // The hooks by name where the manifest is still
-                                // readable, and `pluginview`'s honest placeholder
-                                // where it is not — `hooks` answers an empty
-                                // slice for a directory it cannot open, which is
-                                // the same fact the placeholder states. Read
-                                // here rather than in `pluginview`, which opens
-                                // no manifest by rule.
+                                // The hooks come off the `Plugin` io-harness
+                                // parsed, carried on `Listed` by `copy_out`.
+                                // Until io-harness 0.71.0 this line read the
+                                // manifest again through `marketplace::hooks`,
+                                // because `Plugin` had an accessor for every
+                                // contribution kind except the one that runs
+                                // programs; io-harness#223 closed that and the
+                                // second reader is gone.
                                 let mut rows = io_cli::pluginview::detail(
                                     plugin,
                                     screen.width(),
                                     &app.theme.glyphs,
-                                    &io_cli::marketplace::hooks(&plugin.root),
                                 );
                                 // **The action's index is taken before the row is
                                 // pushed, never worked out afterwards.** Every
@@ -2070,6 +2238,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     }
                                     .to_string(),
                                     "removes its `[[plugin]]` entry".to_string(),
+                                ));
+                                // **The reversible verb, beside the one that is
+                                // not**, at `action_at + 1`. Removing takes the
+                                // entry; this changes one word and leaves the
+                                // bundle declared, listed under its own mark, and
+                                // one keystroke from coming back. Pushed after
+                                // `action_at` was taken, so the removal's index is
+                                // still the length of what was already there.
+                                rows.push(Row::with_detail(
+                                    if plugin.enabled {
+                                        "switch it off"
+                                    } else {
+                                        "switch it back on"
+                                    }
+                                    .to_string(),
+                                    io_cli::pluginview::OLDER_BINARY.to_string(),
                                 ));
                                 descended = Some((
                                     Picker::new(plugin.id.clone(), rows),
@@ -2313,7 +2497,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 descended = Some((
                                     Picker::new(
                                         format!("{}?", skill.name),
-                                        vec![Row::new(verb), Row::new("leave it as it is")],
+                                        vec![
+                                            Row::new(verb),
+                                            Row::new("leave it as it is"),
+                                            // **The irreversible one, last and
+                                            // descending.** Turning a skill off is
+                                            // a rename this row undoes; removing it
+                                            // unlinks the file and nothing in this
+                                            // product brings it back, so it asks
+                                            // again rather than acting from here.
+                                            Row::with_detail(
+                                                "remove it for good".to_string(),
+                                                "deletes the file; turning it off \
+                                                 instead is reversible"
+                                                    .to_string(),
+                                            ),
+                                        ],
                                     ),
                                     Pick::SkillToggle {
                                         name: skill.name.clone(),
@@ -2329,12 +2528,80 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // that io-harness propagates at run start — every turn of
                         // the session dead. So the failure of a move is said, and
                         // nothing is written twice.
+                        Pick::SkillRemove { name, path } => {
+                            if io_cli::store::acts(index) {
+                                // The bundle list goes to the removal for the same
+                                // reason it goes to the move: the refusal lives
+                                // inside `skillview::remove`, so a second caller
+                                // cannot walk past it.
+                                match io_cli::skillview::remove(path, &bundle_skills(&config)) {
+                                    Ok(gone) => {
+                                        // The palette walks its list once at
+                                        // startup, and this is the second thing in
+                                        // the product that changes the directory
+                                        // under it. Leave it and `/` goes on
+                                        // offering a skill whose file is gone.
+                                        skills = io_cli::commands::skills(
+                                            &io_cli::home::path().unwrap_or_default(),
+                                            io_cli::contract::skills_dir(
+                                                &config,
+                                                &capabilities,
+                                                session.root().to_path_buf(),
+                                            )
+                                            .as_deref(),
+                                            &bundle_skills(&config),
+                                        )
+                                        // `.0` for the reason the sibling refresh
+                                        // below takes it: the second half is the
+                                        // startup complaint about a skills
+                                        // directory io-cli did not write into, and
+                                        // it is said once, at startup, by the code
+                                        // that knows the resolved directory.
+                                        .0;
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{name} is gone: {} is deleted",
+                                                gone.display()
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            } else {
+                                app.record(Tone::Muted, format!("{name} is unchanged"));
+                            }
+                        }
                         Pick::SkillToggle {
                             name,
                             path,
                             enabled,
                         } => {
-                            if index != 0 {
+                            if index == 2 {
+                                // **`store::LEAVE_IT` at row 0, and it is the
+                                // opposite way round from the picker above.** That
+                                // one puts its verb first because it is reversible
+                                // by the same row; this one deletes a file, so it
+                                // takes the product's confirmation shape — row 0
+                                // declines, `store::acts` decides, and the index is
+                                // what the test asserts.
+                                descended = Some((
+                                    Picker::new(
+                                        format!("Remove {name}?"),
+                                        vec![
+                                            Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                            Row::with_detail(
+                                                "remove it".to_string(),
+                                                format!("deletes {}", path.display()),
+                                            ),
+                                        ],
+                                    ),
+                                    Pick::SkillRemove {
+                                        name: name.clone(),
+                                        path: path.clone(),
+                                    },
+                                ));
+                            } else if index != 0 {
                                 app.record(Tone::Muted, format!("{name} is unchanged"));
                             } else {
                                 // **The bundle list goes to the move, not just to
@@ -3270,10 +3537,37 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // nothing to open: the file is markdown an operator
                             // edits in their own editor, and `/remember` is the
                             // one writer this product gives it.
-                            Some(io_cli::commands::Held::File(file)) => app.record(
-                                Tone::Muted,
-                                io_cli::commands::instruction_said(file, &app.theme.glyphs),
-                            ),
+                            Some(io_cli::commands::Held::File(file)) => {
+                                app.record(
+                                    Tone::Muted,
+                                    io_cli::commands::instruction_said(file, &app.theme.glyphs),
+                                );
+                                // **The file's own bullets, addressable at last.**
+                                // Through 0.29.0 this row printed a sentence and
+                                // stopped, with a comment saying there was nothing
+                                // to open because the file is markdown an operator
+                                // edits elsewhere and `/remember` is the one writer
+                                // this product gives it. That was true and it was
+                                // half a surface: a list this interface can grow is
+                                // a list it should be able to prune.
+                                let notes = io_cli::memory::notes(session.root(), file.scope);
+                                if notes.is_empty() {
+                                    app.record(
+                                        Tone::Muted,
+                                        "it holds no bullets, so there is nothing here to \
+                                         change; `/remember` writes one"
+                                            .to_string(),
+                                    );
+                                } else {
+                                    descended = Some((
+                                        Picker::new(
+                                            io_cli::memory::file_name(file.scope).to_string(),
+                                            io_cli::commands::note_rows(&notes, &app.theme.glyphs),
+                                        ),
+                                        Pick::Instruction(notes),
+                                    ));
+                                }
+                            }
                             // A note has two verbs on it and a picker has one
                             // Enter, so the row descends into them — the same
                             // replace-in-place `Pick::Complete` uses, and the
@@ -3303,6 +3597,130 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `io_cli::commands`, so what an outcome is called is a
                         // decision a test can stand on rather than a string in a
                         // file nothing links.
+                        Pick::Instruction(notes) => {
+                            if let Some(note) = notes.get(index) {
+                                // **The composer is deliberately NOT set here, and
+                                // the order is `/remember`'s: type the line, then
+                                // pick what it applies to.**
+                                //
+                                // The obvious implementation — put the note's
+                                // current text in the composer so the operator can
+                                // edit it — cannot work in this interface and looks
+                                // like it does. A picker owns the keyboard for as
+                                // long as it is open, so no keystroke can reach the
+                                // composer between a `set` here and the choice
+                                // below; the "replacement" would always be byte-
+                                // identical to the note, `memory::amend` would
+                                // accept it, and the surface would report a
+                                // successful replacement over a write that changed
+                                // nothing. Reopening the note would then overwrite
+                                // whatever the operator had typed instead.
+                                let carried = note.carries();
+                                descended = Some((
+                                    Picker::new(
+                                        format!("line {}?", note.numbered()),
+                                        vec![
+                                            Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                            Row::with_detail(
+                                                "replace it with what is in the prompt".to_string(),
+                                                if app.composer.text().trim().is_empty() {
+                                                    // Said before it is chosen, not
+                                                    // after: an empty prompt is the
+                                                    // state an operator arrives in
+                                                    // when they came to read.
+                                                    "the prompt is empty — type the new line \
+                                                     first, then come back"
+                                                        .to_string()
+                                                } else {
+                                                    "the line's indent and its `-` are the \
+                                                     file's and are not touched"
+                                                        .to_string()
+                                                },
+                                            ),
+                                            Row::with_detail(
+                                                "forget it".to_string(),
+                                                if carried == 0 {
+                                                    "removes this line and leaves every other \
+                                                     byte of the file alone"
+                                                        .to_string()
+                                                } else {
+                                                    // The `import` shape, said out
+                                                    // loud on the screen where the
+                                                    // operator commits to it.
+                                                    format!(
+                                                        "removes this line only; the {carried} \
+                                                         line{} under it stay, and stay in every \
+                                                         prompt",
+                                                        if carried == 1 { "" } else { "s" },
+                                                    )
+                                                },
+                                            ),
+                                        ],
+                                    ),
+                                    Pick::InstructionVerb(note.clone()),
+                                ));
+                            }
+                        }
+                        Pick::InstructionVerb(note) => {
+                            let root = session.root().to_path_buf();
+                            if index == 1 {
+                                let replacement = app.composer.text();
+                                match io_cli::memory::amend(&root, note, &replacement) {
+                                    Ok(path) => {
+                                        app.composer.clear();
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "line {} of {} is replaced; it is in force from \
+                                                 the next turn",
+                                                note.numbered(),
+                                                path.display(),
+                                            ),
+                                        );
+                                    }
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                            if index == 2 {
+                                match io_cli::memory::forget(&root, note) {
+                                    Ok(path) => app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "line {} of {} is gone; every other byte of the file \
+                                             is unchanged",
+                                            note.numbered(),
+                                            path.display(),
+                                        ),
+                                    ),
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                }
+                            }
+                        }
+                        // Index 0 is `store::LEAVE_IT` and does nothing, asserted on
+                        // the index rather than the label everywhere this shape is
+                        // used in the product.
+                        Pick::Unforget { key, restore } => {
+                            if io_cli::store::acts(index) {
+                                let root = session.root().to_path_buf();
+                                match io_cli::recall::unforget(&store, &root, *restore) {
+                                    Ok(keys) => {
+                                        let (tone, said) =
+                                            io_cli::commands::unforgotten_said(key, &keys);
+                                        app.record(tone, said);
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!("{key} was not put back: {error}"),
+                                    ),
+                                }
+                            } else {
+                                // Said rather than left silent: the operator has
+                                // just been told a way back exists, and a
+                                // confirmation that answers nothing when declined
+                                // reads as one that did not register the keystroke.
+                                app.record(Tone::Muted, format!("{key} stays withdrawn"));
+                            }
+                        }
                         Pick::Remembered { scope, key, verbs } => {
                             if let Some(verb) = verbs.get(index) {
                                 let root = session.root().to_path_buf();
@@ -3333,6 +3751,51 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                     &app.theme.glyphs,
                                                 );
                                                 app.record(tone, said);
+                                                // **The restore id is spent here or
+                                                // it is spent nowhere.**
+                                                // `forgotten_said` names the run
+                                                // holding the way back, and through
+                                                // 0.29.0 that sentence was the end
+                                                // of it: the operator was told a way
+                                                // back existed and handed nothing to
+                                                // take it with, while
+                                                // `recall::unforget` sat public,
+                                                // tested and called by no keystroke.
+                                                //
+                                                // Offered rather than taken — they
+                                                // asked to forget it — and
+                                                // `store::acts` decides it the way
+                                                // it decides every confirmation in
+                                                // this product: row 0 declines.
+                                                if let io_cli::recall::Forgotten::Removed {
+                                                    restore,
+                                                } = outcome
+                                                {
+                                                    descended = Some((
+                                                        Picker::new(
+                                                            format!("{key} is withdrawn"),
+                                                            vec![
+                                                                Row::with_detail(
+                                                                    io_cli::store::LEAVE_IT
+                                                                        .to_string(),
+                                                                    "the withdrawal stands"
+                                                                        .to_string(),
+                                                                ),
+                                                                Row::with_detail(
+                                                                    "put it back".to_string(),
+                                                                    format!(
+                                                                        "restores it from run \
+                                                                         {restore}'s restore point"
+                                                                    ),
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        Pick::Unforget {
+                                                            key: key.clone(),
+                                                            restore,
+                                                        },
+                                                    ));
+                                                }
                                             }
                                             Err(error) => app.record(
                                                 Tone::Error,
@@ -3905,7 +4368,185 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 app.record(tone_of(&outcome), outcome.said);
                             }
                         },
+                        // **The two verbs that act without planning an `Edit`, and
+                        // therefore need an arm here of their own.** `manage::plan`
+                        // answers `None` for both — a skill is a file in io-cli's
+                        // own home and a probe writes nothing — so without these
+                        // they fall to `Ok((_, None))` below and do *nothing at
+                        // all*: no act, no output, no refusal, on a line the README
+                        // documents as working. The acts live in `manage_main`,
+                        // which a session never calls.
+                        Ok((io_cli::manage::Request::Skill(verb), None)) => {
+                            match io_cli::home::path() {
+                                None => app.record(
+                                    Tone::Refused,
+                                    "there is no home on this machine to keep skills in"
+                                        .to_string(),
+                                ),
+                                Some(home) => {
+                                    let view = skills_view(&config, &capabilities, session.root());
+                                    let bundles = bundle_skills(&config);
+                                    let done = match &verb {
+                                        io_cli::manage::SkillVerb::Add { source } => {
+                                            io_cli::skillview::install(&home, source)
+                                                .map(|at| format!("{} is installed", at.display()))
+                                        }
+                                        io_cli::manage::SkillVerb::List => {
+                                            for skill in &view.skills {
+                                                app.record(
+                                                    Tone::Muted,
+                                                    format!(
+                                                        "{} — {} · {} · {}",
+                                                        skill.name,
+                                                        skill.origin.word(),
+                                                        if skill.enabled {
+                                                            "enabled"
+                                                        } else {
+                                                            "disabled"
+                                                        },
+                                                        skill.path.display(),
+                                                    ),
+                                                );
+                                            }
+                                            Ok(String::new())
+                                        }
+                                        io_cli::manage::SkillVerb::Remove { name } => {
+                                            // By the resolved name, which is what
+                                            // the listing shows — a file called
+                                            // `mine.md` declaring `name: io-mcp` is
+                                            // `io-mcp` everywhere it is addressed.
+                                            match view.skills.iter().find(|s| s.name == *name) {
+                                                None => Err(format!(
+                                                    "no skill answers to `{name}`; `/skills` \
+                                                     names the ones that do"
+                                                )),
+                                                Some(skill) => {
+                                                    io_cli::skillview::remove(&skill.path, &bundles)
+                                                        .map(|gone| {
+                                                            format!("{} is deleted", gone.display())
+                                                        })
+                                                }
+                                            }
+                                        }
+                                    };
+                                    match done {
+                                        Err(refusal) => app.record(Tone::Refused, refusal),
+                                        Ok(said) => {
+                                            if !said.is_empty() {
+                                                // The palette walks its list once
+                                                // at startup; these two verbs are
+                                                // the only other things that change
+                                                // the directory under it.
+                                                skills = io_cli::commands::skills(
+                                                    &home,
+                                                    io_cli::contract::skills_dir(
+                                                        &config,
+                                                        &capabilities,
+                                                        session.root().to_path_buf(),
+                                                    )
+                                                    .as_deref(),
+                                                    &bundle_skills(&config),
+                                                )
+                                                .0;
+                                                app.record(Tone::Success, said);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok((
+                            io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Probe { id }),
+                            None,
+                        )) => {
+                            // **The session's merged policy, not the file's alone**,
+                            // for the reason the preflight beside it gives: the
+                            // posture the operator chose replaces the tier defaults
+                            // and this session's remembered allowances are a layer
+                            // over both, so a probe built on `Config::policy()` by
+                            // itself would report a refusal for a server this very
+                            // session has already been told to permit.
+                            let policy = io_cli::approval::session_policy(
+                                &config.policy().unwrap_or_default(),
+                                app.posture(),
+                                app.remembered(),
+                            );
+                            match io_cli::servers::probe(&config, &id, &policy).await {
+                                Err(refusal) => app.record(Tone::Refused, refusal),
+                                Ok(probe) => {
+                                    let said = io_cli::servers::probed(&id, &probe);
+                                    app.record(
+                                        if io_cli::exec::probe_code(&probe) == io_cli::exec::OK {
+                                            Tone::Success
+                                        } else {
+                                            Tone::Warning
+                                        },
+                                        said,
+                                    );
+                                }
+                            }
+                        }
                         Ok((_, None)) => {}
+                        // **A plan carrying a disclosure has not been written, and
+                        // this arm exists so that it cannot be.** `manage::plan`
+                        // fills `disclosure` for exactly one request — `plugin add
+                        // <name>` resolved out of a marketplace — by running
+                        // `io_harness::Plugins::inspect` over the clone, so
+                        // io-harness has already read, parsed, validated and
+                        // trust-checked the bundle with no declaration existing
+                        // anywhere on disk. A bundle it refuses never reaches this
+                        // arm at all: `plan` returns `Err` and builds no `Plan`,
+                        // which makes "nothing is written for a bundle that would be
+                        // refused" a property of the library rather than of this
+                        // driver remembering to check.
+                        //
+                        // Guarded rather than nested inside the arm below, so the
+                        // write path keeps exactly the shape it had.
+                        Ok((_, Some(plan))) if plan.disclosure.is_some() => {
+                            let disclosure = plan
+                                .disclosure
+                                .as_ref()
+                                .expect("the guard on this arm just tested it");
+                            app.record(
+                                Tone::Muted,
+                                format!(
+                                    "{} is not installed. This is what io-harness parsed out of \
+                                     it, and nothing has been written to your configuration:",
+                                    disclosure.id,
+                                ),
+                            );
+                            // `record` and never `say`: the footer is one slot the
+                            // next keystroke takes back, and this is the thing the
+                            // operator is answering about.
+                            for line in disclosure.said(&app.theme.glyphs) {
+                                app.record(Tone::Muted, line);
+                            }
+                            picker = Some((
+                                Picker::new(
+                                    format!("Install {}?", disclosure.id),
+                                    vec![
+                                        Row::new(io_cli::store::LEAVE_IT.to_string()),
+                                        Row::with_detail(
+                                            "install it".to_string(),
+                                            format!(
+                                                "appends one `[[plugin]]` entry to the {} file \
+                                                 and changes no other byte of it",
+                                                io_cli::configure::Decided::File {
+                                                    scope: plan.scope,
+                                                    path: Default::default(),
+                                                }
+                                                .word()
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                                Pick::PluginInstall {
+                                    id: disclosure.id.clone(),
+                                    scope: plan.scope,
+                                    edits: plan.edits.clone(),
+                                },
+                            ));
+                        }
                         Ok((request, Some(plan))) => {
                             match io_cli::configure::write(&root, plan.scope, &plan.edits) {
                                 Err(refusal) => app.record(Tone::Refused, refusal),
@@ -3919,127 +4560,49 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         }
                                         Err(error) => app.record(Tone::Error, error),
                                     }
-                                    // **The entry that was just appended, read
-                                    // back out of the file rather than re-decided
-                                    // here.** `pluginview::declared_off` answers
-                                    // `Some` only for a last `[[plugin]]` carrying
-                                    // `enabled = false`, which is what
-                                    // `manage::plan` writes for a bundle resolved
-                                    // out of a marketplace and never for a
-                                    // directory the operator typed. So the driver
-                                    // asks no second time which reading the word
-                                    // had: `marketplace::chosen` decided that once,
-                                    // in the library, and this is its result.
-                                    let disclosing = matches!(
-                                        &request,
-                                        io_cli::manage::Request::Plugin(
-                                            io_cli::manage::PluginVerb::Add { .. }
-                                        )
-                                    )
-                                    .then(|| io_cli::configure::scope_path(&root, plan.scope))
-                                    .flatten()
-                                    .and_then(|path| std::fs::read_to_string(path).ok())
-                                    .and_then(|text| io_cli::pluginview::declared_off(&text));
-
-                                    match &disclosing {
-                                        // **Not "in force from the next turn".** A
-                                        // bundle written switched off is in force
-                                        // from no turn at all, and this is the
-                                        // sentence an operator would read as
-                                        // "installed".
-                                        Some(_) => app.record(
-                                            Tone::Warning,
-                                            io_cli::pluginview::OLDER_BINARY,
-                                        ),
-                                        None => app.record(
-                                            Tone::Success,
-                                            format!(
-                                                "written to the {} file, in force from the next \
-                                                 turn",
-                                                io_cli::configure::Decided::File {
-                                                    scope: plan.scope,
-                                                    path: Default::default(),
-                                                }
-                                                .word()
-                                            ),
-                                        ),
-                                    }
-                                    if let Some((at, declared)) = disclosing {
-                                        // A `[[plugin]] path` is relative to the
-                                        // discovery root, which is
-                                        // `pluginview::declared_at`'s own rule.
-                                        let dir = if declared.is_absolute() {
-                                            declared
-                                        } else {
-                                            root.join(declared)
-                                        };
-                                        let hooks = io_cli::marketplace::hooks(&dir);
-                                        match io_cli::marketplace::disclosure(
-                                            &io_cli::pluginview::view(&config),
-                                            &dir,
-                                            &hooks,
-                                            screen.width(),
-                                            &app.theme.glyphs,
-                                        ) {
-                                            // **Refused at re-discovery, before
-                                            // consent, in io-harness's own
-                                            // sentence.** Nothing is offered to
-                                            // switch on, because nothing would
-                                            // load — and the entry is left
-                                            // declared and off, where `/plugin`
-                                            // lists it under its own mark.
-                                            Err(refusal) => {
-                                                app.record(Tone::Refused, refusal);
+                                    // **Every plan that reaches this arm is one the
+                                    // operator has already consented to**, either
+                                    // by typing the command that produced it or by
+                                    // choosing "install it" on the arm above, which
+                                    // is where a marketplace bundle's write happens
+                                    // now. There is no longer a second reading to
+                                    // recover here: 0.29.0 read the file back with
+                                    // `pluginview::declared_off` to find out whether
+                                    // the entry it had just appended was one it had
+                                    // written switched off, and that whole round trip
+                                    // existed only because io-harness published no
+                                    // way to validate a bundle without declaring it.
+                                    app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "written to the {} file, in force from the next turn",
+                                            io_cli::configure::Decided::File {
+                                                scope: plan.scope,
+                                                path: Default::default(),
                                             }
-                                            Ok(disclosure) => {
-                                                app.record(
-                                                    Tone::Muted,
-                                                    format!(
-                                                        "{} is declared and switched off; \
-                                                         io-harness read, parsed and trust-checked \
-                                                         it, and it contributes nothing until it \
-                                                         is switched on",
-                                                        disclosure.id,
-                                                    ),
-                                                );
-                                                // `record` and never `say`: the
-                                                // footer is one slot the next
-                                                // keystroke takes back, and this
-                                                // is what the operator is
-                                                // answering about.
-                                                for line in &disclosure.said {
-                                                    app.record(Tone::Muted, line.clone());
-                                                }
-                                                picker = Some((
-                                                    Picker::new(
-                                                        format!("Switch on {}?", disclosure.id),
-                                                        vec![
-                                                            Row::new(
-                                                                io_cli::store::LEAVE_IT.to_string(),
-                                                            ),
-                                                            Row::with_detail(
-                                                                "switch it on".to_string(),
-                                                                format!(
-                                                                    "sets `plugin[{at}].enabled = \
-                                                                     true` in the {} file and \
-                                                                     changes no other byte of it",
-                                                                    io_cli::configure::Decided::File {
-                                                                        scope: plan.scope,
-                                                                        path: Default::default(),
-                                                                    }
-                                                                    .word()
-                                                                ),
-                                                            ),
-                                                        ],
-                                                    ),
-                                                    Pick::PluginEnable {
-                                                        id: disclosure.id,
-                                                        scope: plan.scope,
-                                                        index: at,
-                                                    },
-                                                ));
-                                            }
-                                        }
+                                            .word()
+                                        ),
+                                    );
+                                    // **The third door for the same act, and it owes
+                                    // the same sentence.** `/mcp enable|disable
+                                    // <id>` typed in a session builds the identical
+                                    // `servers::switch` edit the picker's toggle
+                                    // and `io mcp disable` build, and both of those
+                                    // say what the key costs an io-harness 0.69.0
+                                    // binary — which for `[[mcp]]` is the silent
+                                    // failure: that binary ignores the key and
+                                    // starts the server anyway. Two of three doors
+                                    // saying it is worse than none, because the
+                                    // silence reads as "there is nothing to say".
+                                    if let io_cli::manage::Request::Mcp(
+                                        io_cli::manage::McpVerb::Enable { .. }
+                                        | io_cli::manage::McpVerb::Disable { .. },
+                                    ) = &request
+                                    {
+                                        app.record(
+                                            Tone::Muted,
+                                            io_cli::servers::OLDER_BINARY.to_string(),
+                                        );
                                     }
                                     // **The preflight after the write, never
                                     // instead of it.** A server the policy will
@@ -4474,21 +5037,243 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         Pick::Provider { add_at },
                     ));
                 }
-                Action::Profile => {
+                Action::Profile(io_cli::commands::ProfileVerb::List) => {
                     let names = io_cli::configure::profiles(&config);
                     if names.is_empty() {
-                        // The "not configured" shape again: an absent section is
-                        // not an error, and `[profile.<name>]` is io-harness's
-                        // own spelling rather than something to explain here.
+                        // **An empty list is now an offer rather than a full
+                        // stop.** An absent section is not an error, and
+                        // `[profile.<name>]` is io-harness's own spelling — but
+                        // until 0.30.0 this sentence was the whole of the surface
+                        // for the operator who had never written one, which is
+                        // exactly the operator a create verb is for.
                         app.record(
                             Tone::Muted,
-                            "this configuration declares no `[profile.<name>]` sections",
+                            "this configuration declares no `[profile.<name>]` sections; \
+                             `/profile create <name>` writes one",
                         );
                     } else {
                         let rows: Vec<Row> =
                             names.iter().map(|name| Row::new(name.clone())).collect();
                         picker = Some((Picker::new("Which profile?", rows), Pick::Profile(names)));
                     }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Create(name))
+                    // **A name another scope already declares is not a fresh
+                    // profile.** `Edit::section` refuses a duplicate within the
+                    // file it is writing and cannot see any other — so creating
+                    // `fast` in the user scope over a `[profile.fast]` in the
+                    // project file succeeds, and the sentence below would call the
+                    // result empty when it inherits every key the project
+                    // declaration carries.
+                    if io_cli::configure::profiles(&config)
+                        .iter()
+                        .any(|declared| declared == name.trim()) =>
+                {
+                    app.record(
+                        Tone::Refused,
+                        format!(
+                            "`{}` is already declared by a file in force; `/profile` switches to \
+                             it, and `/config --scope user` adds keys to it",
+                            name.trim(),
+                        ),
+                    );
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Create(name)) => {
+                    match io_cli::configure::create_profile(&name) {
+                        Err(refusal) => app.record(Tone::Refused, refusal),
+                        Ok(edit) => {
+                            // **User scope, and stated.** A profile has no key
+                            // already deciding it — that is what makes it new — so
+                            // the scope rule's "user scope when no file names it"
+                            // arm is the one that applies. It is also the only
+                            // honest default: a project `io.toml` is committed, and
+                            // writing somebody's personal profile into a shared file
+                            // is a decision they did not make.
+                            let scope = io_harness::config::Scope::User;
+                            match io_cli::configure::write(session.root(), scope, &[edit]) {
+                                Err(refusal) => app.record(Tone::Refused, refusal),
+                                Ok(()) => {
+                                    match io_cli::configure::reload(session.root()) {
+                                        Ok((fresh, stored)) => {
+                                            capabilities = io_cli::contract::Capabilities::stored(
+                                                stored.as_ref(),
+                                            );
+                                            config = fresh;
+                                        }
+                                        Err(error) => app.record(Tone::Error, error),
+                                    }
+                                    app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "`[profile.{}]` is written to the {} file; it is empty \
+                                             until `/config --scope user` puts keys in it, and \
+                                             `/profile` switches to it",
+                                            name.trim(),
+                                            io_cli::configure::Decided::File {
+                                                scope,
+                                                path: Default::default(),
+                                            }
+                                            .word()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Remove(name)) => {
+                    let name = name.trim().to_string();
+                    if name.is_empty() {
+                        app.record(
+                            Tone::Refused,
+                            "`/profile remove` needs the name of a profile".to_string(),
+                        );
+                    } else {
+                        // **Removed from the file that declares it**, found by
+                        // reading each source rather than assumed to be the user
+                        // scope — a profile may perfectly well live in a project
+                        // file, and removing it from somewhere else would report a
+                        // successful write that removed nothing. Highest
+                        // precedence first, which is the order `Config` layers.
+                        let found = config.sources().iter().rev().find_map(|(scope, path)| {
+                            let text = std::fs::read_to_string(path).ok()?;
+                            io_cli::configure::remove_profile(&text, &name)
+                                .ok()
+                                .map(|edits| (*scope, edits))
+                        });
+                        match found {
+                            None => app.record(
+                                Tone::Refused,
+                                format!(
+                                    "no configuration file in force declares `[profile.{name}]`; \
+                                     the ones that are declared are {}",
+                                    match io_cli::configure::profiles(&config).as_slice() {
+                                        [] => "none at all".to_string(),
+                                        names => names
+                                            .iter()
+                                            .map(|found| format!("`{found}`"))
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    }
+                                ),
+                            ),
+                            Some((scope, edits)) => {
+                                let headers = edits.len();
+                                match io_cli::configure::write(session.root(), scope, &edits) {
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(session.root()) {
+                                            Ok((fresh, stored)) => {
+                                                capabilities =
+                                                    io_cli::contract::Capabilities::stored(
+                                                        stored.as_ref(),
+                                                    );
+                                                config = fresh;
+                                            }
+                                            Err(error) => app.record(Tone::Error, error),
+                                        }
+                                        // The header count, because a profile with
+                                        // sub-tables is more than one section and an
+                                        // operator who wrote `[profile.x.run]` should
+                                        // see that it went too.
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "`[profile.{name}]` is removed from the {} file \
+                                                 ({headers} section{}); every other byte of it is \
+                                                 unchanged",
+                                                io_cli::configure::Decided::File {
+                                                    scope,
+                                                    path: Default::default(),
+                                                }
+                                                .word(),
+                                                if headers == 1 { "" } else { "s" },
+                                            ),
+                                        );
+                                        // **One file declared it; another still may,
+                                        // and "removed" would then be a lie the
+                                        // operator cannot see.** `profiles` was
+                                        // widened this release to read every scope
+                                        // precisely because io-harness merges an
+                                        // overlay across all of them — so a profile
+                                        // named in two files survives one removal,
+                                        // goes on being listed, and goes on being
+                                        // switchable, with the sentence above
+                                        // reading as though it were gone.
+                                        let survives = io_cli::configure::profiles(&config)
+                                            .iter()
+                                            .any(|declared| declared == &name);
+                                        if survives {
+                                            app.record(
+                                                Tone::Warning,
+                                                format!(
+                                                    "`{name}` is still declared by another file in \
+                                                     force, so it is still listed and still \
+                                                     switchable; `/profile remove {name}` again \
+                                                     takes the next one"
+                                                ),
+                                            );
+                                        } else if profile.as_deref() == Some(name.as_str()) {
+                                            // The overlay in force was this
+                                            // profile's, and nothing declares it any
+                                            // more. Leaving the name set would put a
+                                            // profile that no longer exists on the
+                                            // status line and fail at the next turn
+                                            // boundary. Guarded on `survives`,
+                                            // because clearing the session for a
+                                            // profile that is still perfectly
+                                            // applicable is the same error in the
+                                            // other direction.
+                                            profile = None;
+                                            app.record(
+                                                Tone::Muted,
+                                                "it was the profile in force, so this session is \
+                                                 back to no profile"
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Clear) => {
+                    if profile.is_none() {
+                        app.record(Tone::Muted, "no profile is in force".to_string());
+                    } else {
+                        // **Nothing is written, because nothing was.** A switch is
+                        // a session overlay; clearing it is re-discovering the
+                        // files without one, which is what the next turn boundary
+                        // would have done anyway had the name not been kept.
+                        match io_cli::configure::reload(session.root()) {
+                            Ok((fresh, stored)) => {
+                                capabilities =
+                                    io_cli::contract::Capabilities::stored(stored.as_ref());
+                                config = fresh;
+                                profile = None;
+                                app.record(
+                                    Tone::Success,
+                                    "no profile is in force from the next turn; nothing was \
+                                     written"
+                                        .to_string(),
+                                );
+                            }
+                            Err(error) => app.record(Tone::Error, error),
+                        }
+                    }
+                }
+                Action::Profile(io_cli::commands::ProfileVerb::Unknown(word)) => {
+                    // Refused by name and never guessed at, which is `/effort`'s
+                    // rule for the same reason: choosing the nearest verb here
+                    // would remove a profile the operator did not name.
+                    app.record(
+                        Tone::Refused,
+                        format!(
+                            "`{word}` is not something `/profile` does; the verbs are `create`, \
+                             `remove` and `clear`, and `/profile` on its own switches"
+                        ),
+                    );
                 }
                 Action::Config(None) => {
                     // **What the routing rules say, and where they will not fire**,
@@ -4703,7 +5488,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // fifth `contract::session` call, which `tests/contract.rs`
                     // counts and fails at five. It is the same reason `/compact`
                     // reads `opening.compaction`.
-                    let remembered = io_cli::recall::view(&store, &root, &opening, None);
+                    // **The run whose trace to read, and through 0.29.0 this was
+                    // `None`.** `recall::view` has always taken an `Option<i64>`
+                    // and the only caller in this file never named a run, so
+                    // `View::trace` was empty in production and the evictions, pin
+                    // refusals and recalls io-harness records as `ContextEvent`
+                    // rows — the three that emit no `EventKind` at all, and so
+                    // have no other witness anywhere — had never once reached an
+                    // operator. `recall::trace`, `kind_label`, `Happened` and
+                    // `Noted` were all public, all tested, and all unreachable
+                    // behind this one argument.
+                    //
+                    // The session's own last turn, which is the anchor `/undo` and
+                    // `/export` already take: not a guess about which run was
+                    // meant, and `None` before the first turn, which is the honest
+                    // empty rather than somebody else's history.
+                    let ran = last_run(&session, &store).map(|turn| turn.run_id);
+                    let remembered = io_cli::recall::view(&store, &root, &opening, ran);
                     // A store that will not answer loses the second list and
                     // keeps the first. The two halves have nothing to do with
                     // each other — one is markdown on disk — and dropping the
@@ -4712,6 +5513,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let (entries, cut) = match &remembered {
                         Ok(view) => {
                             for note in io_cli::commands::memory_notes(view, &app.theme.glyphs) {
+                                app.record(Tone::Muted, note);
+                            }
+                            for note in io_cli::commands::trace_notes(view, &app.theme.glyphs) {
                                 app.record(Tone::Muted, note);
                             }
                             (view.entries.clone(), view.draws_cut)
@@ -7509,6 +8313,14 @@ enum Pick {
     McpRemove {
         id: String,
         at: io_cli::servers::At,
+        /// Whether the file currently lets this server start.
+        ///
+        /// Carried from the row the operator chose, so the toggle's **label** and
+        /// the **value it writes** are decided once, from one reading. Working the
+        /// state out again in the handler would be a second reading of a file that
+        /// may have changed in between, and the two could disagree — offering
+        /// "switch it off" and then writing `true`.
+        enabled: bool,
     },
     /// One link of the provider chain, and where it is declared. `first` decides
     /// whether promoting it is offered at all: a control that is drawn and does
@@ -7673,6 +8485,19 @@ enum Pick {
     /// position now. So the pair says which skill the operator actually read, and
     /// a row that is no longer there is answered with a sentence.
     Skills(Vec<(String, std::path::PathBuf)>),
+    /// The second question a deletion owes: are you sure.
+    ///
+    /// Two steps rather than one, for [`Pick::SkillToggle`]'s own reason turned
+    /// around — that picker changes a file on the way past because the row it sits
+    /// on undoes it, and this one cannot be undone by anything in this product.
+    ///
+    /// Row 0 is `store::LEAVE_IT` and `store::acts` decides, which is the shape
+    /// every destructive confirmation here takes and the one the test asserts **by
+    /// index** rather than by label.
+    SkillRemove {
+        name: String,
+        path: std::path::PathBuf,
+    },
     /// One skill, and the move that decides whether the model is offered it.
     ///
     /// **Two steps rather than one, and for the reason [`Pick::ConfigScope`]
@@ -7786,7 +8611,7 @@ enum Pick {
         unset_at: usize,
         elsewhere_at: usize,
     },
-    /// One bundle's contributions, and the one thing that can be done about it.
+    /// One bundle's contributions, and the two things that can be done about it.
     ///
     /// `bundle` is the resolved directory, which is the only thing a row on screen
     /// and an entry in a file genuinely share — `Config::plugins()` reports neither
@@ -7794,7 +8619,11 @@ enum Pick {
     /// is what `pluginview::declared_at` matches on to find the entry.
     ///
     /// `action_at` is where the removal row sits, recorded by the code that built
-    /// the rows rather than recomputed here.
+    /// the rows rather than recomputed here. **Since 0.30.0 the toggle sits
+    /// immediately after it, at `action_at + 1`**, and it is pushed *after*
+    /// `action_at` is taken — so the removal's index stays the length of what was
+    /// already there, which is what makes it impossible to get wrong. The two act;
+    /// every row before them is a fact to read.
     ///
     /// `enabled` is `pluginview::Listed::enabled`, carried so the confirmation
     /// below words the act the same way the row that opened it did. A bundle
@@ -7815,13 +8644,17 @@ enum Pick {
     /// confirmation past index 0 acts (`store::acts`) and a fact drawn as a row is
     /// a fact an operator can consent with by arrowing onto it.
     ///
-    /// `index` is a position in the file's `[[plugin]]` array — `pluginview::enable`
-    /// sets exactly `plugin[index].enabled` — and never a row number, which is
-    /// [`Pick::PluginRemove`]'s own warning.
-    PluginEnable {
+    /// `edits` is the whole of what consent performs — `manage::plan` built it and
+    /// nothing here decides any part of it again. **Nothing has been written when
+    /// this picker opens**, which is the difference from 0.29.0: that release wrote
+    /// the entry switched off in order to make io-harness read the bundle at all,
+    /// so declining left a `[[plugin]]` entry behind. `Plugins::inspect` reads and
+    /// validates the directory with no declaration on disk, so a decline here
+    /// leaves the operator's file untouched byte for byte.
+    PluginInstall {
         id: String,
         scope: io_harness::config::Scope,
-        index: usize,
+        edits: Vec<io_cli::edit::Edit>,
     },
     /// The second half of removing a bundle: which entry, and are you sure.
     ///
@@ -7879,6 +8712,29 @@ enum Pick {
         key: String,
         verbs: Vec<io_cli::commands::Verb>,
     },
+    /// One instruction file's bullets, in the order they sit in the file.
+    ///
+    /// The `Note`s are carried whole rather than re-read on the next keystroke,
+    /// because a note carries the text it was drawn from and `memory::amend` and
+    /// `memory::forget` compare that against what is on the line now. Re-reading
+    /// here would refresh the very staleness they exist to catch.
+    Instruction(Vec<io_cli::memory::Note>),
+    /// The two verbs on one note, and the note they act on.
+    ///
+    /// A picker has one Enter and a note has two verbs, so the row descends — the
+    /// same shape `Pick::Remembered` takes for the agent's own memory beside it.
+    InstructionVerb(io_cli::memory::Note),
+    /// The way back out of a withdrawal, held between the keystroke that made it
+    /// and the one that may take it.
+    ///
+    /// `restore` is `recall::forget`'s own answer and is never re-derived here:
+    /// that function's note names the two other run ids that look right and says
+    /// what each of them would restore instead, which is a different set of
+    /// entries and a silent one.
+    Unforget {
+        key: String,
+        restore: i64,
+    },
 }
 
 /// The picker that asks which file a `key = value` write goes into.
@@ -7904,7 +8760,12 @@ enum Pick {
 /// Every decision is `crate::manage`'s. This function chooses no scope, spells no
 /// refusal and builds no edit — it prints what the library returned and writes
 /// what the library planned, so this arm and the slash form cannot disagree.
-fn manage_main(
+// **Async since 0.30.0, and only because of `probe`.** Every other verb here reads
+// or writes a file. A probe starts somebody's server, completes the MCP handshake
+// and asks it for its tools, which is `io_harness::probe_mcp` and is async — so the
+// door is async rather than blocking on a runtime of its own inside a program that
+// already has one.
+async fn manage_main(
     root: &std::path::Path,
     config: &io_harness::config::Config,
     tokens: &[String],
@@ -8027,11 +8888,107 @@ fn manage_main(
                 );
             }
         }
+        // **The skill verbs run on the door, because `plan` answers `None` for
+        // them.** A skill is a markdown file in io-cli's own home and no
+        // configuration file declares one, so there is no `Edit` for any of this;
+        // the acts live in `skillview`, which the keystroke calls too, and neither
+        // door words an outcome for itself.
+        io_cli::manage::Request::Skill(verb) => {
+            let Some(home) = io_cli::home::path() else {
+                return Err(
+                    "there is no home on this machine to keep skills in; set `IO_CONFIG_HOME`"
+                        .to_string(),
+                );
+            };
+            let (stored, _) = io_cli::settings::stored(config);
+            let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
+            let view = skills_view(config, &capabilities, root);
+            match verb {
+                io_cli::manage::SkillVerb::Add { source } => {
+                    let at = io_cli::skillview::install(&home, source)?;
+                    println!("{}", at.display());
+                }
+                io_cli::manage::SkillVerb::List => {
+                    for skill in &view.skills {
+                        println!(
+                            "{}\t{}\t{}\t{}",
+                            skill.name,
+                            skill.origin.word(),
+                            if skill.enabled { "enabled" } else { "disabled" },
+                            skill.path.display(),
+                        );
+                    }
+                }
+                io_cli::manage::SkillVerb::Remove { name } => {
+                    // **By the resolved name, which is what the listing shows.**
+                    // Matching the file name here would ask for the one spelling
+                    // this surface never prints — a file called `mine.md` declaring
+                    // `name: io-mcp` is `io-mcp` everywhere it is addressed.
+                    let found = view.skills.iter().find(|skill| skill.name == *name);
+                    let Some(skill) = found else {
+                        return Err(format!(
+                            "no skill answers to `{name}`; `io skill list` names the ones that do"
+                        ));
+                    };
+                    let gone = io_cli::skillview::remove(&skill.path, &bundle_skills(config))?;
+                    println!("{}", gone.display());
+                }
+            }
+        }
+        // **The probe runs on the door, because `plan` answers `None` for it.** It
+        // changes no configuration file — there is no `Edit` for "go and look" — so
+        // the act lives in `servers::probe`, which both doors call, and the sentence
+        // is `servers::probed`'s, so neither door words an outcome for itself.
+        //
+        // It is the one verb here that starts somebody else's program. io-harness
+        // checks the policy before it spawns or dials, and shuts the server down on
+        // every path that started one; io-cli adds no timeout and no retry of its
+        // own.
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Probe { id }) => {
+            let policy = config.policy().unwrap_or_default();
+            let probe = io_cli::servers::probe(config, id, &policy).await?;
+            println!("{}", io_cli::servers::probed(id, &probe));
+            // **Returned here rather than falling through to `OK`.** A probe is
+            // the one verb on this door whose *answer* is the result, so the
+            // status has to carry it — otherwise a script can tell an answering
+            // server from a dead one only by parsing the sentence above.
+            return Ok(io_cli::exec::probe_code(&probe));
+        }
         _ => {}
     }
     let Some(plan) = io_cli::manage::plan(root, &request)? else {
         return Ok(io_cli::exec::OK);
     };
+    // **The disclosure comes before the write on this door too, and the typed
+    // command is the consent.** `manage::plan` fills `disclosure` only for a
+    // `plugin add <name>` resolved out of a marketplace, and it fills it from
+    // `io_harness::Plugins::inspect` — so a bundle io-harness refuses returned `Err`
+    // from `plan` above and nothing reached this line.
+    //
+    // What an operator gets here is therefore the same six contribution kinds the
+    // session shows, on stderr, before anything is written; and then the install
+    // happens, because they named this bundle in the command they typed. A `--yes`
+    // was considered and refused for the reason it was refused in 0.29.0: it is a
+    // second reading of the word "consent" on a surface a script drives. The
+    // alternative — disclose and write nothing — was rejected because it leaves
+    // `io plugin add` unable to install anything at all, which is not a door.
+    //
+    // ASCII and `u16::MAX`: this goes down a pipe, not onto a terminal whose width
+    // and font are known.
+    if let Some(disclosure) = &plan.disclosure {
+        eprintln!(
+            "{} — io-harness read, parsed and trust-checked this bundle. It contributes:",
+            disclosure.id,
+        );
+        for line in disclosure.said(&io_cli::glyphs::ASCII) {
+            eprintln!("{line}");
+        }
+        eprintln!(
+            "installing it now: naming a bundle on this door is the consent, and there is \
+             nobody here to ask. `/plugin remove {}` takes it back out.",
+            disclosure.id,
+        );
+    }
     io_cli::configure::write(root, plan.scope, &plan.edits)?;
     // **The policy preflight, after the write and on stderr.** After, because the
     // report is a disclosure and not a veto: refusing to write an entry because
@@ -8045,55 +9002,21 @@ fn manage_main(
             io_cli::preflight::line(&io_cli::preflight::check(server, &policy))
         );
     }
-    // **A marketplace install stops at declared-and-off on this door, and says
-    // so.** The entry is written `enabled = false` by the same `plan` the session
-    // uses, and the consent that flips it is a confirmation — which this door does
-    // not have and must not invent: a `--yes` here would be a second reading of the
-    // word "consent" on a surface a script drives. So the disclosure goes to
-    // stderr, exactly as the MCP preflight does and for the same reason (the write
-    // did happen, so the status is zero), and the operator switches it on in
-    // `/plugin`. An operator who has read the directory themselves has the path
-    // form, which is the reading that declares a bundle on.
-    if matches!(
-        &request,
-        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Add { .. })
-    ) {
-        if let Some((at, declared)) = io_cli::configure::scope_path(root, plan.scope)
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| io_cli::pluginview::declared_off(&text))
-        {
-            eprintln!("{}", io_cli::pluginview::OLDER_BINARY);
-            let dir = if declared.is_absolute() {
-                declared
-            } else {
-                root.join(declared)
-            };
-            let fresh = io_harness::config::Config::discover(root)
-                .map_err(|error| format!("the written file did not re-read: {error}"))?;
-            match io_cli::marketplace::disclosure(
-                &io_cli::pluginview::view(&fresh),
-                &dir,
-                &io_cli::marketplace::hooks(&dir),
-                // Wide enough that nothing is shortened, and the ASCII set,
-                // because this goes down a pipe rather than onto a terminal
-                // whose width and font are known.
-                u16::MAX,
-                &io_cli::glyphs::ASCII,
-            ) {
-                Err(refusal) => eprintln!("{refusal}"),
-                Ok(disclosure) => {
-                    eprintln!(
-                        "{} is declared and switched off; io-harness read, parsed and \
-                         trust-checked it, and it contributes nothing until `plugin[{at}].enabled` \
-                         is true",
-                        disclosure.id,
-                    );
-                    for line in &disclosure.said {
-                        eprintln!("{line}");
-                    }
-                }
-            }
-        }
+    // **What the key costs an older binary, on stderr, after the write.** Same shape
+    // as the preflight above and for the same reason: a disclosure, not a veto.
+    //
+    // The sentence is `servers::OLDER_BINARY` and **not**
+    // `pluginview::OLDER_BINARY`, because the two costs are opposite and only one of
+    // them is silent. A `[[plugin]]` carrying `enabled` makes the whole file
+    // unreadable to an io-harness 0.69.0 binary, which is loud and self-announcing. A
+    // `[[mcp]]` one is *ignored* by that binary — so the server the operator just
+    // switched off starts anyway, and nothing anywhere says so. Reusing one string
+    // for both would put the reassuring half in front of the dangerous case.
+    if let io_cli::manage::Request::Mcp(
+        io_cli::manage::McpVerb::Enable { .. } | io_cli::manage::McpVerb::Disable { .. },
+    ) = &request
+    {
+        eprintln!("{}", io_cli::servers::OLDER_BINARY);
     }
     Ok(io_cli::exec::OK)
 }
@@ -8274,7 +9197,7 @@ fn value_rows(
                 .map(|rung| rung.to_string())
                 .collect()
         }
-        io_cli::configure::Kind::Model => io_cli::configure::priced_models(root),
+        io_cli::configure::Kind::Model => io_cli::configure::priced_models(config),
         io_cli::configure::Kind::File => {
             // The workspace, through the completion the composer's `@` already
             // opens, so one reader answers "which files may be offered" for both
