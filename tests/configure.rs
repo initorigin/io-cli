@@ -1076,3 +1076,152 @@ fn f18_a_workspace_with_no_prices_offers_no_models() {
     );
     assert!(s.priced_models().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// F7, F8, F9 — a profile is created, removed, and visible from every scope.
+// ---------------------------------------------------------------------------
+
+/// **F7.** Creating writes the section; creating it again is refused and writes
+/// nothing.
+///
+/// The refusal is `Edit::section`'s own, which is the point: a `set` here would
+/// append a *second* `[profile.fast]` header to the file and report success.
+#[test]
+fn f7_a_profile_is_created_and_a_name_already_taken_is_refused() {
+    let before = "[run]\nmax_steps = 10\n";
+    let edit = configure::create_profile("fast").expect("a fresh name is accepted");
+    let after = io_cli::edit::apply(before, &[edit]).expect("the section is written");
+
+    assert!(
+        after.starts_with(before),
+        "creating a profile appends and rewrites nothing: {after:?}",
+    );
+    assert!(
+        after.contains("[profile.fast]"),
+        "the section is written by its own name: {after:?}",
+    );
+    assert_eq!(
+        io_cli::edit::sections(&after)
+            .into_iter()
+            .filter(|path| path == &vec!["profile".to_string(), "fast".to_string()])
+            .count(),
+        1,
+        "exactly one header, which is what `set` would have got wrong",
+    );
+
+    // The whole of the refusal: applying the same create to a file that already
+    // has the section fails, and `apply` is all-or-nothing so nothing is written.
+    let again = configure::create_profile("fast").expect("the edit is built either way");
+    let refusal = io_cli::edit::apply(&after, &[again])
+        .expect_err("a profile that already exists is refused");
+    assert!(
+        refusal.contains("fast"),
+        "the refusal names the profile: {refusal}",
+    );
+}
+
+/// **F7, the empty-name arm.** A name that is only whitespace is refused before an
+/// edit is built at all, because `[profile.]` is a section an operator can neither
+/// switch to nor find again.
+#[test]
+fn f7_a_profile_needs_a_name() {
+    assert!(configure::create_profile("   ").is_err());
+    assert!(configure::create_profile("").is_err());
+}
+
+/// **F8.** Removing takes the whole region *and every sub-table under it*, and
+/// every other byte of the file is identical.
+///
+/// A profile is not one section — `[profile.fast]` and `[profile.fast.run]` are two
+/// headers and one profile, which `configure::profiles` has always known because it
+/// deduplicates on exactly that. Removing only the first would leave an orphan
+/// `[profile.fast.run]` that `profiles` still lists.
+#[test]
+fn f8_removing_a_profile_takes_its_sub_tables_and_nothing_else() {
+    let before = concat!(
+        "[run]\n",
+        "max_steps = 10\n",
+        "\n",
+        "[profile.fast]\n",
+        "\n",
+        "[profile.fast.run]\n",
+        "max_steps = 3\n",
+        "\n",
+        "[profile.slow]\n",
+        "\n",
+        "[app.io-cli]\n",
+        "theme = \"dim\"\n",
+    );
+    let edits = configure::remove_profile(before, "fast").expect("the profile is there");
+    assert_eq!(edits.len(), 2, "one edit per header: {edits:?}");
+
+    let after = io_cli::edit::apply(before, &edits).expect("the removal applies");
+
+    assert!(
+        !after.contains("[profile.fast]") && !after.contains("[profile.fast.run]"),
+        "both headers go: {after:?}",
+    );
+    assert!(
+        after.contains("[profile.slow]"),
+        "a sibling profile is untouched: {after:?}",
+    );
+    // Byte-for-byte on everything that was not the profile.
+    assert!(
+        after.contains("[run]\nmax_steps = 10\n"),
+        "the unrelated section above comes through verbatim: {after:?}",
+    );
+    assert!(
+        after.contains("[app.io-cli]\ntheme = \"dim\"\n"),
+        "and the one below: {after:?}",
+    );
+    let gone = configure::remove_profile(&after, "fast")
+        .expect_err("it is gone, so removing it again is refused");
+    assert!(
+        gone.contains("slow"),
+        "the refusal names what the file does declare: {gone}",
+    );
+}
+
+/// **F8, the refusal.** A name the file does not declare is an error naming the
+/// names it does, not a successful write that removed nothing.
+#[test]
+fn f8_removing_a_profile_that_is_not_there_is_refused_by_name() {
+    let refusal = configure::remove_profile("[run]\nmax_steps = 1\n", "fast")
+        .expect_err("there are no profiles at all");
+    assert!(
+        refusal.contains("no profiles at all"),
+        "an empty file says so rather than listing nothing: {refusal}",
+    );
+}
+
+/// **F9.** A profile declared in a *lower-precedence* scope is listed.
+///
+/// This is the arm that reddens on the old implementation. It read
+/// `sources().last()` — the highest-precedence file — so a profile in the user
+/// scope was invisible to the surface whose whole job is to list them, while
+/// `Config::with_profile` would have applied it perfectly well.
+#[test]
+fn f9_the_profile_list_sees_every_scope_and_not_only_the_last() {
+    let s = scopes(
+        "[profile.slow]\n\n[profile.slow.run]\nmax_steps = 2\n",
+        "[run]\nmax_steps = 10\n",
+        "",
+    );
+    let config = s.config();
+
+    assert!(
+        config.sources().len() > 1,
+        "the fixture needs more than one source or this asserts nothing",
+    );
+    assert_eq!(
+        configure::profiles(&config),
+        vec!["slow".to_string()],
+        "declared in the user scope, listed anyway — and deduplicated across its \
+         own sub-table",
+    );
+    assert!(
+        configure::with_profile(&config, "slow").is_ok(),
+        "and the switch could always reach it, which is what made the old list wrong \
+         rather than merely narrow",
+    );
+}

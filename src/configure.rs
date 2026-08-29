@@ -955,26 +955,123 @@ pub fn rows(settings: &[Setting]) -> Vec<crate::picker::Row> {
 ///
 /// Sorted and deduplicated, because a profile may declare sub-tables — a file
 /// with `[profile.fast]` and `[profile.fast.run]` has one profile, not two.
+///
+/// **Every source, not just the last one.** Until 0.30.0 this read
+/// `sources().last()` alone, so a profile declared in a lower-precedence scope was
+/// invisible to the one surface whose whole job is to list them — and
+/// [`with_profile`] would have applied it perfectly well, because io-harness
+/// merges the overlay across the scopes it merged the file from. A list that
+/// cannot see what the switch can reach is a list that is wrong.
 pub fn profiles(config: &Config) -> Vec<String> {
-    let Some(text) = config
-        .sources()
-        .last()
-        .and_then(|(_, path)| std::fs::read_to_string(path).ok())
-    else {
-        return Vec::new();
-    };
+    let mut names: Vec<String> = Vec::new();
+    for (_, path) in config.sources() {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        names.extend(declared_profiles(&text));
+    }
+    names.sort();
+    names.dedup();
+    names
+}
 
-    let mut names: Vec<String> = crate::edit::sections(&text)
+/// The `[profile.<name>]` names one file's own text declares.
+///
+/// Split out because [`remove_profile`] needs the *sections*, not the names: a
+/// profile is however many headers share its first two segments, and removing it
+/// means removing all of them.
+fn declared_profiles(text: &str) -> Vec<String> {
+    crate::edit::sections(text)
         .into_iter()
         .filter_map(|path| {
             (path.first().map(String::as_str) == Some("profile"))
                 .then(|| path.get(1).cloned())
                 .flatten()
         })
+        .collect()
+}
+
+/// The edit that creates `[profile.<name>]`, or the reason it cannot.
+///
+/// **[`crate::edit::Edit::section`] and deliberately not
+/// [`crate::edit::Edit::set`].** `section` refuses a section that already exists,
+/// which is exactly the "that name is taken" answer this verb owes an operator —
+/// so the refusal is the write primitive's own and there is no second opinion
+/// about what "already there" means. `set` would have appended a second
+/// `[profile.<name>]` header to the file, which is the shape `src/edit.rs:120-126`
+/// records as the reason `section` exists at all.
+///
+/// The body is a comment rather than nothing, because a bare header an operator
+/// then cannot find in their own file is a worse first experience than a line
+/// saying what it is for. `/config --scope` writes the keys.
+pub fn create_profile(name: &str) -> Result<crate::edit::Edit, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("a profile needs a name".to_string());
+    }
+    // `spell` quotes a segment that is not a bare key, so a name with a dot or a
+    // space addresses one profile rather than silently nesting two tables.
+    let path = format!("profile.{}", crate::edit::spell(trimmed));
+    Ok(crate::edit::Edit::section(
+        path,
+        format!("# `{trimmed}`, applied with `/profile` or `--profile {trimmed}`\n"),
+    ))
+}
+
+/// The edits that remove `[profile.<name>]` **and every sub-table under it**.
+///
+/// **A profile is not one section.** `[profile.fast]` and `[profile.fast.run]` are
+/// two headers and one profile — which [`profiles`] already knew, because it
+/// deduplicates on exactly that. So the removal is one
+/// [`crate::edit::Edit::remove`] per header, applied together:
+/// [`crate::edit::apply`] splices in reverse start order and is all-or-nothing, so
+/// either the whole profile goes or the file is untouched.
+///
+/// **`remove` and never [`crate::edit::Edit::unset`]**, and getting that backwards
+/// is the confusion 0.28.0 paid for: `remove` takes a whole `[section]` region,
+/// header and body; `unset` deletes a single `key = value` line and errors on a
+/// section path. This verb wants the region.
+///
+/// `Err` when the file declares no such profile, so the surface can say which
+/// names it does have rather than reporting a successful write that removed
+/// nothing.
+pub fn remove_profile(text: &str, name: &str) -> Result<Vec<crate::edit::Edit>, String> {
+    let headers: Vec<Vec<String>> = crate::edit::sections(text)
+        .into_iter()
+        .filter(|path| {
+            path.first().map(String::as_str) == Some("profile")
+                && path.get(1).map(String::as_str) == Some(name)
+        })
         .collect();
-    names.sort();
-    names.dedup();
-    names
+    if headers.is_empty() {
+        return Err(format!(
+            "this file declares no `[profile.{name}]`; it declares {}",
+            match declared_profiles(text).as_slice() {
+                [] => "no profiles at all".to_string(),
+                found => {
+                    let mut names = found.to_vec();
+                    names.sort();
+                    names.dedup();
+                    names
+                        .iter()
+                        .map(|found| format!("`{found}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            }
+        ));
+    }
+    Ok(headers
+        .into_iter()
+        .map(|path| {
+            crate::edit::Edit::remove(
+                path.iter()
+                    .map(|segment| crate::edit::spell(segment))
+                    .collect::<Vec<_>>()
+                    .join("."),
+            )
+        })
+        .collect())
 }
 
 /// Apply a named profile, or report io-harness's own refusal.
