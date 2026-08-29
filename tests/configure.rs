@@ -4,6 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use io_cli::configure::{self, Decided};
 use io_harness::config::{Config, Scope};
+use io_harness::pricing::{Price, PriceTier};
 
 /// `Config::discover` reads `IO_CONFIG` at call time, so two tests setting it at
 /// once would each see the other's file. Serialised here rather than diagnosed
@@ -51,6 +52,17 @@ impl Scopes {
         let config = Config::discover(self.root.path()).unwrap();
         std::env::remove_var("IO_CONFIG");
         config
+    }
+
+    /// `configure::priced_models` over this fixture's three scopes.
+    ///
+    /// It takes the `Config` this fixture already builds rather than a root,
+    /// because `priced_models` takes one — deliberately. A version that discovered
+    /// its own would re-resolve every `${cmd:}` in the operator's configuration
+    /// each time the model picker opened, which is a credential command executed
+    /// to draw a menu.
+    fn priced_models(&self) -> Vec<String> {
+        configure::priced_models(&self.config())
     }
 }
 
@@ -652,20 +664,35 @@ fn f1_only_the_expected_exit_status_is_signed() {
 
 // F2 — the enum kinds agree with the dependency rather than with a literal.
 
-/// The effects are the dependency's three, and each one round-trips through
-/// io-harness's own deserializer.
+/// F18 — the effects are `Effect::ALL` round-tripped through `Effect::as_str`,
+/// and every spelling is one io-harness's own deserializer accepts.
 ///
-/// The census itself is a build break — `Effect` is not `#[non_exhaustive]`, so
-/// `configure::effects`'s array and match both fail on a variant change. What this
-/// adds is the half the build cannot catch: the *spellings* are serde's
-/// `rename_all`, io-harness exposes no `as_str` for `Effect`, and a rename would
-/// leave io-cli compiling and writing a word the schema rejects.
+/// **Three assertions, and each one fails on a different change.**
 ///
-/// Sabotage: add a fourth effect to io-cli's list. Under it F2 fails, because the
-/// dependency knows three.
+/// The first is the criterion stated literally: the menu *is* the dependency's
+/// enumeration mapped through the dependency's speller. A list io-cli went back to
+/// writing by hand fails it the moment the two disagree, which is the whole point
+/// of no longer keeping a copy.
+///
+/// The second pins the words an operator, `docs/config.example.toml` and every
+/// already-written `io.toml` actually use. It is the half the old hand-written
+/// census could not catch at all: a *rename* upstream now changes `as_str`, so the
+/// menu changes with it, and this is where that is noticed rather than in someone's
+/// config that stopped parsing.
+///
+/// The third is the sabotage the criterion names — hand-write a fourth effect
+/// string and the round trip through `Config::from_toml` refuses it.
 #[test]
 fn f2_the_effects_are_the_dependency_s_own() {
     let effects = configure::effects();
+    assert_eq!(
+        effects,
+        io_harness::Effect::ALL
+            .iter()
+            .map(|effect| effect.as_str().to_string())
+            .collect::<Vec<String>>(),
+        "the menu must be the dependency's enumeration, not io-cli's copy of it"
+    );
     assert_eq!(effects, vec!["allow", "ask", "deny"]);
     for word in &effects {
         let text = format!("[policy]\ndefaults = {{ read = \"{word}\" }}\n");
@@ -676,16 +703,29 @@ fn f2_the_effects_are_the_dependency_s_own() {
     }
 }
 
-/// The exec modes are spelled by io-harness, not by io-cli.
+/// F18 — the exec modes are `ExecMode::ALL`, spelled by `ExecMode::as_str`.
 ///
-/// Weaker than the effects' guarantee and the difference is the dependency's:
-/// `ExecMode` **is** `#[non_exhaustive]` (`sandbox.rs:379`), so a variant added
-/// later falls into a required wildcard and cannot break this build. What is
-/// assertable is that every spelling comes from `ExecMode::as_str` and that
-/// io-harness accepts each one.
+/// **The variant list is no longer io-cli's, and that is what changed.** Until
+/// 0.30.0 the list here was written out by hand because a `#[non_exhaustive]` enum
+/// cannot be enumerated from outside the crate that defines it: a mode io-harness
+/// added would have fallen into a required wildcard and quietly gone missing from
+/// the menu, which is the one failure nobody can see. `ExecMode::ALL` is kept
+/// complete by an exhaustive `match` inside io-harness, so the first assertion
+/// below is now a real guarantee rather than a hope.
+///
+/// The literal that follows pins the words in force, so a rename is caught here;
+/// the scope loop then proves io-harness accepts every one of them.
 #[test]
 fn f2_the_exec_modes_are_spelled_by_the_dependency() {
     let modes = configure::exec_modes();
+    assert_eq!(
+        modes,
+        io_harness::ExecMode::ALL
+            .iter()
+            .map(|mode| mode.as_str().to_string())
+            .collect::<Vec<String>>(),
+        "the menu must be the dependency's enumeration, not io-cli's copy of it"
+    );
     assert_eq!(modes, vec!["read-only", "workspace-write", "full-access"]);
     // **In the user scope, because `Config::from_toml` parses as the PROJECT
     // scope and `full-access` is refused there.** io-harness's `PROJECT_WIDENING`
@@ -706,12 +746,8 @@ fn f2_the_exec_modes_are_spelled_by_the_dependency() {
             "io-harness refuses the mode io-cli offers: {mode}"
         );
     }
-    // Every spelling is the variant's own, never io-cli's.
-    for mode in [
-        io_harness::ExecMode::ReadOnly,
-        io_harness::ExecMode::WorkspaceWrite,
-        io_harness::ExecMode::FullAccess,
-    ] {
+    // Every variant has a row, and its spelling is the variant's own.
+    for mode in io_harness::ExecMode::ALL {
         assert!(
             modes.contains(&mode.as_str().to_string()),
             "{} is a variant with no row",
@@ -818,11 +854,7 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
 /// quietly missing an option nobody can detect.
 #[test]
 fn f2_a_known_mode_is_labelled_by_its_own_name() {
-    for mode in [
-        io_harness::ExecMode::ReadOnly,
-        io_harness::ExecMode::WorkspaceWrite,
-        io_harness::ExecMode::FullAccess,
-    ] {
+    for mode in io_harness::ExecMode::ALL {
         assert_eq!(configure::exec_mode_label(mode), mode.as_str());
     }
 }
@@ -898,14 +930,18 @@ fn f4_the_ladder_is_ordered_from_the_value_in_force() {
 
 /// A key with no value in any file ladders from 1.
 ///
-/// The audit's finding, not a corner case: there is no per-key io-harness default
-/// to anchor on for *any* number key, so this is the ordinary state. An empty
-/// picker was the alternative and a surface whose argument is that a value is
-/// chosen cannot offer nothing.
+/// Not a corner case, the ordinary state: `configure::ladder` is handed a number
+/// and a sign and never a key, so there is no per-key anchor for it to apply. An
+/// empty picker was the alternative, and a surface whose argument is that a value
+/// is chosen cannot offer nothing.
 ///
-/// Sabotage: offer an anchor row for `run.max_steps`. Under it F4 fails, because
-/// `TaskContract::new` says 8 and `TaskContract::workspace` says 12 and neither is
-/// "the default".
+/// Sabotage: anchor this on `io_harness::DEFAULT_WORKSPACE_MAX_STEPS` for
+/// `run.max_steps`. Under it F4 fails, and it *should*: io-harness names that
+/// default (12), but `contract::configured` overwrites it with
+/// `contract::MAX_STEPS` before the configuration is applied
+/// (`src/contract.rs:210`), so a picker anchored on 12 would show a figure no
+/// io-cli turn has ever run under. The number in force for an unset
+/// `run.max_steps` is a thousand.
 #[test]
 fn f4_an_unset_key_ladders_from_one() {
     let rungs = configure::ladder(None, false);
@@ -928,4 +964,115 @@ fn f4_a_signed_key_reaches_below_zero() {
 #[test]
 fn f4_zero_is_a_rung() {
     assert!(configure::ladder(Some(1), false).contains(&0));
+}
+
+// F18 — the model menu is answered by `PriceTable::models`, not scraped.
+
+/// A user scope spelling its rates as a sub-table per model.
+///
+/// `prices::Shape::SubTables` — legal TOML that io-harness reads perfectly well,
+/// and the shape an operator writing rates by hand is most likely to reach for.
+const SUB_TABLE_USER: &str = r#"
+[prices]
+as_of = "2026-08-29"
+
+[prices.models."some-vendor/alpha"]
+input = 1000000
+output = 2000000
+"#;
+
+/// A project scope spelling the same section as a row per model.
+///
+/// `prices::Shape::Table` — what io-cli's own price refresh writes.
+const ROW_TABLE_PROJECT: &str = r#"
+[prices]
+as_of = "2026-08-29"
+
+[prices.models]
+"some-vendor/zeta" = { input = 3000000, output = 4000000 }
+"#;
+
+/// The models offered are the ones the merged table can actually price, in both
+/// spellings of the section and across scopes.
+///
+/// **The user scope is what proves the change, and it was a live defect.** Until
+/// 0.30.0 `priced_models` scraped the files for a literal `[prices.models]`
+/// header, so a scope written as `[prices.models."<id>"]` matched nothing and
+/// contributed no models — the `Kind::Model` picker came up empty on a price table
+/// io-harness was reading perfectly well, and an operator had no way to see why.
+/// Undo the change and `some-vendor/alpha` disappears from this list while the
+/// fixture still parses.
+///
+/// The project scope is written the other way on purpose, so this also covers the
+/// spelling the scrape did handle and the key-by-key merge across scopes that
+/// `Config::discover` performs. Sorted, because the table keys models in a
+/// `BTreeMap` and `alpha` precedes `zeta` whatever order the scopes are read in.
+#[test]
+fn f18_the_offered_models_are_the_ones_the_table_prices() {
+    let s = scopes(SUB_TABLE_USER, ROW_TABLE_PROJECT, "");
+    assert_eq!(
+        s.priced_models(),
+        vec!["some-vendor/alpha", "some-vendor/zeta"]
+    );
+}
+
+/// A model priced by tiers alone is not offered, because it cannot be priced.
+///
+/// **`PriceTable::models`'s own contract, inherited rather than re-implemented.**
+/// `PriceTier`s are keyed separately from base prices and `cost_micros` answers
+/// `None` for a model that has only tiers, so a menu listing one would promise a
+/// cost the table cannot produce. `configure::priced_models` gets this right by
+/// asking the table instead of knowing about tiers at all.
+///
+/// **The tier is added to the table rather than to a fixture file because
+/// io-harness's `[prices]` section cannot express one** — `PricesSection` is
+/// `as_of` plus `models` under `deny_unknown_fields`, so a scope file that tried
+/// would be refused outright and this would be testing the parser instead. What
+/// ties the exclusion back to the surface is the last assertion: the offered list
+/// is exactly the models of the table `priced_models` reads, so whatever that
+/// table excludes the menu excludes.
+#[test]
+fn f18_a_model_priced_by_tiers_alone_is_not_offered() {
+    let s = scopes(SUB_TABLE_USER, ROW_TABLE_PROJECT, "");
+    let table = s.config().prices().expect("a [prices] section");
+    let with_tier = table.clone().with_tiers(
+        "some-vendor/tiers-only",
+        vec![PriceTier {
+            min_prompt_tokens: 200_000,
+            price: Price::ZERO,
+        }],
+    );
+    assert!(
+        !with_tier.models().contains(&"some-vendor/tiers-only"),
+        "a model with tiers and no base price cannot be priced and must not be offered"
+    );
+    assert_eq!(
+        with_tier.models(),
+        table.models(),
+        "a tier adds no model the table can price, so it adds no row to the menu"
+    );
+    assert_eq!(
+        s.priced_models(),
+        table
+            .models()
+            .iter()
+            .map(|model| (*model).to_string())
+            .collect::<Vec<String>>(),
+        "the menu must be exactly what the table prices"
+    );
+}
+
+/// A workspace with no `[prices]` offers nothing rather than guessing.
+///
+/// **And never reaches the network to fill the gap.** The caller says so and
+/// offers the refresh row instead; a settings screen that fetched a catalogue to
+/// draw a menu would be spending an operator's money to render a list.
+#[test]
+fn f18_a_workspace_with_no_prices_offers_no_models() {
+    let s = scopes("[run]\nmax_steps = 10\n", "", "");
+    assert!(
+        s.config().prices().is_none(),
+        "the fixture must have no price table for this to be the case it claims"
+    );
+    assert!(s.priced_models().is_empty());
 }

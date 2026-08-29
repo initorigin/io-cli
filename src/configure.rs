@@ -248,71 +248,64 @@ pub enum Kind {
     Machine,
 }
 
-/// The `Effect` variants, spelled as the file spells them.
+/// The `Effect` variants, spelled by io-harness itself.
 ///
-/// **This is a build-breaking census and it can be, because `Effect` is not
-/// `#[non_exhaustive]`** (`io-harness-0.69.0/src/policy.rs:91-97`). The array
-/// names every variant and the `match` covers every variant, so a variant *added*
-/// by a later io-harness fails the match and a variant *removed* fails the array.
-/// Either way this crate stops compiling rather than shipping a menu that quietly
-/// omits an option — and an option that was never offered is one an operator
-/// cannot detect, which is why that guarantee is worth a function.
+/// **Both halves are the dependency's since io-harness 0.71.0, and neither is
+/// written here any more**: the list is `Effect::ALL`
+/// (`io-harness-0.71.0/src/policy.rs:127`) and each spelling is `Effect::as_str`
+/// (`:143`), which is the word io-harness's own deserializer reads.
 ///
-/// **The one thing it does not catch** is a rename: the strings are serde's
-/// `rename_all = "snake_case"` of the variant names, and io-harness exposes no
-/// `as_str` for `Effect` the way it does for [`exec_modes`], so io-cli has to
-/// spell them. A dependency that renamed `Allow` to `Permit` would leave this
-/// compiling and writing a word the schema rejects. `tests/configure.rs` closes
-/// that by round-tripping each string through io-harness's own deserializer.
+/// Until this release io-cli held a copy of both — an array naming three variants
+/// and a `match` mapping them to three string literals — and the copy was the
+/// defect. The array was a build-breaking census, so a variant *added* or
+/// *removed* upstream stopped this crate compiling; but the literals were io-cli's
+/// transcription of serde's `rename_all = "snake_case"`, so a *rename* upstream
+/// left it compiling and writing a word the schema rejects. Taking the string from
+/// the variant closes the one hole the census could not.
+///
+/// `Effect` is not `#[non_exhaustive]` (`policy.rs:90-92`), so `ALL` is a census
+/// io-harness itself keeps complete rather than a list that can quietly fall
+/// behind, and there is no wildcard on this side to swallow a fourth effect.
+/// `tests/configure.rs` still round-trips every string through io-harness's own
+/// deserializer, because `as_str` and `Deserialize` are two impls and only the
+/// round trip proves they agree.
 #[must_use]
 pub fn effects() -> Vec<String> {
-    [
-        io_harness::Effect::Allow,
-        io_harness::Effect::Ask,
-        io_harness::Effect::Deny,
-    ]
-    .iter()
-    .map(|effect| {
-        match effect {
-            io_harness::Effect::Allow => "allow",
-            io_harness::Effect::Ask => "ask",
-            io_harness::Effect::Deny => "deny",
-        }
-        .to_string()
-    })
-    .collect()
+    io_harness::Effect::ALL
+        .iter()
+        .map(|effect| effect.as_str().to_string())
+        .collect()
 }
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **A weaker guarantee than [`effects`]'s, and the difference is the
-/// dependency's and not a choice made here.** `ExecMode` *is* `#[non_exhaustive]`
-/// (`io-harness-0.69.0/src/sandbox.rs:379`), so rustc requires a wildcard arm on
-/// any match over it and a variant added by a later io-harness would fall into
-/// that wildcard silently — compiling green while the menu omits the new mode.
-/// Only a *removal* breaks the build here.
+/// **The list is `ExecMode::ALL` (`io-harness-0.71.0/src/sandbox.rs:424`) and the
+/// spellings are `ExecMode::as_str` (`:431`).** io-cli wrote the variant list out
+/// by hand until this release for a reason that was the dependency's and not a
+/// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:378-381`), and
+/// a caller outside the defining crate cannot enumerate such an enum without a
+/// wildcard arm that silently swallows the next variant. The issue this crate
+/// filed asking for the enumeration is io-harness#218, and 0.71.0 answers it —
+/// `ALL` is kept complete by an in-crate exhaustive `match` that stops io-harness
+/// compiling when a mode is added, which is a guarantee nothing on this side could
+/// have provided. `strum` was never an answer, being forbidden by io-harness's own
+/// NF2 and by this crate's no-new-dependency constraint.
 ///
-/// So what is asserted is what is obtainable: the spelling of every variant comes
-/// from `ExecMode::as_str` (`sandbox.rs:400`) rather than from io-cli, so a rename
-/// cannot slip through; and [`exec_mode_label`] reports an unknown mode rather
-/// than dropping it. An issue asking io-harness for variant enumeration on both
-/// enums is filed with this release — `strum` is not an answer, being forbidden by
-/// io-harness's own NF2 and by this crate's no-new-dependency constraint.
+/// `ExecMode` is still `#[non_exhaustive]`, so a *match* over it here still needs
+/// a wildcard — see [`exec_mode_label`], which reports an unknown mode rather than
+/// dropping it. What changed is that the menu no longer depends on that: a mode
+/// io-harness adds is offered because it is in `ALL`, not because io-cli noticed.
 #[must_use]
 pub fn exec_modes() -> Vec<String> {
-    [
-        io_harness::ExecMode::ReadOnly,
-        io_harness::ExecMode::WorkspaceWrite,
-        io_harness::ExecMode::FullAccess,
-    ]
-    .iter()
-    .map(|mode| mode.as_str().to_string())
-    .collect()
+    io_harness::ExecMode::ALL
+        .iter()
+        .map(|mode| mode.as_str().to_string())
+        .collect()
 }
 
 /// How a mode reads on the surface, including one this build has never heard of.
 ///
-/// The mitigation [`exec_modes`] describes. A wildcard that omits is the defect; a
+/// The wildcard [`exec_modes`] names. A wildcard that omits is the defect; a
 /// wildcard that says so is the most a `#[non_exhaustive]` enum allows, and it
 /// turns "the menu is missing an option" — which nobody can see — into a row that
 /// names the mode and admits io-cli does not know it.
@@ -386,14 +379,31 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 
 /// The one-two-five ladder around `current`, nearest first.
 ///
-/// **Anchored on the value in force, and that is the audit's finding rather than a
-/// preference.** The plan for this release said the ladder would be anchored on
-/// io-harness's own default for the key. There is no such thing to read:
-/// `run.max_tokens` and `run.max_duration_secs` are `None` in both `TaskContract`
-/// constructors (`contract.rs:652,730`), `run.max_steps` is 8 in one and 12 in the
-/// other (`:650,:728`) so neither is "the default", the `[run]` section is a
-/// private struct with no getter, and `io_harness::Defaults` is the policy tier
-/// defaults under a colliding name. So the anchor is the value the operator
+/// **Anchored on the value in force, and that is still the finding rather than a
+/// preference — but half of the old reason is now false and the correction is
+/// worth writing down.** io-harness 0.71.0 names its own defaults:
+/// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.71.0/src/contract.rs:652,670,686`),
+/// re-exported at the crate root. "There is nothing to read" was true when this
+/// was written and is not true now. What is still true is that none of it anchors
+/// *this* ladder:
+///
+/// * `run.max_steps` — **io-cli does not run on either harness default.**
+///   [`crate::contract::configured`] builds every session turn and every
+///   `io exec` from `TaskContract::workspace(..)` and immediately replaces its
+///   `DEFAULT_WORKSPACE_MAX_STEPS` with [`crate::contract::MAX_STEPS`]
+///   (`src/contract.rs:210`), *before* the configuration is applied over it. The
+///   number in force when no file names the key is a thousand, and it is io-cli's
+///   own. Anchoring the picker on 12 would show a figure no turn has ever run
+///   under.
+/// * `run.max_tokens` and `run.max_duration_secs` — `None` in **both**
+///   `TaskContract` constructors, so there is no default to show at all.
+/// * The rest — the `[run]` section is a private struct with no getter, and
+///   `io_harness::Defaults` is the policy tier defaults under a colliding name.
+///
+/// And a per-key anchor is not this function's to apply in any case: it is handed
+/// a number and a sign, never a key ([`Kind::Number`] carries only `signed`), so
+/// the choice would belong to the caller. So the anchor is the value the operator
 /// actually has — which is also the value they are reasoning from.
 ///
 /// `None` — a key no file names — ladders from 1. The alternative was an empty
@@ -569,55 +579,47 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
-/// **Quoted from the files rather than read from the dependency, because the
-/// dependency has no reader.** `io_harness::pricing::PriceTable`'s whole public
-/// API is `new`, `with`, `with_tiers`, `as_of`, `price` and `tiers` — it can
-/// answer what one named model costs and cannot say which models it holds. So a
-/// surface offering "choose a model you have prices for" has to read the section
-/// itself. This is the same act `Setting::value` already performs for a section
-/// io-harness exposes no accessor for: the origin says which file, and the text is
-/// what that file says. Filed upstream as a gap.
+/// **Read from the dependency's own table since io-harness 0.71.0, not scraped
+/// out of the files.** `PriceTable::models` (`io-harness-0.71.0/src/pricing.rs:268`)
+/// lists every model the table can actually price, and [`Config::prices`] has
+/// always built that table out of the three scopes — so the merged question this
+/// used to hand-roll is precisely the one the accessor answers, and the gap filed
+/// upstream as io-harness#220 has landed. The models come back sorted and unique
+/// because the table keys them in a `BTreeMap`.
+///
+/// **The scrape was also wrong, and replacing it fixes a menu an operator could
+/// not see past.** It matched a literal `[prices.models]` header, so a file
+/// spelling its table as a sub-table per model — `[prices.models."gpt-4.1"]`,
+/// which is [`crate::prices::Shape::SubTables`], legal TOML io-harness reads
+/// perfectly well, and the shape an operator writing rates by hand is most likely
+/// to reach for — listed *no* models at all, and the picker for every
+/// [`Kind::Model`] key came up empty on a perfectly good price table.
+///
+/// **A model priced by tiers alone is not offered**, which is `models`'s own
+/// contract rather than a rule invented here: `PriceTier`s are keyed separately
+/// from base prices and `cost_micros` answers `None` for a model that has only
+/// tiers, so listing it would be promising a cost the table cannot produce.
 ///
 /// **No network call, ever.** A settings screen that reached for a catalogue would
 /// be spending an operator's money to draw a menu; where no priced section exists
 /// the caller says so and offers the refresh row that already acts.
 ///
-/// Every scope rather than the deciding one, because `[prices.models]` is a table
-/// the scopes merge key by key — a model priced in the user file and another in
-/// the project file are both priced for this session.
+/// **This takes the `Config` the caller already holds, and must never re-discover
+/// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
+/// it reads (`io-harness-0.71.0/src/config.rs:517`), so a second discovery re-runs
+/// an operator's credential commands — which for a `${cmd:}` fetching a key out of
+/// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
+/// the picker opens. Taking a `&Config` is not an optimisation; it is the
+/// difference between reading a value and executing somebody's program.
+///
+/// A configuration with no priced section lists nothing, and the caller says so and
+/// offers the refresh row that already acts.
 #[must_use]
-pub fn priced_models(root: &std::path::Path) -> Vec<String> {
-    let mut found: BTreeSet<String> = BTreeSet::new();
-    for scope in [Scope::User, Scope::Project, Scope::Local] {
-        let Some(path) = scope_path(root, scope) else {
-            continue;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let mut inside = false;
-        for line in text.lines() {
-            let line = line.trim();
-            if line.starts_with('[') {
-                // A header ends the previous table and may open this one. Both
-                // spellings io-harness accepts, since a `[prices.models]` and a
-                // dotted `[prices]`/`models` are the same table to a TOML reader
-                // and only the header form appears here.
-                inside = line == "[prices.models]";
-                continue;
-            }
-            if !inside || line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((name, _)) = line.split_once('=') {
-                let name = name.trim().trim_matches('"').trim();
-                if !name.is_empty() {
-                    found.insert(name.to_string());
-                }
-            }
-        }
-    }
-    found.into_iter().collect()
+pub fn priced_models(config: &Config) -> Vec<String> {
+    let Some(prices) = config.prices() else {
+        return Vec::new();
+    };
+    prices.models().into_iter().map(str::to_string).collect()
 }
 
 /// Which file a change to `key` should be written into, and whether that was
