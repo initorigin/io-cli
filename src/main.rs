@@ -2098,7 +2098,70 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // Says what the link is, and where it points. The chain
                         // is arranged through `/config`, which is the one writer
                         // this release gives the file.
-                        Pick::Provider => {
+                        // The add verb, checked first because `add_at` is past the
+                        // end of the chain and every branch below indexes into it.
+                        //
+                        // **Only the presets whose own environment variable is
+                        // already set.** A credential that has to be typed has one
+                        // flow in this product — `io setup`, which types it,
+                        // verifies it and writes it — and building a second one in
+                        // the session loop is what this release's `preferred_tools`
+                        // forbids by name. So the offer is the case that needs no
+                        // typing at all, and the operator with no variable set is
+                        // sent to the flow that already exists rather than to a
+                        // half of it built here.
+                        Pick::Provider { add_at } if index == *add_at => {
+                            // **The three `FromEnv` covers, and no others.**
+                            // `provider::spec_from` is the one constructor for a
+                            // vendor spec outside the wizard handshake, and it
+                            // takes a `FromEnv`; a preset outside those three has
+                            // no spec this file may build, and building one here
+                            // is what `tests/provider.rs` refuses by name.
+                            let ready: Vec<String> = ["openrouter", "anthropic", "openai"]
+                                .into_iter()
+                                .filter(|preset| {
+                                    io_cli::providers::variable(io_cli::providers::Endpoint::Preset(
+                                        preset,
+                                    ))
+                                    .is_some_and(|name| {
+                                        io_cli::providers::variable_is_set(&name)
+                                    })
+                                })
+                                .map(str::to_string)
+                                .collect();
+                            if ready.is_empty() {
+                                app.record(
+                                    Tone::Muted,
+                                    "no preset's API key variable is set in this shell, and a key \
+                                     typed here would be a second credential flow beside `io \
+                                     setup`'s. Export one — OPENROUTER_API_KEY, ANTHROPIC_API_KEY, \
+                                     OPENAI_API_KEY — and this offers it, or run `io setup` to \
+                                     type one."
+                                        .to_string(),
+                                );
+                            } else {
+                                let mut rows = vec![Row::new("leave it".to_string())];
+                                for preset in &ready {
+                                    let variable = io_cli::providers::variable(
+                                        io_cli::providers::Endpoint::Preset(preset),
+                                    )
+                                    .unwrap_or_default();
+                                    rows.push(Row::with_detail(
+                                        preset.clone(),
+                                        // The variable's NAME, never a word about
+                                        // its contents. A name identifies a
+                                        // credential; its value is not this
+                                        // surface's to show.
+                                        format!("uses ${variable}, which is set in this shell"),
+                                    ));
+                                }
+                                descended = Some((
+                                    Picker::new("Add which provider?", rows),
+                                    Pick::ProviderPreset(ready),
+                                ));
+                            }
+                        }
+                        Pick::Provider { .. } => {
                             let chain = io_cli::providers::chain(&config);
                             if let Some(entry) = chain.get(index) {
                                 let place = if entry.index == 0 {
@@ -2140,6 +2203,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         if !first {
                                             rows.push(Row::new("make this the provider in force"));
                                         }
+                                        // **The verb `/provider` has never had.**
+                                        // An operator whose key rotated, or who
+                                        // wants a different model on a link they
+                                        // already have, has until now had to open
+                                        // a file — while every other list in this
+                                        // product could be changed from the list.
+                                        // Its index is recorded rather than worked
+                                        // out on the keystroke, which is the rule
+                                        // the arithmetic below was already the
+                                        // argument for.
+                                        let model_at = rows.len();
+                                        rows.push(Row::with_detail(
+                                            "change the model".to_string(),
+                                            "chooses from the catalogue this provider serves"
+                                                .to_string(),
+                                        ));
+                                        let remove_at = rows.len();
                                         rows.push(Row::new("remove this link from the chain"));
                                         descended = Some((
                                             Picker::new(format!("{}?", entry.model), rows),
@@ -2147,6 +2227,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 label: entry.model.clone(),
                                                 at,
                                                 first,
+                                                kind: entry.kind.clone(),
+                                                model_at,
+                                                remove_at,
                                             },
                                         ));
                                     }
@@ -2159,9 +2242,255 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // from rather than hard-coded, because those two drifting
                         // apart is how a list removes the thing it offered to
                         // promote.
-                        Pick::ProviderVerb { label, at, first } => {
+                        // **The verification call is made here, before any edit,
+                        // and that ordering is the criterion.** A rejected
+                        // credential must leave the configuration byte for byte as
+                        // it was — writing first and verifying after would leave a
+                        // key that cannot authenticate in the operator's file, and
+                        // the next turn would fail with an error about the model.
+                        //
+                        // **Two round trips, not one.** `verify::credential`
+                        // returns `Result<(), String>` and no models; the catalogue
+                        // is a second call. A catalogue that fails does NOT abort
+                        // the add — the credential was just accepted, and refusing
+                        // an operator at that point over a list would be refusing
+                        // them for being offline.
+                        Pick::ProviderPreset(presets) => {
+                            if let Some(preset) =
+                                index.checked_sub(1).and_then(|at| presets.get(at))
+                            {
+                                let preset = preset.clone();
+                                // **The catalogue first, then the model, then the
+                                // credential — and that order is forced rather
+                                // than chosen.** `verify::credential` pings the
+                                // endpoint *with a model*, so verifying before one
+                                // is chosen would either send a model the operator
+                                // has not picked or report a 404 about a model as
+                                // a bad credential. `verify::served` needs neither
+                                // a credential nor a model, so the list comes
+                                // first and the check follows it, still before any
+                                // edit — which is what F10 actually asks for.
+                                app.record(
+                                    Tone::Muted,
+                                    "reading the model catalogue…".to_string(),
+                                );
+                                paint(screen, &mut app)?;
+                                let models: Vec<String> = io_cli::verify::served(None)
+                                    .await
+                                    .into_iter()
+                                    .map(|model| model.id)
+                                    .collect();
+                                if models.is_empty() {
+                                    // Not fatal, and deliberately so: a catalogue
+                                    // that cannot be read is a reason to make the
+                                    // operator name a model, never a reason to
+                                    // refuse an add they can complete offline.
+                                    app.record(
+                                        Tone::Muted,
+                                        format!(
+                                            "no catalogue was served, so there is no list to \
+                                             choose {preset}'s model from; add the link with \
+                                             `io setup`, which takes a typed model"
+                                        ),
+                                    );
+                                } else {
+                                    let mut rows = vec![Row::new("leave it".to_string())];
+                                    for model in &models {
+                                        rows.push(Row::new(model.clone()));
+                                    }
+                                    descended = Some((
+                                        Picker::new(format!("Which {preset} model?"), rows),
+                                        Pick::ProviderModel {
+                                            preset,
+                                            models,
+                                            at: None,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                        Pick::ProviderModel { preset, models, at } => {
+                            if let Some(model) = index.checked_sub(1).and_then(|i| models.get(i)) {
+                                let root = session.root().to_path_buf();
+                                let endpoint = io_cli::providers::Endpoint::Preset(preset);
+                                // **The verification call, before any edit.** On a
+                                // rejection the configuration file is unchanged
+                                // byte for byte, because nothing has touched it
+                                // yet — the ordering is the guarantee, not a check
+                                // performed afterwards. Only for a new link: a
+                                // change of model on a link that already exists is
+                                // not a claim about a credential, and pinging the
+                                // endpoint to change one field would spend an
+                                // operator's money to answer a question nobody
+                                // asked.
+                                let refused = if at.is_none() {
+                                    app.record(
+                                        Tone::Muted,
+                                        format!("checking the {preset} credential…"),
+                                    );
+                                    paint(screen, &mut app)?;
+                                    let which = match preset.as_str() {
+                                        "anthropic" => io_cli::cli::FromEnv::Anthropic,
+                                        "openai" => io_cli::cli::FromEnv::OpenAi,
+                                        _ => io_cli::cli::FromEnv::OpenRouter,
+                                    };
+                                    let (variable, _) = which.vars();
+                                    // `spec_from` checks the variable is set and
+                                    // then leaves the credential `None`, so the key
+                                    // travels one path and never sits in a struct
+                                    // longer than it must — its own doc's rule.
+                                    match io_cli::provider::spec_from(
+                                        which,
+                                        std::env::var(variable).ok(),
+                                        Some(model.clone()),
+                                    ) {
+                                        Err(why) => Some(why),
+                                        Ok(spec) => io_cli::verify::credential(&spec)
+                                            .await
+                                            .err()
+                                            .map(|why| {
+                                                format!(
+                                                    "{preset} refused the credential in \
+                                                     ${variable}: {why}"
+                                                )
+                                            }),
+                                    }
+                                } else {
+                                    None
+                                };
+                                if let Some(why) = refused {
+                                    app.record(
+                                        Tone::Refused,
+                                        format!("{why}. Nothing was written."),
+                                    );
+                                    picker = None;
+                                    paint(screen, &mut app)?;
+                                    continue;
+                                }
+                                let (scope, edit) = match at {
+                                    // A change to a link that already exists goes
+                                    // into the file that already carries it.
+                                    Some(at) => (
+                                        at.scope,
+                                        io_cli::providers::edit(at, "model", model),
+                                    ),
+                                    // A new link goes to the user scope and is
+                                    // written with the credential shape that needs
+                                    // no secret in the file: no `api_key` for a
+                                    // vendor kind, `${env:…}` for a compatible one.
+                                    // `Key::written` owns that distinction.
+                                    None => (
+                                        io_harness::config::Scope::User,
+                                        Some(io_cli::providers::add(
+                                            endpoint,
+                                            model,
+                                            io_cli::providers::Key::Environment
+                                                .written(endpoint)
+                                                .as_deref(),
+                                        )),
+                                    ),
+                                };
+                                match edit {
+                                    None => app.record(
+                                        Tone::Refused,
+                                        "that link is no longer where it was; nothing was written"
+                                            .to_string(),
+                                    ),
+                                    Some(edit) => {
+                                        match io_cli::configure::write(&root, scope, &[edit]) {
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                            Ok(()) => {
+                                                match io_cli::configure::reload(&root) {
+                                                    Ok((fresh, _)) => config = fresh,
+                                                    Err(error) => {
+                                                        app.record(Tone::Error, error)
+                                                    }
+                                                }
+                                                // **Where it landed in the chain,
+                                                // said before it matters.** A new
+                                                // link goes last, so it is a
+                                                // fallback and not the provider in
+                                                // force — an operator who added one
+                                                // expecting it to answer the next
+                                                // turn needs to be told it will not.
+                                                let place =
+                                                    io_cli::providers::chain(&config).len();
+                                                app.record(
+                                                    Tone::Success,
+                                                    match at {
+                                                        Some(_) => format!(
+                                                            "{preset} now asks {model}, from the \
+                                                             next turn"
+                                                        ),
+                                                        None => format!(
+                                                            "{preset} · {model} is link {place} \
+                                                             in the chain{}. Its credential stays \
+                                                             in the environment; nothing was \
+                                                             written into a file.",
+                                                            if place == 1 {
+                                                                ", so it is the provider in force"
+                                                            } else {
+                                                                ", so it is a fallback — promote \
+                                                                 it to make it the one in force"
+                                                            }
+                                                        ),
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Pick::ProviderVerb {
+                            label,
+                            at,
+                            first,
+                            kind,
+                            model_at,
+                            remove_at,
+                        } => {
                             let promote = if *first { usize::MAX } else { 1 };
-                            let remove = if *first { 1 } else { 2 };
+                            let remove = *remove_at;
+                            // The model row descends rather than writing, so it is
+                            // taken before the edit is worked out.
+                            if index == *model_at {
+                                app.record(
+                                    Tone::Muted,
+                                    "reading the model catalogue…".to_string(),
+                                );
+                                paint(screen, &mut app)?;
+                                let models: Vec<String> = io_cli::verify::served(None)
+                                    .await
+                                    .into_iter()
+                                    .map(|model| model.id)
+                                    .collect();
+                                if models.is_empty() {
+                                    app.record(
+                                        Tone::Muted,
+                                        format!(
+                                            "no catalogue was served, so there is no list to \
+                                             choose {label}'s model from"
+                                        ),
+                                    );
+                                } else {
+                                    descended = Some((
+                                        Picker::new(
+                                            format!("Which model for {label}?"),
+                                            std::iter::once(Row::new("leave it".to_string()))
+                                                .chain(
+                                                    models.iter().map(|m| Row::new(m.clone())),
+                                                )
+                                                .collect(),
+                                        ),
+                                        Pick::ProviderModel {
+                                            preset: kind.clone(),
+                                            models,
+                                            at: Some(*at),
+                                        },
+                                    ));
+                                }
+                            }
                             let edit = if index == promote {
                                 io_cli::providers::promote(at)
                             } else if index == remove {
@@ -3434,16 +3763,25 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Provider => {
                     let chain = io_cli::providers::chain(&config);
                     if chain.is_empty() {
-                        app.record(Tone::Muted, "no provider is configured; run `io setup`");
-                    } else {
-                        picker = Some((
-                            Picker::new(
-                                "Providers, in the order they are tried",
-                                io_cli::providers::rows(&chain),
-                            ),
-                            Pick::Provider,
-                        ));
+                        // Still said, and no longer the whole answer: the add row
+                        // below is what this release adds, and a surface that
+                        // refused to open for the operator with nothing configured
+                        // would be refusing exactly the operator the verb is for.
+                        app.record(Tone::Muted, "no provider is configured yet");
                     }
+                    let mut rows = io_cli::providers::rows(&chain);
+                    // Taken before the row is pushed. See `Pick::Providers`.
+                    let add_at = rows.len();
+                    rows.push(Row::with_detail(
+                        "add a link".to_string(),
+                        "chooses a preset, verifies its credential, and takes the model from the \
+                         catalogue that verification returns"
+                            .to_string(),
+                    ));
+                    picker = Some((
+                        Picker::new("Providers, in the order they are tried", rows),
+                        Pick::Provider { add_at },
+                    ));
                 }
                 Action::Profile => {
                     let names = io_cli::configure::profiles(&config);
@@ -6453,6 +6791,22 @@ enum Pick {
         label: String,
         at: io_cli::providers::At,
         first: bool,
+        /// The entry's `kind`, carried so the model picker can name the provider
+        /// it is reading a catalogue for. Read off the row the operator chose
+        /// rather than re-derived, which is the same rule `at` follows.
+        kind: String,
+        /// Where the "change the model" and "remove" rows sit, recorded by the
+        /// code that built them.
+        ///
+        /// **`promote`'s index is still worked out and these two are not**, and the
+        /// asymmetry is deliberate: `promote` is present or absent on one flag the
+        /// arm already has, while these move with every row added above them. The
+        /// original comment here made the argument for computing indices from the
+        /// flag the rows were built from; recording them is the same argument
+        /// carried one step further, and it is what stopped this arm removing the
+        /// link it had offered to re-model.
+        model_at: usize,
+        remove_at: usize,
     },
     /// A confirmation over one session's removal. Row 0 is `store::LEAVE_IT` and
     /// every other row acts — the shape `/mcp` remove established and the one
@@ -6551,7 +6905,35 @@ enum Pick {
     },
     /// The provider chain, in the order `providers::rows` drew it — which is
     /// the order a turn tries it.
-    Provider,
+    ///
+    /// `add_at` is where the add row sits, taken from the length of the chain's
+    /// own rows before it was pushed. The rule every surface in this release
+    /// follows: an index worked out afterwards is an index addressing a different
+    /// list than the one on screen.
+    Provider {
+        add_at: usize,
+    },
+    /// The presets whose own credential variable is already set in this shell,
+    /// with "leave it" at row 0.
+    ///
+    /// **Only those, deliberately.** A credential that has to be typed already has
+    /// a flow — `io setup` types it, verifies it and writes it — and this
+    /// release's `preferred_tools` forbids a second one by name. Offering a preset
+    /// whose variable is unset would either build that second flow or write an
+    /// entry that cannot authenticate.
+    ProviderPreset(Vec<String>),
+    /// The models the verification call returned, with "leave it" at row 0.
+    ///
+    /// `at` is `None` for an add and `Some` for a change to an existing link, so
+    /// one picker serves both and the two cannot drift about what a chosen model
+    /// means. It is an `At` and never a row number: under a profile the rows and
+    /// the file's array describe different entries, which is the 0.21.0 defect
+    /// `providers::At::of` exists to make unspellable.
+    ProviderModel {
+        preset: String,
+        models: Vec<String>,
+        at: Option<io_cli::providers::At>,
+    },
     /// Every skill, in the order `skillview::rows` drew them, carried as the
     /// `(name, path)` each row stood for.
     ///

@@ -894,3 +894,50 @@ fn f10_the_default_offered_is_the_variable_the_endpoint_already_reads() {
     assert!(providers::variable_is_set(var));
     std::env::remove_var(var);
 }
+
+/// F10's ordering, asserted against the driver as text.
+///
+/// **The one gate that has to read `src/main.rs`, and it reads it because nothing
+/// under `tests/` can link it.** The library never writes — it builds an `Edit` —
+/// so "the verification call is made before any edit" is a property of the driver
+/// alone, and a weak instrument aimed at it is the only instrument there is. It is
+/// the shape `tests/context_share.rs` and `tests/contract.rs` already use.
+///
+/// Sabotage: move the `configure::write` above the `verify::credential` in the
+/// `Pick::ProviderModel` arm — under which this fails, and the product it
+/// describes leaves a rejected credential in the operator's file.
+#[test]
+fn f10_the_driver_verifies_before_it_writes() {
+    // Line endings normalised: a Windows checkout has `\r\n`, and a gate that
+    // sliced on `"\n"` matched nothing and panicked on a green product in 0.19.0
+    // and again in 0.23.0.
+    let driver = std::fs::read_to_string("src/main.rs")
+        .expect("the driver is beside the tests")
+        .replace("\r\n", "\n");
+    let arm = driver
+        .find("Pick::ProviderModel { preset, models, at } =>")
+        .expect("the model arm is where the add is completed");
+    let rest = &driver[arm..];
+    // The arm ends where the next one begins.
+    let end = rest
+        .find("Pick::ProviderVerb {")
+        .expect("ProviderVerb follows ProviderModel");
+    let arm = &rest[..end];
+
+    let verified = arm
+        .find("verify::credential")
+        .expect("the add must verify the credential at all");
+    let written = arm
+        .find("configure::write")
+        .expect("the add must write something");
+    assert!(
+        verified < written,
+        "the driver writes before it verifies, so a rejected credential would be left in the \
+         operator's file"
+    );
+    // And the rejection path must not fall through into the write.
+    assert!(
+        arm.contains("Nothing was written."),
+        "a rejected credential must say the file is unchanged"
+    );
+}
