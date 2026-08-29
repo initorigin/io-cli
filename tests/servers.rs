@@ -628,6 +628,10 @@ fn f6_a_server_with_args_and_env_round_trips_as_the_harness_s_own_type() {
             env,
         },
         timeout_secs: 30,
+        // io-harness 0.70.0's field. `true` is its own default, so an entry
+        // written without the key reads back as this — which is what makes the
+        // round-trip below an equality rather than a near miss.
+        enabled: true,
     };
 
     // ONE edit, therefore one `configure::write`: a server whose `args` arrived
@@ -660,6 +664,7 @@ fn f6_an_http_server_round_trips_with_its_headers() {
             headers,
         },
         timeout_secs: 90,
+        enabled: true,
     };
 
     let after = io_cli::edit::apply("", &[servers::add(&server)]).unwrap();

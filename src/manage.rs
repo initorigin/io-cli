@@ -822,13 +822,16 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
     // silent no-op on an HTTP server (`io-harness-0.69.0/src/mcp.rs:267`) — a
     // constructor chain here would drop the arguments of half the servers it was
     // handed and say nothing.
+    // Asked of the harness rather than written as literals, the way `servers::add`
+    // asks it: the defaults are io-harness's, and a value copied into io-cli is one
+    // that goes stale in silence. `enabled` is io-harness 0.70.0's; an added server
+    // is on, and the flag has no keystroke here yet — see the known limitations.
+    let defaults = McpServer::stdio("", "");
     let mut server = McpServer {
         id,
         transport,
-        // Asked of the harness rather than written as a literal, the way
-        // `servers::add` asks it: the default is io-harness's, and a number
-        // copied into io-cli is one that goes stale in silence.
-        timeout_secs: McpServer::stdio("", "").timeout_secs,
+        timeout_secs: defaults.timeout_secs,
+        enabled: defaults.enabled,
     };
     if let Some(seconds) = args.one("timeout-secs")? {
         server.timeout_secs = timeout(seconds)?;
