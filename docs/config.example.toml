@@ -285,17 +285,33 @@ net = "deny"
 # --- Capability bundles (0.20.0) --------------------------------------------
 #
 # A bundle is a directory with a `plugin.toml` in it, and it is loaded because
-# THIS FILE NAMES IT. There is no directory io walks looking for bundles and no
-# registry it fetches from: a `[[plugin]]` entry is the whole of installing one,
-# and deleting the entry is the whole of removing one.
+# THIS FILE NAMES IT. There is no directory io walks looking for bundles: a
+# `[[plugin]]` entry is the whole of installing one, and deleting the entry is
+# the whole of removing one.
+#
+# THERE IS STILL NO REGISTRY, and from 0.29.0 that sentence needs its second
+# half. `/plugin marketplace add <owner>/<repo>` clones a git repository into
+# `~/.io-cli/marketplaces` and lists the directories in it that carry a
+# `plugin.toml`, so a bundle can be found without knowing its path. io operates
+# no index, hosts nothing, curates nothing and ranks nothing — a marketplace is
+# a repository you named, on your disk, and installing out of one still writes
+# exactly the `[[plugin]]` entry below. The clone is a `git` invocation; there
+# is no HTTP client here and no network path beside io-harness's.
 #
 # One directory can contribute six kinds of thing at once — skills, prompt
 # templates, [[agent]] definitions, [[mcp]] servers, [[hook]] tables and policy
-# layers — which is why there is a surface for it. `/plugin` lists what loaded,
-# what each bundle contributed, and every bundle that was declared and DROPPED
-# with io-harness's own reason beside it. That loader has no error path: a
-# dropped bundle is recorded and otherwise silently absent while every other one
-# loads.
+# layers — which is why there is a surface for it. `/plugin` lists THREE sets:
+# what loaded and what each bundle contributed; what was declared `enabled =
+# false`, under its own mark, with what switching it back on would bring; and
+# every bundle that was declared and DROPPED with io-harness's own reason beside
+# it. That loader has no error path: a dropped bundle is recorded and otherwise
+# silently absent while every other one loads.
+#
+# `enabled` is io-harness 0.70.0's, and it defaults to true, so an entry written
+# before it existed means what it always did. WRITING IT COSTS SOMETHING: an
+# io-cli built against io-harness 0.69.0 does not know the key and refuses the
+# WHOLE FILE rather than ignoring it. Remove the `enabled` keys before
+# downgrading. io says this at the moment it writes one.
 #
 # WHICH FILE DECLARES A BUNDLE DECIDES WHAT IT MAY CONTRIBUTE. A bundle named in
 # the project-scoped io.toml — the file a `git clone` delivers — may contribute
