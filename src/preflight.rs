@@ -205,8 +205,11 @@ impl Preflight {
     ///   (`mcp.rs:571-589`). Its own rustdoc says why: connecting happens before the
     ///   run's first step, and a server is configuration the operator wrote rather
     ///   than an action the agent chose, so there is nobody to ask and nothing to
-    ///   ask about. This is the same shape [`crate::approval::refuses_git`] already
-    ///   answers for git's spawn.
+    ///   ask about. Git's spawn used to have this same shape and no longer does:
+    ///   io-harness#214 closed in 0.70.0, so an asking `exec` posture now raises a
+    ///   real approval there. The MCP stdio spawn kept the old shape deliberately,
+    ///   and that divergence is exactly why this report cannot be written by
+    ///   analogy to git.
     /// * An **http** dial goes through `NetGuard::check`, which returns `Ask` to the
     ///   caller as a verdict — and `McpSession::connect` discards that verdict
     ///   (`mcp.rs:336-339` ends the expression in `?;`). Nobody is asked and the
