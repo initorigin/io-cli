@@ -2238,10 +2238,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // directory would take the path reading, which
                                 // exists for a directory the operator wrote
                                 // themselves, and switch this one straight on.
+                                // **One speller, and this was the second.** The
+                                // qualified name is `marketplace::offer`'s to
+                                // write: it answers the *shortest unambiguous*
+                                // spelling, which is the marketplace where the
+                                // label is unique in that clone and the bundle's
+                                // own directory where it is not. Built here by
+                                // hand, this line produced `<label>@<market>` for
+                                // two bundles that share a label inside one
+                                // marketplace — a string `locate` refuses and
+                                // that no further typing can resolve, handed to
+                                // the operator by the surface that exists to tell
+                                // them what to type.
                                 app.composer.set(&format!(
-                                    "/plugin add {}@{}",
-                                    bundle.label(),
-                                    market.name(),
+                                    "/plugin add {}",
+                                    io_cli::marketplace::offer(market, bundle),
                                 ));
                             }
                         }
@@ -7904,11 +7915,25 @@ fn manage_main(
     match &request {
         io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::List) => {
             for server in io_cli::servers::servers(config, &io_cli::servers::Observed::default()) {
+                // **A fourth column, for the reason `plugin list` grew a third.**
+                // io-harness 0.70.0 honours `enabled` before anything is spawned,
+                // dialled or even checked against the policy, so a server switched
+                // off in the file contributes no tools and says nothing about it.
+                // Printing the same three columns for it as for a live server
+                // leaves a script — and an operator whose turns quietly lost their
+                // tools — with no way to tell the two apart. Appended rather than
+                // inserted, so a reader of the three columns this verb has always
+                // printed keeps reading them.
                 println!(
-                    "{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}",
                     server.id,
                     server.transport,
-                    server.decided.word()
+                    server.decided.word(),
+                    if server.enabled {
+                        "enabled"
+                    } else {
+                        io_cli::servers::DISABLED
+                    },
                 );
             }
         }
@@ -7919,10 +7944,15 @@ fn manage_main(
             match found {
                 None => return Err(format!("no configuration file in force declares {id}")),
                 Some(server) => println!(
-                    "{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}",
                     server.id,
                     server.transport,
-                    server.decided.word()
+                    server.decided.word(),
+                    if server.enabled {
+                        "enabled"
+                    } else {
+                        io_cli::servers::DISABLED
+                    },
                 ),
             }
         }

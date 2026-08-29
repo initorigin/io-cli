@@ -1930,6 +1930,11 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // media for one reading, not two decisions: the write verbs, where a
         // disagreement would land in an operator's file, all go through the one
         // parse.
+        // **`servers` is `mcp` there too.** The line travels verbatim and
+        // `manage::parse` folds the plural onto the singular itself — see the fold
+        // at the top of it — because `io servers add …` from a shell never passes
+        // through here. Routing a spelling the parse then refuses is the shape
+        // this arm shipped with until 0.29.0.
         "mcp" | "servers"
             if matches!(
                 input.split_whitespace().nth(1),
@@ -1980,6 +1985,10 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // `install` is `add`'s other spelling and `search` is a read across the
         // marketplaces; both are `manage::parse`'s words, so both route here rather
         // than opening the panel over a line that asked for something else.
+        // **And `plugins` is `plugin` on the far side as well**: the fold lives at
+        // the top of `manage::parse`, where `io plugins install x` from a shell
+        // reaches it too. Admitting a spelling here that the parse refuses teaches
+        // less than refusing it outright, which is what this arm did until 0.29.0.
         "plugin" | "plugins"
             if matches!(
                 input.split_whitespace().nth(1),

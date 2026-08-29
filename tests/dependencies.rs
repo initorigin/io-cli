@@ -631,10 +631,24 @@ fn f7_no_source_file_runs_a_command_or_touches_the_network() {
 /// the call site, because the call site's own list is the thing being widened.
 ///
 /// With the comparison named, `f11_the_permitted_spawn_set_is_exact_paths…` can
-/// hand it a near-miss set and watch it refuse. Rewrite this as
-/// `found.iter().all(|p| permitted.iter().any(|q| p.starts_with(q)))`, or as any
-/// `contains` over the path text, and that test goes red naming the file it just
-/// admitted.
+/// hand it a near-miss set and watch it refuse. Rewrite this as a comparison of
+/// **modules** rather than of files — `p.file_stem()` matched as a prefix,
+/// `p.starts_with(q.with_extension(""))`, or any match over the path text with the
+/// extension dropped — and that test goes red naming the file it just admitted.
+/// Those are the widenings the list below discriminates, and they are the shapes a
+/// rewrite reaches for, because "the fetch module" is how a person says it.
+///
+/// **What the near-miss list does not catch, said here rather than implied.** A
+/// literal `found.iter().all(|p| permitted.iter().any(|q| p.starts_with(q)))`
+/// leaves that test green: `Path::starts_with` is component-wise, the permitted
+/// entries are files, and `src/fetching.rs`, `src/fetch_marketplace.rs`,
+/// `src/fetch/mod.rs` and `src/shell_out.rs` are every one of them refused by it
+/// too. It is a real weakening all the same — `all` stops requiring that each
+/// permitted module still be *present*, so a set that had lost one would pass —
+/// and the `==` in this function is the only thing that catches it. This doc named
+/// that rewrite as one the near-misses kill until 0.29.0; they never did, and
+/// naming a rewrite a gate cannot discriminate is the same vacuity in prose that
+/// 0.25.0 and 0.27.0 shipped in code.
 ///
 /// This product has shipped a gate that could not fail in 0.25.0 and again in
 /// 0.27.0, and 0.28.0 recorded the rule it broke both times: enumerate the arms
@@ -652,10 +666,12 @@ fn only_the_permitted_spawn(found: &[PathBuf]) -> bool {
 /// cannot see, because a gate that has been widened refuses nothing and therefore
 /// fails nothing.
 ///
-/// Each near-miss below shares a prefix, a stem or a parent with a permitted path
-/// and is a different file. Under the exact comparison every one is refused; under
-/// any substring, `starts_with` or stem match, at least one is admitted and this
-/// test fails naming it.
+/// Each near-miss below shares a stem, a stem prefix or a module directory with a
+/// permitted path and is a different file. Under the exact comparison every one is
+/// refused; under a stem match, a stem-prefix match, or any comparison that drops
+/// the extension, at least one is admitted and this test fails naming it. A
+/// component-wise `Path::starts_with` is *not* among them — see the note on
+/// `only_the_permitted_spawn`, which says what does and does not catch that.
 #[test]
 fn f11_the_permitted_spawn_set_is_exact_paths_and_never_a_substring() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -669,13 +685,15 @@ fn f11_the_permitted_spawn_set_is_exact_paths_and_never_a_substring() {
     );
 
     for near in [
-        // Shares the stem `fetch`, which is what a `contains` would match on.
+        // Its stem opens with the permitted stem, which is what a `file_stem`
+        // prefix match admits.
         src.join("fetching.rs"),
-        // Shares the whole stem as a prefix, which is what `starts_with` on the
-        // text would match on.
+        // The permitted stem, whole, followed by a separator of its own — what an
+        // extension-dropped text match admits.
         src.join("fetch_marketplace.rs"),
-        // A module directory whose parent is the permitted path's stem — what
-        // `starts_with` on the *path* would match on.
+        // A module directory named for the permitted file, which is what
+        // `p.starts_with(q.with_extension(""))` admits, and what a comparison of
+        // module names rather than of files admits.
         src.join("fetch").join("mod.rs"),
         // And the same three shapes against the other permitted module, so the
         // property is asserted for both rather than for the new one only.
@@ -708,13 +726,30 @@ fn f11_the_permitted_spawn_set_is_exact_paths_and_never_a_substring() {
 ///    whatever the variable held.
 /// 2. **No shell.** Nothing in the file names one, so there is no line for a
 ///    metacharacter in a repository name to be interpreted by.
-/// 3. **No argument is built out of a string.** No `format!` anywhere in the
-///    module's code — the sabotage F10 names is building the argv by interpolation
-///    from the repository name, and this is the assertion it dies on. Paired with
-///    the structural half: the argv reaches the spawn as the vector the pure
-///    `argv` function returned, in one `.args(…)`, so there is no per-argument
-///    builder call where an interpolation could hide and nothing that runs
-///    differs from what `tests/fetch.rs` asserts.
+/// 3. **The argv is built by a function that never sees the repository name.**
+///    `argv(url: &str, into: &Path)` is handed a URL that `url()` assembled out of
+///    `HOST` and a `Named` `resolve()` has already held to its alphabet, and a
+///    destination path — and nothing else. The sabotage F10 names, an argv element
+///    interpolated from `named.repo`, cannot be written inside it without first
+///    widening that signature, so **the signature is the assertion**, and it is
+///    asserted below. Paired with the structural half: the argv reaches the spawn
+///    as the vector that pure function returned, in one `.args(…)`, so there is no
+///    per-argument builder call where an interpolation could hide and nothing that
+///    runs differs from what `tests/fetch.rs` asserts.
+///
+///    **The `format!` ban beside it is a backstop against an idiom, not the
+///    property, and this doc claimed otherwise until 0.29.0.** `src/fetch.rs`
+///    builds every string it produces with `String::push_str` — `url()` and
+///    `Fetched::sentence()` both — so an interpolation written in the module's own
+///    idiom passes a spelling ban without noticing it. The ban is kept because it
+///    is free and because `format!` is what a hurried edit reaches for; what
+///    actually holds the property is `resolve()`'s allow-list, asserted
+///    behaviourally in `tests/fetch.rs` by the test that a name which could become
+///    an argument or leave the directory is refused, and the five owned elements,
+///    asserted there by
+///    `f10_the_program_is_the_literal_git_and_the_argv_is_five_owned_elements`.
+///    A gate that names a sabotage it cannot catch is worse than one that states
+///    its limits, and this product has shipped the first kind three times.
 /// 4. **It names nothing the event stream carries** — asserted for both permitted
 ///    modules in one loop by `f5_the_spawn_is_unreachable_from_the_event_path`,
 ///    which is where the same property already lives for `src/shell.rs`.
@@ -764,12 +799,30 @@ fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
         );
     }
 
+    // **The assertion the sabotage actually dies on.** An argv element built out
+    // of the repository name has to get at the repository name first, and the one
+    // function that builds the argv is handed a URL and a path. Widen it to take a
+    // `Named` — which is the first line of writing that sabotage — and this goes
+    // red naming the signature.
+    assert!(
+        code.contains("pub fn argv(url: &str, into: &Path) -> Vec<OsString>"),
+        "the argv builder no longer takes a URL and a destination and nothing \
+         else. F10's sabotage is an argv element interpolated from the repository \
+         name; that name reaches this function only through a wider signature, so \
+         the signature is what is pinned. If it genuinely has to change, the \
+         behavioural assertions in tests/fetch.rs are what must be re-argued \
+         first.",
+    );
+    // The backstop, and it is a backstop: this module builds every string it
+    // produces with `String::push_str`, so an interpolation written in its own
+    // idiom would pass this and die on the assertion above instead. Kept because
+    // `format!` is what a hurried edit reaches for and the check is free.
     assert!(
         !code.contains("format!"),
-        "src/fetch.rs builds a string with `format!`. F10's sabotage is exactly \
-         this — an argv element interpolated from the repository name — and the \
-         rule is written as an absence rather than as a review of each call so \
-         that there is nothing to argue about at the next edit.",
+        "src/fetch.rs builds a string with `format!`. The rule is written as an \
+         absence rather than as a review of each call so that there is nothing to \
+         argue about at the next edit — and it is the weaker half of F10's third \
+         property, not the whole of it.",
     );
     assert!(
         !code.contains(".arg("),

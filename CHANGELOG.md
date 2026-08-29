@@ -50,11 +50,47 @@ all, and a configuration whose bundles were all switched off was reported as
 declaring none. It is listed under its own mark, with what switching it back on
 would bring.
 
+**Git is asked about rather than refused, if you run the recommended posture.**
+Not io-cli's fix — io-harness 0.70.0 closed the issue io-cli 0.25.0 filed against
+it. Through 0.69.0 the git spawn accepted only an outright allow, so `ask before
+writes` behaved exactly as `deny` did and all seven git tools were refused with
+nobody consulted. You now get the question. `/commit allow` and the refusal
+explanation are still there and still needed, but only for `read only`, where
+`exec` is a deny and there is nothing to answer — and they are offered only where
+that deny came from the posture's own default rather than from a rule, because a
+rule cannot be widened by a later layer. **The live gate that asserted the old
+behaviour is what caught this**, on the first real run after the pin.
+
 **A run that failed its verification exits 6 again.** io-harness 0.70.0 closed
 this project's own issue #212 and gave that run its own outcome, which — because
 the enum is `#[non_exhaustive]` — quietly moved it out of the set `io exec` maps
 to a ceiling and out of the set the gate retry acts on. Both are named again, so
 a failing gate is retried and reported as what it is.
+
+### Fixed
+
+- **`/plugins <verb>` and `/servers <verb>` reach the parse that serves them.**
+  The plural was accepted by the router and refused one module later, so
+  `/plugins install x` came back "`plugins` is not a surface io manages" while
+  bare `/plugins` opened the panel. Folded in `manage::parse`, which is the one
+  door both the slash form and `io plugins …` go through.
+- **A bundle whose path holds a `"` or a `\` can be read back.** The writer
+  escaped both and the two readers decoded neither, so such a bundle could be
+  declared and then not located again — which meant the disclosure read a
+  different directory's manifest, and the entry could not be removed from the
+  surface that declared it.
+- **`/mcp`, `io mcp list` and `io mcp get` say when a server is switched off.**
+  io-harness 0.70.0 honours `enabled` on an `[[mcp]]` entry before anything is
+  spawned or dialled; io-cli was reading none of it, so a server that could never
+  start was listed exactly like a live one and every turn quietly ran without its
+  tools. Writing the key is still not offered — that verb is next.
+- Text out of a marketplace manifest is filtered of control characters and
+  bounded before it is drawn, the way output from `git` already was. A
+  description holding a raw newline could otherwise forge lines in `/plugin
+  search` — the surface used to decide whose code to install.
+- Where two bundles inside one marketplace share a name, each is offered by its
+  own directory. The refusal used to print one spelling twice and neither
+  resolved, so that bundle could not be installed by name at all.
 
 ### Dependencies
 

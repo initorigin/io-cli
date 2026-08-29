@@ -1525,26 +1525,34 @@ default io-harness will use. You are told before the turn is spent, because the
 author of a commit is the one thing about it that cannot be corrected afterwards
 without rewriting history.
 
-### The refusal this repairs
+### The refusal this repairs — and the half of it that is now fixed upstream
 
-**Before 0.25.0 all seven tools were refused before they ran, for most operators,
-and nobody was ever asked.** io-harness's git spawn checks the `exec` policy
-itself and accepts only an outright allow. Every other gated act turns an *ask*
-into a question on your screen and waits for it; this one returns a refusal
-instead, so `ask` behaves exactly as `deny` does. `ask before writes` — the
-posture the wizard recommends, and the one this README recommends with it — sets
-`exec` to ask. That is the whole of the defect, and it is filed upstream as
-io-harness#214.
+**Through io-harness 0.69.0, all seven tools were refused before they ran, for
+most operators, and nobody was ever asked.** io-harness's git spawn checked the
+`exec` policy itself and accepted only an outright allow. Every other gated act
+turned an *ask* into a question on your screen and waited for it; this one
+returned a refusal instead, so `ask` behaved exactly as `deny` did — and `ask
+before writes`, the posture the wizard recommends, sets `exec` to ask. io-cli
+0.25.0 found that and filed it as io-harness#214.
 
-What io-cli does about it is name the refusal and offer one rule: `exec` allowed
-for `git`, one binary, for this session. `/commit` asks that question *before* it
-spends the turn, because a commit the policy was always going to refuse still
-costs a real completion to discover. The rule goes through the same remembered
-layer as anything else you allow for a session, so it is exactly as strong as
-those and no stronger: it widens an asking default and cannot take back a deny
-from a layer beneath it. One binary name is also the narrowest grant that works —
-an `exec` pattern has no notion of a subcommand, so `git` says *this program may
-be spawned* and nothing about any other.
+**io-harness 0.70.0 closed it, and 0.29.0 pins 0.70.0.** An asking posture now
+raises an ordinary approval: you get the question, and git runs if you say so.
+If you run the recommended posture, none of the rest of this section applies to
+you any more.
+
+What is left is `read only`, where `exec` is a **deny** and there is still no
+question for you to answer. There io-cli names the refusal and offers one rule:
+`exec` allowed for `git`, one binary, for this session. `/commit` asks that
+*before* it spends the turn, because a commit the policy was always going to
+refuse still costs a real completion to discover. The rule goes through the same
+remembered layer as anything else you allow for a session, so it is exactly as
+strong as those and no stronger — and it is offered **only** where the deny came
+from the posture's own default rather than from a rule somebody wrote, because a
+later layer can add capability but can never take back a denial. Offering it
+against a deny rule would be advice that can never be taken. One binary name is
+also the narrowest grant that works: an `exec` pattern has no notion of a
+subcommand, so `git` says *this program may be spawned* and nothing about any
+other.
 
 **Under a posture that denies rather than asks, no rule is offered.** A rule is
 matched before a default, so the same allowance would work under `read only` too,

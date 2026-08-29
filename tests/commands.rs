@@ -414,6 +414,76 @@ fn o2_the_management_write_verbs_reach_the_shared_parse() {
     );
 }
 
+/// **The plural spelling the router takes is the spelling the parse takes.**
+///
+/// `commands::parse` routes `/plugins install x` and `/servers add …` to
+/// `manage::parse` on purpose — the thing being listed is plural, so the plural is
+/// what a hand reaches for, and the comment above that arm says refusing it
+/// teaches nothing. Until 0.29.0 the parse then refused both words as surfaces io
+/// does not manage, so five `/plugins` verbs and four `/servers` verbs were
+/// accepted by one module and refused by the next with a sentence about a surface
+/// the operator had not typed.
+///
+/// **Neither module can see this alone**, which is why it is one test rather than
+/// two: `commands::parse` returns the correct `Action::Manage` and every test of it
+/// passes, while `manage::parse` is asked about a word it never claimed to take and
+/// answers correctly for the question it was asked. The defect is only in the
+/// join, so the join is what is driven — router first, then `tokens` and `parse`
+/// over exactly what the router handed back.
+///
+/// Sabotage: drop the `"plugins" => "plugin"` fold from the top of `manage::parse`.
+/// Under it every plural line below comes back `Err` naming the three surfaces,
+/// over a line the router had already accepted.
+#[test]
+fn o2_the_plural_spelling_the_router_takes_is_the_spelling_the_parse_takes() {
+    use io_cli::commands::Action;
+    use io_cli::manage;
+
+    for line in [
+        "plugins add ./bundles/rust-review",
+        "plugins install owner/repo",
+        "plugins remove ./bundles/rust-review",
+        "plugins search review",
+        "plugins marketplace list",
+        "servers add semlith -- semlith --store /tmp/.semlith mcp",
+        "servers edit semlith --timeout-secs 30",
+        "servers get semlith",
+        "servers remove semlith",
+    ] {
+        let Action::Manage(routed) = commands::parse(line, &defaults(), &DARK) else {
+            panic!("`/{line}` no longer reaches `manage::parse` at all");
+        };
+        // The whole line travels, which is what makes the two doors one door.
+        assert_eq!(routed, line);
+        if let Err(refusal) = manage::parse(&manage::tokens(&routed)) {
+            panic!(
+                "`/{line}` was routed to the one parse and refused there: {refusal}. \
+                 A spelling one module admits and the next refuses is worse than a \
+                 spelling neither takes."
+            );
+        }
+    }
+
+    // The fold is an equivalence rather than a rename: the singular reads exactly
+    // the same, so nothing was moved onto a second meaning.
+    assert_eq!(
+        manage::parse(&manage::tokens("plugins list")),
+        manage::parse(&manage::tokens("plugin list")),
+    );
+    assert_eq!(
+        manage::parse(&manage::tokens("servers list")),
+        manage::parse(&manage::tokens("mcp list")),
+    );
+    // And a word that is neither spelling is still refused by name, so the fold
+    // did not become "anything close enough".
+    let refusal = manage::parse(&manage::tokens("plugs list"))
+        .expect_err("`plugs` is not a surface io manages");
+    assert!(
+        refusal.contains("`plugs`"),
+        "the refusal no longer echoes the word that was typed: {refusal}",
+    );
+}
+
 /// **The palette did not grow, and no group was re-filed.**
 ///
 /// The other half of the assertion above, and the reason it is worth its own

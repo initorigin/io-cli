@@ -33,9 +33,18 @@
 //! `description` — and it goes through [`crate::edit::value_at`], because
 //! `src/edit.rs` is this crate's only permitted TOML parser by path
 //! (`tests/dependencies.rs`, `f7_the_configuration_is_read_through_the_harness_…`).
-//! That function answers in **source bytes**, quotes included, so the value is
-//! unquoted here exactly the way `src/pluginview.rs:727` already unquotes a
-//! declared path — one rule for the whole crate rather than two spellings of it.
+//! That function answers in **source bytes**, quotes included, so every value read
+//! here goes through this module's own `declared`, which unquotes it and then
+//! strips it of control
+//! characters and bounds its length.
+//!
+//! **A manifest is a stranger's file and is treated as one.** `src/fetch.rs:446`
+//! states the rule for git's stderr — output from a program io-cli did not write,
+//! on a renderer whose scrollback is the transcript — and a marketplace manifest is
+//! the same trust class. TOML permits raw newlines inside a `"""` string, so a
+//! `description` can otherwise put forged extra lines on the very surface an
+//! operator reads to decide whose code to install. `plain` is that filter and
+//! every value out of a manifest passes through it, the hook commands included.
 //!
 //! **A manifest that does not name itself is still a bundle.** io-harness would
 //! refuse to load it, and that refusal is io-harness's to make when somebody
@@ -273,24 +282,160 @@ pub fn manifest(dir: &Path) -> Option<Bundle> {
     })
 }
 
-/// One top-level key of a manifest, unquoted.
+/// One top-level key of a manifest, unquoted, filtered and bounded.
 ///
 /// [`crate::edit::value_at`] answers in the value's **source bytes**, so a string
-/// arrives with its quotes on. They are trimmed the way `src/pluginview.rs:727`
-/// trims a declared path — the same two calls in the same order, so there is one
-/// rule in this crate for turning TOML source back into a value rather than two
-/// that can drift.
+/// arrives with its quotes on and its escapes unresolved. `unquote` takes them
+/// off, `plain` takes the control characters out and `bounded` caps the length
+/// — in that order, because decoding an escape is what can *produce* a control
+/// character and a filter that ran first would not see it.
 ///
 /// An empty result is `None` rather than `Some("")`: a key present and blank names
 /// a bundle no better than a key that is absent, and collapsing them here means
 /// [`Bundle::label`] has one case to answer instead of two.
 fn declared(text: &str, key: &str) -> Option<String> {
     let raw = crate::edit::value_at(text, key)?;
-    let value = raw.trim().trim_matches('"').trim();
+    let value = plain(&unquote(raw.trim()));
+    let value = value.trim();
     if value.is_empty() {
         return None;
     }
-    Some(value.to_string())
+    Some(bounded(value))
+}
+
+/// The longest a single value out of a stranger's manifest may be.
+///
+/// A [`matching`] hit is one finished line of `<spelling> · <description>`, and a
+/// description is a field a repository fills in — nothing stops it holding a
+/// megabyte on one line, and a picker row and a scrollback line are both worse than
+/// useless when it does. Two hundred characters is longer than any terminal is wide
+/// and shorter than anything that can bury the row above it.
+///
+/// **A hook's command is deliberately not bounded by this** — see [`hooks`]: it is
+/// argv an operator is consenting to, and a shortened argv is the one thing that
+/// surface must never show.
+const LONGEST: usize = 200;
+
+/// `value` cut to [`LONGEST`] characters.
+///
+/// Plain dots rather than [`Glyphs::ellipsis`]: this is a property of the data and
+/// runs before any renderer is chosen, and a value that arrives at both glyph sets
+/// already carrying a `…` is a value that is wrong in one of them.
+fn bounded(value: &str) -> String {
+    if value.chars().count() <= LONGEST {
+        return value.to_string();
+    }
+    let mut out: String = value.chars().take(LONGEST).collect();
+    out.push_str("...");
+    out
+}
+
+/// A manifest value made safe to put in a terminal.
+///
+/// `src/fetch.rs:446`'s rule, on the same trust class for the same reason: this is
+/// content from a file io-cli did not write, and on this renderer the scrollback is
+/// the transcript. A `description` spelled as a TOML multi-line string may carry
+/// raw newlines, and one of those on the consent surface is a forged line the
+/// operator reads as io-cli's own.
+///
+/// A control character becomes a **space** rather than being dropped, which is the
+/// one place this differs from `fetch.rs`: that function keeps line structure
+/// because `Fetched::sentence` reads the last line, and everything here has to end
+/// up on one line — where dropping a newline would fuse the two words either side
+/// of it into a word neither the file nor io-cli ever spelled.
+///
+/// Unhandled on purpose: the bidirectional format characters (`U+202E` and its
+/// neighbours) are not control characters and are left as they are. They can
+/// reverse how a run of text *displays* without changing what it says, which is a
+/// separate problem from this one and belongs wherever this crate decides it for
+/// every surface at once rather than in the marketplace reader alone.
+fn plain(value: &str) -> String {
+    value
+        .chars()
+        .map(|glyph| if glyph.is_control() { ' ' } else { glyph })
+        .collect()
+}
+
+/// The TOML source of a string value, turned back into the string.
+///
+/// **`trim_matches('"')` understands one of TOML's four string forms**, and
+/// `src/edit.rs:764` already documents that hazard for its own segment splitter —
+/// the fix made there was never applied here. `name = 'tools'` produced the label
+/// `'tools'` while io-harness namespaces that bundle's contributions with `tools`,
+/// so the bundle was unreachable by the only word that matters and the quotes were
+/// drawn on the row.
+///
+/// Handled: literal strings (`'…'`, `'''…'''`), basic strings (`"…"`), multi-line
+/// basic strings (`"""…"""`) including the newline TOML trims immediately after the
+/// opening delimiter, and the escapes `escapes` names.
+///
+/// **Not handled, and stated rather than implied:** the `\uXXXX` / `\UXXXXXXXX`
+/// escapes and the line-ending backslash of a multi-line basic string are left
+/// exactly as the file spells them, so they show as the text they are written as
+/// and never as the character they denote. That is the safe direction — an escape
+/// this function does not decode cannot become a control character — and full TOML
+/// string decoding belongs in `src/edit.rs`, which is this crate's only permitted
+/// TOML parser by rule and is the file that already owns `toml`'s own decoder.
+/// Anything that is not a quoted string at all — a number, an array, a hook's `run`
+/// — comes back untouched.
+fn unquote(raw: &str) -> String {
+    for fence in ["\"\"\"", "'''"] {
+        if raw.len() >= 2 * fence.len() && raw.starts_with(fence) && raw.ends_with(fence) {
+            let inner = &raw[fence.len()..raw.len() - fence.len()];
+            // TOML: a newline immediately after the opening delimiter is not part
+            // of the value.
+            let inner = inner
+                .strip_prefix("\r\n")
+                .or_else(|| inner.strip_prefix('\n'))
+                .unwrap_or(inner);
+            return if fence.starts_with('"') {
+                escapes(inner)
+            } else {
+                inner.to_string()
+            };
+        }
+    }
+    if raw.len() >= 2 && raw.starts_with('\'') && raw.ends_with('\'') {
+        // A literal string takes no escapes at all, which is the whole of what
+        // makes it literal.
+        return raw[1..raw.len() - 1].to_string();
+    }
+    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+        return escapes(&raw[1..raw.len() - 1]);
+    }
+    raw.to_string()
+}
+
+/// The escape sequences of a TOML basic string, resolved.
+///
+/// An escape this function does not know is copied through with its backslash
+/// rather than being dropped or guessed at: the text then says what the file says,
+/// which is the honest answer and the one that cannot invent a character. See
+/// `unquote` for which those are.
+fn escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut glyphs = text.chars();
+    while let Some(glyph) = glyphs.next() {
+        if glyph != '\\' {
+            out.push(glyph);
+            continue;
+        }
+        match glyphs.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('b') => out.push('\u{8}'),
+            Some('f') => out.push('\u{c}'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Every bundle inside a clone, the clone's own root included.
@@ -628,35 +773,130 @@ fn asked(query: &str) -> (&str, Option<&str>) {
 /// that is F4's named sabotage. The two bundles are two different repositories'
 /// code: resolving to whichever the walk happened to reach first installs something
 /// the operator did not choose, silently, under a name they believed meant one
-/// thing. The refusal spells both qualified forms, so the fix is a paste rather
-/// than a lookup.
+/// thing. The refusal spells every way of choosing (`offer`), so the fix is a
+/// paste rather than a lookup.
+///
+/// **A qualifier that names one bundle's own directory beats one that names the
+/// whole marketplace.** One clone can hold two bundles under one label — a
+/// repository that ships `plugins/rust-review` and a fixture copy of it under
+/// `tests/` is the ordinary shape of that — and the marketplace's name then
+/// qualifies neither of them. Without this narrowing the refusal offered one
+/// spelling twice and both copies answered to it, which made the bundle
+/// permanently uninstallable by name: every spelling on offer returned the refusal
+/// that offered it. So `qualified` is matched too, and an exact hit on one
+/// directory wins over the marketplace-wide reading it also satisfies — which is
+/// what makes `<name>@<owner>/<repo>` keep resolving to a clone's own root bundle
+/// when that root shares its label with something deeper.
 pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
     let (name, qualifier) = asked(query);
     let hits: Vec<(&Market, &Bundle)> = markets
         .iter()
         .flat_map(|market| market.bundles.iter().map(move |bundle| (market, bundle)))
-        .filter(|(market, bundle)| {
+        .filter(|hit| {
+            let (market, bundle) = *hit;
             bundle.label() == name
-                && qualifier
-                    .is_none_or(|which| which == market.name() || which == market.named.repo)
+                && qualifier.is_none_or(|which| {
+                    which == market.name()
+                        || which == market.named.repo
+                        || which == qualified(market, bundle)
+                })
         })
         .collect();
+    let precise: Vec<(&Market, &Bundle)> = match qualifier {
+        Some(which) => hits
+            .iter()
+            .copied()
+            .filter(|hit| which == qualified(hit.0, hit.1))
+            .collect(),
+        None => Vec::new(),
+    };
+    let hits = if precise.len() == 1 { precise } else { hits };
     match hits.as_slice() {
         [(_, bundle)] => Ok(bundle.dir.clone()),
         [] => Err(unheld(markets, query)),
         several => {
             let spellings = several
                 .iter()
-                .map(|(market, _)| format!("`{name}@{}`", market.name()))
+                .map(|hit| format!("`{}`", offer(hit.0, hit.1)))
                 .collect::<Vec<_>>()
                 .join(" and ");
+            // **The count is of marketplaces only when there is more than one of
+            // them.** Counting hits and spelling the qualifier from the
+            // marketplace's name told an operator that "2 marketplaces" held the
+            // name when one did, and then named that one marketplace twice.
+            let mut which: Vec<String> = several.iter().map(|hit| hit.0.name()).collect();
+            which.sort();
+            which.dedup();
+            let held = if let [only] = which.as_slice() {
+                let count = several.len();
+                format!("{count} bundles in the marketplace `{only}` are called `{name}`")
+            } else {
+                let count = which.len();
+                format!("{count} marketplaces here hold a bundle called `{name}`")
+            };
             Err(format!(
-                "{} marketplaces here hold a bundle called `{name}`, and installing whichever \
-                 was found first would install code you did not choose; say which one: {spellings}",
-                several.len()
+                "{held}, and installing whichever was found first would install code you did \
+                 not choose; say which one: {spellings}"
             ))
         }
     }
+}
+
+/// `<owner>/<repo>` and then the bundle's own path inside that clone.
+///
+/// The one qualifier that is unique for every bundle on the disk: a marketplace
+/// name is unique by the layout [`crate::fetch::at`] writes, and no two bundles in
+/// one clone sit in one directory. Always `/` between the segments, whatever the
+/// platform spells a path with, because this is a word an operator types and pastes
+/// out of a refusal rather than a path anything opens.
+///
+/// A clone's own root bundle has nothing to add and is qualified by the marketplace
+/// name alone — which is what [`locate`]'s narrowing needs it to be, so that the
+/// shortest spelling still names something exactly.
+fn qualified(market: &Market, bundle: &Bundle) -> String {
+    let mut out = market.name();
+    let inside = bundle
+        .dir
+        .strip_prefix(&market.root)
+        .unwrap_or(bundle.dir.as_path());
+    for part in inside.components() {
+        out.push('/');
+        out.push_str(&part.as_os_str().to_string_lossy());
+    }
+    out
+}
+
+/// The spelling of `bundle` that [`locate`] resolves to it and to nothing else.
+///
+/// **Every surface that offers a spelling offers this one**, so a refusal, the
+/// list of what is here, `plugin search` and the guided browser's prefilled
+/// `/plugin add` cannot disagree about what to type — and none of them can hand an
+/// operator a string that returns the refusal it came from, which is what the
+/// marketplace's name alone did for two bundles sharing a label inside one clone.
+/// Public for that last one: the driver has a `Market` and a `Bundle` in hand and
+/// spelling `<label>@<market>` there a second time is how the two drift.
+///
+/// The shortest spelling that is unambiguous: the marketplace's name where the
+/// label is unique in it, and the bundle's own directory where it is not. A
+/// qualifier longer than it needs to be is one an operator retypes wrongly.
+///
+/// ponytail: the scan is over one marketplace's bundles per call, so a listing is
+/// quadratic in a single clone's bundle count. A clone holding enough bundles for
+/// that to be measurable is a clone whose listing is unreadable for other reasons.
+#[must_use]
+pub fn offer(market: &Market, bundle: &Bundle) -> String {
+    let label = bundle.label();
+    let copies = market
+        .bundles
+        .iter()
+        .filter(|other| other.label() == label)
+        .count();
+    let which = if copies > 1 {
+        qualified(market, bundle)
+    } else {
+        market.name()
+    };
+    format!("{label}@{which}")
 }
 
 /// What to say when no marketplace holds the name that was asked for.
@@ -664,7 +904,7 @@ pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
 /// The list of what *is* here is the whole point of the sentence: a bare "not
 /// found" over a set of clones an operator fetched weeks ago leaves them running
 /// `plugin marketplace list` and then descending into each one. Every bundle is
-/// named in the qualified form, which is the form that always resolves.
+/// named in the qualified form (`offer`), which is the form that always resolves.
 fn unheld(markets: &[Market], query: &str) -> String {
     let held: Vec<String> = markets
         .iter()
@@ -672,7 +912,7 @@ fn unheld(markets: &[Market], query: &str) -> String {
             market
                 .bundles
                 .iter()
-                .map(move |bundle| format!("`{}@{}`", bundle.label(), market.name()))
+                .map(move |bundle| format!("`{}`", offer(market, bundle)))
         })
         .collect();
     if held.is_empty() {
@@ -782,6 +1022,18 @@ impl Chosen {
 /// rather than skipped — this is a disclosure, and a hook drawn as a blank row is
 /// the silence the whole surface exists to end.
 ///
+/// **An empty `on` is every event and is said so.** io-harness documents `on = []`
+/// as firing on all of them (`io-harness/src/hooks.rs:116`), so the hook that runs
+/// most often was the one disclosed as `[]` — the least alarming two characters on
+/// the screen where the operator decides.
+///
+/// **Every value goes through `plain` and none through `bounded`.** A `run`
+/// comes back as the source span of an array, and TOML lets that array run over as
+/// many lines as it likes — newlines straight into the consent list. They are
+/// filtered; the length is not, because this is argv somebody is consenting to and
+/// a shortened argv is worse than no argv at all. See [`disclosure`], which is why
+/// the consent surface is no longer given a width to shorten it by.
+///
 /// **Display only, and deleted whole when #223 lands.** What is installed and
 /// whether it may be stay io-harness's parse and io-harness's trust rule.
 #[must_use]
@@ -795,8 +1047,12 @@ pub fn hooks(dir: &Path) -> Vec<(String, String)> {
         .count();
     (0..count)
         .map(|index| {
-            let at = |key: &str| crate::edit::value_at(&text, &format!("hook[{index}].{key}"));
+            let at = |key: &str| {
+                crate::edit::value_at(&text, &format!("hook[{index}].{key}"))
+                    .map(|raw| plain(&unquote(raw.trim())))
+            };
             let event = at("on")
+                .filter(|on| !every_event(on))
                 .or_else(|| at("at"))
                 .unwrap_or_else(|| "every event".to_string());
             let command = at("run")
@@ -805,6 +1061,16 @@ pub fn hooks(dir: &Path) -> Vec<(String, String)> {
             (event, command)
         })
         .collect()
+}
+
+/// Whether an `on` is the empty array, whatever whitespace it is spelled with.
+///
+/// The source bytes, so `[]`, `[ ]` and an array broken over three lines are one
+/// answer. Anything with a value in it is not this.
+fn every_event(on: &str) -> bool {
+    on.chars()
+        .filter(|glyph| !glyph.is_whitespace())
+        .eq("[]".chars())
 }
 
 /// What a just-declared, switched-off bundle turned out to be.
@@ -850,11 +1116,30 @@ pub struct Disclosure {
 /// reached through `/var` and canonicalises to `/private/var`, and a raw comparison
 /// would answer "io-harness read no bundle there" about the entry that was just
 /// written.
+///
+/// # `_width` is taken and deliberately not used
+///
+/// **Nothing on a consent surface may be elided, and the hook rows are why.**
+/// [`crate::pluginview::detail`] shortens a row's detail to the width it is given,
+/// and on an eighty-column terminal that cuts a hook's `run` array with an
+/// ellipsis — so the operator consented to a truncated argv, on the one
+/// contribution kind that runs programs and the entire reason [`hooks`] exists.
+/// The argv door passed `u16::MAX` and was never shortened, and that door cannot
+/// consent; the TUI door passed the screen's own width, and that is the door where
+/// consent happens.
+///
+/// A width bound buys nothing here in any case: these rows are folded into
+/// [`Disclosure::said`] and written into the scrollback one line at a time, where
+/// the terminal wraps them, rather than drawn into a fixed-width picker. So the
+/// renderer is handed a width nothing can exceed and the caller's is ignored. The
+/// argument stays on the signature because both doors have a width to hand and a
+/// later row here may want one — and taking it while ignoring it is a smaller lie
+/// than shortening a command somebody is about to consent to.
 pub fn disclosure(
     view: &crate::pluginview::View,
     dir: &Path,
     hooks: &[(String, String)],
-    width: u16,
+    _width: u16,
     glyphs: &Glyphs,
 ) -> Result<Disclosure, String> {
     let real = resolved(dir);
@@ -878,7 +1163,7 @@ pub fn disclosure(
         })?;
     Ok(Disclosure {
         id: listed.id.clone(),
-        said: crate::pluginview::detail(listed, width, glyphs, hooks)
+        said: crate::pluginview::detail(listed, u16::MAX, glyphs, hooks)
             .into_iter()
             .map(|row| match row.detail {
                 Some(detail) => format!("{}{}{detail}", row.label, glyphs.separator),
@@ -900,10 +1185,16 @@ pub fn disclosure(
 /// lowercase identifier — a case-sensitive search over the pair finds one or the
 /// other and never both.
 ///
-/// One finished line each, and the first field is the **qualified spelling**, which
-/// is exactly what `plugin add` takes: the answer to "what is out there" is then
-/// also the thing to paste, with no second lookup to work out which marketplace the
-/// hit came from.
+/// One finished line each, and the first field is `offer`'s **qualified
+/// spelling**, which is exactly what `plugin add` takes: the answer to "what is out
+/// there" is then also the thing to paste, with no second lookup to work out which
+/// marketplace the hit came from — and never the same string twice, which is what
+/// the marketplace's name alone printed for two bundles sharing a label inside one
+/// clone.
+///
+/// The description is [`Bundle::line`]'s and is therefore already
+/// control-character-free and bounded — see `declared`. A hit is one line, and a
+/// stranger's manifest does not get to decide how many.
 #[must_use]
 pub fn matching(markets: &[Market], text: &str) -> Vec<String> {
     let needle = text.to_lowercase();
@@ -917,7 +1208,7 @@ pub fn matching(markets: &[Market], text: &str) -> Vec<String> {
                     .as_deref()
                     .is_some_and(|said| said.to_lowercase().contains(&needle))
         })
-        .map(|(market, bundle)| format!("{}@{} · {}", bundle.label(), market.name(), bundle.line()))
+        .map(|(market, bundle)| format!("{} · {}", offer(market, bundle), bundle.line()))
         .collect()
 }
 

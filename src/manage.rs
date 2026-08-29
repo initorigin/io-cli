@@ -263,7 +263,9 @@ pub fn tokens(line: &str) -> Vec<String> {
 /// exactly what `io mcp add …` leaves after the binary name and exactly what
 /// [`tokens`] makes of `/mcp add …`. A leading `/` is tolerated here as well, so
 /// a caller that forgot to strip one gets the same reading rather than a refusal
-/// about a surface called `/mcp`.
+/// about a surface called `/mcp`. **`plugins` and `servers` are the same two
+/// surfaces spelled plural** and are folded onto `plugin` and `mcp` here — see the
+/// comment on the fold for why here and not in [`crate::commands`].
 ///
 /// Every `Err` is a sentence naming what was wrong and what is accepted instead.
 /// There is no bare "invalid argument" in this module: the operator is at a
@@ -279,6 +281,27 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
         );
     };
     let surface = surface.strip_prefix('/').unwrap_or(surface.as_str());
+    // **The plural is the same surface, and it is folded here rather than in the
+    // router.** [`crate::commands`] takes `/plugins` and `/servers` on purpose —
+    // the thing being listed is plural, so the plural is what a hand reaches for
+    // — and it routes those lines, whole, to this parse. Until 0.29.0 they arrived
+    // and were refused by the arm at the bottom as surfaces io does not manage, so
+    // `/plugins install x` was accepted by one module and refused by the next.
+    //
+    // Here rather than there because this is the only door **both** ways in go
+    // through: `io plugins install x` from a shell reaches this function without
+    // passing the router at all, and a fold written in the router would take the
+    // slash form and leave the argv form refused — which is the same disagreement
+    // moved rather than ended, and the one F6's byte comparison exists to forbid.
+    //
+    // The refusals below name the canonical spelling, which is the one the
+    // operator's next line may as well carry. An unknown word is not folded and is
+    // still echoed back as typed.
+    let surface = match surface {
+        "plugins" => "plugin",
+        "servers" => "mcp",
+        other => other,
+    };
     let verb = tokens.get(1).map(String::as_str);
     let args = scan(tokens.get(2..).unwrap_or(&[]))?;
 

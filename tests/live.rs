@@ -3111,16 +3111,29 @@ async fn live_f5_a_commit_the_agent_made_reads_back_with_its_message() {
     );
 }
 
-/// **F1/F2 — an asking posture refuses git before anything is spent, and the one
-/// rule lifts it.**
+/// **F1/F2 — an asking posture ASKS about git and the approver's answer stands.**
 ///
-/// Asserted against a real run rather than against a `Policy` alone, because the
-/// claim this release rests on is about what io-harness's *spawn* does with an
-/// asking posture, and that is only observable by letting it try.
+/// **This arm asserted the opposite until 0.29.0, and the pin is what changed it.**
+/// It was written for 0.25.0, whose premise was that io-harness refused git under
+/// an asking posture *before any approver existed to be consulted* — reported as
+/// io-harness#214. **0.70.0 closed that issue**, at all four sites carrying the
+/// comparison, and this arm came back with `refusals []` on the first live run
+/// after the pin: the approval is raised, `ApproveAll` answers it, and the spawn
+/// happens.
+///
+/// So what it proves now is the fix rather than the defect, and it is still worth
+/// a real run for the reason it always was: **only a live turn has an approver in
+/// it.** `tests/policy.rs` can assert that the posture's effect is `Ask`; nothing
+/// but a run can show that `Ask` is now routed to somebody and honoured.
+///
+/// The allowance is still asserted, because it is still what a `read only`
+/// operator needs — a deny that came from a tier default, which is the one shape
+/// `crate::commit::asked` will offer to lift.
 #[tokio::test]
 #[ignore = "live: needs OPENROUTER_API_KEY"]
-async fn live_f1_f2_an_asking_posture_refuses_git_and_the_allowance_lifts_it() {
+async fn live_f1_f2_an_asking_posture_asks_about_git_and_the_answer_is_honoured() {
     use io_cli::contract::Capabilities;
+    use io_harness::{Act, Effect};
 
     let key = key();
     let dir = tempfile::tempdir().expect("a workspace");
@@ -3136,14 +3149,31 @@ async fn live_f1_f2_an_asking_posture_refuses_git_and_the_allowance_lifts_it() {
         layers: Policy::default().layers,
         defaults: Posture::AskWrites.defaults(),
     };
-    assert!(
-        io_cli::approval::refuses_git(&asking),
-        "the premise of this release: an asking posture refuses git",
+    assert_eq!(
+        asking.check(Act::Exec, io_cli::approval::GIT).effect,
+        Effect::Ask,
+        "the recommended posture asks about git — since io-harness 0.70.0 that \
+         means an approval is raised rather than a refusal returned",
     );
 
-    let lifted = io_cli::approval::effective_policy(&asking, &[io_cli::approval::git_allowance()]);
+    // And a `read only` operator is the one the allowance is still for: a deny
+    // that came from a tier default rather than from a rule, which is the only
+    // shape `commit::asked` offers to lift.
+    let denying = Policy {
+        layers: Policy::default().layers,
+        defaults: Posture::ReadOnly.defaults(),
+    };
+    let verdict = denying.check(Act::Exec, io_cli::approval::GIT);
+    assert_eq!(verdict.effect, Effect::Deny);
     assert!(
-        !io_cli::approval::refuses_git(&lifted),
+        verdict.rule.is_none(),
+        "the deny has to come from the tier default for the allowance to be \
+         offerable; a deny rule can never be widened by a later layer",
+    );
+    let lifted = io_cli::approval::effective_policy(&denying, &[io_cli::approval::git_allowance()]);
+    assert_eq!(
+        lifted.check(Act::Exec, io_cli::approval::GIT).effect,
+        Effect::Allow,
         "and the one rule lifts it",
     );
 
@@ -3188,16 +3218,27 @@ async fn live_f1_f2_an_asking_posture_refuses_git_and_the_allowance_lifts_it() {
         result.run_id
     );
 
-    // **The refusal io-cli explains, arriving from the harness rather than from a
-    // fixture.** `ApproveAll` is handed in deliberately: it answers the `.git`
-    // write gate, so anything refused here was refused by the spawn's own exec
-    // check, which is the behaviour reported upstream as io-harness#214.
+    // **The fix, observed rather than predicted.** `ApproveAll` is handed in
+    // deliberately: it answers both the `.git` write gate and — since io-harness
+    // 0.70.0 — the exec approval the spawn now raises. So an `exec`/`git` refusal
+    // appearing here would mean the asking posture was still being treated as a
+    // hard refusal with nobody consulted, which is exactly the defect #214 closed.
+    //
+    // Asserted as an absence, which is weaker than asserting the spawn happened
+    // and is deliberate: whether the model chooses to call a git tool at all is
+    // the model's decision, and an arm that required the call would be a live
+    // test that fails on a differently-worded reply. What is not the model's
+    // decision is what the harness does when it *is* called, and a refusal is the
+    // only way that shows up here.
     assert!(
-        refusals
+        !refusals
             .iter()
             .any(|(act, target)| act == "exec" && target == io_cli::approval::GIT),
-        "an asking posture must produce an `exec`/`git` refusal — that is what \
-         `App::note_git` explains and what `/commit allow` lifts; got {refusals:?}",
+        "an `exec`/`git` refusal reached the observer while an approver was in \
+         force. io-harness 0.70.0 routes `Effect::Ask` on `Act::Exec` to the \
+         approver instead of refusing outright (#214); a refusal here means that \
+         is not happening, and `App::note_git` will be explaining a wall the \
+         operator was never actually shown. Got {refusals:?}",
     );
 }
 

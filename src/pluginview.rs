@@ -689,7 +689,12 @@ pub fn declared_off(text: &str) -> Option<(usize, PathBuf)> {
         let Some(raw) = crate::edit::value_at(text, &format!("plugin[{index}].path")) else {
             break;
         };
-        last = Some((index, PathBuf::from(raw.trim().trim_matches('"'))));
+        // Decoded by the inverse of the function that wrote it, for the reason
+        // `unquoted` states: the path this hands back is opened to read the
+        // bundle's hooks, and a path with an escape still in it opens a different
+        // manifest — or nothing, and the disclosure then fails closed on a generic
+        // sentence rather than on the real reason.
+        last = Some((index, PathBuf::from(unquoted(&raw))));
     }
     let (index, path) = last?;
     let enabled = crate::edit::value_at(text, &format!("plugin[{index}].enabled"))?;
@@ -847,6 +852,15 @@ pub fn remove(index: usize) -> crate::edit::Edit {
 /// removing something. Deleting the wrong `[[plugin]]` entry is silent: the
 /// operator loses a bundle they never mentioned and finds out when its skills stop
 /// being offered.
+///
+/// The value is **decoded before it is compared**, by the inverse of the function
+/// that wrote it — see `unquoted`. Until 0.29.0 it was `trim_matches('"')`, which
+/// undoes no escape at all, so a bundle at `plugins/a\b` — legal on Linux, and a
+/// directory inside a clone is named by whoever wrote the clone rather than by
+/// [`crate::fetch::resolve`], whose alphabet governs only `<owner>/<repo>` — was
+/// written with its backslash doubled and read back with it still doubled: a
+/// different path, matched against nothing, and `/plugin remove` refusing a row
+/// that is plainly on screen.
 pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Scope, usize)> {
     use io_harness::config::Scope;
     for scope in [Scope::Local, Scope::Project, Scope::User] {
@@ -863,7 +877,7 @@ pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Sc
             let Some(raw) = crate::edit::value_at(&text, &format!("plugin[{index}].path")) else {
                 break;
             };
-            let declared = PathBuf::from(raw.trim().trim_matches('"'));
+            let declared = PathBuf::from(unquoted(&raw));
             let resolved = if declared.is_absolute() {
                 declared.clone()
             } else {
@@ -884,9 +898,52 @@ pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Sc
 /// asked for on its own, and because this crate writes VALUES. It earns its keep
 /// on Windows, where a bundle's path is full of backslashes that a bare `"{}"`
 /// would hand to the parser as escapes.
+///
+/// Its inverse is `unquoted`, and the two are edited together — a write escaping
+/// something the read does not undo is a path that comes back as a different path.
 fn quoted(text: &str) -> String {
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
+}
+
+/// The inverse of [`quoted`]: the path back out of the value a file holds.
+///
+/// **The read half of this module did not exist until 0.29.0.** Both readers —
+/// [`declared_at`] and [`declared_off`] — took the value's bytes and stripped the
+/// surrounding quotes with `trim_matches('"')`, which undoes no escape, so every
+/// path `quoted` had escaped came back doubled. On Windows the doubled separators
+/// collapse and nothing shows; on Linux a bundle directory named `a\b` or `a"b` —
+/// and the directories inside a clone are named by whoever wrote the clone — came
+/// back as a directory that does not exist.
+///
+/// **Exactly `quoted`'s two escapes, undone, and no others.** A full TOML
+/// basic-string decoder — the newline, tab and unicode escapes among them — would
+/// be a second and wider
+/// grammar for a string this module spelled itself, and TOML's grammar belongs to
+/// `src/edit.rs` by rule (`tests/dependencies.rs`). A hand-written entry carrying
+/// an escape `quoted` never writes therefore still comes back with the escape
+/// consumed rather than expanded, which is a path that names nothing and is
+/// reported as one — the same outcome as before, on a value neither reader is for.
+///
+/// `unquoted(&quoted(text)) == text` for every `text`, which is the property the
+/// unit test below asserts and the only one either caller needs.
+fn unquoted(raw: &str) -> String {
+    let inner = raw.trim();
+    let inner = inner.strip_prefix('"').unwrap_or(inner);
+    let inner = inner.strip_suffix('"').unwrap_or(inner);
+    let mut out = String::with_capacity(inner.len());
+    let mut glyphs = inner.chars();
+    while let Some(glyph) = glyphs.next() {
+        // A backslash takes the character after it literally, which undoes both of
+        // `quoted`'s escapes in one arm. A trailing lone backslash — which `quoted`
+        // cannot have written — keeps itself rather than vanishing.
+        out.push(if glyph == '\\' {
+            glyphs.next().unwrap_or('\\')
+        } else {
+            glyph
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1288,6 +1345,45 @@ mod tests {
         assert_eq!(
             add(Path::new(r"C:\bundles\rust-review")),
             crate::edit::Edit::append("plugin", r#"path = "C:\\bundles\\rust-review""#)
+        );
+    }
+
+    /// **What `quoted` wrote is what the readers read back, escape for escape.**
+    ///
+    /// Both readers took the value's bytes and stripped its quotes with
+    /// `trim_matches('"')` until 0.29.0, which undoes nothing — so every path with
+    /// a `\` or a `"` in it came back doubled, and `declared_off` handed a path
+    /// like that to the manifest read that decides what an install discloses.
+    ///
+    /// Sabotage: put `raw.trim().trim_matches('"')` back in either reader. The
+    /// round trip below fails on the first two cases — and the second is the one
+    /// `trim_matches` mangles twice over, since it takes the escaped quote's
+    /// backslash off the end along with the closing quote.
+    #[test]
+    fn a_path_survives_being_written_and_read_back() {
+        for text in [
+            r"/Users/someone/plugins/a\b",
+            "/Users/someone/plugins/a\"b",
+            r"C:\bundles\rust-review",
+            "bundles/rust-review",
+            "",
+        ] {
+            assert_eq!(
+                unquoted(&quoted(text)),
+                text,
+                "the write and the read disagree about {text:?}, so a bundle is \
+                 declared at one path and looked for at another",
+            );
+        }
+
+        // And through the reader an install actually uses, which is where the
+        // wrong path becomes a different manifest.
+        let written = crate::edit::apply("", &[add_off(Path::new(r"plugins/a\b"))])
+            .expect("the disclosing entry applies");
+        assert_eq!(
+            declared_off(&written),
+            Some((0, PathBuf::from(r"plugins/a\b"))),
+            "the entry that was just written cannot be read back: {written}",
         );
     }
 
