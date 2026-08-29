@@ -2241,6 +2241,37 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             "chooses from the catalogue this provider serves"
                                                 .to_string(),
                                         ));
+                                        // **Offered only where there is a secret
+                                        // in the file to take out.** An entry
+                                        // already reading its key from the
+                                        // environment has nothing to move, and a
+                                        // row that did nothing would be the
+                                        // advertised-but-inert shape 0.19.0 built
+                                        // a gate against. `usize::MAX` stands for
+                                        // "no such row" the way `promote`'s
+                                        // absence already does.
+                                        let credential_at = match entry.credential {
+                                            io_cli::providers::Credential::Written => {
+                                                let at = rows.len();
+                                                rows.push(Row::with_detail(
+                                                    "take its key out of the file".to_string(),
+                                                    format!(
+                                                        "removes the `api_key` line, so the key is \
+                                                         read from ${} instead",
+                                                        io_cli::providers::variable(
+                                                            io_cli::providers::Endpoint::Preset(
+                                                                &entry.kind,
+                                                            ),
+                                                        )
+                                                        .unwrap_or_else(|| {
+                                                            "the provider's variable".to_string()
+                                                        }),
+                                                    ),
+                                                ));
+                                                at
+                                            }
+                                            _ => usize::MAX,
+                                        };
                                         let remove_at = rows.len();
                                         rows.push(Row::new("remove this link from the chain"));
                                         descended = Some((
@@ -2251,6 +2282,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 first,
                                                 kind: entry.kind.clone(),
                                                 model_at,
+                                                credential_at,
                                                 remove_at,
                                             },
                                         ));
@@ -2463,10 +2495,51 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             first,
                             kind,
                             model_at,
+                            credential_at,
                             remove_at,
                         } => {
                             let promote = if *first { usize::MAX } else { 1 };
                             let remove = *remove_at;
+                            // **The one caller `providers::edit`'s `api_key` path
+                            // has**, and it is the path that matters: an empty
+                            // value becomes `Edit::unset`, which deletes the line,
+                            // where writing `api_key = ""` would leave a key that
+                            // `provider::key_for` returns as a valid empty
+                            // credential — a 401 on every request with nothing on
+                            // screen to explain it.
+                            if index == *credential_at {
+                                match io_cli::providers::edit(at, "api_key", "") {
+                                    None => app.record(
+                                        Tone::Refused,
+                                        "that link no longer carries a written key".to_string(),
+                                    ),
+                                    Some(edit) => {
+                                        match io_cli::configure::write(
+                                            session.root(),
+                                            at.scope,
+                                            &[edit],
+                                        ) {
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                            Ok(()) => {
+                                                if let Ok((fresh, _)) =
+                                                    io_cli::configure::reload(session.root())
+                                                {
+                                                    config = fresh;
+                                                }
+                                                app.record(
+                                                    Tone::Success,
+                                                    format!(
+                                                        "{label}'s key is out of the file; it is \
+                                                         read from the environment from the next \
+                                                         turn, and the file no longer carries a \
+                                                         secret"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             // The model row descends rather than writing, so it is
                             // taken before the edit is worked out.
                             if index == *model_at {
@@ -2612,7 +2685,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         {
                                             app.record(Tone::Muted, shape);
                                         }
-                                        app.composer.set(&format!("/config {key} "));
+                                        // **A machine-written key is not offered
+                                        // for typing at all, and prefilling it was
+                                        // a route straight past its own guard.**
+                                        // `manage::config_value` refuses a
+                                        // `Kind::Machine` key by name, but the
+                                        // shorthand `/config <key> <value>` never
+                                        // consults the kind — so a composer
+                                        // prefilled with `/config prices.as_of `
+                                        // led the operator to the one door that
+                                        // would write it. The row says what the
+                                        // key is and offers the act beside it.
+                                        if io_cli::configure::kind_of(&key)
+                                            != Some(io_cli::configure::Kind::Machine)
+                                        {
+                                            app.composer.set(&format!("/config {key} "));
+                                        }
                                     }
                                 }
                             }
@@ -3539,7 +3627,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // everywhere: an empty section is not an error.
                         app.record(
                             Tone::Muted,
-                            "no MCP servers are configured; `/config` writes them",
+                            "no MCP servers are configured; `/mcp add <id> -- <command>` adds one, \
+                             or `/mcp add <id> --url <url>` for an HTTP server",
                         );
                     } else {
                         picker = Some((
@@ -3951,8 +4040,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let settings = io_cli::configure::settings(&config);
                     let mut paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
                     let mut rows = io_cli::configure::rows(&settings);
-                    // **Last, because it is the one row that acts.** Every other
-                    // row names a setting and puts it in the composer; a reader
+                    // **Last, because it is the one row that acts on its own.**
+                    // Every other row names a setting and descends into its
+                    // values — since 0.28.0 it is only the four keys no menu can
+                    // hold that still reach the composer, and this row reaches
+                    // neither. A reader
                     // scanning for `policy.defaults.write` should not have to step
                     // over something that does work on the way there.
                     rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
@@ -4049,6 +4141,27 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             },
                         },
                     }
+                }
+                // **A machine-written key is refused here too, because this is the
+                // door the guard was missing.** `manage::config_value` refuses a
+                // `Kind::Machine` key by name, so `io config set prices.as_of …`
+                // has never been able to write one — but the shorthand reaches
+                // `write_where` without consulting the kind at all, and two doors
+                // to one key that disagree about whether it may be typed is the
+                // asymmetry this release exists to remove. The act is offered
+                // rather than the refusal being left bare: the date is written by
+                // re-reading the catalogue, and that row is on `/config`.
+                Action::Config(Some((key, _)))
+                    if io_cli::configure::kind_of(&key)
+                        == Some(io_cli::configure::Kind::Machine) =>
+                {
+                    app.record(
+                        Tone::Refused,
+                        format!(
+                            "{key} is written by the price refresh rather than typed; the last row \
+                             of `/config` re-reads the catalogue and dates it"
+                        ),
+                    );
                 }
                 Action::Config(Some((key, value))) => {
                     picker = Some(write_where(session.root(), key, value));
@@ -6911,6 +7024,9 @@ enum Pick {
         /// it is reading a catalogue for. Read off the row the operator chose
         /// rather than re-derived, which is the same rule `at` follows.
         kind: String,
+        /// Where the "take its key out of the file" row sits, or `usize::MAX`
+        /// where the entry carries no written key and the row was not drawn.
+        credential_at: usize,
         /// Where the "change the model" and "remove" rows sit, recorded by the
         /// code that built them.
         ///

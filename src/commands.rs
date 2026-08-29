@@ -2056,17 +2056,43 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
                 None => Action::Export(Taken::Conversation(None)),
             }
         }
-        // **The verbs go to the one parse; the shorthand stays.** `/config set X
-        // Y`, `/config unset X`, `/config get X` and `/config list` are the words
-        // `io config` takes and reach the same `manage::parse`. `/config <key>
-        // <value>` — no verb — is the shorthand this surface has always had and
-        // is what `/mcp`'s edit row and `/gates` still put in the composer; it
-        // keeps its own arm below rather than being rewritten into a verb the
-        // operator did not type.
+        // **The two verbs that WRITE go to the one parse; the shorthand stays.**
+        // `/config set X Y` and `/config unset X` reach the same `manage::parse`
+        // `io config set|unset` reaches, so the two doors cannot disagree about
+        // what lands in a file. The two that read are answered below by the arms
+        // that have always answered them.
+        //
+        // `/config <key> <value>` — no verb — is the shorthand this surface has
+        // always had and is what `/mcp`'s edit row and `/gates` still put in the
+        // composer; it keeps its own arm below rather than being rewritten into a
+        // verb the operator did not type.
         "config" | "settings"
             if matches!(input.split_whitespace().nth(1), Some("set" | "unset")) =>
         {
             Action::Manage(input.to_string())
+        }
+        // **`get` and `list` are answered by the arms that already answer them,
+        // and routing them anywhere else was a silent write.** Without this,
+        // `/config get run.max_steps` fell through to the shorthand below and was
+        // read as the key `get` with the value `run.max_steps` — so a question
+        // wrote a key called `get` into the operator's file. `/config list` was
+        // read as a question about a key named `list`.
+        //
+        // They do not go to `manage` either: in a session the answer to `list` is
+        // the panel and the answer to `get` is the sentence this surface has
+        // always given, and `io config get|list` is the same reading printed for a
+        // script. Two media for one reading — the rule the `/mcp` and `/plugin`
+        // guards above follow.
+        "config" | "settings" if input.split_whitespace().nth(1) == Some("list") => {
+            Action::Config(None)
+        }
+        "config" | "settings" if input.split_whitespace().nth(1) == Some("get") => {
+            match input.split_whitespace().nth(2) {
+                Some(key) => Action::Config(Some((key.to_string(), String::new()))),
+                // `get` with nothing after it is the panel, not a question about
+                // an empty key.
+                None => Action::Config(None),
+            }
         }
         "config" | "settings" => {
             let mut rest = input.split_whitespace().skip(1);

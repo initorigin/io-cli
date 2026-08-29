@@ -64,7 +64,26 @@ model = "anthropic/claude-sonnet-4"
 # NOTE: a PROJECT-scoped file may narrow this and may never widen it — a
 # repository you cloned must not be able to grant itself permission. Widening
 # belongs in the user-scope file, which is where `io setup` writes.
+#
+# THERE ARE EXACTLY FIVE (KEY, VALUE) PAIRS A COMMITTED io.toml MAY NOT WRITE,
+# and io-harness refuses the WHOLE FILE for any one of them rather than dropping
+# that key — the check runs before the file is deserialized, so what you get is a
+# configuration that no longer parses rather than a rejected setting:
+#
+#   policy.defaults.exec  = "allow"
+#   policy.defaults.net   = "allow"
+#   sandbox.allow_network = true
+#   sandbox.force_floor   = false
+#   sandbox.mode          = "full-access"
+#
+# The narrowing value of each stays legal in a project file, which is what the
+# scope is for. Write any of the five in io.local.toml for this checkout, or in
+# this user-scope file for yourself. `/config` knows the list and says so on the
+# row BEFORE it writes, rather than writing and reporting the rollback.
 
+# Each of the four takes "allow", "ask" or "deny" — io-harness's own three, and
+# nothing else parses. `/config` offers them as a list rather than asking you to
+# type one, and a horizontal arrow steps through them on the row.
 [policy.defaults]
 read = "allow"
 write = "allow"
@@ -142,7 +161,18 @@ net = "deny"
 # because a key present with its own default is a key a reader has to wonder
 # about.
 #
-# [run]
+# EVERY COMMENT BELOW SAYS WHAT THE KEY TAKES, and that is not decoration: from
+# 0.28.0 `/config` chooses a value rather than asking you to type one, and it
+# decides what to offer from the same reading. A key whose values are a closed set
+# gets that set — from io-harness's own types where the set is the harness's — a
+# whole number gets a 1-2-5 ladder built around whatever the value in force is, a
+# model name gets the models `[prices.models]` already prices, a path gets the
+# workspace. What is left to type is only what no menu can hold: a substring, a
+# rubric, a URL, a command line. So a mismatch between one of these comments and
+# what io-cli offers is a defect in one of the two, and the comment is the half
+# you can check.
+#
+# [run]                      # every key here is a WHOLE NUMBER, none negative
 # max_steps = 40             # how many steps one turn may take
 # max_tokens = 250000        # the token ceiling for one turn
 # max_duration_secs = 900    # wall clock for one turn
@@ -151,16 +181,18 @@ net = "deny"
 #
 # [sandbox]
 # mode = "workspace-write"   # read-only | workspace-write | full-access
-# allow_network = false      # whether a contained command may reach the network
-# force_floor = true         # keep the floor even where the caller asked for less
+# allow_network = false      # true or false: may a contained command reach the network
+# force_floor = true         # true or false: keep the floor even where the caller asked for less
 #
 # NOTE on the three sandbox keys above: `allow_network = true`, `force_floor =
-# false` and `mode = "full-access"` are each REFUSED in a project-scoped file by
-# io-harness itself, for the reason the policy note above gives. `/config` shows
-# you the harness's own sentence when a write would do that, rather than a
-# summary of it.
+# false` and `mode = "full-access"` are three of the five pairs a project-scoped
+# file may not write — see the list under the policy block above, and note that
+# io-harness refuses the WHOLE FILE for one of them rather than that key. `/config`
+# says so on the row before it writes, and shows you the harness's own sentence
+# rather than a summary of it when a write does reach that refusal.
 #
 # [memory]                   # bounds the STORE, which outlives every run over it
+#                            # every key here is a WHOLE NUMBER, none negative
 # max_entries = 500          # how many durable entries are kept
 # max_chars = 200000         # the total size of them
 # max_entry_chars = 4000     # the size of any one of them
@@ -369,7 +401,11 @@ net = "deny"
 # whole file unreadable. io-cli's bookkeeping lives in [app.io-cli.prices] below.
 #
 #   as_of    the date the rates were read. REQUIRED: a price list with no date is
-#            a claim with no expiry. Written by a fetch rather than typed.
+#            a claim with no expiry. WRITTEN BY A FETCH RATHER THAN TYPED: a date
+#            set by hand is a claim about a fetch that never happened, and
+#            `io config set prices.as_of …` is refused by name for saying so. It
+#            is on `/config` to be READ, and the act beside it is the row that
+#            re-reads the catalogue and writes this itself.
 #   models   one entry per model, in micro-units PER MILLION TOKENS
 #
 # Rows for models the catalogue no longer serves are left alone rather than
@@ -394,9 +430,9 @@ net = "deny"
 # defaults and says so, carrying the harness's own message.
 
 [app.io-cli]
-# "dark" or "light". Absent means detect from the terminal background.
+# Exactly "dark" or "light". Absent means detect from the terminal background.
 theme = "dark"
-# How much of a change a diff shows.
+# How much of a change a diff shows. Exactly "unified" or "minimal".
 #
 #   "unified"  the hunk as the harness stored it, context and all. The default,
 #              and what an absent key means — so a file written before 0.3.0
@@ -404,7 +440,7 @@ theme = "dark"
 #   "minimal"  the changed lines and the @@ header, without the context. For
 #              reviewing by file rather than by hunk.
 diff = "unified"
-# Which marks to draw with: "unicode" or "ascii".
+# Which marks to draw with: exactly "unicode" or "ascii".
 #
 # Absent — the default — asks the locale: LC_ALL, then LC_CTYPE, then LANG, and
 # the first one PRESENT decides, whatever it says. Name a set here when the locale
@@ -416,16 +452,17 @@ diff = "unified"
 #
 # glyphs = "ascii"
 #
-# Run every session in plain mode: no animation, the ASCII set forced, and each
-# state the session enters committed to the scrollback as a line of text. The same
-# switch as `--plain`, and the flag wins — there is no `--no-plain`, so a file that
-# says true here cannot be turned off for one run.
+# true or false. Run every session in plain mode: no animation, the ASCII set
+# forced, and each state the session enters committed to the scrollback as a line
+# of text. The same switch as `--plain`, and the flag wins — there is no
+# `--no-plain`, so a file that says true here cannot be turned off for one run.
 #
 # false is the default and what an absent key means; it is written out so the file
 # says which way round it is.
 plain = false
 #
-# Whether a prompt that is only a question may be answered in one completion.
+# true or false. Whether a prompt that is only a question may be answered in one
+# completion.
 #
 # io-harness has classified turns since long before io-cli asked it to: a contract
 # carrying no verification criterion turns classification on, and a question then
@@ -520,9 +557,11 @@ fleet = "ctrl+f"
 # them in the half a session turn and an `io exec` run share, so what you write
 # here bounds your terminal exactly as it bounds CI.
 #
-# max_parallel_reads = 10          # read-only tool calls at once; 0 clamps to 1
-# spawn_background_after_secs = 120  # when a slow child is backgrounded
-# detached_spawns = true           # whether a spawn may detach at all
+# max_parallel_reads = 10            # a whole number: read-only tool calls at
+#                                    # once; 0 clamps to 1
+# spawn_background_after_secs = 120  # a whole number of seconds: when a slow
+#                                    # child is backgrounded
+# detached_spawns = true             # true or false: may a spawn detach at all
 
 # --- io-cli's own capabilities ----------------------------------------------
 #
@@ -593,7 +632,10 @@ fleet = "ctrl+f"
 # and live in [prices]; this is the bookkeeping io-harness does not model, in the
 # one section that will not refuse a key it has never heard of.
 #
-#   source_url   the catalogue to read. ABSENT MEANS io-harness's own default,
+#   source_url   a URL, and free text: no menu can hold one, so it is one of the
+#                few keys `/config` still opens a composer for — and it names the
+#                shape and shows an example first rather than opening a bare line.
+#                The catalogue to read. ABSENT MEANS io-harness's own default,
 #                which is the reference catalogue. Write this when you are on a
 #                self-hosted or `compatible` endpoint: the reference catalogue
 #                cannot speak for a server it has never heard of, and this key is
@@ -632,20 +674,31 @@ fleet = "ctrl+f"
 # precedence rule — a precedence rule here would quietly gate every turn on
 # something you did not choose, which is the one failure a gate must not have.
 #
-# `retries` is how many further turns a failing gate may buy, and it defaults to
-# 1. ZERO MEANS REPORT AND DO NOT RE-DRIVE: the failure is shown and the turn
-# ends, which is what you want when a person is watching. It is a small number on
-# purpose — a retry is a whole turn against a real model, not a loop iteration —
-# so an operator who wants several says so.
+# `retries` is a WHOLE NUMBER, none negative: how many further turns a failing
+# gate may buy, defaulting to 1. ZERO MEANS REPORT AND DO NOT RE-DRIVE: the
+# failure is shown and the turn ends, which is what you want when a person is
+# watching. It is a small number on purpose — a retry is a whole turn against a
+# real model, not a loop iteration — so an operator who wants several says so.
 #
 #   --- 1. a command that must exit a status ---------------------------------
 #
-# The argv of a program, not a shell line: io-harness checks argv[0] against this
-# session's `exec` policy and runs it without a shell, so `&&`, a pipe and a glob
-# are not available and were never going to be. `expect_exit` defaults to 0.
+# `command` IS AN ARRAY OF STRINGS AND NEVER A STRING. It is the argv of a
+# program, not a shell line: io-harness checks argv[0] against this session's
+# `exec` policy and runs it without a shell, so `&&`, a pipe and a glob are not
+# available and were never going to be. A scalar written here — `command = "cargo
+# test"` — is a value io-harness cannot read back, which is why it is the one key
+# in io-cli's whole catalogue with a list of its own rather than being lumped in
+# with free text. `io config set app.io-cli.gates.command cargo test --all-features`
+# takes the words after the key and writes them as the array.
 #
 # `command` IS ALWAYS A CONCRETE ARGV. An empty list is refused, and an absent one
 # is not a criterion at all — this key never means "work it out for me".
+#
+# `expect_exit` IS A SIGNED WHOLE NUMBER and defaults to 0. It is the one key here
+# that may go below zero — a process may legitimately be expected to exit on a
+# negative status — and it is the only signed key in the whole catalogue, so
+# `/config`'s ladder for it runs through zero into the negatives while every other
+# number key stops there.
 #
 # What detection is for is the OFFER: `/gates` asks io-harness what this repository
 # builds and tests with — it is the half of this that knows a Cargo workspace from
@@ -668,11 +721,14 @@ fleet = "ctrl+f"
 #
 #   --- 2. a file that must exist, and optionally say something --------------
 #
-# The path is relative to the workspace root. `contains` is plain text the file
-# must hold; absent, existence alone is the whole criterion. This is the cheap
-# gate — nothing is run and nothing is billed — and it is the right one for work
-# whose product is a file: a migration written, a changelog entry added, a
-# generated artefact that has to appear.
+# `file` is A PATH, relative to the workspace root — `/config` offers the
+# workspace's own files rather than asking you to type one. `contains` is FREE
+# TEXT: plain text the file must hold, which no menu can offer, so it is typed
+# with the shape stated first. Absent, existence alone is the whole criterion.
+#
+# This is the cheap gate — nothing is run and nothing is billed — and it is the
+# right one for work whose product is a file: a migration written, a changelog
+# entry added, a generated artefact that has to appear.
 #
 # [app.io-cli.gates]
 # file = "CHANGELOG.md"
@@ -680,8 +736,13 @@ fleet = "ctrl+f"
 #
 #   --- 3. a rubric a second model answers -----------------------------------
 #
-# For work no exit status can judge. `rubric` is what the reviewer is asked to
-# decide; `reviewer` is the model that decides it.
+# For work no exit status can judge. `rubric` is FREE TEXT — the sentence the
+# reviewer is asked to decide, typed, because nothing could offer it as a list.
+# `reviewer` is A MODEL NAME, and `/config` offers the models `[prices.models]`
+# above already prices: never a network call, because a settings screen that
+# reached for a catalogue would be spending your money to draw a menu. A file with
+# no priced models has no list to offer, and the row that re-reads the catalogue
+# is what fills it. `allow_self_review` is TRUE OR FALSE.
 #
 # A RUBRIC REQUIRES A REVIEWER, AND THE REVIEWER MAY NOT BE THE MODEL DOING THE
 # WORK UNLESS `allow_self_review = true`. Both are refused when the section is
@@ -742,6 +803,13 @@ fleet = "ctrl+f"
 # failed", pinning every run to the escalation model from its first request),
 # `bytes = 0` (which can never be true), and a model written as the empty string.
 # The refusal names the key and says the turn is not routed.
+#
+# WHAT EACH OF THE FOUR TAKES. `failures` and `bytes` are WHOLE NUMBERS, neither
+# negative; both `model` keys are MODEL NAMES, offered from the models
+# `[prices.models]` already prices, the same list `[app.io-cli.gates] reviewer`
+# draws from. All four keys are on `/config` and not a chosen two, because a
+# threshold without its model is half a rule and an operator who met one half on
+# that surface would write a section that refuses to parse.
 #
 # THERE IS NO `require_primary` KEY, AND THAT IS A DECISION. io-harness's own
 # Routing carries the field; it gates on Provider::reachable, a defaulted trait

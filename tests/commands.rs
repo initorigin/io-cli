@@ -332,6 +332,88 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     );
 }
 
+/// **A question is never a write, and this shipped as one until it was caught.**
+///
+/// `/config get run.max_steps` fell through to the `/config <key> <value>`
+/// shorthand and was read as the key `get` with the value `run.max_steps`, so a
+/// question wrote a key called `get` into the operator's file; `/config list` was
+/// read as a question about a key named `list`. Found by a reviewer reading the
+/// guard against the comment above it, which claimed both verbs reached
+/// `manage::parse` when the guard matched only `set` and `unset`.
+///
+/// Sabotage: drop `get` and `list` from their guards — under which this fails on
+/// the `Action` a question produces, which is the shape of the write it would
+/// have become.
+#[test]
+fn o2_a_config_question_is_answered_and_never_written() {
+    use io_cli::commands::Action;
+
+    assert_eq!(
+        commands::parse("config get run.max_steps", &defaults(), &DARK),
+        Action::Config(Some(("run.max_steps".to_string(), String::new()))),
+        "`/config get <key>` must be the question this surface has always answered"
+    );
+    assert_eq!(
+        commands::parse("config list", &defaults(), &DARK),
+        Action::Config(None),
+        "`/config list` must open the panel, not ask about a key named `list`"
+    );
+    // A bare `get` is the panel rather than a question about an empty key.
+    assert_eq!(
+        commands::parse("config get", &defaults(), &DARK),
+        Action::Config(None)
+    );
+    // And the two verbs that WRITE do go to the one parse.
+    assert!(
+        matches!(
+            commands::parse("config set run.max_steps 30", &defaults(), &DARK),
+            Action::Manage(_)
+        ),
+        "`/config set` must reach the same parse `io config set` reaches"
+    );
+    assert!(matches!(
+        commands::parse("config unset app.io-cli.plain", &defaults(), &DARK),
+        Action::Manage(_)
+    ));
+    // The shorthand this surface has always had is untouched.
+    assert_eq!(
+        commands::parse("config run.max_steps 30", &defaults(), &DARK),
+        Action::Config(Some(("run.max_steps".to_string(), "30".to_string()))),
+    );
+}
+
+/// The write verbs of `/mcp` and `/plugin` reach the one parse; the bare word
+/// opens the panel.
+#[test]
+fn o2_the_management_write_verbs_reach_the_shared_parse() {
+    use io_cli::commands::Action;
+
+    for line in [
+        "mcp add semlith -- semlith --store /tmp/.semlith mcp",
+        "mcp edit semlith --timeout-secs 30",
+        "mcp remove semlith",
+        "plugin add ./bundles/rust-review",
+        "plugin remove ./bundles/rust-review",
+    ] {
+        assert!(
+            matches!(commands::parse(line, &defaults(), &DARK), Action::Manage(_)),
+            "`/{line}` must reach `manage::parse`, or the slash form and `io …` can disagree"
+        );
+    }
+    // A bare word is the panel, and `list` is the panel too: in a session the
+    // answer to "list" is the surface that draws it.
+    assert_eq!(commands::parse("mcp", &defaults(), &DARK), Action::Mcp);
+    assert_eq!(commands::parse("mcp list", &defaults(), &DARK), Action::Mcp);
+    assert_eq!(
+        commands::parse("plugin", &defaults(), &DARK),
+        Action::Plugin
+    );
+    assert_eq!(
+        commands::parse("plugin list", &defaults(), &DARK),
+        Action::Plugin
+    );
+}
+
 /// **The palette did not grow, and no group was re-filed.**
 ///
 /// The other half of the assertion above, and the reason it is worth its own
