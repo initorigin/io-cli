@@ -435,6 +435,37 @@ how the next line joins the queue. It is the same trade the fleet view makes wit
 the same two arrows, and `/steer` is what sends the queue into the turn rather
 than waiting for it.
 
+**Two more are borrowed by `/config` from 0.28.0**, and they are left out of the
+table above for that same reason: it is what the session binds all the time, and
+these are held for as long as one list is open and handed back when it shuts.
+`Right` and `Left` on
+a `/config` row whose setting is a boolean or a closed set of words change it to
+the next value — and the value after that, and back again — writing each one and
+redrawing the row from the file's own answer rather than from an account of what
+was just done. No picker does anything with a horizontal arrow — they fall
+through to a do-nothing arm — and the interception is scoped to this one list, so
+it takes no key away from any other surface. The composer still moves its cursor
+with them and an approval still moves between its answers; neither has the
+keyboard while a picker is up.
+
+**It is the arrows and not the spacebar, and that is a compromise rather than a
+preference.** `Space` is the obvious key for a toggle and it is unavailable: a
+picker treats every printable character as a fuzzy filter, so the space in a
+two-word query is a keystroke the list has already claimed, and binding it would
+change a setting in the middle of typing a search for a different one. `Left` and
+`Right` are simply the keys the picker does not want. The cost is
+discoverability: an arrow does not announce itself the way a spacebar would, and
+nothing on the row says to press one. That is a real limit of the compromise, and
+stating it beats leaving it to be found. What makes it a small one is that `Enter`
+opens the same values as a list and does everything the arrows do and more — so a
+key nobody finds costs a keystroke rather than a capability.
+
+A number is deliberately not cycled. Its values are a ladder rather than a pair,
+too long to step through without seeing where you are, and a held arrow would
+write the file once per key repeat — so `Enter` opens it instead. A key io-cli
+does not know the values of says so and asks you to press `Enter`, rather than
+absorbing the keystroke and looking broken.
+
 ### Moving a key
 
 The keys the session itself owns can be rebound in `[app.io-cli.keys]`, by action
@@ -546,6 +577,29 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/plugin` | the capability bundles loaded, what each contributed, and the ones that failed |
 | `/gates` | the check a turn must pass before it is done: a command, a file, or a rubric |
 | `/import` | bring instructions, MCP servers, skills and a model across from another agent |
+
+**No command was added in 0.28.0, and four of them stopped being half a surface.**
+Every list here could already be pruned and none of them could be grown: `/mcp`
+edited and removed servers and could not declare one, `/provider` promoted,
+demoted and removed links and could not add one or change a key of one, `/plugin`
+listed bundles and removed them and could not take one on, and `/config` named a
+key and then left you to type a value out of a set it already knew. All four do
+the other half now. No row was added above because none was wanted: a verb belongs
+to the surface that already owns the list, and a second row for one screen reads
+as a second screen — the rule `/usage` follows below.
+
+Which of them is typed and which is a row is not arbitrary. The verbs `add`,
+`edit`, `remove` and `get` on `/mcp`, `add` and `remove` on `/plugin`, and `set`
+and `unset` on `/config` are read by the same parse `io mcp`, `io plugin` and
+`io config` are, so a line typed in the composer and the same line typed at a
+shell produce identical bytes rather than two readings that agree today. A bare
+`/mcp` or `/plugin` still opens its panel, because a
+panel is a better answer in a session than a text dump is, and `/config <key>`
+still answers what that key is set to without writing anything. `/provider`'s two
+new verbs are rows on its panel and never words you type: which link to add is
+chosen from what your shell can already authenticate, and a list is the only
+honest way to ask that. See [Without leaving the
+session](#without-leaving-the-session).
 
 `/effort` is new in 0.26.0 and sits under **this turn** beside `/model`, because
 the two are the same question asked twice: which model the work goes to, and how
@@ -1788,6 +1842,147 @@ The exit status is the table above: a resumed run that pauses again exits `4`
 naming the new pause, and `io resume --list` exits `0` whether or not it found
 anything.
 
+### Managing the configuration without a session
+
+`io mcp`, `io plugin` and `io config` are new in 0.28.0 and do from a shell what
+`/mcp`, `/plugin` and `/config` do inside a session. They open no session, start
+no run and touch no store — a configuration listing that had to build a task
+contract before it could print is a listing nobody can put in a script — and they
+are answered before the terminal check, so `io config list` works in CI where an
+interactive session is refused for having no terminal.
+
+```sh
+io mcp add semlith -- semlith --store /path/to/.semlith mcp
+io mcp add linear --url https://mcp.linear.app/mcp --header 'Authorization=Bearer ${env:LINEAR_TOKEN}'
+io mcp add --transport http linear-server https://mcp.linear.app/mcp
+io mcp list
+io mcp get semlith
+io mcp edit semlith --timeout-secs 30
+io mcp remove semlith
+
+io plugin add ./bundles/rust-review
+io plugin list
+io plugin remove ./bundles/rust-review
+
+io config get run.max_steps
+io config set run.max_steps 40
+io config set app.io-cli.gates.command cargo test --all-features
+io config unset run.max_steps
+io config list
+```
+
+It is the same parse the composer uses. `/mcp add semlith -- semlith --store
+/path/to/.semlith mcp` typed at the prompt and the first line above are one
+sentence arriving through two doors, read by one function, planned into one edit
+and written by one writer — so the two cannot come to write different bytes, which
+is what two hand-written readings of one grammar always eventually do.
+
+**`--` ends io's arguments, and everything after it is the server's, verbatim.**
+The `--store` on the first line is semlith's flag and never io's. A parser that
+went on looking for its own past that point would eat an argument out of the
+middle of somebody's command line and start a server that behaves differently
+from the one they wrote down.
+
+**A URL means HTTP; a command after `--` means stdio.** That is the whole rule.
+`--transport` is accepted because it is what another tool's users have learned to
+type, and their muscle memory is not a thing to punish — but it is read as an
+*assertion about the form* rather than as a way of choosing one. It is checked
+against what you actually wrote and refused by name when the two disagree, so
+`--transport stdio --url …` is a sentence naming which half to delete rather than
+a silent discard of one of them. The third line above is that other tool's
+ordering — the flag, then the name, then the URL as a second word — and it
+produces the same `[[mcp]]` entry as the second line, because a second positional
+*is* a URL wherever the flag sits. `--env` is refused on an HTTP server and
+`--header` on a stdio one, each saying which of the two the server actually takes.
+
+**`--scope user|project|local` says which file, where the file is yours to
+choose.** `mcp add` and `plugin add` default to `user`, because that is the file
+that is yours and is not committed — defaulting to `project` would put one
+operator's server into a repository everyone else clones, which is a disclosure
+rather than a convenience. `config set` and `config unset` have no default: with
+no `--scope` they inherit the file already deciding that key, which is the only
+answer that *changes* a setting instead of shadowing it with a copy somewhere
+higher. `mcp edit`, `mcp remove` and `plugin remove` take no `--scope` at all and
+refuse one by name — the change goes to the file that declares the entry, and a
+scope chosen here would aim a position counted in one file's array at another
+file's.
+
+**`io config list` prints the origin column**, tab-separated after the value:
+`user`, `project`, `local`, or `default` for a key no file names. There is no flag
+to drop it. A value without the file that decided it is half an answer — that is
+the whole argument of the `/config` surface — and a headless listing that left it
+out would be a second, weaker truth about the same configuration.
+
+**Only the answer goes to stdout.** `mcp list`, `mcp get`, `plugin list`,
+`config get` and `config list` write tab-separated rows and nothing else, so they
+pipe. Everything else goes to stderr, including a `[[plugin]]` entry that was
+declared and dropped: it is not part of the list a script asked for, and it is
+exactly what an operator reading that list needs to see.
+
+**A refusal exits `1` and writes nothing.** Every refusal names what was wrong and
+what is accepted instead — there is no bare "invalid argument" in this parse,
+because you are at a terminal with no `--help` open and a refusal that does not
+say what to type next costs you a round trip to this page.
+
+**`io mcp add` reports whether the policy will let that server start, on stderr,
+and exits `0` anyway.** An MCP server is the one piece of configuration whose
+failure mode is silence: a refused entry looks exactly as valid as one that works,
+and you find out on the next turn, from a run that ends before its first step. So
+the entry is written and then the same `Policy::check` io-harness will ask is
+asked here — naming the act, the target, and the rule and the layer that decided,
+or saying the tier default did, which is a different repair. **It is a disclosure
+and not a veto.** Declining to record what you typed because a policy you can edit
+would currently refuse it would make your configuration file depend on the posture
+at the moment of typing, so the write happens and the status stays `0`. A script
+that wants the verdict reads stderr.
+
+The two doors ask slightly different policies, and each is right about the run it
+describes. `io mcp add` asks the `[policy]` section of the configuration in force
+— io-harness's own defaults where a file has none, and those *ask* on `exec`.
+`/mcp add` in a session asks the policy that session is actually running under:
+the same section, plus the posture `Shift+Tab` is on, plus whatever you have
+allowed for this session.
+
+**Every HTTP MCP server is refused by default, and this is the paragraph to read
+before filing a bug.** io-harness denies `net` unless a rule allows it —
+`Policy::default()` does, a policy deserialized from a file with no `net` field
+does, and all three of the postures `io setup` writes say `net = "deny"`
+outright. So on almost every install:
+
+```sh
+io mcp add linear --url https://mcp.linear.app/mcp
+```
+
+writes the entry, exits `0`, and prints on stderr:
+
+```
+`linear` will not start: net `mcp.linear.app:443` is denied by the policy's own default for that act (no rule matched).
+```
+
+Nothing is broken and nothing needs undoing. The server is declared and the
+boundary has simply not been told about it. Naming the host in a policy layer is
+what starts it:
+
+```toml
+[[policy.layers]]
+name = "mcp"
+rules = [{ act = "net", effect = "allow", pattern = "mcp.linear.app" }]
+```
+
+A net rule matches with or without a port: the pattern above allows that host on
+any port, `mcp.linear.app:443` allows exactly one, and `*.linear.app` works the
+way a `*` works on a path. Servers are attached per turn, so the next turn is what
+picks the rule up — there is nothing to re-add and nothing to restart.
+
+A stdio server is a different question and usually a quieter one. It is checked
+against `exec` on the command exactly as the file spells it, and a file written
+for the sandboxed-workspace posture says `exec = "allow"`, so a server declared
+after a `--` normally needs nothing added at all. A file with no `[policy]`
+section is the case to know about: io-harness's own default *asks* on `exec`, and
+a server is spawned before the first step of a run, with nobody there to ask — so
+the preflight reports it as refused rather than as a question, which is what
+io-harness will do to it.
+
 ## Configuration
 
 io-cli has no configuration parser. io-harness owns discovery and layering, and
@@ -1802,9 +1997,64 @@ no file named names no file rather than being blamed on the lowest-precedence
 one: io-harness reports an empty origin for it, and that is its own default
 speaking.
 
-Choosing a row puts its key in the prompt. `/config <key> <value>` asks which of
-the three files to write to, and only that choice writes. The change is in force
-from the next turn.
+**From 0.28.0 a value is chosen rather than typed.** Choosing a row used to put
+its key in the prompt and leave the value to you — so setting
+`policy.defaults.write` meant guessing a word out of a set the pinned dependency
+has made public, and there was no way to tell a typo from an option that does not
+exist. A row now descends into its own values: the three effects and the three
+sandbox modes come from io-harness's own types rather than from a list here, a
+model comes from the `[prices.models]` already in your file, a path comes from the
+same workspace reader the composer's `@` opens, and a number comes from a ladder.
+Nothing on that screen reaches the network, and there is no per-key table of
+options to go stale.
+
+**A number descends into a one-two-five ladder built around the value in force.**
+1, 2, 5 at each magnitude, ordered outwards from where you are, with the value the
+file currently says always present as a rung whether or not it sits on the ladder
+— because a list that quietly omits your own setting is a list you cannot find it
+in. The anchor is the value in force and not a default, because there is no
+default to anchor on: `max_tokens` and `max_duration_secs` are absent in both of
+io-harness's contract constructors and `max_steps` is 8 in one and 12 in the
+other, so "the default" is not a thing this surface could read. A key no file
+names ladders from 1. `app.io-cli.gates.expect_exit` is the one signed key and its
+ladder runs through zero into the negatives, because a process may legitimately
+be expected to exit on one.
+
+**A horizontal arrow changes a boolean or a closed set of words where it stands**,
+without opening anything — see [Keys](#keys) for why it is the arrows and not the
+spacebar. Each press writes, re-reads and redraws the row from the file's own
+answer rather than from an account of what was just done, and each one is
+committed to the scrollback, so cycling through four values leaves four lines
+saying what happened rather than one footer notice overwriting the other three.
+
+**Every row also offers *unset it*, which removes the key rather than writing a
+default's text into a file.** The distinction is the one this whole surface opens
+with: after an unset the origin column says `default` and names no path, which is
+io-harness's own default speaking. Writing the default's *value* instead would
+attribute a crate default to a file you never wrote it in, and that is a lie a
+reader has no way to detect.
+
+**A write goes into the file already deciding the key, and the confirmation says
+so before you choose.** Asking every time would cost more than the change did —
+the value was chosen in one keystroke — and answering "your own file" every time
+is worse than asking: it silently shadows a committed project setting with a
+personal one, which is the change you are least able to see afterwards. A key no
+file names has nothing to inherit and goes to your own file, and the title says
+that too. *write it to another file…* is the row for moving a key between the
+three scopes, and it carries the current value along so a move does not also ask
+you to retype what you had.
+
+What is still typed is only what no menu can hold — a substring, a rubric, a URL,
+a command — and each of those now says what shape it wants and shows a worked
+example before the composer opens. Nothing opens a bare prompt with a key in it
+and no candidates any more.
+
+Three ways in, and they differ in one thing. `/config` opens the list.
+`/config <key> <value>` is the shorthand this surface has always had and asks
+which of the three files to write to. `/config set <key> <value>` — and
+`/config unset <key>`, and `io config set` and `io config unset` — inherit the
+deciding file the way the picker does, and take `--scope user|project|local` to
+override it. The change is in force from the next turn.
 
 **Your file survives it.** The comments, the blank lines, the order you chose and
 every section io-cli has no type for come back byte for byte — one value's bytes
@@ -1824,26 +2074,90 @@ the rule is about which file, not which value. io-cli keeps no copy of those
 rules: it writes, asks io-harness to read the file back, and restores it exactly
 when the answer is no.
 
+**From 0.28.0 the row says so before it writes**, and that is worth a second
+mechanism rather than being left to the round trip, because the cost is not one
+key. There are exactly five (key, value) pairs a committed `io.toml` may not
+carry — `policy.defaults.exec = "allow"`, `policy.defaults.net = "allow"`,
+`sandbox.allow_network = true`, `sandbox.force_floor = false` and
+`sandbox.mode = "full-access"` — and io-harness's check runs *before* the file is
+deserialized, so choosing one of them in a project file does not get you a
+rejected setting: it gets you a configuration that no longer parses. The write is
+still verified by io-harness reading it back, and still rolled back to the exact
+bytes that were there. What the row adds is that the file is not written at all,
+and that the refusal says the whole file is what would have been refused. On
+`config set` it goes further and names the two scopes that will take the value:
+`--scope local` for this checkout, `--scope user` for yourself.
+
 **`/mcp`** shows what is configured, which servers answered this session, how
 many tools each announced, how many distinct ones this session has asked for, and
 the last failure. A server the session has not reached says so and is not shown as
-broken. From 0.21.0 it also **adds, edits and removes** `[[mcp]]` entries, through
-the same write `/config` uses: staged, read back by io-harness, and rolled back
-whole when the answer is no. It offers no *disable*, because `McpServer` has no
+broken. From 0.21.0 it **edits and removes** `[[mcp]]` entries, through the same
+write `/config` uses: staged, read back by io-harness, and rolled back whole when
+the answer is no. **From 0.28.0 it declares them too** — `/mcp add <id> -- <command>
+[args…]` for a server io starts, `/mcp add <id> --url <URL>` for one it dials,
+with `--env`, `--header`, `--timeout-secs` and `--scope`, read by the same parse
+`io mcp add` uses so the two doors write the same bytes. That is the verb this
+panel was missing: `servers::add` existed, was tested, and was called from
+nothing, so a list you could prune was a list you could not grow. See [Managing
+the configuration without a
+session](#managing-the-configuration-without-a-session) for the grammar, which is
+one grammar.
+
+**Adding one reports whether the policy will let it start.** io-harness denies
+`net` by default and every posture `io setup` writes says so, so an HTTP server
+will report *will not start* for almost everyone until a `[[policy.layers]]` rule
+names its host — which is not a bug and is the first thing to check. The report is
+a disclosure and never a veto: the entry is written either way. It is where a
+server is added, rather than at the run that first needs one, because a refused
+entry looks exactly as valid as a working one and the alternative is finding out
+a turn later. The same paragraph in [Managing the configuration without a
+session](#managing-the-configuration-without-a-session) has the rule to write.
+
+It offers no *disable*, because `McpServer` has no
 key for one — an `enabled = false` invented here would be accepted by the file and
 ignored by the harness, and a panel saying "disabled" over a running server is
 worse than a panel with one fewer verb. Nor a *reconnect*: servers are attached
 per turn, so the next turn is what picks up your edit.
 
 **`/provider`** shows the `[[provider]]` array as what it is: the order a turn
-tries them. From 0.21.0 you can **arrange** it — add an entry, promote one,
-demote one, remove one — which is the fallback chain io-harness has supported
-since its 0.27.0 and that this interface has drawn an event for without ever
-being able to cause one. The twenty-one presets it reaches through one
-`Compatible` provider are offered by name with the endpoint each resolves to.
-Reordering moves an entry with its own comments and its own keys rather than
-rebuilding the array, because a chain rebuilt from io-cli's model would silently
-drop whatever io-cli does not model.
+tries them. From 0.21.0 you can **arrange** it — promote an entry, demote one,
+remove one — which is the fallback chain io-harness has supported since its
+0.27.0 and that this interface has drawn an event for without ever being able to
+cause one. Reordering moves an entry with its own comments and its own keys rather
+than rebuilding the array, because a chain rebuilt from io-cli's model would
+silently drop whatever io-cli does not model.
+
+**From 0.28.0 it also adds a link, and changes the model on one it already has.**
+*Add a provider* offers the presets, reads the model catalogue that endpoint
+actually serves and offers you one from it, then verifies the credential — in that
+order, and the order is the guarantee rather than a preference: the check happens
+before a single byte is written, so a rejected credential leaves your
+configuration exactly as it was, and a catalogue that cannot be read is a reason
+to send you to `io setup` rather than to refuse you for being offline. A new link
+is appended, so it is a *fallback* and not the provider in force, and the line
+that confirms it says which position it landed in — promote it if you meant it to
+answer the next turn. Nothing writes a key into the file: a vendor entry is
+written with no `api_key` line at all, which is what io-harness reads as "use my
+own environment variable".
+
+*Change the model* is the only key this panel edits, from the same catalogue, and
+it is deliberately narrow. `kind`, `preset` and `base_url` are the link's
+*identity* — an entry pointed at a different vendor is a different link, and
+remove-then-add says so in words rather than leaving behind the both-bases entry
+that a `preset` written over a `base_url` would be. A model change is not a claim
+about a credential, so nothing is verified for one: pinging an endpoint to rename
+a field would spend your money answering a question nobody asked.
+
+**Add only offers a preset whose API-key variable is already set in your shell** —
+`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — and names the
+variable beside each, never anything about its contents. **That is a decision and
+not a shortfall.** A credential that has to be *typed* has one flow in this
+product: `io setup`, which asks for it, verifies it against the endpoint and
+writes it. A second credential prompt grown inside the session loop would be a
+second thing to keep correct, a second place a key can be pasted, and a second
+answer to "where did my key end up". So this surface offers exactly the case that
+needs no typing, and with no variable set it says so and sends you to the flow
+that already exists. Export one and the row appears.
 
 **From 0.26.0 the chain is what runs.** Since 0.21.0 that panel has drawn the
 whole order while the product only ever asked its head, so a second
@@ -1869,7 +2183,17 @@ tested and called from nothing, while three places in this documentation said th
 "add, edit, disable and remove". They genuinely write now, and the word *disable*
 is gone from that sentence because `/mcp` does not offer it.
 
-Neither verb takes a row number. An entry is addressed by finding its id in the
+**Half of that was still true until 0.28.0, and this page said otherwise.** What
+0.21.0 actually reached was edit, promote, demote and remove. `servers::add` and
+`providers::add` stayed exactly where the paragraph above found their siblings —
+written, tested, and called from nothing — so both panels could shorten a list
+neither of them could lengthen, and this page listed "add an entry" among
+`/provider`'s verbs for seven releases over a row that was never drawn. 0.28.0 is
+the release that makes it true, and this is the second time the same mistake has
+had to be written down: a writer with no caller reads exactly like a feature to
+whoever is documenting it.
+
+No verb here takes a row number. An entry is addressed by finding its id in the
 file's own bytes, because a row on screen and a position in a file's array are
 different numbers the moment anything sorts or filters, and getting that wrong
 does not fail loudly — it removes a server you never named, or bills the next turn
@@ -1877,8 +2201,22 @@ to a vendor you did not choose.
 
 **`/plugin`** shows the capability bundles a `[[plugin]]` entry declared: what
 each one contributed, by name, and every bundle that was declared and dropped
-with io-harness's own reason beside it. See [Capability
-bundles](#capability-bundles).
+with io-harness's own reason beside it. It has been able to remove one since
+0.20.0; **from 0.28.0 it declares one as well.** The add row does not ask you to
+type a path — it walks up to three directories below the workspace root, skipping
+`target`, `node_modules` and anything dotted, and offers every directory that
+carries a `plugin.toml`. A path typed from memory is a path that gets mistyped,
+and io-harness's plugin loader has no error path: an entry naming a directory with
+no manifest is *dropped*, recorded and otherwise silently absent, which is a bundle
+you believe is loaded and is not. So existence is checked before the entry is
+written and again on the keystroke that writes it, because a candidate can lose
+its manifest between the row being drawn and the row being chosen. A directory
+below the root is declared by its **relative** path, which is what makes a bundle
+vendored into a repository work for everyone who clones it; one kept elsewhere is
+written absolute. A bundle deeper than three directories, or outside the root
+entirely, is named outright — `/plugin add <path>`, or `io plugin add <path>` from
+a shell — and is refused by the same check rather than by a shallower one. See
+[Capability bundles](#capability-bundles).
 
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.

@@ -187,6 +187,30 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         return io_cli::exec::resume_main(args, config, root, cli.model).await;
     }
 
+    // **The three management subcommands leave by the same door, and before the
+    // terminal check for the same reason `io exec` does**: `io config list` in CI
+    // has no terminal and must not be refused for that. They open no session,
+    // start no run and touch no store — a configuration listing that had to build
+    // a contract first would be a listing nobody could put in a script.
+    //
+    // The tokens reach `manage::parse` exactly as clap received them; the parse,
+    // the plan and the refusals are all the library's, so this arm and the slash
+    // form below can only ever agree.
+    if let Some(words) = match &cli.command {
+        Some(Subcommand::Mcp(args)) => Some(("mcp", &args.words)),
+        Some(Subcommand::Plugin(args)) => Some(("plugin", &args.words)),
+        Some(Subcommand::Config(args)) => Some(("config", &args.words)),
+        _ => None,
+    } {
+        let (surface, rest) = words;
+        for line in report.drain(..) {
+            eprintln!("{line}");
+        }
+        let mut tokens = vec![surface.to_string()];
+        tokens.extend(rest.iter().cloned());
+        return manage_main(&root, &config, &tokens);
+    }
+
     // A session draws, so it needs a terminal to draw on, and saying so is better
     // than half-working. The check sits AFTER the subcommand is known rather than
     // before it, because `io exec` is the answer to a non-TTY stdout rather than a
@@ -1145,6 +1169,44 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             continue;
         }
 
+        // **The one key a picker does not own, and only on one surface.** A
+        // horizontal arrow over a `/config` row cycles that row's value where it
+        // stands, which is the whole reason the binding is an arrow: the picker
+        // consumes every printable character as a fuzzy filter, so Space — the
+        // obvious key — would toggle a setting in the middle of a two-word query.
+        // `Left`/`Right` reach the picker's `_ => Outcome::Idle` arm and do
+        // nothing there, so intercepting them takes no behaviour away from any
+        // other surface.
+        //
+        // Handled before `open.key(key)` rather than inside `Picker`, so the
+        // picker stays a generic list and the nine other call sites keep the
+        // keyboard they had.
+        if let Some((open, Pick::Config(paths))) = picker.as_mut() {
+            let step = match key.code {
+                KeyCode::Right => Some(true),
+                KeyCode::Left => Some(false),
+                _ => None,
+            };
+            if let Some(forward) = step {
+                let row = open.selection();
+                let chosen = row.and_then(|row| paths.get(row)).cloned();
+                if let Some(key_name) =
+                    chosen.filter(|name| name.as_str() != io_cli::configure::REFRESH_PRICES)
+                {
+                    cycle_setting(
+                        session.root(),
+                        &mut config,
+                        &mut app,
+                        &key_name,
+                        forward,
+                        open,
+                        row.unwrap_or(0),
+                    );
+                }
+                paint(screen, &mut app)?;
+                continue;
+            }
+        }
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
@@ -1764,7 +1826,97 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 }
                             }
                         }
-                        Pick::Plugins(view) => {
+                        // The add verb, and the one row on this surface that is not
+                        // a bundle. It is checked first because `add_at` is past
+                        // the end of both lists and every branch below indexes into
+                        // one of them.
+                        Pick::Plugins { view: _, add_at } if index == *add_at => {
+                            let found = io_cli::pluginview::candidates(session.root());
+                            if found.is_empty() {
+                                // **Naming where it looked.** "No bundles found" is
+                                // a sentence an operator cannot act on; the depth
+                                // and the root are what tell them their bundle is
+                                // outside the walk rather than unreadable.
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "no directory below {} carries a {}; a bundle kept \
+                                         elsewhere is declared with a `[[plugin]]` entry naming \
+                                         its path",
+                                        session.root().display(),
+                                        io_cli::pluginview::MANIFEST,
+                                    ),
+                                );
+                            } else {
+                                let mut rows = vec![Row::new("leave it".to_string())];
+                                for dir in &found {
+                                    rows.push(Row::with_detail(
+                                        io_cli::pluginview::declared(session.root(), dir)
+                                            .display()
+                                            .to_string(),
+                                        format!(
+                                            "declares it in the {} scope, from the next turn",
+                                            io_cli::configure::Decided::File {
+                                                scope: io_harness::config::Scope::User,
+                                                path: Default::default(),
+                                            }
+                                            .word()
+                                        ),
+                                    ));
+                                }
+                                descended = Some((
+                                    Picker::new("Add a bundle", rows),
+                                    Pick::PluginAdd(found),
+                                ));
+                            }
+                        }
+                        // Row 0 is "leave it", so the candidate's own position is
+                        // one less — bound to its own name rather than to `index`,
+                        // which is how a confirmation acts on the wrong row.
+                        Pick::PluginAdd(found) => {
+                            if let Some(dir) = index.checked_sub(1).and_then(|at| found.get(at)) {
+                                // **Checked here and not only when the rows were
+                                // built.** A candidate can lose its manifest between
+                                // the row being drawn and this keystroke, and the
+                                // entry io-harness would then drop is silent — which
+                                // is the state `pluginview`'s module docs exist to
+                                // end, not to reproduce.
+                                match io_cli::pluginview::refusal(dir) {
+                                    Some(refusal) => app.record(Tone::Refused, refusal),
+                                    None => {
+                                        let written =
+                                            io_cli::pluginview::declared(session.root(), dir);
+                                        let edit = io_cli::pluginview::add(&written);
+                                        // The user scope, because a new entry has no
+                                        // file already deciding it — and stated
+                                        // rather than assumed, which is the rule
+                                        // every write in this release follows.
+                                        match io_cli::configure::write(
+                                            session.root(),
+                                            io_harness::config::Scope::User,
+                                            &[edit],
+                                        ) {
+                                            Ok(()) => app.record(
+                                                Tone::Success,
+                                                format!(
+                                                    "{} is declared in the {} scope; what it \
+                                                     contributes is in `/plugin`, and it is in \
+                                                     force from the next turn",
+                                                    written.display(),
+                                                    io_cli::configure::Decided::File {
+                                                        scope: io_harness::config::Scope::User,
+                                                        path: Default::default(),
+                                                    }
+                                                    .word()
+                                                ),
+                                            ),
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Pick::Plugins { view, add_at: _ } => {
                             // **Answered from the reading the rows were drawn
                             // from, and `/skills` does the opposite on purpose.**
                             // There, a row names a file the operator may have
@@ -1970,7 +2122,68 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // Says what the link is, and where it points. The chain
                         // is arranged through `/config`, which is the one writer
                         // this release gives the file.
-                        Pick::Provider => {
+                        // The add verb, checked first because `add_at` is past the
+                        // end of the chain and every branch below indexes into it.
+                        //
+                        // **Only the presets whose own environment variable is
+                        // already set.** A credential that has to be typed has one
+                        // flow in this product — `io setup`, which types it,
+                        // verifies it and writes it — and building a second one in
+                        // the session loop is what this release's `preferred_tools`
+                        // forbids by name. So the offer is the case that needs no
+                        // typing at all, and the operator with no variable set is
+                        // sent to the flow that already exists rather than to a
+                        // half of it built here.
+                        Pick::Provider { add_at } if index == *add_at => {
+                            // **The three `FromEnv` covers, and no others.**
+                            // `provider::spec_from` is the one constructor for a
+                            // vendor spec outside the wizard handshake, and it
+                            // takes a `FromEnv`; a preset outside those three has
+                            // no spec this file may build, and building one here
+                            // is what `tests/provider.rs` refuses by name.
+                            let ready: Vec<String> = ["openrouter", "anthropic", "openai"]
+                                .into_iter()
+                                .filter(|preset| {
+                                    io_cli::providers::variable(
+                                        io_cli::providers::Endpoint::Preset(preset),
+                                    )
+                                    .is_some_and(|name| io_cli::providers::variable_is_set(&name))
+                                })
+                                .map(str::to_string)
+                                .collect();
+                            if ready.is_empty() {
+                                app.record(
+                                    Tone::Muted,
+                                    "no preset's API key variable is set in this shell, and a key \
+                                     typed here would be a second credential flow beside `io \
+                                     setup`'s. Export one — OPENROUTER_API_KEY, ANTHROPIC_API_KEY, \
+                                     OPENAI_API_KEY — and this offers it, or run `io setup` to \
+                                     type one."
+                                        .to_string(),
+                                );
+                            } else {
+                                let mut rows = vec![Row::new("leave it".to_string())];
+                                for preset in &ready {
+                                    let variable = io_cli::providers::variable(
+                                        io_cli::providers::Endpoint::Preset(preset),
+                                    )
+                                    .unwrap_or_default();
+                                    rows.push(Row::with_detail(
+                                        preset.clone(),
+                                        // The variable's NAME, never a word about
+                                        // its contents. A name identifies a
+                                        // credential; its value is not this
+                                        // surface's to show.
+                                        format!("uses ${variable}, which is set in this shell"),
+                                    ));
+                                }
+                                descended = Some((
+                                    Picker::new("Add which provider?", rows),
+                                    Pick::ProviderPreset(ready),
+                                ));
+                            }
+                        }
+                        Pick::Provider { .. } => {
                             let chain = io_cli::providers::chain(&config);
                             if let Some(entry) = chain.get(index) {
                                 let place = if entry.index == 0 {
@@ -2012,6 +2225,54 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         if !first {
                                             rows.push(Row::new("make this the provider in force"));
                                         }
+                                        // **The verb `/provider` has never had.**
+                                        // An operator whose key rotated, or who
+                                        // wants a different model on a link they
+                                        // already have, has until now had to open
+                                        // a file — while every other list in this
+                                        // product could be changed from the list.
+                                        // Its index is recorded rather than worked
+                                        // out on the keystroke, which is the rule
+                                        // the arithmetic below was already the
+                                        // argument for.
+                                        let model_at = rows.len();
+                                        rows.push(Row::with_detail(
+                                            "change the model".to_string(),
+                                            "chooses from the catalogue this provider serves"
+                                                .to_string(),
+                                        ));
+                                        // **Offered only where there is a secret
+                                        // in the file to take out.** An entry
+                                        // already reading its key from the
+                                        // environment has nothing to move, and a
+                                        // row that did nothing would be the
+                                        // advertised-but-inert shape 0.19.0 built
+                                        // a gate against. `usize::MAX` stands for
+                                        // "no such row" the way `promote`'s
+                                        // absence already does.
+                                        let credential_at = match entry.credential {
+                                            io_cli::providers::Credential::Written => {
+                                                let at = rows.len();
+                                                rows.push(Row::with_detail(
+                                                    "take its key out of the file".to_string(),
+                                                    format!(
+                                                        "removes the `api_key` line, so the key is \
+                                                         read from ${} instead",
+                                                        io_cli::providers::variable(
+                                                            io_cli::providers::Endpoint::Preset(
+                                                                &entry.kind,
+                                                            ),
+                                                        )
+                                                        .unwrap_or_else(|| {
+                                                            "the provider's variable".to_string()
+                                                        }),
+                                                    ),
+                                                ));
+                                                at
+                                            }
+                                            _ => usize::MAX,
+                                        };
+                                        let remove_at = rows.len();
                                         rows.push(Row::new("remove this link from the chain"));
                                         descended = Some((
                                             Picker::new(format!("{}?", entry.model), rows),
@@ -2019,6 +2280,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 label: entry.model.clone(),
                                                 at,
                                                 first,
+                                                kind: entry.kind.clone(),
+                                                model_at,
+                                                credential_at,
+                                                remove_at,
                                             },
                                         ));
                                     }
@@ -2031,9 +2296,278 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // from rather than hard-coded, because those two drifting
                         // apart is how a list removes the thing it offered to
                         // promote.
-                        Pick::ProviderVerb { label, at, first } => {
+                        // **The verification call is made here, before any edit,
+                        // and that ordering is the criterion.** A rejected
+                        // credential must leave the configuration byte for byte as
+                        // it was — writing first and verifying after would leave a
+                        // key that cannot authenticate in the operator's file, and
+                        // the next turn would fail with an error about the model.
+                        //
+                        // **Two round trips, not one.** `verify::credential`
+                        // returns `Result<(), String>` and no models; the catalogue
+                        // is a second call. A catalogue that fails does NOT abort
+                        // the add — the credential was just accepted, and refusing
+                        // an operator at that point over a list would be refusing
+                        // them for being offline.
+                        Pick::ProviderPreset(presets) => {
+                            if let Some(preset) =
+                                index.checked_sub(1).and_then(|at| presets.get(at))
+                            {
+                                let preset = preset.clone();
+                                // **The catalogue first, then the model, then the
+                                // credential — and that order is forced rather
+                                // than chosen.** `verify::credential` pings the
+                                // endpoint *with a model*, so verifying before one
+                                // is chosen would either send a model the operator
+                                // has not picked or report a 404 about a model as
+                                // a bad credential. `verify::served` needs neither
+                                // a credential nor a model, so the list comes
+                                // first and the check follows it, still before any
+                                // edit — which is what F10 actually asks for.
+                                app.record(Tone::Muted, "reading the model catalogue…".to_string());
+                                paint(screen, &mut app)?;
+                                let models: Vec<String> = catalogue_for(&preset).await;
+                                if models.is_empty() {
+                                    // Not fatal, and deliberately so: a catalogue
+                                    // that cannot be read is a reason to make the
+                                    // operator name a model, never a reason to
+                                    // refuse an add they can complete offline.
+                                    app.record(
+                                        Tone::Muted,
+                                        format!(
+                                            "no catalogue was served, so there is no list to \
+                                             choose {preset}'s model from; add the link with \
+                                             `io setup`, which takes a typed model"
+                                        ),
+                                    );
+                                } else {
+                                    let mut rows = vec![Row::new("leave it".to_string())];
+                                    for model in &models {
+                                        rows.push(Row::new(model.clone()));
+                                    }
+                                    descended = Some((
+                                        Picker::new(format!("Which {preset} model?"), rows),
+                                        Pick::ProviderModel {
+                                            preset,
+                                            models,
+                                            at: None,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                        Pick::ProviderModel { preset, models, at } => {
+                            if let Some(model) = index.checked_sub(1).and_then(|i| models.get(i)) {
+                                let root = session.root().to_path_buf();
+                                let endpoint = io_cli::providers::Endpoint::Preset(preset);
+                                // **The verification call, before any edit.** On a
+                                // rejection the configuration file is unchanged
+                                // byte for byte, because nothing has touched it
+                                // yet — the ordering is the guarantee, not a check
+                                // performed afterwards. Only for a new link: a
+                                // change of model on a link that already exists is
+                                // not a claim about a credential, and pinging the
+                                // endpoint to change one field would spend an
+                                // operator's money to answer a question nobody
+                                // asked.
+                                let refused = if at.is_none() {
+                                    app.record(
+                                        Tone::Muted,
+                                        format!("checking the {preset} credential…"),
+                                    );
+                                    paint(screen, &mut app)?;
+                                    let which = match preset.as_str() {
+                                        "anthropic" => io_cli::cli::FromEnv::Anthropic,
+                                        "openai" => io_cli::cli::FromEnv::OpenAi,
+                                        _ => io_cli::cli::FromEnv::OpenRouter,
+                                    };
+                                    let (variable, _) = which.vars();
+                                    // `spec_from` checks the variable is set and
+                                    // then leaves the credential `None`, so the key
+                                    // travels one path and never sits in a struct
+                                    // longer than it must — its own doc's rule.
+                                    match io_cli::provider::spec_from(
+                                        which,
+                                        std::env::var(variable).ok(),
+                                        Some(model.clone()),
+                                    ) {
+                                        Err(why) => Some(why),
+                                        Ok(spec) => io_cli::verify::credential(&spec)
+                                            .await
+                                            .err()
+                                            .map(|why| {
+                                                format!(
+                                                    "{preset} refused the credential in \
+                                                     ${variable}: {why}"
+                                                )
+                                            }),
+                                    }
+                                } else {
+                                    None
+                                };
+                                if let Some(why) = refused {
+                                    app.record(
+                                        Tone::Refused,
+                                        format!("{why}. Nothing was written."),
+                                    );
+                                    picker = None;
+                                    paint(screen, &mut app)?;
+                                    continue;
+                                }
+                                let (scope, edit) = match at {
+                                    // A change to a link that already exists goes
+                                    // into the file that already carries it.
+                                    Some(at) => {
+                                        (at.scope, io_cli::providers::edit(at, "model", model))
+                                    }
+                                    // A new link goes to the user scope and is
+                                    // written with the credential shape that needs
+                                    // no secret in the file: no `api_key` for a
+                                    // vendor kind, `${env:…}` for a compatible one.
+                                    // `Key::written` owns that distinction.
+                                    None => (
+                                        io_harness::config::Scope::User,
+                                        Some(io_cli::providers::add(
+                                            endpoint,
+                                            model,
+                                            io_cli::providers::Key::Environment
+                                                .written(endpoint)
+                                                .as_deref(),
+                                        )),
+                                    ),
+                                };
+                                match edit {
+                                    None => app.record(
+                                        Tone::Refused,
+                                        "that link is no longer where it was; nothing was written"
+                                            .to_string(),
+                                    ),
+                                    Some(edit) => {
+                                        match io_cli::configure::write(&root, scope, &[edit]) {
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                            Ok(()) => {
+                                                match io_cli::configure::reload(&root) {
+                                                    Ok((fresh, _)) => config = fresh,
+                                                    Err(error) => app.record(Tone::Error, error),
+                                                }
+                                                // **Where it landed in the chain,
+                                                // said before it matters.** A new
+                                                // link goes last, so it is a
+                                                // fallback and not the provider in
+                                                // force — an operator who added one
+                                                // expecting it to answer the next
+                                                // turn needs to be told it will not.
+                                                let place = io_cli::providers::chain(&config).len();
+                                                app.record(
+                                                    Tone::Success,
+                                                    match at {
+                                                        Some(_) => format!(
+                                                            "{preset} now asks {model}, from the \
+                                                             next turn"
+                                                        ),
+                                                        None => format!(
+                                                            "{preset} · {model} is link {place} \
+                                                             in the chain{}. Its credential stays \
+                                                             in the environment; nothing was \
+                                                             written into a file.",
+                                                            if place == 1 {
+                                                                ", so it is the provider in force"
+                                                            } else {
+                                                                ", so it is a fallback — promote \
+                                                                 it to make it the one in force"
+                                                            }
+                                                        ),
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Pick::ProviderVerb {
+                            label,
+                            at,
+                            first,
+                            kind,
+                            model_at,
+                            credential_at,
+                            remove_at,
+                        } => {
                             let promote = if *first { usize::MAX } else { 1 };
-                            let remove = if *first { 1 } else { 2 };
+                            let remove = *remove_at;
+                            // **The one caller `providers::edit`'s `api_key` path
+                            // has**, and it is the path that matters: an empty
+                            // value becomes `Edit::unset`, which deletes the line,
+                            // where writing `api_key = ""` would leave a key that
+                            // `provider::key_for` returns as a valid empty
+                            // credential — a 401 on every request with nothing on
+                            // screen to explain it.
+                            if index == *credential_at {
+                                match io_cli::providers::edit(at, "api_key", "") {
+                                    None => app.record(
+                                        Tone::Refused,
+                                        "that link no longer carries a written key".to_string(),
+                                    ),
+                                    Some(edit) => {
+                                        match io_cli::configure::write(
+                                            session.root(),
+                                            at.scope,
+                                            &[edit],
+                                        ) {
+                                            Err(refusal) => app.record(Tone::Refused, refusal),
+                                            Ok(()) => {
+                                                if let Ok((fresh, _)) =
+                                                    io_cli::configure::reload(session.root())
+                                                {
+                                                    config = fresh;
+                                                }
+                                                app.record(
+                                                    Tone::Success,
+                                                    format!(
+                                                        "{label}'s key is out of the file; it is \
+                                                         read from the environment from the next \
+                                                         turn, and the file no longer carries a \
+                                                         secret"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // The model row descends rather than writing, so it is
+                            // taken before the edit is worked out.
+                            if index == *model_at {
+                                app.record(Tone::Muted, "reading the model catalogue…".to_string());
+                                paint(screen, &mut app)?;
+                                let models: Vec<String> = catalogue_for(kind).await;
+                                if models.is_empty() {
+                                    app.record(
+                                        Tone::Muted,
+                                        format!(
+                                            "no catalogue names {kind}'s models, so there is no \
+                                             list to choose {label}'s model from — a reference \
+                                             catalogue cannot say what a self-hosted or \
+                                             OpenAI-compatible endpoint serves"
+                                        ),
+                                    );
+                                } else {
+                                    descended = Some((
+                                        Picker::new(
+                                            format!("Which model for {label}?"),
+                                            std::iter::once(Row::new("leave it".to_string()))
+                                                .chain(models.iter().map(|m| Row::new(m.clone())))
+                                                .collect(),
+                                        ),
+                                        Pick::ProviderModel {
+                                            preset: kind.clone(),
+                                            models,
+                                            at: Some(*at),
+                                        },
+                                    ));
+                                }
+                            }
                             let edit = if index == promote {
                                 io_cli::providers::promote(at)
                             } else if index == remove {
@@ -2129,9 +2663,134 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     Err(error) => app.record(Tone::Error, error),
                                 }
                             }
-                            Some(key) => app.composer.set(&format!("/config {key} ")),
+                            // **The prefill is gone, and that is the release.**
+                            // A key whose values are knowable descends into them;
+                            // a key whose value no menu can hold still goes to the
+                            // composer, but says the shape it wants and shows a
+                            // worked example first. Nothing opens a bare composer
+                            // line any more, which is F12.
+                            Some(key) => {
+                                let key = key.to_string();
+                                match value_rows(session.root(), &config, &key) {
+                                    Some(descent) => descended = Some(descent),
+                                    None => {
+                                        if let Some(shape) =
+                                            io_cli::configure::shape_of(&key, &config)
+                                        {
+                                            app.record(Tone::Muted, shape);
+                                        }
+                                        // **A machine-written key is not offered
+                                        // for typing at all, and prefilling it was
+                                        // a route straight past its own guard.**
+                                        // `manage::config_value` refuses a
+                                        // `Kind::Machine` key by name, but the
+                                        // shorthand `/config <key> <value>` never
+                                        // consults the kind — so a composer
+                                        // prefilled with `/config prices.as_of `
+                                        // led the operator to the one door that
+                                        // would write it. The row says what the
+                                        // key is and offers the act beside it.
+                                        if io_cli::configure::kind_of(&key)
+                                            != Some(io_cli::configure::Kind::Machine)
+                                        {
+                                            app.composer.set(&format!("/config {key} "));
+                                        }
+                                    }
+                                }
+                            }
                             None => {}
                         },
+                        // Row 0 is "leave it", the default and the same shape every
+                        // other confirmation on this surface uses.
+                        Pick::ConfigValue {
+                            key,
+                            kind,
+                            values,
+                            scope,
+                            unset_at,
+                            elsewhere_at,
+                        } => {
+                            let root = session.root().to_path_buf();
+                            if index == *elsewhere_at {
+                                // The scope picker, for an operator moving a key
+                                // between files rather than changing its value.
+                                // The current value travels with it, so the move
+                                // does not also ask them to retype what they had.
+                                let current = io_cli::configure::setting(&config, key)
+                                    .value
+                                    .unwrap_or_default();
+                                descended = Some(write_where(&root, key.clone(), current));
+                            } else if index == *unset_at {
+                                match io_cli::configure::write(
+                                    &root,
+                                    *scope,
+                                    &[io_cli::edit::Edit::unset(key.clone())],
+                                ) {
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
+                                    Ok(()) => {
+                                        match io_cli::configure::reload(&root) {
+                                            Ok((fresh, _)) => config = fresh,
+                                            Err(error) => app.record(Tone::Error, error),
+                                        }
+                                        // **The key is gone, so the origin column
+                                        // says `default` and names no path.**
+                                        // Writing the default's text instead would
+                                        // attribute a crate default to a file the
+                                        // operator never wrote it in, which is the
+                                        // lie `configure`'s own module docs open
+                                        // with.
+                                        app.record(
+                                            Tone::Success,
+                                            format!(
+                                                "{key} is no longer set in any file; io-harness's \
+                                                 own default is in force from the next turn"
+                                            ),
+                                        );
+                                    }
+                                }
+                            } else if let Some(value) =
+                                index.checked_sub(1).and_then(|at| values.get(at))
+                            {
+                                if *scope == io_harness::config::Scope::Project
+                                    && io_cli::configure::widens_project(key, value)
+                                {
+                                    app.record(
+                                        Tone::Refused,
+                                        format!(
+                                            "{key} is decided by the project file, and a committed \
+                                             file may not set it to {value} — io-harness refuses \
+                                             the whole file for it, not just the key"
+                                        ),
+                                    );
+                                } else {
+                                    let edit = io_cli::edit::Edit::set(
+                                        key.clone(),
+                                        io_cli::configure::spell_value(kind, value),
+                                    );
+                                    match io_cli::configure::write(&root, *scope, &[edit]) {
+                                        Err(refusal) => app.record(Tone::Refused, refusal),
+                                        Ok(()) => {
+                                            match io_cli::configure::reload(&root) {
+                                                Ok((fresh, _)) => config = fresh,
+                                                Err(error) => app.record(Tone::Error, error),
+                                            }
+                                            app.record(
+                                                Tone::Success,
+                                                format!(
+                                                    "{key} is {value}, in the {} scope, from the \
+                                                     next turn",
+                                                    io_cli::configure::Decided::File {
+                                                        scope: *scope,
+                                                        path: Default::default(),
+                                                    }
+                                                    .word()
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // The gates surface. Every row but the first names a key
                         // and goes to the composer, which is `/config`'s own
                         // shape and reaches `/config`'s own write — the value of
@@ -2848,6 +3507,113 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         "run `io setup` from the shell to change the configuration",
                     );
                 }
+                // **The same parse, the same plan, the same write as `io mcp …`.**
+                // Nothing is decided here: the tokens, the refusals and the scope
+                // are all `manage`'s, and this arm reports what it returned. That
+                // is what makes F6's byte comparison a property of the code rather
+                // than of two implementations agreeing today.
+                Action::Manage(line) => {
+                    let root = session.root().to_path_buf();
+                    let tokens = io_cli::manage::tokens(&line);
+                    match io_cli::manage::parse(&tokens).and_then(|request| {
+                        io_cli::manage::plan(&root, &request).map(|plan| (request, plan))
+                    }) {
+                        // The refusals are finished sentences naming what was
+                        // wrong and what is accepted, so they are printed as they
+                        // came rather than re-worded into a second opinion about
+                        // somebody else's rule.
+                        Err(refusal) => app.record(Tone::Refused, refusal),
+                        // A reading verb reaching here can only be `mcp get`: the
+                        // list verbs are routed to their own panels before `parse`
+                        // is asked, because a panel is a better answer in a session
+                        // than a text dump is. Answered from the configuration this
+                        // session is running on.
+                        Ok((
+                            io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Get { id }),
+                            None,
+                        )) => {
+                            match io_cli::servers::servers(&config, &app.servers)
+                                .into_iter()
+                                .find(|server| server.id == id)
+                            {
+                                None => app.record(
+                                    Tone::Refused,
+                                    format!("no configuration file in force declares {id}"),
+                                ),
+                                Some(server) => app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "{} · {} · {}",
+                                        server.id,
+                                        server.transport,
+                                        server.decided.word()
+                                    ),
+                                ),
+                            }
+                        }
+                        Ok((_, None)) => {}
+                        Ok((request, Some(plan))) => {
+                            match io_cli::configure::write(&root, plan.scope, &plan.edits) {
+                                Err(refusal) => app.record(Tone::Refused, refusal),
+                                Ok(()) => {
+                                    match io_cli::configure::reload(&root) {
+                                        Ok((fresh, stored)) => {
+                                            capabilities = io_cli::contract::Capabilities::stored(
+                                                stored.as_ref(),
+                                            );
+                                            config = fresh;
+                                        }
+                                        Err(error) => app.record(Tone::Error, error),
+                                    }
+                                    app.record(
+                                        Tone::Success,
+                                        format!(
+                                            "written to the {} file, in force from the next turn",
+                                            io_cli::configure::Decided::File {
+                                                scope: plan.scope,
+                                                path: Default::default(),
+                                            }
+                                            .word()
+                                        ),
+                                    );
+                                    // **The preflight after the write, never
+                                    // instead of it.** A server the policy will
+                                    // refuse is still written — the report is a
+                                    // disclosure, and making the file depend on
+                                    // the posture at the moment of typing is what
+                                    // F9's second sabotage arm describes.
+                                    if let io_cli::manage::Request::Mcp(
+                                        io_cli::manage::McpVerb::Add { server, .. },
+                                    ) = &request
+                                    {
+                                        // **The merged policy, not the file's
+                                        // alone.** The posture the operator chose
+                                        // replaces the tier defaults and the
+                                        // session's remembered allowances are a
+                                        // layer over both, so a preflight built on
+                                        // `Config::policy()` by itself would report
+                                        // a refusal for a server this very session
+                                        // has already been told to permit.
+                                        let policy = io_cli::approval::session_policy(
+                                            &config.policy().unwrap_or_default(),
+                                            app.posture(),
+                                            app.remembered(),
+                                        );
+                                        let report = io_cli::preflight::check(server, &policy);
+                                        app.record(
+                                            if report.starts() {
+                                                Tone::Muted
+                                            } else {
+                                                Tone::Warning
+                                            },
+                                            io_cli::preflight::line(&report),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Action::Mcp => {
                     let list = io_cli::servers::servers(&config, &app.servers);
                     if list.is_empty() {
@@ -2855,7 +3621,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // everywhere: an empty section is not an error.
                         app.record(
                             Tone::Muted,
-                            "no MCP servers are configured; `/config` writes them",
+                            "no MCP servers are configured; `/mcp add <id> -- <command>` adds one, \
+                             or `/mcp add <id> --url <url>` for an HTTP server",
                         );
                     } else {
                         picker = Some((
@@ -3118,25 +3885,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         );
                     }
                     if view.is_empty() {
-                        // Naming the file rather than the concept: an operator who
-                        // has never declared a bundle needs to know where the
-                        // entry goes, and one who has needs to know io-cli read
-                        // the file they meant.
+                        // **Said before the picker opens, not instead of it.**
+                        // Until 0.28.0 this branch was the whole answer for an
+                        // operator with no bundles, and it named a `[[plugin]]`
+                        // entry they then had to go and write by hand — which is
+                        // the shape this release exists to remove. The sentence
+                        // stays because it is still true and still orienting; what
+                        // changes is that the surface now offers the verb instead
+                        // of describing the file.
                         app.record(
                             Tone::Muted,
-                            "no capability bundles are declared; add one with a \
-                             `[[plugin]]` entry naming its directory"
-                                .to_string(),
+                            "no capability bundles are declared yet".to_string(),
                         );
-                    } else {
-                        picker = Some((
-                            Picker::new(
-                                "Plugins",
-                                io_cli::pluginview::rows(&view, screen.width(), &app.theme.glyphs),
-                            ),
-                            Pick::Plugins(view),
-                        ));
                     }
+                    let mut rows =
+                        io_cli::pluginview::rows(&view, screen.width(), &app.theme.glyphs);
+                    // Taken before the row is pushed, never worked out afterwards.
+                    // See `Pick::Plugins`.
+                    let add_at = rows.len();
+                    rows.push(Row::with_detail(
+                        "add a bundle".to_string(),
+                        "chooses a directory that carries a `plugin.toml`".to_string(),
+                    ));
+                    picker = Some((Picker::new("Plugins", rows), Pick::Plugins { view, add_at }));
                 }
                 // **Everything is shown before anything is written, and the
                 // default for every item is no.** The plan is built whole here —
@@ -3191,16 +3962,25 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Provider => {
                     let chain = io_cli::providers::chain(&config);
                     if chain.is_empty() {
-                        app.record(Tone::Muted, "no provider is configured; run `io setup`");
-                    } else {
-                        picker = Some((
-                            Picker::new(
-                                "Providers, in the order they are tried",
-                                io_cli::providers::rows(&chain),
-                            ),
-                            Pick::Provider,
-                        ));
+                        // Still said, and no longer the whole answer: the add row
+                        // below is what this release adds, and a surface that
+                        // refused to open for the operator with nothing configured
+                        // would be refusing exactly the operator the verb is for.
+                        app.record(Tone::Muted, "no provider is configured yet");
                     }
+                    let mut rows = io_cli::providers::rows(&chain);
+                    // Taken before the row is pushed. See `Pick::Providers`.
+                    let add_at = rows.len();
+                    rows.push(Row::with_detail(
+                        "add a link".to_string(),
+                        "chooses a preset, verifies its credential, and takes the model from the \
+                         catalogue that verification returns"
+                            .to_string(),
+                    ));
+                    picker = Some((
+                        Picker::new("Providers, in the order they are tried", rows),
+                        Pick::Provider { add_at },
+                    ));
                 }
                 Action::Profile => {
                     let names = io_cli::configure::profiles(&config);
@@ -3254,8 +4034,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     let settings = io_cli::configure::settings(&config);
                     let mut paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
                     let mut rows = io_cli::configure::rows(&settings);
-                    // **Last, because it is the one row that acts.** Every other
-                    // row names a setting and puts it in the composer; a reader
+                    // **Last, because it is the one row that acts on its own.**
+                    // Every other row names a setting and descends into its
+                    // values — since 0.28.0 it is only the four keys no menu can
+                    // hold that still reach the composer, and this row reaches
+                    // neither. A reader
                     // scanning for `policy.defaults.write` should not have to step
                     // over something that does work on the way there.
                     rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
@@ -3352,6 +4135,27 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             },
                         },
                     }
+                }
+                // **A machine-written key is refused here too, because this is the
+                // door the guard was missing.** `manage::config_value` refuses a
+                // `Kind::Machine` key by name, so `io config set prices.as_of …`
+                // has never been able to write one — but the shorthand reaches
+                // `write_where` without consulting the kind at all, and two doors
+                // to one key that disagree about whether it may be typed is the
+                // asymmetry this release exists to remove. The act is offered
+                // rather than the refusal being left bare: the date is written by
+                // re-reading the catalogue, and that row is on `/config`.
+                Action::Config(Some((key, _)))
+                    if io_cli::configure::kind_of(&key)
+                        == Some(io_cli::configure::Kind::Machine) =>
+                {
+                    app.record(
+                        Tone::Refused,
+                        format!(
+                            "{key} is written by the price refresh rather than typed; the last row \
+                             of `/config` re-reads the catalogue and dates it"
+                        ),
+                    );
                 }
                 Action::Config(Some((key, value))) => {
                     picker = Some(write_where(session.root(), key, value));
@@ -6210,6 +7014,25 @@ enum Pick {
         label: String,
         at: io_cli::providers::At,
         first: bool,
+        /// The entry's `kind`, carried so the model picker can name the provider
+        /// it is reading a catalogue for. Read off the row the operator chose
+        /// rather than re-derived, which is the same rule `at` follows.
+        kind: String,
+        /// Where the "take its key out of the file" row sits, or `usize::MAX`
+        /// where the entry carries no written key and the row was not drawn.
+        credential_at: usize,
+        /// Where the "change the model" and "remove" rows sit, recorded by the
+        /// code that built them.
+        ///
+        /// **`promote`'s index is still worked out and these two are not**, and the
+        /// asymmetry is deliberate: `promote` is present or absent on one flag the
+        /// arm already has, while these move with every row added above them. The
+        /// original comment here made the argument for computing indices from the
+        /// flag the rows were built from; recording them is the same argument
+        /// carried one step further, and it is what stopped this arm removing the
+        /// link it had offered to re-model.
+        model_at: usize,
+        remove_at: usize,
     },
     /// A confirmation over one session's removal. Row 0 is `store::LEAVE_IT` and
     /// every other row acts — the shape `/mcp` remove established and the one
@@ -6308,7 +7131,35 @@ enum Pick {
     },
     /// The provider chain, in the order `providers::rows` drew it — which is
     /// the order a turn tries it.
-    Provider,
+    ///
+    /// `add_at` is where the add row sits, taken from the length of the chain's
+    /// own rows before it was pushed. The rule every surface in this release
+    /// follows: an index worked out afterwards is an index addressing a different
+    /// list than the one on screen.
+    Provider {
+        add_at: usize,
+    },
+    /// The presets whose own credential variable is already set in this shell,
+    /// with "leave it" at row 0.
+    ///
+    /// **Only those, deliberately.** A credential that has to be typed already has
+    /// a flow — `io setup` types it, verifies it and writes it — and this
+    /// release's `preferred_tools` forbids a second one by name. Offering a preset
+    /// whose variable is unset would either build that second flow or write an
+    /// entry that cannot authenticate.
+    ProviderPreset(Vec<String>),
+    /// The models the verification call returned, with "leave it" at row 0.
+    ///
+    /// `at` is `None` for an add and `Some` for a change to an existing link, so
+    /// one picker serves both and the two cannot drift about what a chosen model
+    /// means. It is an `At` and never a row number: under a profile the rows and
+    /// the file's array describe different entries, which is the 0.21.0 defect
+    /// `providers::At::of` exists to make unspellable.
+    ProviderModel {
+        preset: String,
+        models: Vec<String>,
+        at: Option<io_cli::providers::At>,
+    },
     /// Every skill, in the order `skillview::rows` drew them, carried as the
     /// `(name, path)` each row stood for.
     ///
@@ -6342,7 +7193,48 @@ enum Pick {
     /// A refused bundle is in here too, and choosing one shows io-harness's
     /// sentence rather than a detail pane: there is nothing to descend into,
     /// because the bundle contributed nothing at all.
-    Plugins(io_cli::pluginview::View),
+    ///
+    /// `add_at` is where the add row sits, recorded by the code that built the rows
+    /// rather than recomputed here — `pluginview::rows` draws the loaded bundles
+    /// and then the refused ones, so the only number that cannot be wrong is the
+    /// length of what was already there. This is [`Pick::PluginEntry`]'s
+    /// `action_at` rule, and it is the rule because every index in this surface
+    /// addresses a list somewhere else.
+    Plugins {
+        view: io_cli::pluginview::View,
+        add_at: usize,
+    },
+    /// The directories below the discovery root that carry a `plugin.toml`, with
+    /// "leave it" at row 0.
+    ///
+    /// **A list rather than a prefilled composer**, which is the verb's whole
+    /// argument: a path typed from memory is a path that gets mistyped into an
+    /// entry io-harness then silently drops. A directory that is not a bundle is
+    /// still refused by name on the way through, because the typed path is not the
+    /// only way a wrong one arrives — a candidate can lose its manifest between the
+    /// row being drawn and this keystroke.
+    PluginAdd(Vec<std::path::PathBuf>),
+    /// One setting's values, as rows, with "leave it" at row 0.
+    ///
+    /// **The descent that ends free text.** Until 0.28.0 choosing a `/config` row
+    /// prefilled the composer with the key and left the value to be guessed out of
+    /// a set the pinned dependency has made public. `values` is that set, obtained
+    /// by kind; `unset_at` is the row that removes the key rather than writing a
+    /// default's text into a file the operator never wrote it in; `elsewhere_at`
+    /// opens the scope picker, because a write inherits the deciding file and an
+    /// operator moving a key between files still needs a way to say so.
+    ///
+    /// `scope` is where the write lands, resolved when the rows were built rather
+    /// than recomputed on the keystroke — the same rule every other confirmation on
+    /// this surface follows, so the file named in the title is the file written to.
+    ConfigValue {
+        key: String,
+        kind: io_cli::configure::Kind,
+        values: Vec<String>,
+        scope: io_harness::config::Scope,
+        unset_at: usize,
+        elsewhere_at: usize,
+    },
     /// One bundle's contributions, and the one thing that can be done about it.
     ///
     /// `bundle` is the resolved directory, which is the only thing a row on screen
@@ -6426,6 +7318,359 @@ enum Pick {
 ///
 /// Every scope is offered whether or not its file exists yet, because writing a
 /// key into a scope for the first time is how this is used.
+/// `io mcp`, `io plugin` and `io config` — the argument forms, end to end.
+///
+/// **Nothing but the answer goes to stdout.** A listing is what a script reads, so
+/// prose about what happened, and the MCP policy preflight in particular, go to
+/// stderr where they cannot contaminate a pipe. The exit status says whether the
+/// operation *happened*: a refusal is non-zero, and a preflight that reports a
+/// server the policy will not start is **zero**, because the entry was written and
+/// the disclosure is not a veto.
+///
+/// Every decision is `crate::manage`'s. This function chooses no scope, spells no
+/// refusal and builds no edit — it prints what the library returned and writes
+/// what the library planned, so this arm and the slash form cannot disagree.
+fn manage_main(
+    root: &std::path::Path,
+    config: &io_harness::config::Config,
+    tokens: &[String],
+) -> Result<u8, String> {
+    let request = io_cli::manage::parse(tokens)?;
+    // The read verbs first: they plan no write at all, which is what
+    // `plan` answering `None` means.
+    match &request {
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::List) => {
+            for server in io_cli::servers::servers(config, &io_cli::servers::Observed::default()) {
+                println!(
+                    "{}\t{}\t{}",
+                    server.id,
+                    server.transport,
+                    server.decided.word()
+                );
+            }
+        }
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Get { id }) => {
+            let found = io_cli::servers::servers(config, &io_cli::servers::Observed::default())
+                .into_iter()
+                .find(|server| &server.id == id);
+            match found {
+                None => return Err(format!("no configuration file in force declares {id}")),
+                Some(server) => println!(
+                    "{}\t{}\t{}",
+                    server.id,
+                    server.transport,
+                    server.decided.word()
+                ),
+            }
+        }
+        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {
+            let view = io_cli::pluginview::view(config);
+            for listed in &view.plugins {
+                println!("{}\t{}", listed.id, listed.root.display());
+            }
+            for refused in &view.refused {
+                // stderr, because a refused bundle is not part of the list a
+                // script asked for — and it is exactly what an operator piping
+                // the list needs to see anyway.
+                eprintln!("{}: {}", refused.path.display(), refused.error);
+            }
+        }
+        io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::Get { key }) => {
+            let setting = io_cli::configure::setting(config, key);
+            println!(
+                "{}\t{}\t{}",
+                setting.path,
+                setting.value.as_deref().unwrap_or(""),
+                setting.decided.word()
+            );
+        }
+        io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::List) => {
+            // **The origin column, and it is not optional.** A headless listing
+            // that omitted it would be a second, weaker truth about the same
+            // configuration than the one `/config` tells — and the whole argument
+            // of that surface is that a value without its deciding file is half an
+            // answer. A key no file names prints `default` and no path.
+            for setting in io_cli::configure::settings(config) {
+                println!(
+                    "{}\t{}\t{}",
+                    setting.path,
+                    setting.value.as_deref().unwrap_or(""),
+                    setting.decided.word()
+                );
+            }
+        }
+        _ => {}
+    }
+    let Some(plan) = io_cli::manage::plan(root, &request)? else {
+        return Ok(io_cli::exec::OK);
+    };
+    io_cli::configure::write(root, plan.scope, &plan.edits)?;
+    // **The policy preflight, after the write and on stderr.** After, because the
+    // report is a disclosure and not a veto: refusing to write an entry because
+    // the policy in force would refuse it would make the file depend on the
+    // posture at the moment of typing. On stderr, and exiting zero, because the
+    // operation did happen.
+    if let io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Add { server, .. }) = &request {
+        let policy = config.policy().unwrap_or_default();
+        eprintln!(
+            "{}",
+            io_cli::preflight::line(&io_cli::preflight::check(server, &policy))
+        );
+    }
+    Ok(io_cli::exec::OK)
+}
+
+/// The models `preset` actually serves, spelled the way `preset` spells them.
+///
+/// **`verify::served` alone is the wrong list, and offering it raw was a defect
+/// this release nearly shipped.** What that call returns is the *reference*
+/// catalogue — OpenRouter's own view of the entire field, as `src/verify.rs:85-95`
+/// says out loud — so its ids are namespaced (`anthropic/claude-…`). Writing one
+/// of those into an `[[provider]]` entry of kind `anthropic` names a model
+/// Anthropic's own API does not serve, and stores a price under a key no provider
+/// call will ever match. `verify::named` exists for exactly this and the wizard
+/// has always used it (`Progress::Catalogue`, twice); these two pickers were the
+/// only readers of the catalogue that did not.
+///
+/// Both arguments to `spec_from` are placeholders, and that is safe rather than
+/// sloppy: `named` matches on the spec's *variant* and reads neither the model nor
+/// the credential, no request is made from this spec, and `spec_from` discards the
+/// key it is handed (`api_key: None`) precisely so a key never sits in a struct
+/// longer than it must. The real spec, with the chosen model, is built for the
+/// verification call afterwards.
+///
+/// Empty for anything outside the three vendors `FromEnv` covers — a reference
+/// list cannot say what a server it has never heard of serves, which is `named`'s
+/// own answer for a `Compatible` endpoint.
+async fn catalogue_for(preset: &str) -> Vec<String> {
+    let which = match preset {
+        "openrouter" => io_cli::cli::FromEnv::OpenRouter,
+        "anthropic" => io_cli::cli::FromEnv::Anthropic,
+        "openai" => io_cli::cli::FromEnv::OpenAi,
+        _ => return Vec::new(),
+    };
+    let Ok(shape) = io_cli::provider::spec_from(
+        which,
+        Some("placeholder".to_string()),
+        Some("placeholder".to_string()),
+    ) else {
+        return Vec::new();
+    };
+    ids(&io_cli::verify::named(
+        &shape,
+        io_cli::verify::served(None).await,
+    ))
+}
+
+/// The values one setting can take, as a picker, or `None` when it has to be typed.
+///
+/// **The kind decides, and every option comes from somewhere that cannot go
+/// stale**: the effects and exec modes from io-harness's own types, a number from
+/// the ladder built around the value in force, a model from `[prices.models]`
+/// already in the file, a file from the workspace. Nothing here is a per-key table
+/// and nothing here reaches the network.
+///
+/// `None` means the value is genuinely unofferable — a substring, a rubric, a URL,
+/// a command — and the caller states the shape and shows an example instead.
+fn value_rows(
+    root: &std::path::Path,
+    config: &io_harness::config::Config,
+    key: &str,
+) -> Option<(Picker, Pick)> {
+    let kind = io_cli::configure::kind_of(key)?;
+    let setting = io_cli::configure::setting(config, key);
+    let current = setting.value.clone();
+    let bare = current
+        .as_deref()
+        .map(|value| value.trim().trim_matches('"').to_string());
+    let values: Vec<String> = match &kind {
+        io_cli::configure::Kind::Flag => vec!["true".to_string(), "false".to_string()],
+        io_cli::configure::Kind::Choice(options) => options.clone(),
+        io_cli::configure::Kind::Number { signed } => {
+            let anchor = bare.as_deref().and_then(|value| value.parse::<i64>().ok());
+            io_cli::configure::ladder(anchor, *signed)
+                .into_iter()
+                .map(|rung| rung.to_string())
+                .collect()
+        }
+        io_cli::configure::Kind::Model => io_cli::configure::priced_models(root),
+        io_cli::configure::Kind::File => {
+            // The workspace, through the completion the composer's `@` already
+            // opens, so one reader answers "which files may be offered" for both
+            // and the policy that hides a file hides it in both places.
+            let policy = io_harness::Policy::default();
+            io_cli::complete::entries(root, &policy, "")
+                .ok()
+                .map(|(found, _)| {
+                    found
+                        .iter()
+                        .map(|entry| entry.path.clone())
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default()
+        }
+        // Typed, and the caller says what shape.
+        io_cli::configure::Kind::List
+        | io_cli::configure::Kind::Text
+        | io_cli::configure::Kind::Machine => return None,
+    };
+    let (scope, inherited) = io_cli::configure::destination(config, key);
+    let word = io_cli::configure::Decided::File {
+        scope,
+        path: Default::default(),
+    };
+    let mut rows = vec![Row::new("leave it".to_string())];
+    for value in &values {
+        // The value in force is marked rather than omitted or reordered: a list
+        // that hid what the file currently says is a list an operator cannot find
+        // their own setting in.
+        let detail = if bare.as_deref() == Some(value.as_str()) {
+            format!("in force now, from the {} scope", setting.decided.word())
+        } else {
+            String::new()
+        };
+        rows.push(Row::with_detail(value.clone(), detail));
+    }
+    let unset_at = rows.len();
+    rows.push(Row::with_detail(
+        "unset it".to_string(),
+        "removes the key, so io-harness's own default is in force and the origin says `default`"
+            .to_string(),
+    ));
+    let elsewhere_at = rows.len();
+    rows.push(Row::with_detail(
+        "write it to another file…".to_string(),
+        "moves the key between the three scopes".to_string(),
+    ));
+    // **The scope is in the title, so it is stated before the choice and not
+    // after it.** A write inherits the file already deciding the key; answering
+    // "the user scope" every time would silently shadow a committed project
+    // setting with a personal one.
+    let title = if inherited {
+        format!(
+            "{key} — writes to the {} file, which decides it",
+            word.word()
+        )
+    } else {
+        format!(
+            "{key} — no file names it, so this writes to the {} file",
+            word.word()
+        )
+    };
+    Some((
+        Picker::new(title, rows),
+        Pick::ConfigValue {
+            key: key.to_string(),
+            kind,
+            values,
+            scope,
+            unset_at,
+            elsewhere_at,
+        },
+    ))
+}
+
+/// Cycle one `/config` row's value where it stands, and redraw the list around it.
+///
+/// **Every decision here is a library call**; what is in this function is the
+/// wiring, which is all this file may hold. `configure::cycled` decides whether
+/// the kind can be cycled at all and what the next value is, `configure::
+/// destination` decides which file it lands in, `configure::spell_value` decides
+/// how it is written, and `configure::widens_project` decides whether that file
+/// will accept it.
+///
+/// The row is rebuilt from a re-read configuration rather than patched in place,
+/// so the value and the origin column on screen are the file's own answer and not
+/// this function's account of what it just did. `selecting` keeps the marker on
+/// the row the operator is holding an arrow on.
+#[allow(clippy::too_many_arguments)]
+fn cycle_setting(
+    root: &std::path::Path,
+    config: &mut io_harness::config::Config,
+    app: &mut io_cli::app::App,
+    key: &str,
+    forward: bool,
+    open: &mut Picker,
+    selecting: usize,
+) {
+    let Some(kind) = io_cli::configure::kind_of(key) else {
+        // A key the catalogue does not name has no kind and cannot be cycled.
+        // Silence would read as a broken key, so it says what to do instead.
+        app.record(
+            Tone::Muted,
+            format!("{key} is not a key io-cli knows the values of; press Enter to type one"),
+        );
+        return;
+    };
+    let setting = io_cli::configure::setting(config, key);
+    let Some(next) = io_cli::configure::cycled(&kind, setting.value.as_deref(), forward) else {
+        app.record(
+            Tone::Muted,
+            format!("{key} is chosen from a list rather than cycled; press Enter to open it"),
+        );
+        return;
+    };
+    let (scope, inherited) = io_cli::configure::destination(config, key);
+    // **Said before it is attempted, because the cost is not one key.**
+    // `refuse_widening` runs before deserialization, so a widening value in a
+    // committed file makes the whole file stop parsing rather than that setting
+    // being rejected. `write` would catch it and report io-harness's own sentence
+    // — this reports it without touching the file at all.
+    if scope == io_harness::config::Scope::Project && io_cli::configure::widens_project(key, &next)
+    {
+        app.record(
+            Tone::Refused,
+            format!(
+                "{key} is decided by the project file, and a committed file may not set it to \
+                 {next} — io-harness refuses the whole file for it, not just the key. Choose \
+                 another value, or move the key to another file with `/config {key} {next}`."
+            ),
+        );
+        return;
+    }
+    let was = setting
+        .value
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let edit = io_cli::edit::Edit::set(key, io_cli::configure::spell_value(&kind, &next));
+    match io_cli::configure::write(root, scope, &[edit]) {
+        Err(refusal) => app.record(Tone::Refused, refusal),
+        Ok(()) => {
+            match io_cli::configure::reload(root) {
+                Ok((fresh, _)) => *config = fresh,
+                Err(error) => app.record(Tone::Error, error),
+            }
+            let settings = io_cli::configure::settings(config);
+            let mut rows = io_cli::configure::rows(&settings);
+            rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
+                config,
+                "prices.as_of",
+            )));
+            open.set_rows(rows, selecting);
+            // **`record`, not `say`.** A one-slot footer notice is overwritten by
+            // the next arrow press, and an operator cycling through four values
+            // would end with three of the four changes unrecorded anywhere. This
+            // is the rule 0.26.0 wrote down and 0.27.0 shipped a violation of.
+            app.record(
+                Tone::Success,
+                format!(
+                    "{key}: {was} → {next}, in the {} scope{}",
+                    io_cli::configure::Decided::File {
+                        scope,
+                        path: Default::default(),
+                    }
+                    .word(),
+                    if inherited {
+                        ", which already decided it"
+                    } else {
+                        ", which is where a key no file named goes"
+                    }
+                ),
+            );
+        }
+    }
+}
+
 fn write_where(root: &std::path::Path, key: String, value: String) -> (Picker, Pick) {
     let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
         io_harness::config::Scope::User,
