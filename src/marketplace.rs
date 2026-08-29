@@ -62,7 +62,54 @@
 //! not hold what was wanted.
 //!
 //! Nothing here writes: [`chosen`] answers with a directory and the entry is
-//! written by [`crate::pluginview::add`], the edit `/plugin add` already had.
+//! written by [`crate::pluginview`], the edits `/plugin add` already had.
+//!
+//! # A marketplace install discloses before it enables, and io-harness does the reading
+//!
+//! A bundle out of a marketplace is a directory **nobody on this machine has
+//! read**, and it contributes to six subsystems at once. Every other bundle io-cli
+//! declares came from a directory the operator typed the path of; this one came
+//! from a stranger's repository, and [`Chosen`] is where the two part.
+//!
+//! io-harness 0.70.0 publishes no loader that takes a directory — `load_one` is
+//! private and `Plugins::load` is `pub(crate)` — so the *only* public way to have
+//! it read, parse, validate and trust-check a bundle is to declare it in a
+//! configuration file. The install therefore writes the entry with
+//! `enabled = false` ([`crate::pluginview::add_off`]), re-discovers, and renders
+//! what comes back on [`io_harness::Plugins::disabled`] through the
+//! [`io_harness::Plugin`] accessors, all of which are valid on a switched-off
+//! bundle. That is [`disclosure`], and the names in it are already namespaced —
+//! `rust-review__reviewer` — which is the whole reason it must come from io-harness
+//! rather than from the manifest: the manifest says `reviewer`, and `reviewer` is a
+//! name the operator will never see again.
+//!
+//! **A bundle io-harness refuses is refused at that point, before consent.** It
+//! lands in `Plugins::dropped` and therefore in
+//! [`crate::pluginview::View::refused`], and [`disclosure`] answers `Err` with
+//! io-harness's own sentence. Nothing is offered to switch on, because there is
+//! nothing that would load.
+//!
+//! **So a marketplace install goes to user scope.** io-harness's
+//! `refuse_executing_contributions` rejects a `Scope::Project` bundle carrying any
+//! `[[hook]]` or `[[mcp]]` and the refusal takes the whole bundle — which is
+//! already `manage`'s default for a new entry, and is a reason not to change it.
+//!
+//! Consent is [`crate::pluginview::enable`], one `set` on that entry's own
+//! `enabled` key. Declining leaves the entry exactly as it is: declared, off, and
+//! listed by `/plugin` under its own mark.
+//!
+//! # The hooks are read here, and only to be shown
+//!
+//! io-harness exposes no accessor for a bundle's hooks (io-harness#223), so
+//! `contributions()` reports the word `hooks` and nothing else — and a bundle's
+//! hooks are the contribution that **runs programs**. Consenting on that word is
+//! consenting to argv nobody named. [`hooks`] reads the `[[hook]]` tables out of
+//! the manifest the way this module's own `declared` already reads `name`,
+//! through [`crate::edit::value_at`], and names each one's event and command.
+//!
+//! **Display only.** What is installed, and whether it may be, stays io-harness's
+//! parse and io-harness's trust rule; this reading decides nothing and is deleted
+//! whole when #223 lands.
 //!
 //! # Removing a marketplace removes a clone and nothing else
 //!
@@ -664,13 +711,181 @@ pub fn chosen(
     dir: &Path,
     markets: impl FnOnce() -> Vec<Market>,
     text: &str,
-) -> Result<PathBuf, String> {
+) -> Result<Chosen, String> {
     match crate::pluginview::refusal(dir) {
-        None => Ok(dir.to_path_buf()),
-        Some(refused) => {
-            locate(&markets(), text).map_err(|missing| format!("{refused} — {missing}"))
+        None => Ok(Chosen::Path(dir.to_path_buf())),
+        Some(refused) => locate(&markets(), text)
+            .map(Chosen::Held)
+            .map_err(|missing| format!("{refused} — {missing}")),
+    }
+}
+
+/// Which reading of the word won, and the directory it named.
+///
+/// **The reading is the disclosure rule, and it is recorded here so that nothing
+/// downstream has to ask the question twice.** A directory the operator typed is a
+/// directory the operator has; a bundle resolved out of a marketplace is a
+/// stranger's code that no one on this machine has read. The first is declared on,
+/// which is `/plugin add`'s behaviour since 0.28.0 and is not a thing to change
+/// under someone who typed a path they trust; the second is declared
+/// `enabled = false` and disclosed before it is switched on. See the module docs.
+///
+/// The distinction rides on [`chosen`]'s own answer rather than on the shape of
+/// the word, for [`chosen`]'s own reason: a rule keyed on a `/` or a leading `.`
+/// would make one word disclose in one working directory and not in another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Chosen {
+    /// A directory on this machine, named by the operator.
+    Path(PathBuf),
+    /// A bundle a marketplace holds, resolved by name.
+    Held(PathBuf),
+}
+
+impl Chosen {
+    /// The directory either reading named.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        match self {
+            Self::Path(dir) | Self::Held(dir) => dir,
         }
     }
+
+    /// Whether declaring it owes the operator a disclosure before it loads.
+    ///
+    /// One method rather than a `matches!` at the call site, so the rule has one
+    /// home and a sabotage of it fails everywhere at once.
+    #[must_use]
+    pub fn discloses(&self) -> bool {
+        matches!(self, Self::Held(_))
+    }
+}
+
+/// Every `[[hook]]` a manifest declares, as `(event, command)`, in its own order.
+///
+/// **The one contribution kind io-harness will not name, on the one that runs
+/// programs.** There is no `Plugin::hooks()` and `Hook` is `pub(crate)`
+/// (io-harness#223), so `contributions()` answers the bare word `hooks` — and an
+/// operator consenting to a stranger's bundle on that word is consenting to argv
+/// nobody has shown them. Read through [`crate::edit::value_at`], which is this
+/// crate's only permitted TOML parser and answers in the value's **source bytes**:
+/// what is drawn is what the file says, unquoted by nobody and interpreted by
+/// nobody.
+///
+/// The tables are counted with [`crate::edit::sections`] rather than by walking
+/// `hook[i].on` until a miss, because a hook may legally carry no `on` at all —
+/// `at` is the other half of that pair, and an empty `on` means *every* event — so
+/// the walk would stop at the first lifecycle hook and under-report the rest.
+///
+/// io-harness's own keys, and both halves of each pair: an event hook has `on`, a
+/// lifecycle hook has `at`; a hook that spawns has `run`, and one that logs has
+/// `append`. A table with neither is a table io-harness refuses, and it is said
+/// rather than skipped — this is a disclosure, and a hook drawn as a blank row is
+/// the silence the whole surface exists to end.
+///
+/// **Display only, and deleted whole when #223 lands.** What is installed and
+/// whether it may be stay io-harness's parse and io-harness's trust rule.
+#[must_use]
+pub fn hooks(dir: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(dir.join(MANIFEST)) else {
+        return Vec::new();
+    };
+    let count = crate::edit::sections(&text)
+        .iter()
+        .filter(|path| path.len() == 1 && path[0] == "hook")
+        .count();
+    (0..count)
+        .map(|index| {
+            let at = |key: &str| crate::edit::value_at(&text, &format!("hook[{index}].{key}"));
+            let event = at("on")
+                .or_else(|| at("at"))
+                .unwrap_or_else(|| "every event".to_string());
+            let command = at("run")
+                .or_else(|| at("append").map(|file| format!("appends to {file}")))
+                .unwrap_or_else(|| "declares neither `run` nor `append`".to_string());
+            (event, command)
+        })
+        .collect()
+}
+
+/// What a just-declared, switched-off bundle turned out to be.
+///
+/// The id is io-harness's — the manifest's `name`, which is also what every
+/// contribution is namespaced by — so the confirmation is titled with the word the
+/// operator will see in a trace, and never with the directory it happened to sit
+/// in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disclosure {
+    /// The bundle's id, for the confirmation's title.
+    pub id: String,
+    /// One finished line per fact, in io-harness's own contribution order.
+    pub said: Vec<String>,
+}
+
+/// What a bundle declared `enabled = false` at `dir` would bring, or why it will
+/// bring nothing.
+///
+/// **Every fact comes off `view`, which came off `Config::plugins()`, which came
+/// off io-harness's own read of the directory** — that is the whole of criterion
+/// F6 and the reason this takes a [`crate::pluginview::View`] rather than a path
+/// and a manifest. The agent names, server ids and layer names have already been
+/// rewritten to `<plugin>__<name>` by io-harness at load, so they are the strings a
+/// refusal, a call and a spawn will use; a disclosure rendered out of the manifest
+/// would name `reviewer` for a bundle that contributes `rust-review__reviewer`,
+/// which is a name the operator will never see again.
+///
+/// `Err` is io-harness's own sentence, whole. A bundle it refused is refused **at
+/// this point, before consent**: it is on `Plugins::dropped` and therefore on
+/// `view.refused`, and there is nothing to offer to switch on because there is
+/// nothing that would load. That is a property of the mechanism rather than a check
+/// written here — the file had to be read for the disclosure to exist at all.
+///
+/// The rows come from [`crate::pluginview::detail`], the renderer `/plugin`'s own
+/// pane uses, so the pane an operator opens afterwards says the same thing in the
+/// same order. They are folded to lines here because a disclosure is recorded into
+/// the scrollback rather than drawn as a list to choose from: every row of a
+/// confirmation past index 0 **acts** ([`crate::store::acts`]), so a fact drawn as
+/// a row would be a fact an operator could accidentally consent with.
+///
+/// Matched on the resolved path, for [`dependents`]' reason: `~` on macOS is
+/// reached through `/var` and canonicalises to `/private/var`, and a raw comparison
+/// would answer "io-harness read no bundle there" about the entry that was just
+/// written.
+pub fn disclosure(
+    view: &crate::pluginview::View,
+    dir: &Path,
+    hooks: &[(String, String)],
+    width: u16,
+    glyphs: &Glyphs,
+) -> Result<Disclosure, String> {
+    let real = resolved(dir);
+    if let Some(refused) = view
+        .refused
+        .iter()
+        .find(|refused| resolved(&refused.path) == real)
+    {
+        return Err(refused.error.clone());
+    }
+    let listed = view
+        .plugins
+        .iter()
+        .find(|listed| resolved(&listed.root) == real)
+        .ok_or_else(|| {
+            format!(
+                "{} is declared and io-harness reported it neither as read nor as refused, so \
+                 there is nothing to disclose and nothing was switched on",
+                dir.display()
+            )
+        })?;
+    Ok(Disclosure {
+        id: listed.id.clone(),
+        said: crate::pluginview::detail(listed, width, glyphs, hooks)
+            .into_iter()
+            .map(|row| match row.detail {
+                Some(detail) => format!("{}{}{detail}", row.label, glyphs.separator),
+                None => row.label,
+            })
+            .collect(),
+    })
 }
 
 /// Every bundle whose name or description carries `text`, in [`markets`]' order.

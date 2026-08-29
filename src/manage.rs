@@ -127,6 +127,13 @@ pub enum PluginVerb {
     /// Still a `PathBuf` for the one word, because the reading that wins in every
     /// existing case is the path and a `String` here would make the common verb
     /// convert at both call sites to serve the rarer one.
+    ///
+    /// **Which reading it was decides whether the entry is written on.** A
+    /// directory the operator typed is declared on, as it has been since 0.28.0; a
+    /// bundle out of a marketplace is a stranger's code and is declared
+    /// `enabled = false` so io-harness reads, parses and trust-checks it before
+    /// anything of it reaches a turn. See [`plan`] and
+    /// [`crate::marketplace::Chosen`].
     Add { path: PathBuf, scope: Scope },
     /// Every declared bundle, loaded and refused.
     List,
@@ -462,7 +469,8 @@ fn judged(text: &str) -> Result<crate::fetch::Named, String> {
 ///
 /// **Every write is one of the edits this crate already had**, and that is the
 /// constraint rather than an observation: `servers::add`, `servers::edit`,
-/// `servers::remove`, `pluginview::add`, `pluginview::remove`, `Edit::set` and
+/// `servers::remove`, `pluginview::add`, `pluginview::add_off`,
+/// `pluginview::remove`, `Edit::set` and
 /// `Edit::unset` are what the interactive surfaces write through, and a second
 /// path assembled here would be a second set of bytes to keep equal — which is
 /// the defect the whole module is arranged against.
@@ -532,16 +540,29 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             //
             // `display()` gives back the word as typed: `path` is a `PathBuf` made
             // out of one token and is never rendered from components.
-            let dir = crate::marketplace::chosen(
+            let chosen = crate::marketplace::chosen(
                 &resolve(root, path),
                 || crate::marketplace::installed().unwrap_or_default(),
                 &path.display().to_string(),
             )?;
+            let written = crate::pluginview::declared(root, chosen.dir());
             Plan {
                 scope: *scope,
-                edits: vec![crate::pluginview::add(&crate::pluginview::declared(
-                    root, &dir,
-                ))],
+                // **Which reading won decides which entry is written, and that is
+                // the whole of the disclosure rule.** A directory the operator
+                // typed is declared on, which is what `/plugin add ./bundles/x`
+                // has done since 0.28.0 and is not a thing to second-guess. A
+                // bundle resolved out of a marketplace is a stranger's code no one
+                // here has read, and it is declared `enabled = false` so that
+                // io-harness reads, parses, validates and trust-checks it — the
+                // only way it can, since it publishes no loader that takes a
+                // directory — before a single contribution reaches a turn.
+                // `Chosen::discloses` is the one place that question is answered.
+                edits: vec![if chosen.discloses() {
+                    crate::pluginview::add_off(&written)
+                } else {
+                    crate::pluginview::add(&written)
+                }],
             }
         }
         Request::Plugin(PluginVerb::Remove { path }) => {
