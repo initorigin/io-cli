@@ -243,6 +243,26 @@ pub enum Happened {
 }
 
 impl Happened {
+    /// What to call it in a line of output.
+    ///
+    /// Here rather than at the surface that draws it, which is the rule
+    /// [`Scope::label`] and [`kind_label`] already follow in this module: the word
+    /// is part of what a trace row *means*, and a surface that spelled its own
+    /// would be free to call a refusal a failure. It is a word and not a sentence
+    /// — nothing in this module touches a terminal, and io-harness's own
+    /// [`Noted::detail`] is the sentence.
+    ///
+    /// **`refused` and not `failed`.** The write did not fail: io-harness declined
+    /// it because an operator had pinned the entry, which is the pin working. A
+    /// reader told it failed goes looking for a broken store.
+    pub fn label(self) -> &'static str {
+        match self {
+            Happened::Evicted => "evicted",
+            Happened::Refused => "refused",
+            Happened::Recalled => "recalled",
+        }
+    }
+
     /// The kind string io-harness stores, `src/state.rs:2982-3009`.
     fn of(kind: &str) -> Option<Self> {
         match kind {
@@ -317,6 +337,16 @@ impl View {
 /// it just ran. `run` names the run whose trace to read, and `None` is a view with
 /// no trace rather than a view of the newest run: guessing which run an operator
 /// meant would put somebody else's evictions in front of them.
+///
+/// **`None` is not the answer for a session, and through 0.29.0 it was the only
+/// one this crate ever passed.** The whole trace half of this module — [`trace`],
+/// [`Happened`], [`Noted`] — was therefore reachable from the test suite and from
+/// nowhere an operator could stand, so the evictions, refusals and recalls it
+/// reads had never once been drawn. `/memory` names the session's **own last
+/// turn** (`src/main.rs`'s `last_run`), which is not a guess: it is the run the
+/// operator was watching a moment ago, and the one whose evictions are about
+/// their work. A session that has not run a turn yet has no run to name and
+/// passes `None`, which is the honest empty rather than somebody else's history.
 ///
 /// Every row is a read. This function cannot write to the store and cannot reach
 /// the filesystem except through [`workspace_key`], which only resolves a path.
@@ -602,7 +632,15 @@ pub fn forget(store: &Store, root: &Path, scope: Scope, key: &str) -> Result<For
 /// An empty `Vec` means the run held no restore point. Against a
 /// [`Forgotten::Removed`] that cannot happen, and if it ever does it is the
 /// symptom of the whole module note: something removed the entry without leaving
-/// a way back.
+/// a way back. A caller may not report it as a restoration — the keys that came
+/// back are the ones named here, and an empty answer names none.
+///
+/// **The keystroke that spends the id.** `/memory` offers the note's verbs,
+/// [`forget`] answers `Removed { restore }`, and the driver puts that id straight
+/// into a confirmation offering to put the entry back — declining by default,
+/// through `crate::store::acts`, like every other confirmation in this product.
+/// Through 0.29.0 the id was formatted into a sentence and then dropped on the
+/// floor: it named a way back that nothing in `src/` could take.
 pub fn unforget(store: &Store, root: &Path, restore: i64) -> Result<Vec<String>, Error> {
     Ok(rewind_run(&Workspace::new(root), store, restore)?.memory_restored)
 }

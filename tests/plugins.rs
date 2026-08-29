@@ -535,6 +535,116 @@ max_steps = 30
     );
 }
 
+/// **F11 (0.30.0).** A bundle is switched off and back on, and the entry survives.
+///
+/// Not the F11 the `f11_candidates_*` tests further down this file cover — that is
+/// 0.28.0's criterion about resolving the word an operator typed. The contracts
+/// number independently and this file now holds tests from both; the doc comment is
+/// what says which, since the name cannot.
+///
+/// `pluginview::disable` writes `false` where `enable` writes `true`, into the same
+/// one key of the same one entry. Everything else about the declaration — the path
+/// it names, and therefore the bundle's identity — is the same bytes afterwards,
+/// which is what separates this verb from `remove`: the bundle goes on being listed
+/// under `DISABLED_MARK` instead of vanishing, and the way back on is the same
+/// keystroke again rather than typing the directory out.
+///
+/// The whole round trip goes through io-harness: the file is written, re-discovered
+/// and read back through `Plugins::disabled()`, because `[[plugin]]` *is* held to
+/// `deny_unknown_fields` and a fixture that only grepped the text would pass on a
+/// key the harness never honoured.
+///
+/// Sabotage: have `disable` call `remove`. The bundle stops being declared at all —
+/// `view.plugins` no longer names it, the `DISABLED_MARK` row is not there, and the
+/// path assertion on the file fails first.
+#[test]
+fn f11_a_bundle_is_switched_off_and_back_on_and_the_entry_survives() {
+    let (_dir, root) = root();
+    bundle(&root, "good", MINIMAL);
+    declaring(&root, LOCAL_FILE, &["good"]);
+    let file = root.join(LOCAL_FILE);
+    let before = std::fs::read_to_string(&file).expect("the configuration");
+
+    let off = io_cli::edit::apply(&before, &[pluginview::disable(0)]).expect("the edit applies");
+    assert!(
+        off.contains("path = \"good\""),
+        "the declaration was taken away rather than switched off: {off}",
+    );
+    assert!(
+        off.contains("enabled = false"),
+        "the key is not a TOML boolean, and io-harness refuses `enabled = \"false\"`: {off}",
+    );
+    std::fs::write(&file, &off).expect("the configuration");
+
+    let config = Config::discover(&root).expect("the configuration loads");
+    let view = pluginview::view(&config);
+    let listed = view
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "rust-review")
+        .expect("a switched-off bundle is still declared and still listed");
+    assert!(
+        !listed.enabled,
+        "the bundle is still loading, so nothing was switched off",
+    );
+
+    // The mark, because a row that vanished and a row that says so are the two
+    // answers this verb chooses between.
+    let rows = pluginview::rows(&view, 120, &io_cli::glyphs::ASCII);
+    let row = rows
+        .iter()
+        .find(|row| row.label == "rust-review")
+        .expect("a row per declared bundle");
+    assert_eq!(
+        row.mark,
+        Some(pluginview::DISABLED_MARK),
+        "a switched-off bundle must be drawn under its own mark rather than \
+         disappearing or reading as loaded",
+    );
+
+    // And back on, from exactly where it was.
+    let on = io_cli::edit::apply(&off, &[pluginview::enable(0)]).expect("the edit applies");
+    assert!(on.contains("enabled = true"), "{on}");
+    assert!(on.contains("path = \"good\""), "{on}");
+    std::fs::write(&file, &on).expect("the configuration");
+    let config = Config::discover(&root).expect("the configuration loads");
+    assert!(
+        pluginview::view(&config)
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id == "rust-review" && plugin.enabled),
+        "a bundle switched off cannot be switched back on, which is the half \
+         0.29.0 could not ship",
+    );
+}
+
+/// **F12, the `[[plugin]]` half.** The sentence this write costs an older binary
+/// is not the sentence the `[[mcp]]` write costs.
+///
+/// Stated on both surfaces because an operator who has met one will assume the
+/// other behaves the same way, and here they are opposites: a 0.69.0 binary refuses
+/// the *whole configuration file* over `enabled` in a `[[plugin]]`, and silently
+/// ignores it in an `[[mcp]]` — starting a server that was switched off. The full
+/// pairing is asserted in `tests/servers_enabled.rs`; this is the half that lives
+/// beside the write it describes.
+///
+/// Sabotage: use `pluginview::OLDER_BINARY` for both. This test and its twin fail
+/// together, and the one that matters is the MCP side, where the operator is told
+/// they will notice something they will not.
+#[test]
+fn f12_the_plugin_older_binary_sentence_is_about_the_whole_file() {
+    let plugin = pluginview::OLDER_BINARY;
+    assert!(
+        plugin.contains("refuses the whole configuration file"),
+        "the cost of this key on an older binary is total, not partial: {plugin}",
+    );
+    assert_ne!(
+        plugin,
+        io_cli::servers::OLDER_BINARY,
+        "the two `enabled` writes cost opposite things and cannot share a sentence",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // F2/F3 rendering — the sentence, and the index mapping
 // ---------------------------------------------------------------------------

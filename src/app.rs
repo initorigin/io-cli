@@ -2340,7 +2340,15 @@ pub fn server_value(key: &str, typed: &str) -> String {
     let typed = typed.trim();
     match key {
         "args" => crate::edit::array(&typed.split_whitespace().collect::<Vec<&str>>()),
-        "timeout_secs" | "env" | "headers" => typed.to_string(),
+        // `enabled` joins these in 0.30.0 because `servers::KEYS` admitted it, and
+        // `KEYS` is what the "change one setting" picker offers. It is a TOML
+        // boolean: quoting it writes `enabled = "false"`, which io-harness refuses,
+        // so `configure::write`'s read-back rolls the whole edit off and the
+        // operator is told their toggle is broken. It fails closed, which is why
+        // nothing was lost — but a surface that advertises a key it cannot write is
+        // the 0.19.0 advertised-but-inert trap, and this is the one line between
+        // them.
+        "timeout_secs" | "enabled" | "env" | "headers" => typed.to_string(),
         _ => crate::servers::quoted(typed),
     }
 }

@@ -91,6 +91,33 @@ pub enum Request {
     Plugin(PluginVerb),
     /// The settings.
     Config(ConfigVerb),
+    /// The skills in this home's own `skills/` directory.
+    Skill(SkillVerb),
+}
+
+/// What `/skills` and `io skill` can be asked to do.
+///
+/// **Three verbs and not five.** Turning a skill off and back on stays a
+/// keystroke: it is a rename inside a directory io-cli owns, it is reversible by
+/// the row that did it, and there is nothing for an argument form to name that
+/// the picker does not name better. Installing and removing are the two that take
+/// a value only the operator can author — a path they have and a name they choose
+/// — which is exactly the line `product.yaml` draws between a value that is
+/// chosen and one that is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillVerb {
+    /// Copy the file at `source` into this home's skills directory.
+    Add { source: std::path::PathBuf },
+    /// Every skill, whose it is, and whether it is on.
+    List,
+    /// Delete one by the name its frontmatter declares.
+    ///
+    /// The **resolved** name and not the file name, because that is what an
+    /// operator reads off `/skills` and what `Skills::discover` keys on. A file
+    /// called `mine.md` declaring `name: io-mcp` is `io-mcp` everywhere it is
+    /// addressed, and asking for the filename here would be asking for the one
+    /// spelling the surface never shows.
+    Remove { name: String },
 }
 
 /// What `/mcp` and `io mcp` can be asked to do.
@@ -114,6 +141,25 @@ pub enum McpVerb {
     },
     /// Take one entry away, whole.
     Remove { id: String },
+    /// Let io-harness start it again — `enabled = true`.
+    Enable { id: String },
+    /// Stop io-harness starting it — `enabled = false`.
+    ///
+    /// **Not [`McpVerb::Remove`], and the pair is deliberate.** A removal takes the
+    /// `[[mcp]]` entry away and the operator re-types the whole server to get it
+    /// back; this changes one word and leaves every other key of the entry exactly
+    /// as it was, so `mcp list` still shows the server and says it is off. Both go
+    /// through [`crate::servers::switch`], which is also what the `/mcp` keystroke
+    /// builds — one write, so the two doors cannot produce different bytes.
+    Disable { id: String },
+    /// Start it, once, on its own, and report what happened —
+    /// [`crate::servers::probe`] over [`io_harness::probe_mcp`].
+    ///
+    /// A read as far as this module is concerned: it writes no configuration file,
+    /// so [`plan`] answers `None` for it and each door runs the probe itself. It is
+    /// not a *cheap* read — it spawns or dials a real server — but nothing about
+    /// the operator's files changes, which is what a `Plan` is about.
+    Probe { id: String },
 }
 
 /// What `/plugin` and `io plugin` can be asked to do.
@@ -207,6 +253,22 @@ pub struct Plan {
     pub scope: Scope,
     /// What to write, applied together or not at all.
     pub edits: Vec<Edit>,
+    /// What the operator has to be shown **before** [`crate::configure::write`]
+    /// is called, and consent to.
+    ///
+    /// `Some` for exactly one request: `plugin add <name>` resolved out of a
+    /// marketplace, which is a stranger's directory nobody on this machine has
+    /// read. It is already the whole answer — [`plan`] got it from
+    /// [`crate::marketplace::disclosure`], which is `io_harness::Plugins::inspect`
+    /// — so a driver holding it has nothing left to decide and no second reading
+    /// to get wrong.
+    ///
+    /// **A door that ignores it writes an unconsented entry**, which is why it is
+    /// a field on the `Plan` rather than a second call the driver has to remember:
+    /// the edits and the disclosure that earns them travel together. A bundle
+    /// io-harness would refuse never reaches here at all — `plan` answers `Err`
+    /// with io-harness's own sentence and there is no `Plan` to write.
+    pub disclosure: Option<crate::marketplace::Disclosure>,
 }
 
 /// The tokens of a slash line, as a shell would have handed them to `io`.
@@ -275,8 +337,9 @@ pub fn tokens(line: &str) -> Vec<String> {
 pub fn parse(tokens: &[String]) -> Result<Request, String> {
     let Some(surface) = tokens.first() else {
         return Err(
-            "nothing was asked for; the surfaces are `mcp`, `plugin` and `config`, and \
-                    each takes a verb after it — `mcp add`, `plugin list`, `config set`"
+            "nothing was asked for; the surfaces are `mcp`, `plugin`, `skill` and `config`, \
+                    and each takes a verb after it — `mcp add`, `plugin list`, `skill add`, \
+                    `config set`"
                 .to_string(),
         );
     };
@@ -300,12 +363,40 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
     let surface = match surface {
         "plugins" => "plugin",
         "servers" => "mcp",
+        // `/skills` is the command and `io skill …` reads better in a shell, so
+        // both spellings fold here for the plural's own reason: the fold has to be
+        // on the door **both** ways in go through, or the argv form and the slash
+        // form end up disagreeing about a word.
+        "skills" => "skill",
         other => other,
     };
     let verb = tokens.get(1).map(String::as_str);
     let args = scan(tokens.get(2..).unwrap_or(&[]))?;
 
     match (surface, verb) {
+        // `no_scope` for the reason every skill verb has it: a skill is a file in
+        // io-cli's own home and no configuration file declares one, so a scope
+        // typed here would name something this surface does not write.
+        ("skill", Some("add")) => {
+            args.no_scope("skill add")?;
+            args.only("skill add", &[])?;
+            Ok(Request::Skill(SkillVerb::Add {
+                source: std::path::PathBuf::from(
+                    args.one_word("skill add", "the path of a skill file")?,
+                ),
+            }))
+        }
+        ("skill", Some("list")) => {
+            args.nothing("skill list")?;
+            Ok(Request::Skill(SkillVerb::List))
+        }
+        ("skill", Some("remove")) => {
+            args.no_scope("skill remove")?;
+            args.only("skill remove", &[])?;
+            Ok(Request::Skill(SkillVerb::Remove {
+                name: args.one_word("skill remove", "the name of an installed skill")?,
+            }))
+        }
         ("mcp", Some("add")) => mcp_add(&args).map(Request::Mcp),
         ("mcp", Some("list")) => {
             args.nothing("mcp list")?;
@@ -318,6 +409,29 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             }))
         }
         ("mcp", Some("edit")) => mcp_edit(&args).map(Request::Mcp),
+        // **One arm for the pair, because they are one verb with a value.** Two
+        // arms would be two spellings of the same three refusals, and the one that
+        // got less attention is the one that would stop refusing a `--scope`.
+        // `no_scope` for `remove`'s reason: the entry lives in exactly one file and
+        // io finds it by name, so a scope typed here would aim a position counted
+        // in one file's array at another file's.
+        ("mcp", Some(word @ ("enable" | "disable"))) => {
+            let named = format!("mcp {word}");
+            args.no_scope(&named)?;
+            args.only(&named, &[])?;
+            let id = args.one_word(&named, "the id of a configured server")?;
+            Ok(Request::Mcp(if word == "enable" {
+                McpVerb::Enable { id }
+            } else {
+                McpVerb::Disable { id }
+            }))
+        }
+        ("mcp", Some("probe")) => {
+            args.only("mcp probe", &[])?;
+            Ok(Request::Mcp(McpVerb::Probe {
+                id: args.one_word("mcp probe", "the id of a configured server")?,
+            }))
+        }
         ("mcp", Some("remove")) => {
             args.no_scope("mcp remove")?;
             args.only("mcp remove", &[])?;
@@ -408,8 +522,9 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
 /// documentation this whole module's refusals exist to save.
 fn verbs(surface: &str) -> &'static str {
     match surface {
-        "mcp" => "`add`, `list`, `get`, `edit` and `remove`",
+        "mcp" => "`add`, `list`, `get`, `edit`, `enable`, `disable`, `probe` and `remove`",
         "plugin" => "`add` (also spelled `install`), `list`, `search`, `remove` and `marketplace`",
+        "skill" => "`add <path>`, `list` and `remove <name>`",
         _ => "`get`, `set`, `unset` and `list`",
     }
 }
@@ -492,11 +607,20 @@ fn judged(text: &str) -> Result<crate::fetch::Named, String> {
 ///
 /// **Every write is one of the edits this crate already had**, and that is the
 /// constraint rather than an observation: `servers::add`, `servers::edit`,
-/// `servers::remove`, `pluginview::add`, `pluginview::add_off`,
-/// `pluginview::remove`, `Edit::set` and
+/// `servers::remove`, `pluginview::add`, `pluginview::remove`, `Edit::set` and
 /// `Edit::unset` are what the interactive surfaces write through, and a second
 /// path assembled here would be a second set of bytes to keep equal — which is
 /// the defect the whole module is arranged against.
+///
+/// **`Err` is also how a bundle is refused before anything is written.** A
+/// `plugin add <name>` resolved out of a marketplace runs
+/// `io_harness::Plugins::inspect` here, so a manifest io-harness would drop — a
+/// bad id, a `[[hook]]` in a committed file, a `${env:}` substitution — ends the
+/// request with io-harness's own sentence and no `Plan` at all. Neither door can
+/// therefore write first and find out afterwards, which is what both of them did
+/// through 0.29.0. What a bundle it *accepts* would bring rides on
+/// [`Plan::disclosure`], for the door to show and get consent for before it calls
+/// [`crate::configure::write`].
 ///
 /// The scope of a change to something that **already exists** is not the
 /// operator's to choose: it is the file that declares it, found by
@@ -523,9 +647,18 @@ fn decided_scope(root: &Path, key: &str, asked: Option<Scope>) -> Scope {
 
 pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
     let plan = match request {
+        // **No skill verb plans an `Edit`, and none ever will.** A skill is a
+        // markdown file in io-cli's own home; no configuration file declares one,
+        // there is no `enabled` key for one in the harness, and `Plan` is a list of
+        // edits to somebody's `io.toml`. Installing copies a file and removing
+        // unlinks one — acts that happen on the door, in `skillview`, the way a
+        // probe does. `Ok(None)` is the honest answer and it is the same one every
+        // read verb here gives.
+        Request::Skill(_) => return Ok(None),
         Request::Mcp(McpVerb::Add { server, scope }) => Plan {
             scope: *scope,
             edits: vec![crate::servers::add(server)],
+            disclosure: None,
         },
         Request::Mcp(McpVerb::Edit { id, key, value }) => {
             let at = declared_server(root, id)?;
@@ -543,6 +676,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             Plan {
                 scope: at.scope,
                 edits: vec![edit],
+                disclosure: None,
             }
         }
         Request::Mcp(McpVerb::Remove { id }) => {
@@ -550,8 +684,14 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             Plan {
                 scope: at.scope,
                 edits: vec![crate::servers::remove(&at)],
+                disclosure: None,
             }
         }
+        // **The entry is found and then edited, never removed and re-added.**
+        // `servers::switch` is the one write, shared with the `/mcp` keystroke, so
+        // whichever door was typed the file gains the same four bytes.
+        Request::Mcp(McpVerb::Enable { id }) => switched(root, id, true)?,
+        Request::Mcp(McpVerb::Disable { id }) => switched(root, id, false)?,
         Request::Plugin(PluginVerb::Add { path, scope }) => {
             // **Both readings of the word, decided in one place.** A directory
             // carrying a manifest is a path and everything else is a name looked
@@ -569,23 +709,36 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 &path.display().to_string(),
             )?;
             let written = crate::pluginview::declared(root, chosen.dir());
+            // **Which reading won decides whether anything is disclosed, and that
+            // is the whole of the rule.** A directory the operator typed is
+            // declared without ceremony, which is what `/plugin add ./bundles/x`
+            // has done since 0.28.0 and is not a thing to second-guess. A bundle
+            // resolved out of a marketplace is a stranger's code nobody here has
+            // read, so io-harness reads, parses, validates and trust-checks it
+            // **now** — `Plugins::inspect`, 0.71.0 — and a refusal is this
+            // function's `Err`, in io-harness's own sentence, with the operator's
+            // configuration file never opened.
+            //
+            // `Chosen::discloses` is the one place that question is answered, and
+            // the scope handed to `inspect` is the scope this `Plan` is about to
+            // be written into: a `[[hook]]` is the bundle's own business in a
+            // user-scope file and is refused whole in a committed one, and an
+            // install that inspected at the wrong scope would disclose a bundle
+            // that then dropped, or refuse one that would have loaded.
+            let disclosure = chosen
+                .discloses()
+                .then(|| crate::marketplace::disclosure(*scope, chosen.dir()))
+                .transpose()?;
             Plan {
                 scope: *scope,
-                // **Which reading won decides which entry is written, and that is
-                // the whole of the disclosure rule.** A directory the operator
-                // typed is declared on, which is what `/plugin add ./bundles/x`
-                // has done since 0.28.0 and is not a thing to second-guess. A
-                // bundle resolved out of a marketplace is a stranger's code no one
-                // here has read, and it is declared `enabled = false` so that
-                // io-harness reads, parses, validates and trust-checks it — the
-                // only way it can, since it publishes no loader that takes a
-                // directory — before a single contribution reaches a turn.
-                // `Chosen::discloses` is the one place that question is answered.
-                edits: vec![if chosen.discloses() {
-                    crate::pluginview::add_off(&written)
-                } else {
-                    crate::pluginview::add(&written)
-                }],
+                // One entry, switched on, written once. Through 0.29.0 a
+                // marketplace bundle was written `enabled = false` first and
+                // switched on afterwards, because declaring it was the only way to
+                // have io-harness read it at all; `inspect` has replaced that
+                // round trip, so there is no longer an entry in the file that the
+                // operator has not agreed to. See `pluginview::add_off`.
+                edits: vec![crate::pluginview::add(&written)],
+                disclosure,
             }
         }
         Request::Plugin(PluginVerb::Remove { path }) => {
@@ -600,11 +753,13 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             Plan {
                 scope,
                 edits: vec![crate::pluginview::remove(index)],
+                disclosure: None,
             }
         }
         Request::Config(ConfigVerb::Set { key, value, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
             edits: vec![Edit::set(key.clone(), value.clone())],
+            disclosure: None,
         },
         Request::Config(ConfigVerb::Unset { key, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
@@ -615,6 +770,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             // for a key whose name happens to be a section's, delete the
             // operator's entire block. See `Edit::unset`.
             edits: vec![Edit::unset(key.clone())],
+            disclosure: None,
         },
         // **A marketplace verb plans no write, and it is here beside the reads
         // rather than given a shape of its own.** `add` and `remove` are not
@@ -633,13 +789,34 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
         //
         // `search` is here as an ordinary read: it opens the marketplaces on the
         // disk rather than a configuration file, and it changes neither.
-        Request::Mcp(McpVerb::List | McpVerb::Get { .. })
+        //
+        // **`mcp probe` is here, and it is the one read in this list that does
+        // something.** It spawns or dials a real server and shuts it down again —
+        // but it changes no configuration file, and a `Plan` is about a file. There
+        // is no `Edit` that could express "go and look", and a `Plan` carrying an
+        // empty edit list is what `Ok(None)` exists to prevent. So each door runs
+        // `servers::probe` itself, through the one entry point, and prints
+        // `servers::probed`'s one sentence.
+        Request::Mcp(McpVerb::List | McpVerb::Get { .. } | McpVerb::Probe { .. })
         | Request::Plugin(
             PluginVerb::List | PluginVerb::Search { .. } | PluginVerb::Marketplace(_),
         )
         | Request::Config(ConfigVerb::Get { .. } | ConfigVerb::List) => return Ok(None),
     };
     Ok(Some(plan))
+}
+
+/// The plan `mcp enable` and `mcp disable` both come to.
+///
+/// One function because they are one write with a different value, and the file is
+/// found the same way either way — by id, in whichever scope declares the entry.
+fn switched(root: &Path, id: &str, on: bool) -> Result<Plan, String> {
+    let at = declared_server(root, id)?;
+    Ok(Plan {
+        scope: at.scope,
+        edits: vec![crate::servers::switch(&at, on)],
+        disclosure: None,
+    })
 }
 
 /// Where the deciding file declares the server called `id`.
@@ -1042,13 +1219,15 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.69.0/src/mcp.rs:267`) — a
-    // constructor chain here would drop the arguments of half the servers it was
-    // handed and say nothing.
+    // silent no-op on an HTTP server (`io-harness-0.71.0/src/mcp.rs:439-447`: the
+    // body writes only into the `Stdio` arm) — a constructor chain here would drop
+    // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`
     // asks it: the defaults are io-harness's, and a value copied into io-cli is one
     // that goes stale in silence. `enabled` is io-harness 0.70.0's; an added server
-    // is on, and the flag has no keystroke here yet — see the known limitations.
+    // is on, and **since 0.30.0 it has both a keystroke and an argument form** —
+    // `/mcp`'s toggle row and `io mcp enable|disable <id>`, which share
+    // `servers::switch`.
     let defaults = McpServer::stdio("", "");
     let mut server = McpServer {
         id,

@@ -872,3 +872,260 @@ fn enable_is_refused_on_a_bundle_skill_and_leaves_the_bundle_untouched() {
     skillview::enable(&parked, std::slice::from_ref(&plug)).expect("and back again");
     assert!(ours.exists());
 }
+
+// ---------------------------------------------------------------------------
+// 0.30.0 F1, F2, F3 — a skill arrives and leaves.
+// ---------------------------------------------------------------------------
+
+/// **F1.** Installing copies the operator's file in, and the row reads `yours`.
+///
+/// The provenance half is the load-bearing one. `skills::wrote` answers *are these
+/// the bytes io-cli last wrote?*, so an install that recorded itself in the
+/// manifest would make the listing credit this crate with somebody else's work —
+/// the same misattribution `home::origin` exists to prevent one level up.
+#[test]
+fn f1_an_installed_skill_is_copied_in_and_belongs_to_the_operator() {
+    let (dir, home) = home();
+    let source = dir.path().join("elsewhere").join("mine.md");
+    write(&source, &skill("mine", "something of my own"));
+    let before = read(&source);
+
+    let at = skillview::install(&home, &source).expect("a fresh name is installed");
+
+    assert_eq!(
+        at,
+        skills::dir(&home).join("mine.md"),
+        "into the skills dir"
+    );
+    assert_eq!(read(&at), before, "byte for byte");
+    assert_eq!(
+        read(&source),
+        before,
+        "**a copy and never a move**: the operator still owns the file they named, \
+         and a lever that emptied it would be `/skills` deleting something outside \
+         the home to put something inside it",
+    );
+
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
+    assert_eq!(
+        listed(&view, "mine").origin,
+        Origin::Yours,
+        "the manifest records nothing for it, which is exactly what makes it theirs",
+    );
+}
+
+/// **F1, the shared parse.** Both spellings reach one `Request`.
+///
+/// The named sabotage is giving the argv form its own copy of the install. This
+/// asserts the level above that: `/skills add …` and `skill add …` are the same
+/// parse, so there is only one thing for a second copy to diverge from.
+#[test]
+fn f1_both_doors_reach_one_parse() {
+    let slash = io_cli::manage::parse(&io_cli::manage::tokens("/skills add /x/y.md"))
+        .expect("the slash form parses");
+    let argv = io_cli::manage::parse(&[
+        "skill".to_string(),
+        "add".to_string(),
+        "/x/y.md".to_string(),
+    ])
+    .expect("the argv form parses");
+
+    assert_eq!(
+        slash, argv,
+        "one parse, so the two doors cannot drift into one being the real one",
+    );
+    assert_eq!(
+        slash,
+        io_cli::manage::Request::Skill(io_cli::manage::SkillVerb::Add {
+            source: PathBuf::from("/x/y.md"),
+        }),
+    );
+}
+
+/// **F2.** Removing unlinks; disabling renames. After a remove the file is in
+/// neither directory; after a disable it is in exactly one of them.
+#[test]
+fn f2_removing_is_not_disabling() {
+    let (_dir, home) = home();
+    let skills_dir = skills::dir(&home);
+    let one = skills_dir.join("gone.md");
+    let two = skills_dir.join("parked.md");
+    write(&one, &skill("gone", "to be removed"));
+    write(&two, &skill("parked", "to be disabled"));
+
+    let parked = skillview::disable(&two, &[]).expect("disable renames");
+    assert!(
+        !two.exists(),
+        "disable moved it out of the skills directory"
+    );
+    assert!(parked.exists(), "and it is in `disabled/`, still on disk");
+
+    skillview::remove(&one, &[]).expect("remove unlinks");
+    assert!(!one.exists(), "gone from the skills directory");
+    assert!(
+        !skills_dir.join(skills::DISABLED).join("gone.md").exists(),
+        "**and gone from `disabled/` too** — a removal implemented as a second \
+         rename would promise deletion and deliver a hidden copy, and the two \
+         verbs would be one act under two names",
+    );
+}
+
+/// **F2, the destination guard.** Installing over a file that is already there is
+/// refused rather than overwriting it: a skill is prose somebody wrote and this
+/// verb has no undo.
+#[test]
+fn f1_installing_over_an_existing_file_is_refused() {
+    let (dir, home) = home();
+    let source = dir.path().join("elsewhere").join("mine.md");
+    write(&source, &skill("mine", "the new one"));
+    let standing = skills::dir(&home).join("mine.md");
+    write(&standing, &skill("mine", "the one already there"));
+    let before = read(&standing);
+
+    let refusal = skillview::install(&home, &source).expect_err("it is already there");
+    assert!(refusal.contains("already there"), "{refusal}");
+    assert_eq!(read(&standing), before, "and nothing was written over it");
+}
+
+/// **F1, the name guard.** A source whose *resolved* name is already claimed is
+/// refused even when its filename is free.
+///
+/// This is `enable`'s own warning reached from the other side: two files answering
+/// to one name make `Skills::discover` return `Err`, io-harness propagates it at
+/// run start, and every turn of the session is dead before its first completion —
+/// with `/skills` unable to help, because its list comes from the call that just
+/// failed.
+#[test]
+fn f1_installing_a_second_claimant_to_one_name_is_refused() {
+    let (dir, home) = home();
+    write(
+        &skills::dir(&home).join("theirs.md"),
+        &skill("io-mcp", "the one already answering"),
+    );
+    let source = dir.path().join("elsewhere").join("mine.md");
+    write(&source, &skill("io-mcp", "a second claimant"));
+
+    let refusal = skillview::install(&home, &source).expect_err("the name is taken");
+    assert!(
+        refusal.contains("io-mcp"),
+        "the refusal names the name rather than the file: {refusal}",
+    );
+    assert!(
+        !skills::dir(&home).join("mine.md").exists(),
+        "and nothing was copied in",
+    );
+    assert!(
+        discovered(&skills::dir(&home)).len() == 1,
+        "the directory still discovers, which is the whole point of refusing",
+    );
+}
+
+/// **F3.** A bundle's skill refuses removal, and the refusal is *inside* the
+/// function.
+///
+/// The sabotage is moving the guard to the call site. This test calls
+/// `skillview::remove` directly — there is no call site between it and the unlink
+/// — so a guard that lived anywhere else would let this delete somebody's bundle
+/// file and the assertion below would fail.
+#[test]
+fn f3_a_bundles_skill_is_not_ours_to_remove() {
+    let (dir, _home) = home();
+    let bundle = dir.path().join("bundles").join("pack");
+    let theirs = bundle.join("skills").join("packed.md");
+    write(&theirs, &skill("packed", "a bundle's own"));
+    let plug = ("pack".to_string(), bundle.clone());
+
+    let refusal = skillview::remove(&theirs, std::slice::from_ref(&plug))
+        .expect_err("a bundle's file is not io-cli's to delete");
+    assert!(
+        refusal.contains("pack"),
+        "the refusal names the bundle: {refusal}",
+    );
+    assert!(theirs.exists(), "and the file is still there");
+}
+
+/// **F1, the half a green suite cannot see.** The *session* acts on a skill verb,
+/// not only the headless door.
+///
+/// This is the gate for the release's worst defect, found by the adversarial
+/// review and by nothing else. `manage::plan` answers `Ok(None)` for every skill
+/// verb — a skill is a file, not a configuration edit — and the session's
+/// `Action::Manage` match ended in `Ok((_, None)) => {}`. So `/skills add
+/// ./x.md`, `/skills list` and `/skills remove x` typed at the prompt parsed
+/// correctly, planned correctly, and then did **nothing at all**: no file copied,
+/// no output, no refusal. The acts existed only in `manage_main`, which a session
+/// never calls. Every one of the 1,600 tests passed, and the README documented the
+/// verbs as working.
+///
+/// The same hole swallowed `/mcp probe`, which is asserted here beside it because
+/// it is the same shape and the same arm.
+///
+/// Sabotage: delete either arm from `src/main.rs`. Nothing else in the suite goes
+/// red.
+#[test]
+fn f1_the_session_acts_on_a_skill_verb_and_not_only_the_headless_door() {
+    let text = std::fs::read_to_string("src/main.rs").expect("the driver");
+    let flat = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+    assert!(
+        flat.contains("Ok((io_cli::manage::Request::Skill(verb), None))"),
+        "the session has no arm for a skill verb, so `/skills add`, `/skills list` \
+         and `/skills remove` parse, plan, and silently do nothing",
+    );
+    // **Counted, never `contains`.** Both verbs have two call sites — the session
+    // and the headless door — so a `contains` is satisfied by the headless one
+    // forever and says nothing about the arm this test exists for. The first
+    // version of this gate made exactly that mistake and its sabotage killed
+    // nothing; this product's own record calls counting the fix.
+    assert_eq!(
+        text.matches("io_cli::skillview::install(").count(),
+        2,
+        "installing a skill has {} call sites, not the two it must have — one on \
+         the session's arm and one on the headless door",
+        text.matches("io_cli::skillview::install(").count(),
+    );
+    assert_eq!(
+        text.matches("io_cli::skillview::remove(").count(),
+        3,
+        "removing a skill has {} call sites, not the three it must have — the \
+         session's typed arm, the headless door, and the `/skills` confirmation",
+        text.matches("io_cli::skillview::remove(").count(),
+    );
+    assert!(
+        flat.contains(
+            "Ok(( io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Probe { id }), None, ))"
+        ),
+        "the session has no arm for `/mcp probe`, so it parses and does nothing",
+    );
+    assert_eq!(
+        text.matches("io_cli::servers::probe(").count(),
+        2,
+        "a probe has exactly two call sites — the session and the headless door — \
+         so neither can be the only one",
+    );
+}
+
+/// **F2, the confirmation.** The driver puts `store::LEAVE_IT` at row 0 and
+/// decides with `store::acts`, asserted **by index**.
+///
+/// Nothing under `tests/` links `src/main.rs`, so this reads it as text — the
+/// instrument `tests/context_share.rs` and `tests/contract.rs` already use for
+/// exactly this class of claim.
+#[test]
+fn f2_the_removal_confirmation_declines_at_row_zero() {
+    let text = std::fs::read_to_string("src/main.rs").expect("the driver");
+    let flat = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+    assert!(
+        flat.contains("Pick::SkillRemove { name, path } => { if io_cli::store::acts(index)"),
+        "the removal is gated on `store::acts`, which is what makes row 0 decline",
+    );
+    assert!(
+        flat.contains(
+            "Picker::new( format!(\"Remove {name}?\"), vec![ \
+             Row::new(io_cli::store::LEAVE_IT.to_string()),"
+        ),
+        "and `LEAVE_IT` is the first row of that picker, by position rather than \
+         by label",
+    );
+}
