@@ -708,20 +708,6 @@ pub fn enable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
     relocate(path, dir)
 }
 
-/// The sentence for a path that lives inside a `[[plugin]]` bundle, if it does.
-///
-/// **Containment, not equality.** io-harness walks a skills directory one level
-/// down for `<name>/SKILL.md` as well as reading the loose files in it, so a
-/// bundle skill's path is not always a direct child of the declared directory.
-///
-/// Both sides are canonicalised before they are compared, because the two come
-/// from different places: a path off [`view`] came through `Skills::discover`,
-/// which canonicalises, and a declared directory is `Plugin::skills_dir` — the
-/// bundle root joined to whatever the manifest wrote, canonical or not. On macOS
-/// a temporary directory is a symlink, which is enough on its own to make an
-/// uncanonicalised comparison answer "not a bundle" about a bundle. A path that
-/// will not canonicalise is compared as it stands: the file being gone is
-/// [`relocate`]'s error to report, not a reason to relax this.
 /// Copy the file at `source` into this home's skills directory. Answers with
 /// where it now is.
 ///
@@ -825,6 +811,20 @@ pub fn remove(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
     Ok(path.to_path_buf())
 }
 
+/// The sentence for a path that lives inside a `[[plugin]]` bundle, if it does.
+///
+/// **Containment, not equality.** io-harness walks a skills directory one level
+/// down for `<name>/SKILL.md` as well as reading the loose files in it, so a
+/// bundle skill's path is not always a direct child of the declared directory.
+///
+/// Both sides are canonicalised before they are compared, because the two come
+/// from different places: a path off [`view`] came through `Skills::discover`,
+/// which canonicalises, and a declared directory is `Plugin::skills_dir` — the
+/// bundle root joined to whatever the manifest wrote, canonical or not. On macOS
+/// a temporary directory is a symlink, which is enough on its own to make an
+/// uncanonicalised comparison answer "not a bundle" about a bundle. A path that
+/// will not canonicalise is compared as it stands: the file being gone is
+/// [`relocate`]'s error to report, not a reason to relax this.
 fn refuse_bundle(path: &Path, bundles: &[(String, PathBuf)]) -> Option<String> {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let (id, dir) = bundles.iter().find(|(_, dir)| {

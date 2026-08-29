@@ -27,8 +27,8 @@
 //!
 //! Worth knowing before a surface promises otherwise. `read_instructions` joins
 //! each name in `[instructions] files` to the **discovery root**
-//! (`io-harness-0.69.0/src/config.rs:1888`), and the default list is exactly
-//! `["AGENTS.md"]` (`config.rs:158`). So `AGENTS.md` is read by every project
+//! (`io-harness-0.71.0/src/config.rs:2111`), and the default list is exactly
+//! `["AGENTS.md"]` (`DEFAULT_INSTRUCTIONS`, `config.rs:159`). So `AGENTS.md` is read by every project
 //! with no configuration at all; `AGENTS.local.md` is read only where a file
 //! names it; and `IO.md` is not reachable by a bare name at all, because a
 //! relative name is resolved against the workspace and the home is not the
@@ -464,7 +464,7 @@ fn bullet(line: &str) -> Option<usize> {
 
 /// The order the three files are named in, and it is the order they reach the
 /// model in: `read_instructions` pushes one constraint per name in list order
-/// (`io-harness-0.69.0/src/config.rs:1884-1899`).
+/// (`read_instructions`, `io-harness-0.71.0/src/config.rs:2111`).
 ///
 /// Project, then local, then user — widest audience first, so the operator's own
 /// standing note is the last thing said. It also matches the order the three

@@ -646,7 +646,7 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
 /// Whether writing `value` to `key` would be refused in a **project-scoped** file.
 ///
 /// io-harness refuses five (key, value) pairs in a committed `io.toml`
-/// (`PROJECT_WIDENING`, `io-harness-0.69.0/src/config.rs:1759-1769`): the two acts
+/// (`PROJECT_WIDENING`, `io-harness-0.71.0/src/config.rs:1998-2008`): the two acts
 /// defaulted to `allow`, egress re-opened inside the sandbox, the portable floor
 /// switched off, and the widest exec mode. The narrowing value of each stays legal,
 /// which is what the scope is for.
@@ -715,7 +715,8 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`io-harness-0.69.0/src/config.rs:1909`); this comment claimed two until
+/// (`substitute`, `io-harness-0.71.0/src/config.rs:2150`, the `cmd` arm at
+/// `:2241`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or
 /// `${file:}` reference is a *name*, and the name is the whole of what an

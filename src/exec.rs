@@ -1161,8 +1161,18 @@ impl WithProvider for Resuming {
         let contract = crate::contract::configured(self.goal, self.root.clone(), &self.config);
         // `None` on every arm: a containment is a fleet's shared budget, this
         // subcommand takes no flag that expresses one, and `crate::resume::recover`
-        // refuses a contained run outright because io-harness 0.69 publishes no
+        // refuses a contained run outright because io-harness publishes no
         // tree-aware recovery entry point to keep those limits with.
+        //
+        // **Still true at 0.71.0, and the shape of the gap is worth naming.** Every
+        // other pause kind has both forms — `resume_tree_with_answer` beside
+        // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
+        // one, `resume_tree_with_decision` beside `resume_with_decision`
+        // (`io-harness-0.71.0/src/run.rs:1769`, `:2088`, `:3002`). Recovery has
+        // `resume_with_recovery_observed` (`:2550`) and nothing tree-aware, so it
+        // is the one pause a contained run cannot be resumed from. Not an oversight
+        // this crate can route around: a fleet's shared ceiling lives in the tree
+        // entry points, and resuming through the flat one would drop it.
         let resumed = match self.decision {
             Decision::Answer {
                 question_id,

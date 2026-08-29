@@ -320,9 +320,10 @@ fn declared(text: &str, key: &str) -> Option<String> {
 /// useless when it does. Two hundred characters is longer than any terminal is wide
 /// and shorter than anything that can bury the row above it.
 ///
-/// **A hook's command is deliberately not bounded by this** — see [`hooks`]: it is
-/// argv an operator is consenting to, and a shortened argv is the one thing that
-/// surface must never show.
+/// **A hook's command is deliberately not bounded by this** — see
+/// [`crate::pluginview::detail`], which draws the hook rows: it is argv an
+/// operator is consenting to, and a shortened argv is the one thing that surface
+/// must never show.
 const LONGEST: usize = 200;
 
 /// `value` cut to [`LONGEST`] characters.

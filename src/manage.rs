@@ -1219,13 +1219,15 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.69.0/src/mcp.rs:267`) — a
-    // constructor chain here would drop the arguments of half the servers it was
-    // handed and say nothing.
+    // silent no-op on an HTTP server (`io-harness-0.71.0/src/mcp.rs:439-447`: the
+    // body writes only into the `Stdio` arm) — a constructor chain here would drop
+    // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`
     // asks it: the defaults are io-harness's, and a value copied into io-cli is one
     // that goes stale in silence. `enabled` is io-harness 0.70.0's; an added server
-    // is on, and the flag has no keystroke here yet — see the known limitations.
+    // is on, and **since 0.30.0 it has both a keystroke and an argument form** —
+    // `/mcp`'s toggle row and `io mcp enable|disable <id>`, which share
+    // `servers::switch`.
     let defaults = McpServer::stdio("", "");
     let mut server = McpServer {
         id,
