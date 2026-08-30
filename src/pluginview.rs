@@ -774,6 +774,33 @@ pub fn refusal(dir: &Path) -> Option<String> {
 /// the one that would make this walk expensive.
 #[must_use]
 pub fn candidates(root: &Path) -> Vec<PathBuf> {
+    visited(root)
+        .into_iter()
+        .filter(|path| path.join(MANIFEST).is_file())
+        .collect()
+}
+
+/// Every directory below `root` the bundle walk looks at, nearest first.
+///
+/// **[`candidates`] is this filtered by "carries a [`MANIFEST`]", and separating
+/// the two is what 0.31.0 needed rather than a second walk.** A directory holding
+/// only a `.claude-plugin/plugin.json` carries no `plugin.toml`, so it was never
+/// in `candidates`'s answer at all — a marketplace reader that iterated that list
+/// looking for foreign manifests would have found none, ever, and the walk it
+/// wanted was the frontier rather than the result.
+///
+/// The skips are unchanged and they are the point: `target`, `node_modules` and
+/// **every dotted directory** are never entered, so `.git` — which every clone has
+/// — is not walked here and cannot contribute a bundle. Reading
+/// `.claude-plugin/plugin.json` at a directory this function returned is a known
+/// path relative to an already-admitted directory and is not this walk descending
+/// into a dot directory; `tests/marketplace.rs` asserts the distinction.
+///
+/// Ordered by depth and then by path so the answer is stable between two calls on
+/// one machine, which is what makes the row an operator picked yesterday the row
+/// in the same place today.
+#[must_use]
+pub fn visited(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut frontier = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = frontier.pop() {
@@ -790,9 +817,7 @@ pub fn candidates(root: &Path) -> Vec<PathBuf> {
             if name.starts_with('.') || name == "target" || name == "node_modules" {
                 continue;
             }
-            if path.join(MANIFEST).is_file() {
-                found.push(path.clone());
-            }
+            found.push(path.clone());
             if depth + 1 < DEPTH {
                 frontier.push((path, depth + 1));
             }

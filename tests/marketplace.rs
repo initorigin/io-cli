@@ -1892,3 +1892,236 @@ fn f16_and_f17_have_one_reader_and_one_validator() {
         "the hook rows do not come from `Plugin::hooks()`",
     );
 }
+
+// ---------------------------------------------------------------------------
+// 0.31.0 — the three manifest formats, and the precedence between them.
+//
+// `tests/adapt.rs` asserts what the reader makes of each file. These assert what
+// `marketplace::holdings` makes of a whole clone, which is the surface every
+// listing and every install actually goes through.
+// ---------------------------------------------------------------------------
+
+/// A clone directory, empty.
+fn clone_dir() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("a clone directory");
+    let root = dir.path().to_path_buf();
+    (dir, root)
+}
+
+/// Write `text` to `root/rel`, making the directories on the way.
+fn write(root: &Path, rel: &str, text: &str) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directories");
+    std::fs::write(&path, text).expect("the file");
+}
+
+#[test]
+fn f1_a_clone_laid_out_like_ultraship_holds_one_bundle_where_it_held_none() {
+    let (_dir, root) = clone_dir();
+    // `zeroonething/ultraship` as it actually is: no `.toml` anywhere, an index
+    // naming one plugin at the clone's own root, and ten skill directories.
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{
+  "name": "ultraship",
+  "owner": { "name": "Aakash Pawar (zeroonething)" },
+  "plugins": [
+    { "name": "ultraship", "description": "Ship at inference speed.", "source": "./" }
+  ]
+}"#,
+    );
+    write(&root, ".claude-plugin/plugin.json", r#"{ "name": "ultraship" }"#);
+    for skill in ["brainstorm", "plan", "develop", "iterate", "complete"] {
+        write(&root, &format!("skills/{skill}/SKILL.md"), "# a skill\n");
+    }
+
+    let held = marketplace::holdings(&root);
+
+    assert_eq!(
+        held.len(),
+        1,
+        "exactly one bundle. Before 0.31.0 this returned none and the surface said \
+         so — `plugin marketplace add zeroonething/ultraship` cloned the repository \
+         and then answered that no directory in it carried a plugin.toml, which is \
+         the defect this release exists to fix",
+    );
+    assert_eq!(held[0].label(), "ultraship");
+    assert_eq!(
+        held[0].origin,
+        marketplace::Origin::Adapted,
+        "and it says it is adapted; the difference between what an author wrote and \
+         what io generated is never something an operator has to infer",
+    );
+}
+
+#[test]
+fn f2_a_native_manifest_wins_its_own_directory_and_the_bundle_is_one() {
+    let (_dir, root) = clone_dir();
+    manifest(&root, "name = \"native\"\ndescription = \"the author's own\"\n");
+    write(
+        &root,
+        ".claude-plugin/plugin.json",
+        r#"{ "name": "foreign", "description": "somebody else's format" }"#,
+    );
+
+    let held = marketplace::holdings(&root);
+
+    assert_eq!(
+        held.len(),
+        1,
+        "two bundles for one directory is the failure this asserts against",
+    );
+    assert_eq!(held[0].label(), "native", "the plugin.toml is the answer");
+    assert_eq!(held[0].origin, marketplace::Origin::Native);
+}
+
+#[test]
+fn f2_a_root_plugin_toml_suppresses_the_index_and_leaves_the_walk_alone() {
+    let (_dir, root) = clone_dir();
+    manifest(&root, "name = \"native-root\"\n");
+    // An index naming a plugin that does not exist on disk. If it were read, the
+    // count below would be its length rather than what the walk finds.
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{ "plugins": [ { "name": "from-the-index", "source": "./" } ] }"#,
+    );
+    manifest(&root.join("plugins").join("child"), "name = \"child\"\n");
+
+    let held = marketplace::holdings(&root);
+    let mut labels: Vec<String> = held.iter().map(marketplace::Bundle::label).collect();
+    labels.sort();
+
+    assert_eq!(
+        labels,
+        vec!["child".to_string(), "native-root".to_string()],
+        "an author who writes io's own manifest at the root has said what they \
+         publish in the format this crate owns, and a foreign index must not speak \
+         over it — but suppressing the index is all it does. A repository carrying \
+         a root manifest and bundles beneath it lists all of them, exactly as it \
+         did before this crate read any foreign format",
+    );
+    assert!(
+        marketplace::unreadable(&root).is_empty(),
+        "and the suppressed index reports nothing either",
+    );
+}
+
+#[test]
+fn f3_the_index_is_the_answer_and_the_walk_does_not_also_run() {
+    let (_dir, root) = clone_dir();
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{
+  "plugins": [
+    { "name": "first", "source": "./plugins/first" },
+    { "name": "second", "source": "./plugins/second" }
+  ]
+}"#,
+    );
+    // A third directory carrying a real `plugin.toml` the index does not name.
+    manifest(&root.join("plugins").join("third"), "name = \"third\"\n");
+
+    let held = marketplace::holdings(&root);
+    let labels: Vec<String> = held.iter().map(marketplace::Bundle::label).collect();
+
+    assert_eq!(
+        held.len(),
+        2,
+        "counted, not matched. A union of the index and the walk would list bundles \
+         the author did not publish beside the ones they did, and an operator would \
+         have no way to tell which was which — so the assertion is the count, and \
+         `contains` would pass over exactly the defect it is written for",
+    );
+    assert_eq!(labels, vec!["first".to_string(), "second".to_string()]);
+    assert!(
+        !labels.contains(&"third".to_string()),
+        "the walk did not also run",
+    );
+}
+
+#[test]
+fn f4_two_codex_manifests_at_two_directories_the_walk_visits_are_both_found() {
+    let (_dir, root) = clone_dir();
+    write(
+        &root,
+        "plugins/alpha/.codex-plugin/plugin.json",
+        r#"{ "name": "alpha" }"#,
+    );
+    write(
+        &root,
+        "plugins/beta/.codex-plugin/plugin.json",
+        r#"{ "name": "beta" }"#,
+    );
+
+    let held = marketplace::holdings(&root);
+    let mut labels: Vec<String> = held.iter().map(marketplace::Bundle::label).collect();
+    labels.sort();
+
+    assert_eq!(
+        labels,
+        vec!["alpha".to_string(), "beta".to_string()],
+        "no index and no plugin.toml, so the walk runs and reads the foreign \
+         manifest at each directory it already visits",
+    );
+    assert!(
+        held.iter()
+            .all(|bundle| bundle.origin == marketplace::Origin::Adapted),
+        "both adapted",
+    );
+}
+
+#[test]
+fn the_walk_still_never_descends_into_a_dot_directory() {
+    let (_dir, root) = clone_dir();
+    // A bundle inside `.git` is what every clone would otherwise offer, and a
+    // `.claude-plugin` directory of its own is the shape that makes reading a
+    // known path relative to an admitted directory look like descending into one.
+    write(
+        &root,
+        ".git/modules/x/.claude-plugin/plugin.json",
+        r#"{ "name": "should-not-appear" }"#,
+    );
+    write(
+        &root,
+        "plugins/real/.claude-plugin/plugin.json",
+        r#"{ "name": "real" }"#,
+    );
+
+    let labels: Vec<String> = marketplace::holdings(&root)
+        .iter()
+        .map(marketplace::Bundle::label)
+        .collect();
+
+    assert_eq!(
+        labels,
+        vec!["real".to_string()],
+        "reading `.claude-plugin` at a known path relative to a directory the walk \
+         already admitted is not the walk descending into a dot directory, and this \
+         is the assertion that keeps the two apart",
+    );
+}
+
+#[test]
+fn a_repository_that_is_no_bundle_at_all_says_so_without_naming_one_file() {
+    let (_dir, root) = clone_dir();
+    write(&root, "README.md", "# not a bundle\n");
+
+    let market = Market {
+        named: named(),
+        root: root.clone(),
+        bundles: marketplace::holdings(&root),
+    };
+
+    let held = market.held();
+    assert!(
+        held.contains(io_cli::pluginview::MANIFEST)
+            && held.contains(io_cli::adapt::INDEX_FILE)
+            && held.contains(io_cli::adapt::MANIFEST_FILE),
+        "three formats are read now, so the sentence names all three rather than \
+         the one filename that was the answer for every marketplace in the field: \
+         {held:?}",
+    );
+}
