@@ -1240,6 +1240,131 @@ fn f7_no_shipped_document_leaves_a_contact_placeholder_unfilled() {
     );
 }
 
+/// Every relative link in a markdown file, as (containing file, target).
+///
+/// Anchors and absolute URLs are not this gate's business: `#section` is checked
+/// by nothing here and `https://` is checked by nobody offline. What is left is
+/// the set of links that can rot silently when a file moves — which is exactly
+/// what this release does to a 2,847-line README.
+fn relative_links() -> Vec<(String, String)> {
+    let mut links = Vec::new();
+
+    for (path, text) in shipped_markdown() {
+        let mut rest = text.as_str();
+        while let Some(open) = rest.find("](") {
+            let after = &rest[open + 2..];
+            let Some(close) = after.find(')') else { break };
+            let target = &after[..close];
+            rest = &after[close + 1..];
+
+            // A link target may carry a title: `](path "Title")`. Take the path.
+            let target = target.split_whitespace().next().unwrap_or(target);
+            if target.is_empty()
+                || target.starts_with('#')
+                || target.starts_with("http://")
+                || target.starts_with("https://")
+                || target.starts_with("mailto:")
+            {
+                continue;
+            }
+            // Drop a fragment on a file link: `guide/keys.md#moving-a-key`.
+            let target = target.split('#').next().unwrap_or(target);
+            if target.is_empty() {
+                continue;
+            }
+            links.push((path.clone(), target.to_string()));
+        }
+    }
+
+    links
+}
+
+/// **F4 — no relative link is dead.**
+///
+/// Written before the guide pages exist, so it fails until they do. A link check
+/// is a few lines of `std`; adding a markdown crate to a tree held at ten direct
+/// dependencies to find a missing file would be the expensive answer to the cheap
+/// question.
+///
+/// Sabotage: point any link at a file that is not there. Only this fails.
+#[test]
+fn f4_every_relative_link_resolves_to_a_file_that_exists() {
+    let root = repo();
+    let mut dead = Vec::new();
+
+    for (from, target) in relative_links() {
+        let base = std::path::Path::new(&from)
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let resolved = root.join(&base).join(&target);
+        if !resolved.exists() {
+            dead.push(format!("{from} → {target}"));
+        }
+    }
+
+    assert!(
+        dead.is_empty(),
+        "these links point at files that are not there, so a reader following \
+         the documentation reaches a 404:\n{}",
+        dead.join("\n"),
+    );
+}
+
+/// **F4, the other half — no guide page is orphaned.**
+///
+/// A split that leaves a page linked from nowhere is worse than not splitting:
+/// the content is gone from where it was and reachable only by someone who
+/// already knows the filename. Every page must be reachable from **both**
+/// indexes, because each is a way in — the README for a reader arriving at the
+/// repository, `docs/CAPABILITIES.md` for one arriving at the docs directory.
+///
+/// The non-empty assertion is load-bearing. With no guide pages on disk the two
+/// loops below iterate nothing and the test passes while proving nothing, which
+/// is the vacuous-gate shape this repository has shipped four times.
+///
+/// Sabotage: add a guide page linked from neither index; or drop one row from
+/// either index. Each fails on its own.
+#[test]
+fn f4_every_guide_page_is_reachable_from_both_indexes() {
+    let guides: Vec<String> = shipped_markdown()
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| path.starts_with("docs/guide/"))
+        .collect();
+
+    assert!(
+        !guides.is_empty(),
+        "no guide pages were found under docs/guide/, so the two checks below \
+         would pass by iterating nothing",
+    );
+
+    let readme = read("README.md");
+    let capabilities = read("docs/CAPABILITIES.md");
+
+    let mut orphans = Vec::new();
+    for guide in &guides {
+        // The README sits at the root and links `docs/guide/x.md`;
+        // CAPABILITIES.md sits in `docs/` and links `guide/x.md`.
+        let from_readme = guide.as_str();
+        let from_capabilities = guide.trim_start_matches("docs/");
+
+        if !readme.contains(from_readme) {
+            orphans.push(format!("{guide} is not linked from README.md"));
+        }
+        if !capabilities.contains(from_capabilities) {
+            orphans.push(format!("{guide} is not linked from docs/CAPABILITIES.md"));
+        }
+    }
+
+    assert!(
+        orphans.is_empty(),
+        "these guide pages are not reachable from an index, so the split moved \
+         content somewhere nobody is pointed at:\n{}",
+        orphans.join("\n"),
+    );
+}
+
 /// **F7, the other half — the private report route is really named.**
 ///
 /// The test above only proves a placeholder is absent, which an empty file also
