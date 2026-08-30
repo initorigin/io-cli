@@ -117,6 +117,18 @@ deleted that was not already copied. This does nothing at all when `$IO_CONFIG` 
 
 ## Limits that hold today
 
+**A marketplace, and an entry inside one, resolve against `github.com` and no other host.** A
+marketplace is named `<owner>/<repo>`; an index entry naming a repository elsewhere has its url
+re-derived to that shape, and a url that is not two ordinary path segments on that host is refused
+and listed with its reason. The only string io hands `git` is one io built — a url somebody else
+wrote reaching a clone is how `ext::sh -c …` becomes a remote shell. All 238 remote entries of
+`anthropics/claude-plugins-official` are on that host.
+
+**A Claude Code or Codex plugin's hooks are read, shown, and translated into nothing.**
+io-harness's hooks are argv against its own event tags and never a shell string, and it refuses
+`${env:}`, `${file:}` and `${cmd:}` inside a manifest in every scope. This is an impossibility, not
+a deferral: the author adds a `plugin.toml` if they want hooks under io.
+
 **A turn the operator interrupted cannot be resumed.** It is reported as ended, with `/fork`
 offered instead.
 

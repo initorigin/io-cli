@@ -99,10 +99,19 @@
 //! Nothing here opens a `plugin.toml`. Every fact comes from
 //! [`io_harness::Config::plugins`], which re-reads each declared bundle from disk
 //! itself; a second reader in this crate would be a second opinion about what a
-//! manifest means, and `tests/dependencies.rs` forbids one by path. Like
-//! [`crate::servers`] and [`crate::skillview`], this is a data model and pure
-//! functions: the driver in `src/main.rs` owns the keyboard and applies what
-//! [`add`] and [`remove`] return.
+//! manifest means, and `tests/dependencies.rs` forbids one by path.
+//!
+//! **One fact on this surface is not io-harness's**: whether io wrote a bundle's
+//! `plugin.toml` itself. io-harness loads a generated manifest exactly as it loads
+//! an authored one and has no word for the difference, so the answer is a path —
+//! the directory [`crate::home::adapters`] names, resolved once in [`view`] and
+//! carried on [`View::adapters`] — and it is still not a second read of any file.
+//! See [`Listed::adapted`].
+//!
+//! Like [`crate::servers`] and [`crate::skillview`], this is a data model and
+//! functions over it: [`view`] is where the machine is read, once, and everything
+//! that draws is pure over what it returned. The driver in `src/main.rs` owns the
+//! keyboard and applies what [`add`] and [`remove`] return.
 
 use std::path::{Path, PathBuf};
 
@@ -131,6 +140,25 @@ pub const REFUSED_MARK: &str = "!";
 /// means a bundle is broken — the distinction the whole third state exists to
 /// draw, since a switched-off bundle is nothing for the operator to fix.
 pub const DISABLED_MARK: &str = "-";
+
+/// The mark on a bundle whose `plugin.toml` io wrote. See [`LOADED_MARK`].
+///
+/// `~` against `+`, `-` and `!`: one ASCII character in both glyph sets, on no
+/// other row this surface draws, and shaped like none of the three — no stroke of
+/// it is a stroke of theirs, so a column of marks stays readable at a glance
+/// rather than resolving into two similar characters.
+///
+/// **It takes the column from the state marks rather than sitting beside them**,
+/// because a row carries one mark and this is the fact an operator cannot recover
+/// any other way. A bundle switched off already says "switched off" as the first
+/// field of its detail — see [`rows`] — and a bundle that loaded is in the list
+/// with its contributions leading the row, so the state survives the column being
+/// spent here. Where the manifest came from does not survive anywhere else: an
+/// adapted bundle looks exactly like a native one on every other field, and the
+/// file to open when io-harness refuses it or when its contributions are not what
+/// the clone promised is the generated one, which nothing else on this surface
+/// names.
+pub const ADAPTED_MARK: &str = "~";
 
 /// The narrowest a bundle's root may be drawn at, before its separator.
 ///
@@ -201,6 +229,38 @@ pub struct Listed {
     pub layers: Vec<String>,
 }
 
+impl Listed {
+    /// Whether io wrote this bundle's manifest rather than the bundle's author.
+    ///
+    /// **A path prefix and nothing else.** [`crate::adapt::generate`] writes every
+    /// manifest it generates under one directory —
+    /// `<adapters>/<owner>/<repo>/<name>/plugin.toml`, the layout
+    /// [`crate::adapt::at`] states — and writes generated manifests nowhere else,
+    /// so a root inside `adapters` came from there and a root outside it did not.
+    /// Nothing is read off the disk to answer this: the module opens no
+    /// `plugin.toml` (see the module docs), and a marker inside the file would in
+    /// any case be a claim about the bytes rather than about where they live.
+    ///
+    /// **`adapters` is io-cli's own home and does not follow `$IO_CONFIG`.**
+    /// [`crate::home::adapters`] derives from the operator's home directory rather
+    /// than from the configuration in force, exactly as the marketplaces do, so an
+    /// operator who points `$IO_CONFIG` or `$IO_CONFIG_HOME` at an unusual place
+    /// has moved their *configuration* and not the generated manifests — the
+    /// prefix still matches and the mark still draws. What does change the answer
+    /// is an operator who copies a generated `plugin.toml` out of that directory
+    /// and declares the copy: it reads as native, which is the true answer, because
+    /// the copy is a file they now own and io will not regenerate it.
+    ///
+    /// A method rather than a field, because [`copy_out`] is called from surfaces
+    /// that have no adapters root to hand — `src/marketplace.rs` copies out a
+    /// bundle it inspected inside a clone — and a field would have to be threaded
+    /// through every one of them to be true anywhere.
+    #[must_use]
+    pub fn adapted(&self, adapters: &Path) -> bool {
+        self.root.starts_with(adapters)
+    }
+}
+
 /// One bundle that was declared and did not load.
 ///
 /// Named for what happened rather than mirroring io-harness's `Dropped`: from
@@ -237,6 +297,19 @@ pub struct View {
     pub plugins: Vec<Listed>,
     /// The bundles that did not, with the reason each one did not.
     pub refused: Vec<Refused>,
+    /// Where io writes the manifests it generates, on this machine.
+    ///
+    /// Carried on the view rather than passed to [`rows`], because it is a fact
+    /// about the machine and not about the terminal: every caller of `rows` and
+    /// every caller of [`detail`] would otherwise have to know it, including the
+    /// ones drawing a bundle that is not on this list at all.
+    ///
+    /// `None` where the operator's home directory cannot be determined, which is
+    /// [`crate::home::adapters`]'s own shape and is read here as *nothing is
+    /// adapted*: with no adapters root there is no directory a generated manifest
+    /// could be under, so no row is marked and every bundle draws as the native
+    /// one it must be.
+    pub adapters: Option<PathBuf>,
 }
 
 impl View {
@@ -390,6 +463,11 @@ pub fn view(config: &io_harness::Config) -> View {
                 error: dropped.error.clone(),
             })
             .collect(),
+        // Resolved once, here, where the view is assembled. The alternative is
+        // every drawing function calling [`crate::home::adapters`] itself, which
+        // would make three pure functions read this machine's environment and
+        // leave a test unable to say what any of them saw.
+        adapters: crate::home::adapters(),
     }
 }
 
@@ -407,10 +485,17 @@ pub fn view(config: &io_harness::Config) -> View {
 ///
 /// **A bundle declared `enabled = false` is inside `view.plugins` and so is inside
 /// that first range**, drawn under [`DISABLED_MARK`] with the state leading its
-/// detail. Three marks and still two ranges: the switched-off bundles are a state
+/// detail. Four marks and still two ranges: the switched-off bundles are a state
 /// the operator chose, not a second failure list, and giving them a range of their
 /// own would have added a third arm to every index calculation on this surface for
 /// nothing.
+///
+/// **The fourth mark is [`ADAPTED_MARK`], and it takes the column from the other
+/// two rather than adding a range of its own.** A bundle whose manifest io
+/// generated is an ordinary declared bundle — it loads, it can be switched off, it
+/// is indexed exactly where it sits — so the only thing that changes is which
+/// character the row wears. See [`ADAPTED_MARK`] for why that character is worth
+/// more there than `+` or `-` is, and [`Listed::adapted`] for what decides it.
 ///
 /// # The narrow form, and what gives way in it
 ///
@@ -422,6 +507,11 @@ pub fn view(config: &io_harness::Config) -> View {
 /// ellipsis and an extension. At eighty columns a row is therefore the id, what it
 /// contributed and
 /// as much description as fits; widen the terminal and the path arrives.
+///
+/// **On an adapted bundle that trade is reversed**: the root's floor is reserved
+/// ahead of the description and the description gives way instead. The row's mark
+/// says io wrote the manifest and the row is then the only place that says where
+/// it wrote it — see [`ADAPTED_MARK`].
 ///
 /// A refused row never carries the root, and not because it did not fit:
 /// io-harness's sentence already opens with the path, so appending it would draw
@@ -435,8 +525,10 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
     let floor = separator_width + glyphs.ellipsis.chars().count();
 
     let mut out = Vec::with_capacity(view.plugins.len() + view.refused.len());
+    let adapters = view.adapters.as_deref();
 
     for plugin in &view.plugins {
+        let adapted = adapters.is_some_and(|root| plugin.adapted(root));
         // Commas inside a field, the glyph set's separator between fields: this
         // is one fact — the list of kinds — and punctuating it with the same run
         // that divides the row would read as five fields.
@@ -473,9 +565,21 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
             .saturating_sub(plugin.id.chars().count())
             .saturating_sub(detail.chars().count());
 
+        // **On an adapted bundle the root is not the field that gives way.** It is
+        // the directory holding the manifest io wrote, which is the file to open
+        // when io-harness refuses the bundle or when what it contributed is not
+        // what the clone promised — and nothing else on this surface names it. The
+        // description competing with it is a line io copied out of somebody else's
+        // metadata, so the root's floor is reserved before the description is
+        // fitted rather than taken from whatever the description leaves.
+        let reserved = if adapted {
+            separator_width + ROOT_FLOOR
+        } else {
+            0
+        };
         if let Some(description) = &plugin.description {
-            if left > floor {
-                let described = fit(description, left - separator_width, glyphs);
+            if left > floor + reserved {
+                let described = fit(description, left - separator_width - reserved, glyphs);
                 left -= separator_width + described.chars().count();
                 detail.push_str(separator);
                 detail.push_str(&described);
@@ -493,7 +597,9 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         }
 
         out.push(Row::marked(
-            if plugin.enabled {
+            if adapted {
+                ADAPTED_MARK
+            } else if plugin.enabled {
                 LOADED_MARK
             } else {
                 DISABLED_MARK
@@ -1011,6 +1117,10 @@ mod tests {
         View {
             plugins: vec![plugin],
             refused: Vec::new(),
+            // No adapters root, so every bundle here is native and the state marks
+            // are what the rows wear. The adapted case is asserted in
+            // `tests/plugins.rs`, against a bundle whose root really is under one.
+            adapters: None,
         }
     }
 
@@ -1098,6 +1208,7 @@ mod tests {
                 path: PathBuf::from("/repo/bundles/empty"),
                 error: "/repo/bundles/empty: no plugin.toml".to_string(),
             }],
+            adapters: None,
         };
         for glyphs in [&UNICODE, &ASCII] {
             let rows = rows(&view, 200, glyphs);
@@ -1199,6 +1310,7 @@ mod tests {
                 path: PathBuf::from("/repo/bundles/empty"),
                 error: sentence.to_string(),
             }],
+            adapters: None,
         };
         for glyphs in [&UNICODE, &ASCII] {
             let rows = rows(&view, 200, glyphs);
@@ -1229,6 +1341,7 @@ mod tests {
                 path: PathBuf::from("/repo/bundles/x"),
                 error: sentence.to_string(),
             }],
+            adapters: None,
         };
         for glyphs in [&UNICODE, &ASCII] {
             let rows = rows(&view, 80, glyphs);

@@ -2414,16 +2414,21 @@ fn f13_a_removal_names_the_adapters_it_orphans_and_leaves_every_entry() {
     );
 }
 
-/// **N8 — a 291-entry index costs one file read, and the shape is what is
-/// asserted.**
+/// **N8 — a 291-entry index costs one file read, asserted as a shape and never
+/// as a clock.**
 ///
-/// A wall-clock threshold is a flaky test on a loaded machine, so the property is
-/// stated structurally and the number is only a ceiling wide enough that only a
-/// catastrophic regression reaches it. The shape: the index path opens **one**
-/// file and descends into nothing, where the walk it replaces is a recursive
-/// `read_dir` to `DEPTH`. That is asserted by putting a real bundle three
-/// directories down and requiring it not to appear — if the walk had run, it
-/// would have.
+/// **`tests/timing.rs` forbids a test from measuring elapsed time, and it is
+/// right.** The first draft of this test timed `holdings` against a two-second
+/// ceiling; that gate caught it on the first full-suite run. A wall-clock
+/// assertion is flaky on a loaded machine and tells you nothing about *why* a
+/// path is fast, so what is asserted here is the cost's shape and the number is
+/// recorded in the release record instead.
+///
+/// The shape: the index path opens **one** file and descends into nothing, where
+/// the walk it replaces is a recursive `read_dir` to `DEPTH`. A real bundle sits
+/// three directories down and must not appear — if the walk had run, it would
+/// have found it. That is a stronger statement than a duration, because it fails
+/// for the reason a regression would actually have.
 ///
 /// The official marketplace's 291 entries are the first real input either path
 /// has had at that size, which is why this is a recorded criterion rather than an
@@ -2446,9 +2451,7 @@ fn n8_an_index_of_291_entries_is_one_read_and_no_walk() {
         "name = \"only-a-walk-finds-me\"\n",
     );
 
-    let began = std::time::Instant::now();
     let held = marketplace::holdings(&root);
-    let took = began.elapsed();
 
     assert_eq!(
         held.len(),
@@ -2460,13 +2463,6 @@ fn n8_an_index_of_291_entries_is_one_read_and_no_walk() {
             .iter()
             .any(|bundle| bundle.label() == "only-a-walk-finds-me"),
         "the walk did not run, which is where the cost of the old path was",
-    );
-    assert!(
-        took < std::time::Duration::from_secs(2),
-        "reading one file and building 291 rows took {took:?}. This ceiling is \
-         deliberately far above any real measurement — it is here to catch a \
-         regression that reintroduced a walk or a per-entry filesystem call, not \
-         to assert a performance number on a loaded machine",
     );
 }
 
@@ -2570,6 +2566,49 @@ fn f11_a_native_bundle_withholds_nothing_and_says_nothing() {
         "the control — the disclosure itself still has something to say, so the \
          assertion above is not passing because the whole thing came back empty",
     );
+}
+
+/// **A repository fetched for an index entry is not a marketplace of its own.**
+///
+/// `marketplace::fetched` clones into `marketplaces/.entries/<owner>/<repo>`, and
+/// the dot is load-bearing rather than cosmetic: `markets` skips a dot-named
+/// directory at both of its two levels, so what an entry pulled down can never be
+/// counted as a marketplace the operator added. Inside the tree rather than beside
+/// it so `plugin marketplace remove` still takes it away.
+///
+/// Sabotage: name the directory `entries`. `markets` then answers two, and the
+/// second is a repository nobody asked for, listed under an owner nobody typed.
+#[test]
+fn a_repository_fetched_for_an_entry_is_not_listed_as_a_marketplace() {
+    let (_dir, root) = clone_dir();
+    manifest(
+        &root.join("zeroonething").join("ultraship"),
+        "name = \"real\"\n",
+    );
+    // What a remote entry's fetch leaves behind, laid out exactly as `fetched`
+    // writes it.
+    manifest(
+        &root
+            .join(".entries")
+            .join("someone")
+            .join("their-plugin")
+            .join("bundle"),
+        "name = \"pulled-down-for-an-entry\"\n",
+    );
+
+    let found = marketplace::markets(&root);
+
+    assert_eq!(
+        found.len(),
+        1,
+        "one marketplace — the one the operator added. Counted, because a second \
+         entry here is a repository they never named: {:?}",
+        found
+            .iter()
+            .map(marketplace::Market::name)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(found[0].name(), "zeroonething/ultraship");
 }
 
 #[test]
