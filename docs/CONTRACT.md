@@ -105,7 +105,8 @@ One directory: `~/.io-cli` on Unix, `%USERPROFILE%\.io-cli` on Windows, created 
 | `io.toml` | The user-scope configuration |
 | `runs.db` (+ `-wal`, `-shm`) | The session store |
 | `skills/` | Skills, with `skills/disabled/` for the ones switched off |
-| `marketplaces/` | Cloned marketplaces |
+| `marketplaces/` | Cloned marketplaces, with `marketplaces/.entries/` for a repository an index pointed at |
+| `adapters/<owner>/<repo>/<name>/` | The `plugin.toml` io generates for a Claude Code or Codex bundle |
 | `.fetching/` | Staging for a clone in flight, renamed into place on success |
 | `IO.md` | The user-scope memory file |
 | `.import-offered` | Marks that the import offer was made, so declining is remembered |
@@ -115,11 +116,6 @@ deleted that was not already copied. This does nothing at all when `$IO_CONFIG` 
 `$IO_CONFIG_HOME` is already set.
 
 ## Limits that hold today
-
-**`$IO_CONFIG_HOME` does not move the skills directory.** The skills surfaces resolve through
-io-cli's *default* home (`home::path()`) where the memory file resolves through the home actually
-in force (`home::in_force()`), so an operator who points `$IO_CONFIG_HOME` elsewhere gets their
-memory file there and their skills in `~/.io-cli/skills/`. Known since 0.30.1.
 
 **A turn the operator interrupted cannot be resumed.** It is reported as ended, with `/fork`
 offered instead.

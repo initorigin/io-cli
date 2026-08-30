@@ -6,6 +6,72 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-30
+
+io-cli has operated a marketplace nobody could stock. Every capability bundle
+published in the field is a Claude Code plugin or a Codex plugin, and
+`plugin.toml` is a format only this project writes — so the surface 0.29.0 and
+0.30.0 built, disclosed and gated was reachable only by a bundle you had written
+yourself, which is the one case that never needed a marketplace. A survey of the
+marketplaces on the author's own machine found five repositories publishing 304
+plugins between them and zero `.toml` files among them.
+
+From this release io reads the three formats a bundle is actually published in.
+The bet is that a plugin's value is in its skills, its templates and its agents
+rather than in the syntax of its manifest, and that a tool which reads three
+formats is better placed than one that asks 291 strangers to adopt a fourth.
+
+### Added
+
+**`.claude-plugin/marketplace.json` is read as a repository's index**, and
+`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` as bundle manifests
+wherever the existing walk already looks. The precedence is stated: a
+`plugin.toml` at a repository's root suppresses the index and nothing else; where
+there is no root manifest the index is the answer and the walk does not also run,
+because a union would list bundles the author never published beside the ones
+they did; where there is neither, the walk reads each directory natively first and
+foreign second. An entry in a shape io does not read is listed with its reason
+rather than dropped.
+
+**An index may place a plugin in another repository**, which 238 of the official
+marketplace's 291 entries do, and installing one fetches it at the commit the
+index names. `git clone --revision` is not available below git 2.49, so a
+commit-pinned shallow fetch is four invocations rather than one.
+
+**An adapter manifest is generated** under
+`~/.io-cli/adapters/<owner>/<repo>/<name>/plugin.toml`, with absolute paths into
+the clone, so io-harness loads the bundle with no change to that crate. The
+stranger's checkout is never written to. An adapted bundle is marked as adapted
+wherever it is drawn, so the difference between what an author wrote and what io
+generated is never something you have to infer.
+
+### Changed
+
+**The skills directory now follows `$IO_CONFIG_HOME`.** It resolved through
+io-cli's default home while your memory file resolved through the home actually in
+force, so pointing that variable elsewhere moved one and not the other. A skill is
+something you wrote, and it belongs where the rest of what you wrote is. The
+limitation this removes was recorded in `docs/CONTRACT.md` since 0.30.1.
+
+### Not included, deliberately
+
+**A Claude Code or Codex plugin's hooks are not carried across.** io-harness's
+hooks are argv against its own event tags and deliberately never a shell string,
+and it refuses `${env:}`, `${file:}` and `${cmd:}` inside a manifest in every
+scope — so a hook in either foreign format is a shell line, an unknown event and a
+refused substitution at once. No adapter closes that, and an approximated hook is
+a program running on your machine that nobody described accurately.
+
+So every hook a bundle declares is **shown** before you install it, with its
+event, its command unshortened, and the reason it will not run. If you want hooks
+under io, the repository's author adds a `plugin.toml`, which then wins its own
+root.
+
+io also does not become compatible with another tool's runtime — the variables it
+sets, the directory it runs a hook in, its permission model or its session
+lifecycle. io reads what a manifest says and nothing about how another program
+would have executed it.
+
 ## [0.30.2] - 2026-08-30
 
 A documentation release. Thirty-one claims across the README, the changelog, the
@@ -2667,7 +2733,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.30.2...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/initorigin/io-cli/compare/v0.30.2...v0.31.0
 [0.30.2]: https://github.com/initorigin/io-cli/compare/v0.30.1...v0.30.2
 [0.30.1]: https://github.com/initorigin/io-cli/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/initorigin/io-cli/compare/v0.29.0...v0.30.0
