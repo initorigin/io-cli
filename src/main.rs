@@ -3211,7 +3211,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             ),
                                         );
                                     }
-                                    Err(refusal) => app.record(Tone::Error, refusal),
+                                    // `Tone::Refused`, like every sibling arm in
+                                    // this same `match`. A profile that cannot be
+                                    // switched to is refused by the same rules
+                                    // those arms are refused by, and being the one
+                                    // arm drawn as an error made it read as a
+                                    // failure of the program rather than an answer
+                                    // from it.
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
                                 }
                             }
                         }
@@ -4168,6 +4175,47 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // neither asserted nor sabotaged. This arm holds the wiring: build the
         // policy actually in force, ask, and either say why not or submit.
         let mut command = app.key(key);
+        // **A skill invocation is a submit too, and for the same reason.** It
+        // hands work to the agent rather than reporting something, so it becomes
+        // the `Command::Submit` a typed prompt becomes.
+        //
+        // **Resolved here rather than in the parse, because this is where the
+        // inventory lives.** `skills` is re-walked at every turn boundary, so
+        // `/plugin` and `/import` cannot leave it stale; `commands::parse` matches
+        // a static table and has no way to know what is installed, which is
+        // exactly why it recognises the *shape* and leaves the *resolution* here.
+        if let Command::Slash(text) = &command {
+            if let Action::Skill(wire, args) = commands::parse(text, app.keys(), &app.theme) {
+                command = if skills.iter().any(|listed| listed.name == wire) {
+                    // The name io-harness put in the model's catalogue, then
+                    // whatever the operator added. Not a sentence asking the model
+                    // to please use a skill — that was 0.31.0's `invoke_skill`,
+                    // and whether the skill ran at all depended on how the English
+                    // read.
+                    //
+                    // **This is as structural as io-cli can make it, and the limit
+                    // is io-harness's.** `read_skill` is the *model's* tool and
+                    // there is no public call that runs a skill on the model's
+                    // behalf, so what io-cli controls is that the prompt is the
+                    // catalogue name and nothing else.
+                    Command::Submit(if args.is_empty() {
+                        wire
+                    } else {
+                        format!("{wire}\n\n{args}")
+                    })
+                } else {
+                    let dash = app.theme.glyphs.dash;
+                    app.say(
+                        Tone::Warning,
+                        format!(
+                            "there is no {} skill {dash} /skills lists what is installed",
+                            io_cli::naming::display(&wire),
+                        ),
+                    );
+                    Command::None
+                };
+            }
+        }
         if let Command::Slash(text) = &command {
             if let Action::Commit(allow) = commands::parse(text, app.keys(), &app.theme) {
                 // **Asked first, allowed second, and the order is the fix for a
@@ -4267,6 +4315,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
             }
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
+                // Rewritten into a `Command::Submit` above, for the reason
+                // `/commit` is: invoking a skill hands work to the agent, so it
+                // has to become the same submit a typed prompt becomes.
+                Action::Skill(..) => debug_assert!(
+                    false,
+                    "a skill invocation is rewritten into a submit before the match"
+                ),
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
@@ -5317,9 +5372,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Profile(io_cli::commands::ProfileVerb::Unknown(word)) => {
-                    // Refused by name and never guessed at, which is `/effort`'s
-                    // rule for the same reason: choosing the nearest verb here
-                    // would remove a profile the operator did not name.
+                    // Named and never guessed at: choosing the nearest verb here
+                    // would remove a profile the operator did not name. This one
+                    // keeps `Tone::Refused` where `/effort`'s mistyped level gave
+                    // it up in 0.32.0, and the difference is the consequence — a
+                    // wrong `/effort` word buys the wrong amount of reasoning, a
+                    // wrong `/profile` verb deletes something. The tone is the
+                    // refusal to act on a destructive word.
                     app.record(
                         Tone::Refused,
                         format!(
@@ -5693,10 +5752,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // the line drew the half nothing wrote.
                         app.status.effort = level;
                     }
-                    // A word that is not a level is refused rather than
-                    // reported, so the tone is the refusal's.
+                    // **A word that is not a level is a typo, not a refusal.**
+                    // Through 0.31.0 this was `Tone::Refused` and the comment
+                    // here argued for it — but `Tone::Refused`'s own doc
+                    // (`theme.rs`) says it means an act the permission boundary
+                    // refused, and it is the one tone whose word an operator must
+                    // be able to trust. Spending it on a mistyped argument is how
+                    // `refused:` stops meaning anything. The sentence still says
+                    // what the levels are; it just no longer claims a boundary
+                    // turned something down.
                     let tone = match said {
-                        io_cli::commands::Reasoning::Unknown(_) => Tone::Refused,
+                        io_cli::commands::Reasoning::Unknown(_) => Tone::Warning,
                         _ => Tone::Muted,
                     };
                     app.record(tone, io_cli::app::reasoning_said(&said, effort));
@@ -6766,6 +6832,14 @@ async fn turn<P: Provider>(
     // and never spoken to — which is exactly what a session with no responder
     // does today: the question pauses the run instead.
     let (answerer, mut questions) = io_cli::intent::channel();
+    // **This is the one site that keeps the receiver, and therefore the one site
+    // that can promise an overlay.** `Events` commits the durable question line
+    // wherever nothing will draw one; saying so here is what stops the operator
+    // being asked twice, and *not* saying it anywhere else is what keeps a
+    // resumed run's question visible. Set per turn rather than once at startup
+    // because it is a fact about this turn's contract, and the `/resume`
+    // continuation builds its own.
+    app.set_answering(true);
     // The fourth, and the only one that can stop the work before it starts.
     // Registering it is what turns io-harness's planning phase on, so it is put
     // on the contract only where the contract itself reaches the run.
@@ -9903,6 +9977,13 @@ async fn resume_pending<P: Provider>(
     // `answer` resolves `None` — which is io-harness's own "nobody can answer",
     // so the run parks again and `/resume` finds it.
     let (answerer, _) = io_cli::intent::channel();
+    // **And because the receiver is dropped, this run has no overlay — so the
+    // durable question line has to come back.** The turn loop sets this `true`
+    // for a turn it is holding the overlay for; a resumed run continues in the
+    // same process, so leaving the flag alone would inherit that promise and a
+    // question asked here would be rendered by nothing at all. This is the exact
+    // path a `--plain`-only gate would have blanked.
+    app.set_answering(false);
     let continuing = io_cli::contract::session(
         goal,
         session.root().to_path_buf(),
@@ -10182,12 +10263,17 @@ async fn watch_child(
         }
         // No row, or a store that cannot answer. Neither is a reason to open a
         // watch that would show nothing; both are worth saying.
+        // A run that is not there is a fact about the store, not something a
+        // permission boundary turned down.
         Ok(None) => {
-            app.record(Tone::Refused, format!("run {run_id} is not in the store"));
+            app.record(Tone::Muted, format!("run {run_id} is not in the store"));
             return Ok(());
         }
+        // And a store that cannot answer is an error, which is a third thing
+        // again. Drawing all three as refusals made the one tone that has to mean
+        // something mean "anything that did not work".
         Err(error) => {
-            app.record(Tone::Refused, format!("cannot watch run {run_id}: {error}"));
+            app.record(Tone::Error, format!("cannot watch run {run_id}: {error}"));
             return Ok(());
         }
     }
@@ -10196,8 +10282,9 @@ async fn watch_child(
         Err(error) => {
             // The store is readable — the session is running out of it — so this
             // is the run being unknown to it, which is a fact worth saying rather
-            // than a silence to interpret.
-            app.record(Tone::Refused, format!("cannot watch run {run_id}: {error}"));
+            // than a silence to interpret. `Tone::Error` and not `Tone::Refused`:
+            // nothing declined this, the attach simply failed.
+            app.record(Tone::Error, format!("cannot watch run {run_id}: {error}"));
             return Ok(());
         }
     };
@@ -10236,7 +10323,7 @@ async fn watch_child(
                 }
             }
             Err(error) => {
-                app.record(Tone::Refused, format!("stopped watching: {error}"));
+                app.record(Tone::Error, format!("stopped watching: {error}"));
                 paint(screen, app)?;
                 return Ok(());
             }
@@ -10305,19 +10392,32 @@ fn paint_picker(
     if !pending.is_empty() {
         screen.commit(&pending).map_err(|error| error.to_string())?;
     }
-    // **The prompt takes the rows it needs, and gives them back.** Only with no
-    // picker open and only at an idle prompt — `App::viewport_wanted` returns the
-    // fixed height in every other case — because re-placing the viewport
-    // re-queries the cursor, and doing that under a streaming turn would land the
-    // viewport somewhere the output underneath it has already moved past.
-    if picker.is_none() {
-        let wanted = app.viewport_wanted(screen.width(), screen.terminal_rows());
-        if wanted != screen.rows() {
-            // A failure here leaves the session's own height in place — see
-            // `Screen::replace` — so a terminal that will not answer keeps a
-            // usable prompt rather than losing one over a row.
-            let _ = replace_viewport(screen, wanted);
-        }
+    // **Every surface takes the rows it needs, and gives them back.**
+    //
+    // Through 0.31.0 this ran only with no picker open and only at an idle
+    // prompt, because re-placing the viewport re-queries the cursor and doing
+    // that under a streaming turn would land the viewport somewhere the output
+    // underneath it has already moved past. **The ordering above is what makes
+    // that safe, and it was always here**: `take_pending` is drained and
+    // committed before anything is measured, so by this line there is no output
+    // waiting to go above the viewport and nothing underneath it can move. A
+    // re-placement mid-turn is therefore the same operation as one at an idle
+    // prompt, which `tests/viewport.rs` asserts over a growth, a shrink, a
+    // grow-to-grow and a resize while grown.
+    //
+    // A picker sizes for itself. It is drawn *instead of* the app, so `App` is
+    // not holding the surface that knows how many rows are wanted — which is the
+    // one case the demand cannot come from `viewport_wanted`. Both paths clamp
+    // through `term::viewport_for`, so there is still exactly one ceiling.
+    let wanted = match picker.as_ref() {
+        Some((open, _)) => io_cli::term::viewport_for(open.rows_wanted(), screen.terminal_rows()),
+        None => app.viewport_wanted(screen.width(), screen.terminal_rows()),
+    };
+    if wanted != screen.rows() {
+        // A failure here leaves the session's own height in place — see
+        // `Screen::replace` — so a terminal that will not answer keeps a
+        // usable prompt rather than losing one over a row.
+        let _ = replace_viewport(screen, wanted);
     }
     let theme = app.theme;
     screen

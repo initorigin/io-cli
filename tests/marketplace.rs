@@ -1392,14 +1392,25 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
         marketplace::disclosure(Scope::Local, &dir).expect("io-harness read the directory");
     assert_eq!(disclosure.id, "rust-review");
     let said = disclosure.said(&io_cli::glyphs::UNICODE).join("\n");
+    // **The name the operator will meet again, which since 0.32.0 is the
+    // qualified one with a colon.** The point of the assertion is unchanged and
+    // if anything sharper: consent has to be given to the name that appears on
+    // `/plugin`, `/skills`, the palette and the `Read skill` line, or the operator
+    // agrees to one thing and then reads about another. Before this release those
+    // surfaces all drew io-harness's `__`; now they all draw `:`, and the
+    // disclosure has to move with them.
     assert!(
-        said.contains("rust-review__reviewer"),
-        "the agent is not named as io-harness namespaced it, so the operator is \
-         consenting to a name they will never see again: {said}",
+        said.contains("rust-review:reviewer"),
+        "the agent is not named as the operator will see it everywhere else, so \
+         they are consenting to a name that appears nowhere: {said}",
     );
     assert!(
-        said.contains("rust-review__no-secrets"),
-        "the policy layer is not named as io-harness namespaced it: {said}",
+        !said.contains(io_harness::NAMESPACE),
+        "io-harness's own separator reached the consent surface: {said}",
+    );
+    assert!(
+        said.contains("rust-review:no-secrets"),
+        "the policy layer is not named as the operator will see it on /status: {said}",
     );
     assert!(
         !said.contains("switched off"),

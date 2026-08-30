@@ -1989,7 +1989,9 @@ pub fn committed(
             }
         }
         facts.push((
-            format!("policy {}", layer.name),
+            // A bundle's layer arrives qualified with `io_harness::NAMESPACE`;
+            // drawn with a colon, like every other contribution a bundle makes.
+            format!("policy {}", crate::naming::display(&layer.name)),
             if acts.is_empty() {
                 format!("no rule {dash} it governs nothing")
             } else {

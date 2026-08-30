@@ -95,6 +95,7 @@ pub mod manage;
 pub mod markdown;
 pub mod marketplace;
 pub mod memory;
+pub mod naming;
 pub mod page;
 pub mod picker;
 pub mod picture;
