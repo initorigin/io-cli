@@ -6,6 +6,104 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-30
+
+The agent could ask you a question and you could not answer it. `Intent::render`
+drew the answer composer only where there was room left over, and a question with
+a context line and five choices filled all eight rows of the viewport — so what
+you actually saw was a question, some inert bullets, and nothing to type into.
+The same question reached the screen twice, and the second copy was labelled
+`warning:`.
+
+That fixed eight-row viewport is one cause behind four defects, so this release
+makes the viewport the size of what it has to show. The rest of what is here
+follows from it: a plan overlay that keeps its own footer, a queue you can read,
+pickers that say how much they are not showing.
+
+Alongside it, the interface stops withholding things it already does. Ten
+commands run while a turn is in flight. A message typed mid-turn reaches that
+turn. A bundle's skill is drawn under a name you can read and type. The token
+figure moves while the tokens are being spent. And the plugin set is resolved once
+for the session rather than twice for every message.
+
+### Added
+
+**The viewport grows to what a surface asks for, and gives the rows back.** A
+question overlay asks for its offers and its composer, a plan overlay for its
+steps and its footer, the queue for one row per message, a picker for its list.
+The ceiling is your terminal's height less four rows — not a ration, but the
+exchange the surface is about, kept visible. On an 80×24 that is a twenty-row
+viewport. `VIEWPORT_HEIGHT` is a floor now rather than a fixed size.
+
+**The question overlay is answerable, as one list with no modes.** The agent's
+offers and a row for an answer nobody offered are peers in the same list. `Enter`
+on an offer sends it verbatim; the last row unfolds a composer directly beneath
+it and typing there sends prose. Typing anywhere moves the marker to that row, so
+you can simply start writing. The marker opens there too, never on the agent's
+first suggestion — a reflexive `Enter` must not become silent agreement with
+something you have not read.
+
+**`Tab` takes the row under the marker, in every list in the product**, and
+`Shift+Tab` steps back. Both were unbound and did nothing.
+
+**Ten commands run while a turn is in flight**: `/status`, `/context`, `/cost`,
+`/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet` and `/image`. `/` opens
+the palette mid-turn and `@` completes a path. Everything that reassigns the
+session or the provider, writes the store or a configuration file, or submits a
+turn keeps its refusal.
+
+**A message typed during a turn is delivered to that turn**, at its next step
+boundary, and recorded in the transcript as it goes. `/steer` is unchanged. A
+message that reaches no further step boundary still runs as its own turn
+afterwards.
+
+**A live token figure**, estimated from the streamed text and written `~1.2k tok`
+so it cannot be read as settled. The provider's own number replaces it when the
+step commits.
+
+### Changed
+
+**A bundle's contributions are drawn `bundle:name` rather than `bundle__name`** —
+on `/skills`, in the palette, in the `Read skill` line, in `/plugin`'s inventory
+and on `/status`. io-harness's separator is unchanged and still what the model
+sees; io translates at the two edges. Choosing a skill now writes the command
+`/bundle:name` instead of the sentence `use the <name> skill: `, which submitted
+as an ordinary prompt and left it to the model to interpret.
+
+**The plugin set is resolved once per session** rather than twice on the build
+path of every turn, and re-read only when a declared manifest's stamp changes.
+`/plugin` and `/skills` cost nothing to open when nothing has moved.
+
+**Tones say what they mean.** `refused:` is reserved for an act the permission
+boundary refused. A mistyped `/effort` argument, a run that is simply not in the
+store, three watch errors and two `/memory` bookkeeping lines were all wearing it;
+a plan proposal and a question were drawn as warnings. All corrected.
+
+### Fixed
+
+**A question is drawn once, and never as a warning.** It was committed to the
+transcript and redrawn by the overlay, with the overlay's copy prefixed
+`warning:`. The transcript line survives wherever nothing else will draw it —
+under `--plain`, and on a resumed run, which has no overlay in this process at
+all.
+
+**Overlays measured themselves by counting lines while rendering through a
+wrapping paragraph**, so a long question or plan step consumed more rows than the
+count admitted: the offers and the footer fell off the bottom, and the composer
+was then drawn over rows already painted. Everything measures wrapped rows now.
+
+**The plan overlay keeps its `Enter approves / Esc cancels` footer.** It was the
+last line pushed and so the first line lost, on the one overlay whose own
+documentation forbids exactly that.
+
+**Truncation says what it dropped.** A picker over four hundred rows, a fleet view
+with more children than rows, and `/stats`' per-table breakdown all cut silently;
+`/stats` was capping at five on a page with unlimited rows.
+
+**`outcome_help` told you a parked question or plan could not be answered by this
+release and to say it in your next prompt.** `/resume` has answered both since
+0.23.0.
+
 ## [0.31.0] - 2026-08-30
 
 io-cli has operated a marketplace nobody could stock. Every capability bundle
@@ -2740,7 +2838,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/initorigin/io-cli/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/initorigin/io-cli/compare/v0.30.2...v0.31.0
 [0.30.2]: https://github.com/initorigin/io-cli/compare/v0.30.1...v0.30.2
 [0.30.1]: https://github.com/initorigin/io-cli/compare/v0.30.0...v0.30.1

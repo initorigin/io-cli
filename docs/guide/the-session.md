@@ -215,3 +215,59 @@ has started no background work has not started zero jobs.
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)
+
+## The viewport takes the rows a surface needs
+
+`io` draws into an inline viewport — a few rows at the bottom of your terminal,
+with everything finished committed above them into the terminal's own scrollback,
+where your search and your selection already work. That viewport was a fixed eight
+rows from 0.1.0 until 0.32.0, and a surface needing more quietly lost the
+remainder.
+
+**It is now the size of what it has to show.** A question overlay asks for its
+offers and its composer, a plan overlay for its steps and its footer, the queue for
+one row per message it is holding, and a picker for its list. When the surface
+closes the rows go back.
+
+**The ceiling is your terminal's height less four rows.** Those four are not a
+ration — a surface may take the screen when it needs it — they are the exchange the
+surface is *about*, kept visible. A question filling the terminal to the last row
+is a question with no readable reason for being asked. On an 80×24 that leaves a
+twenty-row viewport, which holds a twelve-step plan with its footer, or a
+five-choice question with its context line and somewhere to type.
+
+**A surface that cannot have what it asked for degrades rather than overflowing.**
+Growth is a request. Every one of them elides with a count — `⋯ 3 more` — so a
+list cut short never looks like a list that ended.
+
+The scrollback above is untouched by any of this. Committed rows are the
+terminal's, and growing or shrinking the viewport neither repeats them nor loses
+them.
+
+## A message typed mid-turn reaches that turn
+
+Type while the agent is working and your line is queued rather than sent. The
+queue is drawn above the composer, every message with its position.
+
+**Since 0.32.0 those messages are delivered into the running turn**, at its next
+step boundary, and each one is recorded in your transcript as it goes. Before, they
+waited for the turn to end and then ran as turns of their own — so a correction
+typed thirty seconds into a ten-minute turn arrived nine and a half minutes late,
+against work it was meant to change.
+
+`/steer` still sends immediately, and behaves exactly as it did.
+
+**A message that reaches no further step boundary is not lost.** If the turn
+finishes, is interrupted, or errors before reading it, it runs as its own turn
+afterwards and the session says which of the two happened.
+
+## The token figure while a step is streaming
+
+Providers do not bill per chunk, so nothing in the event stream carries a running
+token count. Until 0.32.0 the figure simply sat still for the whole of a turn while
+the clock beside it ran.
+
+It now moves, as an **estimate** taken from the streamed text, and it is written
+with a leading tilde — `~1.2k tok` — so it can never be read as settled. When the
+step commits, the provider's own number replaces it and the tilde goes. The two are
+never added together.

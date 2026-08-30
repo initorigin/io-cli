@@ -147,6 +147,31 @@ points an operator can enter the state.
 **Every HTTP MCP server is refused by default**, because the default network effect is `Deny`. A
 bare-host rule opens it.
 
+**Ten commands run while a turn is in flight, and the rest are refused.** `/status`, `/context`,
+`/cost`, `/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet` and `/image` report while the
+agent works; `/` and `@` open the palette and path completion; `/compact` and `/steer` reach the
+turn through their own arms as they always have. Every other command keeps its refusal, in the same
+sentence, and the rule is what a command *does* rather than how harmless it looks: anything that
+reassigns the session or the provider, writes the store or a configuration file, or submits a turn
+of its own is refused.
+
+**`/config` is refused mid-turn in every form, including the bare one.** Its picker offers a row
+that re-reads the provider's catalogue, writes the prices into a scope file and reassigns the
+configuration the running turn is holding. The run-state guard is on the whole command deliberately
+— splitting a bare form from an argued one is where a mistake ships a write into a running turn —
+and the same applies to `/plugin`, `/mcp`, `/provider`, `/skills`, `/memory` and `/store`.
+
+**A mid-stream token figure is an estimate and is drawn as one.** `EventKind::Token` carries text
+and no count, because providers do not bill per chunk, so the figure that moves while a step is
+streaming is derived from the delta text and written `~1.2k tok`. It is replaced by the provider's
+own number the moment the step commits, and the settled form has no tilde. Nothing adds the two
+together.
+
+**A bundle's contributions are displayed with a colon and addressed with io-harness's separator.**
+`ultraship:brainstorm` is what you read; `ultraship__brainstorm` is what the model was shown and
+what `read_skill` resolves. `io exec`, `io plugin` and `io skill` report the wire name, because a
+script addresses the wire.
+
 ## What may change
 
 Everything not named above. In particular: the layout of what is drawn on the terminal, the

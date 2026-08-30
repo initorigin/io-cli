@@ -102,7 +102,14 @@ pub const KEYS: &[(&str, &str)] = &[
         "Esc",
         "stop the running turn, or close a picker without choosing",
     ),
-    ("/", "at an empty prompt, open the command palette"),
+    (
+        "Tab",
+        "in any list, take the row under the marker; `Shift+Tab` steps back",
+    ),
+    (
+        "/",
+        "open the command palette \u{2014} at the prompt or while a turn runs",
+    ),
     ("@", "after a space, complete a path from the workspace"),
     (
         "!",
@@ -2587,15 +2594,7 @@ fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Lin
 /// `/copy diff` is `/copy`'s second word rather than a command of its own here, so
 /// the first word decides and both forms are admitted; both only read.
 pub const MID_TURN: &[&str] = &[
-    "/status",
-    "/context",
-    "/cost",
-    "/stats",
-    "/help",
-    "/theme",
-    "/copy",
-    "/expand",
-    "/fleet",
+    "/status", "/context", "/cost", "/stats", "/help", "/theme", "/copy", "/expand", "/fleet",
     "/image",
 ];
 
@@ -2638,8 +2637,17 @@ mod mid_turn_tests {
         assert_eq!(
             admitted,
             vec![
-                "/help", "/theme", "/expand", "/status", "/context", "/copy", "/copy diff",
-                "/fleet", "/image", "/cost", "/stats",
+                "/help",
+                "/theme",
+                "/expand",
+                "/status",
+                "/context",
+                "/copy",
+                "/copy diff",
+                "/fleet",
+                "/image",
+                "/cost",
+                "/stats",
             ],
             "the mid-turn half of COMMANDS changed; every entry here is a decision \
              about what may happen while a turn holds the session, the store and \
@@ -2654,10 +2662,31 @@ mod mid_turn_tests {
         assert_eq!(
             refused,
             vec![
-                "/exit", "/setup", "/model", "/resume", "/fork", "/steer", "/compact", "/commit",
-                "/config", "/remember", "/memory", "/skills", "/mcp", "/provider", "/plugin",
-                "/import", "/profile", "/effort", "/contain", "/undo", "/plan", "/clear", "/store",
-                "/export", "/gates",
+                "/exit",
+                "/setup",
+                "/model",
+                "/resume",
+                "/fork",
+                "/steer",
+                "/compact",
+                "/commit",
+                "/config",
+                "/remember",
+                "/memory",
+                "/skills",
+                "/mcp",
+                "/provider",
+                "/plugin",
+                "/import",
+                "/profile",
+                "/effort",
+                "/contain",
+                "/undo",
+                "/plan",
+                "/clear",
+                "/store",
+                "/export",
+                "/gates",
             ],
             "the refused half of COMMANDS changed",
         );

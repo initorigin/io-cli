@@ -745,6 +745,12 @@ fn the_key_table_covers_every_key_this_release_binds() {
         // opening is mid-turn, and a slash command cannot be typed then.
         "Ctrl+F",
         "y / a / n",
+        // 0.32.0. Not a chord and not rebindable: it is `Picker::key`'s, so it
+        // applies to every list in the product rather than to one surface, and it
+        // is the completion key an operator arrives already expecting. Until this
+        // release it fell into the catch-all and did nothing at all, which is
+        // worse than a key that is not bound.
+        "Tab",
         // The three prefixes 0.7.0 adds. None is a chord, and none is
         // rebindable: they are characters the composer would otherwise have
         // taken, so what they cost is a literal `/`, `@` or `!` in the one
@@ -757,7 +763,7 @@ fn the_key_table_covers_every_key_this_release_binds() {
     }
     assert_eq!(
         documented.len(),
-        15,
+        16,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );
