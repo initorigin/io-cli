@@ -472,11 +472,20 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
         assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
         let help = outcome_help(outcome)
             .unwrap_or_else(|| panic!("{outcome} leaves the operator with no next action"));
+        // **`/resume` since 0.32.0, and "next prompt" is gone on purpose.** The
+        // two sentences that told an operator a parked question or plan could not
+        // be answered by this release had been false since 0.23.0 — `/resume`
+        // reopens both. An approval keeps `Shift+Tab`, because an approval belongs
+        // to the turn that asked for it and there is nothing left to authorize.
         assert!(
-            ["io setup", "Shift+Tab", "next prompt"]
+            ["io setup", "Shift+Tab", "/resume"]
                 .iter()
                 .any(|way| help.contains(way)),
             "{outcome} should name something the operator can do: {help}",
+        );
+        assert!(
+            !help.contains("no way to answer") && !help.contains("this release has no"),
+            "{outcome} still claims a capability this product shipped in 0.23.0: {help}",
         );
     }
 
@@ -529,7 +538,7 @@ fn the_awaiting_help_reaches_the_transcript() {
     assert!(line.contains("awaiting_answer"), "{line:?}");
     assert!(line.contains("warning"), "{line:?}");
     assert!(
-        line.contains("next prompt"),
+        line.contains("/resume"),
         "the way out should be in the transcript, not only in the docs: {line:?}",
     );
     assert!(!line.contains("error"), "nothing went wrong: {line:?}");

@@ -1239,7 +1239,7 @@ fn the_writers_are_configure_commands_and_skills_is_the_inspection() {
 /// is gone while the model keeps reading it — the same failure the pin flag exists
 /// to prevent one level down.
 #[test]
-fn a_refused_withdrawal_is_a_refusal_and_names_the_pin() {
+fn a_withdrawal_that_did_not_happen_names_the_pin_and_is_never_a_success() {
     use io_cli::commands::forgotten_said;
     use io_cli::glyphs::ASCII;
     use io_cli::recall::{Forgotten, Scope};
@@ -1251,7 +1251,18 @@ fn a_refused_withdrawal_is_a_refusal_and_names_the_pin() {
         Forgotten::Refused,
         &ASCII,
     );
-    assert_eq!(tone, Tone::Refused, "a refusal is not a success: {said}");
+    // **Not a success, and since 0.32.0 not a refusal either.** `Tone::Refused`
+    // means an act the permission boundary refused, and nothing here went near
+    // one — this is io-cli's own bookkeeping about a note the operator pinned.
+    // Spending the word `refused` on it is how the word stops meaning anything on
+    // the surface that needs it. What carries the fact is the sentence, asserted
+    // below, which is the same argument `forgotten_said`'s own doc makes.
+    assert_ne!(tone, Tone::Success, "nothing was withdrawn: {said}");
+    assert_ne!(
+        tone,
+        Tone::Refused,
+        "a pinned note is not a permission boundary refusing an act: {said}",
+    );
     assert!(
         said.contains("pinned"),
         "the reason is what makes it actionable: {said}",
