@@ -578,21 +578,20 @@ fn no_comment_still_says_a_turn_cannot_be_steered() {
     // page would be a stronger claim than the gate ever made — `/steer` is
     // documented on the commands page and the keys page, and which of those owns
     // the sentence is an editorial choice this test has no business deciding.
-    let stated = shipped_prose()
-        .into_iter()
-        .any(|(_, text)| {
-            let said = text.to_lowercase();
-            said.contains("steer inbox") || said.contains("/steer")
-        });
+    let stated = shipped_prose().into_iter().any(|(_, text)| {
+        let said = text.to_lowercase();
+        said.contains("steer inbox") || said.contains("/steer")
+    });
     assert!(
         stated,
         "no page says a turn can be spoken to while it runs, so an operator \
          learns that containment costs a steer from the silence where the \
          correction should be",
     );
-    let corrected = shipped_prose()
-        .into_iter()
-        .any(|(_, text)| text.to_lowercase().contains("contained turn can be steered"));
+    let corrected = shipped_prose().into_iter().any(|(_, text)| {
+        text.to_lowercase()
+            .contains("contained turn can be steered")
+    });
     assert!(
         corrected,
         "no page says the containment switch no longer decides whether a turn \
@@ -1253,12 +1252,19 @@ fn shipped_markdown() -> Vec<(String, String)> {
 /// **template** shape — an angle-bracket token naming a contact that was meant to
 /// be substituted and was not.
 ///
+/// The changelog is exempt, through [`shipped_prose`], and it earned the
+/// exemption immediately: 0.30.2's own entry has to quote the placeholder in
+/// order to say it was removed, and the first run of this gate failed on that
+/// sentence. **A gate that reads prose can forbid a file from explaining
+/// itself** — the third time this repository has hit that shape — and the
+/// changelog is the one file whose job is to describe what used to be there.
+///
 /// Sabotage: put `<project-contact-email>` back into either file. Only this fails.
 #[test]
 fn f7_no_shipped_document_leaves_a_contact_placeholder_unfilled() {
     let mut offenders = Vec::new();
 
-    for (path, text) in shipped_markdown() {
+    for (path, text) in shipped_prose() {
         for (number, line) in text.lines().enumerate() {
             // An angle-bracket token that names a contact rather than an argument.
             // `<goal>`, `<path>` and `<version>` are argument spellings and are
@@ -1268,9 +1274,8 @@ fn f7_no_shipped_document_leaves_a_contact_placeholder_unfilled() {
                 let after = &rest[open + 1..];
                 let Some(close) = after.find('>') else { break };
                 let token = &after[..close];
-                let looks_like_contact = token.contains("contact")
-                    || token.contains("email")
-                    || token.contains("your-");
+                let looks_like_contact =
+                    token.contains("contact") || token.contains("email") || token.contains("your-");
                 // A URL in angle brackets is a markdown autolink, not a placeholder.
                 let is_autolink = token.starts_with("http");
                 if looks_like_contact && !is_autolink {
@@ -1597,8 +1602,8 @@ fn f6_the_contract_page_agrees_with_the_code() {
     // Every `[app.io-cli]` key. The field list is read out of the struct's own
     // source rather than hand-listed here, so a field added without a row on the
     // page fails instead of arriving undocumented.
-    let settings = std::fs::read_to_string(repo().join("src/settings.rs"))
-        .expect("src/settings.rs exists");
+    let settings =
+        std::fs::read_to_string(repo().join("src/settings.rs")).expect("src/settings.rs exists");
     let body = settings
         .split_once("pub struct CliSettings")
         .expect("CliSettings is declared")
