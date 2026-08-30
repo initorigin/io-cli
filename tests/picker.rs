@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::App;
 use io_cli::picker::{Outcome, Picker, Row};
 use io_cli::theme::DARK;
+use ratatui::text::Line;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -700,4 +701,483 @@ fn o11_tab_declines_on_a_heading_like_enter_does() {
     // The marker steps off the heading when the picker opens, so this asserts the
     // pair agree rather than manufacturing an unreachable state.
     assert_eq!(picker.key(key(KeyCode::Tab)), Outcome::Chosen(1));
+}
+
+// ---------------------------------------------------------------------------
+// T04 — a marked set the spacebar toggles, and an unfold whose height is
+// measured per row
+// ---------------------------------------------------------------------------
+
+fn space() -> KeyEvent {
+    key(KeyCode::Char(' '))
+}
+
+/// **T04 — the spacebar marks and unmarks, and the screen says which rows.**
+///
+/// The whole of the plural mechanic in one place: a toggle, a set read back in
+/// the caller's own numbering, and a box the operator can see it in. A mark that
+/// is only in the struct is a selection nobody can check before they press Enter.
+#[test]
+fn t04_the_spacebar_marks_and_unmarks_on_a_plural_picker() {
+    let mut picker = providers().accepting_several();
+    assert!(
+        picker.marked().is_empty(),
+        "a picker opens with nothing marked",
+    );
+    // With nothing marked, the plural answer is the singular one: the row under
+    // the marker, and not an empty list.
+    assert_eq!(picker.chosen(), vec![0]);
+
+    assert_eq!(
+        picker.key(space()),
+        Outcome::Idle,
+        "marking chooses nothing"
+    );
+    assert_eq!(
+        picker.marked(),
+        vec![0],
+        "the spacebar did not mark the row"
+    );
+    assert_eq!(
+        picker.query(),
+        "",
+        "the space was typed into the query instead of marking",
+    );
+
+    // And unmarks: the same key, the same row.
+    picker.key(space());
+    assert!(
+        picker.marked().is_empty(),
+        "the second press did not unmark it: {:?}",
+        picker.marked(),
+    );
+
+    // Two rows, reported in the caller's row order rather than in the order they
+    // were pressed — row 2 is marked before row 1 here on purpose.
+    picker.key(key(KeyCode::Down));
+    picker.key(key(KeyCode::Down));
+    picker.key(space());
+    picker.key(key(KeyCode::Up));
+    picker.key(space());
+    assert_eq!(picker.marked(), vec![1, 2]);
+    assert_eq!(
+        picker.chosen(),
+        vec![1, 2],
+        "with rows marked, the plural answer is the marks and not the marker",
+    );
+    // Enter still answers with one index, in the spelling every existing caller
+    // reads. The plural answer is a second question, asked of the same picker.
+    assert_eq!(picker.key(key(KeyCode::Enter)), Outcome::Chosen(1));
+
+    // On the screen, which is the only place the operator can check it.
+    let (mut screen, recorder) = support::screen_of(80, 24, 8);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let viewport = screen.viewport_text();
+    let checked: Vec<&str> = viewport
+        .lines()
+        .filter(|line| line.contains("[x]"))
+        .collect();
+    assert_eq!(
+        checked.len(),
+        2,
+        "two rows are marked and the screen shows a different number: {viewport:?}",
+    );
+    // `OpenAI` is also a substring of `Any OpenAI-compatible endpoint`, so the
+    // second half says which of the two this is: a `contains` an unrelated row
+    // satisfies is the vacuity this product keeps finding in its own gates.
+    assert!(
+        checked[0].contains("Anthropic"),
+        "the first ticked row is not the first marked one: {checked:?}",
+    );
+    assert!(
+        checked[1].contains("OpenAI") && !checked[1].contains("compatible"),
+        "the tick is on `Any OpenAI-compatible endpoint` rather than on `OpenAI`: \
+         {checked:?}",
+    );
+    let empty: Vec<&str> = viewport
+        .lines()
+        .filter(|line| line.contains("[ ]"))
+        .collect();
+    assert_eq!(
+        empty.len(),
+        2,
+        "every markable row carries a box, ticked or not: {viewport:?}",
+    );
+    assert!(
+        recorder.contains("[x]"),
+        "the box never reached the terminal"
+    );
+}
+
+/// **T04 — a single-answer picker is untouched: the spacebar is a query
+/// character, as it has always been.**
+///
+/// The constraint the whole opt-in exists for. Nine call sites never mark
+/// anything, and none of them can be edited to cope — so a space on any of them
+/// has to do exactly what it did before this release: narrow the list.
+#[test]
+fn t04_the_spacebar_is_still_a_query_character_on_an_ordinary_picker() {
+    let mut picker = providers();
+    assert_eq!(picker.key(space()), Outcome::Idle);
+    assert_eq!(
+        picker.query(),
+        " ",
+        "the space was swallowed by a marked set no ordinary picker has",
+    );
+    assert!(
+        picker.marked().is_empty(),
+        "an ordinary picker marked a row: {:?}",
+        picker.marked(),
+    );
+    // A space is a real filter character on these labels, which is why it cannot
+    // be spent: `Any OpenAI-compatible endpoint` has one and `OpenRouter` does
+    // not.
+    assert_eq!(
+        picker.matching(),
+        1,
+        "the space did not filter, so it was not treated as a query character",
+    );
+    assert_eq!(
+        picker.rows()[picker.selected()].label,
+        "Any OpenAI-compatible endpoint"
+    );
+
+    // And the box is not drawn on it either: the column belongs to the plural
+    // picker alone.
+    let mut picker = providers();
+    let (mut screen, _recorder) = support::screen_of(80, 24, 8);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    assert!(
+        !screen.viewport_text().contains("[ ]"),
+        "a single-answer picker grew a checkbox column: {:?}",
+        screen.viewport_text(),
+    );
+}
+
+/// **T04 — a mark made in a filtered list is the caller's own row index.**
+///
+/// The expensive defect, one state along. Three call sites index a slice raw with
+/// what this widget hands back; a plural answer carrying filtered positions
+/// panics at those and acts on the wrong rows at the others — once per marked
+/// row, silently.
+#[test]
+fn t04_a_mark_is_an_index_into_the_callers_rows_and_not_the_filtered_view() {
+    let mut picker = providers().accepting_several();
+    // `h` admits `Anthropic` alone — row 1 of the caller's list, and position 0
+    // of the filtered one, which is exactly what a filtered index would report.
+    picker.key(key(KeyCode::Char('h')));
+    assert_eq!(picker.matching(), 1);
+
+    picker.key(space());
+    assert_eq!(
+        picker.marked(),
+        vec![1],
+        "the marked row is a position in the filtered view, not a row",
+    );
+    assert_eq!(picker.rows()[picker.marked()[0]].label, "Anthropic");
+}
+
+/// **T04 — a marked row the query hides is still marked.**
+///
+/// The release's recorded open question, answered: marks are held against
+/// unfiltered rows and survive the query. The alternative makes the filter
+/// destructive — an operator marking five rows out of four hundred narrows the
+/// list to find each one, and every narrowing would throw away the marks made
+/// under the last.
+#[test]
+fn t04_a_marked_row_survives_the_query_that_hides_it() {
+    let mut picker = providers().accepting_several();
+    picker.key(key(KeyCode::Down));
+    picker.key(space());
+    picker.key(key(KeyCode::Down));
+    picker.key(key(KeyCode::Down));
+    picker.key(space());
+    assert_eq!(picker.marked(), vec![1, 3]);
+
+    // `h` admits `Anthropic` alone, so row 3 is not on the screen at all.
+    picker.key(key(KeyCode::Char('h')));
+    assert_eq!(picker.matching(), 1);
+    assert_eq!(
+        picker.marked(),
+        vec![1, 3],
+        "a keystroke that hid a marked row un-marked it",
+    );
+
+    // And a query that admits nothing at all, which is the state that has no
+    // match set to read a mark out of.
+    picker.key(key(KeyCode::Char('z')));
+    assert_eq!(picker.matching(), 0);
+    assert_eq!(
+        picker.marked(),
+        vec![1, 3],
+        "an empty result forgot the marks"
+    );
+
+    // Widening brings the rows back, still marked, still drawn as marked.
+    picker.key(key(KeyCode::Backspace));
+    picker.key(key(KeyCode::Backspace));
+    assert_eq!(picker.query(), "");
+    assert_eq!(picker.matching(), 4);
+    assert_eq!(picker.marked(), vec![1, 3]);
+
+    let (mut screen, _recorder) = support::screen_of(80, 24, 8);
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    let viewport = screen.viewport_text();
+    let checked: Vec<&str> = viewport
+        .lines()
+        .filter(|line| line.contains("[x]"))
+        .collect();
+    assert_eq!(checked.len(), 2, "{viewport:?}");
+    assert!(
+        checked[1].contains("Any OpenAI-compatible endpoint"),
+        "the row that was hidden came back unticked: {checked:?}",
+    );
+}
+
+/// **T04 — a heading cannot be marked, for the reason it cannot be chosen.**
+///
+/// No path that *moves* the marker leaves it on a heading, so this puts it there
+/// through [`Picker::focus`], which can — the same belt-and-braces `Enter` and
+/// `Tab` keep, reached by the one door that actually opens.
+#[test]
+fn t04_a_heading_cannot_be_marked() {
+    let mut picker = Picker::new(
+        "Which command?",
+        vec![
+            Row::heading("a group"),
+            Row::new("first"),
+            Row::new("second"),
+        ],
+    )
+    .accepting_several();
+
+    assert!(
+        picker.focus(0),
+        "the heading is a row the marker can be put on"
+    );
+    assert_eq!(picker.selection(), Some(0), "the marker is on the heading");
+    picker.key(space());
+    assert!(
+        picker.marked().is_empty(),
+        "a heading was marked: {:?}",
+        picker.marked(),
+    );
+    // The control: the same key on the row below it does mark, so the assertion
+    // above is about headings rather than about a spacebar that never works.
+    assert!(picker.focus(1));
+    picker.key(space());
+    assert_eq!(picker.marked(), vec![1]);
+}
+
+/// **T04 — the row demand does not move as the marker moves or the query
+/// filters.**
+///
+/// The driver re-places the viewport whenever the demand changes, and a
+/// re-placement is a terminal tear-down and a cursor query — on a surface that is
+/// open while a turn is in flight. So a demand that followed the *focused* row's
+/// unfold height would tear the terminal down on every arrow key between a short
+/// preview and a tall one. `rows_wanted` reserves the largest configured unfold
+/// instead, which is a function of the configuration and of nothing the operator
+/// is doing.
+///
+/// **Asserted by comparing demands, never by a clock.** N1 forbids a sleeping or
+/// clock-reading test anywhere under `tests/` — and it sweeps for the spellings
+/// as plain strings, in comments too, so they are not written out here either. A
+/// timing would be measuring the wrong thing regardless: the property is that a
+/// number does not change, and a number is what is compared.
+///
+/// The list's own length is subtracted, because that half of the demand is
+/// *supposed* to follow the query — a filter that admits two rows asks for two
+/// rows. What must be constant is everything else: the head, and the reservation.
+#[test]
+fn t04_the_demand_does_not_move_with_the_marker_or_the_query() {
+    let mut picker = Picker::new(
+        "Which one?",
+        vec![
+            Row::new("alpha"),
+            Row::new("beta"),
+            Row::new("gamma"),
+            Row::new("delta"),
+            Row::new("epsilon"),
+        ],
+    );
+    // Two unfolds of very different heights, which is the whole fixture: with one
+    // height per picker there was nothing here to oscillate.
+    picker.set_unfold(0, 1);
+    picker.set_unfold(3, 7);
+
+    // The demand minus the rows the query admits: the head plus the reservation.
+    let overhead = |picker: &Picker| {
+        picker
+            .rows_wanted()
+            .saturating_sub(u16::try_from(picker.matching()).expect("a small list"))
+    };
+
+    let opening = overhead(&picker);
+    assert_eq!(
+        opening, 8,
+        "one row for the head and seven for the tallest unfold, whatever is focused",
+    );
+
+    let mut seen = vec![opening];
+    let mut markers = vec![picker.selection()];
+    let mut lists = vec![picker.matching()];
+    // Down onto `delta`, which is the seven-row unfold, and past it; then a query
+    // that hides *both* unfolding rows; then back out again.
+    for stroke in [
+        key(KeyCode::Down),
+        key(KeyCode::Down),
+        key(KeyCode::Down),
+        key(KeyCode::Down),
+        key(KeyCode::Up),
+        key(KeyCode::Char('m')),
+        key(KeyCode::Char('a')),
+        key(KeyCode::Backspace),
+        key(KeyCode::Backspace),
+        key(KeyCode::Home),
+    ] {
+        picker.key(stroke);
+        seen.push(overhead(&picker));
+        markers.push(picker.selection());
+        lists.push(picker.matching());
+    }
+
+    // The fixture has to actually exercise both halves, or the constant below is
+    // a constant about nothing.
+    assert!(
+        markers.contains(&Some(0)) && markers.contains(&Some(3)),
+        "the marker never visited both unfolding rows: {markers:?}",
+    );
+    assert!(
+        lists.iter().any(|count| *count != 5),
+        "the query never filtered anything: {lists:?}",
+    );
+    assert!(
+        markers.contains(&Some(2)),
+        "the marker never left the unfolding rows: {markers:?}",
+    );
+
+    assert!(
+        seen.iter().all(|demand| *demand == opening),
+        "the reservation moved as the operator did, which re-places the viewport \
+         on a keystroke: {seen:?}",
+    );
+
+    // And what is *drawn* does follow the marker, which is the other half of the
+    // pair: the reservation is the largest, the open block is the focused row's.
+    assert!(picker.focus(0));
+    assert!(picker.unfolded_now(), "row 0 opens a block of its own");
+    assert!(picker.focus(2));
+    assert!(
+        !picker.unfolded_now(),
+        "a row with no unfold configured opened one",
+    );
+}
+
+/// **T04 — an unfold reserves the rows ratatui will paint, not the lines the
+/// caller counted.**
+///
+/// `crate::rows::wrapped` is the one measurement in this crate, and this is the
+/// fixture that tells it apart from the `lines.len()` it replaced: two logical
+/// lines that wrap to more than two rows at the width they are drawn at. A gate
+/// written against the line count fails here, which is the point — that count has
+/// already cost this product two defects, both of them content painted over rows
+/// something else had been promised.
+#[test]
+fn t04_a_wrapped_unfold_reserves_the_measured_height() {
+    const WIDTH: u16 = 32;
+    let preview = vec![
+        Line::from("the first line of this preview is long enough to wrap several times over"),
+        Line::from("and the second one wraps as well"),
+    ];
+    let height = io_cli::rows::wrapped(&preview, WIDTH);
+    assert!(
+        height > u16::try_from(preview.len()).expect("two lines"),
+        "the fixture does not wrap at {WIDTH} columns, so it cannot tell a \
+         measured height from a counted one: {height} rows for {} lines",
+        preview.len(),
+    );
+
+    let mut picker = Picker::new("Which one?", vec![Row::new("aaa"), Row::new("bbb")]);
+    picker.set_unfold(0, height);
+    assert_eq!(
+        picker.rows_wanted(),
+        2 + height + 1,
+        "the demand does not carry the measured height",
+    );
+
+    let (mut screen, _recorder) = support::screen_of(WIDTH, 24, 16);
+    // The area's own origin, because an inline viewport does not start at row
+    // zero — the rectangle `opened` reports is absolute and the viewport text is
+    // indexed from the top of the area.
+    let top = std::cell::Cell::new(u16::MAX);
+    screen
+        .draw(|frame| {
+            top.set(frame.area().y);
+            picker.render(frame, frame.area(), &DARK);
+        })
+        .expect("frame");
+
+    let opened = picker.opened().expect("the block was reserved");
+    assert_eq!(
+        opened.height, height,
+        "the reserved block is not the height the text was measured at",
+    );
+    assert_eq!(opened.width, WIDTH);
+
+    // The rows are really reserved, not merely promised in a rectangle: the row
+    // below the unfolding one is drawn `height` rows further down than it would
+    // otherwise be.
+    let viewport = screen.viewport_text();
+    let lines: Vec<&str> = viewport.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.contains("aaa"))
+        .expect("the unfolding row");
+    let second = lines
+        .iter()
+        .position(|line| line.contains("bbb"))
+        .expect("the row below it");
+    assert_eq!(
+        second - first,
+        usize::from(height) + 1,
+        "the block took {} rows and the text needs {height}: {viewport:?}",
+        second - first - 1,
+    );
+    assert_eq!(
+        opened.y,
+        top.get() + u16::try_from(first).expect("a small viewport") + 1,
+        "the block does not open directly beneath the row that owns it",
+    );
+    for row in &lines[first + 1..second] {
+        assert!(
+            row.is_empty(),
+            "the reserved rows are the caller's to draw into and must be left \
+             blank: {row:?}",
+        );
+    }
+
+    // A second row with a height of its own, which is what one height per picker
+    // could not express: each keeps its own, and the taller is what is reserved.
+    picker.set_unfold(1, 2);
+    assert_eq!(
+        picker.rows_wanted(),
+        2 + height + 1,
+        "the shorter unfold replaced the taller one instead of joining it",
+    );
+    picker.key(key(KeyCode::Down));
+    screen
+        .draw(|frame| picker.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    assert_eq!(
+        picker.opened().expect("the second block").height,
+        2,
+        "the second row opened the first row's height",
+    );
 }

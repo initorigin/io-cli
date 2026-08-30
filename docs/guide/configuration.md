@@ -35,12 +35,37 @@ names ladders from 1. `app.io-cli.gates.expect_exit` is the one signed key and i
 ladder runs through zero into the negatives, because a process may legitimately
 be expected to exit on one.
 
-**A horizontal arrow changes a boolean or a closed set of words where it stands**,
-without opening anything — see [Keys](#keys) for why it is the arrows and not the
-spacebar. Each press writes, re-reads and redraws the row from the file's own
-answer rather than from an account of what was just done, and each one is
-committed to the scrollback, so cycling through four values leaves four lines
-saying what happened rather than one footer notice overwriting the other three.
+**A horizontal arrow opens a row's values, with the marker on the value in
+force.** `Left` and `Right` do what `Enter` does, and they open on where you
+already are so you can see it before you move; `Enter` on a value is the
+confirmation, and the write goes into the file the descent names.
+
+**No arrow key writes a configuration file, and until 0.33.0 one did.** `Left`
+and `Right` on a boolean or a closed set of words used to step to the next value
+and write it into a scope file on the keystroke — one press, one write, nothing
+asked. It was the only unconfirmed write in this product reachable from a bare
+arrow key, and it is the reason `/config` could not be opened while a turn was
+running at all. Removing the write rather than guarding it is what made the bare
+list safe enough to report mid-turn; see [Keys](keys.md) for the commands that now
+answer while the agent works.
+
+**The price refresh is one descent below `prices.as_of`, and it used to be the
+last row of the bare list.** There it made a keystroke on `/config` read the
+network, write a scope file and reassign the configuration a running turn was
+holding — which is a list that acts, on a surface whose whole job is saying what
+is in force. It is now where the act belongs: choose `prices.as_of`, the date the
+refresh writes, and the descent offers *leave it* at the top and the re-read under
+it, with the date it last read beside it. Row 0 declines and nothing happens,
+which is what row 0 does on every confirmation in this product. What the refresh
+then shows you before it writes is unchanged — see
+[What it costs](accounting.md).
+
+`prices.as_of` is still the one key you cannot type a value into. A date typed by
+hand is a claim about a fetch that never happened, so `/config prices.as_of
+<value>`, `io config set prices.as_of` and every other typing door refuse it — and
+they refuse it in the same words, because a key one door writes and another will
+not is the asymmetry this surface exists to remove. The descent offers the fetch
+instead of the date.
 
 **Every row also offers *unset it*, which removes the key rather than writing a
 default's text into a file.** The distinction is the one this whole surface opens
@@ -115,7 +140,7 @@ with `--env`, `--header`, `--timeout-secs` and `--scope`, read by the same parse
 panel was missing: `servers::add` existed, was tested, and was called from
 nothing, so a list you could prune was a list you could not grow. See [Managing
 the configuration without a
-session](#managing-the-configuration-without-a-session) for the grammar, which is
+session](headless.md#managing-the-configuration-without-a-session) for the grammar, which is
 one grammar.
 
 **Adding one reports whether the policy will let it start.** io-harness denies
@@ -126,7 +151,7 @@ a disclosure and never a veto: the entry is written either way. It is where a
 server is added, rather than at the run that first needs one, because a refused
 entry looks exactly as valid as a working one and the alternative is finding out
 a turn later. The same paragraph in [Managing the configuration without a
-session](#managing-the-configuration-without-a-session) has the rule to write.
+session](headless.md#managing-the-configuration-without-a-session) has the rule to write.
 
 **It switches a server off and back on**, which through io-harness 0.69.0 it
 could not: `McpServer` carried no key for it, and an `enabled = false` invented
@@ -235,7 +260,7 @@ vendored into a repository work for everyone who clones it; one kept elsewhere i
 written absolute. A bundle deeper than three directories, or outside the root
 entirely, is named outright — `/plugin add <path>`, or `io plugin add <path>` from
 a shell — and is refused by the same check rather than by a shallower one. See
-[Capability bundles](#capability-bundles).
+[Capability bundles](plugins.md#capability-bundles).
 
 **From 0.29.0 the same verb also takes a name.** `/plugin add ultraship` installs
 a bundle out of a marketplace you have added, and `ultraship@zeroonething/ultraship`
@@ -247,7 +272,7 @@ the disk rather than the spelling, so one word cannot mean a directory on a mach
 that has one and a marketplace bundle on a machine that does not.
 
 Installing by name **declares the bundle switched off and shows you what it would
-bring before it brings it** — see [Marketplaces](#marketplaces). Installing by
+bring before it brings it** — see [Marketplaces](plugins.md#marketplaces). Installing by
 path does not: that directory is one you already have.
 
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
@@ -265,15 +290,15 @@ Nine keys live there, and eight tables:
 | `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
 | `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |
 | `detached_spawns` | whether a spawn may detach at all. Absent, it may. `false` buys a trace with every child's whole life in it, which a detached child gives up. |
-| `conversational` | whether a prompt that is only a question may be answered in one completion, with no steps and no tools. Absent leaves io-harness's own classification where it is, which is what every release before 0.26.0 did; `false` opens a full run for every prompt. See [Answered without opening a run](#answered-without-opening-a-run). |
-| `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](#moving-a-key). |
-| `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](#the-fleet). |
+| `conversational` | whether a prompt that is only a question may be answered in one completion, with no steps and no tools. Absent leaves io-harness's own classification where it is, which is what every release before 0.26.0 did; `false` opens a full run for every prompt. See [Answered without opening a run](the-session.md#answered-without-opening-a-run). |
+| `[app.io-cli.keys]` | the session's keys, by action name. See [Moving a key](keys.md#moving-a-key). |
+| `[app.io-cli.containment]` | the caps a fan-out runs under. Absent, a session cannot decompose anything. See [The fleet](fleet.md#the-fleet). |
 | `[[app.io-cli.mcp]]` | MCP servers for the turn, in io-harness's own shape. Merged with the top-level `[[mcp]]`, and wins a collision of ids. |
 | `[[app.io-cli.lsp]]` | language servers for this workspace. Merged with the top-level `[[lsp]]`, and wins a collision of ids. |
 | `[app.io-cli.browser]` | a browser the agent may drive. Never downloaded — it is one you already have. |
-| `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](#verification-gates). |
-| `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start, on `/config`, and when `/contain on` is typed. A rule that cannot be obeyed — half a rule, a threshold of zero, or an empty model — is refused by name and leaves the run unrouted. See [Which model a run asks](#which-model-a-run-asks). |
-| `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](#where-a-price-comes-from). |
+| `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](verification.md#verification-gates). |
+| `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start, on `/config`, and when `/contain on` is typed. A rule that cannot be obeyed — half a rule, a threshold of zero, or an empty model — is refused by name and leaves the run unrouted. See [Which model a run asks](providers.md#which-model-a-run-asks). |
+| `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](accounting.md#where-a-price-comes-from). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
 default rather than stopping a session from starting. A section io-harness cannot
@@ -300,7 +325,7 @@ says.
 
 Two more paths arrive with the shipped skills. `~/.io-cli/skills/disabled/` holds
 the ones that are turned off, which is a directory rather than a setting — see
-[Skills](#skills). And `~/.io-cli/.skills-manifest` is where io-cli records the
+[Skills](skills.md#skills). And `~/.io-cli/.skills-manifest` is where io-cli records the
 bytes it last wrote for each shipped skill, so an upgrade can tell an untouched
 file from one you edited. It sits in the home and deliberately *not* in the
 skills directory, because every markdown file in there is offered to the model
@@ -309,7 +334,7 @@ and a state file is not a skill.
 io also records in the home that it has offered to bring your setup across from
 another agent tool, so that offer is made once on a first run and never again
 however many times you start a session. Opening it deliberately is `/import` —
-see [Bringing your setup across](#bringing-your-setup-across).
+see [Bringing your setup across](import.md#bringing-your-setup-across).
 
 The file is found in this order, which is io-harness's and is unchanged:
 `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`, else `$XDG_CONFIG_HOME/io/io.toml`
@@ -408,7 +433,7 @@ browser at all. io-cli's own `[app.io-cli.browser]` is read from either scope.
 
 `NO_COLOR` is read from the environment rather than from this file, and so is the
 locale behind `glyphs`. See [Reading it without seeing
-it](#reading-it-without-seeing-it).
+it](accessibility.md#reading-it-without-seeing-it).
 
 ---
 

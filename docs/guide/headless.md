@@ -47,7 +47,7 @@ would call a truncated run a finished one.
 
 **Exit `6` is new in 0.24.0 and it is the only one that is.** It says something no
 other row could: the criterion you set in
-[`[app.io-cli.gates]`](#verification-gates) did not pass — the tests failed, the
+[`[app.io-cli.gates]`](verification.md#verification-gates) did not pass — the tests failed, the
 file was not written, the reviewer said no. **Two routes reach it.** The run ends
 the way `0` ends, of its own accord, and the gate then answers failed; or
 io-harness ends the run itself as `VerificationFailed`, which is a run that spent
@@ -136,7 +136,7 @@ io resume 41 --goal "add a test for the parser and run it"
 | Flag | Does |
 | --- | --- |
 | `--list` | list the runs waiting for a person and carry none of them on |
-| `--answer <text>` | answer the question the run stopped on |
+| `--answer <text>` | answer the question the run stopped on — all of it, when the run stopped on several asked at once |
 | `--plan <verdict>` | `approve`, `revise` or `cancel` the plan the run proposed |
 | `--correction <text>` | what the plan should do differently; required by `--plan revise` and refused without it |
 | `--recovery <decision>` | `retry`, `abandon` or `completed` — what happened to the call the run was interrupted in the middle of |
@@ -145,6 +145,39 @@ io resume 41 --goal "add a test for the parser and run it"
 | `--json` | write the resumed run's events, and `--list`'s rows, as newline-delimited JSON |
 | `--policy <posture>` | the posture for the rest of this run; defaults to the one the run itself recorded |
 | `--provider <name>` | `openrouter`, `anthropic` or `openai` — take the credential and model from the environment |
+
+**A batched ask is one row, one id and one `--answer`.** An agent can ask several
+things at once, and io-harness parks the whole ask as a single `pending_questions`
+row answered through a single `question_id` — so the pause is still
+`waiting_on: "question"` and there is no per-question flag to reach for. What
+`--list` adds is a `questions` count on the row, because the one thing you cannot
+see from `waiting_on` alone is how much that single answer has to cover: it is the
+number of questions for a question row and `null` for the three pauses that are
+not questions.
+
+So one text answers the lot, and the refusal that names the pause says so —
+number your answers to match the questions and send them as one string:
+
+```sh
+io resume --list --json | jq -r 'select(.questions > 1) | .run_id'
+io resume 41 --answer "1. the parser that is already there  2. no, leave the CLI alone"
+```
+
+**The questions themselves are not on this command line.** `--list` counts them —
+`3 questions` on the row, and the `questions` field in `--json` — and says so
+rather than pasting the numbered ask into a one-line detail, which reads as if the
+first question were the whole thing. To see them, resume the run at a terminal;
+`io` draws them one at a time there. What the door cannot do is take the ask
+apart: io-harness records one reply against one row, and the per-question
+breakdown is written only by a responder inside the running process.
+
+**One limitation to know before you script against it.** A *single* question that
+takes several answers loses that fact in the store: io-harness's
+`PendingQuestion` has no column for it and the singular writer records none, so a
+lone multi-select that parks and is resumed comes back as a pick-one. A batched
+ask keeps it, because a batch carries its questions whole. This is upstream of
+io-cli and is stated rather than papered over with a default that would read as a
+fact.
 
 **Each pause takes its own input, and exactly one.** clap cannot see which pause
 a run is on, so a flag for the wrong one is checked against the store and refused
@@ -168,7 +201,7 @@ run, and it wins.
 
 **A turn you interrupted is refused here in the same words the session uses**,
 before a provider is built — see [When a run stops for
-you](#when-a-run-stops-for-you) for why it cannot be carried on.
+you](resume.md#when-a-run-stops-for-you) for why it cannot be carried on.
 
 The exit status is the table above: a resumed run that pauses again exits `4`
 naming the new pause, and `io resume --list` exits `0` whether or not it found
@@ -205,6 +238,7 @@ io mcp probe semlith                          # start it and ask what it offers
 io mcp remove semlith
 
 io skill add ./my-skill.md
+io skill add ./my-skill/SKILL.md              # installed as my-skill.md, from its own name
 io skill list
 io skill remove my-skill
 
@@ -213,7 +247,8 @@ io plugin add ultraship                       # or a name from a marketplace
 io plugin install ultraship                   # the same verb
 io plugin search review
 io plugin list
-io plugin remove ./bundles/rust-review
+io plugin remove ./bundles/rust-review        # the directory
+io plugin remove rust-review                  # or the name of a bundle you declared
 
 io plugin marketplace add zeroonething/ultraship
 io plugin marketplace list
@@ -261,6 +296,16 @@ higher. `mcp edit`, `mcp remove` and `plugin remove` take no `--scope` at all an
 refuse one by name — the change goes to the file that declares the entry, and a
 scope chosen here would aim a position counted in one file's array at another
 file's.
+
+**`io plugin remove` takes a directory or a bundle's name.** The path is read
+first and against the disk, so `io plugin remove ./bundles/rust-review` means what
+it has always meant; only when no configuration file declares that directory is
+the word matched against the names of the bundles you have declared — loaded,
+switched off and failed to load alike. Two of one name are refused with both
+directories printed, because taking whichever was found first would delete a
+`[[plugin]]` entry you never pointed at and nothing would say so. Until 0.33.0
+only the path was read, while `plugin add` printed a line telling you to remove it
+by id.
 
 **`io plugin add <name>` from a marketplace declares the bundle and stops there.**
 It writes the entry switched off, prints the disclosure to standard error, and

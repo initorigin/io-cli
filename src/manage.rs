@@ -186,9 +186,17 @@ pub enum PluginVerb {
     /// Every bundle in every added marketplace whose name or description carries
     /// `text`. A read: it opens no file and writes none.
     Search { text: String },
-    /// Undeclare a bundle. No scope: the file that named it is the file the
+    /// Undeclare a bundle, named **by the directory it lives in or by the id its
+    /// manifest carries**. No scope: the file that named it is the file the
     /// removal has to go to, and [`plan`] finds it.
-    Remove { path: PathBuf },
+    ///
+    /// A `String` and not a `PathBuf`, because a path is only the first of the two
+    /// readings and the second one is a name. Which it was is decided against the
+    /// disk in [`plan`] and never here — the path first, always — for
+    /// [`crate::marketplace::chosen`]'s reason: a parse that judged the *shape* of
+    /// the word would make one word mean a directory on a machine that has one and
+    /// a bundle's name on a machine that does not.
+    Remove { word: String },
     /// The repositories bundles are fetched from.
     ///
     /// **A nested enum rather than three more variants here, and the argument is
@@ -490,7 +498,10 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             args.no_scope("plugin remove")?;
             args.only("plugin remove", &[])?;
             Ok(Request::Plugin(PluginVerb::Remove {
-                path: PathBuf::from(args.one_word("plugin remove", "the directory of a bundle")?),
+                word: args.one_word(
+                    "plugin remove",
+                    "the directory of a bundle, or the name of a bundle that is declared",
+                )?,
             }))
         }
         ("config", Some("get")) => {
@@ -542,7 +553,14 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
 fn verbs(surface: &str) -> &'static str {
     match surface {
         "mcp" => "`add`, `list`, `get`, `edit`, `enable`, `disable`, `probe` and `remove`",
-        "plugin" => "`add` (also spelled `install`), `list`, `search`, `remove` and `marketplace`",
+        // `remove` takes the same two readings `add` does — a directory, or the
+        // name of a bundle — and says so here, because an operator who was refused
+        // is being told what to type next and `remove <path>` alone would send the
+        // one holding a name to the documentation.
+        "plugin" => {
+            "`add <path|name>` (also spelled `install`), `list`, `search <text>`, \
+             `remove <path|name>` and `marketplace`"
+        }
         "skill" => "`add <path>`, `list` and `remove <name>`",
         _ => "`get`, `set`, `unset` and `list`",
     }
@@ -616,6 +634,24 @@ fn judged(text: &str) -> Result<crate::fetch::Named, String> {
     })
 }
 
+/// Which file a `config` write lands in: the one `--scope` named, or the one
+/// already deciding the key.
+///
+/// **The same answer `/config`'s descent gives**, through the same function, so
+/// the two entry paths cannot disagree about where a key lives. A configuration
+/// that cannot be discovered at all is not a reason to refuse the write — the
+/// caller's own `configure::write` reports that far better than a guess here
+/// would — so it falls back to the user scope, which is where a key nothing
+/// decides goes anyway.
+fn decided_scope(root: &Path, key: &str, asked: Option<Scope>) -> Scope {
+    if let Some(scope) = asked {
+        return scope;
+    }
+    io_harness::config::Config::discover(root)
+        .map(|config| crate::configure::destination(&config, key).0)
+        .unwrap_or(Scope::User)
+}
+
 /// Turn a request into the file and the edits that carry it out.
 ///
 /// `Ok(None)` is a **read** — `list`, `get` — which writes nothing and is
@@ -646,25 +682,23 @@ fn judged(text: &str) -> Result<crate::fetch::Named, String> {
 /// [`crate::servers::declared_in`] and [`crate::pluginview::declared_at`]. A
 /// `--scope` there is refused at parse rather than honoured, because honouring it
 /// would aim an index counted in one file's array at a different file's.
-/// Which file a `config` write lands in: the one `--scope` named, or the one
-/// already deciding the key.
 ///
-/// **The same answer `/config`'s descent gives**, through the same function, so
-/// the two entry paths cannot disagree about where a key lives. A configuration
-/// that cannot be discovered at all is not a reason to refuse the write — the
-/// caller's own `configure::write` reports that far better than a guess here
-/// would — so it falls back to the user scope, which is where a key nothing
-/// decides goes anyway.
-fn decided_scope(root: &Path, key: &str, asked: Option<Scope>) -> Scope {
-    if let Some(scope) = asked {
-        return scope;
-    }
-    io_harness::config::Config::discover(root)
-        .map(|config| crate::configure::destination(&config, key).0)
-        .unwrap_or(Scope::User)
-}
-
-pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
+/// # `declared`, and why it is handed in rather than read
+///
+/// Every bundle the caller's already-resolved view names, as `(id, directory)`
+/// pairs — [`crate::pluginview::ids`] builds it — and **the `plugin remove` arm is
+/// the only thing in this function that reads it**. It is a parameter because
+/// reading it here would mean calling `Config::plugins()`, which is not an
+/// accessor: it re-reads, re-parses and re-trust-checks every declared manifest
+/// off the disk on every call, and `tests/dependencies.rs` confines it by exact
+/// path to `src/resolved.rs`. Both doors already hold the view, so nothing new is
+/// computed by passing it; a door planning any other request may pass an empty
+/// slice.
+pub fn plan(
+    root: &Path,
+    request: &Request,
+    declared: &[(String, PathBuf)],
+) -> Result<Option<Plan>, String> {
     let plan = match request {
         // **No skill verb plans an `Edit`, and none ever will.** A skill is a
         // markdown file in io-cli's own home; no configuration file declares one,
@@ -789,15 +823,8 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 disclosure,
             }
         }
-        Request::Plugin(PluginVerb::Remove { path }) => {
-            let dir = resolve(root, path);
-            let (scope, index) = crate::pluginview::declared_at(root, &dir).ok_or_else(|| {
-                format!(
-                    "no configuration file declares {}, so there is no `[[plugin]]` entry to \
-                     remove; `plugin list` shows what is declared",
-                    dir.display()
-                )
-            })?;
+        Request::Plugin(PluginVerb::Remove { word }) => {
+            let (scope, index) = removal(root, word, declared)?;
             Plan {
                 scope,
                 edits: vec![crate::pluginview::remove(index)],
@@ -881,6 +908,80 @@ fn declared_server(root: &Path, id: &str) -> Result<crate::servers::At, String> 
         format!(
             "no configuration file in force declares an MCP server called `{id}`, so there is \
              nothing to change; `mcp list` shows the ones that are configured"
+        )
+    })
+}
+
+/// Which `[[plugin]]` entry `plugin remove <word>` means: the directory, or the
+/// bundle of that name.
+///
+/// **The path is read first and the disk is what answers**, which is
+/// [`crate::marketplace::chosen`]'s standing rule for the same word on `plugin
+/// add` and is deliberately the same rule here. Nothing about the *shape* of the
+/// word is read — no rule about a `/`, a leading `.` or an extension — so
+/// `io plugin remove ./bundles/rust-review` keeps meaning exactly what
+/// `docs/guide/headless.md` says it means, and a directory that is declared is
+/// always removed as one.
+///
+/// Only when no configuration file declares that directory is the word read as a
+/// bundle's id, over the set the caller already resolved. **Every hit is collected
+/// and the first is never taken.** [`crate::pluginview::Listed::id`] is unique
+/// among the bundles io-harness *loaded* — two declared `enabled = false` may
+/// share one, which is the swap the flag exists for — so taking one of them
+/// deletes a `[[plugin]]` entry the operator never pointed at, silently, and they
+/// find out when a bundle's skills stop being offered. Two candidates are
+/// therefore refused with **both directories named**: the directory is the
+/// spelling that tells them apart, every listing already prints it, and it is the
+/// spelling that resolves through the path reading above.
+///
+/// The refused and dropped entries are in `declared` too, and they are exactly the
+/// entries an operator most wants gone — a bundle whose manifest will not parse is
+/// one they cannot fix from the manifest.
+fn removal(
+    root: &Path,
+    word: &str,
+    declared: &[(String, PathBuf)],
+) -> Result<(Scope, usize), String> {
+    let typed = resolve(root, Path::new(word));
+    if let Some(at) = crate::pluginview::declared_at(root, &typed) {
+        return Ok(at);
+    }
+    let hits = crate::pluginview::by_id(declared, word);
+    let dir = match hits.as_slice() {
+        [only] => *only,
+        [] => {
+            return Err(format!(
+                "no configuration file declares {}, and no bundle one declares is called \
+                 `{word}`, so there is no `[[plugin]]` entry to remove; `plugin list` shows what \
+                 is declared",
+                typed.display()
+            ))
+        }
+        several => {
+            let spellings = several
+                .iter()
+                .map(|dir| format!("`{}`", dir.display()))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            return Err(format!(
+                "{} declared bundles are called `{word}`, and removing whichever was found first \
+                 would take away an entry you did not choose; say which one by its directory: \
+                 {spellings}",
+                several.len()
+            ));
+        }
+    };
+    // A bundle that is in the resolved view was declared by *some* file, so this
+    // is not the ordinary miss above: it is a declaration whose written path does
+    // not match the directory io-harness read it from — a symlinked root, most
+    // likely — and saying which directory was looked for is the whole of what an
+    // operator can act on.
+    crate::pluginview::declared_at(root, dir).ok_or_else(|| {
+        format!(
+            "the bundle called `{word}` was read from {}, and no configuration file declares that \
+             directory, so there is no `[[plugin]]` entry to remove; `plugin list` shows what is \
+             declared",
+            dir.display()
         )
     })
 }
@@ -1271,7 +1372,7 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.71.0/src/mcp.rs:439-447`: the
+    // silent no-op on an HTTP server (`io-harness-0.72.0/src/mcp.rs:439-447`: the
     // body writes only into the `Stdio` arm) — a constructor chain here would drop
     // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`

@@ -244,7 +244,10 @@ pub enum Kind {
     ///
     /// One key, `prices.as_of`. It is in the catalogue because a date an operator
     /// cannot see is a claim with no expiry they cannot check — but it is a fact to
-    /// read, and the act beside it is [`REFRESH_PRICES`].
+    /// read, and the act beside it is [`REFRESH_PRICES`], one descent below the row
+    /// through [`descent`]. A `Machine` key still has no value to type, which is
+    /// why `value_rows` answers `None` for it and `manage::config_value` refuses it
+    /// by name; the descent offers the act, never the key.
     Machine,
 }
 
@@ -252,7 +255,7 @@ pub enum Kind {
 ///
 /// **Both halves are the dependency's since io-harness 0.71.0, and neither is
 /// written here any more**: the list is `Effect::ALL`
-/// (`io-harness-0.71.0/src/policy.rs:127`) and each spelling is `Effect::as_str`
+/// (`io-harness-0.72.0/src/policy.rs:127`) and each spelling is `Effect::as_str`
 /// (`:143`), which is the word io-harness's own deserializer reads.
 ///
 /// Until this release io-cli held a copy of both — an array naming three variants
@@ -279,7 +282,7 @@ pub fn effects() -> Vec<String> {
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **The list is `ExecMode::ALL` (`io-harness-0.71.0/src/sandbox.rs:424`) and the
+/// **The list is `ExecMode::ALL` (`io-harness-0.72.0/src/sandbox.rs:424`) and the
 /// spellings are `ExecMode::as_str` (`:431`).** io-cli wrote the variant list out
 /// by hand until this release for a reason that was the dependency's and not a
 /// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:378-381`), and
@@ -383,7 +386,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 /// preference — but half of the old reason is now false and the correction is
 /// worth writing down.** io-harness 0.71.0 names its own defaults:
 /// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
-/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.71.0/src/contract.rs:652,670,686`),
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.72.0/src/contract.rs:652,670,686`),
 /// re-exported at the crate root. "There is nothing to read" was true when this
 /// was written and is not true now. What is still true is that none of it anchors
 /// *this* ladder:
@@ -468,52 +471,6 @@ pub fn ladder(current: Option<i64>, signed: bool) -> Vec<i64> {
     ordered.into_iter().map(|(_, rung)| rung).collect()
 }
 
-/// The next value along, for a kind that can be cycled where it stands.
-///
-/// **Booleans and closed enums only, and a number deliberately not.** A number's
-/// ladder cannot be shown on the row it is being changed on, and a held arrow
-/// would write the file once per key repeat; it descends into a value picker
-/// instead. So this answers `None` for every other kind, and the caller's arrow
-/// does nothing rather than doing something invisible.
-///
-/// **The keys are horizontal arrows because they are not printable.**
-/// `crate::picker::Picker` consumes every printable character as a fuzzy filter
-/// (`src/picker.rs:423-430`), so the obvious binding — Space — cannot be used: a
-/// two-word query contains one, and binding it would toggle a setting in the
-/// middle of typing a search. `Left` and `Right` fall to the picker's `_ =>
-/// Outcome::Idle` arm and are the only free keys that read as "the value beside
-/// this one".
-///
-/// `current` is the value in force as the file spells it, or `None` for a key no
-/// file names. An unset boolean cycles to `true` first, because the operator
-/// reached for the arrow in order to change something.
-#[must_use]
-pub fn cycled(kind: &Kind, current: Option<&str>, forward: bool) -> Option<String> {
-    let options: Vec<String> = match kind {
-        Kind::Flag => vec!["false".to_string(), "true".to_string()],
-        Kind::Choice(options) => options.clone(),
-        _ => return None,
-    };
-    let bare = current.map(|value| value.trim().trim_matches('"'));
-    let at = bare.and_then(|value| options.iter().position(|option| option == value));
-    let next = match at {
-        // Wrapping, because a closed set has no end to fall off: an operator
-        // arrowing past the last option means the first one.
-        Some(at) if forward => (at + 1) % options.len(),
-        Some(at) => (at + options.len() - 1) % options.len(),
-        // A key no file names, or one holding a value this build does not know.
-        // Either way there is no position to step from, so the two directions
-        // enter the list at its two ends — forward at the last option, backward at
-        // the first. For a boolean that means the first press of `Right` turns it
-        // on, which is what an operator reaching for the arrow on an unset flag
-        // meant; for a closed enum it is simply symmetric, and one more press
-        // reaches everything either way.
-        None if forward => options.len() - 1,
-        None => 0,
-    };
-    options.get(next).cloned()
-}
-
 /// A value as TOML spells it for that kind.
 ///
 /// **The serialized value, never the label**, which is the difference F3's own
@@ -562,8 +519,8 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
             "a URL returning a model catalogue — for example: https://openrouter.ai/api/v1/models"
         }
         "prices.as_of" => {
-            "written by the price refresh rather than typed; use the last row of `/config` to \
-             re-read the catalogue"
+            "written by the price refresh rather than typed; choose it on `/config` and the \
+             refresh that re-reads the catalogue is the row after `leave it`"
         }
         // A key the catalogue does not name. Its shape is the operator's own
         // business — io-cli has no schema for it and inventing one here would be
@@ -580,7 +537,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
 /// **Read from the dependency's own table since io-harness 0.71.0, not scraped
-/// out of the files.** `PriceTable::models` (`io-harness-0.71.0/src/pricing.rs:268`)
+/// out of the files.** `PriceTable::models` (`io-harness-0.72.0/src/pricing.rs:268`)
 /// lists every model the table can actually price, and [`Config::prices`] has
 /// always built that table out of the three scopes — so the merged question this
 /// used to hand-roll is precisely the one the accessor answers, and the gap filed
@@ -606,7 +563,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 ///
 /// **This takes the `Config` the caller already holds, and must never re-discover
 /// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
-/// it reads (`io-harness-0.71.0/src/config.rs:517`), so a second discovery re-runs
+/// it reads (`io-harness-0.72.0/src/config.rs:517`), so a second discovery re-runs
 /// an operator's credential commands — which for a `${cmd:}` fetching a key out of
 /// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
 /// the picker opens. Taking a `&Config` is not an optimisation; it is the
@@ -646,7 +603,7 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
 /// Whether writing `value` to `key` would be refused in a **project-scoped** file.
 ///
 /// io-harness refuses five (key, value) pairs in a committed `io.toml`
-/// (`PROJECT_WIDENING`, `io-harness-0.71.0/src/config.rs:1998-2008`): the two acts
+/// (`PROJECT_WIDENING`, `io-harness-0.72.0/src/config.rs:1998-2008`): the two acts
 /// defaulted to `allow`, egress re-opened inside the sandbox, the portable floor
 /// switched off, and the widest exec mode. The narrowing value of each stays legal,
 /// which is what the scope is for.
@@ -684,10 +641,37 @@ pub fn widens_project(key: &str, value: &str) -> bool {
 /// a key that is not in any file and never will be would show as "not set"
 /// forever on a surface whose whole job is saying what is in force.
 ///
+/// **It is not a row of the bare list, since 0.33.0.** Through 0.32.0 it was
+/// appended after the settings, and the bare `/config` therefore *was* a write and
+/// a reassignment of the running configuration — which is the whole of why the
+/// command was refused mid-turn (`crate::commands::MID_TURN`, and
+/// `US-IO-CLI-0.32.0-I11` with it). Moving it one descent below `prices.as_of`,
+/// where [`descent`] hands it out, is what makes the bare list a list of facts and
+/// nothing else; the act is still one keystroke further on, beside the very date it
+/// writes.
+///
 /// It lives here rather than in the driver so a test can reach it: nothing under
 /// `tests/` can link `src/main.rs`, and a row spelled in the driver is a row no
 /// test can assert on.
 pub const REFRESH_PRICES: &str = "!refresh-prices";
+
+/// The key the decline row of a `/config` descent carries.
+///
+/// **A sentinel and not the label, for exactly the reason [`REFRESH_PRICES`] is
+/// one.** The rows of [`descent`] travel in a `Vec<String>` the driver matches on,
+/// and until 0.33.0 the decline row's entry in it was the bare string
+/// [`crate::store::LEAVE_IT`] — `leave it`, with no `!` in front of it. TOML
+/// accepts `"leave it" = true` as a quoted key, [`settings`] sweeps every key out
+/// of `Config::origins()` onto the bare `/config` list, and the driver matches
+/// these keys by value: an operator with that key in a file would have got a real
+/// row whose Enter hit the do-nothing arm and reported nothing at all. `!` is the
+/// one character no key in this product's catalogue starts with, and it is why the
+/// act beside this row is spelled the way it is.
+///
+/// The *label* stays [`crate::store::LEAVE_IT`] — that is the word the operator
+/// reads, and every confirmation in this product opens on it. What changes is only
+/// the key underneath it, which nobody reads.
+pub const DECLINE: &str = "!leave-it";
 
 /// The label that sentinel wears on the picker.
 pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
@@ -696,6 +680,60 @@ pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
         None => "no prices are configured".to_string(),
     };
     crate::picker::Row::with_detail("prices: re-read the catalogue", detail)
+}
+
+/// The acts one key descends into, as `(title, rows, keys)`, or `None` where the
+/// key descends into values alone.
+///
+/// **The parallel `keys` vector is what the caller decides on, never the row's
+/// position or its label** — the same shape `/gates` already uses for
+/// [`crate::app::PROPOSED_GATE`]: a sentinel sits in the list where a real key
+/// would, so one `match` covers both kinds of row. Row 0 is labelled
+/// [`crate::store::LEAVE_IT`] and declines, which is this product's rule for every
+/// confirmation, and `crate::store::acts` is what reads that position. Its *key* is
+/// [`DECLINE`] rather than that label, because a key a file could also name is a
+/// key two different rows answer to.
+///
+/// **Exactly one key answers `Some`, and it is named rather than derived from its
+/// [`Kind`].** `prices.as_of` is `Kind::Machine` and so is offered no value to
+/// type — but "machine-written" is not "has an act": a second `Machine` key added
+/// later would inherit a price refresh that has nothing to do with it. The act
+/// belongs to the price table, so it is the price table's key that opens it, and
+/// every other key — machine-written or not — descends exactly where it did.
+///
+/// This offers no way to *type* `prices.as_of`. `manage::config_value` still
+/// refuses that key by name and this changes nothing about it: a date typed by hand
+/// is a claim about a fetch that never happened. What the descent offers is the
+/// fetch.
+#[must_use]
+pub fn descent(
+    config: &Config,
+    key: &str,
+) -> Option<(String, Vec<crate::picker::Row>, Vec<String>)> {
+    if key != "prices.as_of" {
+        return None;
+    }
+    let setting = setting(config, key);
+    let title = match &setting.value {
+        Some(as_of) => format!(
+            "{key} is {as_of} ({}), and is written by the refresh rather than typed",
+            setting.decided.word()
+        ),
+        None => format!("{key} is not set, and is written by the refresh rather than typed"),
+    };
+    let rows = vec![
+        crate::picker::Row::with_detail(
+            crate::store::LEAVE_IT,
+            "nothing is read and nothing is written",
+        ),
+        refresh_row(&setting),
+    ];
+    // **The label is `store::LEAVE_IT`; the key beside it is [`DECLINE`].** A row's
+    // label is what the operator reads and its key is what the driver matches on,
+    // and only the second one has to be a sentinel — see `DECLINE` for the
+    // collision that made it one.
+    let keys = vec![DECLINE.to_string(), REFRESH_PRICES.to_string()];
+    Some((title, rows, keys))
 }
 
 /// Whether a key's value is a credential and must never be shown in full.
@@ -715,7 +753,7 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`substitute`, `io-harness-0.71.0/src/config.rs:2150`, the `cmd` arm at
+/// (`substitute`, `io-harness-0.72.0/src/config.rs:2150`, the `cmd` arm at
 /// `:2241`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or
@@ -795,6 +833,23 @@ pub fn settings(config: &Config) -> Vec<Setting> {
     }
 
     rows
+}
+
+/// What one setting is, and which file decided it, as one sentence.
+///
+/// **One speller for two doors.** `/config <key>` in the idle loop and a row
+/// chosen on the bare `/config` list while a turn is in flight answer the same
+/// question, and since 0.33.0 both can be reached in one session. Two `format!`
+/// calls agreeing today is the shape this product has repeatedly found disagreeing
+/// later — most recently a guided browser that built a command string by hand and
+/// was a second implementation of the parse.
+///
+/// A key no file names reads `not set` rather than an empty value, because an
+/// empty string is a value an operator can actually write.
+#[must_use]
+pub fn said(setting: &Setting) -> String {
+    let what = setting.value.as_deref().unwrap_or("not set");
+    format!("{} is {what} ({})", setting.path, setting.decided.word())
 }
 
 /// One key, resolved.

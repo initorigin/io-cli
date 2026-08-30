@@ -1230,26 +1230,91 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // picker stays a generic list and the nine other call sites keep the
         // keyboard they had.
         if let Some((open, Pick::Config(paths))) = picker.as_mut() {
-            let step = match key.code {
-                KeyCode::Right => Some(true),
-                KeyCode::Left => Some(false),
-                _ => None,
-            };
-            if let Some(forward) = step {
+            // One key, not two directions. Until 0.33.0 the direction chose the
+            // next value; an arrow now opens the list, and a list has no
+            // direction to open in — so `Left` and `Right` are the same
+            // keystroke and are written as one.
+            let arrow = matches!(key.code, KeyCode::Right | KeyCode::Left);
+            // **An arrow opens the values; it no longer writes one.**
+            //
+            // Until 0.33.0 `Left`/`Right` here called `cycle_setting`, which wrote
+            // the scope file and reassigned `config` on the keystroke — the only
+            // unconfirmed write in this product reachable from a bare arrow key,
+            // and the reason the sentence "the bare `/config` list reports" could
+            // not be said. Every other managed surface writes one descent below a
+            // list, with the do-nothing row at index 0; this one keystroke was the
+            // exception.
+            //
+            // The affordance survives: an arrow on a setting still means "show me
+            // what this can be", and it opens on the value in force so the operator
+            // can see where they are before they move. `Enter` on a value is the
+            // confirmation, exactly as it is when the row is chosen rather than
+            // arrowed at. `Up`/`Down` move inside the descent.
+            //
+            // **What `Left`/`Right` do inside a descent depends on which descent
+            // it is.** A values descent is a `Pick::ConfigValue`, so they miss this
+            // interception entirely and end at `Picker::key`'s `_ => Outcome::Idle`
+            // like every other surface. `prices.as_of`'s act descent is another
+            // `Pick::Config`, so an arrow there re-enters *this* arm — and what
+            // makes that harmless is the sentinel arm below, which names both of
+            // its rows and does nothing for either, rather than any property of
+            // `value_rows`.
+            if arrow {
                 let row = open.selection();
                 let chosen = row.and_then(|row| paths.get(row)).cloned();
-                if let Some(key_name) =
-                    chosen.filter(|name| name.as_str() != io_cli::configure::REFRESH_PRICES)
-                {
-                    cycle_setting(
-                        session.root(),
-                        &mut config,
-                        &mut app,
-                        &key_name,
-                        forward,
-                        open,
-                        row.unwrap_or(0),
-                    );
+                match chosen.as_deref() {
+                    // A descent's rows are acts, not keys: row 0 declines and the
+                    // other one re-reads the price catalogue. Neither has values to
+                    // open and neither is a key to say anything about.
+                    None
+                    | Some(io_cli::configure::DECLINE)
+                    | Some(io_cli::configure::REFRESH_PRICES) => {}
+                    Some(key_name) => match value_rows(session.root(), &config, key_name) {
+                        Some((mut values, kind)) => {
+                            // The value in force, found by label rather than by an
+                            // index into the row list — the rows carry `leave it`,
+                            // `unset it` and sometimes `elsewhere`, and their
+                            // positions are `value_rows`' business rather than this
+                            // arm's.
+                            let setting = io_cli::configure::setting(&config, key_name);
+                            let bare = setting
+                                .value
+                                .as_deref()
+                                .map(|value| value.trim().trim_matches('"').to_string());
+                            if let Some(current) = bare {
+                                if let Some(at) = values
+                                    .rows()
+                                    .iter()
+                                    .position(|candidate| candidate.label == current)
+                                {
+                                    values.focus(at);
+                                }
+                            }
+                            picker = Some((values, kind));
+                        }
+                        // **A key whose values cannot be offered still answers the
+                        // keystroke.** `value_rows` says `None` for a typed value
+                        // and for every key the catalogue does not name — which is
+                        // every operator-written key `settings()` sweeps in from
+                        // `config.origins()`. Silence would read as a broken key,
+                        // so it says what to do instead, and `record` rather than
+                        // `say` because the picker stays open over the footer the
+                        // next keystroke would take back anyway.
+                        None => {
+                            let said = if io_cli::configure::kind_of(key_name).is_none() {
+                                format!(
+                                    "{key_name} is not a key io-cli knows the values of; press \
+                                     Enter to type one"
+                                )
+                            } else {
+                                format!(
+                                    "{key_name} takes a value no list can hold; press Enter and \
+                                     the row says the shape it wants"
+                                )
+                            };
+                            app.record(Tone::Muted, said);
+                        }
+                    },
                 }
                 paint(screen, &mut app)?;
                 continue;
@@ -3257,11 +3322,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             }
                         }
                         Pick::Config(paths) => match paths.get(index).map(String::as_str) {
+                            // **Row 0 of a descent, and it must be matched before
+                            // the key arm below.** Since 0.33.0 this same `Pick`
+                            // carries the rows of `prices.as_of`'s descent, whose
+                            // first row is the do-nothing one every confirmation in
+                            // this product opens on. Without this arm it falls into
+                            // `Some(key)` and the surface opens a scope picker for a
+                            // setting called "leave it".
+                            //
+                            // The key is `configure::DECLINE` (`!leave-it`) rather
+                            // than the label the operator reads: TOML admits
+                            // `"leave it" = true` as a quoted bare key, and
+                            // `settings` sweeps every key out of `config.origins`,
+                            // so the bare string would have been a sentinel inside
+                            // a space that admits real keys. `REFRESH_PRICES`
+                            // carries a `!` for the same reason.
+                            Some(io_cli::configure::DECLINE) => {}
                             // The one row on this surface that acts rather than
                             // naming something. It re-reads the catalogue the
                             // operator's provider serves and writes what moved
                             // into the scope that already declares the prices —
-                            // or the user scope, for a first fill.
+                            // or the user scope, for a first fill. It is reached
+                            // one descent below the date it writes, never from the
+                            // bare list.
                             Some(io_cli::configure::REFRESH_PRICES) => {
                                 refresh_prices(screen, &mut app, &config, &spec, session.root())
                                     .await?;
@@ -4418,8 +4501,26 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Action::Manage(line) => {
                     let root = session.root().to_path_buf();
                     let tokens = io_cli::manage::tokens(&line);
+                    // **The declared bundles are handed in rather than read here.**
+                    // `plugin remove <name>` resolves a word against what is
+                    // declared, and the read that answers that is
+                    // `Config::plugins()` — a full re-parse of every manifest,
+                    // confined to `src/resolved.rs` by `tests/dependencies.rs`.
+                    // This session already resolved it once; passing it keeps the
+                    // parse where the release put it.
+                    //
+                    // **Re-resolved first when the files moved, because this door
+                    // is reached without a turn in between.** `holdings` is
+                    // otherwise refreshed at the turn boundary alone, so `/plugin
+                    // add ./bundles/x` followed by `/plugin remove x` resolved the
+                    // name against the set from *before* the add and refused a
+                    // bundle that had just been declared — while `io plugin remove
+                    // x` in a shell worked, because the argument door loads fresh.
+                    refresh_holdings(&mut holdings, &config);
+                    let declared =
+                        io_cli::pluginview::ids(&io_cli::pluginview::view(holdings.loaded()));
                     match io_cli::manage::parse(&tokens).and_then(|request| {
-                        io_cli::manage::plan(&root, &request).map(|plan| (request, plan))
+                        io_cli::manage::plan(&root, &request, &declared).map(|plan| (request, plan))
                     }) {
                         // The refusals are finished sentences naming what was
                         // wrong and what is accepted, so they are printed as they
@@ -5456,64 +5557,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                 }
                 Action::Config(None) => {
-                    // **What the routing rules say, and where they will not fire**,
-                    // said on the surface that edits them. `/config` is where an
-                    // operator meets `[app.io-cli.routing]`, and a section they can
-                    // change here without being told it is inert for their session
-                    // is the defect this release exists partly to avoid. Read from
-                    // the configuration in force rather than the startup snapshot,
-                    // so an edit made this session is what is described.
-                    if let Some(routing) = io_cli::settings::stored(&config)
-                        .0
-                        .and_then(|stored| stored.routing)
-                    {
-                        if let Some(said) = io_cli::routing::describe(&routing) {
-                            app.record(Tone::Muted, said);
-                        }
-                        // **Why the section is not routing anything, if it is
-                        // not.** The pair of `contract::gate_notice`: this
-                        // surface lists the four routing keys, so a section
-                        // that is plainly in the operator's file and doing
-                        // nothing has to say why here or nowhere.
-                        if let Some(why) = io_cli::routing::notice(&routing) {
-                            app.record(Tone::Refused, why);
-                        }
-                        // `contained` and not `containment.is_some()`: `/contain off`
-                        // puts the session back on the flat loop, where the rules do
-                        // fire, so a warning keyed on the configuration would go on
-                        // being shown to an operator it no longer applies to.
-                        if let Some(notice) =
-                            io_cli::routing::inert_under_containment(&routing, contained)
-                        {
-                            app.record(Tone::Warning, notice);
-                        }
-                    }
+                    routing_notices(&mut app, &config, contained);
                     let settings = io_cli::configure::settings(&config);
-                    let mut paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
-                    let mut rows = io_cli::configure::rows(&settings);
-                    // **Last, because it is the one row that acts on its own.**
-                    // Every other row names a setting and descends into its
-                    // values — since 0.28.0 it is only the four keys no menu can
-                    // hold that still reach the composer, and this row reaches
-                    // neither. A reader
-                    // scanning for `policy.defaults.write` should not have to step
-                    // over something that does work on the way there.
-                    rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
-                        &config,
-                        "prices.as_of",
-                    )));
-                    paths.push(io_cli::configure::REFRESH_PRICES.to_string());
+                    let paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
+                    let rows = io_cli::configure::rows(&settings);
+                    // **Every row here names a setting, and none of them acts.**
+                    // Until 0.33.0 the price refresh sat at the end of this list,
+                    // which made the bare surface a place where a keystroke could
+                    // read the network and write a file — and that is why `/config`
+                    // could not run while a turn was in flight. It now lives one
+                    // descent below `prices.as_of`, the date it writes, reached the
+                    // way every other write in this product is reached.
                     picker = Some((Picker::new("Which setting?", rows), Pick::Config(paths)));
                 }
                 // A key with no value is a question. Naming what is in force and
                 // which file decided it is the answer, and nothing is written.
                 Action::Config(Some((key, value))) if value.is_empty() => {
                     let setting = io_cli::configure::setting(&config, &key);
-                    let what = setting.value.as_deref().unwrap_or("not set");
-                    app.record(
-                        Tone::Muted,
-                        format!("{key} is {what} ({})", setting.decided.word()),
-                    );
+                    app.record(Tone::Muted, io_cli::configure::said(&setting));
                 }
                 // **`/mcp`'s edit verb comes back through here, and it comes back
                 // addressed by the server's own id.** The composer line `/mcp`
@@ -5609,8 +5670,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     app.record(
                         Tone::Refused,
                         format!(
-                            "{key} is written by the price refresh rather than typed; the last row \
-                             of `/config` re-reads the catalogue and dates it"
+                            "{key} is written by the price refresh rather than typed; choose it \
+                             on `/config` and the refresh is the row after `leave it`"
                         ),
                     );
                 }
@@ -6511,11 +6572,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // window shows on the next message — and `/plugin` and
                     // `/skills` read whatever this left, which is why opening
                     // them costs no resolution at all when nothing has changed.
-                    if tokio::task::block_in_place(|| holdings.stale(&config)) {
-                        holdings = tokio::task::block_in_place(|| {
-                            io_cli::resolved::Resolved::load(&config)
-                        });
-                    }
+                    refresh_holdings(&mut holdings, &config);
                     skills = commands::skills(
                         &io_cli::home::authored().unwrap_or_default(),
                         io_cli::contract::skills_dir(
@@ -6801,19 +6858,70 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
     }
 }
 
-/// **The agent's own look, committed where it looked.**
+/// **What the routing rules say, and where they will not fire**, said on the
+/// surface that edits them.
 ///
-/// A wrapper over [`io_cli::attach::viewed`], which is where every decision
+/// `/config` is where an operator meets `[app.io-cli.routing]`, and a section they
+/// can change here without being told it is inert for their session is the defect
+/// this release exists partly to avoid. Read from the configuration in force
+/// rather than the startup snapshot, so an edit made this session is what is
+/// described.
+///
+/// **One speller for two doors**, which is why it is a function rather than the
+/// block it was until 0.33.0: `/config` bare opens the same list at an idle prompt
+/// and while a turn is in flight, and this product's commonest defect is a surface
+/// answered one way by one door and another way by the other.
+///
+/// `contained` is the session's switch and not `containment.is_some()`: `/contain
+/// off` puts the session back on the flat loop, where the rules do fire, so a
+/// warning keyed on the configuration alone would go on being shown to an operator
+/// it no longer applies to. Inside `turn()` the two are the same fact — the caller
+/// hands the turn its caps as `contained.then_some(…)` — so the mid-turn door
+/// passes `containment.is_some()` and says exactly what the idle one says.
+fn routing_notices(app: &mut App, config: &Config, contained: bool) {
+    let Some(routing) = io_cli::settings::stored(config)
+        .0
+        .and_then(|stored| stored.routing)
+    else {
+        return;
+    };
+    if let Some(said) = io_cli::routing::describe(&routing) {
+        app.record(Tone::Muted, said);
+    }
+    // **Why the section is not routing anything, if it is not.** The pair of
+    // `contract::gate_notice`: this surface lists the four routing keys, so a
+    // section that is plainly in the operator's file and doing nothing has to say
+    // why here or nowhere.
+    if let Some(why) = io_cli::routing::notice(&routing) {
+        app.record(Tone::Refused, why);
+    }
+    if let Some(notice) = io_cli::routing::inert_under_containment(&routing, contained) {
+        app.record(Tone::Warning, notice);
+    }
+}
+
 /// A keystroke while a picker is open on top of a running turn.
 ///
-/// **Only the three kinds `turn()` can open reach here**, and that is the whole
+/// *(Two orphaned lines opened this block until 0.33.0 — the first half of
+/// [`commit_viewed`]'s doc, which had been left stranded above the wrong item and
+/// has since been put back on it. Nothing in the suite can see a rustdoc summary
+/// attached to the wrong item, so it survived every gate.)*
+///
+/// **Only the four kinds `turn()` can open reach here**, and that is the whole
 /// safety argument: the palette and path completion set or paste into the
-/// composer, and `/theme` resolves a theme. None of them writes a file, touches
-/// the store, or reassigns anything the running turn is holding — which is the
-/// property that lets a picker be open at all while a turn owns the session.
+/// composer, `/theme` resolves a theme, and `/config` bare reports a setting.
+/// None of them writes a file, touches the store, or reassigns anything the
+/// running turn is holding — which is the property that lets a picker be open at
+/// all while a turn owns the session.
 ///
 /// It lives beside the loop rather than inside it so the `select!` arm stays
 /// readable; every decision in it is a library call.
+///
+/// The argument list is long because this function is the wiring: each of these is
+/// something the running turn already holds and this function only reads. Bundling
+/// them into a struct would put a type between the loop and the borrow checker for
+/// no gain, which is the shape `cycle_setting` carried before it was deleted.
+#[allow(clippy::too_many_arguments)]
 fn mid_turn_picker(
     picker: &mut Option<(Picker, Pick)>,
     app: &mut App,
@@ -6822,6 +6930,14 @@ fn mid_turn_picker(
     policy: &Policy,
     templates: &io_harness::Templates,
     skills: &[io_cli::skillview::Listed],
+    // **Shared, never owned**, and it decides the *origin* rather than the value.
+    // `configure::setting` uses this in-memory configuration only to find which
+    // file decided a key, then reads that key's value off the disk at call time —
+    // long-standing behaviour, shared with the idle door. So a report mid-turn is
+    // a mixed reading: the origin the turn was built with, the value as the file
+    // stands now. A key deleted underneath the turn therefore reads as "not set"
+    // with a scope still named beside it.
+    config: &io_harness::config::Config,
     key: crossterm::event::KeyEvent,
 ) {
     let Some((open, kind)) = picker.as_mut() else {
@@ -6877,6 +6993,25 @@ fn mid_turn_picker(
                         "that row is the note, not a file — the rest of the listing is not shown",
                     ),
                 },
+                // **`/config` bare, and it reports.** Choosing a row mid-turn says
+                // what is in force and which file decided it — the same sentence
+                // `Action::Config(Some((key, "")))` produces in the idle loop —
+                // rather than descending toward a write. The descent exists and is
+                // reachable when no turn is running; here the surface is a reader.
+                //
+                // Nothing needs guarding beyond this arm. `picker` is a local of
+                // `turn()`, so a picker opened here is dropped when the turn ends
+                // and can never reach the idle loop's write-capable arm; and the
+                // arrow that opens a key's values is intercepted in the idle loop
+                // alone — there is no such interception in this function, so
+                // `Left`/`Right` do reach `Picker::key` here and end at its
+                // `_ => Outcome::Idle`.
+                Pick::Config(paths) => {
+                    if let Some(key) = paths.get(index) {
+                        let setting = io_cli::configure::setting(config, key);
+                        app.record(Tone::Muted, io_cli::configure::said(&setting));
+                    }
+                }
                 // `turn()` opens no other kind. An assertion rather than a
                 // silence, so opening one without wiring it here is caught in a
                 // debug build.
@@ -6941,6 +7076,9 @@ fn commit_image<P: Provider>(
     Ok(())
 }
 
+/// **The agent's own look, committed where it looked.**
+///
+/// A wrapper over [`io_cli::attach::viewed`], which is where every decision
 /// lives. Nothing is decided here, deliberately: `src/main.rs` is linked by no
 /// integration test, so a branch written here could not be sabotaged and would
 /// not be covered.
@@ -7389,6 +7527,7 @@ async fn turn<P: Provider>(
                                 policy,
                                 templates,
                                 skills,
+                                config,
                                 key,
                             );
                             Command::None
@@ -7737,6 +7876,37 @@ async fn turn<P: Provider>(
                                                     .collect(),
                                             ),
                                             Pick::Theme,
+                                        ));
+                                    }
+                                    // **`/config` bare, and only bare.**
+                                    // `runs_mid_turn` refuses every argued form, so
+                                    // the `Some(..)` arms — which descend toward a
+                                    // write, or are one — cannot reach this loop at
+                                    // all. What opens here is the list of settings
+                                    // with no acting row on it, and choosing one
+                                    // reports through `mid_turn_picker`.
+                                    //
+                                    // The picker is a local of `turn()`, so it is
+                                    // dropped when the turn ends and can never be
+                                    // inherited by the idle loop's write-capable
+                                    // arm.
+                                    Action::Config(None) => {
+                                        // The same prose the idle door says before
+                                        // it opens the same list — see
+                                        // `routing_notices`. `containment.is_some()`
+                                        // *is* the session's `contained` in here:
+                                        // the caps reach a turn only through
+                                        // `contained.then_some(…)`.
+                                        routing_notices(app, config, containment.is_some());
+                                        let settings = io_cli::configure::settings(config);
+                                        let paths: Vec<String> =
+                                            settings.iter().map(|s| s.path.clone()).collect();
+                                        picker = Some((
+                                            Picker::new(
+                                                "Which setting?",
+                                                io_cli::configure::rows(&settings),
+                                            ),
+                                            Pick::Config(paths),
                                         ));
                                     }
                                     // `runs_mid_turn` admits exactly the words
@@ -8430,13 +8600,29 @@ fn observing<T>(
     Ok(out)
 }
 
-/// The last run of this session, if it has had one.
+/// Re-resolve the declared bundles, but only if the disk has moved under them.
 ///
-/// **Its doc comment was taken by an insertion in this release** — `undo_whole_turn`
-/// and `observing` were added directly beneath it, so this sentence became their
-/// summary line and this function was left with none. Found by the adversarial
-/// review, and worth noting because nothing in the suite can see a rustdoc
-/// summary attached to the wrong item.
+/// **One function because there are two moments, and they must not drift.** The
+/// turn boundary refreshes so an edit made in another window shows on the next
+/// message; `/plugin` and `/mcp` refresh because a bundle added earlier in the
+/// same idle stretch has to be removable by name from the session, which it was
+/// not until 0.33.0 — `io plugin remove <name>` worked from a shell and the
+/// session answered that no bundle by that name was declared. Two doors, one
+/// answer, and this product's commonest defect is the release where only one of
+/// them got the fix.
+///
+/// `stale` stats the declared manifests and the configuration files and parses
+/// nothing, so the once-per-session resolution `src/resolved.rs` exists for is
+/// kept: a session that changes no file still resolves exactly once.
+/// `tests/dependencies.rs` counts the `Resolved::load` sites on the interactive
+/// path and holds them at two — this is one of them, and adding a third would be
+/// a resolution somebody put back on a per-turn path.
+fn refresh_holdings(holdings: &mut io_cli::resolved::Resolved, config: &Config) {
+    if tokio::task::block_in_place(|| holdings.stale(config)) {
+        *holdings = tokio::task::block_in_place(|| io_cli::resolved::Resolved::load(config));
+    }
+}
+
 /// The session facts a mid-turn report needs, read before the turn borrows the
 /// session.
 ///
@@ -8449,6 +8635,13 @@ struct TurnFacts {
     last: Option<io_harness::TranscriptTurn>,
 }
 
+/// The last run of this session, if it has had one.
+///
+/// **This summary was attached to the wrong item for two releases.** An insertion
+/// put `TurnFacts` between the sentence and the function it describes, so
+/// `TurnFacts` opened with two summary lines and this function had none. Nothing
+/// in the suite can see a rustdoc summary attached to the wrong item, which is why
+/// it took a reading pass to find and is worth a note rather than a silent fix.
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)
@@ -9568,7 +9761,20 @@ async fn manage_main(
         }
         _ => {}
     }
-    let Some(plan) = io_cli::manage::plan(root, &request)? else {
+    // **Resolved only for the one verb that needs it.** `Config::plugins()` is a
+    // full re-parse of every declared manifest, so building a view for every
+    // `io mcp …` and `io config …` would make this door pay a plugin resolve to
+    // edit a server. Every other request takes the empty slice, which the
+    // parameter's own documentation says is correct for it.
+    let declared = match &request {
+        io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Remove { .. }) => {
+            io_cli::pluginview::ids(&io_cli::pluginview::view(
+                io_cli::resolved::Resolved::load(config).loaded(),
+            ))
+        }
+        _ => Vec::new(),
+    };
+    let Some(plan) = io_cli::manage::plan(root, &request, &declared)? else {
         return Ok(io_cli::exec::OK);
     };
     // **The disclosure comes before the write on this door too, and the typed
@@ -9603,9 +9809,13 @@ async fn manage_main(
         for line in disclosure.said(&io_cli::glyphs::ASCII) {
             eprintln!("{line}");
         }
+        // **The spelling is this door's own.** An operator reading this is standing
+        // in a shell, not in a session, so the command offered is the one they can
+        // type where they are — and since 0.33.0 it resolves a bundle's name, which
+        // is what this sentence promised and could not deliver before.
         eprintln!(
             "installing it now: naming a bundle on this door is the consent, and there is \
-             nobody here to ask. `/plugin remove {}` takes it back out.",
+             nobody here to ask. `io plugin remove {}` takes it back out.",
             disclosure.id,
         );
     }
@@ -9803,6 +10013,14 @@ fn value_rows(
     config: &io_harness::config::Config,
     key: &str,
 ) -> Option<(Picker, Pick)> {
+    // **Before `kind_of`, deliberately.** A key whose value is machine-written has
+    // no `Kind` and would leave by the `?` below — which is right for typing one
+    // and wrong for the act that writes it. `prices.as_of` is the only key with a
+    // descent of acts rather than values, and `configure::descent` answers for it
+    // alone, so a machine-written key added later inherits nothing.
+    if let Some((title, rows, keys)) = io_cli::configure::descent(config, key) {
+        return Some((Picker::new(title, rows), Pick::Config(keys)));
+    }
     let kind = io_cli::configure::kind_of(key)?;
     let setting = io_cli::configure::setting(config, key);
     let current = setting.value.clone();
@@ -9894,107 +10112,6 @@ fn value_rows(
             elsewhere_at,
         },
     ))
-}
-
-/// Cycle one `/config` row's value where it stands, and redraw the list around it.
-///
-/// **Every decision here is a library call**; what is in this function is the
-/// wiring, which is all this file may hold. `configure::cycled` decides whether
-/// the kind can be cycled at all and what the next value is, `configure::
-/// destination` decides which file it lands in, `configure::spell_value` decides
-/// how it is written, and `configure::widens_project` decides whether that file
-/// will accept it.
-///
-/// The row is rebuilt from a re-read configuration rather than patched in place,
-/// so the value and the origin column on screen are the file's own answer and not
-/// this function's account of what it just did. `selecting` keeps the marker on
-/// the row the operator is holding an arrow on.
-#[allow(clippy::too_many_arguments)]
-fn cycle_setting(
-    root: &std::path::Path,
-    config: &mut io_harness::config::Config,
-    app: &mut io_cli::app::App,
-    key: &str,
-    forward: bool,
-    open: &mut Picker,
-    selecting: usize,
-) {
-    let Some(kind) = io_cli::configure::kind_of(key) else {
-        // A key the catalogue does not name has no kind and cannot be cycled.
-        // Silence would read as a broken key, so it says what to do instead.
-        app.record(
-            Tone::Muted,
-            format!("{key} is not a key io-cli knows the values of; press Enter to type one"),
-        );
-        return;
-    };
-    let setting = io_cli::configure::setting(config, key);
-    let Some(next) = io_cli::configure::cycled(&kind, setting.value.as_deref(), forward) else {
-        app.record(
-            Tone::Muted,
-            format!("{key} is chosen from a list rather than cycled; press Enter to open it"),
-        );
-        return;
-    };
-    let (scope, inherited) = io_cli::configure::destination(config, key);
-    // **Said before it is attempted, because the cost is not one key.**
-    // `refuse_widening` runs before deserialization, so a widening value in a
-    // committed file makes the whole file stop parsing rather than that setting
-    // being rejected. `write` would catch it and report io-harness's own sentence
-    // — this reports it without touching the file at all.
-    if scope == io_harness::config::Scope::Project && io_cli::configure::widens_project(key, &next)
-    {
-        app.record(
-            Tone::Refused,
-            format!(
-                "{key} is decided by the project file, and a committed file may not set it to \
-                 {next} — io-harness refuses the whole file for it, not just the key. Choose \
-                 another value, or move the key to another file with `/config {key} {next}`."
-            ),
-        );
-        return;
-    }
-    let was = setting
-        .value
-        .clone()
-        .unwrap_or_else(|| "default".to_string());
-    let edit = io_cli::edit::Edit::set(key, io_cli::configure::spell_value(&kind, &next));
-    match io_cli::configure::write(root, scope, &[edit]) {
-        Err(refusal) => app.record(Tone::Refused, refusal),
-        Ok(()) => {
-            match io_cli::configure::reload(root) {
-                Ok((fresh, _)) => *config = fresh,
-                Err(error) => app.record(Tone::Error, error),
-            }
-            let settings = io_cli::configure::settings(config);
-            let mut rows = io_cli::configure::rows(&settings);
-            rows.push(io_cli::configure::refresh_row(&io_cli::configure::setting(
-                config,
-                "prices.as_of",
-            )));
-            open.set_rows(rows, selecting);
-            // **`record`, not `say`.** A one-slot footer notice is overwritten by
-            // the next arrow press, and an operator cycling through four values
-            // would end with three of the four changes unrecorded anywhere. This
-            // is the rule 0.26.0 wrote down and 0.27.0 shipped a violation of.
-            app.record(
-                Tone::Success,
-                format!(
-                    "{key}: {was} → {next}, in the {} scope{}",
-                    io_cli::configure::Decided::File {
-                        scope,
-                        path: Default::default(),
-                    }
-                    .word(),
-                    if inherited {
-                        ", which already decided it"
-                    } else {
-                        ", which is where a key no file named goes"
-                    }
-                ),
-            );
-        }
-    }
 }
 
 fn write_where(root: &std::path::Path, key: String, value: String) -> (Picker, Pick) {

@@ -14,10 +14,10 @@ from 0.24.0**, which was the last of these to be named here and was named with i
 reason: it needed a surface of its own, and `/gates` is that surface. There is
 still no `[verify]` section, because there is none in io-harness's schema to
 apply — what a session carries comes from `[app.io-cli.gates]`, which is io-cli's
-own. See [Verification gates](#verification-gates). **`[run.commit_identity]` is
+own. See [Verification gates](verification.md#verification-gates). **`[run.commit_identity]` is
 *read* from 0.25.0**: it has reached a turn's contract since 0.14.0 like every
 other section, and until there was a commit to author it was a value nothing in
-this interface had cause to look at. See [Git](#git).
+this interface had cause to look at. See [Git](git.md#git).
 
 That leaves one key still unapplied, and it has a reason too: `run.templates` is
 the thirteenth `[run]` key, reachable only through its own accessor. It is not a
@@ -26,7 +26,7 @@ silent omission — this is where it is named.
 **A price is never invented, and a missing one is never a zero.** io-cli compiles
 no rates in and estimates nothing, so an install that has connected no provider
 reports tokens and no currency, and a total containing a model the table does not
-price is reported as a floor. See [What it costs](#what-it-costs).
+price is reported as a floor. See [What it costs](accounting.md#what-it-costs).
 
 **`/import` does not bring a permission boundary across, and never will.** Another
 tool spells a permission as a command line; io-harness matches a binary name. The
@@ -34,7 +34,7 @@ nearest honest translation is wider than what you granted, so io reports the
 allowlist it found and writes no rule at all. Setting the boundary here is
 `Shift+Tab`, `/config`, or the `io-permissions` skill — three surfaces where you
 can see what you are granting. See [Bringing your setup
-across](#bringing-your-setup-across).
+across](import.md#bringing-your-setup-across).
 
 **Git stops at your own checkout.** The seven built-ins the agent has are fixed
 argvs with no remote among them, so nothing here pushes, fetches or opens a pull
@@ -43,7 +43,7 @@ deletes a branch either — both throw away work, and both are yours to decide. 
 io-cli starts no git process of its own: the branch on the status line is a read
 of `.git/HEAD`, and `/commit` is a prompt. What lifts the tools when your posture
 refuses them is a permission rule, not a code path that runs git behind the
-policy. See [Git](#git).
+policy. See [Git](git.md#git).
 
 **Sixel is still absent**, because encoding it means palette quantisation and
 another dependency, for terminals that either speak one of the two protocols
@@ -76,7 +76,7 @@ a model that accepts them.**
 six of them write. A model that reaches for `docx_write` in a session where you
 never meant a document to be written is stopped by the write gate rather than by
 the absence of the tool — which is what the gate is for, and why the writers are
-named one by one in [Documents](#documents) rather than counted.
+named one by one in [Documents](media.md#documents) rather than counted.
 
 **An image the agent was *given* rather than asked for is not shown.** A picture
 returned by an MCP tool, and a browser screenshot, both become images inside

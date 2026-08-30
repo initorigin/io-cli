@@ -96,8 +96,8 @@
 //! nothing better to say about.
 
 use io_harness::{
-    AssistantTurn, Containment, Error, Observer, PendingQuestion, PlanStep, PlanVerdict, Policy,
-    Provider, RecoveryDecision, RunOutcome, RunStatus, Store, TaskContract,
+    AssistantTurn, Choice, Containment, Error, Observer, PendingQuestion, PlanStep, PlanVerdict,
+    Policy, Provider, Question, RecoveryDecision, RunOutcome, RunStatus, Store, TaskContract,
 };
 
 /// What a run stopped on, as data. Marks, wording and ordering belong to the
@@ -107,6 +107,12 @@ use io_harness::{
 /// question id cannot be handed to the plan driver by a caller that got its
 /// variables the wrong way round — the mistake that would deliver one operator's
 /// answer into somebody else's run.
+///
+/// **A batched ask does not add a fifth kind**, and the reason is the same
+/// property: io-harness parks a whole batch as one row under one `question_id`, so
+/// it is carried by the `questions` field of [`Self::Question`], the variant that
+/// already owns that id, rather than by a variant that would give one id a second
+/// name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
     /// The agent asked the operator something and nobody answered.
@@ -118,7 +124,46 @@ pub enum Pending {
         /// What it already knew, when it said.
         context: Option<String>,
         /// The options it offered. An answer is not obliged to be one of them.
-        choices: Vec<String>,
+        ///
+        /// [`Choice`] rather than `String` since io-harness 0.72.0, so an offer's
+        /// description and preview survive the trip through this type and a
+        /// surface has something to render.
+        ///
+        /// **Empty for a batch**, and that is the store's shape rather than a
+        /// loss here: `Store::put_questions` writes the `choices` column only for
+        /// the singular ask, so a batch's offers are in the `questions` field below
+        /// and nowhere else.
+        choices: Vec<Choice>,
+        /// Every question of a batched ask, in the order the agent asked them, or
+        /// **empty for the ordinary single question** — which is exactly what
+        /// `PendingQuestion::questions` holds and is not a flag invented here.
+        ///
+        /// **A field on this variant rather than a variant of its own, because a
+        /// batch is not a second kind of pause.** io-harness 0.72.0 parks a whole
+        /// batch as *one* `pending_questions` row: one `question_id`, one
+        /// `RunOutcome::AwaitingAnswer`, one `Waiting::Question`, and the same four
+        /// `resume_*_with_answer` functions with the signatures they already had. A
+        /// second variant would say there is a second id and a second driver, and
+        /// there is neither — so it would break this enum's one load-bearing
+        /// property (each answerable kind carries its own id under its own name) by
+        /// giving one id two names. Keeping it one variant keeps that property
+        /// literally true: there is one `question_id` here, and it addresses the
+        /// whole ask.
+        ///
+        /// What a batch's row does *not* carry in its own columns is why this field
+        /// has to exist at all. The `question` field is the batch rendered as
+        /// numbered prose (`"1. …\n2. …"`) and the `choices` field is
+        /// empty, so a surface reading only those draws a wall of text with nothing
+        /// to pick. The per-question text, context and offers are here.
+        ///
+        /// **`Question::multiple` is readable here and nowhere else**, so a resumed
+        /// multi-select is only recoverable for a batch: `PendingQuestion` has no
+        /// `multiple` column, and `Store::put_question` — the singular writer the
+        /// run loop calls for `ask_question` — writes no `questions` value at all.
+        /// A singular ask's `multiple` is therefore lost by the store before io-cli
+        /// sees the row, which is io-harness's to fix and is stated here rather than
+        /// papered over with a default that would read as a fact.
+        questions: Vec<Question>,
         /// The step it asked on, which is committed — so the resume starts after
         /// it and the question is not asked twice.
         step: u32,
@@ -430,11 +475,19 @@ pub fn pending_for(store: &Store, run_id: i64) -> Result<Pending, Error> {
     }
 
     if let Some(question) = unresolved_question(store, run_id)? {
+        // `questions` straight through, empty and all: a row written by 0.71.0 or
+        // earlier has a NULL column that io-harness reads as the empty vector, and a
+        // singular `ask_question` written by 0.72.0 has one too. Both are the
+        // single-question shape, and neither needs a reader of its own here —
+        // io-harness's `Choice` deserializer already accepts the plain-string
+        // spelling every earlier release wrote into `choices`, so a second reader in
+        // this crate would be a second opinion about a format io-harness owns.
         return Ok(Pending::Question {
             question_id: question.id,
             question: question.question,
             context: question.context,
             choices: question.choices,
+            questions: question.questions,
             step: question.step,
         });
     }

@@ -2410,23 +2410,21 @@ fn n2_the_speculation_line_fits_eighty_columns() {
 /// A question with everything on it: a context line, five offers, and words long
 /// enough to wrap at eighty columns.
 fn crowded_question() -> io_harness::Question {
-    io_harness::Question {
-        question: "which of the columns in this table should the migration drop, given \
-                   that it has forty rows and exactly one caller anywhere in the workspace?"
-            .to_string(),
-        context: Some(
-            "the table is referenced once, from the importer, and nothing reads it after \
-             the backfill finishes"
-                .to_string(),
-        ),
-        choices: vec![
-            "created_at".to_string(),
-            "updated_at".to_string(),
-            "deleted_at, which the soft-delete path still writes on every request".to_string(),
-            "archived_at".to_string(),
-            "expired_at".to_string(),
-        ],
-    }
+    io_harness::Question::new(
+        "which of the columns in this table should the migration drop, given \
+         that it has forty rows and exactly one caller anywhere in the workspace?",
+    )
+    .with_context(
+        "the table is referenced once, from the importer, and nothing reads it after \
+         the backfill finishes",
+    )
+    .with_choices([
+        "created_at",
+        "updated_at",
+        "deleted_at, which the soft-delete path still writes on every request",
+        "archived_at",
+        "expired_at",
+    ])
 }
 
 /// **N6 — the question overlay has a defined form at 80x24 and at the floor.**

@@ -95,7 +95,7 @@ carries one criterion on the contract and reports the verdict io-harness came
 back with.
 
 `io exec` gains exit `6` for this — the agent finished and the work does not hold
-up. See [Exit status](#exit-status).
+up. See [Exit status](headless.md#exit-status).
 
 ---
 

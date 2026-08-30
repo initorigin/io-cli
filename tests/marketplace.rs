@@ -194,7 +194,7 @@ fn f1_a_marketplace_verb_plans_no_configuration_write() {
     ] {
         let request = manage::parse(&manage::tokens(line)).expect(line);
         assert!(
-            manage::plan(root.path(), &request)
+            manage::plan(root.path(), &request, &[])
                 .expect("a marketplace verb plans")
                 .is_none(),
             "{line} planned a write to a configuration file",

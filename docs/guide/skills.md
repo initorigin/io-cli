@@ -38,6 +38,27 @@ there is no undo, and a file whose `name:` is already claimed by another skill,
 because two names resolving to one skill is the fatal case described below. A
 bundle's skill is not yours to add or remove, and says so.
 
+**`io skill add ./my-skill/SKILL.md` works, and until 0.33.0 it did not.** The
+commonest layout on disk is a directory holding a `SKILL.md`, and the installed
+file used to be named after the source's *file name* — so that add wrote
+`~/.io-cli/skills/SKILL.md`, a shape io-cli then read as a folder skill and
+refused to remove or disable forever, with a sentence about a directory that did
+not exist. The installed file is now named from the skill's **own** name: the
+frontmatter `name:` where there is one, the containing directory for a `SKILL.md`,
+the file stem otherwise. `io skill add ./my-skill/SKILL.md` installs `my-skill.md`
+and `io skill remove my-skill` takes it back out, and the name every check asks
+about is the name a run will resolve rather than the word `SKILL`.
+
+**A skill `/import` wrote as a folder is manageable too, and it never was.**
+`/import` could write a skill into `~/.io-cli/skills/<name>/SKILL.md`, and neither
+lever would touch that shape — so the product shipped a verb that created state
+its own management surface refused to manage. Both work on it now: removing takes
+the folder, and turning it off moves the whole `<name>/` into `disabled/` rather
+than the file inside it. A loose `SKILL.md` sitting directly in the skills
+directory is still refused by the off switch, and deliberately: the move keeps the
+name, so it would land as `disabled/SKILL.md` and be re-offered as a skill called
+*disabled*, taking every other parked skill's hiding place with it.
+
 Until 0.30.0 the only thing that had ever written into that directory was
 `/import`, following a tool io happened to detect. If you had written a skill
 yourself, there was no door.

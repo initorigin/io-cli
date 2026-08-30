@@ -21,6 +21,15 @@
 //! choice is load-bearing rather than cosmetic. What leaves this widget is
 //! unaffected: [`Outcome::Chosen`] and [`Picker::selected`] are indices into the
 //! caller's own row list at every point, filtered or not.
+//!
+//! **From 0.33.0 it can also take several answers, and only when it is asked
+//! to.** [`Picker::accepting_several`] gives the spacebar to a marked set that
+//! [`Picker::marked`] reads back — in the same unfiltered numbering as everything
+//! else here, and surviving the query that hid a marked row. A picker that is not
+//! told this treats a space as the query character it has always been, which is
+//! what leaves every existing caller alone.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
@@ -41,6 +50,22 @@ use crate::theme::{Theme, Tone};
 /// marker's note has always described, and safe for the same reason: this widget
 /// is drawn *instead of* the composer, so the two never appear at once.
 const UNMARKED: &str = "  ";
+
+/// The box a plural picker draws before every markable row, checked and unchecked.
+///
+/// **Spelled in ASCII in both glyph sets, and not taken off [`Glyphs`] at all.**
+/// The two sets exist so a terminal that cannot draw a character still gets a
+/// column of the same width; `[x] ` and `[ ] ` are four cells in either, and a
+/// box drawn out of the box-drawing range would have to be paired with an ASCII
+/// fallback that says exactly this. The `x` rather than a tick for the same
+/// reason — a tick is not in the set every terminal has.
+///
+/// It is drawn **only on a picker told it accepts several**, so a picker that
+/// takes one answer looks exactly as it did before [`Picker::accepting_several`]
+/// existed: same columns, same marker, same everything.
+const CHECKED: &str = "[x] ";
+/// The unchecked half of [`CHECKED`], the same width so the labels line up.
+const UNCHECKED: &str = "[ ] ";
 
 /// One choice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,20 +186,47 @@ pub struct Picker {
     intent: Option<usize>,
     /// The first row currently drawn, so a long list scrolls instead of being cut.
     offset: usize,
-    /// A row that opens a block beneath itself while it holds the marker, and the
-    /// rows that block wants.
+    /// Whether the spacebar marks rows on this picker, set by
+    /// [`Picker::accepting_several`] and false everywhere else.
     ///
-    /// **The index is into `rows`, like [`Self::intent`] and never like
-    /// [`Self::cursor`]**, so a query that reorders the list keeps the unfold on
+    /// **Opt-in rather than always on**, because marking costs the spacebar: on a
+    /// plural picker a space is a toggle and no longer a query character. Every
+    /// picker in the product filters as it is typed and several of them filter
+    /// over labels with spaces in them — `Any OpenAI-compatible endpoint`, a
+    /// session's `~/code/io-cli       1 turn` — so a spacebar taken from every
+    /// picker at once would be a filter that silently cannot express half the
+    /// rows it is filtering.
+    plural: bool,
+    /// Which rows are marked, **as indices into `rows`**, exactly like
+    /// [`Self::intent`] and never like [`Self::cursor`].
+    ///
+    /// Empty on a picker that was never told it accepts several, which is what
+    /// makes this invisible to every existing caller: nothing can put an index in
+    /// here but the spacebar, and the spacebar does not mark unless `plural`.
+    ///
+    /// A `BTreeSet` so the set comes back in the caller's own row order rather
+    /// than in the order the operator happened to press space, which is the order
+    /// a list of chosen rows has to be reported and applied in.
+    marks: BTreeSet<usize>,
+    /// Which rows open a block beneath themselves while they hold the marker, and
+    /// how many rows each of those blocks wants.
+    ///
+    /// **The keys are indices into `rows`, like [`Self::intent`] and never like
+    /// [`Self::cursor`]**, so a query that reorders the list keeps each unfold on
     /// the row it belongs to rather than on whatever ranked into that position.
     ///
-    /// Only one row can carry it, which is the whole mechanic: an accordion with
-    /// two panels open is two things competing for the rows beneath one marker.
-    /// 0.32.0 ships it with exactly one caller — the question overlay's free-text
-    /// row, which unfolds a composer — because a mechanic built without one is a
-    /// mode nobody can see, and this product shipped a whole pipeline reachable
-    /// only from its own tests one release ago.
-    unfold: Option<(usize, u16)>,
+    /// **One height per row rather than one height for the picker**, from 0.33.0.
+    /// The block a row opens is a preview of *that* row, and a preview wraps to a
+    /// different number of rows for every choice — a single height would be right
+    /// for one row and wrong for the rest, which on a `Paragraph` means either
+    /// blank rows under a short preview or a long one silently clipped.
+    ///
+    /// Only one block is ever **open**, which is the whole mechanic: an accordion
+    /// with two panels open is two things competing for the rows beneath one
+    /// marker. That is still true — the open block is the one belonging to the row
+    /// under the marker, and there is only ever one of those. What is reserved is
+    /// another question; see [`Self::rows_wanted`].
+    unfolds: BTreeMap<usize, u16>,
     /// Where the unfolded block was drawn by the last [`Self::render`], for the
     /// caller to draw into.
     ///
@@ -194,7 +246,9 @@ impl Picker {
             query: String::new(),
             cursor: 0,
             offset: 0,
-            unfold: None,
+            plural: false,
+            marks: BTreeSet::new(),
+            unfolds: BTreeMap::new(),
             opened: None,
         };
         // A grouped list opens with a heading in the first slot, and the marker
@@ -219,6 +273,40 @@ impl Picker {
         self
     }
 
+    /// Take several answers: the spacebar marks and unmarks the row under the
+    /// marker, and [`Picker::marked`] is what the operator marked.
+    ///
+    /// **Opt-in, and every picker in the product is unchanged without it.** A
+    /// plural picker spends the spacebar on the toggle, so a space is no longer a
+    /// query character on it — and half the labels this widget filters over have
+    /// spaces in them, so a picker that took the spacebar from everybody would be
+    /// a filter that cannot spell the rows it is filtering. It also draws a box
+    /// before each row, which is a column the single-answer pickers do not pay
+    /// for.
+    ///
+    /// **The marked set survives the query, and that is the decision.** It is held
+    /// against the caller's own row indices rather than against the current match
+    /// set, so a row marked before a keystroke that hides it is still marked after
+    /// it, and still marked when a backspace brings it back. The alternative —
+    /// dropping a mark when the query stops admitting its row — makes the filter
+    /// destructive: an operator marking five rows out of four hundred narrows the
+    /// list to find each one, and every narrowing would throw away the marks made
+    /// under the last. It is the same defect the remembered marker row exists for
+    /// — the one a narrowing query used to destroy, so that `/fork` branched from
+    /// turn 0 — one state along, and it is answered the same way. That is why
+    /// marks *have* to be unfiltered indices rather than merely why it is tidy
+    /// that they are.
+    ///
+    /// The cost is stated rather than hidden: a marked row can be off the screen
+    /// while it is marked, so a caller acting on [`Picker::marked`] is acting on
+    /// rows the operator may not be able to see at that moment. Showing the count
+    /// is the caller's job — this widget owns one line and the query is already
+    /// on it.
+    pub fn accepting_several(mut self) -> Self {
+        self.plural = true;
+        self
+    }
+
     /// Replace every row, keeping what has been typed and aiming at `selecting`.
     ///
     /// For a caller whose rows arrive after the picker is already on the screen —
@@ -226,8 +314,15 @@ impl Picker {
     /// request is in flight. Building a fresh `Picker` instead would throw away
     /// whatever was typed during the wait, which on a four-hundred-model list is
     /// the only thing anybody does.
+    /// **The marks go with the rows they addressed.** They are indices into the
+    /// list being replaced, and the replacement is a different list — the model
+    /// step's four hundred models arriving over a one-row placeholder — so
+    /// carrying them would mark whatever now sits at those positions. The query
+    /// survives because it is text the operator typed; a mark is a row, and the
+    /// row is gone.
     pub fn set_rows(&mut self, rows: Vec<Row>, selecting: usize) {
         self.rows = rows;
+        self.marks.clear();
         self.aim(selecting);
     }
 
@@ -274,6 +369,44 @@ impl Picker {
     /// preview — has to be able to see that there is nothing there.
     pub fn selection(&self) -> Option<usize> {
         self.matches.get(self.cursor).copied()
+    }
+
+    /// Which rows the spacebar has marked, as indices into [`Picker::rows`], in
+    /// the caller's own row order.
+    ///
+    /// The same numbering as [`Outcome::Chosen`], [`Picker::selected`] and
+    /// [`Picker::selection`], and it has to be: three call sites index a slice raw
+    /// with what this widget hands back, and a plural answer carrying filtered
+    /// positions would panic at those and act on the wrong rows at the rest — the
+    /// single-answer defect, once per marked row.
+    ///
+    /// **A marked row that the query no longer admits is still in here.** See
+    /// [`Picker::accepting_several`] for why that is the answer rather than an
+    /// oversight; the short of it is that a filter an operator uses to *find* the
+    /// rows to mark cannot also be what un-marks them.
+    ///
+    /// Always empty on a picker that was not told it accepts several.
+    pub fn marked(&self) -> Vec<usize> {
+        self.marks.iter().copied().collect()
+    }
+
+    /// What this picker is answering with: every marked row, or — with nothing
+    /// marked — the row under the marker, if there is one.
+    ///
+    /// The plural [`Picker::selection`], and the reason it lives here rather than
+    /// at each call site: "the marks, unless there are none, in which case the
+    /// marker" is a rule that has to be spelled identically everywhere or an
+    /// operator who marked nothing and pressed Enter gets nothing at all. Written
+    /// once, it cannot be spelled differently in the second caller.
+    ///
+    /// Empty only when nothing is marked *and* nothing is under the marker: an
+    /// empty picker, or a query that admits nothing.
+    pub fn chosen(&self) -> Vec<usize> {
+        if self.marks.is_empty() {
+            self.selection().into_iter().collect()
+        } else {
+            self.marked()
+        }
     }
 
     /// What has been typed so far, which is what the top line shows.
@@ -362,8 +495,25 @@ impl Picker {
     /// it holds the marker.
     ///
     /// `row` indexes the caller's own `rows`, the same as [`Outcome::Chosen`].
+    ///
+    /// **Called once per unfolding row, not once per picker.** Each call records
+    /// that row's own height, and calling it again for the same row replaces that
+    /// height — which is what a caller re-measuring a preview after a resize does.
+    /// Through 0.32.0 the second call moved the one unfold onto the second row;
+    /// from 0.33.0 both rows keep theirs.
+    ///
+    /// **`height` is a measurement, and the only honest way to get it is
+    /// [`crate::rows::wrapped`].** A preview is text in a `Paragraph` with
+    /// wrapping on, so its height is a function of the width it will be drawn at
+    /// and `lines.len()` is not it — the count that has already cost this product
+    /// two defects, both of them content painted over rows something else had been
+    /// promised. A caller measures what it is about to draw, at the width it will
+    /// be drawn at, and hands the answer here.
+    ///
+    /// A `height` of zero is a row that unfolds nothing, which is how a caller
+    /// says "not this one" without a second spelling.
     pub fn set_unfold(&mut self, row: usize, height: u16) {
-        self.unfold = Some((row, height));
+        self.unfolds.insert(row, height);
     }
 
     /// Put the marker on `row`, an index into the caller's own `rows`.
@@ -383,14 +533,34 @@ impl Picker {
 
     /// Whether the unfolding row is the one under the marker right now.
     ///
-    /// The caller asks this to decide where a keystroke goes: with the block open
-    /// it belongs to whatever is drawn in it, and with it shut the picker filters
-    /// as it always has.
+    /// **Do not route a keystroke on this.** It said so until 0.33.0, and the
+    /// advice was safe only while exactly one row could unfold. Once several can —
+    /// an offer opening its preview beside the free-text row opening a composer —
+    /// the predicate is true over both, and `Enter` on an open preview goes to
+    /// whatever the *other* block holds. Ask the caller's own question instead:
+    /// `Intent::writing` asks whether the marker is on the row that takes typing,
+    /// which is what that routing ever meant.
+    ///
+    /// It remains as what it says: whether the block under the marker is open.
+    /// `src/` has no caller today — the one it had was the mistake above.
     pub fn unfolded_now(&self) -> bool {
-        match (self.unfold, self.matches.get(self.cursor)) {
-            (Some((row, height)), Some(under)) => height > 0 && row == *under,
-            _ => false,
-        }
+        self.open_block() > 0
+    }
+
+    /// How many rows the block that is open right now wants, and zero when none
+    /// is.
+    ///
+    /// **The height of the row under the marker**, which is the only block that
+    /// can be open — the accordion has one panel. Deliberately not the height
+    /// [`Self::rows_wanted`] reserves, and the two disagreeing is the point: what
+    /// is *drawn* follows the marker, what is *asked for* must not. See
+    /// [`Self::rows_wanted`].
+    fn open_block(&self) -> u16 {
+        self.matches
+            .get(self.cursor)
+            .and_then(|row| self.unfolds.get(row))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Where the unfolded block was drawn by the last [`Self::render`].
@@ -417,7 +587,20 @@ impl Picker {
         // tear-down and a cursor query per keystroke, on a surface that is open
         // while a turn is in flight. `render` still draws the block only when it
         // is open, so the reserved rows simply show more of the list meanwhile.
-        let block = self.unfold.map_or(0, |(_, height)| height);
+        //
+        // **The LARGEST configured unfold, never the focused one.** With a height
+        // per row, asking for the focused row's height puts the oscillation back
+        // in a second door: every arrow key between a one-row preview and a
+        // seven-row one would change the demand by six, and every keystroke that
+        // filtered a tall row out of the list would change it again. Reserving the
+        // largest is the only figure that is a function of the *configuration*
+        // rather than of the marker or the query — so it cannot move while the
+        // operator moves, which is the property this line exists for. It over-asks
+        // by the difference whenever a shorter row holds the marker; `App::viewport_wanted`
+        // clamps the total to the terminal anyway, and the surplus shows more of
+        // the list, which is the same surplus a configured-but-shut unfold has
+        // always produced.
+        let block = self.unfolds.values().copied().max().unwrap_or(0);
         list.saturating_add(block).saturating_add(1)
     }
 
@@ -525,6 +708,29 @@ impl Picker {
                 }
                 Outcome::Idle
             }
+            // **The spacebar marks, and only on a picker told it accepts
+            // several.** It sits above the printable arm rather than inside it,
+            // so on every other picker in the product a space falls through to
+            // that arm and is a query character exactly as it has always been —
+            // which is what makes this change unobservable to the nine call
+            // sites that never mark anything.
+            //
+            // A heading is never marked, for the reason it is never chosen: it is
+            // not a row anybody can act on. No path that moves the marker leaves
+            // it on one, so this guard is the same belt-and-braces `Enter` keeps
+            // — and unlike `Enter`, `focus` can put the marker there.
+            KeyCode::Char(' ')
+                if self.plural
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                if let Some(row) = self.matches.get(self.cursor).copied() {
+                    if !self.rows[row].heading && !self.marks.remove(&row) {
+                        self.marks.insert(row);
+                    }
+                }
+                Outcome::Idle
+            }
             // Every printable character narrows. Modified characters are left
             // alone — `Ctrl+C` has already returned above, and a `Ctrl` or `Alt`
             // chord is a command somebody meant, not a letter they typed.
@@ -582,11 +788,12 @@ impl Picker {
         // block is reserved rather than borrowed from the list, because a composer
         // squeezed into rows the list is also using is the overlap 0.32.0 exists to
         // end.
-        let block = if self.unfolded_now() {
-            self.unfold.map_or(0, |(_, height)| height)
-        } else {
-            0
-        };
+        // The block **the marked row** opens, which is the one that can be open,
+        // and never the larger figure `rows_wanted` reserves: drawing the reserved
+        // height under a short preview would paint blank rows the list could have
+        // used, and drawing it under a tall one is the clipping that height is
+        // measured to avoid.
+        let block = self.open_block();
         let room = (area.height as usize).saturating_sub(1 + block as usize);
         // **A row is spent saying what is not shown, and only when something is
         // not.** Until 0.32.0 a picker over four hundred rows drew the twenty it
@@ -652,6 +859,21 @@ impl Picker {
             // the string actually about to be drawn; the two sets agree on its
             // width today and this does not depend on them continuing to.
             let marker_width = marker.chars().count();
+            // The box, on a plural picker only, between the marker and the kind
+            // mark. **Drawn for every row rather than for the marked ones**, so
+            // the column exists before anything is in it: a box that appears only
+            // once a row is marked is a list that shifts sideways under the
+            // operator's eyes, and — worse — a plural picker with nothing marked
+            // yet would look exactly like a single-answer one, which is the whole
+            // thing the operator has to know before they press Enter.
+            let check = if !self.plural {
+                ""
+            } else if self.marks.contains(&self.matches[position]) {
+                CHECKED
+            } else {
+                UNCHECKED
+            };
+            let check_width = check.chars().count();
             // The kind mark rides here, between the marker and the label, and
             // never inside either. Not in the label, because the matcher ranks
             // the label and a shared first character makes both of its top tiers
@@ -662,11 +884,14 @@ impl Picker {
             let mark_width = mark.chars().count();
             let label = fit(
                 &row.label,
-                width.saturating_sub(marker_width + mark_width),
+                width.saturating_sub(marker_width + check_width + mark_width),
                 &theme.glyphs,
             );
             let label_width = label.chars().count();
             let mut spans = vec![Span::styled(marker, theme.style(Tone::Accent))];
+            if !check.is_empty() {
+                spans.push(Span::styled(check, theme.style(Tone::Accent)));
+            }
             if !mark.is_empty() {
                 spans.push(Span::styled(mark, theme.style(Tone::Muted)));
             }
@@ -684,7 +909,7 @@ impl Picker {
                 // reaches the buffer is a budget that disagrees with the row by
                 // however much they differ — and this budget being one cell out is
                 // precisely how an ellipsis ends up on the floor.
-                let used = marker_width + mark_width + label_width + 2;
+                let used = marker_width + check_width + mark_width + label_width + 2;
                 if let Some(room) = width.checked_sub(used) {
                     if room > 1 {
                         spans.push(Span::styled("  ", theme.style(Tone::Muted)));
@@ -703,11 +928,11 @@ impl Picker {
             // for. Reserved as blank rows here and drawn by the caller into the
             // rectangle recorded after the loop, because only this widget knows
             // where the row landed once the list has scrolled.
-            if block > 0
-                && self
-                    .unfold
-                    .is_some_and(|(row, _)| row == self.matches[position])
-            {
+            // `block` is already the height of the row under the marker and is
+            // zero when that row has no unfold, so the row it opens under is the
+            // marked one by construction — the second half of the old condition
+            // was asking the same question `open_block` has now answered.
+            if block > 0 && position == self.cursor {
                 let top = area
                     .y
                     .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
@@ -777,6 +1002,9 @@ impl Picker {
         // where the row's own name begins, and a mark is a fact about the row
         // rather than part of what it is called — a reader following the caret
         // onto `: clear` has been pointed at punctuation.
+        // Past the BOX as well on a plural picker, for the same reason: the box
+        // says whether the row is marked, which is a fact about it rather than
+        // part of its name.
         let indent = if self.matches.is_empty() {
             0
         } else {
@@ -786,7 +1014,12 @@ impl Picker {
                 .and_then(|index| self.rows[*index].mark)
                 .map(|mark| mark.chars().count() + 1)
                 .unwrap_or(0);
-            (theme.glyphs.marker.chars().count() + mark) as u16
+            let check = if self.plural {
+                CHECKED.chars().count()
+            } else {
+                0
+            };
+            (theme.glyphs.marker.chars().count() + check + mark) as u16
         };
         frame.set_cursor_position(Position {
             x: (area.x + indent).min(area.right().saturating_sub(1)),

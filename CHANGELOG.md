@@ -6,6 +6,145 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-31
+
+io-harness 0.72.0 lets an agent ask several things at once and lets a choice carry
+a description and a preview. All of it reached io-cli the moment the pin moved and
+none of it was drawn: a batched ask emitted an event the transcript had no
+disposition for, a described choice was a label with its sentence thrown away, and
+a question that accepted several answers accepted one. A resumed batch was worse
+than blind — it came back as one row of numbered prose with an empty choices
+column, so what an operator saw was a wall of text and nothing to pick.
+
+This release makes the question surface the one surface. A batch arrives as one
+overlay and is answered in place; an offer explains itself and can show what
+taking it would do; `Space` marks a set where the question takes one.
+
+The other half is a write nobody chose. `/config` was refused mid-turn because its
+bare list carried a row that re-read the provider's catalogue and wrote a scope
+file — and because `Left` and `Right` on a row wrote the file on the keystroke,
+with no confirmation, which was the only such write in the product. Both are gone
+rather than guarded, and the bare `/config` reports while a turn runs.
+
+### Added
+
+**An agent can ask several questions at once and they arrive as one overlay.** One
+question is on the screen at a time, with the same offers, context and free-text
+row a single question has. Deciding one moves to the next undecided one; deciding
+the last delivers the whole batch. `PgUp` and `PgDn` walk it, and a decided
+question re-opens with your own answer back in the composer. Two lines of the head
+say which question of how many, and what this one was already decided as.
+
+There is no review pane and no submit key, deliberately. The answers are already
+on the screen they were typed into, one page-key apart; a second rendering of them
+is a second thing that can disagree with the first, and a submit key that answers
+nothing is the reflexive `Enter` this overlay has always been careful about.
+Nothing is sent until every question is decided, because io-harness commits a batch
+only when every entry has an answer — four of five parks the run as thoroughly as
+none. `Esc` decides the question on the screen as *nobody here can answer this* and
+moves on; the run still parks, which is all `Esc` has ever promised.
+
+**A choice can explain itself.** A description is drawn on a row of its own under
+the label and stays there, because comparing five offers needs all five sentences
+at once. A preview unfolds beneath the offer under the marker, one at a time, and
+folds when the marker moves — five blocks at once is a wall nobody reads. It is
+marked the way this product already marks quoted words, since a preview is
+somebody else's text. `Enter` on an offer whose preview is open still answers with
+that offer.
+
+**A question that takes several answers takes them.** `Space` marks and unmarks
+the offer under the marker, the offers carry a box from the moment the list opens,
+and `Enter` sends the marked set — or, with nothing marked, the offer you are
+looking at, because an empty answer is information the agent did not have and
+would now believe. The set is joined by io-harness's own speller, so two interfaces
+answering one question produce the same text. Marks are held against the list you
+were given and survive the query that hides a row: an operator narrows a list in
+order to find each row to mark, and a filter that un-marked as it went would throw
+away the marks made under the last query.
+
+**`/config` runs while a turn is in flight, in its bare form**, taking the
+mid-turn set from ten commands to eleven. `/config <key>` and `/config <key>
+<value>` descend toward a write and keep their refusal — the first time the
+run-state guard has read past a command's first word. The whole-command refusal
+still covers `/plugin`, `/mcp`, `/provider`, `/skills`, `/memory` and `/store`.
+
+**`io plugin remove` takes a bundle's name as well as its directory.** The path is
+read first and against the disk, so an existing script means what it always meant.
+Two declared bundles of one name are refused with both directories printed rather
+than resolved by order.
+
+### Changed
+
+**No arrow key writes a configuration file.** `Left` and `Right` on a `/config`
+row used to step a boolean or a closed set of words to its next value and write
+that value into a scope file on the keystroke, unconfirmed. They now open that
+setting's values with the marker on the value in force, and `Enter` is the
+confirmation every other managed surface already uses.
+
+**The price refresh moved off the bare `/config` list** to one descent below
+`prices.as_of`, the date it writes, with *leave it* at row 0. It was the last row
+of the list, which made a keystroke on a surface whose whole job is reporting read
+the network, write a file and reassign the running turn's configuration.
+
+**`io resume --list` says how many questions a parked row is waiting on.** A
+batched ask is one row with one id and one `--answer` answers all of it — there is
+no per-question flag, because io-harness parks a batch as a single row and records
+a single reply against it. The refusal now says so and tells you to number your
+answers to match. The questions themselves are counted rather than pasted into a
+one-line detail, which read as if the first were the whole ask.
+
+### Fixed
+
+**`io skill add <dir>/SKILL.md` installed a skill that could never be removed.**
+The destination was named from the source's file name, so the commonest layout on
+disk wrote `~/.io-cli/skills/SKILL.md` — a shape io-cli read as a folder skill and
+then refused both to remove and to disable, forever, with a sentence about a
+directory that did not exist. The installed file is named from the skill's own
+name now, and `io skill remove <name>` takes it back out.
+
+**A skill `/import` wrote as a folder could not be removed or turned off.** The
+product shipped a verb that created state its own management surface refused to
+manage. Both levers work on it, and a disabled folder skill stays visible on the
+surface that re-enables it. Disabling a loose `SKILL.md` sitting directly in the
+skills directory is refused: the move keeps the name, so it would land as
+`disabled/SKILL.md` and be re-offered as a skill called *disabled*, taking every
+parked skill's hiding place with it.
+
+**`io plugin add` printed `plugin remove <id> takes it back out` and the verb read
+its argument as a path**, so the sentence was false on the door that printed it.
+
+**A batched ask emitted an event nothing in the transcript could dispose of.**
+io-harness 0.72.0 emits `QuestionsAsked` for a batch and does not also emit
+`QuestionAsked`, so the surface this release exists for was the one ask the
+transcript was blind to. The declared event kinds move from 51 to 52.
+
+**A resumed batch came back as a wall of text with nothing to pick.** The parked
+row's question column is numbered prose and its choices column is empty, so a
+resume read only those and drew both. The questions are carried whole now.
+
+**Thirty-four of the forty-six in-page links in the documentation went nowhere.**
+0.30.2 split a 2,847-line README into nineteen guide pages and moved the text
+faithfully, but every anchor kept pointing inside the file it had left. The link
+gate skipped fragment-only links by design, so nothing caught it and nothing
+stopped it growing. Every anchor now names the page that holds the heading, and
+the gate resolves both spellings instead of skipping one. Found while bringing this
+release's own prose back to true, and repaired here rather than left for a version
+that would have had to find it again.
+
+**A comment said io-harness substitutes two forms when it substitutes three.**
+`${cmd:…}` is the third, and the same sentence went on to say a manifest refuses
+all three. The correction had already been made once, in 0.21.0, in the other file
+that carries the claim.
+
+### Known limitations
+
+**A single question that takes several answers loses that fact when it parks.**
+io-harness's `PendingQuestion` has no column for it and the singular writer records
+none, so a lone multi-select that parks and is resumed comes back as a pick-one. A
+batched ask keeps it, because a batch carries its questions whole. This is
+upstream, and it is stated rather than papered over with a default that would read
+as a fact.
+
 ## [0.32.0] - 2026-08-30
 
 The agent could ask you a question and you could not answer it. `Intent::render`
@@ -2838,7 +2977,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/initorigin/io-cli/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/initorigin/io-cli/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/initorigin/io-cli/compare/v0.30.2...v0.31.0
 [0.30.2]: https://github.com/initorigin/io-cli/compare/v0.30.1...v0.30.2

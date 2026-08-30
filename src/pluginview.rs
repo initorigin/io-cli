@@ -1059,6 +1059,51 @@ pub fn declared_at(root: &Path, bundle: &Path) -> Option<(io_harness::config::Sc
     None
 }
 
+/// Every declared bundle's id beside the directory it was read from — loaded,
+/// switched off and refused alike.
+///
+/// **The refused ones are in the list on purpose.** A bundle whose manifest will
+/// not parse is one an operator cannot fix from the manifest and most wants gone,
+/// and it is the one a name is the only handle on: [`Refused`] carries the id it
+/// could read, or the directory's own name where it could not.
+///
+/// Pure, and takes the view a surface already built: it is what a door hands
+/// [`crate::manage::plan`] so that `plugin remove <name>` can be answered without
+/// `Config::plugins()` — a full re-parse of every declared manifest, confined by
+/// `tests/dependencies.rs` to `src/resolved.rs`.
+///
+/// **The pairs are not a map and must not become one.** The id is unique among
+/// the *loaded* bundles alone (see [`Listed::id`]), so two entries may share one
+/// and a map would keep whichever was inserted last — which is the silent wrong
+/// delete [`declared_at`] and [`remove`] are both written against.
+#[must_use]
+pub fn ids(view: &View) -> Vec<(String, PathBuf)> {
+    view.plugins
+        .iter()
+        .map(|plugin| (plugin.id.clone(), plugin.root.clone()))
+        .chain(
+            view.refused
+                .iter()
+                .map(|refused| (refused.id.clone(), refused.path.clone())),
+        )
+        .collect()
+}
+
+/// Every declared bundle called `id`, as the directory that identifies it.
+///
+/// **Every hit, never the first.** The caller decides what to do with two of them;
+/// what it may not do is pick, and a helper returning an `Option` would have made
+/// that decision here where the count is still known. See [`Listed::id`] for why
+/// there can be two, and [`declared_at`] for what taking the wrong one costs.
+#[must_use]
+pub fn by_id<'a>(declared: &'a [(String, PathBuf)], id: &str) -> Vec<&'a Path> {
+    declared
+        .iter()
+        .filter(|(name, _)| name == id)
+        .map(|(_, root)| root.as_path())
+        .collect()
+}
+
 /// A TOML basic string, escaped.
 ///
 /// The twin of [`crate::servers`]'s own, which is private to that module — here
