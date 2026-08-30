@@ -8,7 +8,7 @@
 //! exists to have and the reason the parse is in the library rather than in
 //! `src/main.rs`, which nothing under `tests/` can link.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use io_cli::manage::{self, ConfigVerb, McpVerb, PluginVerb, Request};
 use io_harness::config::Scope;
@@ -20,8 +20,9 @@ fn argv(words: &[&str]) -> Vec<String> {
 }
 
 /// `Config::discover` reads `IO_CONFIG` at call time, so two tests setting it at
-/// once would each see the other's file. Only the scope test needs it — every
-/// other test here parses rather than plans.
+/// once would each see the other's file. The scope test sets it; the `plugin
+/// remove` tests below resolve a real configuration and would see it set, so they
+/// take the same lock. Every other test here parses rather than plans.
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -41,7 +42,9 @@ fn server(request: &Request) -> &io_harness::McpServer {
 /// of parsed structs: two orderings could agree on every field of an `McpServer`
 /// and still be written by two code paths that spell an entry differently.
 fn written(root: &Path, request: &Request) -> String {
-    let plan = manage::plan(root, request)
+    // No declared bundle: every request written through this helper is an `mcp` or
+    // `config` one, and `plan` reads the set only for `plugin remove`.
+    let plan = manage::plan(root, request, &[])
         .expect("the request plans")
         .expect("a write, not a read");
     io_cli::edit::apply("", &plan.edits).expect("the edits apply to an empty file")
@@ -78,6 +81,7 @@ fn f13_a_planned_config_write_inherits_the_deciding_file() {
     let inherited = manage::plan(
         root.path(),
         &manage::parse(&argv(&["config", "set", "app.io-cli.theme", "light"])).expect("it parses"),
+        &[],
     )
     .expect("it plans")
     .expect("a write");
@@ -92,6 +96,7 @@ fn f13_a_planned_config_write_inherits_the_deciding_file() {
     let user = manage::plan(
         root.path(),
         &manage::parse(&argv(&["config", "set", "run.max_steps", "20"])).expect("it parses"),
+        &[],
     )
     .expect("it plans")
     .expect("a write");
@@ -109,6 +114,7 @@ fn f13_a_planned_config_write_inherits_the_deciding_file() {
             "local",
         ]))
         .expect("it parses"),
+        &[],
     )
     .expect("it plans")
     .expect("a write");
@@ -118,6 +124,7 @@ fn f13_a_planned_config_write_inherits_the_deciding_file() {
     let unset = manage::plan(
         root.path(),
         &manage::parse(&argv(&["config", "unset", "app.io-cli.theme"])).expect("it parses"),
+        &[],
     )
     .expect("it plans")
     .expect("a write");
@@ -535,7 +542,7 @@ fn f6_config_set_takes_a_value_the_kind_admits_and_names_the_options_for_one_it_
                 scope: None,
             })
         );
-        let plan = manage::plan(root.path(), &request)
+        let plan = manage::plan(root.path(), &request, &[])
             .expect("it plans")
             .expect("a write");
         assert_eq!(plan.scope, Scope::User);
@@ -574,7 +581,7 @@ max_retries = 2
     let root = tempfile::tempdir().expect("a temporary directory");
     let request =
         manage::parse(&argv(&["config", "unset", "run.max_steps"])).expect("unset parses");
-    let plan = manage::plan(root.path(), &request)
+    let plan = manage::plan(root.path(), &request, &[])
         .expect("it plans")
         .expect("a write");
 
@@ -655,7 +662,7 @@ command = \"mcp-search\"
 
     let request = manage::parse(&argv(&["mcp", "edit", "search", "--command", "mcp-find"]))
         .expect("one key at a time");
-    let plan = manage::plan(root.path(), &request)
+    let plan = manage::plan(root.path(), &request, &[])
         .expect("the server is declared")
         .expect("a write");
     assert_eq!(plan.scope, Scope::Project);
@@ -673,7 +680,7 @@ command = \"mcp-search\"
     assert!(aimed.contains("--scope"), "{aimed}");
 
     let removal = manage::parse(&argv(&["mcp", "remove", "search"])).expect("remove parses");
-    let plan = manage::plan(root.path(), &removal)
+    let plan = manage::plan(root.path(), &removal, &[])
         .expect("the server is declared")
         .expect("a write");
     assert_eq!(plan.scope, Scope::Project);
@@ -685,7 +692,7 @@ command = \"mcp-search\"
     // A server no file in force declares is a refusal naming it, not a write to
     // a position that was guessed.
     let missing = manage::parse(&argv(&["mcp", "remove", "absent"])).expect("it parses");
-    let refusal = manage::plan(root.path(), &missing).expect_err("nothing declares it");
+    let refusal = manage::plan(root.path(), &missing, &[]).expect_err("nothing declares it");
     assert!(refusal.contains("absent"), "{refusal}");
 }
 
@@ -704,7 +711,7 @@ fn f6_a_reading_verb_plans_no_write_at_all() {
     ] {
         let request = manage::parse(&manage::tokens(line)).expect(line);
         assert!(
-            manage::plan(root.path(), &request)
+            manage::plan(root.path(), &request, &[])
                 .expect("a read plans")
                 .is_none(),
             "{line} planned a write"
@@ -729,7 +736,7 @@ fn f6_a_plugin_directory_with_no_manifest_is_refused_before_anything_is_written(
             scope: Scope::User,
         })
     );
-    let refusal = manage::plan(root.path(), &request).expect_err("it is not a bundle");
+    let refusal = manage::plan(root.path(), &request, &[]).expect_err("it is not a bundle");
     assert!(refusal.contains(io_cli::pluginview::MANIFEST), "{refusal}");
 
     // And with a manifest it is declared as written, relative to the root, so a
@@ -741,11 +748,262 @@ fn f6_a_plugin_directory_with_no_manifest_is_refused_before_anything_is_written(
         "name = \"demo\"\n",
     )
     .expect("a manifest");
-    let plan = manage::plan(root.path(), &request)
+    let plan = manage::plan(root.path(), &request, &[])
         .expect("it is a bundle now")
         .expect("a write");
     let after = io_cli::edit::apply("", &plan.edits).expect("the entry is written");
     assert!(after.contains("path = \"bundle\""), "{after}");
+}
+
+// --- `plugin remove <word>`: the path first, then the declared name -------------
+//
+// `io plugin add <name>` installs a bundle a marketplace holds and then tells the
+// operator that `plugin remove <id>` takes it back out. Until this release that
+// sentence was false: the verb resolved its word as a path only, so the id it had
+// just printed found nothing and the refusal named a path nobody typed. The two
+// readings now sit here in the order `marketplace::chosen` states — the disk is
+// asked about the directory first, and nothing reads the *shape* of the word —
+// and everything below is about that order, about never taking the first of two
+// bundles sharing a name, and about the refusals saying which reading failed.
+//
+// Every fixture declares its bundles inside a fresh `tempfile` root and addresses
+// entries by id and by path. No test here asserts a position in a
+// `Config::discover` result: the user-scope file on the machine running the suite
+// is discovered too, and six tests in an earlier release asserted indices over the
+// developer's own `~/.io-cli/io.toml` and were green on CI alone.
+
+/// A bundle directory at `at` whose manifest carries `name`.
+fn manifest(root: &Path, at: &str, name: &str) -> PathBuf {
+    let dir = root.join(at);
+    std::fs::create_dir_all(&dir).expect("the bundle directory");
+    std::fs::write(dir.join(io_cli::pluginview::MANIFEST), format!("name = \"{name}\"\n"))
+        .expect("the manifest");
+    dir
+}
+
+/// A local-scope file declaring each `(path, enabled)` in order, and its bytes.
+fn declaring(root: &Path, entries: &[(&str, bool)]) -> String {
+    let text: String = entries
+        .iter()
+        .map(|(path, on)| {
+            let off = if *on { "" } else { "enabled = false\n" };
+            format!("[[plugin]]\npath = \"{path}\"\n{off}\n")
+        })
+        .collect();
+    std::fs::write(root.join(io_harness::config::LOCAL_FILE), &text).expect("the configuration");
+    text
+}
+
+/// The `(id, directory)` pairs a door hands `plan`, resolved the way both doors
+/// resolve them — through `resolved::Resolved`, which is the one module permitted
+/// to call `Config::plugins()`.
+fn declared_bundles(root: &Path) -> Vec<(String, PathBuf)> {
+    let config = io_harness::Config::discover(root).expect("the configuration discovers");
+    io_cli::pluginview::ids(&io_cli::pluginview::view(
+        io_cli::resolved::Resolved::load(&config).loaded(),
+    ))
+}
+
+/// The file after the removal `line` plans, or the refusal it gave instead.
+fn removing(root: &Path, before: &str, line: &str) -> Result<(Scope, String), String> {
+    let request = manage::parse(&manage::tokens(line)).expect("the line parses");
+    let plan = manage::plan(root, &request, &declared_bundles(root))?
+        .expect("a removal is a write, not a read");
+    Ok((
+        plan.scope,
+        io_cli::edit::apply(before, &plan.edits).expect("the edits apply to the file"),
+    ))
+}
+
+/// **The path reading is asked first, and a word that is both a declared directory
+/// and another bundle's name is the directory.**
+///
+/// This is `marketplace::chosen`'s rule for `plugin add`, kept for `plugin remove`:
+/// the disk answers, and nothing keys on whether the word holds a `/`, a leading
+/// `.` or an extension. `docs/guide/headless.md` documents
+/// `io plugin remove ./bundles/rust-review`, and `tests/commands.rs` sends the same
+/// spelling through the slash form.
+///
+/// Sabotage: match declared ids before asking the disk. Only this test fails —
+/// and it fails by removing `bundles/elsewhere`, the entry the operator did not
+/// name, which is the silent wrong delete this whole path is written against.
+#[test]
+fn f6_plugin_remove_reads_a_word_that_is_a_declared_directory_as_the_directory() {
+    // Every test below resolves a real configuration, and `Config::discover` reads
+    // `IO_CONFIG` at call time — so they take the same lock the scope test does.
+    let _lock = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    // A directory called `twin`, and a *different* directory whose manifest is
+    // called `twin`. One word, two readings, and the disk decides.
+    manifest(root, "twin", "other-bundle");
+    manifest(root, "bundles/elsewhere", "twin");
+    let before = declaring(root, &[("twin", true), ("bundles/elsewhere", true)]);
+
+    let (scope, after) = removing(root, &before, "plugin remove twin").expect("the directory");
+    assert_eq!(scope, Scope::Local, "the file that declared it is the file edited");
+    assert!(
+        !after.contains("path = \"twin\""),
+        "the directory named on the command line is still declared: {after}",
+    );
+    assert!(
+        after.contains("path = \"bundles/elsewhere\""),
+        "the bundle whose manifest is called `twin` was removed instead of the \
+         directory the operator typed: {after}",
+    );
+
+    // The documented spelling resolves to the same entry it always has.
+    let (_, after) =
+        removing(root, &before, "plugin remove ./bundles/elsewhere").expect("the directory");
+    assert!(
+        !after.contains("path = \"bundles/elsewhere\""),
+        "`./` in front of a declared directory stopped resolving, and that is the \
+         spelling `docs/guide/headless.md` prints: {after}",
+    );
+    assert!(after.contains("path = \"twin\""), "{after}");
+}
+
+/// **A word no file declares as a directory is read as a declared bundle's name**,
+/// which is what `plugin add <name>` tells the operator to type.
+///
+/// Sabotage: drop the id fallback and keep the path reading alone — the state this
+/// release found. Only this test and the two below fail, and what ships is an
+/// install that prints a removal command which cannot work.
+#[test]
+fn f6_plugin_remove_takes_the_name_a_declared_bundle_carries() {
+    let _lock = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    manifest(root, "bundles/first", "alpha-bundle");
+    manifest(root, "bundles/second", "beta-bundle");
+    let before = declaring(root, &[("bundles/first", true), ("bundles/second", true)]);
+
+    let (scope, after) =
+        removing(root, &before, "plugin remove beta-bundle").expect("the name resolves");
+    assert_eq!(scope, Scope::Local);
+    assert!(
+        !after.contains("path = \"bundles/second\""),
+        "the entry declaring the bundle called `beta-bundle` is still there: {after}",
+    );
+    assert!(
+        after.contains("path = \"bundles/first\""),
+        "the wrong entry was removed — a name resolved to a neighbour: {after}",
+    );
+}
+
+/// **Two declared bundles of one name are refused, with both directories named.**
+///
+/// `Listed::id` is unique among the bundles io-harness *loaded*; two declared
+/// `enabled = false` may share one, which is the `tools-v1`/`tools-v2` swap the
+/// flag exists for. Taking the first of them deletes a `[[plugin]]` entry the
+/// operator never pointed at, and nothing says so until a bundle's skills stop
+/// being offered — so the refusal hands back the spelling that disambiguates,
+/// which is the directory, and which is what the path reading above resolves.
+///
+/// Sabotage: return the first hit instead of collecting them. Only this test
+/// fails, and it fails silently in the field.
+#[test]
+fn f6_plugin_remove_refuses_two_bundles_of_one_name_and_names_both_directories() {
+    let _lock = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    manifest(root, "bundles/one", "twinned");
+    manifest(root, "bundles/two", "twinned");
+    // Both switched off: io-harness reserves an id only for a bundle it switched
+    // on, so this is the shape in which two entries genuinely share one.
+    let before = declaring(root, &[("bundles/one", false), ("bundles/two", false)]);
+
+    let refusal = removing(root, &before, "plugin remove twinned")
+        .expect_err("one name, two bundles, no answer");
+    for named in ["bundles/one", "bundles/two"] {
+        assert!(
+            refusal.contains(named),
+            "the refusal must name every candidate's path, and `{named}` is not in \
+             it: {refusal}",
+        );
+    }
+    assert!(
+        refusal.contains('2'),
+        "the refusal should say how many bundles answer to the name: {refusal}",
+    );
+
+    // The fixture is sound: each of them is still removable by its directory, so
+    // the refusal above is about the ambiguity and not about a broken file.
+    let (_, after) = removing(root, &before, "plugin remove bundles/two").expect("the directory");
+    assert!(!after.contains("path = \"bundles/two\""), "{after}");
+    assert!(after.contains("path = \"bundles/one\""), "{after}");
+}
+
+/// **A word that is neither reading is refused as neither**, naming the directory
+/// that was looked for and the name that was looked up.
+///
+/// The refusal before this release named only the path — a path the operator never
+/// typed, because they had typed a name — and left them with no way to tell a
+/// misspelt directory from a misspelt bundle.
+///
+/// Sabotage: drop the name half of the sentence and keep the old path-only
+/// refusal. Only this test fails.
+#[test]
+fn f6_plugin_remove_refuses_a_word_that_is_neither_a_directory_nor_a_name() {
+    let _lock = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    manifest(root, "bundles/first", "alpha-bundle");
+    let before = declaring(root, &[("bundles/first", true)]);
+
+    let refusal = removing(root, &before, "plugin remove nowhere-at-all")
+        .expect_err("neither a declared directory nor a declared name");
+    assert!(
+        refusal.contains(&root.join("nowhere-at-all").display().to_string()),
+        "the directory reading is not reported, so an operator who mistyped a path \
+         cannot see what was looked for: {refusal}",
+    );
+    assert!(
+        refusal.contains("is called `nowhere-at-all`"),
+        "the refusal names only the path, which is the sentence this release \
+         replaced: an operator who typed a name is told about a path they never \
+         wrote: {refusal}",
+    );
+}
+
+/// **A bundle that did not load is removable by the name the listing shows**, and
+/// it is the one an operator most wants gone.
+///
+/// A directory with no manifest is dropped by io-harness, listed under
+/// `pluginview::Refused`, and cannot be repaired from a manifest that is not there.
+/// Its id is the directory's own name — asserted here rather than assumed, so that
+/// a word which is secretly a path could not be what makes the removal work.
+///
+/// Sabotage: build the pairs from `view.plugins` alone and leave `view.refused`
+/// out. Only this test fails, and what ships is a broken entry an operator can see
+/// on `/plugin` and cannot take out by the name it is listed under.
+#[test]
+fn f6_plugin_remove_takes_the_name_of_a_bundle_that_was_refused() {
+    let _lock = env_lock();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    manifest(root, "bundles/good", "good-bundle");
+    std::fs::create_dir_all(root.join("bundles/ghost-bundle")).expect("a directory, no manifest");
+    let before = declaring(root, &[("bundles/good", true), ("bundles/ghost-bundle", true)]);
+
+    let declared = declared_bundles(root);
+    assert!(
+        declared.iter().any(|(id, at)| id == "ghost-bundle" && at.ends_with("ghost-bundle")),
+        "a dropped bundle is identified by the directory's own name, and the pairs \
+         handed to `plan` must carry it: {declared:?}",
+    );
+
+    let (scope, after) =
+        removing(root, &before, "plugin remove ghost-bundle").expect("the refused bundle");
+    assert_eq!(scope, Scope::Local);
+    assert!(
+        !after.contains("path = \"bundles/ghost-bundle\""),
+        "the entry declaring the bundle that would not load is still there: {after}",
+    );
+    assert!(
+        after.contains("path = \"bundles/good\""),
+        "the bundle that loaded was removed instead: {after}",
+    );
 }
 
 // --- refusals say what was wrong ------------------------------------------------

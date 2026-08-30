@@ -1856,3 +1856,102 @@ fn n3_two_writes_in_one_second_of_the_same_length_are_the_documented_limit() {
          prove",
     );
 }
+
+// ---------------------------------------------------------------------------
+// `ids` and `by_id` — the handle a bundle's name gives on its entry
+// ---------------------------------------------------------------------------
+//
+// `io plugin add <name>` installs by name and then tells the operator that
+// removing it takes the same name. `manage::plan` answers that word by asking the
+// disk about a directory first and matching declared ids only after — over the
+// pairs `ids` builds here, because resolving them inside `plan` would mean
+// `Config::plugins()`, a full re-parse of every declared manifest that
+// `tests/dependencies.rs` confines to `src/resolved.rs` by exact path.
+
+/// **Every declared bundle is in the pairs** — loaded, switched off, and refused.
+///
+/// The refused one is the point: it is the entry an operator most wants gone and
+/// the one they cannot fix from a manifest that does not parse, and its id is the
+/// directory's own name where io-harness could read no manifest at all.
+///
+/// Sabotage: build the list from `view.plugins` alone. Under it only this test and
+/// its sibling in `tests/manage.rs` fail, and what ships is a broken entry
+/// `/plugin` lists under a name that removes nothing.
+#[test]
+fn ids_carries_every_declared_bundle_including_the_ones_that_did_not_load() {
+    let (_dir, root) = root();
+    bundle(&root, "bundles/rust-review", MINIMAL);
+    bundle(
+        &root,
+        "bundles/off",
+        &MINIMAL.replace("rust-review", "switched-off"),
+    );
+    empty_bundle(&root, "bundles/ghost");
+    std::fs::write(
+        root.join(LOCAL_FILE),
+        "[[plugin]]\npath = \"bundles/rust-review\"\n\n\
+         [[plugin]]\npath = \"bundles/off\"\nenabled = false\n\n\
+         [[plugin]]\npath = \"bundles/ghost\"\n",
+    )
+    .expect("the configuration");
+
+    let config = Config::discover(&root).expect("the configuration");
+    let pairs = pluginview::ids(&pluginview::view(&config.plugins()));
+
+    for (id, at) in [
+        ("rust-review", "bundles/rust-review"),
+        ("switched-off", "bundles/off"),
+        ("ghost", "bundles/ghost"),
+    ] {
+        assert!(
+            pairs
+                .iter()
+                .any(|(name, dir)| name == id && dir.ends_with(at)),
+            "`{id}` at `{at}` is not among the declared pairs, so `plugin remove \
+             {id}` has nothing to match: {pairs:?}",
+        );
+    }
+    // One pair per entry and no entry counted twice. Filtered to this root: the
+    // machine running the suite has a user-scope file of its own, which
+    // `Config::discover` reads too and which is nothing to assert about.
+    let ours = pairs.iter().filter(|(_, dir)| dir.starts_with(&root)).count();
+    assert_eq!(ours, 3, "one pair per declared entry: {pairs:?}");
+}
+
+/// **Every bundle of that name comes back, and never just the first.**
+///
+/// An id is unique among the bundles io-harness *loaded*; two declared
+/// `enabled = false` share one whenever an operator is swapping `tools-v1` for
+/// `tools-v2`. A helper that answered with one of them would decide, here, which
+/// `[[plugin]]` entry gets deleted — silently, and the caller could not tell that a
+/// choice had been made at all.
+///
+/// Pure, over a slice written out in the test: the point is the matching, and a
+/// fixture on disk would be asserting `Config::discover` again.
+///
+/// Sabotage: `.find()` in place of `.filter()`. Only this test fails.
+#[test]
+fn by_id_answers_with_every_bundle_of_that_name() {
+    let declared = vec![
+        ("twin".to_string(), PathBuf::from("/bundles/one")),
+        ("other".to_string(), PathBuf::from("/bundles/two")),
+        ("twin".to_string(), PathBuf::from("/bundles/three")),
+    ];
+
+    assert_eq!(
+        pluginview::by_id(&declared, "twin"),
+        vec![Path::new("/bundles/one"), Path::new("/bundles/three")],
+        "both bundles of that name, in the order they were declared",
+    );
+    assert_eq!(
+        pluginview::by_id(&declared, "other"),
+        vec![Path::new("/bundles/two")],
+        "the unique name answers with the one bundle, so the assertion above is a \
+         match rather than a constant",
+    );
+    assert!(
+        pluginview::by_id(&declared, "twi").is_empty(),
+        "a name is matched whole: a prefix of one is not a bundle",
+    );
+    assert!(pluginview::by_id(&[], "twin").is_empty());
+}
