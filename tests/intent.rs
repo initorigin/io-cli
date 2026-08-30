@@ -44,7 +44,7 @@ fn app() -> App {
 /// What the app draws, through a real render buffer rather than a row string —
 /// the rule this product has paid for three times: a string assertion cannot see
 /// a widget clip a row.
-fn drawn(app: &App, width: u16, height: u16) -> String {
+fn drawn(app: &mut App, width: u16, height: u16) -> String {
     let (mut screen, _recorder) = support::screen_of(width, height, height);
     screen
         .draw(|frame| app.render(frame, frame.area()))
@@ -185,7 +185,7 @@ fn the_question_its_context_and_its_choices_are_all_drawn() {
 
     let mut app = app();
     app.open_intent(asked.0);
-    let screen = drawn(&app, 80, 12);
+    let screen = drawn(&mut app, 80, 12);
 
     assert!(screen.contains("drop the column or keep it?"), "{screen}");
     assert!(
@@ -223,7 +223,7 @@ async fn the_question_is_readable_and_answerable_with_no_colour() {
 
     let mut app = App::new(io_cli::theme::MONO, "test-model");
     app.open_intent(questions.recv().await.expect("asked"));
-    let screen = drawn(&app, 80, 12);
+    let screen = drawn(&mut app, 80, 12);
 
     assert!(screen.contains("drop the column or keep it?"), "{screen}");
     assert!(screen.contains("40 rows"), "{screen}");
@@ -284,7 +284,7 @@ fn live(question: Question) -> (Intent, tokio::sync::oneshot::Receiver<Option<St
 /// What the overlay draws, on its own rather than through the app: `App` can only
 /// hold a live question, so a stored one has to be rendered directly, and holding
 /// the live one to the same helper is what makes the comparison a comparison.
-fn drawn_overlay(overlay: &Intent, theme: &io_cli::theme::Theme) -> String {
+fn drawn_overlay(overlay: &mut Intent, theme: &io_cli::theme::Theme) -> String {
     let (mut screen, _recorder) = support::screen_of(80, 12, 12);
     screen
         .draw(|frame| overlay.render(frame, frame.area(), theme))
@@ -296,7 +296,7 @@ fn drawn_overlay(overlay: &Intent, theme: &io_cli::theme::Theme) -> String {
 /// was taken. Run against both constructors, because a property asserted for a
 /// live question and not a stored one is how the two paths drift apart.
 fn the_properties_both_paths_owe(open: impl Fn() -> Intent) {
-    let screen = drawn_overlay(&open(), &DARK);
+    let screen = drawn_overlay(&mut open(), &DARK);
     assert!(screen.contains("drop the column or keep it?"), "{screen}");
     assert!(
         screen.contains("40 rows and one caller"),
@@ -406,8 +406,8 @@ fn esc_on_a_stored_question_leaves_the_run_parked_with_no_answer() {
 /// neither promises something behind the screen is not doing.
 #[test]
 fn the_footer_says_what_esc_actually_leaves_behind_on_each_path() {
-    let live_screen = drawn_overlay(&live(question()).0, &DARK);
-    let stored_screen = drawn_overlay(&Intent::resumed(&stored(&question())), &DARK);
+    let live_screen = drawn_overlay(&mut live(question()).0, &DARK);
+    let stored_screen = drawn_overlay(&mut Intent::resumed(&stored(&question())), &DARK);
 
     assert!(
         live_screen.contains("Esc leaves it for later"),
@@ -429,10 +429,248 @@ fn the_footer_says_what_esc_actually_leaves_behind_on_each_path() {
 /// out all have to be words.
 #[test]
 fn a_stored_question_is_readable_with_no_colour_at_all() {
-    let overlay = Intent::resumed(&stored(&question()));
-    let screen = drawn_overlay(&overlay, &io_cli::theme::MONO);
+    let mut overlay = Intent::resumed(&stored(&question()));
+    let screen = drawn_overlay(&mut overlay, &io_cli::theme::MONO);
 
     assert!(screen.contains("drop the column or keep it?"), "{screen}");
     assert!(screen.contains("40 rows"), "{screen}");
     assert!(screen.contains("Esc"), "{screen}");
+}
+
+// ---------------------------------------------------------------------------
+// 0.32.0 — the question becomes answerable, as one list with no modes.
+// ---------------------------------------------------------------------------
+
+/// A question with a context line and five choices: the shape that filled all
+/// eight rows of the viewport through 0.31.0 and left the operator with nothing
+/// to type into.
+fn five_choices() -> Question {
+    Question {
+        question: "which column should the migration drop?".to_string(),
+        context: Some("the table has 40 rows and one caller".to_string()),
+        choices: vec![
+            "created_at".to_string(),
+            "updated_at".to_string(),
+            "deleted_at".to_string(),
+            "archived_at".to_string(),
+            "expired_at".to_string(),
+        ],
+    }
+}
+
+/// **O1 — the answer composer is rendered and focusable, at 80x24 and at 80x8.**
+///
+/// This is the release's own defect. `Intent::render` drew the composer only
+/// `if area.height > head`, and `head` was `lines.len()` over a paragraph that
+/// wraps — so a question with a context line and five choices consumed the whole
+/// viewport and the text area was never rendered at all. The operator saw a
+/// question, some inert bullets, and no way to answer.
+///
+/// Asserted by finding the composer's own prompt marker in a rendered frame, not
+/// by the absence of a panic: the old code did not panic, it silently drew
+/// nothing.
+///
+/// Sabotage: restore `if area.height > head` around the composer render, under
+/// which the 80x8 arm goes red and the 80x24 arm does not — which is also the
+/// evidence that the small terminal is the case that mattered.
+#[test]
+fn o1_the_composer_is_drawn_however_long_the_question_is() {
+    for (width, height) in [(80u16, 24u16), (80, 8)] {
+        let (mut overlay, _reply) = live(five_choices());
+        let (mut screen, _recorder) = support::screen_of(width, height, height);
+        screen
+            .draw(|frame| overlay.render(frame, frame.area(), &DARK))
+            .expect("a frame");
+        let screen = screen.viewport_text().to_string();
+
+        assert!(
+            screen.contains(io_cli::composer::PROMPT.trim_end()),
+            "no composer at {width}x{height}, so the question cannot be answered: {screen}",
+        );
+    }
+}
+
+/// **O1/O2 — the offers and the free-text row are one list, and the marker opens
+/// on the row that takes prose.**
+///
+/// The second half is a safety property rather than a preference: an overlay that
+/// opened with an offer marked would turn a reflexive `Enter` — the key the
+/// operator has just pressed to submit the prompt that started this turn — into
+/// silent agreement with a suggestion they have not read.
+#[test]
+fn o2_the_marker_opens_on_the_row_that_takes_prose() {
+    let (mut overlay, _reply) = live(five_choices());
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        None,
+        "Enter on an untouched overlay must be a mis-key, never agreement with \
+         the agent's first offer",
+    );
+}
+
+/// **O2 — `Enter` on a choice sends that string verbatim.**
+///
+/// Verbatim matters: the string the agent sent is the string it gets back, never
+/// the row's label re-read off the screen and never a fitted copy of it. That is
+/// why `Outcome::Chosen` indexes the caller's own unfiltered rows.
+#[test]
+fn o2_enter_on_an_offer_sends_that_offer_verbatim() {
+    let (mut overlay, _reply) = live(five_choices());
+
+    // Up from the free-text row is the last offer.
+    assert_eq!(overlay.key(key(KeyCode::Up)), None, "moving does not answer");
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(Some("expired_at".to_string())),
+        "the offer the marker was on, exactly as the agent spelled it",
+    );
+}
+
+/// **O2 — typing answers, wherever the marker was, and the marker follows.**
+///
+/// The one place this surface differs from every other `Picker` in the product,
+/// and it is deliberate: a picker's printable keys filter its rows, which is right
+/// for four hundred models and wrong for five offers. Here the expensive act is
+/// answering, not finding.
+#[test]
+fn o2_typing_from_an_offer_answers_rather_than_filtering() {
+    let (mut overlay, _reply) = live(five_choices());
+
+    // Put the marker on an offer first, so the typing has somewhere wrong to go.
+    overlay.key(key(KeyCode::Up));
+    for ch in "none of those".chars() {
+        assert_eq!(
+            overlay.key(key(KeyCode::Char(ch))),
+            None,
+            "typing does not close the overlay",
+        );
+    }
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(Some("none of those".to_string())),
+        "the words the operator typed, not the offer the marker started on",
+    );
+}
+
+/// **O2 — moving the marker off the free-text row folds the composer shut without
+/// losing what was typed.**
+#[test]
+fn o2_folding_the_composer_keeps_what_was_typed() {
+    let (mut overlay, _reply) = live(five_choices());
+    for ch in "half written".chars() {
+        overlay.key(key(KeyCode::Char(ch)));
+    }
+    // Up onto an offer, then back down to the free-text row.
+    overlay.key(key(KeyCode::Up));
+    overlay.key(key(KeyCode::Down));
+
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(Some("half written".to_string())),
+        "the composer lost its contents when the marker left it",
+    );
+}
+
+/// **O2 — a question with no choices is the free-text row alone, already
+/// unfolded**, which is the surface this overlay had before 0.32.0. Asserted
+/// because a redesign that changes the simplest case has changed something it was
+/// not asked to.
+#[test]
+fn o2_a_question_with_no_choices_is_the_surface_it_always_was() {
+    let (mut overlay, _reply) = live(Question::new("what did you mean?"));
+    let (mut screen, _recorder) = support::screen_of(80, 12, 12);
+    screen
+        .draw(|frame| overlay.render(frame, frame.area(), &DARK))
+        .expect("a frame");
+    let drawn = screen.viewport_text().to_string();
+    assert!(
+        drawn.contains(io_cli::composer::PROMPT.trim_end()),
+        "the composer is not drawn: {drawn}",
+    );
+
+    for ch in "i meant the second one".chars() {
+        overlay.key(key(KeyCode::Char(ch)));
+    }
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(Some("i meant the second one".to_string())),
+    );
+}
+
+/// **O4 — `Esc` still sends `None`, from either row.**
+///
+/// Asserted against the existing behaviour rather than re-derived: `None` is what
+/// io-harness documents as "nobody here can answer this", so the run parks with
+/// the question persisted rather than being denied. A redesign that turned a
+/// decline into an empty answer would send the agent back to work knowing nothing
+/// more, and would look identical on screen.
+#[test]
+fn o4_esc_declines_from_the_offers_as_well_as_from_the_composer() {
+    let (mut from_composer, _a) = live(five_choices());
+    assert_eq!(from_composer.key(key(KeyCode::Esc)), Some(None));
+
+    let (mut from_offers, _b) = live(five_choices());
+    from_offers.key(key(KeyCode::Up));
+    assert_eq!(
+        from_offers.key(key(KeyCode::Esc)),
+        Some(None),
+        "Esc on an offer declines too, rather than choosing it",
+    );
+}
+
+/// **O3 — the question is not drawn as a warning.**
+///
+/// `Tone::Warning`'s word is literally `warning`, so every question this agent
+/// ever asked arrived prefixed with it. Asserted under `MONO`, where a tone is
+/// nothing but its word — which is the only place the claim is checkable at all.
+#[test]
+fn o3_a_question_is_not_a_warning() {
+    let (mut overlay, _reply) = live(five_choices());
+    let (mut screen, _recorder) = support::screen_of(80, 24, 24);
+    screen
+        .draw(|frame| overlay.render(frame, frame.area(), &io_cli::theme::MONO))
+        .expect("a frame");
+    let drawn = screen.viewport_text().to_string();
+
+    assert!(
+        drawn.contains("which column should the migration drop?"),
+        "{drawn}",
+    );
+    assert!(
+        !drawn.contains("warning"),
+        "the question is drawn as a warning: {drawn}",
+    );
+}
+
+/// **O16 — the overlay asks the viewport for the rows it needs, and the request
+/// grows with the question.**
+///
+/// A request rather than a demand: `App::viewport_wanted` clamps it to what the
+/// terminal can spare. What is asserted here is that the number is derived from
+/// the content and is measured through the wrapper, not counted as lines — the
+/// defect `rows::wrapped` exists for.
+#[test]
+fn o16_the_overlay_asks_for_rows_that_grow_with_the_question() {
+    let (small, _a) = live(Question::new("what did you mean?"));
+    let (large, _b) = live(five_choices());
+
+    let small_rows = small.rows_wanted(80, &DARK);
+    let large_rows = large.rows_wanted(80, &DARK);
+    assert!(
+        large_rows > small_rows,
+        "five offers and a context line asked for {large_rows} rows, no more than \
+         the bare question's {small_rows}",
+    );
+
+    // The measurement is of wrapped rows, so a question too long for the width
+    // asks for more than the same question at a width that fits it.
+    let (long, _c) = live(Question::new(
+        "which of the columns in this table should the migration drop, given that \
+         it has forty rows and exactly one caller anywhere in the workspace?",
+    ));
+    assert!(
+        long.rows_wanted(40, &DARK) > long.rows_wanted(200, &DARK),
+        "the row demand ignores wrapping, which is the `lines.len()` measurement \
+         this release replaced",
+    );
 }

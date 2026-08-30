@@ -213,13 +213,26 @@ fn f1_the_palette_opens_on_the_rows_the_viewport_has() {
         viewport.contains(first_group.0.title()),
         "the first group's heading opens the list: {viewport:?}",
     );
-    for (name, _) in first_group.1.iter().take(usize::from(height) - 2) {
+    // Three rows go to something other than a command: the head, the first
+    // group's heading, and — since 0.32.0 — the row that says how many rows are
+    // not shown. Drawn here at `VIEWPORT_HEIGHT` on purpose: this is the small
+    // terminal, the case the elision exists for. A real session grows the viewport
+    // to `Picker::rows_wanted` and the elision never fires at all.
+    for (name, _) in first_group.1.iter().take(usize::from(height) - 3) {
         let label = name.strip_prefix('/').expect("a command");
         assert!(
             viewport.contains(label),
             "the palette opens on the rows the viewport has, and {label} is missing: {viewport:?}",
         );
     }
+
+    // **And it says what it did not draw.** Until 0.32.0 a palette of thirty-six
+    // commands in eight rows drew five of them and said nothing at all, so a list
+    // filtered down to nothing looked exactly like one scrolled to its end.
+    assert!(
+        viewport.contains("more"),
+        "the palette dropped most of its rows without saying so: {viewport:?}",
+    );
 }
 
 #[test]
@@ -808,7 +821,13 @@ fn f5_a_bundle_skill_is_offered_under_the_name_the_model_addresses() {
         "the operator's own skill and the bundle's are both choosable",
     );
 
-    let label = namespaced("acme", "helper");
+    // **Drawn qualified, addressed namespaced.** Since 0.32.0 the row reads
+    // `acme:helper`; `io_harness::NAMESPACE` is what `Skills::catalog` put in the
+    // model's prompt and what `read_skill` resolves by equality, and
+    // `io_cli::naming` is the only thing between the two. The round trip is
+    // asserted below, which is the property that makes the display safe.
+    let wire = namespaced("acme", "helper");
+    let label = io_cli::naming::display(&wire);
     let index = rows
         .iter()
         .position(|row| row.label == label)
@@ -839,6 +858,29 @@ fn f5_a_bundle_skill_is_offered_under_the_name_the_model_addresses() {
         "the bare name is offered, and the model cannot address it",
     );
 
+    // **And the round trip, which is what makes drawing a colon safe.** The label
+    // an operator reads becomes the command `invoke_skill` writes, which
+    // `commands::parse` turns back into the exact string io-harness put in the
+    // model's catalogue. If this does not hold, the palette is offering a name
+    // that resolves to nothing — the same defect the assertion above guards, one
+    // translation later.
+    let typed = commands::invoke_skill(&wire);
+    assert_eq!(
+        typed.trim(),
+        format!("/{label}"),
+        "choosing the row must write the command, not a sentence about it",
+    );
+    let asked = commands::parse(
+        typed.trim_start_matches('/').trim(),
+        &io_cli::keys::Keys::default(),
+        &DARK,
+    );
+    assert_eq!(
+        asked,
+        commands::Action::Skill(wire.clone(), String::new()),
+        "the typed command did not resolve back to the name the model addresses",
+    );
+
     // The provenance is in the label AND in the detail, because the detail is the
     // column a narrow terminal drops first.
     let detail = rows[index]
@@ -852,27 +894,32 @@ fn f5_a_bundle_skill_is_offered_under_the_name_the_model_addresses() {
         "the detail says what it is and whose it is: {detail:?}",
     );
 
+    // **`Chosen` carries the wire name, not the displayed one**, and that is the
+    // seam: everything from here on is talking to io-harness, so the translation
+    // happens at the row and at the parse — the two edges — and nowhere in
+    // between. `invoke_skill` displays it on the way to the composer; `parse`
+    // resolves it back. A `Chosen` holding the colon form would put the
+    // translation in the middle of the pipeline, where every later caller would
+    // have to remember it.
     assert_eq!(
         commands::palette_pick(&none, &skills, index),
-        Some(Chosen::Skill(label.clone())),
-        "choosing it stands for the namespaced name and not the bare one",
+        Some(Chosen::Skill(wire.clone())),
+        "choosing it stands for the name the model addresses, not the bare one \
+         and not the one drawn",
     );
 
-    // And through the picker, as the driver reaches it: typed for by the name the
-    // model uses, chosen with `Enter`, resolved back through `palette_pick`.
+    // And through the picker, as the driver reaches it: typed for by the name it
+    // is drawn under, chosen with `Enter`, resolved back through `palette_pick`
+    // to the name the model addresses.
     let mut picker = Picker::new("Which command?", rows.clone());
     type_at(&mut picker, &label);
-    assert_eq!(
-        marked(&picker),
-        label,
-        "typing the namespaced name finds it"
-    );
+    assert_eq!(marked(&picker), label, "typing the qualified name finds it");
     let Outcome::Chosen(chosen) = picker.key(key(KeyCode::Enter)) else {
         panic!("Enter on the marked row must choose it");
     };
     assert_eq!(
         commands::palette_pick(&none, &skills, chosen),
-        Some(Chosen::Skill(label)),
+        Some(Chosen::Skill(wire.clone())),
     );
 }
 
