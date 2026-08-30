@@ -88,7 +88,7 @@ pub const PROGRAM: &str = "git";
 /// been typed by somebody is how `ext::sh -c …` becomes a remote shell, and
 /// [`resolve`] refuses everything that is not two ordinary path segments precisely
 /// so that this string is the only host that can ever be reached.
-const HOST: &str = "https://github.com/";
+pub const HOST: &str = "https://github.com/";
 
 /// The variable that stops git asking for a credential on a terminal io-cli owns.
 ///
@@ -353,6 +353,164 @@ pub fn argv(url: &str, into: &Path) -> Vec<OsString> {
     ]
 }
 
+/// Where in a repository's history a fetch should land.
+///
+/// A marketplace itself is always [`Pin::Head`]: the operator asked for a
+/// repository by name and there is nothing to pin them to. A bundle an index
+/// places in another repository is whatever that index named, and the official
+/// index names a `sha` on all 238 of its remote entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pin {
+    /// The default branch, shallow. What a marketplace add has always done.
+    Head,
+    /// A tag or branch name, shallow. One invocation, because `git clone` takes
+    /// `--branch`.
+    Ref(String),
+    /// A commit. **Not one invocation**, and that is a property of git rather
+    /// than a choice: `git clone --revision` landed in 2.49, the release machine
+    /// runs 2.41, and io-cli states no git floor. See [`steps`].
+    Commit(String),
+}
+
+impl Pin {
+    /// What an index named, or `None` where what it named is not usable.
+    ///
+    /// **A `sha` and a `ref` are argv elements out of a stranger's file, so each
+    /// is judged before it can become one.** A value beginning with `-` becomes an
+    /// *option* to a program that parses options, whatever the argv looked like
+    /// when it left here — the same reason [`resolve`] refuses such a segment, and
+    /// the reason this returns `None` rather than trimming anything.
+    ///
+    /// A directory name that says which pin this is.
+    ///
+    /// **A fetched repository is keyed on it**, because `clone_at` answers
+    /// `Already` on an existing destination before it looks at the pin and nothing
+    /// records which commit a directory holds. Two index entries naming one
+    /// repository at two commits are two directories, so the second cannot be
+    /// handed the first one's tree.
+    ///
+    /// Safe as a path component by construction rather than by filtering: a commit
+    /// is hex, a ref has already passed [`segment`], and the unpinned case is a
+    /// constant. Nothing an index wrote reaches this unjudged.
+    #[must_use]
+    pub fn spelling(&self) -> String {
+        match self {
+            Self::Head => String::from("head"),
+            Self::Ref(reference) => {
+                let mut out = String::from("ref-");
+                out.push_str(reference);
+                out
+            }
+            Self::Commit(commit) => commit.clone(),
+        }
+    }
+
+    /// A commit is preferred over a tag where an entry carries both, because a tag
+    /// is a name its author can move and a commit is not, and an index that names
+    /// both has named the commit it means.
+    #[must_use]
+    pub fn named(reference: Option<&str>, commit: Option<&str>) -> Option<Self> {
+        if let Some(commit) = commit {
+            return commit_like(commit).then(|| Self::Commit(commit.to_string()));
+        }
+        match reference {
+            Some(reference) => segment(reference).then(|| Self::Ref(reference.to_string())),
+            None => Some(Self::Head),
+        }
+    }
+}
+
+/// Whether `text` is a commit this module will put in an argv.
+///
+/// Hex and nothing else, between an abbreviation git will still resolve and the
+/// longest hash it produces. Stated as what is allowed, the direction [`segment`]
+/// is stated in and for its reason.
+fn commit_like(text: &str) -> bool {
+    text.len() >= 7 && text.len() <= 64 && text.chars().all(|glyph| glyph.is_ascii_hexdigit())
+}
+
+/// The `<owner>/<repo>` an index entry's clone URL points at, on the one host.
+///
+/// **The URL a stranger wrote is never the URL that reaches git.** `HOST`'s own
+/// documentation states the ceiling this keeps: the only string that can reach the
+/// program is one built here out of that constant, because an argument somebody
+/// else chose is how `ext::sh -c …` becomes a remote shell. So an entry's `url` is
+/// taken apart, judged by [`resolve`]'s rules like any other name, and thrown
+/// away — [`url`] rebuilds it. Anything not on that host, or not exactly two
+/// ordinary path segments, is `None`, and the caller lists it with its reason
+/// rather than dropping it.
+///
+/// The ceiling costs nothing that exists: all 238 remote entries of
+/// `anthropics/claude-plugins-official` and all ten of
+/// `obra/superpowers-marketplace` are two segments on this host.
+#[must_use]
+pub fn from_url(text: &str) -> Option<Named> {
+    resolve(text.trim().strip_prefix(HOST)?)
+}
+
+/// Every argv a fetch at `at` needs, in order, each already complete.
+///
+/// **One list for one invocation and four for a commit, and the length is the
+/// honest part.** `git clone --revision <sha>` would make the pinned case a single
+/// call, and it is not available: the option landed in git 2.49 and this product
+/// names no git floor, so the portable route is an empty repository, a remote, a
+/// shallow fetch of the one commit, and a detached checkout of what came back.
+/// GitHub serves a fetch of a reachable commit, which is what makes the third step
+/// work at depth one.
+///
+/// Every element is owned and handed through whole, exactly as [`argv`]'s are:
+/// nothing here is quoted, escaped, joined, or spliced into a line for something
+/// else to take apart again. `FETCH_HEAD` rather than the commit is what the
+/// checkout names, so the only place the commit appears is the fetch that asked
+/// for it.
+#[must_use]
+pub fn steps(url: &str, into: &Path, at: &Pin) -> Vec<Vec<OsString>> {
+    let dir = into.as_os_str().to_os_string();
+    match at {
+        Pin::Head => vec![argv(url, into)],
+        Pin::Ref(reference) => vec![vec![
+            OsString::from("clone"),
+            OsString::from("--depth"),
+            OsString::from("1"),
+            OsString::from("--branch"),
+            OsString::from(reference),
+            OsString::from(url),
+            dir,
+        ]],
+        Pin::Commit(commit) => vec![
+            vec![
+                OsString::from("init"),
+                OsString::from("--quiet"),
+                dir.clone(),
+            ],
+            vec![
+                OsString::from("-C"),
+                dir.clone(),
+                OsString::from("remote"),
+                OsString::from("add"),
+                OsString::from("origin"),
+                OsString::from(url),
+            ],
+            vec![
+                OsString::from("-C"),
+                dir.clone(),
+                OsString::from("fetch"),
+                OsString::from("--depth"),
+                OsString::from("1"),
+                OsString::from("origin"),
+                OsString::from(commit),
+            ],
+            vec![
+                OsString::from("-C"),
+                dir,
+                OsString::from("checkout"),
+                OsString::from("--detach"),
+                OsString::from("FETCH_HEAD"),
+            ],
+        ],
+    }
+}
+
 /// Clone `url` into `into`, assembling it at `staging` first.
 ///
 /// Both paths are the caller's, which is what lets `tests/fetch.rs` drive every
@@ -367,6 +525,36 @@ pub fn argv(url: &str, into: &Path) -> Vec<OsString> {
 /// again afterwards whatever happened, so the only thing that can survive this
 /// call is a complete tree at `into`.
 pub fn clone(url: &str, into: &Path, staging: &Path) -> Fetched {
+    clone_at(url, into, staging, &Pin::Head)
+}
+
+/// One spawn of [`PROGRAM`], with the streams the viewport depends on.
+///
+/// **The crate's only spawn site, and it takes a finished argv.** Every element
+/// has already been built by [`steps`], which is pure and asserted; this function
+/// adds nothing to the list and cannot, because it never sees the parts. All three
+/// streams are spelled out even though `output()` already wires them this way — the
+/// wiring is the property that keeps the viewport safe, the child gets no tty and
+/// writes nothing to the screen, and a reader checking that should not have to know
+/// a default.
+fn run(argv: Vec<OsString>) -> std::io::Result<std::process::Output> {
+    Command::new(PROGRAM)
+        .args(argv)
+        .env(NO_PROMPT, "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+}
+
+/// Clone `url` into `into` at `at`, assembling it at `staging` first.
+///
+/// [`clone`]'s general form. The staging-and-rename discipline is the same and is
+/// the reason a pinned fetch is safe to build out of four invocations: nothing
+/// reaches `into` until every step has succeeded, so a process killed between the
+/// fetch and the checkout leaves a directory under `staging` that the next run
+/// removes, never a half-pinned tree under a path the listing walks.
+pub fn clone_at(url: &str, into: &Path, staging: &Path, at: &Pin) -> Fetched {
     if into.exists() {
         return Fetched::Already(into.to_path_buf());
     }
@@ -382,21 +570,32 @@ pub fn clone(url: &str, into: &Path, staging: &Path) -> Fetched {
     // fails for a reason that has nothing to do with the marketplace.
     let _ = std::fs::remove_dir_all(staging);
 
-    // All three streams are spelled out even though `output()` already wires them
-    // this way. The wiring is the property that keeps the viewport safe — the
-    // child gets no tty and writes nothing to the screen — and a reader checking
-    // that should not have to know a default.
-    let output = Command::new(PROGRAM)
-        .args(argv(url, staging))
-        .env(NO_PROMPT, "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    // **The first step that fails ends the fetch.** A pinned checkout is four
+    // invocations and each depends on the one before it, so carrying on after a
+    // failure would run `checkout` against a repository that has fetched nothing
+    // and report the second, less useful error. `Pin::Head` is one step and this
+    // loop is exactly what the code above it always did.
+    let mut failure = None;
+    for argv in steps(url, staging, at) {
+        match run(argv) {
+            Err(error) => {
+                failure = Some(Fetched::unstartable(&error));
+                break;
+            }
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                failure = Some(Fetched::Failed {
+                    status: output.status.code(),
+                    stderr: readable(&output.stderr),
+                });
+                break;
+            }
+        }
+    }
 
-    let fetched = match output {
-        Err(error) => Fetched::unstartable(&error),
-        Ok(output) if output.status.success() => match settle(staging, into) {
+    let fetched = match failure {
+        Some(failure) => failure,
+        None => match settle(staging, into) {
             Ok(()) => Fetched::Cloned(into.to_path_buf()),
             // A clone that worked and a move that did not is still a failure with
             // nothing at the destination, which is the only shape this module
@@ -405,10 +604,6 @@ pub fn clone(url: &str, into: &Path, staging: &Path) -> Fetched {
                 status: None,
                 stderr: error.to_string(),
             },
-        },
-        Ok(output) => Fetched::Failed {
-            status: output.status.code(),
-            stderr: readable(&output.stderr),
         },
     };
 

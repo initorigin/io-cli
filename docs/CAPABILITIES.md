@@ -26,7 +26,7 @@ the limits that capability actually has.
 | [When a run stops for you](guide/resume.md) | A question, a plan or an interrupted call decided where it was left; the turn an interrupt makes unresumable; and one `io` at a time on one conversation |
 | [What it costs](guide/accounting.md) | Money and the token split by run, session, model and day; where a price comes from; and why an unpriced model makes a total a floor |
 | [Skills](guide/skills.md) | The five this crate ships, adding and removing your own, the claimed name being the frontmatter name, and what a duplicate costs |
-| [Capability bundles](guide/plugins.md) | A directory contributing to six subsystems at once, marketplaces, and the disclosure that happens with your configuration file untouched |
+| [Capability bundles](guide/plugins.md) | A directory contributing to six subsystems at once, marketplaces, installing a Claude Code or Codex plugin, and the disclosure that happens with your configuration file untouched |
 | [Hooks](guide/hooks.md) | An audit log, a notification, a formatter or a check that stops the run, declared in `io.toml` — and the failure that is quiet |
 | [The fleet](guide/fleet.md) | Contained turns spawning children under one shared ceiling, the live tree, and the plan a contained turn proposes before it acts |
 | [Verification gates](guide/verification.md) | The criterion, the fact that it is evaluated after every step rather than once per turn, per-gate retry, and exit `6` |

@@ -896,6 +896,67 @@ fn memory_fixture() -> (
     )
 }
 
+/// Every mark `/plugin` draws, taken off rows the surface itself produced.
+///
+/// A `View` written out here rather than a configuration on disk, because what the
+/// gate needs is one row of every kind in one list — loaded, switched off, refused
+/// and adapted — and the adapted one is a root under the adapters directory, which
+/// is a fact about a path rather than anything a fixture has to create.
+///
+/// The ASCII set, because that is the set the gate is about. The marks carry no
+/// set of their own — see `pluginview::LOADED_MARK` — and asserting them off the
+/// substituted rendering is what says so.
+fn plugin_marks() -> Vec<&'static str> {
+    let adapters = std::path::PathBuf::from("/home/someone/.io-cli/adapters");
+    let bundle = |id: &str, root: std::path::PathBuf| io_cli::pluginview::Listed {
+        id: id.to_string(),
+        enabled: true,
+        description: Some("Everything our Rust reviews need.".to_string()),
+        version: None,
+        root,
+        contributions: vec!["skills"],
+        skills: None,
+        templates: None,
+        agents: Vec::new(),
+        servers: Vec::new(),
+        hooks: Vec::new(),
+        layers: Vec::new(),
+    };
+    let mut off = bundle(
+        "tools-v1",
+        std::path::PathBuf::from("/home/someone/code/bundles/tools-v1"),
+    );
+    off.enabled = false;
+    let view = io_cli::pluginview::View {
+        plugins: vec![
+            bundle(
+                "rust-review",
+                std::path::PathBuf::from("/home/someone/code/bundles/rust-review"),
+            ),
+            off,
+            // `<adapters>/<owner>/<repo>/<name>`, which is the layout
+            // `adapt::at` writes and the only thing `Listed::adapted` reads.
+            bundle(
+                "claude-review",
+                adapters
+                    .join("zeroonething")
+                    .join("ultraship")
+                    .join("claude-review"),
+            ),
+        ],
+        refused: vec![io_cli::pluginview::Refused {
+            id: "empty".to_string(),
+            path: std::path::PathBuf::from("/home/someone/code/bundles/empty"),
+            error: "no plugin.toml".to_string(),
+        }],
+        adapters: Some(adapters),
+    };
+    io_cli::pluginview::rows(&view, 200, &ASCII)
+        .iter()
+        .filter_map(|row| row.mark)
+        .collect()
+}
+
 /// **N3 — the memory page draws in ASCII, at eighty columns and at thirty.**
 ///
 /// The sabotage arm is a pinned note marked with a glyph outside ASCII: the sweep
@@ -907,9 +968,17 @@ fn memory_fixture() -> (
 /// what is left after that, dropping it entirely when there is no room — so the
 /// mark, which is the whole of what says *pinned* and *not read*, is the one thing
 /// that cannot be squeezed out.
+///
+/// The pairing block at the end is the registry for **every** mark this product
+/// draws in a picker's mark column, `/plugin`'s four included: what is asserted of
+/// a mark — one ASCII cell, drawn on a row a surface really produces, and different
+/// from the marks it sits beside — is a property of the column rather than of the
+/// memory page, and a second gate beside this one is a second place for the next
+/// mark to be left out of.
 #[test]
 fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
     use io_cli::commands::{memory_page, LOOSE_MARK, PINNED_MARK, READ_MARK, UNREAD_MARK};
+    use io_cli::pluginview::{ADAPTED_MARK, DISABLED_MARK, LOADED_MARK, REFUSED_MARK};
 
     let (files, entries) = memory_fixture();
     let theme = ascii();
@@ -947,7 +1016,27 @@ fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
     // mark to a space would pass the sweep above and destroy the page.
     let (rows, _) = memory_page(&files, &entries, false, &ASCII);
     let marks: Vec<&str> = rows.iter().filter_map(|row| row.mark).collect();
-    for mark in [READ_MARK, UNREAD_MARK, PINNED_MARK, LOOSE_MARK] {
+    // `/plugin`'s own four, off the rows `pluginview::rows` drew for a list holding
+    // one bundle of every kind. A mark that is declared and that no surface ever
+    // puts on a row fails here rather than shipping as a constant nobody sees.
+    // **Each mark is looked for on the surface that draws it, not in the union.**
+    // `LOADED_MARK` is `+` and so is `READ_MARK`; `DISABLED_MARK` is `-` and so
+    // are `LOOSE_MARK` and `UNREAD_MARK`. Searching one merged set would find
+    // `/plugin`'s two commonest marks in the *memory page's* rows and pass however
+    // `/plugin` drew them — make every arm of its mark selector return
+    // `ADAPTED_MARK` and a union check notices nothing. Paired with its own
+    // surface, that sabotage fails here.
+    let drawn = plugin_marks();
+    for (mark, on) in [
+        (READ_MARK, &marks),
+        (UNREAD_MARK, &marks),
+        (PINNED_MARK, &marks),
+        (LOOSE_MARK, &marks),
+        (LOADED_MARK, &drawn),
+        (DISABLED_MARK, &drawn),
+        (REFUSED_MARK, &drawn),
+        (ADAPTED_MARK, &drawn),
+    ] {
         assert!(mark.is_ascii(), "{mark:?} is not ASCII");
         assert_eq!(
             mark.chars().count(),
@@ -955,8 +1044,8 @@ fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
             "{mark:?} is not one cell; a mark of an odd width shifts the column",
         );
         assert!(
-            marks.contains(&mark),
-            "{mark:?} is on no row of the fixture"
+            on.contains(&mark),
+            "{mark:?} is on no row of the surface that is supposed to draw it",
         );
     }
     assert_ne!(
@@ -964,6 +1053,19 @@ fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
         "a pinned note and a loose one have to look different or the mark says nothing",
     );
     assert_ne!(READ_MARK, UNREAD_MARK);
+    // **All four of `/plugin`'s, pairwise**, and not only the new one against the
+    // old three: they share one column on one list, so any two of them being the
+    // same character makes the column say less than an operator reads off it.
+    let plugin = [LOADED_MARK, DISABLED_MARK, REFUSED_MARK, ADAPTED_MARK];
+    for (at, mark) in plugin.iter().enumerate() {
+        for other in &plugin[at + 1..] {
+            assert_ne!(
+                mark, other,
+                "two of `/plugin`'s marks are the same character, so a row wearing \
+                 it says two things at once",
+            );
+        }
+    }
 }
 
 /// N3 — the two pickers `/remember` and `/memory` open, and every sentence they

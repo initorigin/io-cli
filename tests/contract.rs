@@ -93,16 +93,32 @@ fn discovered(files: &[(&str, &str)]) -> (tempfile::TempDir, Config) {
 /// home it was started with.
 struct HomeFixture {
     dir: tempfile::TempDir,
-    previous: [(&'static str, Option<std::ffi::OsString>); 2],
+    previous: [(&'static str, Option<std::ffi::OsString>); 4],
 }
 
 impl HomeFixture {
+    /// **The fixture names the home in force as well as the operator's home, and
+    /// that is what `io` itself does.** `contract::default_skills` anchors on
+    /// [`io_cli::home::in_force`] since 0.31.0, and in the binary
+    /// `home::adopt()` runs immediately above the first `Config::discover` and
+    /// sets `IO_CONFIG_HOME` to `~/.io-cli`. A fixture that set only `HOME` would
+    /// therefore be testing a state the product never reaches — and, worse, would
+    /// inherit whatever `no_user_scope` had already pointed the variable at, so
+    /// the default this file asserts on would be a directory in some other
+    /// fixture's temporary tree.
+    ///
+    /// `IO_CONFIG` names a file outright and beats `IO_CONFIG_HOME`, so an
+    /// inherited one has to go or the fixture is not the fixture. Every variable
+    /// touched here is restored on drop, this one included.
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("a home directory");
-        let previous = ["HOME", "USERPROFILE"].map(|var| (var, std::env::var_os(var)));
-        for (var, _) in &previous {
-            std::env::set_var(var, dir.path());
-        }
+        let home = dir.path().to_path_buf();
+        let previous = ["HOME", "USERPROFILE", "IO_CONFIG_HOME", "IO_CONFIG"]
+            .map(|var| (var, std::env::var_os(var)));
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("IO_CONFIG_HOME", home.join(".io-cli"));
+        std::env::remove_var("IO_CONFIG");
         Self { dir, previous }
     }
 
@@ -1922,5 +1938,64 @@ fn n3_this_release_adds_no_configuration_key() {
         "0.27.0 adds three commands and no keys; a different number here means a \
          release that promised an operator nothing would change gave them \
          something to configure",
+    );
+}
+
+/// **F16 — the default skills directory sits under the home in force, beside the
+/// memory note.**
+///
+/// A skill is something the operator wrote, so it belongs wherever they put the
+/// rest of what they wrote: an `$IO_CONFIG_HOME` pointed somewhere else moved
+/// `io.toml` and `IO.md` there, and a skills default that stayed with io-cli's own
+/// default home would read a directory beside a configuration file this session is
+/// not using.
+///
+/// **Both halves are asserted here, in one test, because that is the only thing
+/// that keeps them together.** A test for the skills half alone permits
+/// `contract::default_skills` and `memory::path` to answer about two different
+/// directories, which is the state this release exists to end.
+///
+/// The fixture makes the *wrong* answer available on purpose: `HomeFixture`
+/// creates `~/.io-cli/skills` under a home that is not the one in force, so a
+/// regression to `home::path` fails loudly with a path rather than quietly with a
+/// `None` that could mean anything.
+///
+/// Sabotage: put `home::path()` back in `contract::default_skills` — under which
+/// this fails on the first assertion, naming the home it followed.
+///
+/// The lock is held for the whole of it. `IO_CONFIG_HOME` is left set on the way
+/// out, the way `tests/memory.rs` leaves it: the directory it names is gone by
+/// then, so a later `Config::discover` finds no user scope, which is what every
+/// other fixture in this file wants anyway.
+#[test]
+fn f16_the_skills_default_follows_the_home_in_force() {
+    let _guard = env_lock();
+    let user = io_harness::config::Scope::User;
+
+    // io-cli's default home, with skills in it — the answer that must NOT win.
+    let default_home = HomeFixture::new();
+    let unread = default_home.skills();
+
+    // And the home actually in force, which is somewhere else entirely.
+    let dir = tempfile::tempdir().expect("the home in force");
+    // `IO_CONFIG` names a file outright and beats `IO_CONFIG_HOME`, so a developer
+    // who has one exported would otherwise decide this test.
+    std::env::remove_var(io_harness::config::CONFIG_VAR);
+    std::env::set_var(io_harness::config::CONFIG_HOME_VAR, dir.path());
+    let skills = dir.path().join("skills");
+    std::fs::create_dir_all(&skills).expect("the skills directory in force");
+
+    assert_eq!(
+        io_cli::contract::skills_dir(&nothing(), &Capabilities::default(), root()),
+        Some(skills),
+        "a contract that names no skills directory takes the one under the home in \
+         force, not the {} nobody pointed this session at",
+        unread.display(),
+    );
+    assert_eq!(
+        io_cli::memory::path(&root(), user),
+        Some(dir.path().join(io_cli::memory::file_name(user))),
+        "and the operator's memory note answers about the same directory, which is \
+         the point: authored content has one home, not two",
     );
 }

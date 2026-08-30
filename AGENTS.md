@@ -59,11 +59,17 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
   `git clone` for a marketplace) and nowhere else.
 - **TOML parsing** is permitted in `src/edit.rs` alone. Every other module that needs a value out
   of a configuration file goes through `edit::value_at`, `edit::sections` or `edit::array`.
-  `src/marketplace.rs` reads a stranger's `plugin.toml` that way.
+  `src/marketplace.rs` reads a stranger's `plugin.toml` that way, and `src/adapt.rs` *writes* one
+  without ever parsing it.
+- **JSON deserialization** is permitted in `src/import.rs` and `src/adapt.rs`, and nowhere else.
+  The rule is over the parse rather than over the crate name: `src/exec.rs` serializes its own
+  `--json` event lines and is not a second opinion about anybody's file. The set is compared with
+  `==` and has its own near-miss test, because a widening makes a gate more permissive and so goes
+  vacuous without going red.
 - **No agent loop.** The sweep strips comments first, so a doc comment containing "while" is not
   a finding; `src/provider.rs` is exempted by path and held to four properties of its own.
 
-**Module map (`src/`, 74 files).**
+**Module map (`src/`, 75 files).**
 
 - Session surface — `app.rs` (state), `term.rs` (an inline viewport, never the alternate
   screen), `events.rs` + `triage.rs` (what each io-harness event does; a kind with no
@@ -81,7 +87,8 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
   `provider.rs`.
 - Store — `store.rs`, `export.rs`, `undo.rs`, `rewind.rs`, `sessions.rs`.
 - Bundles — `skills.rs`, `skillview.rs`, `plugin`-facing `pluginview`, `marketplace.rs`,
-  `fetch.rs`, `import.rs`.
+  `fetch.rs`, `import.rs`, `adapt.rs` (the three manifest formats io did not invent, read; and the
+  `plugin.toml` io generates for one, written and never parsed).
 - Media and git — `picture.rs`, `attach.rs`, `repo.rs`, `commit.rs`.
 
 **Nothing under `tests/` links `src/main.rs`.** A guard written in the driver cannot be tested

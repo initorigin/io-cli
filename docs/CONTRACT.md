@@ -104,8 +104,9 @@ One directory: `~/.io-cli` on Unix, `%USERPROFILE%\.io-cli` on Windows, created 
 | --- | --- |
 | `io.toml` | The user-scope configuration |
 | `runs.db` (+ `-wal`, `-shm`) | The session store |
-| `skills/` | Skills, with `skills/disabled/` for the ones switched off |
-| `marketplaces/` | Cloned marketplaces |
+| `skills/` | Skills, with `skills/disabled/` for the ones switched off. Read from and written to the home in force, so `$IO_CONFIG`/`$IO_CONFIG_HOME` moves it with `io.toml` and `IO.md`. io does not move files you already own; it says so at startup if the old directory still holds any |
+| `marketplaces/` | Cloned marketplaces, with `marketplaces/.entries/` for a repository an index pointed at |
+| `adapters/<owner>/<repo>/<name>/` | The `plugin.toml` io generates for a Claude Code or Codex bundle |
 | `.fetching/` | Staging for a clone in flight, renamed into place on success |
 | `IO.md` | The user-scope memory file |
 | `.import-offered` | Marks that the import offer was made, so declining is remembered |
@@ -116,10 +117,17 @@ deleted that was not already copied. This does nothing at all when `$IO_CONFIG` 
 
 ## Limits that hold today
 
-**`$IO_CONFIG_HOME` does not move the skills directory.** The skills surfaces resolve through
-io-cli's *default* home (`home::path()`) where the memory file resolves through the home actually
-in force (`home::in_force()`), so an operator who points `$IO_CONFIG_HOME` elsewhere gets their
-memory file there and their skills in `~/.io-cli/skills/`. Known since 0.30.1.
+**A marketplace, and an entry inside one, resolve against `github.com` and no other host.** A
+marketplace is named `<owner>/<repo>`; an index entry naming a repository elsewhere has its url
+re-derived to that shape, and a url that is not two ordinary path segments on that host is refused
+and listed with its reason. The only string io hands `git` is one io built — a url somebody else
+wrote reaching a clone is how `ext::sh -c …` becomes a remote shell. All 238 remote entries of
+`anthropics/claude-plugins-official` are on that host.
+
+**A Claude Code or Codex plugin's hooks are read, shown, and translated into nothing.**
+io-harness's hooks are argv against its own event tags and never a shell string, and it refuses
+`${env:}`, `${file:}` and `${cmd:}` inside a manifest in every scope. This is an impossibility, not
+a deferral: the author adds a `plugin.toml` if they want hooks under io.
 
 **A turn the operator interrupted cannot be resumed.** It is reported as ended, with `/fork`
 offered instead.
