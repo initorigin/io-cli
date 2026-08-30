@@ -264,6 +264,52 @@ pub fn hooks_in(file: &Path) -> Vec<Hook> {
     found
 }
 
+/// An index entry's name as a plugin id io-harness accepts, or `None` where no
+/// such id is derivable from it.
+///
+/// **An id is not a label, and that is why this refuses far more than it maps.**
+/// It is the word an operator types at `plugin add`, and io-harness namespaces
+/// every name a bundle contributes with it — a bundle whose id is `rust-review`
+/// contributes `rust-review__reviewer`. A mapping that dropped or invented
+/// characters would hand a person an id they never saw in the index and cannot
+/// guess from it: `My.Plugin` quietly installed as `my-plugin` is one name in the
+/// author's file, a second in the listing, and a third thing entirely in every
+/// namespaced name the bundle goes on to contribute.
+///
+/// So the line is drawn at what a reader undoes by eye:
+///
+/// - A name that is already an id is the id, unchanged.
+/// - A name that becomes one under an ASCII case fold alone is folded. `Rust` and
+///   `rust` are the same word to anyone reading them, and the fold is the one
+///   transformation a person performs without being told it happened.
+/// - Everything else refuses — a dot, a space, an underscore, a slash, a leading
+///   hyphen, a non-ASCII letter, or a name longer than
+///   [`io_harness::MAX_ID`]. [`crate::marketplace`] reports it by name.
+///
+/// Refusing costs the index's author one renamed key. Mangling costs every
+/// operator of that marketplace a name they cannot type.
+///
+/// The rule is restated here rather than called because io-harness's own check is
+/// private and answers about a `plugin.toml` that does not exist yet — an index
+/// entry has no file to be refused against. [`io_harness::MAX_ID`] is taken from
+/// the crate rather than copied, so the one part of the rule that can move is not
+/// spelled twice.
+#[must_use]
+pub fn normalised(name: &str) -> Option<String> {
+    // ASCII, not Unicode: a Unicode fold can turn one character into several
+    // (`İ` folds to `i` plus a combining dot), which is exactly the invented
+    // character this refuses. Byte length is the id's length because an id that
+    // passes the character rule is ASCII, and it is what io-harness measures.
+    let id = name.to_ascii_lowercase();
+    let usable = !id.is_empty()
+        && id.len() <= io_harness::MAX_ID
+        && id.starts_with(|glyph: char| glyph.is_ascii_lowercase() || glyph.is_ascii_digit())
+        && id
+            .chars()
+            .all(|glyph| glyph.is_ascii_lowercase() || glyph.is_ascii_digit() || glyph == '-');
+    usable.then_some(id)
+}
+
 /// A read value, filtered, bounded, and `None` where it is blank.
 ///
 /// The same collapse [`crate::marketplace`]'s own reader makes and for the same
@@ -346,10 +392,9 @@ impl Unread {
     /// The line a listing draws for it.
     fn said(&self) -> String {
         match self.name.as_deref().map(plain) {
-            Some(name) if !name.trim().is_empty() => format!(
-                "{} names a source io does not read",
-                bounded(name.trim()),
-            ),
+            Some(name) if !name.trim().is_empty() => {
+                format!("{} names a source io does not read", bounded(name.trim()),)
+            }
             _ => "an entry with no name names a source io does not read".to_string(),
         }
     }

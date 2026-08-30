@@ -88,7 +88,7 @@ pub const PROGRAM: &str = "git";
 /// been typed by somebody is how `ext::sh -c …` becomes a remote shell, and
 /// [`resolve`] refuses everything that is not two ordinary path segments precisely
 /// so that this string is the only host that can ever be reached.
-const HOST: &str = "https://github.com/";
+pub const HOST: &str = "https://github.com/";
 
 /// The variable that stops git asking for a credential on a terminal io-cli owns.
 ///
@@ -444,21 +444,21 @@ pub fn steps(url: &str, into: &Path, at: &Pin) -> Vec<Vec<OsString>> {
     let dir = into.as_os_str().to_os_string();
     match at {
         Pin::Head => vec![argv(url, into)],
-        Pin::Ref(reference) => {
-            let mut one = vec![
-                OsString::from("clone"),
-                OsString::from("--depth"),
-                OsString::from("1"),
-                OsString::from("--branch"),
-                OsString::from(reference),
-                OsString::from(url),
-                dir,
-            ];
-            one.shrink_to_fit();
-            vec![one]
-        }
+        Pin::Ref(reference) => vec![vec![
+            OsString::from("clone"),
+            OsString::from("--depth"),
+            OsString::from("1"),
+            OsString::from("--branch"),
+            OsString::from(reference),
+            OsString::from(url),
+            dir,
+        ]],
         Pin::Commit(commit) => vec![
-            vec![OsString::from("init"), OsString::from("--quiet"), dir.clone()],
+            vec![
+                OsString::from("init"),
+                OsString::from("--quiet"),
+                dir.clone(),
+            ],
             vec![
                 OsString::from("-C"),
                 dir.clone(),

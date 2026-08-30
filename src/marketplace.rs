@@ -359,25 +359,112 @@ pub fn adapted(dir: &Path) -> Option<Bundle> {
     })
 }
 
-/// One index entry as a [`Bundle`].
+/// One index entry as a [`Bundle`], under the id [`published`] derived for it.
 ///
 /// The name is the index's, never the directory's, and that is a decision rather
 /// than a convenience: the index is the author's own statement of what the
 /// repository publishes, it is the word an operator types at `plugin add`, and an
 /// entry whose source is another repository has no local directory to take a name
 /// from until the install has already happened.
-fn from_entry(clone: &Path, entry: crate::adapt::Entry) -> Bundle {
+///
+/// **It is the id and not the entry's own spelling**, for [`Bundle::label`]'s
+/// reason: the label is the word the listing draws and therefore the word
+/// [`locate`] is asked for, and io-harness namespaces the bundle's contributions
+/// with the id. An entry spelled `Rust-Review` drawn under that spelling would
+/// name a bundle no install could resolve. The two differ only by a case fold —
+/// [`crate::adapt::normalised`] refuses anything wider — so the row still reads
+/// as the entry an operator found in the index.
+fn from_entry(clone: &Path, id: String, entry: crate::adapt::Entry) -> Bundle {
     let dir = match &entry.source {
         crate::adapt::Source::Local(said) => local_dir(clone, said),
         crate::adapt::Source::Remote(_) => clone.to_path_buf(),
     };
     Bundle {
         dir,
-        name: Some(entry.name),
+        name: Some(id),
         description: entry.description,
         origin: Origin::Adapted,
         source: Some(entry.source),
     }
+}
+
+/// The bundles an index publishes, and one line for every entry it does not.
+///
+/// **One reader answering both, because [`holdings`] and [`unreadable`] must not
+/// disagree about which entry is which.** An entry counted as a bundle by one and
+/// reported as a refusal by the other is a row an operator can see, cannot
+/// install, and is told nothing about. The two stay separate at the surface — a
+/// refusal is not a bundle and a listing must not offer it as one — and share the
+/// decision underneath.
+///
+/// Two refusals are made here on top of what [`crate::adapt`] itself could not
+/// read, and neither is a drop:
+///
+/// 1. A name [`crate::adapt::normalised`] cannot make an id is refused **by
+///    name**. It joins the reader's own unreadable lines because the rule there
+///    already is "reported, never skipped" — an entry that vanished would leave
+///    an operator comparing a listing against a file to work out which of the two
+///    is lying.
+/// 2. Two entries reaching one id are refused **naming both**, in [`locate`]'s
+///    words for the same class of problem: one name, two different repositories'
+///    code, and whichever was found first is code the operator did not choose.
+///    Neither is offered, and that is where this parts from `locate` — `locate`
+///    can offer a qualifier that tells two marketplaces apart, and inside one
+///    index there is no second spelling to offer. The index's author is the only
+///    party who can resolve it.
+fn published(clone: &Path, index: crate::adapt::Index) -> (Vec<Bundle>, Vec<String>) {
+    let mut said = index.unreadable;
+    let mut kept: Vec<(String, String, Bundle)> = Vec::new();
+    for entry in index.entries {
+        let written = entry.name.clone();
+        let Some(id) = crate::adapt::normalised(&written) else {
+            said.push(format!(
+                "{written} is not a usable plugin id and io does not invent one — an id is \
+                 what you type at `plugin add` and what namespaces every name the bundle \
+                 contributes, so it must be 1 to {} characters of `a-z`, `0-9` and `-`, \
+                 starting with a letter or a digit",
+                io_harness::MAX_ID,
+            ));
+            continue;
+        };
+        kept.push((id.clone(), written, from_entry(clone, id, entry)));
+    }
+
+    // The ids more than one entry reached, in the order the index first names
+    // them, so two reads of one file report in one order. Quadratic over the
+    // entries and deliberately so: the largest index in the field carries 291 of
+    // them, and a map keyed by id would still have to be walked in the file's
+    // order to report in it.
+    let mut clashing: Vec<String> = Vec::new();
+    for (id, _, _) in &kept {
+        if !clashing.contains(id) && kept.iter().filter(|held| held.0 == *id).count() > 1 {
+            clashing.push(id.clone());
+        }
+    }
+    for id in &clashing {
+        let names: Vec<String> = kept
+            .iter()
+            .filter(|held| held.0 == *id)
+            .map(|held| format!("`{}`", held.1))
+            .collect();
+        let count = names.len();
+        // ` and ` is `locate`'s own joiner for its own list of spellings. A second
+        // joiner for the same class of sentence is a second phrasing an operator
+        // has to learn twice.
+        let spellings = names.join(" and ");
+        said.push(format!(
+            "{count} entries in this index are the plugin id `{id}` — {spellings} — and \
+             installing whichever was found first would install code you did not choose; \
+             none of them is offered until the index names them apart"
+        ));
+    }
+
+    let bundles = kept
+        .into_iter()
+        .filter(|held| !clashing.contains(&held.0))
+        .map(|held| held.2)
+        .collect();
+    (bundles, said)
 }
 
 /// A `"./"` or `"./plugins/x"` source resolved against the clone.
@@ -575,7 +662,9 @@ fn escapes(text: &str) -> String {
 ///    membership for exactly that reason: a union would list bundles the author
 ///    did not publish beside the ones they did, with no way for an operator to
 ///    tell which was which. The index is the author's own statement, and it is the
-///    file both Claude Code and Codex read.
+///    file both Claude Code and Codex read. Not every entry becomes a bundle —
+///    [`published`] holds back the ones that name no usable plugin id, and
+///    [`unreadable`] is where each of those says so by name.
 /// 3. Otherwise the walk, with each directory read as a native manifest first and
 ///    a foreign one only where it carries none.
 ///
@@ -598,11 +687,7 @@ fn escapes(text: &str) -> String {
 pub fn holdings(clone: &Path) -> Vec<Bundle> {
     if !clone.join(MANIFEST).is_file() {
         if let Some(index) = crate::adapt::index_at(clone) {
-            return index
-                .entries
-                .into_iter()
-                .map(|entry| from_entry(clone, entry))
-                .collect();
+            return published(clone, index).0;
         }
     }
     // `visited` and not `candidates`: the latter is this filtered by "carries a
@@ -616,7 +701,12 @@ pub fn holdings(clone: &Path) -> Vec<Bundle> {
         .collect()
 }
 
-/// What an index said it could not read, for the surface that lists it.
+/// Every entry of an index that yields no bundle, for the surface that lists it.
+///
+/// Three kinds of line, and one list because an operator reading a listing has one
+/// question — which entries are not here, and why: an entry [`crate::adapt`] could
+/// not read at all, a name that is no plugin id, and a set of names that reach one
+/// id. [`published`] writes all three.
 ///
 /// Separate from [`holdings`] rather than a field on it, because a refusal is not
 /// a bundle and a listing that mixed the two would offer a row that cannot be
@@ -629,7 +719,7 @@ pub fn unreadable(clone: &Path) -> Vec<String> {
         return Vec::new();
     }
     crate::adapt::index_at(clone)
-        .map(|index| index.unreadable)
+        .map(|index| published(clone, index).1)
         .unwrap_or_default()
 }
 
@@ -683,6 +773,68 @@ fn ordinary(dir: &Path) -> Vec<PathBuf> {
 /// A path's last component as a `String`, or `None` where it has none.
 fn name_of(path: &Path) -> Option<String> {
     Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Where a bundle an index placed in another repository is cloned to.
+///
+/// **Dot-named, and inside the marketplaces tree on purpose.** [`markets`] skips
+/// anything dot-named at both of its two levels, so a repository fetched for one
+/// entry can never be counted as a marketplace of its own — which it is not: the
+/// operator added one marketplace and this is a directory that marketplace's index
+/// pointed at. Inside the tree rather than beside it so that
+/// `plugin marketplace remove` takes it away with everything else the marketplace
+/// brought down.
+const ENTRIES: &str = ".entries";
+
+/// The directory a bundle is actually in, fetching it where it is not here yet.
+///
+/// **A local source is already on the disk and this does nothing at all.** 53 of
+/// the official index's 291 entries are that shape. The other 238 name another
+/// repository, and this is where that repository is brought down — through
+/// [`crate::fetch`], which owns every spawn, at the commit or the tag the index
+/// named, with the URL re-derived from [`crate::fetch::from_url`] so the string
+/// reaching git is one io-cli built.
+///
+/// The `path` an entry names is joined **component by component, plain names
+/// only**, exactly as a local source is: it is a value out of a stranger's file
+/// and the directory it addresses is inside the clone or the entry addresses the
+/// clone's root.
+pub fn fetched(bundle: &Bundle, marketplaces: &Path, staging: &Path) -> Result<PathBuf, String> {
+    let Some(crate::adapt::Source::Remote(remote)) = &bundle.source else {
+        return Ok(bundle.dir.clone());
+    };
+    let named = crate::fetch::from_url(&remote.url).ok_or_else(|| {
+        let mut out = String::from("io reads a marketplace entry only from ");
+        out.push_str(crate::fetch::HOST);
+        out.push_str("<owner>/<repo>, and ");
+        out.push_str(&bounded(&plain(&remote.url)));
+        out.push_str(" is not that, so it is not fetched");
+        out
+    })?;
+    let pin = crate::fetch::Pin::named(remote.reference.as_deref(), remote.sha.as_deref())
+        .ok_or_else(|| {
+            let mut out = String::from("the index pins ");
+            out.push_str(&bundle.label());
+            out.push_str(" to something io will not put on a command line, so it is not fetched");
+            out
+        })?;
+
+    let into = at(marketplaces.join(ENTRIES).as_path(), &named);
+    match crate::fetch::clone_at(&crate::fetch::url(&named), &into, staging, &pin) {
+        crate::fetch::Fetched::Cloned(dir) | crate::fetch::Fetched::Already(dir) => {
+            Ok(match &remote.path {
+                Some(said) => local_dir(&dir, said),
+                None => dir,
+            })
+        }
+        // `sentence` answers `None` only for `Cloned`, which the arm above takes,
+        // so this is the failure's own words and never a default. The fallback is
+        // written all the same rather than unwrapped: an ending added upstream
+        // would otherwise turn a refusal into a panic on the consent surface.
+        other => Err(other
+            .sentence()
+            .unwrap_or_else(|| String::from("the fetch did not finish and said nothing"))),
+    }
 }
 
 /// What io-cli says when it has no home of its own to keep a marketplace in.

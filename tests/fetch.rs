@@ -414,7 +414,11 @@ fn said(argv: &[OsString]) -> Vec<String> {
 /// and the assertion above it fails on the elements.
 #[test]
 fn f6_an_unpinned_fetch_is_still_one_shallow_clone_of_five_elements() {
-    let steps = fetch::steps("https://example.invalid/x.git", Path::new("/tmp/x"), &fetch::Pin::Head);
+    let steps = fetch::steps(
+        "https://example.invalid/x.git",
+        Path::new("/tmp/x"),
+        &fetch::Pin::Head,
+    );
 
     assert_eq!(steps.len(), 1, "one invocation, counted");
     assert_eq!(
@@ -461,7 +465,9 @@ fn f5_a_commit_pinned_fetch_names_the_sha_in_its_fetch_and_checks_out_fetch_head
     assert_eq!(
         steps
             .iter()
-            .filter(|step| said(step).contains(&"30287f5e3f122a646d1ac5ca3ab96e130c52a3ad".to_string()))
+            .filter(
+                |step| said(step).contains(&"30287f5e3f122a646d1ac5ca3ab96e130c52a3ad".to_string())
+            )
             .count(),
         1,
         "the sha appears in exactly one invocation — the fetch that asks for it. \
@@ -516,7 +522,10 @@ fn f5_a_ref_pinned_fetch_is_one_clone_carrying_the_tag() {
 #[test]
 fn f5_a_commit_beats_a_tag_where_an_entry_names_both() {
     assert_eq!(
-        fetch::Pin::named(Some("v1.5.5"), Some("30287f5e3f122a646d1ac5ca3ab96e130c52a3ad")),
+        fetch::Pin::named(
+            Some("v1.5.5"),
+            Some("30287f5e3f122a646d1ac5ca3ab96e130c52a3ad")
+        ),
         Some(fetch::Pin::Commit(
             "30287f5e3f122a646d1ac5ca3ab96e130c52a3ad".to_string()
         )),
@@ -530,7 +539,12 @@ fn f5_a_commit_beats_a_tag_where_an_entry_names_both() {
 /// the argv looked like when it left the builder.
 #[test]
 fn f5_a_pin_that_could_become_an_argument_is_refused() {
-    for bad in ["--upload-pack=touch /tmp/pwned", "-x", "not-hex-at-all", "abc"] {
+    for bad in [
+        "--upload-pack=touch /tmp/pwned",
+        "-x",
+        "not-hex-at-all",
+        "abc",
+    ] {
         assert_eq!(
             fetch::Pin::named(None, Some(bad)),
             None,

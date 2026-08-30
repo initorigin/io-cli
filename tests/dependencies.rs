@@ -1149,9 +1149,13 @@ fn n1_json_is_deserialized_in_the_permitted_modules_and_nowhere_else() {
             );
         }
 
-        if ["serde_json::from_str", "serde_json::from_slice", "serde_json::from_reader"]
-            .iter()
-            .any(|call| code.contains(call))
+        if [
+            "serde_json::from_str",
+            "serde_json::from_slice",
+            "serde_json::from_reader",
+        ]
+        .iter()
+        .any(|call| code.contains(call))
         {
             readers.push(path);
         }
