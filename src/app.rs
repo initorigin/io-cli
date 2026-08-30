@@ -192,6 +192,23 @@ pub struct App {
     /// question with prose — and because only one of them authorizes anything.
     /// Both are modal, and [`App::modal`] is the one place that knows it.
     intent: Option<crate::intent::Intent>,
+    /// Deliveries that arrived while one was already on screen.
+    ///
+    /// **The defect this closes (0.33.0):** [`Self::open_intent`] assigned
+    /// `intent` unconditionally, so a second question arriving mid-answer replaced
+    /// the first and dropped its reply channel — and a dropped channel is `None`,
+    /// which io-harness reads as *pause the run and keep the question*. The first
+    /// question became a silent pause nobody was ever shown. The mpsc has always
+    /// carried N; only this field assumed one.
+    ///
+    /// **Invariant: empty whenever `intent` is `None`.** A delivery is held only
+    /// because something is on screen, and the moment the screen frees up the next
+    /// one takes it — otherwise a run would sit waiting on an overlay that nothing
+    /// will ever open. Held here rather than left in the channel because the
+    /// driver's select arm must be allowed to keep draining: a question left
+    /// unreceived is indistinguishable, from the far end, from one nobody will
+    /// answer.
+    held: std::collections::VecDeque<crate::intent::Questions>,
     /// The plan on screen, if one is waiting to be decided.
     ///
     /// While it is up io-harness's own policy denies every write and every exec
@@ -362,6 +379,7 @@ impl App {
             pending: Vec::new(),
             approval: None,
             intent: None,
+            held: std::collections::VecDeque::new(),
             plan: None,
             remembered: Vec::new(),
             root: std::path::PathBuf::new(),
@@ -428,10 +446,43 @@ impl App {
     ///
     /// Committed nowhere, for the same reason an approval is not: a question in
     /// the scrollback can be scrolled away from a run that is blocked on it. The
-    /// transcript gets `QuestionAsked` from the event stream, which is the note
+    /// transcript gets `QuestionsAsked` from the event stream, which is the note
     /// that the run stopped rather than the question itself.
-    pub fn open_intent(&mut self, asked: crate::intent::Asked) {
-        self.intent = Some(crate::intent::Intent::new(asked));
+    ///
+    /// **A delivery arriving while one is on screen is HELD, not dropped** (F3,
+    /// 0.33.0). Until this release the assignment was unconditional, so the second
+    /// question replaced the first and took its reply channel with it — see
+    /// [`Self::held`] for what that did to the run behind it. Nothing about the
+    /// second question is decided here beyond *later*: it opens by itself the
+    /// moment [`Self::answer_intent`] frees the screen.
+    ///
+    /// **This is the whole of the driver's select arm.** Handing the guard to the
+    /// library rather than writing it beside the `recv` is not tidiness: nothing
+    /// under `tests/` links the driver, so a guard written there is a decision no
+    /// test can assert and no sabotage can falsify — which is exactly how this
+    /// defect survived three releases.
+    ///
+    /// Takes anything a delivery can be made from, so both the channel's own
+    /// [`crate::intent::Questions`] and a bare [`crate::intent::Asked`] are
+    /// accepted without a second entry point.
+    pub fn open_intent(&mut self, questions: impl Into<crate::intent::Questions>) {
+        let questions = questions.into();
+        if self.intent.is_some() {
+            self.held.push_back(questions);
+            return;
+        }
+        self.intent = Some(crate::intent::Intent::new(questions));
+    }
+
+    /// Put the next held delivery on screen, if the screen is free and there is
+    /// one. The one place [`Self::held`]'s invariant is restored.
+    fn open_held(&mut self) {
+        if self.intent.is_some() {
+            return;
+        }
+        if let Some(next) = self.held.pop_front() {
+            self.intent = Some(crate::intent::Intent::new(next));
+        }
     }
 
     /// A question a *previous* process left in the store, opened to be answered
@@ -448,40 +499,61 @@ impl App {
         self.intent = Some(intent);
     }
 
-    /// Answer the open question, or decline it with `None`.
+    /// Answer the open delivery — one entry per question it carried, in the order
+    /// it carried them, `None` for each one declined.
     ///
     /// Declining is not a refusal: io-harness persists the question and pauses
     /// the run, so the answer can arrive after this process has exited. What is
     /// said in the scrollback says which of the two happened.
+    ///
+    /// **A batch with one `None` in it parks, and the scrollback has to say so**
+    /// (F2). The harness commits a batch only when every entry is `Some`, so four
+    /// answers out of five stop the run exactly as thoroughly as none of them
+    /// would — and a transcript showing four `answered` lines and nothing else
+    /// would describe a turn that carried on. The closing line is that correction,
+    /// and it is committed only when there is something to correct.
     ///
     /// **Returns what nobody took.** A live question's answer travels down the
     /// channel its run is blocked on and this is `None`; a question opened from
     /// the store has no such channel, so the answer comes back here and the
     /// caller must hand it to [`crate::resume`]. Discarding it there would drop
     /// the operator's answer in silence, which is why it is returned rather than
-    /// swallowed as it was before 0.23.0.
+    /// swallowed as it was before 0.23.0. Still a single `Option` because only the
+    /// stored path can produce one, and a stored overlay is one question: a
+    /// `PendingQuestion` is one row of the store.
     #[must_use = "a resumed question's answer is delivered by the caller, not by the overlay"]
-    pub fn answer_intent(&mut self, answer: Option<String>) -> Option<Option<String>> {
+    pub fn answer_intent(&mut self, answers: Vec<Option<String>>) -> Option<Option<String>> {
         let intent = self.intent.take()?;
-        match &answer {
-            Some(text) => self.record(
-                Tone::Muted,
-                format!("answered {} {text}", self.theme.glyphs.dash),
-            ),
-            // **Declining is a real answer, so it is not a warning.** io-harness
-            // documents `None` as "nobody here can answer this": the question is
-            // persisted and the run pauses, resumable. Nothing has gone wrong and
-            // nothing was refused — the operator chose the option the surface
-            // offers them, and `Tone::Warning`'s own word is `warning`.
-            None => self.record(
+        let dash = self.theme.glyphs.dash;
+        for answer in &answers {
+            match answer {
+                Some(text) => self.record(Tone::Muted, format!("answered {dash} {text}")),
+                // **Declining is a real answer, so it is not a warning.**
+                // io-harness documents `None` as "nobody here can answer this":
+                // the question is persisted and the run pauses, resumable. Nothing
+                // has gone wrong and nothing was refused — the operator chose the
+                // option the surface offers them, and `Tone::Warning`'s own word
+                // is `warning`.
+                None => self.record(
+                    Tone::Muted,
+                    format!("left unanswered {dash} the run pauses and keeps the question"),
+                ),
+            }
+        }
+        if answers.len() > 1 && answers.iter().any(Option::is_none) {
+            self.record(
                 Tone::Muted,
                 format!(
-                    "left unanswered {} the run pauses and keeps the question",
-                    self.theme.glyphs.dash
+                    "the run pauses and keeps all {} {dash} a batch is committed only when every \
+                     question is answered",
+                    answers.len()
                 ),
-            ),
+            );
         }
-        intent.resolve(answer)
+        let undelivered = intent.resolve(answers);
+        // The screen is free, so whatever arrived while it was not takes it.
+        self.open_held();
+        undelivered
     }
 
     /// A plan was proposed and nothing has been done about it yet.
@@ -554,6 +626,13 @@ impl App {
         // opens two today, and this must not be the line that makes that
         // assumption load-bearing.
         let had_intent = self.intent.take().is_some();
+        // **And everything held behind it.** Leaving a parked overlay is "get me
+        // out of this", and a held delivery that opened in its place would be the
+        // opposite of what the key was pressed for. Dropping the deliveries drops
+        // their reply channels, which is `None` — the run those questions belong
+        // to parks with them persisted, which is where a leave leaves things
+        // anyway.
+        self.held.clear();
         let had_plan = self.plan.take().is_some();
         if had_intent || had_plan {
             self.record(
@@ -1128,6 +1207,11 @@ impl App {
         // pauses a run rather than the one that denies it — and this run has
         // already stopped, so the pause costs nothing that was still moving.
         self.intent = None;
+        // Everything held behind it goes with it, and for the same reason: the run
+        // that asked those questions is the run that has just ended, so there is
+        // nobody left to answer to. The senders drop, which is `None`, which is
+        // the pause — and this run has already stopped.
+        self.held.clear();
         // And for a plan, where `None` is the safe direction twice over: the run
         // is over, and a plan nobody decided is a plan nothing acted on.
         self.plan = None;
@@ -1795,12 +1879,15 @@ impl App {
         // key is the operator typing prose, which is why this arm is below the
         // approval's and above everything else.
         if let Some(open) = self.intent.as_mut().filter(|_| !interrupting) {
-            if let Some(answer) = open.key(key) {
+            // `Some` only once every question of the delivery has been decided —
+            // the overlay walks a batch itself, so this arm cannot tell a batch
+            // from a single question and does not need to.
+            if let Some(answers) = open.key(key) {
                 // Handed back rather than dropped when the question came from the
                 // store: `answer_intent` returns whatever no run was waiting for,
                 // and the one thing that must never happen to an operator's
                 // answer is that it goes nowhere quietly.
-                if let Some(undelivered) = self.answer_intent(answer) {
+                if let Some(undelivered) = self.answer_intent(answers) {
                     return Command::Answered(undelivered);
                 }
             }

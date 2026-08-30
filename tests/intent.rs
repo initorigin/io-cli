@@ -15,7 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::App;
 use io_cli::intent::{Asked, Intent};
 use io_cli::theme::DARK;
-use io_harness::{PendingQuestion, Question, Responder};
+use io_harness::{Choice, PendingQuestion, Question, Responder};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -168,11 +168,15 @@ async fn the_overlay_refuses_a_paste_and_keeps_the_composer_clear() {
 fn the_question_its_context_and_its_choices_are_all_drawn() {
     let (answerer, mut questions) = io_cli::intent::channel();
     let responder: Arc<dyn Responder> = Arc::new(answerer);
-    let question = Question {
-        question: "drop the column or keep it?".to_string(),
-        context: Some("it has 40 rows and one caller".to_string()),
-        choices: vec!["drop".to_string(), "keep".to_string()],
-    };
+    // **The offers are spelled with words the question does not contain**, and
+    // that is the whole assertion below. Through 0.32.0 this fixture offered
+    // `drop` and `keep` against a question reading "drop the column or keep it?",
+    // so the line checking that the choices are drawn passed on the question text
+    // alone — it could not fail while the question rendered at all, which is a
+    // gate asserting nothing.
+    let question = Question::new("drop the column or keep it?")
+        .with_context("it has 40 rows and one caller")
+        .with_choices(["created_at", "updated_at"]);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -193,8 +197,8 @@ fn the_question_its_context_and_its_choices_are_all_drawn() {
         "the context is shown"
     );
     assert!(
-        screen.contains("drop") && screen.contains("keep"),
-        "so are the choices",
+        screen.contains("created_at") && screen.contains("updated_at"),
+        "so are the choices, and neither word is in the question line above: {screen}",
     );
     assert!(
         screen.contains("Esc"),
@@ -213,11 +217,11 @@ async fn the_question_is_readable_and_answerable_with_no_colour() {
     let responder: Arc<dyn Responder> = Arc::new(answerer);
     let asking = tokio::spawn(async move {
         responder
-            .answer(&Question {
-                question: "drop the column or keep it?".to_string(),
-                context: Some("it has 40 rows".to_string()),
-                choices: vec!["drop".to_string()],
-            })
+            .answer(
+                &Question::new("drop the column or keep it?")
+                    .with_context("it has 40 rows")
+                    .with_choices(["drop"]),
+            )
             .await
     });
 
@@ -241,12 +245,15 @@ async fn the_question_is_readable_and_answerable_with_no_colour() {
 
 /// The question every test below is asked, live or stored — one fixture, so the
 /// two construction paths are compared on identical material.
+///
+/// The offers are words the question does not contain, for the reason
+/// [`the_question_its_context_and_its_choices_are_all_drawn`] gives: an offer
+/// spelled with a word already in the question line makes "the choices are drawn"
+/// a claim the question's own rendering satisfies.
 fn question() -> Question {
-    Question {
-        question: "drop the column or keep it?".to_string(),
-        context: Some("it has 40 rows and one caller".to_string()),
-        choices: vec!["drop".to_string(), "keep".to_string()],
-    }
+    Question::new("drop the column or keep it?")
+        .with_context("it has 40 rows and one caller")
+        .with_choices(["created_at", "updated_at"])
 }
 
 /// A `PendingQuestion` the store itself wrote and read back.
@@ -285,7 +292,18 @@ fn live(question: Question) -> (Intent, tokio::sync::oneshot::Receiver<Option<St
 /// hold a live question, so a stored one has to be rendered directly, and holding
 /// the live one to the same helper is what makes the comparison a comparison.
 fn drawn_overlay(overlay: &mut Intent, theme: &io_cli::theme::Theme) -> String {
-    let (mut screen, _recorder) = support::screen_of(80, 12, 12);
+    drawn_overlay_at(overlay, 80, 12, theme)
+}
+
+/// The same, at a stated size. A block whose height depends on the width it wraps
+/// at cannot be asserted through a helper that hard-codes one.
+fn drawn_overlay_at(
+    overlay: &mut Intent,
+    width: u16,
+    height: u16,
+    theme: &io_cli::theme::Theme,
+) -> String {
+    let (mut screen, _recorder) = support::screen_of(width, height, height);
     screen
         .draw(|frame| overlay.render(frame, frame.area(), theme))
         .expect("a frame");
@@ -303,8 +321,8 @@ fn the_properties_both_paths_owe(open: impl Fn() -> Intent) {
         "the context: {screen}",
     );
     assert!(
-        screen.contains("drop") && screen.contains("keep"),
-        "the choices, as offers: {screen}",
+        screen.contains("created_at") && screen.contains("updated_at"),
+        "the choices, as offers, in words the question line does not carry: {screen}",
     );
     assert!(screen.contains("Esc"), "the way out is a word: {screen}");
 
@@ -323,14 +341,14 @@ fn the_properties_both_paths_owe(open: impl Fn() -> Intent) {
     }
     assert_eq!(
         answering.key(key(KeyCode::Enter)),
-        Some(Some("keep it".to_string())),
+        Some(vec![Some("keep it".to_string())]),
         "and the answer is exactly what was typed",
     );
 
     let mut declining = open();
     assert_eq!(
         declining.key(key(KeyCode::Esc)),
-        Some(None),
+        Some(vec![None]),
         "Esc declines, and declining carries no answer",
     );
 }
@@ -356,7 +374,7 @@ async fn a_live_answer_goes_down_the_channel_and_leaves_the_caller_nothing_to_do
     let (overlay, reply) = live(question());
 
     assert_eq!(
-        overlay.resolve(Some("keep it".to_string())),
+        overlay.resolve(vec![Some("keep it".to_string())]),
         None,
         "nothing comes back: the turn took it",
     );
@@ -379,7 +397,7 @@ fn a_stored_answer_comes_back_to_the_caller_that_has_to_deliver_it() {
     let overlay = Intent::resumed(&stored(&question()));
 
     assert_eq!(
-        overlay.resolve(Some("keep it".to_string())),
+        overlay.resolve(vec![Some("keep it".to_string())]),
         Some(Some("keep it".to_string())),
         "the caller resumes the run with this",
     );
@@ -392,9 +410,9 @@ fn a_stored_answer_comes_back_to_the_caller_that_has_to_deliver_it() {
 fn esc_on_a_stored_question_leaves_the_run_parked_with_no_answer() {
     let mut overlay = Intent::resumed(&stored(&question()));
 
-    assert_eq!(overlay.key(key(KeyCode::Esc)), Some(None));
+    assert_eq!(overlay.key(key(KeyCode::Esc)), Some(vec![None]));
     assert_eq!(
-        overlay.resolve(None),
+        overlay.resolve(vec![None]),
         Some(None),
         "no answer is delivered, and none is invented",
     );
@@ -445,17 +463,15 @@ fn a_stored_question_is_readable_with_no_colour_at_all() {
 /// eight rows of the viewport through 0.31.0 and left the operator with nothing
 /// to type into.
 fn five_choices() -> Question {
-    Question {
-        question: "which column should the migration drop?".to_string(),
-        context: Some("the table has 40 rows and one caller".to_string()),
-        choices: vec![
-            "created_at".to_string(),
-            "updated_at".to_string(),
-            "deleted_at".to_string(),
-            "archived_at".to_string(),
-            "expired_at".to_string(),
-        ],
-    }
+    Question::new("which column should the migration drop?")
+        .with_context("the table has 40 rows and one caller")
+        .with_choices([
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "archived_at",
+            "expired_at",
+        ])
 }
 
 /// **O1 — the answer composer is rendered and focusable, at 80x24 and at 80x8.**
@@ -525,7 +541,7 @@ fn o2_enter_on_an_offer_sends_that_offer_verbatim() {
     );
     assert_eq!(
         overlay.key(key(KeyCode::Enter)),
-        Some(Some("expired_at".to_string())),
+        Some(vec![Some("expired_at".to_string())]),
         "the offer the marker was on, exactly as the agent spelled it",
     );
 }
@@ -551,7 +567,7 @@ fn o2_typing_from_an_offer_answers_rather_than_filtering() {
     }
     assert_eq!(
         overlay.key(key(KeyCode::Enter)),
-        Some(Some("none of those".to_string())),
+        Some(vec![Some("none of those".to_string())]),
         "the words the operator typed, not the offer the marker started on",
     );
 }
@@ -570,7 +586,7 @@ fn o2_folding_the_composer_keeps_what_was_typed() {
 
     assert_eq!(
         overlay.key(key(KeyCode::Enter)),
-        Some(Some("half written".to_string())),
+        Some(vec![Some("half written".to_string())]),
         "the composer lost its contents when the marker left it",
     );
 }
@@ -597,7 +613,7 @@ fn o2_a_question_with_no_choices_is_the_surface_it_always_was() {
     }
     assert_eq!(
         overlay.key(key(KeyCode::Enter)),
-        Some(Some("i meant the second one".to_string())),
+        Some(vec![Some("i meant the second one".to_string())]),
     );
 }
 
@@ -611,13 +627,13 @@ fn o2_a_question_with_no_choices_is_the_surface_it_always_was() {
 #[test]
 fn o4_esc_declines_from_the_offers_as_well_as_from_the_composer() {
     let (mut from_composer, _a) = live(five_choices());
-    assert_eq!(from_composer.key(key(KeyCode::Esc)), Some(None));
+    assert_eq!(from_composer.key(key(KeyCode::Esc)), Some(vec![None]));
 
     let (mut from_offers, _b) = live(five_choices());
     from_offers.key(key(KeyCode::Up));
     assert_eq!(
         from_offers.key(key(KeyCode::Esc)),
-        Some(None),
+        Some(vec![None]),
         "Esc on an offer declines too, rather than choosing it",
     );
 }
@@ -676,5 +692,688 @@ fn o16_the_overlay_asks_for_rows_that_grow_with_the_question() {
         long.rows_wanted(40, &DARK) > long.rows_wanted(200, &DARK),
         "the row demand ignores wrapping, which is the `lines.len()` measurement \
          this release replaced",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.33.0 — a batch of questions is one overlay, and a second question is held
+// rather than dropped.
+// ---------------------------------------------------------------------------
+
+/// Five independent questions, the shape io-harness 0.72.0's `answer_all` exists
+/// for and the shape that arrived as five consecutive overlays before it.
+fn five_questions() -> Vec<Question> {
+    (1..=5)
+        .map(|at| Question::new(format!("question {at} of the migration?")))
+        .collect()
+}
+
+/// **F2 — a batch crosses the channel as ONE delivery and comes back in the order
+/// it was asked.**
+///
+/// The count is what catches the regression. io-harness's default `answer_all`
+/// body loops `answer` once per question, so without the override the first
+/// `recv` yields a delivery of **one** and the second question is not even sent
+/// until the first has been answered — five overlays, each hiding the next.
+///
+/// Sabotage: delete `Answerer::answer_all` and fall back to the trait default,
+/// under which the length assertion fails at 1. Sabotage the order by collecting
+/// the answers into a set or by delivering them as they are decided, under which
+/// the final comparison fails while every other assertion here still passes.
+#[tokio::test]
+async fn t07_a_batch_crosses_as_one_delivery_and_comes_back_in_order() {
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let responder: Arc<dyn Responder> = Arc::new(answerer);
+    let asking = tokio::spawn(async move {
+        let batch = five_questions();
+        responder.answer_all(&batch).await
+    });
+
+    let batch = questions.recv().await.expect("the batch reaches the ui");
+    assert_eq!(
+        batch.len(),
+        5,
+        "five questions did not cross as one unit, so the interface is still \
+         answering them one at a time",
+    );
+
+    let mut app = app();
+    app.open_intent(batch);
+    for at in 1..=5 {
+        assert!(
+            app.asking(),
+            "the overlay closed after {} answers, and a batch that is not whole \
+             parks the run",
+            at - 1,
+        );
+        typed(&mut app, &format!("answer {at}"));
+        app.key(key(KeyCode::Enter));
+    }
+    assert!(
+        !app.asking(),
+        "the overlay is gone once every question is decided"
+    );
+
+    assert_eq!(
+        asking.await.expect("the responder future"),
+        (1..=5)
+            .map(|at| Some(format!("answer {at}")))
+            .collect::<Vec<_>>(),
+        "the run received the answers out of the order it asked the questions",
+    );
+}
+
+/// **F2 — declining one question of a batch lands `None` in exactly that position,
+/// and the surface says the run parks rather than reporting success.**
+///
+/// io-harness commits a batch only when every entry is `Some`: four answers out of
+/// five park the whole batch for a human. So the one thing this must not do is
+/// look like an answered turn.
+///
+/// Sabotage: make `Esc` decline the whole batch, under which the vector comes back
+/// all-`None` and the position assertions fail. Sabotage the notice by recording
+/// only the per-question lines, under which the scrollback claims four answers and
+/// never says the run stopped.
+#[tokio::test]
+async fn t07_declining_one_question_parks_the_batch_and_says_so() {
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let responder: Arc<dyn Responder> = Arc::new(answerer);
+    let asking = tokio::spawn(async move {
+        let batch = five_questions();
+        responder.answer_all(&batch).await
+    });
+
+    let mut app = app();
+    app.open_intent(questions.recv().await.expect("the batch"));
+    for at in 1..=5 {
+        if at == 3 {
+            // The one nobody here can answer. It decides *this* question and
+            // moves on rather than closing the overlay.
+            app.key(key(KeyCode::Esc));
+            assert!(
+                app.asking(),
+                "Esc closed the whole batch, so four questions nobody declined \
+                 were declined for them",
+            );
+            continue;
+        }
+        typed(&mut app, &format!("answer {at}"));
+        app.key(key(KeyCode::Enter));
+    }
+
+    let answers = asking.await.expect("the responder future");
+    assert_eq!(
+        answers.len(),
+        5,
+        "one entry per question, whatever was decided"
+    );
+    assert_eq!(answers[2], None, "the declined question is the third one");
+    for (at, answer) in answers.iter().enumerate() {
+        if at == 2 {
+            continue;
+        }
+        assert_eq!(
+            answer.as_deref(),
+            Some(format!("answer {}", at + 1).as_str()),
+            "question {} lost its answer to the decline beside it",
+            at + 1,
+        );
+    }
+
+    let said = said(&mut app);
+    assert!(
+        said.contains("pauses"),
+        "the scrollback reports a finished turn rather than a parked run: {said}",
+    );
+}
+
+/// **F3 — a second question arriving while one is open is HELD, and both reply
+/// channels survive.**
+///
+/// The defect this closes: `App::open_intent` assigned the overlay
+/// unconditionally, so the second question replaced the first and dropped its
+/// reply channel — and a dropped channel is `None`, which io-harness reads as
+/// *pause the run and keep the question*. The first question became a silent
+/// pause that nobody was ever shown. The mpsc has always carried N; only the
+/// interface assumed one.
+///
+/// **This test fails before the fix**, on the first assertion: the first future
+/// resolves `None` while the operator's words go to the second question.
+///
+/// Sabotage: restore the unconditional assignment, or hold the second question and
+/// never open it — the first fails the answer comparison, the second fails
+/// `asking()` after the first answer.
+#[tokio::test]
+async fn f3_a_second_question_is_held_rather_than_replacing_the_first() {
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let responder: Arc<dyn Responder> = Arc::new(answerer);
+
+    // Asked and received one at a time, so which question is which is a fact
+    // rather than a race.
+    let first = {
+        let responder = Arc::clone(&responder);
+        tokio::spawn(async move { responder.answer(&Question::new("the first?")).await })
+    };
+    let one = questions.recv().await.expect("the first question");
+    let second = {
+        let responder = Arc::clone(&responder);
+        tokio::spawn(async move { responder.answer(&Question::new("the second?")).await })
+    };
+    let two = questions.recv().await.expect("the second question");
+
+    let mut app = app();
+    app.open_intent(one);
+    app.open_intent(two);
+
+    typed(&mut app, "answering the first");
+    app.key(key(KeyCode::Enter));
+    assert!(
+        app.asking(),
+        "the held question did not open, so a run is still waiting on an overlay \
+         that will never be drawn",
+    );
+
+    typed(&mut app, "answering the second");
+    app.key(key(KeyCode::Enter));
+    assert!(!app.asking(), "and nothing is left holding the keyboard");
+
+    assert_eq!(
+        first.await.expect("the first responder future"),
+        Some("answering the first".to_string()),
+        "the first question's channel was dropped by the second question arriving",
+    );
+    assert_eq!(
+        second.await.expect("the second responder future"),
+        Some("answering the second".to_string()),
+    );
+}
+
+/// **A `multiple` question is submitted in io-harness's own spelling.**
+///
+/// Compared against `Question::answer_of`'s own output and never against a
+/// literal: the joiner lives in the harness so that two interfaces answering the
+/// same question produce the same text, and a literal here is io-cli quietly
+/// forking that spelling the next time the harness changes it.
+///
+/// Sabotage: join the labels in io-cli — with `" and "`, or with `", "` written out
+/// here — under which the first arm fails on any two-label answer and keeps passing
+/// on the one-label arm, which is exactly how a fork of a joiner goes unnoticed.
+#[test]
+fn t07_a_multiple_question_answers_in_the_harness_own_spelling() {
+    let plural = || {
+        Question::new("which platforms should the build target?")
+            .with_choices(["linux", "windows", "macos"])
+            .multiple()
+    };
+
+    let (mut overlay, _reply) = live(plural());
+    // The marker opens on the free-text row, as it does on every question. Up is
+    // the last offer.
+    overlay.key(key(KeyCode::Up));
+    overlay.key(key(KeyCode::Char(' ')));
+    overlay.key(key(KeyCode::Up));
+    overlay.key(key(KeyCode::Char(' ')));
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(vec![Some(Question::answer_of(["windows", "macos"]))]),
+        "the marked offers, in the caller's row order and in the harness's spelling",
+    );
+
+    // **Nothing marked is still an answer**: `Picker::chosen` falls back to the
+    // row under the marker, so `Enter` on an offer of a plural question sends that
+    // offer rather than nothing at all.
+    let (mut unmarked, _reply) = live(plural());
+    unmarked.key(key(KeyCode::Up));
+    assert_eq!(
+        unmarked.key(key(KeyCode::Enter)),
+        Some(vec![Some(Question::answer_of(["macos"]))]),
+        "a plural question with nothing marked answered with nothing",
+    );
+}
+
+/// **The spacebar on a single-answer question is still a space.**
+///
+/// `Picker::accepting_several` costs the spacebar, so a question that does not
+/// take several must never opt in — otherwise every two-word answer in the
+/// product loses its spaces to a mark nobody asked for.
+///
+/// Sabotage: call `accepting_several` unconditionally in `Intent::list`, under
+/// which the space is swallowed as a toggle and the answer comes back
+/// `"twowords"`.
+#[test]
+fn t07_the_spacebar_on_a_single_answer_question_is_still_a_space() {
+    let (mut overlay, _reply) = live(five_choices());
+    // From an offer, which is the only place a mark could be made at all.
+    overlay.key(key(KeyCode::Up));
+    for ch in "two words".chars() {
+        assert_eq!(
+            overlay.key(key(KeyCode::Char(ch))),
+            None,
+            "typing does not close the overlay",
+        );
+    }
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(vec![Some("two words".to_string())]),
+        "the spacebar was taken from a question that takes one answer",
+    );
+}
+
+/// **F9 — the free-text row is last and holds the marker, on every question of a
+/// batch as on a single one.** Asserted by index rather than off the screen: a
+/// row string can be produced by a question line that happens to contain the same
+/// words, and 0.32.0's decision is about *which row is focused*, which no screen
+/// assertion can see.
+///
+/// Sabotage: focus row 0 when the overlay moves to the next question of a batch —
+/// under which the second arm fails while every single-question test passes, and
+/// a reflexive `Enter` becomes silent agreement with an offer nobody read.
+#[tokio::test]
+async fn f9_the_free_text_row_is_last_and_focused_on_every_question_of_a_batch() {
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let responder: Arc<dyn Responder> = Arc::new(answerer);
+    let _asking = tokio::spawn(async move {
+        let batch = vec![five_choices(), Question::new("and then what?")];
+        responder.answer_all(&batch).await
+    });
+
+    let mut overlay = Intent::new(questions.recv().await.expect("the batch"));
+    // Five offers on the first question, none on the second: the free-text row is
+    // `choices.len()` in both, which is the index the unfold is keyed on.
+    for offers in [5usize, 0] {
+        let rows = overlay.offers().rows();
+        assert_eq!(
+            rows.len(),
+            offers + 1,
+            "the free-text row is missing, or something else is in the list",
+        );
+        assert_eq!(
+            rows[offers].label,
+            io_cli::intent::OWN_WORDS,
+            "the free-text row is not the last one",
+        );
+        assert_eq!(
+            overlay.offers().selected(),
+            offers,
+            "the marker did not open on the row that takes prose",
+        );
+        // Decide this one, which moves the overlay to the next question.
+        overlay.key(key(KeyCode::Char('x')));
+        overlay.key(key(KeyCode::Enter));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0.33.0 — an offer can say more than its label: F4 the description, F5 the
+// preview, F6 the room the preview is given.
+// ---------------------------------------------------------------------------
+
+/// Offers that say more than their labels.
+///
+/// **Every word asserted below appears exactly once in this fixture**, and never
+/// in the question, the context, a label or the key line. That is not tidiness:
+/// two gates in this file were vacuous because `contains` found their needle in
+/// the question text, so a description asserted with words the question already
+/// says proves that the question was drawn.
+fn explained() -> Question {
+    Question::new("which column should the migration drop?")
+        .with_context("the table has 40 rows and one caller")
+        .with_choices([
+            Choice::new("created_at").describe("stamped once and never read since"),
+            Choice::new("updated_at"),
+            Choice::new("archived_at").preview("ALTER TABLE ledger\n  DROP COLUMN archived_at;"),
+        ])
+}
+
+/// **F4 — a description takes a row under its label, and an offer without one
+/// takes no row at all.**
+///
+/// The count is what catches it. A description drawn into the row's `detail`
+/// instead — the same words, on the same line — leaves four rows where this wants
+/// five, and looks correct in any screen assertion that only asks whether the
+/// sentence is present.
+///
+/// Sabotage: push a description row for every offer rather than for the described
+/// ones, under which the count is seven; drop the row entirely and it is four;
+/// build it with `Row::new` rather than `Row::heading` and the `heading`
+/// assertion fails, which is the one that keeps `Enter` from answering the agent
+/// with its own explanation.
+#[test]
+fn f4_a_description_takes_a_row_and_an_offer_without_one_takes_none() {
+    let (mut overlay, _reply) = live(explained());
+
+    let rows = overlay.offers().rows().to_vec();
+    assert_eq!(
+        rows.len(),
+        5,
+        "three offers, one description and the free-text row is five rows: {:?}",
+        rows.iter().map(|row| &row.label).collect::<Vec<_>>(),
+    );
+    assert_eq!(rows[0].label, "created_at");
+    assert_eq!(
+        rows[1].label.trim(),
+        "stamped once and never read since",
+        "the description is not directly under the label it explains",
+    );
+    assert!(
+        rows[1].heading,
+        "the description is a selectable row, so Enter can answer the agent with \
+         its own explanation of an offer",
+    );
+    assert_eq!(
+        rows[2].label, "updated_at",
+        "the offer with no description grew a row anyway",
+    );
+    assert_eq!(rows[3].label, "archived_at");
+    assert_eq!(rows[4].label, io_cli::intent::OWN_WORDS);
+
+    // And it reaches the screen — always, rather than under the marker. The
+    // marker opens on the free-text row, so the preview on `archived_at` is
+    // **not** open, which is the whole difference between the two fields.
+    let screen = drawn_overlay(&mut overlay, &DARK);
+    assert!(
+        screen.contains("stamped once and never read since"),
+        "the description reached the row list and not the screen: {screen}",
+    );
+    assert!(
+        !screen.contains("ALTER TABLE"),
+        "a preview is drawn without its offer holding the marker, which puts \
+         every offer's block on the screen at once: {screen}",
+    );
+}
+
+/// Two offers, each with a preview nothing else on the screen says.
+fn two_previews() -> Question {
+    Question::new("which migration should run first?").with_choices([
+        Choice::new("widen the ledger")
+            .preview("ALTER TABLE ledger\n  ALTER COLUMN amount TYPE numeric;"),
+        Choice::new("backfill the ledger")
+            .preview("UPDATE ledger\n  SET amount = 0 WHERE amount IS NULL;"),
+    ])
+}
+
+/// **F5 — a preview unfolds under the offer that holds the marker, moving the
+/// marker folds it and opens the next, and only one is ever open.**
+///
+/// Asserted three ways round, because each catches a different mistake: nothing
+/// is open before an offer is marked, the marked offer's own block is the one
+/// drawn, and the block belonging to the other offer is absent every time.
+///
+/// Sabotage: draw every configured preview rather than the open one, under which
+/// the "two at once" assertions fail; key the unfold on the row that *was* marked
+/// rather than the row that is, under which the second and third frames show the
+/// wrong block.
+#[test]
+fn f5_a_preview_unfolds_under_the_marked_offer_and_only_one_is_ever_open() {
+    let (mut overlay, _reply) = live(two_previews());
+
+    let closed = drawn_overlay(&mut overlay, &DARK);
+    assert!(
+        !closed.contains("TYPE numeric") && !closed.contains("IS NULL"),
+        "a preview is unfolded while the marker is still on the free-text row: \
+         {closed}",
+    );
+
+    // Up from the free-text row lands on the second offer.
+    overlay.key(key(KeyCode::Up));
+    assert_eq!(overlay.offers().selected(), 1, "the marker did not move");
+    let second = drawn_overlay(&mut overlay, &DARK);
+    assert!(
+        second.contains("IS NULL"),
+        "the marked offer's preview is not drawn: {second}",
+    );
+    assert!(
+        !second.contains("TYPE numeric"),
+        "the other offer's preview is open at the same time: {second}",
+    );
+
+    overlay.key(key(KeyCode::Up));
+    assert_eq!(overlay.offers().selected(), 0);
+    let first = drawn_overlay(&mut overlay, &DARK);
+    assert!(
+        first.contains("TYPE numeric"),
+        "moving the marker did not open the next preview: {first}",
+    );
+    assert!(
+        !first.contains("IS NULL"),
+        "the preview the marker left did not fold: {first}",
+    );
+}
+
+/// **F5/O4 — `Enter` on an offer whose preview is open answers with the offer.**
+///
+/// The defect this closes is the one the release nearly shipped: through 0.32.0
+/// the free-text row was the only row that unfolded anything, so "something is
+/// unfolded" and "the operator is writing" were the same question and `Enter` was
+/// routed by the first. Give an offer a preview and that test starts answering
+/// `true` on the offers as well — `Enter` would go to the composer, which is
+/// empty, and the keypress would do nothing at all.
+///
+/// Sabotage: route `Enter` on `Picker::unfolded_now` again, under which this
+/// fails with `None` — the overlay still open and the run still stopped.
+#[test]
+fn f5_enter_on_an_offer_with_an_open_preview_answers_with_the_offer() {
+    let (mut overlay, _reply) = live(two_previews());
+    overlay.key(key(KeyCode::Up));
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(vec![Some("backfill the ledger".to_string())]),
+        "Enter over an open preview did not answer with the offer under it",
+    );
+}
+
+/// One offer, one preview, so the block's height is the only thing that moves.
+fn one_preview(preview: &str) -> Question {
+    Question::new("which migration?")
+        .with_choices([Choice::new("drop three columns").preview(preview)])
+}
+
+/// A preview of **one logical line** that wraps to several rows at a narrow
+/// width. The fixture is the test: a gate written against `lines.len()` sees one
+/// row here and one row in [`SHORT`], and cannot tell them apart.
+const LONG: &str =
+    "ALTER TABLE ledger DROP COLUMN archived_at, DROP COLUMN expired_at, DROP COLUMN deleted_at;";
+
+/// The control: one logical line that also *occupies* one row at that width.
+const SHORT: &str = "DROP COLUMN archived_at;";
+
+/// **F6 — the unfold is the WRAPPED height at the rendered width, not the count
+/// of lines in the preview.**
+///
+/// This is the defect 0.32.0 paid for in two overlays: a `Paragraph` with
+/// wrapping on occupies more rows than it has lines, and a surface that reserved
+/// `lines.len()` drew its block over rows the list had been promised.
+///
+/// The two fixtures have the **same logical line count** and different wrapped
+/// heights, so `lines.len()` cannot distinguish them and `rows::wrapped` must.
+/// Both halves are asserted: the room asked for, and the last word of the preview
+/// actually reaching the screen — a block reserved one row deep clips the rest
+/// silently, which is exactly how this failure hides.
+///
+/// Sabotage: measure with `preview.lines().count()` instead of `rows::wrapped`,
+/// under which the difference below is 0 and `deleted_at;` is off the screen.
+#[test]
+fn f6_the_unfold_is_the_wrapped_height_and_not_the_line_count() {
+    assert_eq!(
+        LONG.lines().count(),
+        SHORT.lines().count(),
+        "the fixtures differ in line count, so this proves nothing about wrapping",
+    );
+
+    let (long, _a) = live(one_preview(LONG));
+    let (short, _b) = live(one_preview(SHORT));
+    // Identical questions, identical labels, identical heads: the only thing that
+    // can differ between these two numbers is the block.
+    assert_eq!(
+        long.rows_wanted(200, &DARK),
+        short.rows_wanted(200, &DARK),
+        "at a width that fits both previews on one row they must ask for the same",
+    );
+    let extra = long
+        .rows_wanted(40, &DARK)
+        .saturating_sub(short.rows_wanted(40, &DARK));
+    assert!(
+        extra >= 2,
+        "a one-line preview that wraps asked for {extra} rows more than one that \
+         does not, which is the `lines.len()` measurement this release replaced",
+    );
+
+    // And the whole block is on the screen, not just the room for it.
+    let (mut overlay, _c) = live(one_preview(LONG));
+    overlay.key(key(KeyCode::Up));
+    let screen = drawn_overlay_at(&mut overlay, 40, 16, &DARK);
+    assert!(
+        screen.contains("deleted_at;"),
+        "the tail of a wrapped preview was clipped, so the block was reserved \
+         shorter than it draws: {screen}",
+    );
+}
+
+/// **F6 — the room a preview asks for is the same number before and after the
+/// frame that measures it.**
+///
+/// This is the ordering the criterion is about. A preview's height is a function
+/// of the width, the width is not known until something draws, and the driver
+/// reads the demand **before** it draws — so a measurement that only reaches
+/// `Picker::set_unfold` from inside `render` arrives a frame late: the overlay
+/// opens a block too short and grows under the operator's hands on their first
+/// keystroke.
+///
+/// Sabotage, in both directions, and each fails only this test. Measure the
+/// previews solely in `render` and the first number is short of the second.
+/// Measure them in `rows_wanted` *and* leave the block the picker is now
+/// reserving in the sum, and the second is larger than the first by the whole
+/// block — a viewport that grows every frame until it hits the ceiling.
+#[test]
+fn f6_the_room_asked_for_is_the_same_before_and_after_the_first_frame() {
+    let (mut overlay, _reply) = live(one_preview(LONG));
+
+    let before = overlay.rows_wanted(40, &DARK);
+    let _ = drawn_overlay_at(&mut overlay, 40, 16, &DARK);
+    assert_eq!(
+        overlay.rows_wanted(40, &DARK),
+        before,
+        "the room asked for changed once a frame had measured the preview",
+    );
+
+    // And it does not follow the marker either: the reservation is the largest
+    // configured block, not the open one.
+    overlay.key(key(KeyCode::Up));
+    assert_eq!(
+        overlay.rows_wanted(40, &DARK),
+        before,
+        "the demand moved when the marker did, which re-places the viewport on \
+         every arrow key",
+    );
+}
+
+/// **F5 — the quoted block is drawn in both glyph sets, and in each set's own
+/// character.**
+///
+/// The vocabulary is the markdown blockquote's — `theme.glyphs.rule` and a space
+/// — so it is `─ ` under Unicode and `- ` under ASCII, one cell plus a space
+/// either way. Asserted with the preview's own first words attached, because the
+/// ASCII `rule` is also the ASCII `dash` and a bare `contains("- ")` is satisfied
+/// by the key line above the list.
+///
+/// Sabotage: write the prefix as a literal `| ` or `> ` rather than taking it off
+/// the glyph set, under which both arms fail; take it off `glyphs.dash` instead
+/// and the Unicode arm fails, because an em dash is not the rule.
+#[test]
+fn f5_the_quoted_block_is_drawn_in_both_glyph_sets() {
+    let ascii = DARK.with_glyphs(io_cli::glyphs::ASCII);
+
+    let (mut unicode_overlay, _a) = live(one_preview(SHORT));
+    unicode_overlay.key(key(KeyCode::Up));
+    let unicode = drawn_overlay(&mut unicode_overlay, &DARK);
+    assert!(
+        unicode.contains("\u{2500} DROP COLUMN archived_at;"),
+        "the Unicode set did not quote the preview with its own rule: {unicode}",
+    );
+
+    let (mut ascii_overlay, _b) = live(one_preview(SHORT));
+    ascii_overlay.key(key(KeyCode::Up));
+    let drawn = drawn_overlay(&mut ascii_overlay, &ascii);
+    assert!(
+        drawn.contains("- DROP COLUMN archived_at;"),
+        "the ASCII set did not quote the preview at all: {drawn}",
+    );
+    assert!(
+        !drawn.contains('\u{2500}'),
+        "the ASCII set drew a box-drawing character, which is a replacement box \
+         on the terminal that asked for ASCII: {drawn}",
+    );
+}
+
+/// **F9 — the free-text row is still last and still holds the marker once the
+/// offers carry more than labels.**
+///
+/// The existing F9 test uses bare offers, where the free-text row's index is
+/// `choices.len()` and a marker aimed at either number lands in the same place.
+/// A described offer takes a row for its description, so the two numbers part
+/// company — and aiming at `choices.len()` now puts the opening marker on a real
+/// offer, which is exactly the reflexive-`Enter` failure F9 exists to prevent.
+///
+/// Sabotage: focus `choices.len()` rather than the last row, under which the
+/// first arm's marker sits on `archived_at` — index 3 of 5 — and `Enter` agrees
+/// with an offer nobody read.
+#[tokio::test]
+async fn f9_the_free_text_row_is_last_when_the_offers_carry_descriptions() {
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let responder: Arc<dyn Responder> = Arc::new(answerer);
+    let _asking = tokio::spawn(async move {
+        let batch = vec![explained(), Question::new("and then what?")];
+        responder.answer_all(&batch).await
+    });
+
+    let mut overlay = Intent::new(questions.recv().await.expect("the batch"));
+    // Five rows on the first question — three offers, one description and the
+    // free-text row — and one on the second.
+    for expected in [5usize, 1] {
+        let rows = overlay.offers().rows();
+        assert_eq!(rows.len(), expected, "the list is not the shape F4 builds");
+        assert_eq!(
+            rows[expected - 1].label,
+            io_cli::intent::OWN_WORDS,
+            "the free-text row is not the last one",
+        );
+        assert_eq!(
+            overlay.offers().selected(),
+            expected - 1,
+            "the marker opened on an offer rather than on the row that takes \
+             prose, which turns a reflexive Enter into agreement",
+        );
+        overlay.key(key(KeyCode::Char('x')));
+        overlay.key(key(KeyCode::Enter));
+    }
+}
+
+/// **F4/F5 — an offer's own label is what the agent gets back, whichever row the
+/// list drew it on.**
+///
+/// A description takes a row, so from 0.33.0 the row index the picker hands back
+/// is no longer the choice index io-harness expects. Indexing `choices` with a
+/// row answers the agent with a **different offer of the same question** —
+/// plausible, wrong, and invisible on screen.
+///
+/// Sabotage: index `question.choices` with the row directly, under which `Enter`
+/// on `updated_at` — row 2, choice 1 — answers `archived_at`.
+#[test]
+fn f4_choosing_an_offer_below_a_description_answers_with_that_offer() {
+    let (mut overlay, _reply) = live(explained());
+    // Home puts the marker on the first row, then two Downs step past the
+    // description onto `updated_at`, which the picker refuses to stop on.
+    overlay.key(key(KeyCode::Home));
+    assert_eq!(overlay.offers().selected(), 0);
+    overlay.key(key(KeyCode::Down));
+    assert_eq!(
+        overlay.offers().selected(),
+        2,
+        "the marker rested on a description row, which is not a choice",
+    );
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(vec![Some("updated_at".to_string())]),
+        "the answer is the offer under the marker, not the one at that row index",
     );
 }
