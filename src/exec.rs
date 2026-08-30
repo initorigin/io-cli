@@ -809,16 +809,37 @@ fn gate_line(standing: &crate::gates::Standing) -> String {
 /// carried on, so listing them under a heading that means "waiting for you"
 /// would offer work that does not exist — [`decision_for`] is where an operator
 /// who names one by hand is told why.
+///
+/// **A batched ask is still `waiting_on: "question"` with one id**, because that
+/// is what the store holds: io-harness 0.72.0 parks a whole batch as one
+/// `pending_questions` row answered through one `question_id`. Renaming it would
+/// break every script written against this listing to describe a difference the
+/// resume door does not have. What is added instead is `questions` — how many
+/// questions that one row is waiting on — because the operator's next command is
+/// a single `--answer` and the one thing they cannot see from `waiting_on` alone
+/// is how much that one answer has to cover. It is `1` for an ordinary question
+/// and `null` for the three pauses that are not questions, which is the shape
+/// `id` already uses for the run whose process went away.
 pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
-    let (waiting_on, id, step) = match pending {
+    let (waiting_on, id, step, asked) = match pending {
         Pending::Question {
-            question_id, step, ..
-        } => ("question", Some(*question_id), *step),
-        Pending::Plan { plan_id, step, .. } => ("plan", Some(*plan_id), *step),
+            question_id,
+            step,
+            questions,
+            ..
+        } => (
+            "question",
+            Some(*question_id),
+            *step,
+            // `max(1)` rather than the length: a singular ask carries no batch at
+            // all, and a row waiting on one question is waiting on one question.
+            Some(questions.len().max(1)),
+        ),
+        Pending::Plan { plan_id, step, .. } => ("plan", Some(*plan_id), *step, None),
         Pending::Recovery {
             attempt_id, step, ..
-        } => ("recovery", Some(*attempt_id), *step),
-        Pending::Died { last_step } => ("died", None, *last_step),
+        } => ("recovery", Some(*attempt_id), *step, None),
+        Pending::Died { last_step } => ("died", None, *last_step, None),
         Pending::Interrupted | Pending::Finished => return None,
     };
     Some(if json {
@@ -829,11 +850,19 @@ pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
             "waiting_on": waiting_on,
             "id": id,
             "step": step,
+            "questions": asked,
         })
         .to_string()
     } else {
+        // Only when there is more than one. A `1 question` on every row of a
+        // listing is the mark nobody reads, and the plain stream is the one being
+        // skimmed rather than parsed.
+        let several = match asked {
+            Some(n) if n > 1 => format!("  {n} questions"),
+            _ => String::new(),
+        };
         match id {
-            Some(id) => format!("run {run_id}  {waiting_on} {id}  step {step}"),
+            Some(id) => format!("run {run_id}  {waiting_on} {id}  step {step}{several}"),
             None => format!("run {run_id}  {waiting_on}  step {step}"),
         }
     })
@@ -850,6 +879,13 @@ pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// Answer the question the run asked.
+    ///
+    /// **One id and one text answer a batched ask too**, and that is the store's
+    /// shape rather than a simplification: io-harness parks a whole batch as one
+    /// row under one `question_id`, and `resume_with_answer_observed` records one
+    /// reply against it. So this needs no plural twin — what it needs, and what
+    /// the refusal sentence gives it, is a line telling the operator their one
+    /// text has to cover every question in the batch.
     Answer {
         /// The row the answer is written against.
         question_id: i64,
@@ -937,6 +973,28 @@ pub fn recovery_for(flag: RecoveryFlag, account: Option<&str>) -> Result<Recover
 /// that could drift apart.
 fn waiting_on(run_id: i64, pending: &Pending) -> String {
     match pending {
+        // **A batch is one `--answer`, and this sentence has to say what that
+        // answer has to be.** io-harness parks the whole ask as one row, and a
+        // resume records one text against it — `PendingQuestion::answers`, the
+        // per-question breakdown, is written only by a `Responder` inside the
+        // running process and stays empty for every answer that arrives this way.
+        // So the door *can* answer a batch in one invocation; what it cannot do is
+        // take the questions apart, and an operator who is told only
+        // `--answer "<your answer>"` will send one sentence to a five-part ask.
+        Pending::Question {
+            question_id,
+            questions,
+            ..
+        } if questions.len() > 1 => format!(
+            "run {run_id} is waiting on question {question_id}, which is {n} questions the \
+             agent asked in one go. One `--answer` answers all {n}: there is no per-question \
+             flag, because io-harness parks a batch as a single row and records a single \
+             reply against it. Number your answers to match the questions and send them as \
+             one text — `io resume {run_id} --answer \"1. <…> 2. <…>\"`. The questions \
+             themselves are not on this command line; `io` shows them when you resume the \
+             run there",
+            n = questions.len(),
+        ),
         Pending::Question { question_id, .. } => format!(
             "run {run_id} is waiting on question {question_id}; answer it with \
              `io resume {run_id} --answer \"<your answer>\"`"
@@ -1223,12 +1281,12 @@ impl WithProvider for Resuming {
         // refuses a contained run outright because io-harness publishes no
         // tree-aware recovery entry point to keep those limits with.
         //
-        // **Still true at 0.71.0, and the shape of the gap is worth naming.** Every
+        // **Still true at 0.72.0, and the shape of the gap is worth naming.** Every
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.71.0/src/run.rs:1769`, `:2088`, `:3002`). Recovery has
-        // `resume_with_recovery_observed` (`:2550`) and nothing tree-aware, so it
+        // (`io-harness-0.72.0/src/run.rs:1770`, `:2089`, `:3003`). Recovery has
+        // `resume_with_recovery_observed` (`:2551`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree
         // entry points, and resuming through the flat one would drop it.

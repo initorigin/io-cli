@@ -41,7 +41,7 @@ pub enum Disposition {
     Silent,
 }
 
-/// Every kind io-harness 0.71 declares, in its own declaration order.
+/// Every kind io-harness 0.72 declares, in its own declaration order.
 ///
 /// The order is the enum's rather than alphabetical so that this table can be
 /// read down the side of `observe.rs` when the pin moves.
@@ -112,6 +112,23 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         "the question overlay, which is on screen at the moment it is asked — and a committed line \
          wherever nothing draws one: plain mode, and a resumed run whose overlay this process is \
          not holding",
+    ),
+    // **0.33.0 — the one kind in this table whose fact no overlay can carry.**
+    // The obvious row here would have copied `question_asked` above and been
+    // `Silent` with the overlay as its route, and it would have been wrong.
+    // `crate::intent::Answerer` implements `Responder::answer` and nothing else,
+    // so io-harness's own `answer_all` hands the overlay the batch one question at
+    // a time; the overlay draws a question, never an ask. "These three arrived
+    // together" is the entire content of this variant — it is why io-harness
+    // added it — and there is no surface in this product that would have said it.
+    // A `Silent` row would have routed the only fact it carries to nothing.
+    (
+        "questions_asked",
+        Disposition::Line,
+        "the batch line, saying how many the agent asked at once and numbering each one in the \
+         order it asked them. The questions themselves keep `question_asked`'s rule and are drawn \
+         under it only where no overlay will draw them — the count is committed either way, \
+         because that is the part nothing else says",
     ),
     ("question_answered", Disposition::Line, "the answer line"),
     (

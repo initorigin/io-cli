@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use io_cli::events::{kind_name, Events};
 use io_cli::theme::{Tone, DARK};
-use io_harness::{EventKind, RunEvent, TodoItem, TodoState, TODO_MAX_ITEMS};
+use io_harness::{EventKind, Question, RunEvent, TodoItem, TodoState, TODO_MAX_ITEMS};
 
 // The `STYLED` and `FALLS_THROUGH` lists stood here until 0.11.0. They were a
 // pair because the second one was a real destination — a muted line naming the
@@ -615,8 +615,8 @@ fn f8_this_release_has_seen_every_kind_io_harness_emits() {
     let declared = support::harness_event_kinds();
     assert_eq!(
         declared.len(),
-        51,
-        "the locked io-harness declares fifty-one event kinds; found {}",
+        52,
+        "the locked io-harness declares fifty-two event kinds; found {}",
         declared.len(),
     );
 }
@@ -2524,6 +2524,180 @@ fn o3_the_committed_question_is_not_a_warning() {
         !line.contains("warning"),
         "a question is not a warning: {line:?}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// 0.33.0 — a batch is drawn as a batch
+// ---------------------------------------------------------------------------
+
+/// Three questions the agent asked in one call, as io-harness 0.72.0 emits them.
+///
+/// The three texts share no word with each other and none of them is a substring
+/// of the heading, so a `contains` below fails when the arm drops a question
+/// rather than being answered by something already on the frame for another
+/// reason.
+fn a_batch() -> EventKind {
+    EventKind::QuestionsAsked {
+        questions: vec![
+            Question::new("drop the column or keep it?").with_choices(["drop", "keep"]),
+            Question::new("which index goes with it?"),
+            Question::new("rename the table too?"),
+        ],
+    }
+}
+
+/// **A batched ask names every question it carried, numbered, in the order asked.**
+///
+/// io-harness emits no `QuestionAsked` for a batch, so before this release the
+/// whole ask put *nothing at all* in a transcript — in the release whose subject
+/// is batched asks.
+///
+/// Asserted per row and by pairing rather than over the flattened string: the
+/// ordinal and the question it belongs to have to be on the same row, which is a
+/// claim a `contains` over one glued string cannot make and which fails when the
+/// arm numbers the batch off its own loop counter.
+#[test]
+fn a_batched_ask_names_every_question_and_says_they_arrived_together() {
+    let mut events = Events::new(DARK);
+    // No overlay is holding these, so the transcript draws the questions too.
+    events.set_answering(false);
+    let drawn = rows(events.event(&event(a_batch()), Duration::ZERO));
+
+    let heading = drawn
+        .first()
+        .unwrap_or_else(|| panic!("a batched ask committed nothing at all: {drawn:?}"));
+    assert!(
+        heading.contains("3 questions together"),
+        "the heading does not say the ask was a batch, which is the only thing \
+         distinguishing this event from three singular ones: {heading:?}",
+    );
+
+    for (index, asked) in [
+        "drop the column or keep it?",
+        "which index goes with it?",
+        "rename the table too?",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ordinal = format!("{} of 3", index + 1);
+        let row = drawn
+            .iter()
+            .find(|row| row.contains(&ordinal))
+            .unwrap_or_else(|| panic!("no row is numbered {ordinal:?}: {drawn:?}"));
+        assert!(
+            row.contains(asked),
+            "the row numbered {ordinal:?} does not carry the question asked in that \
+             position: {row:?}",
+        );
+    }
+
+    // The offers belong to the question above them and are marked as offers. The
+    // needle carries the bullet, because both labels are also words inside the
+    // first question's own text — `contains("drop")` would be green with the
+    // choice rows deleted.
+    let first = drawn
+        .iter()
+        .position(|row| row.contains("1 of 3"))
+        .expect("the first question is numbered");
+    assert_eq!(
+        drawn[first + 1].trim(),
+        format!("{} drop", DARK.glyphs.bullet),
+        "the first offer is not the row under the question it belongs to: {drawn:?}",
+    );
+    assert_eq!(
+        drawn[first + 2].trim(),
+        format!("{} keep", DARK.glyphs.bullet),
+        "the second offer is not the row under the question it belongs to: {drawn:?}",
+    );
+    // And the question with no offers has none invented for it.
+    let last = drawn
+        .iter()
+        .position(|row| row.contains("3 of 3"))
+        .expect("the third question is numbered");
+    assert_eq!(
+        last,
+        drawn.len() - 1,
+        "a question that offered nothing grew a choice row: {drawn:?}",
+    );
+}
+
+/// **The count is committed even when the overlay is holding the questions, and
+/// the questions are not.**
+///
+/// The two halves are one claim. `intent::Answerer` implements `Responder::answer`
+/// alone, so io-harness's `answer_all` hands the overlay one question at a time
+/// and nothing there says the three arrived together — that fact reaches nobody
+/// unless this line commits unconditionally. The questions themselves keep
+/// `question_asked`'s 0.32.0 rule, or a batch asks the operator each of its
+/// questions twice.
+///
+/// Sabotage, either direction: put the heading inside the `plain || !answering`
+/// guard, or move the question rows outside it. One assertion here fails for each.
+#[test]
+fn a_batched_ask_commits_its_count_even_when_an_overlay_draws_the_questions() {
+    let mut events = Events::new(DARK);
+    events.set_answering(true);
+    let drawn = rows(events.event(&event(a_batch()), Duration::ZERO));
+
+    assert_eq!(
+        drawn.len(),
+        1,
+        "the overlay asks these one at a time, so the transcript commits the count \
+         and nothing else: {drawn:?}",
+    );
+    assert!(
+        drawn[0].contains("3 questions together"),
+        "the batch reached no surface at all: {drawn:?}",
+    );
+    assert!(
+        !drawn[0].contains("drop the column"),
+        "the question is on the overlay and in the transcript, which is the defect \
+         0.32.0 removed from the singular arm: {drawn:?}",
+    );
+}
+
+/// A batch may carry one question — io-harness rejects an empty list and accepts a
+/// single-element one — and the sentence is written for it.
+///
+/// Sabotage: delete the `asked == 1` branch. The heading reads `1 questions
+/// together`, which the second assertion names.
+#[test]
+fn a_batch_of_one_is_not_announced_as_1_questions() {
+    let mut events = Events::new(DARK);
+    events.set_answering(true);
+    let line = rendered(
+        &mut events,
+        EventKind::QuestionsAsked {
+            questions: vec![Question::new("which index goes with it?")],
+        },
+    );
+    assert!(line.contains("one question"), "{line:?}");
+    assert!(!line.contains("1 questions"), "{line:?}");
+}
+
+/// **The singular arm is untouched, and this is what says so.**
+///
+/// The cheap way to have handled 0.72.0 would have been to fold `QuestionAsked`
+/// into the batch renderer as a batch of one. It compiles, it is shorter, and it
+/// silently rewords every question this product has drawn since 0.7.0 — `the agent
+/// asks: <question>` becomes a heading and a `1 of 1` row.
+#[test]
+fn a_single_question_is_still_drawn_as_a_question_rather_than_a_batch_of_one() {
+    let mut events = Events::new(DARK);
+    events.set_answering(false);
+    let single = rendered(&mut events, a_question());
+
+    assert!(
+        single.contains("the agent asks: drop the column or keep it?"),
+        "the singular question lost its own sentence: {single:?}",
+    );
+    for batched in ["together", " of 1", "one question"] {
+        assert!(
+            !single.contains(batched),
+            "a single question was drawn through the batch arm ({batched:?}): {single:?}",
+        );
+    }
 }
 
 /// **A path that contains io-harness's separator is drawn as itself.**

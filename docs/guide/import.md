@@ -73,7 +73,7 @@ the rest of the import still goes through. Going over io-harness's ceiling refus
 **every** skill instead: the harness rejects a whole directory rather than the
 excess, so an operator at 63 skills who imported three more would get a session in
 which every turn dies at run start with nothing visible to blame. See
-[Skills](#skills).
+[Skills](skills.md#skills).
 
 ---
 

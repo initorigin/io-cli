@@ -42,15 +42,14 @@ fn variant(name: &str) -> String {
 #[test]
 fn the_table_names_every_kind_the_locked_harness_declares() {
     let declared = support::harness_event_kinds();
-    assert_eq!(
-        declared.len(),
-        51,
-        "the locked io-harness declares fifty-one event kinds; found {}",
-        declared.len(),
-    );
-
     let triaged: Vec<&str> = TRIAGE.iter().map(|(name, ..)| *name).collect();
 
+    // **The two name sets are asserted before the count, and that order is the
+    // point (0.33.0).** The count stood first until this release, so a pin that
+    // grew a kind failed here saying a number had moved and stopped — the list
+    // naming *which* kind was new never ran. That is the least useful half of
+    // this test failing in place of the most useful one, and it is exactly what
+    // happened when io-harness 0.72.0 added `QuestionsAsked`.
     let untriaged: Vec<&String> = declared
         .iter()
         .filter(|name| !triaged.contains(&name.as_str()))
@@ -70,6 +69,41 @@ fn the_table_names_every_kind_the_locked_harness_declares() {
         gone.is_empty(),
         "these names are no longer io-harness event kinds: {gone:?}",
     );
+
+    // And the count last, which now catches only what the two sets above cannot:
+    // a harness that declared the same names twice, or a parser that stopped
+    // reading the enum and handed back a shorter list that happens to be a subset.
+    assert_eq!(
+        declared.len(),
+        52,
+        "the locked io-harness declares fifty-two event kinds; found {}",
+        declared.len(),
+    );
+}
+
+/// **0.33.0 — the batched ask is a line, and a `Silent` row here would route its
+/// only fact to nothing.**
+///
+/// `crate::intent::Answerer` implements `Responder::answer` and nothing else, so
+/// io-harness's `answer_all` walks a batch and the overlay draws one question at a
+/// time — exactly as it does for `question_asked`. "These arrived together" is the
+/// whole content of this variant and no surface in this product says it.
+///
+/// Sabotage: copy `question_asked`'s `Silent` onto the row. That is the plausible
+/// wrong answer, it is the one a reader of the table above would reach for, and it
+/// fails here by name rather than as a sentence missing from a transcript.
+#[test]
+fn a_batched_ask_is_a_line_because_no_overlay_carries_the_batch() {
+    assert_eq!(
+        triage::disposition("questions_asked"),
+        Some(Disposition::Line),
+        "a batched ask reaches no surface unless the transcript draws it",
+    );
+    let route = triage::route("questions_asked").expect("the questions_asked row");
+    assert!(
+        route.contains("numbering"),
+        "the route does not say what makes the batch legible as one: {route}",
+    );
 }
 
 #[test]
@@ -86,7 +120,7 @@ fn the_table_has_no_duplicate_and_every_row_records_a_route() {
             "{name} has no route recorded, so nobody can check whether its fact reaches anyone",
         );
     }
-    assert_eq!(seen.len(), 51);
+    assert_eq!(seen.len(), 52);
 }
 
 /// A `Line` kind with no arm behind it is the old defect wearing the new table's
@@ -97,27 +131,68 @@ fn every_line_kind_has_an_arm_in_the_renderer() {
     let source = std::fs::read_to_string("src/events.rs")
         .expect("this crate's source is readable")
         .replace("\r\n", "\n");
+
+    // **The renderer's match, sliced out before anything is searched — and the
+    // twelve spaces alone are not enough to find it.**
+    //
+    // Two assertions live in this indentation. A bare `contains` was satisfied by
+    // the variant's name appearing in a doc comment, which is how this test went
+    // green through the whole of 0.14.0's sabotage pass with the `Dialed` arm
+    // deleted: the `Sandbox` arm's prose names `EventKind::Dialed` to explain why
+    // it draws nothing itself, and that mention alone answered the question. The
+    // indentation closed that one. It did not close the second: `Events::commit`
+    // opens with a *different* match on `&event.kind`, the one that decides
+    // `self.thinking`, and its arms sit at the same twelve spaces — so it names
+    // `EventKind::Reasoning` and `EventKind::Token` whatever the renderer below it
+    // does, and deleting either arm from the renderer left this test green. The
+    // comment that used to stand here claimed the indentation was unique to the
+    // renderer's arms. It never was.
+    //
+    // So the renderer is identified by the statement immediately above it, which
+    // belongs to no other match in the file, and the slice ends at the first
+    // top-level item after `Events::commit`. What is searched is the renderer and
+    // nothing else.
+    const OPENS: &str = "let dash = theme.glyphs.dash;\n        match &event.kind {";
+    const CLOSES: &str = "\nfn leader(";
+    let from = source
+        .find(OPENS)
+        .expect("`Events::commit` opens its renderer match under `let dash`")
+        + OPENS.len();
+    let to = source[from..]
+        .find(CLOSES)
+        .map(|at| from + at)
+        .expect("`fn leader` follows the impl `Events::commit` belongs to");
+    let renderer = &source[from..to];
+
+    // The slice starts *after* the thinking match, and that is the whole of what
+    // makes the search honest. `self.thinking = true` is written in that match and
+    // nowhere else, so finding it here would mean the slice had swallowed it and
+    // every assertion below had gone back to being satisfiable from two arms it
+    // does not care about.
+    assert!(
+        !renderer.contains("self.thinking = true"),
+        "the slice reaches back into the match that decides `thinking`, whose arms \
+         name `EventKind::Reasoning` and `EventKind::Token` at the same indentation",
+    );
+    assert!(
+        renderer.contains("\n            EventKind::"),
+        "the slice holds no match arms at all, so it is not the renderer",
+    );
+
     for (name, disposition, _) in TRIAGE {
         if *disposition != Disposition::Line {
             continue;
         }
-        // **At the match arm's own indentation, and not anywhere in the file.**
-        // A bare `contains` was satisfied by the variant's name appearing in a
-        // doc comment, which is how this test went green through the whole of
-        // 0.14.0's sabotage pass with the `Dialed` arm deleted: the `Sandbox`
-        // arm's prose names `EventKind::Dialed` to explain why it draws nothing
-        // itself, and that mention alone answered the question. That is the same
-        // defect this test was written in 0.11.0 to close, wearing the new
-        // table's clothes exactly as the comment above says — a name with no arm
-        // behind it. `tests/glyphs.rs` already reads arms this way, by the twelve
-        // spaces every match arm in that file sits at and no `use`, doc line or
-        // expression does.
+        // At the match arm's own indentation, within the renderer's own match: a
+        // name with no arm behind it is the defect this test was written in 0.11.0
+        // to close, and a mention in a comment is not an arm.
         let arm = format!("EventKind::{}", variant(name));
         let declared = format!("\n            {arm}");
         assert!(
-            source.contains(&declared),
-            "{name} is triaged as a line and `{arm}` has no arm in src/events.rs, so it commits \
-             nothing at all — a mention in a comment is not an arm",
+            renderer.contains(&declared),
+            "{name} is triaged as a line and `{arm}` has no arm in the renderer in \
+             src/events.rs, so it commits nothing at all — a mention in a comment is not an \
+             arm, and neither is the arm in the match that decides `thinking`",
         );
     }
 }
@@ -357,7 +432,7 @@ fn the_dispositions_are_the_three_the_contract_names() {
         .count();
     assert_eq!(
         lines + status + silent,
-        51,
+        52,
         "every kind is exactly one of the three: {lines} lines, {status} status, {silent} silent",
     );
     // The release's own claim, and the reason it exists: most kinds are not

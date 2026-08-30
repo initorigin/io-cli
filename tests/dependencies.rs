@@ -998,6 +998,34 @@ fn code_of(text: &str) -> String {
         .join("\n")
 }
 
+/// Every door `toml` opens into a document.
+///
+/// **A ban that names two spellings is a ban on two spellings.** Until 0.33.0
+/// this gate refused `toml::from_str` and `toml::de::` and nothing else, and
+/// `src/prices.rs` counted a table with `text.parse::<toml::Value>()` — the same
+/// act, through `FromStr`, past a gate that had never been told to look for it.
+/// The crate's headline invariant, and this release's N5, were false for as long
+/// as that one line stood. It was found by sabotage rather than by the gate,
+/// which is the whole finding: the gate could not have found it.
+///
+/// So the list is `toml`'s entry points enumerated rather than sampled. The free
+/// functions, including a `from_slice` this version no longer has — named anyway,
+/// because a `toml` upgrade that brings it back should not also quietly reopen a
+/// door. The deserializer module and the `Deserializer` re-exported beside it.
+/// And every `FromStr` route that can be spelled with a turbofish, whether it is
+/// written as a method call or as an associated function. The annotation route
+/// has no literal to name and is caught separately, at the call site.
+const TOML_PARSERS: &[&str] = &[
+    "toml::from_str",
+    "toml::from_slice",
+    "toml::de::",
+    "toml::Deserializer",
+    "toml::Value::from_str",
+    "toml::Table::from_str",
+    "toml::value::Table::from_str",
+    "parse::<toml::",
+];
+
 #[test]
 fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
     // io-harness owns discovery, layering and validation. This crate serializes
@@ -1031,12 +1059,36 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
         let code = code_of(&text);
         let permitted = path.ends_with(&editor);
         if !permitted {
-            assert!(
-                !code.contains("toml::from_str"),
-                "{} parses TOML itself; configuration is io-harness's",
-                path.display(),
-            );
+            for door in TOML_PARSERS {
+                assert!(
+                    !code.contains(door),
+                    "{} parses TOML itself, through `{door}`; configuration is io-harness's",
+                    path.display(),
+                );
+            }
+            // **`FromStr` is reachable without spelling a parser at all.** A
+            // turbofish is one door and the list above holds it; an annotation
+            // is the other, and `let document: toml::Value = text.parse()?`
+            // contains no literal any list could name. So a `toml` type is
+            // permitted outside the editor only as the head of a path:
+            // `toml::Value::String` spells a value and `toml::Value::try_from`
+            // serialises one, and neither can turn text into a document.
+            // Anything else — an annotation, a generic argument, a turbofish —
+            // is a shape this module is not permitted to hold.
+            for named in ["toml::Value", "toml::Table", "toml::value::Table"] {
+                for (at, _) in code.match_indices(named) {
+                    assert!(
+                        code[at + named.len()..].starts_with("::"),
+                        "{} names `{named}` somewhere other than at the head of a \
+                         constructor path, which is how `FromStr` is reached without \
+                         naming a parser; configuration is io-harness's",
+                        path.display(),
+                    );
+                }
+            }
         }
+        // Outside the `permitted` arm on purpose: `src/edit.rs` is exempted from
+        // parsing TOML, not from reaching into the deserializer's internals.
         assert!(
             !code.contains("toml::de::"),
             "{} reaches into TOML deserialization",
@@ -1576,4 +1628,267 @@ fn n1_the_driver_resolves_the_plugin_set_once_and_again_only_when_it_moved() {
         3,
         "both resolutions and the staleness check run off the event-loop task",
     );
+}
+
+/// A numeric bound that belongs to io-harness, and the nouns it counts.
+///
+/// **Three private constants, and io-cli can see none of them.** `QUESTIONS_MAX`
+/// bounds a batch, `PREVIEW_MAX_LINES` and `PREVIEW_MAX_BYTES` bound a preview
+/// before the harness sends one. None is `pub`, so this crate cannot import a
+/// figure to compare against and cannot be told when one moves — which is exactly
+/// why a page that copies one is a promise io-cli cannot keep. The harness changes
+/// it in a point release and the page is wrong with nothing red.
+///
+/// The figures are written out here rather than imported for that reason, and the
+/// gate is over the *prose*, not over the number: what is forbidden is io-cli
+/// stating a bound of somebody else's as its own.
+struct Bound {
+    /// The harness constant, named so a failure says which page to fix and why.
+    constant: &'static str,
+    /// How the figure can reach a page. Digits and the English word both, because
+    /// a house style that spells small numbers out is precisely how a figure gets
+    /// past a sweep that only looks for digits — and this product's style does.
+    spellings: &'static [&'static str],
+    /// What the figure counts.
+    ///
+    /// **This is the field that keeps the sweep off the shipped docs.** A number
+    /// is only a bound when it bounds something, and every figure here has a
+    /// homonym already in the guide: `twelve document tools`, `a twelve-step
+    /// plan`, `no group may hold more than ten`, `a thought longer than ten
+    /// rows`, `a ten-minute turn`. Pairing each figure with its own noun — and
+    /// only its own — is what tells those apart from a restated limit. `ten` is
+    /// the question cap and is not checked against rows; `twelve` is the preview's
+    /// rows and is not checked against tools or steps.
+    counts: &'static [&'static str],
+}
+
+const HARNESS_BOUNDS: &[Bound] = &[
+    Bound {
+        constant: "QUESTIONS_MAX",
+        spellings: &["10", "ten"],
+        counts: &["question"],
+    },
+    Bound {
+        constant: "PREVIEW_MAX_LINES",
+        spellings: &["12", "twelve"],
+        counts: &["line", "row"],
+    },
+    Bound {
+        constant: "PREVIEW_MAX_BYTES",
+        spellings: &["800", "eight hundred"],
+        counts: &["byte", "character"],
+    },
+];
+
+/// The words that turn a number into a ceiling.
+///
+/// Without one of these a figure beside its noun is a description rather than a
+/// limit — `twelve lines of the head say where you are` counts rows on a screen
+/// and promises nothing about a bound.
+const CEILING: &[&str] = &[
+    "at most",
+    "up to",
+    "more than",
+    "maximum",
+    "capped",
+    "caps at",
+    "cap of",
+    "limit",
+    "truncat",
+    "cut off",
+    "longer than",
+];
+
+/// What makes a sentence a denial rather than a claim.
+///
+/// The criterion is that io-cli states no bound of io-harness's **as its own**, so
+/// a page saying it imposes none has to survive the sweep — and `the-session.md`
+/// carries exactly that sentence, which is the reason the criterion is true today.
+const DISCLAIMED: &[&str] = &[
+    "does not",
+    "doesn't",
+    "do not",
+    "not restate",
+    "never restates",
+    "no limit",
+    "no bound",
+    "without a limit",
+];
+
+/// The byte index at or before `at` that a `&str` may be cut on.
+///
+/// The guide is full of em dashes, so a window taken by arithmetic lands inside a
+/// multi-byte character often enough that a sweep written without this would fail
+/// as a panic in the gate rather than as a finding about a page.
+fn floor_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// The byte index at or after `at` that a `&str` may be cut on.
+fn ceil_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
+/// The first place `text` states one of io-harness's bounds as io-cli's own.
+///
+/// Three things have to line up, and each one is a guard against prose the product
+/// already ships:
+///
+/// 1. **The figure sits against the noun it counts** — `ten questions`,
+///    `12-question`, `twelve lines`. A figure a clause away from a noun is a
+///    coincidence, and a window wide enough to catch one is a window wide enough
+///    to catch `question`, a word that appears sixty times on one guide page.
+/// 2. **A ceiling word is nearby**, so a count is not read as a cap.
+/// 3. **Nothing in the window denies it**, so the sentence that makes the
+///    criterion true is not the sentence that fails it.
+///
+/// Returns the offending window, because a gate that says only "somewhere in this
+/// file" is a gate somebody greps for an hour.
+fn restated_bound(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    for bound in HARNESS_BOUNDS {
+        for spelling in bound.spellings {
+            for counted in bound.counts {
+                for joiner in [" ", "-"] {
+                    let phrase = format!("{spelling}{joiner}{counted}");
+                    for (at, _) in lower.match_indices(&phrase) {
+                        // `112 lines` is not `12 lines`, and a version string is
+                        // not a bound.
+                        if lower[..at].ends_with(|c: char| c.is_ascii_digit()) {
+                            continue;
+                        }
+                        let from = floor_boundary(&lower, at.saturating_sub(90));
+                        let to = ceil_boundary(&lower, at + phrase.len() + 90);
+                        let window = &lower[from..to];
+                        if !CEILING.iter().any(|word| window.contains(word)) {
+                            continue;
+                        }
+                        if DISCLAIMED.iter().any(|word| window.contains(word)) {
+                            continue;
+                        }
+                        return Some(format!(
+                            "{} — `{}` is io-harness's: ...{}...",
+                            bound.constant,
+                            phrase,
+                            window.trim()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Every page this product ships to a reader.
+///
+/// Sorted for the reason `spawning_modules` is sorted: `read_dir` answers in
+/// whatever order the filesystem holds it, and a gate that names a different file
+/// first on a different machine is a gate somebody stops believing.
+fn shipped_prose() -> Vec<(PathBuf, String)> {
+    fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+        for entry in std::fs::read_dir(dir).expect("docs is readable").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                let text = std::fs::read_to_string(&path).expect("a shipped page");
+                out.push((path, text));
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    let readme = root.join("README.md");
+    let text = std::fs::read_to_string(&readme).expect("README.md is shipped");
+    out.push((readme, text));
+    walk(&root.join("docs"), &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[test]
+fn n6_no_shipped_page_states_a_harness_bound_as_io_clis_own() {
+    // **The criterion had no oracle, which is the same thing as not being
+    // asserted.** N6 says io-cli states no numeric bound of io-harness's as its
+    // own, and it was true by inspection: the harness's three constants are
+    // private, none of the figures appeared in `docs/`, and `the-session.md` says
+    // outright that io-cli renders what arrives rather than restating a bound.
+    // Nothing would have caught the next release writing "at most ten questions"
+    // into a guide page, and a figure copied out of a private constant is wrong
+    // the first time the harness moves it, with nothing red anywhere.
+
+    // The detector is proved in both directions before it is pointed at the docs.
+    // A sweep that cannot see a restated bound passes every page in the product
+    // and asserts nothing, and it passes *silently* — which is the failure mode
+    // this whole file exists to refuse.
+    for stated in [
+        "io-cli shows at most ten questions in one batch.",
+        "A preview is capped at twelve lines before it is drawn.",
+        "Previews are truncated at 800 bytes.",
+        "The batch holds up to 10 questions.",
+        "No preview is longer than 12 rows.",
+        "A preview is cut off at eight hundred characters.",
+    ] {
+        assert!(
+            restated_bound(stated).is_some(),
+            "the sweep cannot see the bound in {stated:?}, so it asserts nothing",
+        );
+    }
+
+    // And does not fire on a page denying it imposes one, or on a number about
+    // something else. Every line but the first two is shipped prose, quoted from
+    // the page it lives on — these are the sentences the sweep has to survive.
+    for innocent in [
+        "io-harness limits a preview to twelve lines before it sends one, and io-cli \
+         does not restate that bound as its own.",
+        "The viewport is capped at 112 lines of scrollback.",
+        "twelve lines of the head say where you are: which question of how many",
+        "no group may hold more than ten, **inspect**",
+        "That is twelve tools in its workspace, and no page may list more than twelve.",
+        "a thought longer than ten rows is fitted with the rest kept",
+        "a twenty-row viewport, which holds a twelve-step plan with its footer",
+        "typed thirty seconds into a ten-minute turn arrived nine and a half minutes late",
+        "Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none.",
+    ] {
+        assert!(
+            restated_bound(innocent).is_none(),
+            "the sweep fires on {innocent:?}, which states no bound of io-cli's: {:?}",
+            restated_bound(innocent),
+        );
+    }
+
+    // A gate whose corpus has moved out from under it reads nothing and passes.
+    let pages = shipped_prose();
+    assert!(
+        pages
+            .iter()
+            .any(|(path, _)| path.ends_with("guide/the-session.md")),
+        "the sweep is reading somewhere other than the shipped guide",
+    );
+    assert!(
+        pages.len() > 20,
+        "the shipped documentation is {} pages, which is fewer than this product has",
+        pages.len(),
+    );
+
+    for (path, text) in pages {
+        assert!(
+            restated_bound(&text).is_none(),
+            "{} states a bound that is io-harness's, not io-cli's: {}. \
+             The harness moves these in a point release and nothing here would go \
+             red — say what io-cli does with what arrives, not what the harness \
+             allows to arrive.",
+            path.display(),
+            restated_bound(&text).unwrap_or_default(),
+        );
+    }
 }

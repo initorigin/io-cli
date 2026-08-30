@@ -147,19 +147,23 @@ points an operator can enter the state.
 **Every HTTP MCP server is refused by default**, because the default network effect is `Deny`. A
 bare-host rule opens it.
 
-**Ten commands run while a turn is in flight, and the rest are refused.** `/status`, `/context`,
-`/cost`, `/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet` and `/image` report while the
-agent works; `/` and `@` open the palette and path completion; `/compact` and `/steer` reach the
-turn through their own arms as they always have. Every other command keeps its refusal, in the same
-sentence, and the rule is what a command *does* rather than how harmless it looks: anything that
-reassigns the session or the provider, writes the store or a configuration file, or submits a turn
-of its own is refused.
+**Eleven commands run while a turn is in flight, and the rest are refused.** `/status`,
+`/context`, `/cost`, `/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet`, `/image` and
+`/config` report while the agent works; `/` and `@` open the palette and path completion;
+`/compact` and `/steer` reach the turn through their own arms as they always have. Every other
+command keeps its refusal, in the same sentence, and the rule is what a command *does* rather than
+how harmless it looks: anything that reassigns the session or the provider, writes the store or a
+configuration file, or submits a turn of its own is refused.
 
-**`/config` is refused mid-turn in every form, including the bare one.** Its picker offers a row
-that re-reads the provider's catalogue, writes the prices into a scope file and reassigns the
-configuration the running turn is holding. The run-state guard is on the whole command deliberately
-— splitting a bare form from an argued one is where a mistake ships a write into a running turn —
-and the same applies to `/plugin`, `/mcp`, `/provider`, `/skills`, `/memory` and `/store`.
+**`/config` is admitted bare and refused the moment it carries a word.** Through 0.32.0 it was
+refused in every form, because the bare list carried a row that re-read the provider's catalogue,
+wrote the prices into a scope file and reassigned the configuration the running turn was holding —
+and because a horizontal arrow on a row wrote the scope file where it stood. 0.33.0 removed both
+acts rather than guarding them: the refresh is one descent below `prices.as_of`, the arrows open a
+setting's values, and the bare list reports and nothing more. `/config <key>` and
+`/config <key> <value>` descend toward a write and keep their refusal, which is the first time the
+run-state guard has read past a command's first word. The whole-command refusal still applies to
+`/plugin`, `/mcp`, `/provider`, `/skills`, `/memory` and `/store`.
 
 **A mid-stream token figure is an estimate and is drawn as one.** `EventKind::Token` carries text
 and no count, because providers do not bill per chunk, so the figure that moves while a step is

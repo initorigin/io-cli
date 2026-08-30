@@ -593,6 +593,41 @@ pub fn sections(text: &str) -> Vec<Vec<String>> {
         .unwrap_or_default()
 }
 
+/// The keys `[path]` declares directly, sorted.
+///
+/// **The read half of [`sections`], one level down.** That answers which tables a
+/// document holds; this answers what one of them spells. Keys only and never their
+/// values — [`value_at`] is where a value's own bytes come from — so this stays a
+/// module that works in bytes and decides nothing about what a setting means.
+///
+/// It exists because `src/prices.rs` needed to count the models a file prices and
+/// was parsing the whole document to `toml::Value` to do it, which made this
+/// module's "the only file permitted to parse TOML" rule false while the gate that
+/// enforced it named only two spellings. The honest fix was the accessor rather
+/// than an exemption: `prices` never needed a document, only a count of one
+/// table's keys, and [`sections`] already exists for exactly this reason one level
+/// up.
+///
+/// Empty when the document does not parse, when it carries no such header, or when
+/// the table is spelled as an inline `name = { … }` — which is a value rather than
+/// a region and has no keys of its own to walk. An array-of-tables index is not
+/// addressed here; the first region whose path matches answers.
+#[must_use]
+pub fn keys(text: &str, path: &str) -> Vec<String> {
+    let Ok(names) = segments(path) else {
+        return Vec::new();
+    };
+    let Ok(found) = regions(text) else {
+        return Vec::new();
+    };
+    let Some(region) = found.iter().find(|region| region.path == names) else {
+        return Vec::new();
+    };
+    let flat: BTreeMap<String, toml::Value> =
+        toml::from_str(&text[region.body.clone()]).unwrap_or_default();
+    flat.into_keys().collect()
+}
+
 /// The TOML source of the value at `path`, exactly as the file spells it.
 ///
 /// **Quoting, not interpreting.** This returns the bytes between the `=` and the

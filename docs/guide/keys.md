@@ -57,33 +57,51 @@ than waiting for it.
 **Two more are borrowed by `/config` from 0.28.0**, and they are left out of the
 table above for that same reason: it is what the session binds all the time, and
 these are held for as long as one list is open and handed back when it shuts.
-`Right` and `Left` on
-a `/config` row whose setting is a boolean or a closed set of words change it to
-the next value — and the value after that, and back again — writing each one and
-redrawing the row from the file's own answer rather than from an account of what
-was just done. No picker does anything with a horizontal arrow — they fall
-through to a do-nothing arm — and the interception is scoped to this one list, so
-it takes no key away from any other surface. The composer still moves its cursor
-with them and an approval still moves between its answers; neither has the
-keyboard while a picker is up.
+`Right` and `Left` on a `/config` row open that setting's values as a list, with
+the marker already on the value in force, so you can see where you are before you
+move. No picker does anything with a horizontal arrow — they fall through to a
+do-nothing arm — and the interception is scoped to this one list, so it takes no
+key away from any other surface. The composer still moves its cursor with them and
+an approval still moves between its answers; neither has the keyboard while a
+picker is up.
 
-**It is the arrows and not the spacebar, and that is a compromise rather than a
-preference.** `Space` is the obvious key for a toggle and it is unavailable: a
-picker treats every printable character as a fuzzy filter, so the space in a
-two-word query is a keystroke the list has already claimed, and binding it would
-change a setting in the middle of typing a search for a different one. `Left` and
-`Right` are simply the keys the picker does not want. The cost is
-discoverability: an arrow does not announce itself the way a spacebar would, and
-nothing on the row says to press one. That is a real limit of the compromise, and
-stating it beats leaving it to be found. What makes it a small one is that `Enter`
-opens the same values as a list and does everything the arrows do and more — so a
-key nobody finds costs a keystroke rather than a capability.
+**Until 0.33.0 those two arrows wrote the file on the keystroke.** On a boolean or
+a closed set of words they stepped to the next value, wrote it into a scope file
+and redrew the row — one press, one write, no confirmation. It was the only
+unconfirmed write in this product reachable from a bare arrow key, and it is why
+`/config` could not be opened while a turn was running. The arrows now do what
+`Enter` does; `Enter` on a value is the confirmation, exactly as it is on every
+other managed surface, and `Up`/`Down` move inside the values while `Left`/`Right`
+do nothing there. Nothing about the arrows is a shortcut past a decision any more,
+which is the whole of the change: the affordance was worth keeping and the write
+was not.
 
-A number is deliberately not cycled. Its values are a ladder rather than a pair,
-too long to step through without seeing where you are, and a held arrow would
-write the file once per key repeat — so `Enter` opens it instead. A key io-cli
-does not know the values of says so and asks you to press `Enter`, rather than
-absorbing the keystroke and looking broken.
+**A third is borrowed by a question that takes several answers, and it is the
+spacebar.** Where the agent asks something that accepts more than one choice, the
+offers are drawn with a box in front of each — `[ ]` and `[x]` in both glyph sets,
+because a tick is not a character every terminal has — and `Space` marks and
+unmarks the offer under the marker. `Enter` sends the marked set; with nothing
+marked it sends the offer you are looking at, so a reflexive `Enter` still answers
+with something the agent asked rather than with nothing.
+
+It is borrowed and not bound, and the distinction is load-bearing. Every other
+list in this product treats a printable character as a filter, and half the labels
+it filters over have spaces in them — `Any OpenAI-compatible endpoint`, a
+session's own workspace row — so a spacebar taken from every picker at once would
+be a filter that cannot spell the rows it is filtering. Only a list that was told
+it accepts several spends the key, and on that list a space typed into the
+free-text row is prose again, because that row is not an offer and cannot be
+marked.
+
+A marked offer stays marked while you narrow the list, including when the narrowing
+hides it. An operator marking five rows out of four hundred narrows the list to
+find each one, and a filter that un-marked as it went would throw away the marks
+made under the last query. The cost is stated rather than hidden: a marked row can
+be off the screen while it is marked.
+
+**`PgUp` and `PgDn` are borrowed when the agent asks several things at once.**
+They walk the batch, one question on the screen at a time; see
+[While it works](the-session.md) for what that surface does.
 
 ### Moving a key
 
@@ -138,10 +156,13 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 
 ## While a turn is running
 
-**Ten commands report while the agent works.** `/status`, `/context`, `/cost`,
-`/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet` and `/image` all answer
-mid-turn, `/` opens the palette and `@` completes a path, and `/compact` and
-`/steer` reach the running turn as they always have.
+**Eleven commands report while the agent works**, and they are `/status`,
+`/context`, `/cost`, `/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet`,
+`/image` and `/config`.
+
+The palette opens mid-turn too, and path completion with it — the `/` and the `@`
+in the table above. `/compact` and `/steer` reach the running turn through their
+own arms, as they always have, and are not part of this set.
 
 Until 0.32.0 every slash but those last two was refused with *not while a turn is
 running — Ctrl+C interrupts it first*, so reading a status page meant stopping
@@ -151,14 +172,21 @@ product had and withheld.
 **Everything else keeps that refusal, and the rule is what a command does rather
 than how harmless it looks.** A command that reassigns the session or the
 provider, writes the store or a configuration file, or submits a turn of its own
-is refused: `/clear`, `/resume`, `/fork`, `/model`, `/undo`, `/setup`, `/import`,
-`/profile`, `/effort`, `/contain`, `/plan`, `/gates`, `/remember`, `/commit`,
-`/config`, `/plugin`, `/mcp`, `/provider`, `/skills`, `/memory`, `/store`, and a
-`!` line.
+is refused: `/exit`, `/setup`, `/model`, `/resume`, `/fork`, `/commit`,
+`/remember`, `/memory`, `/skills`, `/mcp`, `/provider`, `/plugin`, `/import`,
+`/profile`, `/effort`, `/contain`, `/undo`, `/plan`, `/clear`, `/store`,
+`/export`, `/gates`, and a `!` line.
 
-**`/config` is refused even bare**, and that is worth saying because it looks like
-a report. Its picker offers a row that re-reads your provider's catalogue, writes
-the prices into a scope file and reassigns the configuration the running turn is
-holding. The guard is on the whole command rather than on the verb, deliberately:
-splitting a reading form from a writing one is where a mistake ships a write into
-a turn that is already running.
+**`/config` joined the first list in 0.33.0, and only in its bare form.** Through
+0.32.0 it was refused in every form, because the bare list carried a row that
+re-read your provider's catalogue, wrote the prices into a scope file and
+reassigned the configuration the running turn was holding — and because a
+horizontal arrow on a row wrote the file where it stood. Neither is there now: the
+refresh moved one descent below `prices.as_of`, the arrows open the values instead
+of writing one, and what is left is a list of what every setting is and which file
+decided it.
+
+So the split is no longer between a safe spelling of a command and a dangerous
+one. `/config <key>` and `/config <key> <value>` descend toward a write and keep
+the refusal, which is the first time the mid-turn rule has read past a command's
+first word. A trailing space is still the bare form.

@@ -228,7 +228,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use io_cli::app::{App, Command};
 use io_cli::term::SCROLLBACK_RESERVE;
 use io_cli::theme::DARK;
-use io_harness::{EventKind, Question, RunEvent};
+use io_harness::{Choice, EventKind, Question, RunEvent};
 
 /// A terminal big enough that nothing here is testing the ceiling.
 const TERMINAL: u16 = 40;
@@ -260,17 +260,15 @@ fn press(app: &mut App, code: KeyCode) -> Command {
 
 /// The question that filled the whole viewport through 0.31.0.
 fn five_choices() -> Question {
-    Question {
-        question: "which column should the migration drop?".to_string(),
-        context: Some("the table has 40 rows and one caller".to_string()),
-        choices: vec![
-            "created_at".to_string(),
-            "updated_at".to_string(),
-            "deleted_at".to_string(),
-            "archived_at".to_string(),
-            "expired_at".to_string(),
-        ],
-    }
+    Question::new("which column should the migration drop?")
+        .with_context("the table has 40 rows and one caller")
+        .with_choices([
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "archived_at",
+            "expired_at",
+        ])
 }
 
 /// **O16 — the question overlay.**
@@ -305,6 +303,89 @@ fn o16_the_question_overlay_grows_the_viewport_and_gives_it_back() {
         app.viewport_wanted(80, TERMINAL),
         floor,
         "the viewport kept the rows after the surface closed",
+    );
+}
+
+/// The same question, with one of its offers carrying a preview.
+///
+/// Deliberately the *same* offers and the same context, so the head and the row
+/// list are identical to `five_choices` and the only thing that can move the
+/// demand is the block.
+fn five_choices_previewing(preview: &str) -> Question {
+    Question::new("which column should the migration drop?")
+        .with_context("the table has 40 rows and one caller")
+        .with_choices([
+            Choice::new("created_at"),
+            Choice::new("updated_at"),
+            Choice::new("deleted_at").preview(preview),
+            Choice::new("archived_at"),
+            Choice::new("expired_at"),
+        ])
+}
+
+/// A question overlay open on `question`, on a running turn.
+fn asking(question: Question) -> (App, tokio::sync::oneshot::Receiver<Option<String>>) {
+    let mut app = running();
+    let (answer, reply) = tokio::sync::oneshot::channel();
+    app.open_intent(io_cli::intent::Asked { question, answer });
+    (app, reply)
+}
+
+/// **F6 — a preview grows the viewport to hold it, the growth does not follow the
+/// marker, and it still stops at the terminal less the reserve.**
+///
+/// The pair differs by nothing but the preview, so the extra rows are the block
+/// and cannot be a longer question or an extra offer.
+///
+/// Sabotage: reserve the *focused* row's unfold rather than the largest
+/// configured one, under which the demand changes on every arrow key — and every
+/// change re-places the viewport, which is a terminal tear-down and a cursor query
+/// per keystroke while a turn is in flight. Drop the block from the demand
+/// altogether and the first assertion fails.
+#[test]
+fn f6_a_preview_grows_the_viewport_and_stops_at_the_reserve() {
+    let (bare, _a) = asking(five_choices());
+    let (previewed, _b) = asking(five_choices_previewing(
+        "ALTER TABLE ledger\n  DROP COLUMN deleted_at;\n-- 40 rows\n-- one caller",
+    ));
+
+    let plain = bare.viewport_wanted(80, TERMINAL);
+    let grown = previewed.viewport_wanted(80, TERMINAL);
+    assert!(
+        grown > plain,
+        "the preview asked for no rows of its own: {grown} against {plain}",
+    );
+    assert!(
+        grown < TERMINAL - SCROLLBACK_RESERVE,
+        "the fixture is already at the ceiling, so the assertions below would \
+         hold whatever the demand was",
+    );
+
+    // **The demand does not move with the marker.** Up walks off the free-text
+    // row, onto an offer with no preview, then onto the one that has it.
+    let (mut walking, _c) = asking(five_choices_previewing(
+        "ALTER TABLE ledger\n  DROP COLUMN deleted_at;\n-- 40 rows\n-- one caller",
+    ));
+    for step in 0..4 {
+        press(&mut walking, KeyCode::Up);
+        assert_eq!(
+            walking.viewport_wanted(80, TERMINAL),
+            grown,
+            "the demand changed on arrow key {step}, which re-places the viewport \
+             and queries the cursor once per keystroke",
+        );
+    }
+
+    // And a preview taller than the terminal gets what there is.
+    let tall = (0..200)
+        .map(|n| format!("-- line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (huge, _d) = asking(five_choices_previewing(&tall));
+    assert_eq!(
+        huge.viewport_wanted(80, TERMINAL),
+        TERMINAL - SCROLLBACK_RESERVE,
+        "growth for a preview did not stop at the reserve",
     );
 }
 

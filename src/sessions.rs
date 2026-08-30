@@ -241,6 +241,12 @@ fn stamp(created_at: &str) -> String {
 /// same argument [`cut_note`] is built on. The three states an operator has to
 /// act on, and the two they have to know about, are the ones that get a mark;
 /// everything else is the absence of one.
+///
+/// **A batched ask gets the same mark as a single question, deliberately.** It is
+/// one parked row waiting on one answer, and a sixth word for "asks, but several
+/// at once" would spend a column an operator reads at a glance on a distinction
+/// that changes nothing about what they do next. [`note`] has the room to say how
+/// many, and says it.
 pub fn mark(pending: &Pending) -> Option<&'static str> {
     match pending {
         Pending::Question { .. } => Some(QUESTION_MARK),
@@ -268,9 +274,32 @@ pub fn mark(pending: &Pending) -> Option<&'static str> {
 /// continue.
 pub fn note(pending: &Pending) -> Option<String> {
     Some(match pending {
-        Pending::Question { question, .. } => {
-            format!("waiting on your answer: {question}")
-        }
+        // **A batch is counted rather than quoted, and the quoting is what would
+        // be false.** io-harness renders a batch's `question` column as numbered
+        // prose — `"1. …\n2. …"` — so the singular arm here would paste several
+        // newline-separated questions into a one-line picker detail, which either
+        // wraps a row that has no second row or is cut after `1.` and reads as the
+        // whole ask. The count is true, fits, and says the thing the operator's
+        // next keystroke depends on: this needs more than one answer.
+        Pending::Question {
+            question,
+            questions,
+            ..
+        } => match questions.len() {
+            // No batch, or a batch of one. The agent's own words either way: an
+            // empty `questions` is the singular ask, whose words are the `question`
+            // column, and a one-question batch's column has been numbered `1. …` by
+            // the store, so the question itself reads better than the rendering of
+            // it.
+            0 | 1 => {
+                let asked = match questions.first() {
+                    Some(first) => first.question.as_str(),
+                    None => question.as_str(),
+                };
+                format!("waiting on your answer: {asked}")
+            }
+            n => format!("waiting on your answers to {n} questions the agent asked together"),
+        },
         Pending::Plan { steps, .. } => format!(
             "waiting on your verdict on a plan of {} step{}",
             steps.len(),

@@ -42,7 +42,7 @@ computed in: the tokens are what happened and the money is what they came to. It
 is **absent** — not `$0` — where there is no price table, where the table prices
 none of the models this run called, or where nothing has run yet. Those three
 things are different and none of them means free; `/cost` is where they are told
-apart. See [What it costs](#what-it-costs).
+apart. See [What it costs](accounting.md#what-it-costs).
 
 **Two things about that line were corrected in the same release, both of them
 priority inversions.** The footer used to drop its whole right-hand group — the
@@ -271,3 +271,81 @@ It now moves, as an **estimate** taken from the streamed text, and it is written
 with a leading tilde — `~1.2k tok` — so it can never be read as settled. When the
 step commits, the provider's own number replaces it and the tilde goes. The two are
 never added together.
+
+## The agent asks everything in one surface
+
+When the agent needs to know something, the offers and a row that takes your own
+words are one list. Move to an offer and `Enter` sends it verbatim; move to the
+last row and a composer unfolds under it and takes what you type. There is no key
+that moves between two panes, because there are not two panes.
+
+**An agent can ask several things at once, and they arrive as one overlay.** One
+question is on the screen at a time — its question line, its context, its offers,
+its free-text row: exactly the surface a single question has, so answering one
+does not change because four others exist. Deciding it moves to the next question
+that has not been decided, and deciding the last one sends the whole batch. Two
+lines of the head say where you are: which question of how many, and what this one
+was already decided as if you have come back to it.
+
+**`PgUp` and `PgDn` walk the batch**, in either direction, at any point before it
+is sent. A question you have already decided re-opens with your own answer back in
+the composer, so changing your mind is retyping or re-sending your own words
+rather than a second kind of screen with a second set of keys. There is no review
+pane and no submit key: the answers are already on the screen you typed them into,
+one page-key apart, and a second rendering of them is a second thing that can
+disagree with the first.
+
+**Nothing is sent until every question is decided.** io-harness commits a batch
+only when every entry has an answer, so four out of five parks the run exactly as
+thoroughly as none. Declining is a decision — `Esc` decides the question on the
+screen as *nobody here can answer this* and moves on, and the run parks, which is
+the only thing `Esc` has ever promised.
+
+A batch of one is a batch of one. The overlay carries no batch chrome, `PgUp` and
+`PgDn` do nothing, and every key does what it did before.
+
+### An offer can say more than its label
+
+A choice may carry a **description** — one sentence saying what taking it means —
+and a **preview** — a short block showing what taking it would do. They are drawn
+differently because they are different things.
+
+A description is always on the screen, on a row of its own under the label it
+explains, because someone comparing five offers needs all five sentences at once.
+A preview is a block, and five blocks at once is a wall nobody reads — so it
+unfolds beneath the offer under the marker, one at a time, and folds again when
+the marker moves. It is marked as quoted words, the same way this product draws a
+model's own blockquote, because a preview is somebody else's text and not io's.
+On an offer carrying both, the open preview sits between the label and its
+description.
+
+`Enter` on an offer whose preview is open still answers with that offer. The
+question is which row holds the marker, never whether anything is unfolded.
+
+io-harness bounds a preview before it sends one and io-cli does not restate those
+bounds as its own: what arrives is drawn. What is bounded here is the drawing —
+the block asks for the rows it wraps to, and the viewport clamps that to what your
+terminal can spare.
+
+### A question that takes several answers
+
+Where a question accepts more than one, each offer is drawn with a box in front of
+it and `Space` marks and unmarks the one under the marker. `Enter` sends the
+marked set; with nothing marked it sends the offer you are looking at, because an
+empty answer is not an answer — it is information the agent did not have and would
+now believe. What crosses the wire is io-harness's own spelling of a multiple
+answer, not a joiner written here, so two interfaces answering one question
+produce the same text.
+
+The box is drawn on every offer from the moment the list opens, marked or not. A
+column that appeared only once something was marked would be a list that shifts
+sideways as you use it, and — worse — a question that takes several would look
+exactly like one that takes one until you had already pressed `Enter`.
+
+**A known limitation, and it is upstream.** io-harness's store has no column for
+"this question takes several answers" on a *singular* ask, and the singular writer
+records none — so a single multi-select question that parks and is resumed later
+comes back as a pick-one. A batched ask keeps it, because a batch carries its
+questions whole. Nothing io-cli can read recovers the flag for the singular case,
+and defaulting it either way would be io-cli stating as fact something no longer
+on disk.

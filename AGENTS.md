@@ -58,7 +58,8 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
 - **Process spawns** are permitted in `src/shell.rs` (the `!` escape) and `src/fetch.rs` (one
   `git clone` for a marketplace) and nowhere else.
 - **TOML parsing** is permitted in `src/edit.rs` alone. Every other module that needs a value out
-  of a configuration file goes through `edit::value_at`, `edit::sections` or `edit::array`.
+  of a configuration file goes through `edit::value_at`, `edit::sections`, `edit::keys` or
+  `edit::array`.
   `src/marketplace.rs` reads a stranger's `plugin.toml` that way, and `src/adapt.rs` *writes* one
   without ever parsing it.
 - **JSON deserialization** is permitted in `src/import.rs` and `src/adapt.rs`, and nowhere else.

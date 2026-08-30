@@ -1431,7 +1431,7 @@ pub const READ_MARK: &str = "+";
 /// The case this page exists for. A file that is there and is not read looks,
 /// from everywhere else in this product, exactly like one that is read: nothing
 /// warns, and a missing or skipped instruction file is passed over in silence
-/// (`read_instructions`, `io-harness-0.71.0/src/config.rs:2111`).
+/// (`read_instructions`, `io-harness-0.72.0/src/config.rs:2111`).
 pub const UNREAD_MARK: &str = "-";
 
 /// What one row of the memory page stands for.
@@ -1647,7 +1647,7 @@ pub fn memory_notes(view: &crate::recall::View, glyphs: &crate::glyphs::Glyphs) 
 /// writing: a file that exists and is not read. It names what would make it
 /// read rather than only reporting the fact, because `[instructions] files`
 /// **replaces** the default list rather than adding to it
-/// (`DEFAULT_INSTRUCTIONS`, `io-harness-0.71.0/src/config.rs:159`, read at
+/// (`DEFAULT_INSTRUCTIONS`, `io-harness-0.72.0/src/config.rs:159`, read at
 /// `:2120`) and there is nothing on any
 /// other surface to pull on.
 pub fn instruction_said(
@@ -2578,25 +2578,55 @@ fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Lin
 /// eleven was a capability the product already had, withheld by a guard nobody
 /// revisited.
 ///
-/// **`/config` is refused in every form, and that is `US-IO-CLI-0.32.0-I11`.**
-/// The release contract listed it among the eleven; it cannot be admitted even
-/// bare. `/config` alone opens a picker whose rows include
-/// [`crate::configure::REFRESH_PRICES`], which re-reads the provider's catalogue,
-/// **writes a scope file**, and then reassigns both the `Config` and the
-/// `Capabilities` the running turn is holding — a reassignment that is not
-/// expressible behind the shared reference a turn has, quite apart from being a
-/// write. Admitting the command while filtering that one row out is the
-/// bare-from-argued split the contract's own `risks` section says not to make: the
-/// guard is on the whole command precisely so a mistake cannot ship a write into a
-/// running turn. Recorded as an iteration with the developer's approval rather
-/// than quietly dropped.
+/// **`/config` is admitted bare and refused argued, and that discharges
+/// `US-IO-CLI-0.32.0-I11`.** Through 0.32.0 it was refused in every form, because
+/// the bare picker's own rows included [`crate::configure::REFRESH_PRICES`] —
+/// which re-reads the provider's catalogue, **writes a scope file**, and then
+/// reassigns both the `Config` and the `Capabilities` the running turn is holding.
+/// Admitting the command while filtering that one row out would have been the
+/// bare-from-argued split the 0.32.0 contract refused by name: a guard on the
+/// whole command precisely so a mistake could not ship a write into a running
+/// turn.
+///
+/// 0.33.0 removes the write instead of guarding it. The act moved one descent
+/// below `prices.as_of`, the date it writes, so **the bare list has no row that
+/// acts** and the split is no longer between a safe form and a dangerous one — it
+/// is between a list that reports and an argument that writes. `/config <key>` and
+/// `/config <key> <value>` keep their refusal, which is the first time
+/// [`runs_mid_turn`] has had a reason to read past the first word.
 ///
 /// `/copy diff` is `/copy`'s second word rather than a command of its own here, so
 /// the first word decides and both forms are admitted; both only read.
 pub const MID_TURN: &[&str] = &[
-    "/status", "/context", "/cost", "/stats", "/help", "/theme", "/copy", "/expand", "/fleet",
+    "/status",
+    "/context",
+    "/cost",
+    "/stats",
+    "/help",
+    "/theme",
+    "/copy",
+    "/expand",
+    "/fleet",
     "/image",
+    "/config",
+    "/settings",
 ];
+
+/// The commands admitted mid-turn only when nothing follows the word.
+///
+/// The mechanism exists for `/config` rather than the other way round: bare it
+/// opens a list that reports, while `/config <key>` descends toward a write and
+/// `/config <key> <value>` is one. A command here is admitted by [`MID_TURN`] and
+/// then refused again by [`runs_mid_turn`] the moment it carries an argument.
+///
+/// **`/settings` is here because [`parse`] treats it as the same command.** Both
+/// spellings reach the same three arms, so admitting one and refusing the other
+/// would make a command's availability depend on which of its two names an
+/// operator typed. Adding it to [`MID_TURN`] alone would be worse than leaving it
+/// out: the bare-only refusal keys on the name, so `/settings <key> <value>` would
+/// have written into a running turn — the one thing this whole split exists to
+/// stop.
+pub const BARE_ONLY_MID_TURN: &[&str] = &["/config", "/settings"];
 
 /// Whether `word` is the first word of a command in [`COMMANDS`].
 ///
@@ -2619,17 +2649,25 @@ pub fn names_a_command(word: &str) -> bool {
 
 /// Whether this typed line may run while a turn is in flight.
 ///
-/// Takes the whole line rather than a name, so a command whose admission ever
-/// depends on its arguments has somewhere to say so. None does today —
-/// `MID_TURN`'s doc records why `/config` is refused outright — and the first word
-/// decides. `line` is what `Command::Slash` carries: the leading slash already
-/// stripped, and trimmed.
+/// Takes the whole line rather than a name, so a command whose admission depends
+/// on its arguments has somewhere to say so. Since 0.33.0 one does: `/config`
+/// reports in its bare form and writes in its argued ones, so it is in
+/// [`MID_TURN`] and in [`BARE_ONLY_MID_TURN`], and a word after it puts the
+/// refusal back. `line` is what `Command::Slash` carries: the leading slash
+/// already stripped, and trimmed.
 pub fn runs_mid_turn(line: &str) -> bool {
     let mut words = line.split_whitespace();
     let Some(first) = words.next() else {
         return false;
     };
-    if !MID_TURN.contains(&format!("/{first}").as_str()) {
+    let name = format!("/{first}");
+    if !MID_TURN.contains(&name.as_str()) {
+        return false;
+    }
+    // **`next()`, not a length check on the line.** Trailing whitespace is not an
+    // argument, and `split_whitespace` has already discarded it — so `/config   `
+    // is the bare form and `/config prices.as_of` is not.
+    if BARE_ONLY_MID_TURN.contains(&name.as_str()) && words.next().is_some() {
         return false;
     }
     true
@@ -2663,6 +2701,7 @@ mod mid_turn_tests {
                 "/context",
                 "/copy",
                 "/copy diff",
+                "/config",
                 "/fleet",
                 "/image",
                 "/cost",
@@ -2689,7 +2728,6 @@ mod mid_turn_tests {
                 "/steer",
                 "/compact",
                 "/commit",
-                "/config",
                 "/remember",
                 "/memory",
                 "/skills",
@@ -2717,19 +2755,63 @@ mod mid_turn_tests {
         );
     }
 
-    /// **`/config` is refused in every form**, including the bare one the release
-    /// contract originally admitted. Its picker carries a row that writes a scope
-    /// file and reassigns the running turn's `Config`, and a filter that removed
-    /// just that row would be the bare-from-argued split this product decided not
-    /// to make. Asserted in all four shapes so the decision cannot be undone by
-    /// half.
+    /// **`/config` reports bare and is refused argued** — the 0.33.0 shape, and
+    /// the discharge of `US-IO-CLI-0.32.0-I11`.
+    ///
+    /// What changed is not the guard but the surface under it: the price refresh
+    /// left the bare picker for a descent below `prices.as_of`, so the bare list
+    /// has no row that acts and there is nothing left to filter out. The refusal
+    /// that remains is about arguments, which genuinely do write.
+    ///
+    /// Trailing whitespace is the bare form. It is asserted because
+    /// `split_whitespace` is what makes that true, and a future rewrite reaching
+    /// for `line.contains(' ')` would refuse `/config   ` while admitting nothing
+    /// new — a regression no other assertion here would catch.
     #[test]
-    fn config_is_refused_in_every_form_including_the_bare_one() {
-        assert!(!runs_mid_turn("config"));
-        assert!(!runs_mid_turn("config   "));
+    fn config_reports_bare_mid_turn_and_is_refused_the_moment_it_carries_a_word() {
+        assert!(runs_mid_turn("config"));
+        assert!(runs_mid_turn("config   "));
         assert!(!runs_mid_turn("config list"));
         assert!(!runs_mid_turn("config get run.max_steps"));
         assert!(!runs_mid_turn("config run.max_steps 40"));
+    }
+
+    /// The bare-only rule reaches exactly one command, and every other admitted
+    /// command keeps its arguments.
+    ///
+    /// Without this, moving a second command into `BARE_ONLY_MID_TURN` — or
+    /// dropping the `BARE_ONLY_MID_TURN` check for a blanket "no arguments
+    /// mid-turn" — would pass every other assertion in this file. `/copy diff` is
+    /// the one that proves it: it is an admitted command whose second word is part
+    /// of the command.
+    #[test]
+    fn the_bare_only_rule_reaches_config_alone() {
+        assert_eq!(BARE_ONLY_MID_TURN, &["/config", "/settings"]);
+        // Both spellings of one command, held to one answer. `parse` reads
+        // `"config" | "settings"` in every arm, so a session that admitted one and
+        // refused the other would make availability depend on which name was
+        // typed — and admitting `/settings` without the bare-only rule would let
+        // `/settings <key> <value>` write into a running turn.
+        for spelling in ["config", "settings"] {
+            assert!(runs_mid_turn(spelling));
+            assert!(runs_mid_turn(&format!("{spelling}   ")));
+            assert!(!runs_mid_turn(&format!("{spelling} list")));
+            assert!(!runs_mid_turn(&format!("{spelling} run.max_steps 40")));
+        }
+        assert!(runs_mid_turn("copy diff"));
+        assert!(runs_mid_turn("theme dark"));
+        assert!(runs_mid_turn("expand 3"));
+        for name in MID_TURN {
+            if BARE_ONLY_MID_TURN.contains(name) {
+                continue;
+            }
+            let argued = format!("{} something", name.trim_start_matches('/'));
+            assert!(
+                runs_mid_turn(&argued),
+                "{name} is admitted bare but refused with an argument, and it is \
+                 not in BARE_ONLY_MID_TURN",
+            );
+        }
     }
 
     #[test]

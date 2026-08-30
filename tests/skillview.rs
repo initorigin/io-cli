@@ -1006,13 +1006,22 @@ fn f1_installing_a_second_claimant_to_one_name_is_refused() {
     write(&source, &skill("io-mcp", "a second claimant"));
 
     let refusal = skillview::install(&home, &source).expect_err("the name is taken");
+    // **Which guard fired, not merely that one did.** Three of `install`'s
+    // refusals interpolate `{name}`, so `contains("io-mcp")` is satisfied by the
+    // path-component refusal and by the destination one as well and pins nothing.
+    // The claimed-name sentence is the only one that says a skill *already
+    // answers* to it, and the only one that names the directory it answers in.
     assert!(
-        refusal.contains("io-mcp"),
-        "the refusal names the name rather than the file: {refusal}",
+        refusal.contains("already answers to `io-mcp`"),
+        "the refusal is the claimed-name one, naming the name: {refusal}",
     );
     assert!(
-        !skills::dir(&home).join("mine.md").exists(),
-        "and nothing was copied in",
+        refusal.contains(&skills::dir(&home).display().to_string()),
+        "and names the directory the claimant is in: {refusal}",
+    );
+    assert!(
+        !skills::dir(&home).join("io-mcp.md").exists(),
+        "and nothing was copied in under the name it resolves to",
     );
     assert!(
         discovered(&skills::dir(&home)).len() == 1,
@@ -1029,17 +1038,21 @@ fn f1_installing_a_second_claimant_to_one_name_is_refused() {
 /// file and the assertion below would fail.
 #[test]
 fn f3_a_bundles_skill_is_not_ours_to_remove() {
+    // **The id is a word that appears nowhere in the path.** With the bundle
+    // declared as `pack` inside `bundles/pack`, every refusal that prints the path
+    // at all satisfies `contains("pack")` — including the ones that know nothing
+    // about bundles — so the assertion could not fail and pinned nothing.
     let (dir, _home) = home();
     let bundle = dir.path().join("bundles").join("pack");
     let theirs = bundle.join("skills").join("packed.md");
     write(&theirs, &skill("packed", "a bundle's own"));
-    let plug = ("pack".to_string(), bundle.clone());
+    let plug = ("shipyard".to_string(), bundle.clone());
 
     let refusal = skillview::remove(&theirs, std::slice::from_ref(&plug))
         .expect_err("a bundle's file is not io-cli's to delete");
     assert!(
-        refusal.contains("pack"),
-        "the refusal names the bundle: {refusal}",
+        refusal.contains("shipyard"),
+        "the refusal names the bundle by the id it was declared under: {refusal}",
     );
     assert!(theirs.exists(), "and the file is still there");
 }
@@ -1127,5 +1140,289 @@ fn f2_the_removal_confirmation_declines_at_row_zero() {
         ),
         "and `LEAVE_IT` is the first row of that picker, by position rather than \
          by label",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.33.0 F15, F16 — the folder layout, added under the name it resolves to and
+// managed as the folder it is.
+//
+// The whole `is_bundle` branch was untested before this release and nothing
+// anywhere created a `SKILL.md` under io-cli's own skills directory, which is
+// why `install` naming its destination from the source's file name shipped: it
+// wrote `skills/SKILL.md`, and `remove` and `disable` then refused that file
+// forever with a sentence about deleting a folder that was not there.
+// ---------------------------------------------------------------------------
+
+/// **F15.** A `<name>/SKILL.md` source lands as `<name>.md` and comes back out.
+///
+/// Sabotage: name the destination from `source.file_name()` again. The install
+/// writes `skills/SKILL.md`, this test's `remove` is refused, and the assertion
+/// on where it landed fails first.
+#[test]
+fn f15_a_folder_skill_is_added_under_its_resolved_name_and_removed() {
+    let (dir, home) = home();
+    let source = dir
+        .path()
+        .join("elsewhere")
+        .join("ultraship")
+        .join("SKILL.md");
+    write(&source, &skill("ultraship", "the layout skills ship in"));
+
+    let at = skillview::install(&home, &source).expect("a folder skill is added");
+    assert_eq!(
+        at,
+        skills::dir(&home).join("ultraship.md"),
+        "named from the name the run resolves, never from the source's file name",
+    );
+    assert_eq!(
+        discovered(&skills::dir(&home)),
+        vec!["ultraship".to_string()],
+        "and the run resolves the same name off what was written",
+    );
+
+    let gone = skillview::remove(&at, &[]).expect("and it is io-cli's to take away");
+    assert_eq!(gone, at);
+    assert!(!at.exists(), "gone from the skills directory");
+}
+
+/// **F15, no frontmatter.** The name comes from the source's parent directory.
+///
+/// io-harness's `default_name` reads `foo/SKILL.md` as `foo`, so io-cli must too:
+/// a destination named from the file stem would be `SKILL.md`, and one named from
+/// a `describe` that stopped at the stem would be `SKILL.md` under another
+/// spelling. Sabotage: drop the `SKILL` case from `describe` and this lands as
+/// `SKILL.md`.
+#[test]
+fn f15_a_folder_skill_with_no_frontmatter_takes_its_directorys_name() {
+    let (dir, home) = home();
+    let source = dir
+        .path()
+        .join("elsewhere")
+        .join("ultraship")
+        .join("SKILL.md");
+    write(&source, "Do the thing.\n");
+
+    let at = skillview::install(&home, &source).expect("a nameless folder skill is added");
+    assert_eq!(at, skills::dir(&home).join("ultraship.md"));
+    assert_eq!(
+        discovered(&skills::dir(&home)),
+        vec!["ultraship".to_string()],
+        "which is the name the harness resolves for the source too",
+    );
+}
+
+/// **F15, the trust boundary.** A resolved name that is not one path component is
+/// refused, and nothing is written.
+///
+/// The name is somebody else's frontmatter and it is about to be joined onto io's
+/// own home: `Path::join` reads `../escape` as an escape and an absolute path as a
+/// replacement for everything to its left. `crate::import` refuses the same value
+/// for the same reason and the refusal is that function, called rather than
+/// restated. Sabotage: drop the call and `<home>/escape.md` appears — one level
+/// above the directory this verb is allowed to write in.
+#[test]
+fn f15_a_resolved_name_that_is_not_one_path_component_is_refused() {
+    let (dir, home) = home();
+    let source = dir.path().join("elsewhere").join("theirs").join("SKILL.md");
+    write(&source, &skill("../escape", "somebody else's frontmatter"));
+
+    let refusal = skillview::install(&home, &source).expect_err("a name is not a path");
+    assert!(
+        refusal.contains("single path component"),
+        "the refusal says what is wrong with the name: {refusal}",
+    );
+    assert!(
+        !home.join("escape.md").exists(),
+        "and nothing was written outside the skills directory",
+    );
+    assert!(
+        !skills::dir(&home).exists() || discovered(&skills::dir(&home)).is_empty(),
+        "nor inside it",
+    );
+}
+
+/// **F16.** A folder skill inside io-cli's own skills directory is removed as a
+/// folder — which is every skill `/import` has ever written.
+///
+/// Sabotage: unlink the file instead of the directory. The empty directory is left
+/// behind, `discovered` still passes because the harness skips a directory with no
+/// `SKILL.md` in it, and the assertion on the folder is what goes red.
+#[test]
+fn f16_a_folder_skill_in_io_clis_own_skills_directory_is_removed() {
+    let (_dir, home) = home();
+    let folder = skills::dir(&home).join("ultraship");
+    let path = folder.join("SKILL.md");
+    write(&path, &skill("ultraship", "the shape /import writes"));
+    assert_eq!(
+        discovered(&skills::dir(&home)),
+        vec!["ultraship".to_string()],
+        "the run is offered it, so the surface has to be able to take it away",
+    );
+
+    let gone = skillview::remove(&path, &[]).expect("io-cli removes what io-cli laid out");
+    assert_eq!(gone, folder, "the folder went, not the file inside it");
+    assert!(
+        !folder.exists(),
+        "no empty directory left behind, holding nothing discovery can see",
+    );
+    assert!(discovered(&skills::dir(&home)).is_empty());
+}
+
+/// **F16, the toggle.** A folder skill disables as a folder, is still listed while
+/// it is off, and enables back into place.
+///
+/// The listing half is the load-bearing one: `disabled_files` reading only the
+/// top-level `*.md` files would take a parked folder skill off the very surface
+/// that turns it back on — a one-way door dressed up as a toggle. Sabotage: drop
+/// the directory arm of that walk and `listed` panics with the skill missing.
+#[test]
+fn f16_a_folder_skill_in_io_clis_own_skills_directory_is_disabled_and_enabled() {
+    let (_dir, home) = home();
+    let folder = skills::dir(&home).join("ultraship");
+    let path = folder.join("SKILL.md");
+    write(&path, &skill("ultraship", "the shape /import writes"));
+
+    let parked = skillview::disable(&path, &[]).expect("disable moves the folder");
+    assert_eq!(parked, skills::disabled_dir(&home).join("ultraship"));
+    assert!(
+        parked.join("SKILL.md").is_file(),
+        "the file moved with the folder it belongs to",
+    );
+    assert!(
+        !folder.exists(),
+        "and nothing was left in the skills directory"
+    );
+    assert!(
+        discovered(&skills::dir(&home)).is_empty(),
+        "which is the off-switch: the run's walk cannot see into `disabled/`",
+    );
+
+    let view = skillview::view(&home, &skills::dir(&home), &[]);
+    assert!(
+        !listed(&view, "ultraship").enabled,
+        "still listed, and listed as off",
+    );
+
+    skillview::enable(&parked.join("SKILL.md"), &[]).expect("and back again");
+    assert!(path.is_file(), "the folder is where it started");
+    assert_eq!(
+        discovered(&skills::dir(&home)),
+        vec!["ultraship".to_string()]
+    );
+}
+
+/// **F16, the other sense of the word.** A bundle's folder skill is refused by
+/// both levers, and the bundle is left exactly as it was found.
+///
+/// `refuse_bundle` and `is_bundle` are two different senses of one word and only
+/// one of them changed. This is the case where that matters: a bundle's
+/// `<name>/SKILL.md` sits inside a directory whose own layout is
+/// `<root>/skills/<name>/SKILL.md`, so the *shape* test says folder skill and says
+/// it correctly — the only thing standing between somebody else's directory and
+/// `remove_dir_all` is the containment test.
+///
+/// Sabotage: delete the `refuse_bundle` call from either lever. Under it this test
+/// deletes or moves a whole directory of a bundle's, and the snapshot is what
+/// catches it.
+#[test]
+fn f16_a_bundles_folder_skill_is_refused_by_both_levers() {
+    let (dir, home) = home();
+    std::fs::create_dir_all(skills::dir(&home)).expect("the skills directory");
+    let declared = dir.path().join("acme").join("skills");
+    let theirs = declared.join("helper").join("SKILL.md");
+    write(&theirs, &skill("helper", "a bundle's own, in folder form"));
+    // The id is a word the path does not contain, so a refusal that merely printed
+    // the path could not satisfy these assertions.
+    let plug = ("shipyard".to_string(), declared.clone());
+    let before = snapshot(&declared);
+
+    let refusal = skillview::remove(&theirs, std::slice::from_ref(&plug))
+        .expect_err("a bundle's directory is not io-cli's to delete");
+    assert!(
+        refusal.contains("shipyard"),
+        "the refusal names the bundle: {refusal}",
+    );
+    let refusal =
+        skillview::disable(&theirs, std::slice::from_ref(&plug)).expect_err("nor to move");
+    assert!(
+        refusal.contains("shipyard"),
+        "and so does the other lever's: {refusal}",
+    );
+
+    assert_eq!(snapshot(&declared), before, "the refused levers touched it");
+    assert!(
+        !declared.join(skills::DISABLED).exists(),
+        "io-cli made a disabled/ inside a bundle it does not own",
+    );
+}
+
+/// **F16, the migration.** The stray `skills/SKILL.md` that 0.32.0's `skill add`
+/// wrote is a loose file, and removing it removes the file.
+///
+/// Sabotage: go back to deciding the folder shape from the basename. This file
+/// answers `true` to it, `remove` refuses, and the operator can never take it
+/// away.
+#[test]
+fn f16_a_stray_skill_md_that_declares_a_name_is_a_file_and_not_a_folder() {
+    let (_dir, home) = home();
+    let stray = skills::dir(&home).join("SKILL.md");
+    write(
+        &stray,
+        &skill("ultraship", "what `skill add` used to write"),
+    );
+
+    // Disabling it is refused, and for the destination rather than the file: moved
+    // under its own name it would land as `disabled/SKILL.md`, and a directory
+    // holding a `SKILL.md` is exactly what `Skills::discover` walks into — the
+    // off-switch would put the file back in front of the model under the name
+    // `disabled` and take every other parked skill's hiding place with it.
+    let refusal = skillview::disable(&stray, &[]).expect_err("a loose SKILL.md cannot be parked");
+    assert!(
+        refusal.contains(skills::DISABLED),
+        "the refusal is about where it would land: {refusal}",
+    );
+    assert!(
+        !skills::disabled_dir(&home).exists(),
+        "and no `disabled/` was made on the way to refusing",
+    );
+
+    let gone = skillview::remove(&stray, &[]).expect("a loose file is unlinked");
+    assert_eq!(gone, stray, "the file, and not the directory it sits in");
+    assert!(
+        skills::dir(&home).is_dir(),
+        "and the skills directory is still there",
+    );
+}
+
+/// **F16, and the reason the shape test is not only about position.** A stray
+/// `skills/SKILL.md` with no frontmatter resolves to the *directory's* name, which
+/// makes it indistinguishable from a folder skill by the file alone — so it is
+/// refused, and the refusal names the directory rather than one that is not there.
+///
+/// This is the assertion that keeps `remove` from ever calling `remove_dir_all` on
+/// a skills directory. Sabotage: drop the skills-directory case from `own_folder`
+/// and this test deletes every skill in the home.
+#[test]
+fn f16_a_stray_skill_md_with_no_name_is_refused_rather_than_guessed_at() {
+    let (_dir, home) = home();
+    let stray = skills::dir(&home).join("SKILL.md");
+    let beside = skills::dir(&home).join("mine.md");
+    write(&stray, "Do the thing.\n");
+    write(
+        &beside,
+        &skill("mine", "the operator's own, sitting next to it"),
+    );
+
+    let refusal = skillview::remove(&stray, &[]).expect_err("io-cli did not lay this out");
+    assert!(
+        refusal.contains(&skills::dir(&home).display().to_string()),
+        "the refusal names the folder it is talking about: {refusal}",
+    );
+    assert!(stray.exists(), "and deleted nothing");
+    assert_eq!(
+        discovered(&skills::dir(&home)).len(),
+        2,
+        "least of all the skills sitting beside it",
     );
 }
