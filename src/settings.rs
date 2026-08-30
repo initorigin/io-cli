@@ -86,8 +86,11 @@ pub struct CliSettings {
     /// MCP servers for the turn: `[[app.io-cli.mcp]]`.
     ///
     /// io-harness's own `McpServer`, which is `Deserialize` for exactly this
-    /// purpose. **It reaches a turn only where a contract does**, which today is
-    /// the contained turn — see [`crate::contract`].
+    /// purpose. **It reaches a turn wherever a contract does**, which since
+    /// 0.11.0 is every turn: the interactive session and `io exec` both build one
+    /// from the same configuration, so a server declared here is attached to the
+    /// contained turn and the flat one alike — see [`crate::contract`] and
+    /// [`crate::exec`]'s module note, which says the same of either arm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<Vec<io_harness::McpServer>>,
     /// Language servers for this workspace: `[[app.io-cli.lsp]]`.
