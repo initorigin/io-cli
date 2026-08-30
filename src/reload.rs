@@ -2,7 +2,7 @@
 //!
 //! **io-harness takes the instruction files as a snapshot and never takes
 //! another.** `read_instructions` runs inside `Config::discover`
-//! (`io-harness-0.71.0/src/config.rs:2111`), composes each named file into a
+//! (`io-harness-0.72.0/src/config.rs:2111`), composes each named file into a
 //! constraint, and stores the result in a private `Config.instructions` field.
 //! There is no `Config::reload`, and `Config::with_profile` clones the field
 //! rather than going back to disk — so a `Config` is exactly as old as the call

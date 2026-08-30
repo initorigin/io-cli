@@ -255,7 +255,7 @@ pub enum Kind {
 ///
 /// **Both halves are the dependency's since io-harness 0.71.0, and neither is
 /// written here any more**: the list is `Effect::ALL`
-/// (`io-harness-0.71.0/src/policy.rs:127`) and each spelling is `Effect::as_str`
+/// (`io-harness-0.72.0/src/policy.rs:127`) and each spelling is `Effect::as_str`
 /// (`:143`), which is the word io-harness's own deserializer reads.
 ///
 /// Until this release io-cli held a copy of both — an array naming three variants
@@ -282,7 +282,7 @@ pub fn effects() -> Vec<String> {
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **The list is `ExecMode::ALL` (`io-harness-0.71.0/src/sandbox.rs:424`) and the
+/// **The list is `ExecMode::ALL` (`io-harness-0.72.0/src/sandbox.rs:424`) and the
 /// spellings are `ExecMode::as_str` (`:431`).** io-cli wrote the variant list out
 /// by hand until this release for a reason that was the dependency's and not a
 /// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:378-381`), and
@@ -386,7 +386,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 /// preference — but half of the old reason is now false and the correction is
 /// worth writing down.** io-harness 0.71.0 names its own defaults:
 /// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
-/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.71.0/src/contract.rs:652,670,686`),
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.72.0/src/contract.rs:652,670,686`),
 /// re-exported at the crate root. "There is nothing to read" was true when this
 /// was written and is not true now. What is still true is that none of it anchors
 /// *this* ladder:
@@ -583,7 +583,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
 /// **Read from the dependency's own table since io-harness 0.71.0, not scraped
-/// out of the files.** `PriceTable::models` (`io-harness-0.71.0/src/pricing.rs:268`)
+/// out of the files.** `PriceTable::models` (`io-harness-0.72.0/src/pricing.rs:268`)
 /// lists every model the table can actually price, and [`Config::prices`] has
 /// always built that table out of the three scopes — so the merged question this
 /// used to hand-roll is precisely the one the accessor answers, and the gap filed
@@ -609,7 +609,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 ///
 /// **This takes the `Config` the caller already holds, and must never re-discover
 /// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
-/// it reads (`io-harness-0.71.0/src/config.rs:517`), so a second discovery re-runs
+/// it reads (`io-harness-0.72.0/src/config.rs:517`), so a second discovery re-runs
 /// an operator's credential commands — which for a `${cmd:}` fetching a key out of
 /// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
 /// the picker opens. Taking a `&Config` is not an optimisation; it is the
@@ -649,7 +649,7 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
 /// Whether writing `value` to `key` would be refused in a **project-scoped** file.
 ///
 /// io-harness refuses five (key, value) pairs in a committed `io.toml`
-/// (`PROJECT_WIDENING`, `io-harness-0.71.0/src/config.rs:1998-2008`): the two acts
+/// (`PROJECT_WIDENING`, `io-harness-0.72.0/src/config.rs:1998-2008`): the two acts
 /// defaulted to `allow`, egress re-opened inside the sandbox, the portable floor
 /// switched off, and the widest exec mode. The narrowing value of each stays legal,
 /// which is what the scope is for.
@@ -778,7 +778,7 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`substitute`, `io-harness-0.71.0/src/config.rs:2150`, the `cmd` arm at
+/// (`substitute`, `io-harness-0.72.0/src/config.rs:2150`, the `cmd` arm at
 /// `:2241`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or

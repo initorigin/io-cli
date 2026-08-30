@@ -1914,7 +1914,10 @@ fn ids_carries_every_declared_bundle_including_the_ones_that_did_not_load() {
     // One pair per entry and no entry counted twice. Filtered to this root: the
     // machine running the suite has a user-scope file of its own, which
     // `Config::discover` reads too and which is nothing to assert about.
-    let ours = pairs.iter().filter(|(_, dir)| dir.starts_with(&root)).count();
+    let ours = pairs
+        .iter()
+        .filter(|(_, dir)| dir.starts_with(&root))
+        .count();
     assert_eq!(ours, 3, "one pair per declared entry: {pairs:?}");
 }
 

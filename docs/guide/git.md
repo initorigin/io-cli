@@ -97,7 +97,7 @@ made — no git, not a repository, the boundary refusing that path — the spawn
 fails with the reason and **no child starts**, rather than quietly sharing the
 parent's tree and reintroducing the collision the switch exists to remove.
 `/fleet` marks the rows whose roster entry asked for one. See [The
-fleet](#the-fleet).
+fleet](fleet.md#the-fleet).
 
 That mark is a property of the roster entry and not a directory. io-harness
 records a child's actual worktree path and hands it back to nobody, so a path

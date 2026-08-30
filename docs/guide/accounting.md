@@ -58,8 +58,8 @@ whose prices it read and threw away on the same row. The rates land in `[prices]
 which is io-harness's own section: `as_of` for the date, and one line per model
 under `[prices.models]`.
 
-**Refreshing is a row on `/config`, and it shows every rate that would move before
-it writes anything** — what each was and what it would become — and you can
+**Refreshing is a row one descent below `prices.as_of` on `/config`, and it shows
+every rate that would move before it writes anything** — what each was and what it would become — and you can
 decline the lot. That is not courtesy. The file records what a rate *is* and never
 where it came from, so io-cli cannot tell a correction you made by hand from a
 value an older catalogue served; it does not guess, it shows you. A refetch that

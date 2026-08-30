@@ -1255,8 +1255,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 let row = open.selection();
                 let chosen = row.and_then(|row| paths.get(row)).cloned();
                 if let Some(key_name) = chosen {
-                    if let Some((mut values, kind)) =
-                        value_rows(session.root(), &config, &key_name)
+                    if let Some((mut values, kind)) = value_rows(session.root(), &config, &key_name)
                     {
                         // The value in force, found by label rather than by an
                         // index into the row list — the rows carry `leave it`,
@@ -6854,6 +6853,12 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
 ///
 /// It lives beside the loop rather than inside it so the `select!` arm stays
 /// readable; every decision in it is a library call.
+///
+/// The argument list is long because this function is the wiring: each of these is
+/// something the running turn already holds and this function only reads. Bundling
+/// them into a struct would put a type between the loop and the borrow checker for
+/// no gain, which is the shape `cycle_setting` carried before it was deleted.
+#[allow(clippy::too_many_arguments)]
 fn mid_turn_picker(
     picker: &mut Option<(Picker, Pick)>,
     app: &mut App,

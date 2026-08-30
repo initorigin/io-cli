@@ -776,8 +776,11 @@ fn f6_a_plugin_directory_with_no_manifest_is_refused_before_anything_is_written(
 fn manifest(root: &Path, at: &str, name: &str) -> PathBuf {
     let dir = root.join(at);
     std::fs::create_dir_all(&dir).expect("the bundle directory");
-    std::fs::write(dir.join(io_cli::pluginview::MANIFEST), format!("name = \"{name}\"\n"))
-        .expect("the manifest");
+    std::fs::write(
+        dir.join(io_cli::pluginview::MANIFEST),
+        format!("name = \"{name}\"\n"),
+    )
+    .expect("the manifest");
     dir
 }
 
@@ -841,7 +844,11 @@ fn f6_plugin_remove_reads_a_word_that_is_a_declared_directory_as_the_directory()
     let before = declaring(root, &[("twin", true), ("bundles/elsewhere", true)]);
 
     let (scope, after) = removing(root, &before, "plugin remove twin").expect("the directory");
-    assert_eq!(scope, Scope::Local, "the file that declared it is the file edited");
+    assert_eq!(
+        scope,
+        Scope::Local,
+        "the file that declared it is the file edited"
+    );
     assert!(
         !after.contains("path = \"twin\""),
         "the directory named on the command line is still declared: {after}",
@@ -984,11 +991,16 @@ fn f6_plugin_remove_takes_the_name_of_a_bundle_that_was_refused() {
     let root = dir.path();
     manifest(root, "bundles/good", "good-bundle");
     std::fs::create_dir_all(root.join("bundles/ghost-bundle")).expect("a directory, no manifest");
-    let before = declaring(root, &[("bundles/good", true), ("bundles/ghost-bundle", true)]);
+    let before = declaring(
+        root,
+        &[("bundles/good", true), ("bundles/ghost-bundle", true)],
+    );
 
     let declared = declared_bundles(root);
     assert!(
-        declared.iter().any(|(id, at)| id == "ghost-bundle" && at.ends_with("ghost-bundle")),
+        declared
+            .iter()
+            .any(|(id, at)| id == "ghost-bundle" && at.ends_with("ghost-bundle")),
         "a dropped bundle is identified by the directory's own name, and the pairs \
          handed to `plan` must carry it: {declared:?}",
     );

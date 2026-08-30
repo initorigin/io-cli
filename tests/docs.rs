@@ -1296,10 +1296,11 @@ fn f7_no_shipped_document_leaves_a_contact_placeholder_unfilled() {
 
 /// Every relative link in a markdown file, as (containing file, target).
 ///
-/// Anchors and absolute URLs are not this gate's business: `#section` is checked
-/// by nothing here and `https://` is checked by nobody offline. What is left is
-/// the set of links that can rot silently when a file moves — which is exactly
-/// what this release does to a 2,847-line README.
+/// An absolute URL is not this gate's business: `https://` is checked by nobody
+/// offline. What is left is the set of links that can rot silently when a file
+/// moves — which is exactly what this release does to a 2,847-line README. The
+/// fragment on a target is dropped here and checked by [`anchor_links`], which
+/// asks the other half of the question: the file is there, but is the heading?
 fn relative_links() -> Vec<(String, String)> {
     let mut links = Vec::new();
 
@@ -1361,6 +1362,171 @@ fn f4_every_relative_link_resolves_to_a_file_that_exists() {
         dead.is_empty(),
         "these links point at files that are not there, so a reader following \
          the documentation reaches a 404:\n{}",
+        dead.join("\n"),
+    );
+}
+
+/// The anchor GitHub gives each heading in a markdown file, in document order.
+///
+/// GitHub's rule: lowercase, punctuation dropped, spaces to hyphens. So
+/// `## What it costs` is reached as `#what-it-costs`, and the backticks around
+/// `## `[app.io-cli.keys]`` are no part of its anchor. A heading repeated inside
+/// one file gets `-1` on the second and `-2` on the third, which is why this
+/// returns the slugs in order rather than a set.
+///
+/// A `#` inside a fenced block is a shell prompt or a comment, not a heading, so
+/// the fences are tracked and their contents skipped.
+fn heading_slugs(text: &str) -> Vec<String> {
+    let mut bases: Vec<String> = Vec::new();
+    let mut slugs = Vec::new();
+    let mut fenced = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        let heading = rest.trim_start_matches('#');
+        // `#notaheading` is a fragment or a hashtag; a heading has a space.
+        if !heading.starts_with(' ') {
+            continue;
+        }
+        let base: String = heading
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+            .map(|c| if c == ' ' { '-' } else { c })
+            .collect();
+
+        let seen = bases.iter().filter(|already| *already == &base).count();
+        slugs.push(if seen == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{seen}")
+        });
+        bases.push(base);
+    }
+
+    slugs
+}
+
+/// Every anchor link in a markdown file, as (containing file, line, the page the
+/// heading is promised to be in, fragment).
+///
+/// Both spellings land here with the promise made explicit: `](#x)` promises a
+/// heading in the containing file, `](page.md#x)` one in `page.md`, so the gate
+/// below asks a single question of both. Links inside a fenced block are examples
+/// of what to type, not links a reader can click, and are skipped.
+fn anchor_links() -> Vec<(String, usize, PathBuf, String)> {
+    let root = repo();
+    let mut links = Vec::new();
+
+    for (path, text) in shipped_markdown() {
+        let base = std::path::Path::new(&path)
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let mut fenced = false;
+
+        for (number, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                fenced = !fenced;
+                continue;
+            }
+            if fenced {
+                continue;
+            }
+
+            let mut rest = line;
+            while let Some(open) = rest.find("](") {
+                let after = &rest[open + 2..];
+                let Some(close) = after.find(')') else { break };
+                let target = &after[..close];
+                rest = &after[close + 1..];
+
+                // A link target may carry a title: `](path "Title")`. Take the path.
+                let target = target.split_whitespace().next().unwrap_or(target);
+                if target.starts_with("http://")
+                    || target.starts_with("https://")
+                    || target.starts_with("mailto:")
+                {
+                    continue;
+                }
+                let Some((page, fragment)) = target.split_once('#') else {
+                    continue;
+                };
+                if fragment.is_empty() {
+                    continue;
+                }
+                let page = if page.is_empty() {
+                    root.join(&path)
+                } else {
+                    root.join(&base).join(page)
+                };
+                links.push((path.clone(), number + 1, page, fragment.to_string()));
+            }
+        }
+    }
+
+    links
+}
+
+/// **F4, the third part — no anchor link is dead.**
+///
+/// The split moved byte ranges faithfully and left every in-page anchor pointing
+/// at a heading that had gone to another file: 34 of the 46 fragment-only links
+/// in the shipped documentation resolved to nothing, and a reader clicking one
+/// watched the page not move. Nothing caught it, because the link gate above
+/// dropped the fragment and asked only whether the file was there — for a
+/// fragment-only link, the file is always there.
+///
+/// The non-empty assertion is load-bearing for the same reason it is on the
+/// orphan gate: a parser that quietly stops matching would iterate nothing and
+/// pass, which is the vacuous-gate shape this repository has shipped four times.
+///
+/// Sabotage: change one anchor to a heading that is not in the page it names, or
+/// move a heading whose anchor is linked. Only this fails.
+#[test]
+fn f4_every_anchor_link_resolves_to_a_heading() {
+    let root = repo();
+    let links = anchor_links();
+
+    assert!(
+        links.len() > 20,
+        "only {} anchor links were found across the documentation, so this gate \
+         is checking almost nothing — the parser stopped matching",
+        links.len(),
+    );
+
+    let mut dead = Vec::new();
+    for (from, line, page, fragment) in links {
+        let shown = page.strip_prefix(&root).unwrap_or(&page).display();
+        let Ok(text) = std::fs::read_to_string(&page) else {
+            dead.push(format!(
+                "{from}:{line}: #{fragment} — no {shown} to hold it"
+            ));
+            continue;
+        };
+        if !heading_slugs(&text).iter().any(|slug| slug == &fragment) {
+            dead.push(format!(
+                "{from}:{line}: #{fragment} is in no heading of {shown}"
+            ));
+        }
+    }
+
+    assert!(
+        dead.is_empty(),
+        "these anchors name a heading that is not in the page they point at, so \
+         a reader clicking one watches the page not move:\n{}",
         dead.join("\n"),
     );
 }
@@ -1739,4 +1905,371 @@ fn f7_the_security_policy_names_a_private_route_that_is_not_a_public_issue() {
         "CODE_OF_CONDUCT.md asks for reports to reach the maintainers privately, \
          so it has to say through what",
     );
+}
+
+/// Every run of whitespace as one space, so a needle is a claim rather than a
+/// claim **plus the column the paragraph happened to wrap at**.
+///
+/// Every gate above matches raw bytes, which is right for a table row and wrong
+/// for a sentence: markdown prose here is hard-wrapped at eighty columns, so a
+/// two-line sentence carries a newline and two indents that no author chose and
+/// every reflow moves. A needle written against one wrapping either fails on the
+/// next edit — teaching people to delete the gate — or is shortened until it stops
+/// being the claim. Flattening first is what lets the needle be the sentence.
+///
+/// It does **not** strip markup, and must not: the pages carry `` `/config` ``
+/// with its backticks in the bytes, so a needle drops the backticks only where the
+/// file does.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The paragraph beginning at `opening`, up to the blank line that ends it.
+///
+/// Narrower than [`under_heading`] because these two lists are paragraphs rather
+/// than sections, and a section-wide search would find `/config` in the three
+/// paragraphs of prose *about* the split and read them as members of it.
+fn paragraph<'a>(text: &'a str, opening: &str) -> &'a str {
+    let from = text
+        .find(opening)
+        .unwrap_or_else(|| panic!("no paragraph opening {opening:?}"));
+    let rest = &text[from..];
+    let to = rest.find("\n\n").unwrap_or(rest.len());
+    &rest[..to]
+}
+
+/// Every backticked word in `region` that begins with a slash, in the order the
+/// prose names them.
+///
+/// A command and nothing else: the refused paragraph also backticks `!`, which is
+/// a shell escape rather than a command and is asserted for separately.
+fn slash_words(region: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = region;
+    while let Some(open) = rest.find('`') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('`') else { break };
+        let word = &after[..close];
+        rest = &after[close + 1..];
+        if word.starts_with('/') && word.len() > 1 {
+            out.push(word.to_string());
+        }
+    }
+    out
+}
+
+/// `spell`'s answer with the capital a sentence opens on.
+fn capitalised(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// **The mid-turn split in the prose is the split `runs_mid_turn` makes.**
+///
+/// The count and both halves, asked of the code. `docs/guide/keys.md` printed
+/// twenty-one refused commands while the code refused twenty-two of them —
+/// `/exit` and `/export` had never been listed — and the number in front of the
+/// admitted half was `Ten` for a release in which it was eleven. Neither was
+/// catchable by reading a diff: the sentence was not touched by the release that
+/// falsified it.
+///
+/// **The two halves are read out of `COMMANDS` and never written down here.**
+/// `/steer` and `/compact` are subtracted by name, and that subtraction is the one
+/// thing this test states rather than derives: both are refused by `runs_mid_turn`
+/// and both nevertheless reach a running turn, through the arms that existed
+/// before the mid-turn set did. The prose says so in its own paragraph, so listing
+/// them under "refused" would be the page contradicting itself two lines later.
+///
+/// Sorted before comparison rather than compared in order: membership and count
+/// are the claim, and a gate that failed because an author moved `/undo` two
+/// commas to the left is a gate that gets deleted.
+///
+/// Sabotage: put `/config` back in the refused paragraph; drop `/export` from it;
+/// add a twelfth name to the admitted paragraph; or write `Ten` in front of
+/// either sentence. Each fails, naming the command or the number.
+#[test]
+fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
+    use io_cli::commands::{runs_mid_turn, MID_TURN};
+
+    // Reached through their own arms rather than through the mid-turn set, and
+    // named in the prose as exactly that.
+    const OWN_ARMS: [&str; 2] = ["/steer", "/compact"];
+
+    let keys = guide("keys");
+    let contract = read("docs/CONTRACT.md");
+
+    let count = spell(MID_TURN.len());
+    assert_ne!(
+        count,
+        "an unspelled number",
+        "the mid-turn set is {} commands and `spell` has no word for it, so the \
+         two sentences below cannot be checked at all",
+        MID_TURN.len(),
+    );
+
+    let opens = format!(
+        "**{} commands report while the agent works**",
+        capitalised(count)
+    );
+    assert!(
+        keys.contains(&opens),
+        "docs/guide/keys.md should open the mid-turn paragraph {opens:?}; \
+         `MID_TURN` holds {} commands",
+        MID_TURN.len(),
+    );
+    assert!(
+        flat(&contract).contains(&format!(
+            "**{} commands run while a turn is in flight, and the rest are refused.**",
+            capitalised(count),
+        )),
+        "docs/CONTRACT.md should say how many commands run mid-turn, and the code \
+         admits {}",
+        MID_TURN.len(),
+    );
+
+    // The admitted half, as the prose names it.
+    let mut named = slash_words(paragraph(&keys, &opens));
+    named.sort();
+    let mut admitted: Vec<String> = MID_TURN.iter().map(|name| (*name).to_string()).collect();
+    admitted.sort();
+    assert_eq!(
+        named, admitted,
+        "docs/guide/keys.md names a different set of mid-turn commands than \
+         `MID_TURN` holds",
+    );
+
+    // The refused half, likewise — read out of `COMMANDS` through the same
+    // predicate the driver asks, so a command that changes sides changes this.
+    let refused_opens = "**Everything else keeps that refusal";
+    let mut listed = slash_words(paragraph(&keys, refused_opens));
+    listed.sort();
+    let mut refused: Vec<String> = COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !runs_mid_turn(name.trim_start_matches('/')))
+        .filter(|name| !OWN_ARMS.contains(name))
+        .map(str::to_string)
+        .collect();
+    refused.sort();
+    assert_eq!(
+        listed, refused,
+        "docs/guide/keys.md's refused list is not the refused half of COMMANDS; \
+         an operator reading it is told a command is refused that runs, or told \
+         nothing about one that is",
+    );
+    assert!(
+        paragraph(&keys, refused_opens).contains("`!` line"),
+        "a `!` line is refused mid-turn too and the paragraph has to say so, \
+         because it is the one refusal that is not a slash command",
+    );
+
+    // And the two that are neither: refused by the predicate, and reaching the
+    // turn anyway. A page that dropped this paragraph would leave the list above
+    // reading as the whole truth.
+    let flattened = flat(&keys);
+    for name in OWN_ARMS {
+        assert!(
+            flattened.contains(&format!("`{name}`")),
+            "docs/guide/keys.md stops saying that {name} reaches a running turn \
+             through its own arm, so its absence from both lists reads as an \
+             omission",
+        );
+    }
+}
+
+/// **No page still describes the two writes 0.33.0 took out of `/config`.**
+///
+/// Both were true sentences and both are now folklore. The bare `/config` list
+/// carried a row that re-read the provider's catalogue and wrote a scope file, and
+/// a horizontal arrow on a row wrote the scope file on the keystroke — the only
+/// unconfirmed write in the product reachable from a bare arrow key. Every page
+/// that explained why `/config` was refused mid-turn explained it in terms of one
+/// of those.
+///
+/// Every shipped page rather than the two that carried the claims, for
+/// `no_documentation_surface_still_claims_the_old_asymmetry`'s reason: a negative
+/// gate aimed at one file goes **vacuous** the moment the sentence moves, and this
+/// project has moved its prose between files once already.
+///
+/// The positives are the load-bearing half. Four `!contains` assertions are
+/// satisfied by four empty files, so each falsehood is paired with the sentence
+/// that replaces it, on the page that owns it.
+///
+/// Sabotage: restore any one of the four sentences, or delete any one of the
+/// replacements. Each fails on its own and names the file.
+#[test]
+fn no_page_still_says_config_writes_a_file_from_the_list_or_from_an_arrow() {
+    const FALSEHOODS: &[&str] = &[
+        // The count in front of the mid-turn set, which was ten through 0.32.0.
+        "Ten commands report while the agent works",
+        "Ten commands run while a turn is in flight",
+        // The whole-command refusal, and the reason given for it.
+        "`/config` is refused even bare",
+        "refused mid-turn in every form",
+        "picker offers a row that re-reads",
+        // The arrow that wrote where it stood.
+        "A horizontal arrow changes a boolean or a closed set of words where it stands",
+    ];
+
+    for (name, text) in shipped_prose() {
+        let said = flat(&text);
+        for claim in FALSEHOODS {
+            assert!(
+                !said.contains(claim),
+                "{name} still says {claim:?}, which has not been true since \
+                 0.33.0: the bare `/config` list has no row that acts, and \
+                 `Left`/`Right` open a setting's values instead of writing one",
+            );
+        }
+    }
+
+    // The replacements, each on the page that owns the claim: which form of
+    // `/config` runs mid-turn, that the arrows stopped writing, and where the
+    // refresh went.
+    for (page, needle) in [
+        (
+            "keys",
+            "`/config` joined the first list in 0.33.0, and only in its bare form.",
+        ),
+        (
+            "configuration",
+            "**No arrow key writes a configuration file, and until 0.33.0 one did.**",
+        ),
+        (
+            "configuration",
+            "**The price refresh is one descent below `prices.as_of`",
+        ),
+    ] {
+        assert!(
+            flat(&guide(page)).contains(needle),
+            "docs/guide/{page}.md is missing {needle:?}, so the sentence that \
+             replaces a falsehood above is not there and the page is silent \
+             rather than corrected",
+        );
+    }
+
+    const ADMITTED: &str =
+        "**`/config` is admitted bare and refused the moment it carries a word.**";
+    assert!(
+        flat(&read("docs/CONTRACT.md")).contains(ADMITTED),
+        "docs/CONTRACT.md is the page a script author reads, so it has to state \
+         which spellings of `/config` a running turn accepts",
+    );
+}
+
+/// **The question surface is documented as the one surface it became.**
+///
+/// io-harness 0.72.0 shipped batched asks, described choices, previews and
+/// multi-select, and every one of them reached this crate silently when the pin
+/// moved. A capability that arrives without a sentence is a capability nobody
+/// finds: an operator meets `PgUp` by pressing it, or does not.
+///
+/// Each claim is asserted on the page that owns it rather than through an `any()`
+/// over the set, so moving one to a different page fails here and has to be moved
+/// deliberately.
+///
+/// Sabotage: delete any one of these sentences. Each fails, naming the page and
+/// the sentence.
+#[test]
+fn the_guide_describes_a_batched_ask_a_described_offer_and_a_marked_set() {
+    let session = flat(&guide("the-session"));
+    for needle in [
+        // A batch is one overlay, walked, and nothing is sent until it is whole.
+        "**An agent can ask several things at once, and they arrive as one overlay.**",
+        "**`PgUp` and `PgDn` walk the batch**",
+        "**Nothing is sent until every question is decided.**",
+        // ...and the two things a reader would otherwise go looking for.
+        "There is no review pane and no submit key",
+        "`Esc` decides the question on the screen",
+        // A description is always drawn; a preview unfolds one at a time.
+        "A description is always on the screen, on a row of its own under the label",
+        "A preview is a block",
+        // And the set.
+        "`Space` marks and unmarks the one under the marker",
+    ] {
+        assert!(
+            session.contains(needle),
+            "docs/guide/the-session.md is missing {needle:?}, so the question \
+             surface 0.33.0 rebuilt is undocumented on the page that owns it",
+        );
+    }
+
+    // The spacebar is a borrowed key rather than a bound one, and the keys page is
+    // where a reader looks for a key. It is deliberately NOT in `commands::KEYS`
+    // — that table is what the session binds all the time, asserted row for row by
+    // `the_readme_key_table_is_the_key_table`, and this key is held only while a
+    // list that accepts several answers is open, exactly as `/config`'s two arrows
+    // and the queue's four keys are. A row for it in `KEYS` would put a key in
+    // `/help` that most sessions never have.
+    const SPACEBAR: &str =
+        "borrowed by a question that takes several answers, and it is the spacebar";
+    assert!(
+        flat(&guide("keys")).contains(SPACEBAR),
+        "docs/guide/keys.md lists every key the session borrows, and the spacebar \
+         is one from 0.33.0",
+    );
+
+    // Headless: one row, one id, one `--answer`, and the limitation stated.
+    let headless = flat(&guide("headless"));
+    for needle in [
+        "**A batched ask is one row, one id and one `--answer`.**",
+        "there is no per-question flag",
+        "**One limitation to know before you script against it.**",
+    ] {
+        assert!(
+            headless.contains(needle),
+            "docs/guide/headless.md is missing {needle:?}; an operator scripting \
+             against a parked batch has no other page to learn it from",
+        );
+    }
+}
+
+/// **The two management verbs 0.33.0 repaired say what they now accept.**
+///
+/// `io skill add <dir>/SKILL.md` installed a file that neither lever could touch
+/// again, and `io plugin add` printed a removal line the removal verb could not
+/// read. Both are fixes to a *sentence the product itself printed*, so a fix with
+/// no documentation leaves the operator with the old sentence and a verb that has
+/// quietly changed under it.
+///
+/// Sabotage: delete either page's paragraph. Each fails on its own.
+#[test]
+fn the_guide_says_a_skill_installs_under_its_own_name_and_a_bundle_removes_by_name() {
+    // Each needle names the page that owns the claim. The first two are the shape
+    // of the repair — the installed file is named from the skill's own name, and a
+    // folder skill is manageable — and the rest are the second reading `plugin
+    // remove` grew, on both the panel page and the argv page.
+    for (page, needle) in [
+        (
+            "skills",
+            "**`io skill add ./my-skill/SKILL.md` works, and until 0.33.0 it did not.**",
+        ),
+        (
+            "skills",
+            "**A skill `/import` wrote as a folder is manageable too, and it never was.**",
+        ),
+        (
+            "plugins",
+            "**From a shell it is `io plugin remove`, and it takes a directory or a name.**",
+        ),
+        (
+            "plugins",
+            "**Two bundles of one name are refused, with both directories named.**",
+        ),
+        (
+            "headless",
+            "**`io plugin remove` takes a directory or a bundle's name.**",
+        ),
+    ] {
+        assert!(
+            flat(&guide(page)).contains(needle),
+            "docs/guide/{page}.md is missing {needle:?}. Both verbs were repaired \
+             in 0.33.0 and both were repairs to a sentence the product itself \
+             printed, so an undocumented fix leaves the operator with the old \
+             sentence over a verb that has quietly changed",
+        );
+    }
 }

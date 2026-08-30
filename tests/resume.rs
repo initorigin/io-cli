@@ -1056,7 +1056,9 @@ fn a_question_row_in_the_pre_0_72_0_shape_reads_back_with_its_offers() {
          makes this row the old shape",
     );
 
-    let question_id = store.put_question(run_id, 1, &old).expect("a parked question");
+    let question_id = store
+        .put_question(run_id, 1, &old)
+        .expect("a parked question");
     let (id, question, choices, questions) = read_back(&store, run_id);
 
     assert_eq!(id, question_id);
@@ -1068,7 +1070,9 @@ fn a_question_row_in_the_pre_0_72_0_shape_reads_back_with_its_offers() {
          about them",
     );
     assert!(
-        choices.iter().all(|c| c.description.is_none() && c.preview.is_none()),
+        choices
+            .iter()
+            .all(|c| c.description.is_none() && c.preview.is_none()),
         "and nothing was invented to fill the fields the old spelling never had",
     );
     assert!(
@@ -1175,7 +1179,11 @@ fn the_session_list_counts_a_batch_rather_than_quoting_the_rendering_of_it() {
         !note.contains('\n'),
         "a picker detail is one line, and the batch's rendering is not: {note:?}",
     );
-    for asked in ["Which database?", "Which platforms?", "Which release channel?"] {
+    for asked in [
+        "Which database?",
+        "Which platforms?",
+        "Which release channel?",
+    ] {
         assert!(
             !note.contains(asked),
             "quoting the ask is what this replaced — {asked:?} is in {note:?}",

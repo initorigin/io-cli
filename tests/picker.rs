@@ -1059,7 +1059,7 @@ fn t04_the_demand_does_not_move_with_the_marker_or_the_query() {
         "the query never filtered anything: {lists:?}",
     );
     assert!(
-        markers.iter().any(|at| *at == Some(2)),
+        markers.contains(&Some(2)),
         "the marker never left the unfolding rows: {markers:?}",
     );
 

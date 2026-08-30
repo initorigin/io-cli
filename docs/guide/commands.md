@@ -95,7 +95,7 @@ still answers what that key is set to without writing anything. `/provider`'s tw
 new verbs are rows on its panel and never words you type: which link to add is
 chosen from what your shell can already authenticate, and a list is the only
 honest way to ask that. See [Without leaving the
-session](#without-leaving-the-session).
+session](configuration.md#without-leaving-the-session).
 
 `/effort` is new in 0.26.0 and sits under **this turn** beside `/model`, because
 the two are the same question asked twice: which model the work goes to, and how
@@ -104,7 +104,7 @@ the level it sets holds for that turn and for every turn after it until you chan
 it — and a bare `/effort` reports the level in force and changes nothing.
 `/effort off` is not a fourth level below `low`: it goes back to sending no
 reasoning field at all, which is what every release before this one sent. See [How
-much reasoning a turn buys](#how-much-reasoning-a-turn-buys).
+much reasoning a turn buys](the-session.md#how-much-reasoning-a-turn-buys).
 
 `/profile` sits under **the session** from 0.26.0, and it is a correction rather
 than a reshuffle — the third time this sentence has been written, after 0.19.0's
@@ -123,17 +123,17 @@ diff` because it is the third thing you do with work that has just finished: one
 puts the answer somewhere, one puts the patch somewhere, and this one makes the
 patch permanent. Its description says *ask the agent* because that is literally
 what the word does — it sends a prompt, and the agent reviews, stages and writes
-the message. See [Git](#git).
+the message. See [Git](git.md#git).
 
 `/plugin` is new in 0.20.0 and sits beside those two because it is the third
 surface of the same kind: something a configuration file declares by name, whose
 effect on the session is otherwise invisible. See [Capability
-bundles](#capability-bundles).
+bundles](plugins.md#capability-bundles).
 
 `/import` is new in 0.21.0 and is last in the group because it is the one command
 here you use once: the others are returned to for the life of the install. It
 writes files, which is the whole reason it is under **configure**. See [Bringing
-your setup across](#bringing-your-setup-across).
+your setup across](import.md#bringing-your-setup-across).
 
 `/gates` is new in 0.24.0 and is under **configure** for that same reason and not
 because of what its first screen shows. It opens on the criterion in force and the
@@ -143,16 +143,16 @@ That promise is worth more here than it is for a server list: a gate set by
 accident does not merely change what the next turn talks to, it can spend a whole
 extra turn against a real model deciding the first one was not finished. It sits
 before `/import` because it is one you come back to. See [Verification
-gates](#verification-gates).
+gates](verification.md#verification-gates).
 
 `/resume` does more than reopen from 0.23.0: each row says what that session's
 last run stopped on, and choosing one answers it. No command was added for that —
 the one that was already there was extended. See [When a run stops for
-you](#when-a-run-stops-for-you).
+you](resume.md#when-a-run-stops-for-you).
 
 `/cost` and `/stats` are new in 0.22.0 and are two commands rather than one
 because they are two questions: `/cost` says what the work cost, `/stats` says
-whether it worked. See [What it costs](#what-it-costs).
+whether it worked. See [What it costs](accounting.md#what-it-costs).
 
 `/image`, `/copy` and `/copy diff` sit under **this turn** from 0.22.0, and it is
 a correction rather than a way of making room — the same sentence 0.19.0 wrote
@@ -222,6 +222,13 @@ model, and the run-scoped status fields back to zero. It clears the screen and
 nothing else — the conversation it ends is still in the store and still listed by
 `/resume`, and your terminal's scrollback is still your terminal's. It is refused
 while a turn is running.
+
+**Eleven of these run while a turn is in flight and the rest are refused**, and
+the rule is what a command does rather than how harmless it looks. `/config`
+joined that first set in 0.33.0, in its bare form only: `/config <key>` and
+`/config <key> <value>` descend toward a write and keep the refusal. The whole
+list, and the reason each side of it is where it is, is on
+[Keys](keys.md) — one place, so the two cannot come to disagree.
 
 `/copy` uses OSC 52, so it reaches the clipboard of the machine you are *sitting
 at* rather than the one you are ssh'd into. Nothing acknowledges an OSC 52 write:

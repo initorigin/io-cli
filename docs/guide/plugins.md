@@ -51,6 +51,25 @@ the two lists have no relation to the order entries appear in any file, and a ro
 number read against the wrong list removes a bundle you never mentioned. Where no
 file names the directory, io says so and removes nothing.
 
+**From a shell it is `io plugin remove`, and it takes a directory or a name.**
+`io plugin add` has always printed *`plugin remove <id>` takes it back out* and
+the verb read its argument as a path only, so the sentence was false on the door
+that printed it. The path is still read first and against the disk, so
+`io plugin remove ./bundles/rust-review` means exactly what it always meant, and a
+directory that is declared is always removed as one. Only when no configuration
+file declares that directory is the word read as the name of a bundle you have
+declared — across the loaded ones, the ones switched off and the ones that failed
+to load, which are the entries you most want gone, since a bundle whose manifest
+will not parse is one you cannot fix from the manifest.
+
+**Two bundles of one name are refused, with both directories named.** A bundle's
+id is unique among the ones io-harness actually *loaded*; two declared with
+`enabled = false` may share one, which is the whole point of that flag. Taking
+whichever was found first would delete a `[[plugin]]` entry you never pointed at,
+silently, and you would find out when a bundle's skills stopped being offered. So
+io says how many carry the name and prints each one's directory, which is the
+spelling that tells them apart and the spelling the path reading above resolves.
+
 The directory itself is never touched. This surface edits a configuration file,
 and deleting somebody's work because they stopped loading it is not a thing a list
 should do. Declaring a bundle is still a line you write yourself: a path is

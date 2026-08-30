@@ -53,6 +53,7 @@ posture on the next.](assets/screenshot.png)
 | **Undo** | `Esc Esc` at an empty prompt rewinds the last turn — its files, its memory and the conversation head |
 | **Conversations that survive** | `/resume` reopens an earlier session and answers whatever its last run stopped on, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
 | **A paused run, answered** | A question, a plan or an interrupted call is decided where it was left and the run carries on from the step it stopped at — from a session, or from a script with `io resume` |
+| **Everything it asks, in one place** | Several questions asked at once arrive as one overlay, answered one at a time and sent together; an offer may explain itself and preview what taking it would do; `Space` marks where a question takes more than one answer |
 | **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json`, and `io resume` carries a parked one on |
 | **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
 | **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
@@ -138,7 +139,7 @@ the limits that capability actually has.
 
 | Guide | What it covers |
 | --- | --- |
-| [While it works](docs/guide/the-session.md) | What a running turn shows you, how the agent's manner is drawn, answering without opening a run, how much reasoning a turn buys, and background jobs |
+| [While it works](docs/guide/the-session.md) | What a running turn shows you, how the agent's manner is drawn, answering without opening a run, how much reasoning a turn buys, background jobs, and the one surface the agent asks everything through |
 | [Keys](docs/guide/keys.md) | Every default binding, and moving one |
 | [Commands](docs/guide/commands.md) | All thirty-six, grouped by what you are doing |
 | [Bringing your setup across](docs/guide/import.md) | What `/import` finds on this machine, item by item, and the credential it never reads |
@@ -196,7 +197,7 @@ says so once at startup, naming the number that is no longer in force and
 `[run] max_steps` as where the cap lives now. **A section that was ignored may
 start being read**, which 0.14.0 did to eleven of them, and that is a behaviour
 change for a file that already carried one; it is the migration note in
-[Configuration](#configuration) and in the changelog rather than something to
+[Configuration](docs/guide/configuration.md#configuration) and in the changelog rather than something to
 find out from a turn.
 
 ## Security

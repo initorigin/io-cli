@@ -1960,7 +1960,10 @@ fn a_parked_batch_is_listed_and_refused_as_the_several_questions_it_is() {
     let row = exec::listed(41, &batch, true).expect("a batch is a row");
     let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
     assert_eq!(value["waiting_on"], "question");
-    assert_eq!(value["id"], 219, "one row, one id, and it is the one to answer");
+    assert_eq!(
+        value["id"], 219,
+        "one row, one id, and it is the one to answer"
+    );
     assert_eq!(
         value["questions"], 3,
         "and the one thing `waiting_on` cannot say: how much that one answer has \
