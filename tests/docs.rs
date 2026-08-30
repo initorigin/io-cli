@@ -27,8 +27,22 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// One shipped file, with its line endings normalised.
+///
+/// **The `\r` strip is why this file passes on Windows.** Git checks these
+/// documents out with CRLF there, and every helper below reasons about `\n` — most
+/// sharply [`paragraph`], which ends a paragraph at `"\n\n"` and on a CRLF
+/// checkout found no boundary at all, took the rest of the document, and reported
+/// that a page naming eleven commands named all thirty-eight. Normalising once
+/// here rather than in each helper is the difference between one rule and a guard
+/// every future reader has to remember.
+///
+/// Caught by the release matrix on 0.33.0, with macOS and Linux green — which is
+/// what the matrix is for.
 fn read(name: &str) -> String {
-    std::fs::read_to_string(repo().join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
+    std::fs::read_to_string(repo().join(name))
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+        .replace("\r\n", "\n")
 }
 
 /// The pages that describe the product **as it is now**, for a sweep that
@@ -1225,7 +1239,12 @@ fn shipped_markdown() -> Vec<(String, String)> {
                     .expect("walked from the root")
                     .to_string_lossy()
                     .replace('\\', "/");
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                // Line endings normalised for the same reason the path separator
+                // above is: these pages are read on three platforms and every
+                // sweep below reasons about `\n`. See `read`.
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_default()
+                    .replace("\r\n", "\n");
                 out.push((relative, text));
             }
         }
