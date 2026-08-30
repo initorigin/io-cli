@@ -63,7 +63,11 @@ version that could.
   rather than overwritten, and a file whose `name:` is already claimed is refused
   even when its filename is free, because two skills answering to one name make
   every turn of the next session fail before its first completion. Until now the
-  only thing that had ever written a skill file was `/import`.
+  only thing that had ever written a skill file was `/import`. **The `io skill`
+  half of this entry did not ship in 0.30.0**: the parse and the plan were there,
+  but `src/cli.rs` named no `skill` subcommand, so the argv door answered
+  `unrecognized subcommand 'skill'` until 0.30.1 added it. The session commands
+  are as described.
 - **`/memory` edits and forgets an instruction note**, by line. Both splice the
   file, so your indent, your `*`, a `\r\n` and a last line with no newline all
   survive. A note changed underneath you is refused rather than overwritten. A
@@ -2574,7 +2578,37 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.27.0...HEAD
-[0.27.0]: https://github.com/initorigin/io-cli/releases/tag/v0.27.0
-[0.1.1]: https://github.com/initorigin/io-cli/releases/tag/v0.1.1
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.30.1...HEAD
+[0.30.1]: https://github.com/initorigin/io-cli/compare/v0.30.0...v0.30.1
+[0.30.0]: https://github.com/initorigin/io-cli/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/initorigin/io-cli/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/initorigin/io-cli/compare/v0.27.0...v0.28.0
+[0.27.0]: https://github.com/initorigin/io-cli/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/initorigin/io-cli/compare/v0.25.0...v0.26.0
+[0.25.0]: https://github.com/initorigin/io-cli/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/initorigin/io-cli/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/initorigin/io-cli/compare/v0.22.0...v0.23.0
+[0.22.0]: https://github.com/initorigin/io-cli/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/initorigin/io-cli/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/initorigin/io-cli/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/initorigin/io-cli/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/initorigin/io-cli/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/initorigin/io-cli/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/initorigin/io-cli/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/initorigin/io-cli/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/initorigin/io-cli/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/initorigin/io-cli/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/initorigin/io-cli/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/initorigin/io-cli/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/initorigin/io-cli/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/initorigin/io-cli/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/initorigin/io-cli/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/initorigin/io-cli/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/initorigin/io-cli/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/initorigin/io-cli/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/initorigin/io-cli/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/initorigin/io-cli/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/initorigin/io-cli/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/initorigin/io-cli/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/initorigin/io-cli/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/initorigin/io-cli/releases/tag/v0.1.0

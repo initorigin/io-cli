@@ -1365,6 +1365,64 @@ fn f4_every_guide_page_is_reachable_from_both_indexes() {
     );
 }
 
+/// **Every CHANGELOG heading is a link, and every link definition has a heading.**
+///
+/// Thirty of thirty-three version headings had no link definition, so they
+/// rendered as literal `[0.29.0]` text on GitHub while the file's own header
+/// claimed Keep a Changelog conformance — and `[Unreleased]` compared from a tag
+/// four releases old, which is the kind of wrong that looks right.
+///
+/// Most of F9 is prose with no oracle. This part is not, so it is asserted rather
+/// than reviewed: a definition is a mechanical consequence of adding a heading,
+/// and mechanical things belong in a test.
+///
+/// Sabotage: delete any `[x.y.z]:` line, or add a heading without one. Either fails.
+#[test]
+fn every_changelog_heading_has_a_link_definition_and_the_reverse() {
+    let changelog = read("CHANGELOG.md");
+
+    let headings: Vec<String> = changelog
+        .lines()
+        .filter_map(|line| line.strip_prefix("## ["))
+        .filter_map(|rest| rest.split(']').next())
+        .map(str::to_string)
+        .collect();
+
+    let defined: Vec<String> = changelog
+        .lines()
+        .filter(|line| line.starts_with('['))
+        .filter(|line| line.contains("]: "))
+        .filter_map(|line| line.strip_prefix('['))
+        .filter_map(|rest| rest.split(']').next())
+        .map(str::to_string)
+        .collect();
+
+    assert!(
+        headings.len() > 30,
+        "the CHANGELOG should carry every released version as a heading; found {}",
+        headings.len(),
+    );
+
+    let undefined: Vec<&String> = headings.iter().filter(|h| !defined.contains(h)).collect();
+    assert!(
+        undefined.is_empty(),
+        "these headings have no link definition, so they render as literal text \
+         rather than as a link to the diff: {undefined:?}",
+    );
+
+    let dangling: Vec<&String> = defined.iter().filter(|d| !headings.contains(d)).collect();
+    assert!(
+        dangling.is_empty(),
+        "these link definitions name no heading, so a version was renamed or \
+         removed and its link was left behind: {dangling:?}",
+    );
+
+    assert!(
+        changelog.contains("[Unreleased]: ") && changelog.contains("...HEAD"),
+        "[Unreleased] should compare the newest tag against HEAD",
+    );
+}
+
 /// **F7, the other half — the private report route is really named.**
 ///
 /// The test above only proves a placeholder is absent, which an empty file also

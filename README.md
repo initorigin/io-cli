@@ -57,8 +57,8 @@ posture on the next.](docs/screenshot.png)
 `io` does not enter the alternate screen and does not capture the mouse, in any
 mode, behind any flag. Every finished message, tool call and system line is
 committed into the terminal's own scrollback; eight rows at the bottom hold the
-live row, the activity line, two rows of composer and a three-row footer, and
-only those repaint.
+unfinished tail of a streaming answer, a blank row, the activity line, a rule,
+one row of composer and a three-row footer, and only those repaint.
 
 So when the session ends the whole conversation is still there. Your terminal's
 search finds it, tmux copy-mode scrolls it, and a mouse drag selects it — none of
@@ -143,8 +143,8 @@ thing at any time.
 | the repository | `.cursorrules` or `CONVENTIONS.md`, if either is there |
 
 A tool that is not installed simply is not offered. A tool whose files are all
-**empty** is a different row and says so — on a good many machines all three
-Gemini files exist and every one is zero bytes, and an import of nothing that
+**empty** is a different row and says so — on a good many machines both Gemini
+files exist and each one is zero bytes, and an import of nothing that
 then reports success is the failure you cannot see.
 
 **Where it writes:** instructions are appended to the memory file for the scope
@@ -607,7 +607,8 @@ to the surface that already owns the list, and a second row for one screen reads
 as a second screen — the rule `/usage` follows below.
 
 **0.30.0 closes the rest of it, and adds no command either.** A skill can be put
-there and taken away (`/skills add`, `/skills remove`, `io skill …`); an
+there and taken away (`/skills add`, `/skills remove`, and the same words from a
+shell as `io skill …` from 0.30.1, which is where that door actually opened); an
 instruction note can be changed and forgotten (`/memory`); a profile can be
 created, removed and cleared (`/profile create|remove|clear`); an MCP server and a
 capability bundle can each be switched **off without being removed**, which until
@@ -1094,7 +1095,7 @@ One directory can hand over six kinds of thing at once: skills, prompt templates
 Every other capability in a session is one you put there — a skill file is yours
 or io-cli's, an `[[mcp]]` entry is a line you wrote, a policy layer came from a
 posture you chose. A bundle is a directory somebody else wrote that adds names to
-four subsystems on one line, and *what did that directory put in my session* is a
+six subsystems on one line, and *what did that directory put in my session* is a
 question whose only previous answer was to open the manifest.
 
 **`/plugin` answers it, and it answers the dropped ones too.** One row per bundle
@@ -1204,7 +1205,7 @@ it deletes anything.
 
 ### What a bundle is allowed to do is shown before it is allowed to do it
 
-A bundle contributes to four subsystems at once, and until 0.29.0 every one you
+A bundle contributes to six subsystems at once, and until 0.29.0 every one you
 declared came from a directory you had read. A marketplace removes that reading,
 so the install puts it back.
 
@@ -1415,8 +1416,9 @@ like the ones it was written against.
 not squeamishness. A criterion run from here could not be handed the cache
 directories a real run gets from the detected toolchain, so a `cargo test` gate
 would fail on a registry write that io-harness's own gate would have allowed. It
-also keeps a rule worth keeping: exactly one module in io-cli starts a process at
-all, and it is the one behind `!`.
+also keeps a rule worth keeping: exactly two modules in io-cli start a process at
+all — the one behind `!` and the one that runs the `git` of a marketplace fetch.
+`tests/dependencies.rs` names both by path and fails on a third.
 
 The single exception is a `file` criterion with no `contains`. io-harness has no
 criterion for bare existence — the nearest one treats a missing file and an empty
@@ -1523,7 +1525,7 @@ disclosure.
 **There is no `require_primary` key**, and its absence is a decision rather than
 an omission. io-harness's own `Routing` carries the field, and it gates on
 `Provider::reachable` — a defaulted trait method whose body answers yes, and which
-no provider in io-harness 0.69 overrides. A key for it would be offered on a
+no provider in io-harness 0.71.0 overrides. A key for it would be offered on a
 surface, accepted from a file, and permanently inert: you would set it, believe an
 unattended overnight run now refuses to start against a dead endpoint, and get
 exactly the behaviour you had before. It goes in when a provider answers the
@@ -1844,20 +1846,25 @@ what it already does with a policy refusal.
 | `3` | a ceiling was reached: steps, time, tokens, or the tree's shared budget |
 | `4` | the run stopped needing a human: it asked a question, proposed a plan, or was interrupted in the middle of a call |
 | `5` | it ended without finishing: stalled, escalated, or cancelled |
-| `6` | the agent finished and the work does not hold up: a gate you configured did not pass |
+| `6` | the work does not hold up: a gate you configured did not pass |
 
 A ceiling is `3` and not `0` because io-harness returns one as a *successful
 call* whose outcome says a limit was hit; a status read off the result alone
 would call a truncated run a finished one.
 
 **Exit `6` is new in 0.24.0 and it is the only one that is.** It says something no
-other row could: the run ended the way `0` ends, of its own accord, and then the
-criterion you set in [`[app.io-cli.gates]`](#verification-gates) failed anyway —
-the tests did not pass, the file was not written, the reviewer said no. It is not
-`1`, because nothing went wrong with the invocation; it is not `5`, because the
-agent did not stall or give up; and it is emphatically not `0`, which is the
-status a build script reads as permission to carry on. A run that never had a gate
-configured can never return it.
+other row could: the criterion you set in
+[`[app.io-cli.gates]`](#verification-gates) did not pass — the tests failed, the
+file was not written, the reviewer said no. **Two routes reach it.** The run ends
+the way `0` ends, of its own accord, and the gate then answers failed; or
+io-harness ends the run itself as `VerificationFailed`, which is a run that spent
+its whole step budget and never passed the gate. The second is a ceiling by
+mechanism and is deliberately not `3`: what is worth reporting is that the work
+was judged and did not hold up, and `3` would move exactly the runs `6` was
+invented for. It is not `1`, because nothing went wrong with the invocation; it
+is not `5`, because the agent did not stall or give up; and it is emphatically
+not `0`, which is the status a build script reads as permission to carry on. A
+run that never had a gate configured can never return it.
 
 **No exit code was renumbered, and `6` is the first one added since `io exec`
 shipped.** `0` through `5` have meant exactly what they mean in the table above
@@ -1901,7 +1908,7 @@ either direction.
 One object per line, and nothing else on stdout, so it pipes straight into a
 reader. The objects are `io_harness::RunEvent` serialized by io-harness's own
 derive — the same shape its `[[hook]]` writer appends to a file and its store
-keeps in `run_events.json`:
+keeps in the `json` column of its `run_events` table:
 
 ```json
 {"run_id":41,"step":2,"depth":0,"event":"step","decision":"wrote src/lib.rs","tool_call":"write_file","tokens":812,"changed":true}
@@ -1909,8 +1916,8 @@ keeps in `run_events.json`:
 
 The variant's fields sit beside the envelope's rather than under a key of their
 own. Because io-cli forwards the harness's type rather than modelling one of its
-own, every event kind reaches the stream — including the thirty-nine the
-interactive renderer has no way to draw. **There is no timestamp**: `RunEvent`
+own, every event kind reaches the stream — including every kind the interactive
+renderer has no way to draw. **There is no timestamp**: `RunEvent`
 does not carry one, and inventing an envelope to add one would make this a
 format io-cli owns rather than one it passes through.
 
@@ -1977,7 +1984,7 @@ anything.
 ### Managing the configuration without a session
 
 `io mcp`, `io plugin` and `io config` are new in 0.28.0, `io skill` joins them in
-0.30.0, and they do from a shell what `/mcp`, `/plugin`, `/config` and `/skills`
+0.30.1, and they do from a shell what `/mcp`, `/plugin`, `/config` and `/skills`
 do inside a session. They open no session, start no run and touch no store — a
 configuration listing that had to build a task contract before it could print is a
 listing nobody can put in a script — and they are answered before the terminal
@@ -2275,10 +2282,14 @@ entry looks exactly as valid as a working one and the alternative is finding out
 a turn later. The same paragraph in [Managing the configuration without a
 session](#managing-the-configuration-without-a-session) has the rule to write.
 
-It offers no *disable*, because `McpServer` has no
-key for one — an `enabled = false` invented here would be accepted by the file and
-ignored by the harness, and a panel saying "disabled" over a running server is
-worse than a panel with one fewer verb. Nor a *reconnect*: servers are attached
+**It switches a server off and back on**, which through io-harness 0.69.0 it
+could not: `McpServer` carried no key for it, and an `enabled = false` invented
+here would have been accepted by the file and ignored by the harness. io-harness
+0.70.0 made `enabled` a real field, honoured before the server is spawned,
+dialled or even checked against the policy, so 0.29.0 drew the state without a
+writer for it and 0.30.0 adds both halves — a surface that can switch a server
+off has to be able to switch it back on. `io mcp disable` and `io mcp enable` are
+the same edit from a shell. There is still no *reconnect*: servers are attached
 per turn, so the next turn is what picks up your edit.
 
 **`/provider`** shows the `[[provider]]` array as what it is: the order a turn
@@ -2434,7 +2445,9 @@ lives too, because that is rows inside the store rather than a file of its own �
 and the skills directory, which is `~/.io-cli/skills` when `skills` names none.
 `~/.io-cli/IO.md` is in it as well: the guidance you want in every project, which
 `/remember` writes when you pick that scope. That is one directory to copy to a
-new machine, and one path to put in a bug report.
+new machine, and one path to put in a bug report — as long as you have named no
+location of your own, which splits it in two, as the resolution order below
+says.
 
 Two more paths arrive with the shipped skills. `~/.io-cli/skills/disabled/` holds
 the ones that are turned off, which is a directory rather than a setting — see
@@ -2455,8 +2468,19 @@ or `~/.config/io/io.toml`, and `%APPDATA%\io\io.toml` on Windows. What 0.15.0
 changed is that io-cli sets `IO_CONFIG_HOME` to its own home before io-harness
 resolves anything, so the second rung is the one that answers when you have named
 no location yourself. Set `IO_CONFIG` or `IO_CONFIG_HOME` and io-cli sets nothing
-and moves nothing — the location is yours. A project's own `io.toml` and a
+and moves nothing — that location is yours. A project's own `io.toml` and a
 gitignored `io.local.toml` layer on top of whichever file was found.
+
+**That is also where the home splits, and the split is deliberate.** `io.toml`,
+the run store beside it and `IO.md` follow the variable, because all three are
+resolved from the configuration path in force. The skills directory,
+`.skills-manifest`, `marketplaces/` with the staging directory a clone is
+assembled in, and the session lock are built from `~/.io-cli` whatever the
+variables say: a marketplace clone is io-cli's own cache of other people's
+repositories rather than part of your configuration, and following the variable
+there would leave every clone already fetched invisible. So under a home you
+named yourself there are two directories rather than one, and both go in the
+copy and in the bug report.
 
 io-cli sets `IO_CONFIG_HOME` in its own process environment, which every child a
 session starts inherits: a `!` shell line, a spawned agent, a nested `io`. For a
