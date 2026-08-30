@@ -1149,3 +1149,121 @@ fn f19_no_source_cites_an_io_harness_this_crate_does_not_pin() {
         stale.join("\n"),
     );
 }
+
+/// The markdown a reader meets, by path relative to the root.
+///
+/// Walked rather than listed, because a list is a second place to add a file and
+/// the one that never gets updated. Dotted directories are skipped, which drops
+/// `.ultraship/` — gitignored whole, the maintainer's working notes rather than a
+/// reader-facing surface — and also `.github/`'s issue and pull-request
+/// templates, which no criterion here covers. `target/` holds nothing shipped.
+fn shipped_markdown() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("walked from the root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                out.push((relative, text));
+            }
+        }
+    }
+
+    let root = repo();
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    out.sort();
+    out
+}
+
+/// **F7 — no shipped document contains an unfilled placeholder.**
+///
+/// `SECURITY.md` forbade the public-issue fallback and then named a literal
+/// `<project-contact-email>`, and `CODE_OF_CONDUCT.md` carried the same token —
+/// so from 0.1.0 to 0.30.1 this project told people not to open an issue and
+/// gave them nowhere else to go. The README routes every vulnerability report at
+/// `SECURITY.md`, so the dead end was the only documented path.
+///
+/// The needle is not "an angle bracket": `docs/CONTRACT.md` legitimately writes
+/// `io exec "<goal>"` and `<subcommand>`, and a gate that banned those would be
+/// reverted the first time someone documented a command's arguments. It is the
+/// **template** shape — an angle-bracket token naming a contact that was meant to
+/// be substituted and was not.
+///
+/// Sabotage: put `<project-contact-email>` back into either file. Only this fails.
+#[test]
+fn f7_no_shipped_document_leaves_a_contact_placeholder_unfilled() {
+    let mut offenders = Vec::new();
+
+    for (path, text) in shipped_markdown() {
+        for (number, line) in text.lines().enumerate() {
+            // An angle-bracket token that names a contact rather than an argument.
+            // `<goal>`, `<path>` and `<version>` are argument spellings and are
+            // deliberately not matched.
+            let mut rest = line;
+            while let Some(open) = rest.find('<') {
+                let after = &rest[open + 1..];
+                let Some(close) = after.find('>') else { break };
+                let token = &after[..close];
+                let looks_like_contact = token.contains("contact")
+                    || token.contains("email")
+                    || token.contains("your-");
+                // A URL in angle brackets is a markdown autolink, not a placeholder.
+                let is_autolink = token.starts_with("http");
+                if looks_like_contact && !is_autolink {
+                    offenders.push(format!("{path}:{}: <{token}>", number + 1));
+                }
+                rest = &after[close + 1..];
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these documents ship an unfilled contact placeholder, so a reader \
+         following them reaches nobody:\n{}",
+        offenders.join("\n"),
+    );
+}
+
+/// **F7, the other half — the private report route is really named.**
+///
+/// The test above only proves a placeholder is absent, which an empty file also
+/// satisfies. This one proves the replacement is present, so deleting the
+/// reporting section to make the first test pass fails this one.
+#[test]
+fn f7_the_security_policy_names_a_private_route_that_is_not_a_public_issue() {
+    const ADVISORY: &str = "security/advisories/new";
+
+    let security = read("SECURITY.md");
+    assert!(
+        security.contains(ADVISORY),
+        "SECURITY.md forbids opening a public issue, so it has to name the \
+         private route that replaces it",
+    );
+    assert!(
+        security.contains("Do not open a public issue"),
+        "the policy's central instruction is missing",
+    );
+
+    let conduct = read("CODE_OF_CONDUCT.md");
+    assert!(
+        conduct.contains(ADVISORY),
+        "CODE_OF_CONDUCT.md asks for reports to reach the maintainers privately, \
+         so it has to say through what",
+    );
+}
