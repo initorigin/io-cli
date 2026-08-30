@@ -5864,53 +5864,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // The picture, drawn now, at the bottom. It cannot open the row
                 // it was announced on: that row is in the terminal's scrollback,
                 // which nothing here reaches.
+                // One implementation, two doors — see `commit_image`. `/image`
+                // reached this arm alone until 0.32.0 gave it a second at the
+                // mid-turn loop, and a surface answered one way by its key and
+                // another by its name is a defect this product has shipped twice.
                 Action::Image(which) => {
-                    let total = app.images();
-                    match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
-                        Some((number, path)) => {
-                            let effective =
-                                approval::session_policy(&policy, app.posture(), app.remembered());
-                            match io_cli::attach::prepare(
-                                session.root(),
-                                &effective,
-                                provider.accepts_images(),
-                                &path,
-                            ) {
-                                Ok(staged) => {
-                                    let (drawable, graphics) = forms(&app);
-                                    let drawn = io_cli::picture::render(
-                                        &staged.bytes,
-                                        &staged.path,
-                                        staged.media_type,
-                                        drawable,
-                                        graphics,
-                                        screen.width(),
-                                    );
-                                    let caption = app.theme.notice(
-                                        Tone::Muted,
-                                        io_cli::picture::caption(
-                                            number,
-                                            &staged.path,
-                                            staged.media_type,
-                                            staged.bytes.len(),
-                                        ),
-                                    );
-                                    commit_drawn(screen, &mut app, drawn, Some(caption))?;
-                                }
-                                Err(error) => app.say(Tone::Error, error),
-                            }
-                        }
-                        None if total == 0 => {
-                            app.say(Tone::Muted, "no image has been attached in this session")
-                        }
-                        None => app.say(
-                            Tone::Muted,
-                            format!("say which one: /image 1 to /image {total}"),
-                        ),
-                    }
+                    let root = session.root().to_path_buf();
+                    commit_image(&mut app, screen, &root, &policy, &provider, which)?;
                 }
                 Action::Expand => {
-                    let lines = expand(&session, &store, &app.theme, app.events.thought());
+                    let last = last_run(&session, &store);
+                    let lines = expand(last.as_ref(), &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 // **Committed upward, exactly as `/expand` and `Ctrl+T` are.**
@@ -5948,7 +5912,9 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                     let lines = io_cli::status::committed(
                         &app.status,
-                        &session,
+                        session.root(),
+                        session.id(),
+                        session.head(),
                         &policy,
                         &reading,
                         // What the NEXT turn would run under, which is why
@@ -6260,7 +6226,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 Action::Copy(what) => {
-                    let (payload, said) = to_copy(&session, &store, what);
+                    let last = last_run(&session, &store);
+                    let (payload, said) = to_copy(last.as_ref(), &store, what);
                     match payload {
                         Some(payload) => {
                             screen
@@ -6491,6 +6458,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // steered, so that is not the word for the difference.
                         contained.then_some(containment.as_ref()).flatten(),
                         &capabilities,
+                        // The palette's rows, so `/` mid-turn offers exactly what
+                        // `/` at an idle prompt offers.
+                        &templates,
+                        &skills,
                         &seen,
                         planning,
                         // Taken rather than read: one request, one turn. A queue
@@ -6745,6 +6716,143 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
 /// **The agent's own look, committed where it looked.**
 ///
 /// A wrapper over [`io_cli::attach::viewed`], which is where every decision
+/// A keystroke while a picker is open on top of a running turn.
+///
+/// **Only the three kinds `turn()` can open reach here**, and that is the whole
+/// safety argument: the palette and path completion set or paste into the
+/// composer, and `/theme` resolves a theme. None of them writes a file, touches
+/// the store, or reassigns anything the running turn is holding — which is the
+/// property that lets a picker be open at all while a turn owns the session.
+///
+/// It lives beside the loop rather than inside it so the `select!` arm stays
+/// readable; every decision in it is a library call.
+fn mid_turn_picker(
+    picker: &mut Option<(Picker, Pick)>,
+    app: &mut App,
+    // The workspace root, captured before the turn borrowed the session.
+    root: &std::path::Path,
+    policy: &Policy,
+    templates: &io_harness::Templates,
+    skills: &[io_cli::skillview::Listed],
+    key: crossterm::event::KeyEvent,
+) {
+    let Some((open, kind)) = picker.as_mut() else {
+        return;
+    };
+    match open.key(key) {
+        Outcome::Chosen(index) => {
+            let label = open.rows()[index].label.clone();
+            // Built while `kind` still borrows the picker, installed once the
+            // borrow ends — the same shape the idle loop's `descended` uses, and
+            // for the same reason: a completion that descends replaces itself.
+            let mut descended = None;
+            match kind {
+                Pick::Theme => {
+                    if let Some(chosen) = Theme::by_name(&label) {
+                        // Resolved, not assigned, exactly as the idle picker
+                        // does it: a mid-session picker that beat `NO_COLOR`
+                        // would make the variable mean *until you touch
+                        // anything*.
+                        let applied = Theme::from_env(Some(chosen.name), app.theme.glyphs);
+                        app.theme = applied;
+                        app.events.set_theme(applied);
+                    }
+                }
+                Pick::Palette => match commands::palette_pick(templates, skills, index) {
+                    Some(commands::Chosen::Command(command)) => app.composer.set(command),
+                    Some(commands::Chosen::Template(name)) => {
+                        match commands::expand(templates, &name) {
+                            Ok(prompt) => app.composer.set(&prompt),
+                            Err(error) => app.say(Tone::Error, error),
+                        }
+                    }
+                    Some(commands::Chosen::Skill(name)) => {
+                        app.composer.set(&commands::invoke_skill(&name));
+                    }
+                    None => {}
+                },
+                Pick::Complete(entries) => match complete::pick(entries, index) {
+                    Some(complete::Picked::Insert(path)) => app.composer.paste(&path),
+                    Some(complete::Picked::Descend(dir)) => {
+                        let effective =
+                            approval::session_policy(policy, app.posture(), app.remembered());
+                        match completion(root, &effective, &dir, &app.theme.glyphs) {
+                            Ok(Some(open)) => descended = Some(open),
+                            Ok(None) => {
+                                app.say(Tone::Muted, format!("nothing to complete in {dir}"))
+                            }
+                            Err(error) => app.say(Tone::Error, error),
+                        }
+                    }
+                    None => app.say(
+                        Tone::Muted,
+                        "that row is the note, not a file — the rest of the listing is not shown",
+                    ),
+                },
+                // `turn()` opens no other kind. An assertion rather than a
+                // silence, so opening one without wiring it here is caught in a
+                // debug build.
+                _ => debug_assert!(false, "a picker kind reached the mid-turn loop with no arm"),
+            }
+            *picker = descended;
+        }
+        Outcome::Cancelled => *picker = None,
+        Outcome::Idle => {}
+    }
+}
+
+/// Draw an attached image back into the scrollback, at either loop.
+///
+/// One implementation because there are two doors since 0.32.0 — `/image` at an
+/// idle prompt and `/image` while a turn runs — and this product has shipped the
+/// same defect twice from having two: a surface answered one way by its key and
+/// another by its name. Every decision inside it is a library call.
+fn commit_image<P: Provider>(
+    app: &mut App,
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    root: &std::path::Path,
+    policy: &Policy,
+    provider: &P,
+    which: Option<usize>,
+) -> Result<(), String> {
+    let total = app.images();
+    match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
+        Some((number, path)) => {
+            let effective = approval::session_policy(policy, app.posture(), app.remembered());
+            match io_cli::attach::prepare(root, &effective, provider.accepts_images(), &path) {
+                Ok(staged) => {
+                    let (drawable, graphics) = forms(app);
+                    let drawn = io_cli::picture::render(
+                        &staged.bytes,
+                        &staged.path,
+                        staged.media_type,
+                        drawable,
+                        graphics,
+                        screen.width(),
+                    );
+                    let caption = app.theme.notice(
+                        Tone::Muted,
+                        io_cli::picture::caption(
+                            number,
+                            &staged.path,
+                            staged.media_type,
+                            staged.bytes.len(),
+                        ),
+                    );
+                    commit_drawn(screen, app, drawn, Some(caption))?;
+                }
+                Err(error) => app.say(Tone::Error, error),
+            }
+        }
+        None if total == 0 => app.say(Tone::Muted, "no image has been attached in this session"),
+        None => app.say(
+            Tone::Muted,
+            format!("say which one: /image 1 to /image {total}"),
+        ),
+    }
+    Ok(())
+}
+
 /// lives. Nothing is decided here, deliberately: `src/main.rs` is linked by no
 /// integration test, so a branch written here could not be sabotaged and would
 /// not be covered.
@@ -6795,6 +6903,12 @@ async fn turn<P: Provider>(
     config: &Config,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
+    // **The palette's rows, since 0.32.0 opens it while a turn runs.** Both are
+    // the driver's session-lifetime state — `skills` is re-walked at every turn
+    // boundary — and they are handed down rather than rebuilt, so what the
+    // mid-turn palette offers is exactly what the idle one offers.
+    templates: &io_harness::Templates,
+    skills: &[io_cli::skillview::Listed],
     // The last request this session's provider was handed. `/context` reads it to
     // say what is in the window, and `ctx N%` reads it so the two say the same
     // thing — see `note_context`, and the live run that found them disagreeing.
@@ -6817,6 +6931,11 @@ async fn turn<P: Provider>(
     text: String,
     started: Instant,
 ) -> Result<Turned, String> {
+    // **A picker can be open while the agent works, since 0.32.0.** Only the
+    // three kinds `mid_turn_picker` names ever land here — the palette, path
+    // completion and `/theme` — because those are the ones whose outcome touches
+    // nothing the running turn is holding.
+    let mut picker: Option<(Picker, Pick)> = None;
     let (observer, mut events) = bridge::channel();
     // The one way a turn is stopped from the interface, contained or not. Both
     // arms take a contract **and** a steer inbox since 0.17.0, and the stop key
@@ -6896,6 +7015,22 @@ async fn turn<P: Provider>(
     // Taken before the future borrows the session, because it is needed inside the
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
+    // **What the mid-turn reports need, captured before the turn takes the
+    // session.** The future below holds `&mut Session` for the whole of the
+    // select loop, so nothing inside it can read the session at all — and since
+    // 0.32.0 `/status`, `/cost`, `/copy` and `/expand` run inside it.
+    //
+    // Every fact here is one the running turn cannot change while it runs: the id
+    // is the session's, the head is the turn *before* this one until this one
+    // commits, and the last on-path turn is likewise the previous one. So the
+    // snapshot is not an approximation of the live reading — mid-turn it **is**
+    // the live reading, and taking it here is what makes the reports reachable at
+    // all without a second `&Session` the borrow checker is right to refuse.
+    let facts = TurnFacts {
+        id: session.id(),
+        head: session.head(),
+        last: last_run(session, store),
+    };
     app.contained = containment.is_some();
     // Built before the future borrows it, and for both arms alike.
     // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
@@ -7035,7 +7170,7 @@ async fn turn<P: Provider>(
             result = &mut running => break Some(result),
             _ = ticker.tick() => {
                 if app.tick(started.elapsed()) {
-                    paint(screen, app)?;
+                    paint_picker(screen, app, picker.as_mut())?;
                 }
             }
             Some(event) = events.recv() => {
@@ -7045,6 +7180,43 @@ async fn turn<P: Provider>(
                 let at = started.elapsed();
                 app.status.elapsed = at;
                 app.event(&event, at);
+                // **A queued message reaches the turn it was typed into
+                // (0.32.0).** `App::compose` queues a prompt typed mid-turn and
+                // answers `Command::None`, and until this release nothing did
+                // anything with it until the turn had ended — so a correction
+                // typed thirty seconds into a ten-minute turn waited nine and a
+                // half minutes and then ran as a turn of its own, against work it
+                // was meant to change.
+                //
+                // **At the step boundary, and that is not merely where O8 puts
+                // it.** Flushing the moment the operator pressed Enter would empty
+                // io-cli's queue into io-harness's inbox instantly, and the queue
+                // surface — the operator's only view of what they have typed and
+                // not yet had answered — would never have anything in it. Held
+                // until a step lands, the list is visible for as long as it is
+                // genuinely waiting, and goes when it is genuinely gone.
+                //
+                // Both arms have carried a `SteerInbox` since 0.17.0, so this
+                // needs no io-harness entry point — only a default. `/steer` is
+                // unchanged and still flushes explicitly; what it flushes is now
+                // whatever has been typed since the last step.
+                //
+                // **And a message delivered into a turn that reaches no further
+                // step boundary is not lost.** The inbox still holds it, and the
+                // drain after this loop reads `inbox.pending().messages` back and
+                // re-queues them to run as their own turns — the existing path,
+                // which is O9's fallback and says which of the two happened.
+                if matches!(event.kind, io_harness::EventKind::Step { .. })
+                    && !app.queued_prompts().is_empty()
+                {
+                    let dash = app.theme.glyphs.dash;
+                    let delivered = app.deliver_queued(|text| {
+                        steer.say(text.to_string()).map_err(|e| e.to_string())
+                    });
+                    if let Some(error) = delivered.refused {
+                        app.say(Tone::Warning, format!("nothing is listening {dash} {error}"));
+                    }
+                }
                 commit_edits(app, store, &event, screen.width());
                 commit_commits(app, store, &event);
                 // The live half of `ctx N%`. Anchored on a step rather than on
@@ -7061,7 +7233,7 @@ async fn turn<P: Provider>(
                 note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(ask) = asks.recv() => {
                 // The run is now stopped inside `Approver::decide_in_context` and
@@ -7069,7 +7241,7 @@ async fn turn<P: Provider>(
                 // which is what leaves `Ctrl+C` reachable while a question is up.
                 app.open_approval(ask);
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(proposed) = plans.recv() => {
                 // The run is stopped inside `PlanGate::review`, and while it is
@@ -7077,7 +7249,7 @@ async fn turn<P: Provider>(
                 // the workspace behind this overlay cannot change while it is up.
                 app.open_plan(proposed);
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(asked) = questions.recv() => {
                 // The same shape one seam over: the run is stopped inside
@@ -7088,7 +7260,7 @@ async fn turn<P: Provider>(
                 // since.)
                 app.open_intent(asked);
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(input) = inputs.recv() => {
                 match input {
@@ -7096,7 +7268,56 @@ async fn turn<P: Provider>(
                         // Bound rather than tested inside the guard: `App::key`
                         // changes state, and a match guard is not a place to put
                         // something that does.
-                        let command = app.key(key);
+                        // **The command surface opens while the agent works
+                        // (0.32.0, O10).** `commands::opens_palette` and
+                        // `complete::opens` carry no run-state check at all and
+                        // never did — the mid-turn loop simply never called them,
+                        // and went straight to `App::key`, where `/` and `@` are
+                        // ordinary characters. So the palette typed a literal
+                        // slash into the composer and said nothing.
+                        //
+                        // Neither predicate changes; only the call sites, which
+                        // is what the contract asked for. The pickers reachable
+                        // here are exactly those whose outcome touches nothing
+                        // but the interface — the palette and path completion set
+                        // or paste into the composer, and `/theme` resolves a
+                        // theme. Anything that writes a file or reassigns
+                        // session-lifetime state keeps its refusal, which is why
+                        // `/config` is not among them.
+                        //
+                        // Answered as `Command::None` so the match below is
+                        // untouched: a keystroke the picker took is a keystroke
+                        // the session did not see.
+                        let command = if picker.is_some() {
+                            mid_turn_picker(&mut picker, app, &root, policy, templates, skills, key);
+                            Command::None
+                        } else if commands::opens_palette(key, app.composer.is_empty(), app.armed())
+                        {
+                            picker = Some((
+                                Picker::new(
+                                    "Which command?",
+                                    commands::palette(templates, skills),
+                                ),
+                                Pick::Palette,
+                            ));
+                            Command::None
+                        } else if complete::opens(key, &app.composer.text(), app.armed()) {
+                            let effective = approval::session_policy(
+                                policy,
+                                app.posture(),
+                                app.remembered(),
+                            );
+                            match completion(&root, &effective, "", &app.theme.glyphs) {
+                                Ok(Some(open)) => picker = Some(open),
+                                Ok(None) => {
+                                    app.say(Tone::Muted, "nothing in this workspace to complete")
+                                }
+                                Err(error) => app.say(Tone::Error, error),
+                            }
+                            Command::None
+                        } else {
+                            app.key(key)
+                        };
                         match command {
                             Command::Interrupt => {
                                 // **One path for both kinds of turn, and it is
@@ -7237,51 +7458,30 @@ async fn turn<P: Provider>(
                             // first — the opposite of what this command does.
                             Command::Slash(ref line)
                                 if line.split_whitespace().next() == Some("steer") => {
+                                // The loop, the ordering and the transcript
+                                // records are `App::deliver_queued`'s, in the
+                                // library, because nothing under `tests/` links
+                                // this file. What is left here is the sentence,
+                                // and `/steer`'s sentence is unchanged from
+                                // 0.31.0 — including its refusal path, and
+                                // including the summary being skipped on a
+                                // refusal, since `App::say` keeps one notice and
+                                // a count written over the error would report
+                                // success on the one path where there was none.
                                 let dash = app.theme.glyphs.dash;
-                                let mut sent = 0usize;
-                                // The summary below is skipped when this is set,
-                                // because a count is not the answer to a refusal
-                                // — and `App::say` keeps one notice, so a
-                                // summary written over the error would be the
-                                // interface reporting success on the one path
-                                // where there was none.
-                                let mut refused = false;
-                                // Each on its own, in the order they were typed:
-                                // io-harness pushes one `Observation` per message
-                                // and the model reads them in that order. Joining
-                                // them would be one paragraph the operator never
-                                // wrote.
-                                while let Some(waiting) = app.next_queued_prompt() {
-                                    if let Err(error) = steer.say(waiting.clone()) {
-                                        // Unreachable while `inbox` is alive —
-                                        // and said rather than swallowed anyway,
-                                        // because the one thing worse than a
-                                        // correction that arrives late is one
-                                        // that reports success and goes nowhere.
-                                        app.queue_prompt(waiting);
-                                        app.say(
-                                            Tone::Warning,
-                                            format!("nothing is listening {dash} {error}"),
-                                        );
-                                        refused = true;
-                                        break;
-                                    }
-                                    // Into the transcript, not the footer. A
-                                    // steered line becomes an observation in the
-                                    // run's ledger, so it is part of the
-                                    // conversation rather than about it — and it
-                                    // is the only part that will never get an
-                                    // echo of its own, because it is not a turn.
-                                    app.record(
+                                let delivered = app.deliver_queued(|text| {
+                                    steer.say(text.to_string()).map_err(|e| e.to_string())
+                                });
+                                match delivered.refused {
+                                    // Unreachable while `inbox` is alive, and said
+                                    // rather than swallowed anyway.
+                                    Some(error) => app.say(
+                                        Tone::Warning,
+                                        format!("nothing is listening {dash} {error}"),
+                                    ),
+                                    None => app.say(
                                         Tone::Muted,
-                                        format!("[mid-turn] {}", waiting.trim()),
-                                    );
-                                    sent += 1;
-                                }
-                                if !refused {
-                                    app.say(
-                                        Tone::Muted,
-                                        match sent {
+                                        match delivered.sent {
                                             0 => format!(
                                                 "nothing queued {dash} type a line first, then \
                                                  /steer"
@@ -7294,7 +7494,7 @@ async fn turn<P: Provider>(
                                                  next step"
                                             ),
                                         },
-                                    );
+                                    ),
                                 }
                             }
                             // Refused with a sentence rather than dropped in
@@ -7313,6 +7513,141 @@ async fn turn<P: Provider>(
                             // be unreadable for as long as the command took. So
                             // the block is confined to the idle prompt, where
                             // there is no turn for it to stall.
+                            // **The refusal is a list now, not a blanket
+                            // (0.32.0).** Through 0.31.0 every slash but
+                            // `/compact` and `/steer` was declined here, so
+                            // `/status` was refused for the same reason `/clear`
+                            // is and the sentence told the operator to interrupt
+                            // their turn to read a report. Every one of the ten
+                            // admitted below was a capability the product already
+                            // had, withheld by a guard nobody revisited.
+                            //
+                            // The decision is `commands::runs_mid_turn`, in the
+                            // library, because nothing under `tests/` links this
+                            // file: a list written here could be neither asserted
+                            // exhaustively nor sabotaged, and it is a list about
+                            // what may happen while a turn holds the session, the
+                            // store and the provider.
+                            Command::Slash(ref line) if commands::runs_mid_turn(line) => {
+                                match commands::parse(line, app.keys(), &app.theme) {
+                                    Action::Print(lines) => {
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Fleet => app.toggle_fleet(),
+                                    Action::Expand => {
+                                        let lines = expand(
+                                            facts.last.as_ref(),
+                                            store,
+                                            &app.theme,
+                                            app.events.thought(),
+                                        );
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Stats => {
+                                        let lines = io_cli::stats::committed(
+                                            store,
+                                            &app.theme,
+                                            screen.width(),
+                                        )?;
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Cost => {
+                                        let (settings, _) = settings::stored(config);
+                                        let table = io_cli::cost::table(config);
+                                        let provenance = io_cli::cost::Provenance::of(
+                                            config,
+                                            settings.as_ref(),
+                                        );
+                                        let lines = io_cli::cost::committed(
+                                            store,
+                                            &table,
+                                            &provenance,
+                                            facts.last.as_ref().map(|turn| turn.run_id),
+                                            Some(facts.id),
+                                            &app.theme,
+                                            screen.width(),
+                                        )?;
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    // **The turn's own contract, not a sixth
+                                    // one.** The idle arms build a `reading`
+                                    // contract because there is no turn to read
+                                    // one off; here there is, and it is the one
+                                    // actually in force — which is both the more
+                                    // truthful answer mid-turn and what keeps
+                                    // `tests/contract.rs`'s count of
+                                    // `contract::session` call sites intact.
+                                    Action::Status => {
+                                        let lines = io_cli::status::committed(
+                                            &app.status,
+                                            &root,
+                                            facts.id,
+                                            facts.head,
+                                            policy,
+                                            &contract,
+                                            containment,
+                                            &app.theme,
+                                            screen.width(),
+                                        );
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Context => {
+                                        let lines = io_cli::context::committed(
+                                            seen.latest().as_ref(),
+                                            &contract,
+                                            contract.max_tokens,
+                                            &app.theme,
+                                            screen.width(),
+                                        );
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Copy(what) => {
+                                        let (payload, said) = to_copy(facts.last.as_ref(), store, what);
+                                        match payload {
+                                            Some(payload) => {
+                                                screen
+                                                    .escape(&io_cli::clipboard::sequence(&payload))
+                                                    .map_err(|e| e.to_string())?;
+                                                app.say(
+                                                    Tone::Muted,
+                                                    io_cli::clipboard::describe(&payload),
+                                                );
+                                            }
+                                            None => app.say(Tone::Muted, said),
+                                        }
+                                    }
+                                    Action::Image(which) => commit_image(
+                                        app,
+                                        screen,
+                                        &root,
+                                        policy,
+                                        provider,
+                                        which,
+                                    )?,
+                                    Action::Theme => {
+                                        picker = Some((
+                                            Picker::new(
+                                                "Which theme?",
+                                                io_cli::theme::THEMES
+                                                    .iter()
+                                                    .map(|theme| Row::new(theme.name))
+                                                    .collect(),
+                                            ),
+                                            Pick::Theme,
+                                        ));
+                                    }
+                                    // `runs_mid_turn` admits exactly the words
+                                    // above, so nothing else can reach here. It
+                                    // is an assertion rather than a wildcard so
+                                    // that widening the list without wiring the
+                                    // command is caught in a debug build rather
+                                    // than by silence.
+                                    _ => debug_assert!(
+                                        false,
+                                        "runs_mid_turn admitted a command with no arm here"
+                                    ),
+                                }
+                            }
                             Command::Slash(_) | Command::Shell(_) => {
                                 let dash = app.theme.glyphs.dash;
                                 app.say(
@@ -7371,7 +7706,7 @@ async fn turn<P: Provider>(
                     _ => {}
                 }
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
         }
     };
@@ -7990,6 +8325,18 @@ fn observing<T>(
 /// summary line and this function was left with none. Found by the adversarial
 /// review, and worth noting because nothing in the suite can see a rustdoc
 /// summary attached to the wrong item.
+/// The session facts a mid-turn report needs, read before the turn borrows the
+/// session.
+///
+/// See where it is built in `turn`: each of these is unchanged for as long as the
+/// turn runs, which is what makes a snapshot the honest reading rather than a
+/// stale one.
+struct TurnFacts {
+    id: i64,
+    head: Option<i64>,
+    last: Option<io_harness::TranscriptTurn>,
+}
+
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)
@@ -8007,7 +8354,12 @@ fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTu
 /// so the only copy of a fitted thought is the one [`Events`](io_cli::events::Events) kept, and this is
 /// where it is spent.
 fn expand(
-    session: &Session,
+    // **The last on-path turn rather than the session (0.32.0).** `/expand` runs
+    // while a turn is in flight now, and a turn in flight holds `&mut Session`
+    // for the whole select loop — so a reader that took `&Session` could not be
+    // reached from there. Mid-turn the last completed run *is* the previous one,
+    // so the captured value is the same answer a live read would give.
+    last: Option<&io_harness::TranscriptTurn>,
     store: &Store,
     theme: &Theme,
     thought: Option<&str>,
@@ -8022,7 +8374,7 @@ fn expand(
         );
         lines.push(Line::from(""));
     }
-    lines.extend(step_detail(session, store, theme));
+    lines.extend(step_detail(last, store, theme));
     lines
 }
 
@@ -8032,8 +8384,12 @@ fn expand(
 /// archive, so the output goes to the store when it happens and comes back here
 /// when somebody asks for it. Committed upward like everything else that shows
 /// more of something.
-fn step_detail(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
-    let Some(turn) = last_run(session, store) else {
+fn step_detail(
+    last: Option<&io_harness::TranscriptTurn>,
+    store: &Store,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let Some(turn) = last else {
         return vec![theme.notice(Tone::Muted, "nothing has run in this session yet")];
     };
     let steps = match store.steps(turn.run_id) {
@@ -8066,12 +8422,16 @@ fn step_detail(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'sta
 }
 
 /// What `/copy` should put on the clipboard, or why there is nothing to put.
-fn to_copy(session: &Session, store: &Store, what: Copied) -> (Option<String>, String) {
-    let Some(turn) = last_run(session, store) else {
+fn to_copy(
+    last: Option<&io_harness::TranscriptTurn>,
+    store: &Store,
+    what: Copied,
+) -> (Option<String>, String) {
+    let Some(turn) = last else {
         return (None, "nothing has run in this session yet".into());
     };
     match what {
-        Copied::Answer => match turn.reply {
+        Copied::Answer => match turn.reply.clone() {
             Some(reply) if !reply.trim().is_empty() => (Some(reply), String::new()),
             // A turn that stopped on a ceiling, a refusal or an interrupt has no
             // closing message, and inventing one would misreport the ending.

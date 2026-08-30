@@ -2168,7 +2168,9 @@ fn f11_status_folds_at_eighty_columns_rather_than_losing_the_end_of_a_row() {
         let set = theme.glyphs.name;
         let rows = text_of(&io_cli::status::committed(
             &app.status,
-            &session,
+            session.root(),
+            session.id(),
+            session.head(),
             &policy,
             &contract,
             Some(&caps),

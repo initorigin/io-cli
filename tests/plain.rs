@@ -680,7 +680,17 @@ fn f11_status_in_plain_mode_is_the_same_content_in_the_ascii_set() {
         // The mode, set exactly where the driver sets it.
         status.plain = plain;
         status.budgets = io_cli::status::Budgets::in_force(&contract);
-        io_cli::status::committed(&status, &session, &policy, &contract, None, &theme, 80)
+        io_cli::status::committed(
+            &status,
+            session.root(),
+            session.id(),
+            session.head(),
+            &policy,
+            &contract,
+            None,
+            &theme,
+            80,
+        )
             .iter()
             .map(text_of)
             .collect()

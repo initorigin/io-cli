@@ -1583,7 +1583,9 @@ fn committed_of(
 ) -> Vec<String> {
     io_cli::status::committed(
         &app.status,
-        &fixture.session,
+        fixture.session.root(),
+        fixture.session.id(),
+        fixture.session.head(),
         &fixture.policy,
         contract,
         caps,

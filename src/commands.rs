@@ -2555,3 +2555,153 @@ fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Lin
         })
         .collect()
 }
+
+/// The commands that run while a turn is in flight.
+///
+/// **The rule is what a command *does*, not how harmless it looks.** A command
+/// runs mid-turn when it only reads, or only commits into the scrollback, or only
+/// changes something the interface owns. It keeps its refusal when it reassigns
+/// the session or the provider, writes the store or a configuration file, or
+/// submits a turn of its own — because the turn that is running holds all three of
+/// those and a second writer is a race the operator did not ask for.
+///
+/// Through 0.31.0 the mid-turn arm refused **every** slash but `/compact` and
+/// `/steer`, so `/status` was declined for the same reason `/clear` was, and the
+/// sentence told the operator to interrupt their turn first. Every one of these
+/// eleven was a capability the product already had, withheld by a guard nobody
+/// revisited.
+///
+/// **`/config` is refused in every form, and that is `US-IO-CLI-0.32.0-I11`.**
+/// The release contract listed it among the eleven; it cannot be admitted even
+/// bare. `/config` alone opens a picker whose rows include
+/// [`crate::configure::REFRESH_PRICES`], which re-reads the provider's catalogue,
+/// **writes a scope file**, and then reassigns both the `Config` and the
+/// `Capabilities` the running turn is holding — a reassignment that is not
+/// expressible behind the shared reference a turn has, quite apart from being a
+/// write. Admitting the command while filtering that one row out is the
+/// bare-from-argued split the contract's own `risks` section says not to make: the
+/// guard is on the whole command precisely so a mistake cannot ship a write into a
+/// running turn. Recorded as an iteration with the developer's approval rather
+/// than quietly dropped.
+///
+/// `/copy diff` is `/copy`'s second word rather than a command of its own here, so
+/// the first word decides and both forms are admitted; both only read.
+pub const MID_TURN: &[&str] = &[
+    "/status",
+    "/context",
+    "/cost",
+    "/stats",
+    "/help",
+    "/theme",
+    "/copy",
+    "/expand",
+    "/fleet",
+    "/image",
+];
+
+/// Whether this typed line may run while a turn is in flight.
+///
+/// Takes the whole line rather than a name, so a command whose admission ever
+/// depends on its arguments has somewhere to say so. None does today —
+/// `MID_TURN`'s doc records why `/config` is refused outright — and the first word
+/// decides. `line` is what `Command::Slash` carries: the leading slash already
+/// stripped, and trimmed.
+pub fn runs_mid_turn(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if !MID_TURN.contains(&format!("/{first}").as_str()) {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod mid_turn_tests {
+    use super::*;
+
+    /// **O12 — the partition is exhaustive over `COMMANDS`.**
+    ///
+    /// Written out rather than derived, so a command added later lands in the
+    /// failure message by name instead of defaulting quietly into either half.
+    /// That is the idiom `tests/commands.rs`'s inert-command filter already uses,
+    /// and the defect it exists for: a permissive default is a write in a running
+    /// turn that nobody chose.
+    #[test]
+    fn o12_every_command_is_either_admitted_or_refused_and_the_lists_are_written_out() {
+        let admitted: Vec<&str> = COMMANDS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| runs_mid_turn(name.trim_start_matches('/')))
+            .collect();
+        assert_eq!(
+            admitted,
+            vec![
+                "/help", "/theme", "/expand", "/status", "/context", "/copy", "/copy diff",
+                "/fleet", "/image", "/cost", "/stats",
+            ],
+            "the mid-turn half of COMMANDS changed; every entry here is a decision \
+             about what may happen while a turn holds the session, the store and \
+             the provider",
+        );
+
+        let refused: Vec<&str> = COMMANDS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| !runs_mid_turn(name.trim_start_matches('/')))
+            .collect();
+        assert_eq!(
+            refused,
+            vec![
+                "/exit", "/setup", "/model", "/resume", "/fork", "/steer", "/compact", "/commit",
+                "/config", "/remember", "/memory", "/skills", "/mcp", "/provider", "/plugin",
+                "/import", "/profile", "/effort", "/contain", "/undo", "/plan", "/clear", "/store",
+                "/export", "/gates",
+            ],
+            "the refused half of COMMANDS changed",
+        );
+
+        assert_eq!(
+            admitted.len() + refused.len(),
+            COMMANDS.len(),
+            "every command is in exactly one half",
+        );
+    }
+
+    /// **`/config` is refused in every form**, including the bare one the release
+    /// contract originally admitted. Its picker carries a row that writes a scope
+    /// file and reassigns the running turn's `Config`, and a filter that removed
+    /// just that row would be the bare-from-argued split this product decided not
+    /// to make. Asserted in all four shapes so the decision cannot be undone by
+    /// half.
+    #[test]
+    fn config_is_refused_in_every_form_including_the_bare_one() {
+        assert!(!runs_mid_turn("config"));
+        assert!(!runs_mid_turn("config   "));
+        assert!(!runs_mid_turn("config list"));
+        assert!(!runs_mid_turn("config get run.max_steps"));
+        assert!(!runs_mid_turn("config run.max_steps 40"));
+    }
+
+    #[test]
+    fn a_word_that_is_not_a_command_is_refused() {
+        assert!(!runs_mid_turn(""));
+        assert!(!runs_mid_turn("   "));
+        assert!(!runs_mid_turn("definitely-not-a-command"));
+        // A skill invocation hands work to the agent, which is a submit.
+        assert!(!runs_mid_turn("ultraship:brainstorm"));
+    }
+
+    #[test]
+    fn the_two_that_already_ran_mid_turn_are_not_in_this_list() {
+        // `/steer` and `/compact` reach the turn through their own guarded arms,
+        // ahead of the refusal, and they act on the `Steer` handle rather than on
+        // the app. Admitting them here as well would give each two routes into one
+        // turn, which is the shape `/fleet` had — answered one way by its key and
+        // another by its name — and that inconsistency is one of the things this
+        // release exists to remove.
+        assert!(!runs_mid_turn("steer"));
+        assert!(!runs_mid_turn("compact"));
+    }
+}

@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use io_harness::{Containment, Policy, Session, TaskContract};
+use io_harness::{Containment, Policy, TaskContract};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -1889,7 +1889,16 @@ pub fn format_containment(mode: &str, backend: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn committed(
     status: &Status,
-    session: &Session,
+    // **The session's three facts rather than the session (0.32.0).** `/status`
+    // runs while a turn is in flight now, and a turn in flight holds `&mut
+    // Session` for the whole of the driver's select loop — so a report that took
+    // `&Session` could not be reached from there at all. All three are captured
+    // before the turn starts, and all three are still true while it runs: the
+    // root does not move, the id is the session's, and the head is the turn
+    // *before* this one until this one commits.
+    root: &std::path::Path,
+    id: i64,
+    head: Option<i64>,
     policy: &Policy,
     contract: &TaskContract,
     // The caps the NEXT turn would run under, which is `None` both for a session
@@ -1907,7 +1916,7 @@ pub fn committed(
     // The workspace and the conversation, both asked of the `Session` rather than
     // threaded down from the driver, so there is one answer to "which workspace
     // is this" and it is io-harness's — the same rule `App::set_root` follows.
-    facts.push(("workspace".into(), session.root().display().to_string()));
+    facts.push(("workspace".into(), root.display().to_string()));
 
     // Directly under the workspace, because it is the second half of the same
     // fact: the path says which directory, and this says which of its branches is
@@ -1946,9 +1955,9 @@ pub fn committed(
     ));
     facts.push((
         "session".into(),
-        match session.head() {
-            Some(head) => format!("{} {dash} head at turn {head}", session.id()),
-            None => format!("{} {dash} no turn has run in it yet", session.id()),
+        match head {
+            Some(head) => format!("{id} {dash} head at turn {head}"),
+            None => format!("{id} {dash} no turn has run in it yet"),
         },
     ));
     facts.push(("model".into(), status.model.clone()));

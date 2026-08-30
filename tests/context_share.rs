@@ -476,7 +476,17 @@ fn the_status_page_names_the_window_before_anything_has_been_assembled() {
     let contract = tight();
 
     let page = |status: &Status| {
-        io_cli::status::committed(status, &session, &policy, &contract, None, &DARK, 100)
+        io_cli::status::committed(
+            status,
+            session.root(),
+            session.id(),
+            session.head(),
+            &policy,
+            &contract,
+            None,
+            &DARK,
+            100,
+        )
             .iter()
             .map(|line| {
                 line.spans
