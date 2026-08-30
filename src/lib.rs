@@ -112,6 +112,7 @@ pub mod resume;
 pub mod reviewer;
 pub mod rewind;
 pub mod routing;
+pub mod rows;
 pub mod servers;
 pub mod sessions;
 pub mod settings;
