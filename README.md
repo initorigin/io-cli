@@ -64,9 +64,12 @@ posture on the next.](assets/screenshot.png)
 
 `io` does not enter the alternate screen and does not capture the mouse, in any
 mode, behind any flag. Every finished message, tool call and system line is
-committed into the terminal's own scrollback; eight rows at the bottom hold the
+committed into the terminal's own scrollback; a few rows at the bottom hold the
 unfinished tail of a streaming answer, a blank row, the activity line, a rule,
-one row of composer and a three-row footer, and only those repaint.
+one row of composer and a three-row footer, and only those repaint. Eight rows is
+the floor: a surface that needs more — a question with its offers, a plan with its
+steps, the messages you have queued — takes what it needs and gives it back,
+stopping four rows short of the top so the exchange it is about stays visible.
 
 So when the session ends the whole conversation is still there. Your terminal's
 search finds it, tmux copy-mode scrolls it, and a mouse drag selects it — none of
