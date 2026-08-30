@@ -1526,3 +1526,193 @@ fn f7_a_switched_off_bundle_reaches_no_turn_while_its_directories_still_read() {
          pane can say what switching it on would bring",
     );
 }
+
+// ---------------------------------------------------------------------------
+// F14 — a bundle whose manifest io wrote is drawn as one
+// ---------------------------------------------------------------------------
+
+/// Where a generated manifest sits, under the fixture's own adapters root.
+///
+/// `<adapters>/<owner>/<repo>/<name>`, which is the layout `adapt::at` writes and
+/// the only thing `Listed::adapted` reads. A real adapter is written under
+/// `home::adapters()`; the prefix is what decides the answer, so a fixture that
+/// reproduces the shape reproduces the case without moving anybody's home.
+const ADAPTED_AT: &str = "adapters/zeroonething/ultraship/claude-review";
+
+/// The bundle id the generated manifest declares.
+const ADAPTED: &str = "claude-review";
+
+/// A manifest of the shape `adapt::generate` writes: a name, the two directories it
+/// found in the clone, and a description long enough to compete with the root for
+/// what an eighty-column row has left.
+///
+/// The description is deliberately not the bundle's name, so a row's detail
+/// containing `claude-review` can only have got it from the path.
+const GENERATED: &str = r#"
+name = "claude-review"
+description = "A code review bundle published for another agent, adapted by io."
+skills = "skills"
+templates = "templates"
+"#;
+
+/// A root declaring one adapted bundle and one native one, in that order.
+fn one_adapted_one_native() -> (tempfile::TempDir, pluginview::View) {
+    let (dir, root) = root();
+    bundle(&root, "bundles/rust-review", MINIMAL);
+    bundle(&root, ADAPTED_AT, GENERATED);
+    declaring(&root, LOCAL_FILE, &["bundles/rust-review", ADAPTED_AT]);
+    let config = Config::discover(&root).expect("the configuration loads");
+    let mut view = pluginview::view(&config);
+    view.adapters = Some(adapters_of(&view));
+    (dir, view)
+}
+
+/// The adapters root **as io-harness resolved it**, taken back off the bundle's own
+/// root rather than rebuilt from the fixture's directory.
+///
+/// A temporary directory is reached through a symlink on macOS — `/var/folders/…`
+/// and `/private/var/folders/…` are the same directory — and `Path::starts_with`
+/// compares components, so a prefix assembled here from `root()` would not be a
+/// prefix of the path the harness read and every row would draw as native for a
+/// reason that has nothing to do with the criterion.
+fn adapters_of(view: &pluginview::View) -> PathBuf {
+    listed(view, ADAPTED)
+        .root
+        .ancestors()
+        .nth(3)
+        .expect("`<adapters>/<owner>/<repo>/<name>` has three directories above it")
+        .to_path_buf()
+}
+
+/// **F14.** An adapted bundle draws under its own mark and the native bundle
+/// listed beside it does not.
+///
+/// Asserted as the list of labels wearing `ADAPTED_MARK` rather than as a
+/// `contains`, because both failures this gate exists for produce a list that still
+/// contains the right row: the mark drawn on nothing gives an empty list, and the
+/// mark drawn on everything gives a list of two. A fixture holding one bundle of
+/// each kind is what makes the second one visible at all.
+///
+/// Sabotage: drop the `adapted` arm from the mark in `pluginview::rows`. The
+/// adapted bundle draws `+` like any other, an operator has no way to tell a
+/// manifest io wrote from one a person did, and the generated file they must open
+/// when io-harness refuses the bundle is named nowhere.
+#[test]
+fn f14_an_adapted_bundle_draws_its_own_mark_and_a_native_one_beside_it_does_not() {
+    let (_dir, view) = one_adapted_one_native();
+
+    for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
+        // Wide enough that nothing is shortened, so what is read off the row is
+        // the mark rather than what survived the fitter.
+        let rows = pluginview::rows(&view, 400, glyphs);
+        let marked: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.mark == Some(pluginview::ADAPTED_MARK))
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(
+            marked,
+            vec![ADAPTED],
+            "{}: the adapted mark is on {} of the drawn rows rather than on the one \
+             bundle io wrote a manifest for; drawn: {:?}",
+            glyphs.name,
+            marked.len(),
+            rows.iter()
+                .map(|row| (row.mark, row.label.clone()))
+                .collect::<Vec<_>>(),
+        );
+
+        let native = rows
+            .iter()
+            .find(|row| row.label == "rust-review")
+            .expect("the native bundle drew a row");
+        assert_eq!(
+            native.mark,
+            Some(pluginview::LOADED_MARK),
+            "{}: a bundle whose author wrote its `plugin.toml` is drawn as adapted",
+            glyphs.name,
+        );
+    }
+}
+
+/// **F14, the half a mark cannot carry.** An adapted row names the directory the
+/// generated manifest is in, at the width the row is actually drawn at.
+///
+/// One character says *io wrote this manifest*; it does not say **where**, and the
+/// generated file is under a directory the operator never typed. Eighty columns
+/// rather than four hundred, because a fact that is only true on a wide terminal is
+/// not one an operator can rely on: the root has a floor and a reserved place ahead
+/// of the description, which is a line io copied out of somebody else's metadata.
+///
+/// Sabotage: drop the reservation in `pluginview::rows` and fit the description
+/// against the whole of what is left. This description is longer than the room, so
+/// it takes all of it, the root falls below its floor and is dropped whole, and the
+/// row that carries the mark stops carrying the path the mark is about.
+#[test]
+fn f14_an_adapted_row_names_the_directory_the_generated_manifest_is_in() {
+    let (_dir, view) = one_adapted_one_native();
+
+    for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
+        let rows = pluginview::rows(&view, 80, glyphs);
+        let row = rows
+            .iter()
+            .find(|row| row.label == ADAPTED)
+            .expect("the adapted bundle drew a row");
+        let detail = row.detail.clone().expect("a listed bundle has a detail");
+        assert!(
+            detail.contains(ADAPTED),
+            "{}: the row wears the adapted mark and does not say which directory \
+             the generated manifest is in: {detail}",
+            glyphs.name,
+        );
+        // The picker's own budget: marker, label, gap, detail. A row that names the
+        // path by overrunning the terminal has not named it.
+        assert!(
+            row.label.chars().count() + detail.chars().count() + 4 <= 80,
+            "{}: the row does not fit eighty columns: {detail}",
+            glyphs.name,
+        );
+    }
+}
+
+/// **The one thing `ADAPTED_MARK` taking the column costs, asserted rather than
+/// argued.**
+///
+/// A row carries one mark, so an adapted bundle that is also **switched off**
+/// draws `~` and not `-`. `ADAPTED_MARK`'s own rustdoc says that is safe because a
+/// switched-off bundle already leads its detail with the words — and a sentence in
+/// a doc comment is not a gate. This is the gate: the state has to survive the
+/// column being spent, or the trade the constant argues for is one that lost an
+/// operator a fact.
+///
+/// Sabotage: stop leading a switched-off row's detail with its state. Every other
+/// bundle in the product keeps its `-`, so nothing else in the suite goes red —
+/// only the row where the mark was spent on something else.
+#[test]
+fn an_adapted_bundle_that_is_switched_off_still_says_so_in_its_detail() {
+    let (_dir, root) = root();
+    bundle(&root, ADAPTED_AT, GENERATED);
+    declaring_off(&root, ADAPTED_AT);
+    let config = Config::discover(&root).expect("the configuration loads");
+    let mut view = pluginview::view(&config);
+    view.adapters = Some(adapters_of(&view));
+
+    let rows = pluginview::rows(&view, 200, &io_cli::glyphs::ASCII);
+    let row = rows
+        .iter()
+        .find(|row| row.label == ADAPTED)
+        .expect("the switched-off adapted bundle is listed at all");
+
+    assert_eq!(
+        row.mark,
+        Some(pluginview::ADAPTED_MARK),
+        "the adapted mark takes the column from the state mark — that is the \
+         decision this test exists to hold to its own terms",
+    );
+    let detail = row.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.starts_with("switched off"),
+        "so the state must lead the detail, or spending the column lost it: \
+         {detail:?}",
+    );
+}

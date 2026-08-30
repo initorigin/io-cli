@@ -813,6 +813,37 @@ fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
          behavioural assertions in tests/fetch.rs are what must be re-argued \
          first.",
     );
+    // **0.31.0 pins a second builder, and this is where that gate was re-argued
+    // rather than relaxed.** An index entry may name a commit, and a shallow clone
+    // checked out at one is not a single `git clone`: `--revision` landed in git
+    // 2.49, this product names no git floor, so the portable route is four
+    // invocations. The literal that used to be asserted here — `.args(argv(` at
+    // the spawn — cannot survive that, because the spawn now takes a finished list
+    // from a loop rather than calling one builder inline.
+    //
+    // What replaces it is stronger rather than weaker, and the difference is worth
+    // stating because 0.31.0's own risk list names "relaxing F10 to fit both
+    // shapes" as a failure mode. Before: one builder's signature pinned, and the
+    // spawn asserted to call it. After: **two** builders' signatures pinned, and
+    // the spawn asserted to take a `Vec<OsString>` **parameter** — so it cannot
+    // add an element at the call site even in principle, which the inline form
+    // could have done and was only prevented from doing by `!contains(".arg(")`.
+    // The count of spawns is unchanged at one, and every other absence below still
+    // holds.
+    assert!(
+        code.contains("pub fn steps(url: &str, into: &Path, at: &Pin) -> Vec<Vec<OsString>>"),
+        "the pinned-fetch builder no longer takes a URL, a destination and a pin \
+         and nothing else. It is the second place an argv element could be \
+         interpolated from something a stranger's index wrote, so its signature is \
+         pinned for the reason `argv`'s is.",
+    );
+    assert!(
+        code.contains("fn run(argv: Vec<OsString>)"),
+        "the one spawn no longer takes a finished argv as a parameter. That is the \
+         property that makes the assertions above load-bearing: the spawn never \
+         sees the parts, so every element it passes was built by a pure function \
+         `tests/fetch.rs` asserts the output of.",
+    );
     // The backstop, and it is a backstop: this module builds every string it
     // produces with `String::push_str`, so an interpolation written in its own
     // idiom would pass this and die on the assertion above instead. Kept because
@@ -832,9 +863,16 @@ fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
          hides from both.",
     );
     assert!(
-        code.contains(".args(argv("),
-        "the spawn no longer takes its arguments from `argv`, so tests/fetch.rs is \
-         asserting the shape of a function nothing runs",
+        code.contains(".args(argv)"),
+        "the spawn no longer takes its arguments from the finished list handed to \
+         it, so tests/fetch.rs is asserting the shape of a function nothing runs",
+    );
+    assert_eq!(
+        code.matches(".args(").count(),
+        1,
+        "src/fetch.rs passes arguments in more than one place. Every element goes \
+         through a pure builder and reaches the program through the single `run`, \
+         so a second `.args(` is a second argv nothing asserts the shape of.",
     );
 }
 
@@ -1032,6 +1070,154 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
             "src/edit.rs names `{named}`. It is permitted to parse TOML only because it \
              works in bytes and never decides what a setting means; the moment it reaches \
              for a configuration type it has become the second reader this gate forbids.",
+        );
+    }
+}
+
+/// The modules permitted to turn somebody else's JSON into a value.
+///
+/// **Two, and they are files rather than modules.** `src/import.rs` has read the
+/// operator's own `~/.claude.json` and Codex settings since 0.21.0;
+/// `src/adapt.rs` reads the three foreign plugin manifest formats. Sorted here
+/// for the reason `spawning_modules` is sorted: `read_dir` answers in whatever
+/// order the filesystem holds, and a test that passes on one machine and fails on
+/// another is worse than no test.
+fn json_reading_modules() -> Vec<PathBuf> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut permitted = vec![src.join("adapt.rs"), src.join("import.rs")];
+    permitted.sort();
+    permitted
+}
+
+/// Is `found` **exactly** the set permitted to deserialize JSON?
+///
+/// Named for the reason `only_the_permitted_spawn` is named, and it is the same
+/// reason: the sabotage arm for this criterion is "widen the set to a substring
+/// or stem match", which makes the gate *more* permissive — so nothing fails and
+/// it goes vacuous without going red, and the call site cannot observe it because
+/// the call site's own list is the thing being widened.
+fn only_the_permitted_json_reader(found: &[PathBuf]) -> bool {
+    found == json_reading_modules().as_slice()
+}
+
+/// **N1 — a second reader of a stranger's file is a second opinion about it, and
+/// JSON must not spread before it is confined.**
+///
+/// This is `f7_the_configuration_is_read_through_the_harness_and_never_parsed_
+/// here`'s rule applied to the other format, and it is written in the same
+/// release as the first line that reads a stranger's JSON rather than after it.
+/// The TOML rule was learned expensively: `src/edit.rs` is the one exemption and
+/// it is held to properties, because a module that decides what somebody else's
+/// file *means* is a second answer to a question that already has one.
+///
+/// **Deserialization only, and the asymmetry is the whole argument.** The TOML
+/// rule forbids `toml::from_str` — the parse — and says why in its own words at
+/// `f7`'s comment: a `from_str` into a shape of our own is the second opinion.
+/// Writing is not that. `src/exec.rs` builds `--json` event lines with
+/// `serde_json::to_string` and `serde_json::json!`, reading nobody's file and
+/// deciding nothing about anybody's format, and a gate that banned it would have
+/// to exempt that module for a property which is not the one being protected —
+/// an exemption granted for the wrong reason is how a permission list starts
+/// widening itself.
+#[test]
+fn n1_json_is_deserialized_in_the_permitted_modules_and_nowhere_else() {
+    let permitted = json_reading_modules();
+    let mut readers = Vec::new();
+
+    for (path, text) in sources() {
+        // Comments stripped, for the reason the TOML sweep strips them and the
+        // reason 0.16.0, 0.19.0, 0.25.0 and 0.26.0 each paid for: a gate that
+        // reads prose forbids a file from explaining itself, and this module's
+        // own documentation has to name the call it is permitted to make.
+        let code = code_of(&text);
+
+        // Spelling the name around is the same act as writing it, exactly as it
+        // is for a spawn. `use serde_json as j` puts a parse in a file where the
+        // literal below never appears, so the aliased forms are forbidden
+        // everywhere — the permitted modules included, which therefore write the
+        // call out in full and are found by the sweep like anything else.
+        for evasion in [
+            "use serde_json as ",
+            "use serde_json::{",
+            "use serde_json::*",
+        ] {
+            assert!(
+                !code.contains(evasion),
+                "{} imports serde_json under another spelling; a JSON parse is \
+                 written out in full or it is not written",
+                path.display(),
+            );
+        }
+
+        if [
+            "serde_json::from_str",
+            "serde_json::from_slice",
+            "serde_json::from_reader",
+        ]
+        .iter()
+        .any(|call| code.contains(call))
+        {
+            readers.push(path);
+        }
+    }
+
+    readers.sort();
+    assert!(
+        only_the_permitted_json_reader(&readers),
+        "JSON is deserialized somewhere other than the two modules permitted to do \
+         it. Found {readers:?}; exactly these are permitted, by exact path: \
+         {permitted:?} — one for the operator's own Claude and Codex files, one for \
+         the foreign plugin manifests. A third is a second opinion about what \
+         somebody else's file means, which is the defect the TOML rule beside this \
+         one exists to prevent.",
+    );
+}
+
+/// **N1's second half — the permitted set is exact paths, and widening it is an
+/// edit somebody makes on purpose.**
+///
+/// The sibling arm — a third file parsing JSON — is covered by the sweep above.
+/// This covers the arm that sweep cannot see, because a gate that has been
+/// widened refuses nothing and therefore fails nothing. Each near-miss shares a
+/// stem, a stem prefix or a module directory with a permitted path and is a
+/// different file.
+#[test]
+fn n1_the_permitted_json_set_is_exact_paths_and_never_a_substring() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let permitted = json_reading_modules();
+
+    // The control. Without it a predicate answering `false` for everything would
+    // satisfy every assertion below while refusing the real modules too.
+    assert!(
+        only_the_permitted_json_reader(&permitted),
+        "the permitted set does not admit itself, so nothing below means anything",
+    );
+
+    for near in [
+        // Its stem opens with a permitted stem, which a `file_stem` prefix match
+        // admits.
+        src.join("adapter.rs"),
+        // A permitted stem, whole, followed by a separator of its own — what an
+        // extension-dropped text match admits.
+        src.join("adapt_hooks.rs"),
+        // A module directory named for a permitted file, which is what
+        // `p.starts_with(q.with_extension(""))` admits.
+        src.join("adapt").join("mod.rs"),
+        // And the same shapes against the other permitted module, so the property
+        // is asserted for both rather than for the new one only.
+        src.join("importer.rs"),
+        src.join("import").join("mod.rs"),
+    ] {
+        let mut widened = permitted.clone();
+        widened.push(near.clone());
+        widened.sort();
+        assert!(
+            !only_the_permitted_json_reader(&widened),
+            "{} is admitted beside the permitted modules. The set is compared by \
+             exact path for exactly this reason: a substring, stem or prefix match \
+             is a permission list that widens itself, and a third module would then \
+             read a stranger's JSON while this file went on passing.",
+            near.display(),
         );
     }
 }

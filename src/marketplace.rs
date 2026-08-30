@@ -166,12 +166,40 @@ pub const HERE_MARK: &str = crate::pluginview::LOADED_MARK;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bundle {
     /// The directory the manifest sits in.
+    ///
+    /// For a bundle an index places in **another** repository this is the clone
+    /// the index itself is in, because the bundle's own directory does not exist
+    /// until the install fetches it. [`Bundle::source`] is what says which of the
+    /// two this is, and nothing draws a label off this field for an index bundle —
+    /// an index always names its entries, so [`Bundle::label`] never reaches the
+    /// directory case for one.
     pub dir: PathBuf,
     /// The manifest's `name`, unquoted, or `None` where it carries none this
     /// module could read.
     pub name: Option<String>,
     /// The manifest's `description`, unquoted, or `None`.
     pub description: Option<String>,
+    /// Whether the author wrote a manifest io reads, or io generated one.
+    pub origin: Origin,
+    /// Where an index said the bundle is, and `None` for a bundle found by the
+    /// walk — which is by definition already at [`Bundle::dir`].
+    pub source: Option<crate::adapt::Source>,
+}
+
+/// Whether a bundle's manifest is the author's or io's.
+///
+/// **Drawn rather than inferred.** An adapted bundle works through a
+/// `plugin.toml` io generated from somebody else's `plugin.json`, and the
+/// difference between what an author wrote and what io made of it must never be
+/// something an operator has to work out — least of all when a bundle is dropped
+/// and the file to look at is the generated one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// The directory carries a [`MANIFEST`]. Read exactly as it was before io-cli
+    /// read any foreign format, and it wins its own directory.
+    Native,
+    /// Read from a Claude Code or Codex manifest. io writes the `plugin.toml`.
+    Adapted,
 }
 
 impl Bundle {
@@ -203,17 +231,33 @@ impl Bundle {
     /// the operator has no other way to tell.
     #[must_use]
     pub fn line(&self) -> String {
+        // The file named is the one io actually read, which since 0.31.0 is not
+        // always a `plugin.toml`. A sentence telling an operator to look in a file
+        // that is not there is worse than the missing description it is reporting.
+        let read = self.read_from();
         match (&self.name, &self.description) {
             (Some(_), Some(said)) => said.clone(),
-            (Some(_), None) => "its plugin.toml carries no description".to_string(),
+            (Some(_), None) => format!("its {read} carries no description"),
             (None, Some(said)) => {
-                let mut out = String::from("its plugin.toml does not name it; ");
+                let mut out = format!("its {read} does not name it; ");
                 out.push_str(said);
                 out
             }
-            (None, None) => {
-                "its plugin.toml does not name it, and carries no description".to_string()
-            }
+            (None, None) => format!("its {read} does not name it, and carries no description"),
+        }
+    }
+
+    /// The name of the manifest file this bundle's two keys came out of.
+    #[must_use]
+    pub fn read_from(&self) -> &'static str {
+        // **An index entry's two keys came out of the index**, not out of any
+        // `plugin.json`, and in the common case that file does not exist at the
+        // path the sentence would send an operator to. `source` is what says which
+        // read this was: the walk sets it `None`, `from_entry` sets it `Some`.
+        match (self.origin, self.source.is_some()) {
+            (Origin::Native, _) => MANIFEST,
+            (Origin::Adapted, true) => crate::adapt::INDEX_FILE,
+            (Origin::Adapted, false) => crate::adapt::MANIFEST_FILE,
         }
     }
 }
@@ -251,7 +295,16 @@ impl Market {
     #[must_use]
     pub fn held(&self) -> String {
         match self.bundles.len() {
-            0 => format!("no directory in it carries a {MANIFEST}"),
+            // Three formats are read now, so the sentence names the shape rather
+            // than one filename. Before 0.31.0 this said "no directory in it
+            // carries a plugin.toml", which was true and was the answer for every
+            // marketplace in the field — the release exists because of it.
+            0 => format!(
+                "nothing in it is a bundle — no {MANIFEST}, no {}/{}, no {}",
+                crate::adapt::CLAUDE_DIR,
+                crate::adapt::INDEX_FILE,
+                crate::adapt::MANIFEST_FILE,
+            ),
             1 => "1 bundle".to_string(),
             many => format!("{many} bundles"),
         }
@@ -288,7 +341,154 @@ pub fn manifest(dir: &Path) -> Option<Bundle> {
         dir: dir.to_path_buf(),
         name: declared(&text, "name"),
         description: declared(&text, "description"),
+        origin: Origin::Native,
+        source: None,
     })
+}
+
+/// One directory's foreign manifest as a [`Bundle`], or `None` where it carries
+/// none.
+///
+/// [`manifest`]'s counterpart for the two formats io-cli did not invent, and it is
+/// only ever consulted where that function has already answered `None` — a native
+/// `plugin.toml` wins its own directory, which is F2.
+#[must_use]
+pub fn adapted(dir: &Path) -> Option<Bundle> {
+    let read = crate::adapt::manifest_at(dir)?;
+    Some(Bundle {
+        dir: dir.to_path_buf(),
+        name: read.name,
+        description: read.description,
+        origin: Origin::Adapted,
+        source: None,
+    })
+}
+
+/// One index entry as a [`Bundle`], under the id [`published`] derived for it.
+///
+/// The name is the index's, never the directory's, and that is a decision rather
+/// than a convenience: the index is the author's own statement of what the
+/// repository publishes, it is the word an operator types at `plugin add`, and an
+/// entry whose source is another repository has no local directory to take a name
+/// from until the install has already happened.
+///
+/// **It is the id and not the entry's own spelling**, for [`Bundle::label`]'s
+/// reason: the label is the word the listing draws and therefore the word
+/// [`locate`] is asked for, and io-harness namespaces the bundle's contributions
+/// with the id. An entry spelled `Rust-Review` drawn under that spelling would
+/// name a bundle no install could resolve. The two differ only by a case fold —
+/// [`crate::adapt::normalised`] refuses anything wider — so the row still reads
+/// as the entry an operator found in the index.
+fn from_entry(clone: &Path, id: String, entry: crate::adapt::Entry) -> Bundle {
+    let dir = match &entry.source {
+        crate::adapt::Source::Local(said) => local_dir(clone, said),
+        crate::adapt::Source::Remote(_) => clone.to_path_buf(),
+    };
+    Bundle {
+        dir,
+        name: Some(id),
+        description: entry.description,
+        origin: Origin::Adapted,
+        source: Some(entry.source),
+    }
+}
+
+/// The bundles an index publishes, and one line for every entry it does not.
+///
+/// **One reader answering both, because [`holdings`] and [`unreadable`] must not
+/// disagree about which entry is which.** An entry counted as a bundle by one and
+/// reported as a refusal by the other is a row an operator can see, cannot
+/// install, and is told nothing about. The two stay separate at the surface — a
+/// refusal is not a bundle and a listing must not offer it as one — and share the
+/// decision underneath.
+///
+/// Two refusals are made here on top of what [`crate::adapt`] itself could not
+/// read, and neither is a drop:
+///
+/// 1. A name [`crate::adapt::normalised`] cannot make an id is refused **by
+///    name**. It joins the reader's own unreadable lines because the rule there
+///    already is "reported, never skipped" — an entry that vanished would leave
+///    an operator comparing a listing against a file to work out which of the two
+///    is lying.
+/// 2. Two entries reaching one id are refused **naming both**, in [`locate`]'s
+///    words for the same class of problem: one name, two different repositories'
+///    code, and whichever was found first is code the operator did not choose.
+///    Neither is offered, and that is where this parts from `locate` — `locate`
+///    can offer a qualifier that tells two marketplaces apart, and inside one
+///    index there is no second spelling to offer. The index's author is the only
+///    party who can resolve it.
+fn published(clone: &Path, index: crate::adapt::Index) -> (Vec<Bundle>, Vec<String>) {
+    let mut said = index.unreadable;
+    let mut kept: Vec<(String, String, Bundle)> = Vec::new();
+    for entry in index.entries {
+        let written = entry.name.clone();
+        let Some(id) = crate::adapt::normalised(&written) else {
+            said.push(format!(
+                "{written} is not a usable plugin id and io does not invent one — an id is \
+                 what you type at `plugin add` and what namespaces every name the bundle \
+                 contributes, so it must be 1 to {} characters of `a-z`, `0-9` and `-`, \
+                 starting with a letter or a digit",
+                io_harness::MAX_ID,
+            ));
+            continue;
+        };
+        kept.push((id.clone(), written, from_entry(clone, id, entry)));
+    }
+
+    // The ids more than one entry reached, in the order the index first names
+    // them, so two reads of one file report in one order. Quadratic over the
+    // entries and deliberately so: the largest index in the field carries 291 of
+    // them, and a map keyed by id would still have to be walked in the file's
+    // order to report in it.
+    let mut clashing: Vec<String> = Vec::new();
+    for (id, _, _) in &kept {
+        if !clashing.contains(id) && kept.iter().filter(|held| held.0 == *id).count() > 1 {
+            clashing.push(id.clone());
+        }
+    }
+    for id in &clashing {
+        let names: Vec<String> = kept
+            .iter()
+            .filter(|held| held.0 == *id)
+            .map(|held| format!("`{}`", held.1))
+            .collect();
+        let count = names.len();
+        // ` and ` is `locate`'s own joiner for its own list of spellings. A second
+        // joiner for the same class of sentence is a second phrasing an operator
+        // has to learn twice.
+        let spellings = names.join(" and ");
+        said.push(format!(
+            "{count} entries in this index are the plugin id `{id}` — {spellings} — and \
+             installing whichever was found first would install code you did not choose; \
+             none of them is offered until the index names them apart"
+        ));
+    }
+
+    let bundles = kept
+        .into_iter()
+        .filter(|held| !clashing.contains(&held.0))
+        .map(|held| held.2)
+        .collect();
+    (bundles, said)
+}
+
+/// A `"./"` or `"./plugins/x"` source resolved against the clone.
+///
+/// **Every component that is not a plain name is dropped**, so a source of
+/// `"../../etc"` or an absolute path cannot address anything outside the clone.
+/// A marketplace index is written by a stranger and this is the one value in it
+/// that becomes a path io reads from; the directory it names is inside the clone
+/// or the entry addresses the clone's own root.
+fn local_dir(clone: &Path, said: &str) -> PathBuf {
+    let mut dir = clone.to_path_buf();
+    for part in Path::new(said).components() {
+        if let std::path::Component::Normal(name) = part {
+            if name != "." {
+                dir.push(name);
+            }
+        }
+    }
+    dir
 }
 
 /// One top-level key of a manifest, unquoted, filtered and bounded.
@@ -331,7 +531,7 @@ const LONGEST: usize = 200;
 /// Plain dots rather than [`Glyphs::ellipsis`]: this is a property of the data and
 /// runs before any renderer is chosen, and a value that arrives at both glyph sets
 /// already carrying a `…` is a value that is wrong in one of them.
-fn bounded(value: &str) -> String {
+pub(crate) fn bounded(value: &str) -> String {
     if value.chars().count() <= LONGEST {
         return value.to_string();
     }
@@ -450,13 +650,39 @@ fn escapes(text: &str) -> String {
 
 /// Every bundle inside a clone, the clone's own root included.
 ///
+/// **Three formats, and the precedence between them is the whole of this
+/// function.**
+///
+/// 1. A native `plugin.toml` at the clone's own root **suppresses the index**. A
+///    repository that has written io's own manifest has said what it publishes in
+///    the format this crate owns, and a foreign index must not speak over it. That
+///    is what lets the author of a Claude or Codex bundle take back control by
+///    adding one file, and [`crate::adapt`]'s generator never writes inside a
+///    clone precisely so this stays the author's decision. It suppresses the index
+///    and nothing else: the walk still runs, so a repository that carries a root
+///    manifest **and** bundles in subdirectories lists all of them exactly as it
+///    did before this crate read any foreign format.
+/// 2. Otherwise `.claude-plugin/marketplace.json`, where the clone carries one.
+///    **The walk does not also run**, and F3 asserts the count rather than the
+///    membership for exactly that reason: a union would list bundles the author
+///    did not publish beside the ones they did, with no way for an operator to
+///    tell which was which. The index is the author's own statement, and it is the
+///    file both Claude Code and Codex read. Not every entry becomes a bundle —
+///    [`published`] holds back the ones that name no usable plugin id, and
+///    [`unreadable`] is where each of those says so by name.
+/// 3. Otherwise the walk, with each directory read as a native manifest first and
+///    a foreign one only where it carries none.
+///
 /// **The walk is [`crate::pluginview::candidates`]'s**, not a second one written
 /// here: it already skips `target`, `node_modules` and every dotted directory —
 /// `.git`, which every clone has, most of all — and it already orders by depth and
 /// then by path so two calls on one machine answer the same way. A repository
 /// laying its bundles out in a way that walk cannot see is a repository `/plugin
 /// add` could not see either, and one walk that is sometimes too shallow is better
-/// than two that disagree about which.
+/// than two that disagree about which. Reading `.claude-plugin/plugin.json` at a
+/// directory the walk visited does **not** weaken its dotted-directory skip: the
+/// path is known and relative to a directory already admitted, and the walk itself
+/// still never descends into one.
 ///
 /// The root is checked separately because that function only ever looks at a
 /// directory's *children*, and a marketplace that is itself one bundle — a single
@@ -464,12 +690,42 @@ fn escapes(text: &str) -> String {
 /// entirely.
 #[must_use]
 pub fn holdings(clone: &Path) -> Vec<Bundle> {
-    let mut dirs = Vec::new();
-    if clone.join(MANIFEST).is_file() {
-        dirs.push(clone.to_path_buf());
+    if !clone.join(MANIFEST).is_file() {
+        if let Some(index) = crate::adapt::index_at(clone) {
+            return published(clone, index).0;
+        }
     }
-    dirs.extend(crate::pluginview::candidates(clone));
-    dirs.iter().filter_map(|dir| manifest(dir)).collect()
+    // `visited` and not `candidates`: the latter is this filtered by "carries a
+    // plugin.toml", and a directory holding only a `.claude-plugin/plugin.json`
+    // carries none — so iterating `candidates` looking for a foreign manifest
+    // would find one exactly never.
+    let mut dirs = vec![clone.to_path_buf()];
+    dirs.extend(crate::pluginview::visited(clone));
+    dirs.iter()
+        .filter_map(|dir| manifest(dir).or_else(|| adapted(dir)))
+        .collect()
+}
+
+/// Every entry of an index that yields no bundle, for the surface that lists it.
+///
+/// Three kinds of line, and one list because an operator reading a listing has one
+/// question — which entries are not here, and why: an entry [`crate::adapt`] could
+/// not read at all, a name that is no plugin id, and a set of names that reach one
+/// id. [`published`] writes all three.
+///
+/// Separate from [`holdings`] rather than a field on it, because a refusal is not
+/// a bundle and a listing that mixed the two would offer a row that cannot be
+/// installed. Empty for a clone with no index, which is the same answer as an
+/// index that read cleanly — the distinction that matters is whether there is
+/// something to report, and there is not.
+#[must_use]
+pub fn unreadable(clone: &Path) -> Vec<String> {
+    if clone.join(MANIFEST).is_file() {
+        return Vec::new();
+    }
+    crate::adapt::index_at(clone)
+        .map(|index| published(clone, index).1)
+        .unwrap_or_default()
 }
 
 /// Every marketplace under `root`, ordered by owner and then by repository.
@@ -522,6 +778,97 @@ fn ordinary(dir: &Path) -> Vec<PathBuf> {
 /// A path's last component as a `String`, or `None` where it has none.
 fn name_of(path: &Path) -> Option<String> {
     Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Where a bundle an index placed in another repository is cloned to.
+///
+/// **Dot-named, and inside the marketplaces tree on purpose.** [`markets`] skips
+/// anything dot-named at both of its two levels, so a repository fetched for one
+/// entry can never be counted as a marketplace of its own — which it is not: the
+/// operator added one marketplace and this is a directory that marketplace's index
+/// pointed at. Inside the tree rather than beside it so that
+/// `plugin marketplace remove` takes it away with everything else the marketplace
+/// brought down.
+const ENTRIES: &str = ".entries";
+
+/// Where the repositories one marketplace's index pointed at are kept.
+///
+/// `<marketplaces>/.entries/<owner>/<repo>` — the marketplace's own name, so
+/// [`discard`] removes an index's fetched repositories with the index itself
+/// rather than leaving them in a directory no surface lists. Dot-named, so
+/// [`markets`] cannot count one as a marketplace the operator added.
+fn entries(marketplaces: &Path, market: &Named) -> PathBuf {
+    at(marketplaces.join(ENTRIES).as_path(), market)
+}
+
+/// The directory a bundle is actually in, fetching it where it is not here yet.
+///
+/// **A local source is already on the disk and this does nothing at all.** 53 of
+/// the official index's 291 entries are that shape. The other 238 name another
+/// repository, and this is where that repository is brought down — through
+/// [`crate::fetch`], which owns every spawn, at the commit or the tag the index
+/// named, with the URL re-derived from [`crate::fetch::from_url`] so the string
+/// reaching git is one io-cli built.
+///
+/// The `path` an entry names is joined **component by component, plain names
+/// only**, exactly as a local source is: it is a value out of a stranger's file
+/// and the directory it addresses is inside the clone or the entry addresses the
+/// clone's root.
+pub fn fetched(
+    bundle: &Bundle,
+    market: &Named,
+    marketplaces: &Path,
+    staging: &Path,
+) -> Result<PathBuf, String> {
+    let Some(crate::adapt::Source::Remote(remote)) = &bundle.source else {
+        return Ok(bundle.dir.clone());
+    };
+    let named = crate::fetch::from_url(&remote.url).ok_or_else(|| {
+        let mut out = String::from("io reads a marketplace entry only from ");
+        out.push_str(crate::fetch::HOST);
+        out.push_str("<owner>/<repo>, and ");
+        out.push_str(&bounded(&plain(&remote.url)));
+        out.push_str(" is not that, so it is not fetched");
+        out
+    })?;
+    let pin = crate::fetch::Pin::named(remote.reference.as_deref(), remote.sha.as_deref())
+        .ok_or_else(|| {
+            let mut out = String::from("the index pins ");
+            out.push_str(&bundle.label());
+            out.push_str(" to something io will not put on a command line, so it is not fetched");
+            out
+        })?;
+
+    // **Keyed on the marketplace that named it and on the pin, not on the
+    // repository alone**, and both halves are defects this would otherwise have.
+    //
+    // `clone_at` answers `Already` the instant the destination exists, before the
+    // pin is consulted, and nothing records which commit a directory holds. Two
+    // entries naming one repository at two commits — which is ordinary; 85 of the
+    // official index's entries are `git-subdir` into a handful of repositories —
+    // would give the second entry the first one's code, adapted from a tree the
+    // index did not name for it, with the disclosure truthfully describing the
+    // wrong commit. The pin in the path makes `Already` mean *this* commit.
+    //
+    // Under the marketplace's own `<owner>/<repo>` so that `discard` can take the
+    // entries away with the clone that named them. Keyed the other way they would
+    // outlive every removal in a directory nothing lists.
+    let into = at(&entries(marketplaces, market), &named).join(pin.spelling());
+    match crate::fetch::clone_at(&crate::fetch::url(&named), &into, staging, &pin) {
+        crate::fetch::Fetched::Cloned(dir) | crate::fetch::Fetched::Already(dir) => {
+            Ok(match &remote.path {
+                Some(said) => local_dir(&dir, said),
+                None => dir,
+            })
+        }
+        // `sentence` answers `None` only for `Cloned`, which the arm above takes,
+        // so this is the failure's own words and never a default. The fallback is
+        // written all the same rather than unwrapped: an ending added upstream
+        // would otherwise turn a refusal into a panic on the consent surface.
+        other => Err(other
+            .sentence()
+            .unwrap_or_else(|| String::from("the fetch did not finish and said nothing"))),
+    }
 }
 
 /// What io-cli says when it has no home of its own to keep a marketplace in.
@@ -661,6 +1008,14 @@ pub fn discard(root: &Path, named: &Named) -> Outcome {
             said,
         };
     }
+    // **The repositories this marketplace's index pointed at go with it.** They
+    // were fetched only because this index named them, they sit under
+    // `.entries/<owner>/<repo>` keyed on this marketplace for exactly that reason,
+    // and nothing lists them — a removal that left them behind would leave clones
+    // on the disk the operator has no surface to find or delete. Best effort and
+    // before the clone, so the sentence below is not written unless the clone
+    // itself went.
+    let _ = std::fs::remove_dir_all(entries(root, named));
     match std::fs::remove_dir_all(&clone) {
         Ok(()) => {
             let mut said = String::from("the clone is gone: ");
@@ -715,6 +1070,57 @@ pub fn dependents(view: &crate::pluginview::View, clone: &Path) -> Vec<PathBuf> 
         .collect()
 }
 
+/// The adapter directories that stop working when `clone` goes.
+///
+/// **[`dependents`] cannot see these, and that is a property of the design rather
+/// than an oversight.** A bundle installed from a `plugin.toml` is declared at a
+/// path *inside* the clone, so removing the clone is visibly removing it. A bundle
+/// installed from a Claude Code or Codex manifest is declared at a path under
+/// `~/.io-cli/adapters`, which is not inside the clone at all — the generated
+/// manifest merely *points* there. Removing the marketplace would leave that entry
+/// declared, loading a manifest whose every path has just been deleted, and
+/// `dependents` would have said nothing.
+///
+/// So the link is read where it actually is: the generated manifest's own
+/// `skills` and `templates` values, through [`crate::edit::value_at`], which is
+/// this crate's only permitted TOML reader. An adapter naming a path inside the
+/// clone is an adapter this removal orphans.
+///
+/// **The `[[plugin]]` entry is not touched and neither is the adapter directory.**
+/// 0.29.0's rule is that a cache being emptied does not undo a configuration
+/// decision, and an adapter is io's own file rather than the operator's — but it
+/// is still not this verb's to delete, because the entry that names it survives.
+/// What is owed is the consequence, said before anything goes.
+#[must_use]
+pub fn orphaned(view: &crate::pluginview::View, clone: &Path, adapters: &Path) -> Vec<PathBuf> {
+    let real = resolved(clone);
+    let under = resolved(adapters);
+    view.plugins
+        .iter()
+        .map(|listed| listed.root.clone())
+        .chain(view.refused.iter().map(|refused| refused.path.clone()))
+        .filter(|root| resolved(root).starts_with(&under))
+        .filter(|root| points_into(root, &real))
+        .collect()
+}
+
+/// Whether the adapter at `root` names a path inside `clone`.
+///
+/// Both of the generated manifest's directory keys are checked, not one: a bundle
+/// publishing only `commands/` has a `templates` and no `skills`, and a rule that
+/// read `skills` alone would call that adapter unaffected by a removal that guts
+/// it.
+fn points_into(root: &Path, clone: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(MANIFEST)) else {
+        return false;
+    };
+    ["skills", "templates"].iter().any(|key| {
+        crate::edit::value_at(&text, key)
+            .map(|raw| unquote(raw.trim()))
+            .is_some_and(|said| resolved(Path::new(&said)).starts_with(clone))
+    })
+}
+
 /// A path with its symlinks followed, or the path itself where it cannot be.
 ///
 /// The fallback is the honest one: a path that does not exist cannot be resolved,
@@ -730,27 +1136,67 @@ fn resolved(path: &Path) -> PathBuf {
 /// One function so that the two doors cannot word this differently, and `None`
 /// rather than an empty string so that neither door has to decide whether to draw
 /// it — an empty warning drawn as a row is a row an operator reads as a warning.
+/// What removing `clone` costs, in one sentence, or `None` when it costs nothing.
+///
+/// **The one call a door makes**, so the three surfaces that offer this removal
+/// cannot ask different questions. Before 0.31.0 each of them called
+/// [`dependents`] and then [`warning`]; a release that added a second way for a
+/// bundle to depend on a clone would have had to be remembered at all three, and
+/// `src/main.rs` is linked by nothing under `tests/`, so forgetting one would have
+/// been invisible to every gate.
+///
+/// `adapters` is an `Option` because [`crate::home::adapters`] is: an operator
+/// with no home directory has no adapters, and a `None` there is not an error, it
+/// is an empty list.
 #[must_use]
-pub fn warning(inside: &[PathBuf]) -> Option<String> {
-    if inside.is_empty() {
+pub fn removal_cost(
+    view: &crate::pluginview::View,
+    clone: &Path,
+    adapters: Option<&Path>,
+) -> Option<String> {
+    let inside = dependents(view, clone);
+    let orphans = adapters
+        .map(|at| orphaned(view, clone, at))
+        .unwrap_or_default();
+    warning(&inside, &orphans)
+}
+
+/// The line that says what a removal is about to cost, given both lists.
+#[must_use]
+pub fn warning(inside: &[PathBuf], orphans: &[PathBuf]) -> Option<String> {
+    if inside.is_empty() && orphans.is_empty() {
         return None;
     }
-    let mut said = if inside.len() == 1 {
-        String::from("1 declared bundle lives inside it")
+    // **Counted together and listed together.** The two lists differ in where the
+    // declaration points and in nothing an operator cares about: both are bundles
+    // that stop loading, both keep their `[[plugin]]` entry, and both are named so
+    // the operator can decide before anything goes. Two sentences would ask them
+    // to work out which kind theirs was in order to read the consequence.
+    let all: Vec<&PathBuf> = inside.iter().chain(orphans.iter()).collect();
+    let mut said = if all.len() == 1 {
+        String::from("1 declared bundle stops loading")
     } else {
-        format!("{} declared bundles live inside it", inside.len())
+        format!("{} declared bundles stop loading", all.len())
     };
     said.push_str(
         ": the `[[plugin]]` entries are left exactly as they are, and io-harness will \
          report them as missing from the next turn — ",
     );
     said.push_str(
-        &inside
-            .iter()
+        &all.iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", "),
     );
+    if !orphans.is_empty() {
+        // Named as adapters rather than left to look like ordinary directories: an
+        // operator who goes looking finds a `plugin.toml` io wrote, in a directory
+        // they never made, and the sentence is the only thing that explains it.
+        said.push_str(
+            ". The ones under `adapters/` are manifests io generated; they are not \
+             removed, and they stop loading because the clone they name is going",
+        );
+    }
     Some(said)
 }
 
@@ -798,6 +1244,22 @@ fn asked(query: &str) -> (&str, Option<&str>) {
 /// what makes `<name>@<owner>/<repo>` keep resolving to a clone's own root bundle
 /// when that root shares its label with something deeper.
 pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
+    located(markets, query).map(|(_, bundle)| bundle.dir.clone())
+}
+
+/// [`locate`], keeping the marketplace and the bundle rather than the path alone.
+///
+/// **The install needs all three and a `PathBuf` throws two of them away.** An
+/// adapted bundle's directory is not the directory a `[[plugin]]` entry names —
+/// the entry names the generated manifest, which lives under
+/// `<adapters>/<owner>/<repo>/<name>`, and the owner and the repository come from
+/// the [`Market`] while the name comes from the [`Bundle`]. A remote entry's
+/// directory does not exist at all until [`fetched`] has run, and what says so is
+/// [`Bundle::source`].
+///
+/// One matcher and two returns, so `plugin add` and every listing agree about
+/// which bundle a word names. [`locate`] is this, narrowed.
+pub fn located<'a>(markets: &'a [Market], query: &str) -> Result<(&'a Market, &'a Bundle), String> {
     let (name, qualifier) = asked(query);
     let hits: Vec<(&Market, &Bundle)> = markets
         .iter()
@@ -822,7 +1284,7 @@ pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
     };
     let hits = if precise.len() == 1 { precise } else { hits };
     match hits.as_slice() {
-        [(_, bundle)] => Ok(bundle.dir.clone()),
+        [(market, bundle)] => Ok((market, bundle)),
         [] => Err(unheld(markets, query)),
         several => {
             let spellings = several
@@ -961,12 +1423,123 @@ pub fn chosen(
     dir: &Path,
     markets: impl FnOnce() -> Vec<Market>,
     text: &str,
+    at: Homes<'_>,
 ) -> Result<Chosen, String> {
     match crate::pluginview::refusal(dir) {
         None => Ok(Chosen::Path(dir.to_path_buf())),
-        Some(refused) => locate(&markets(), text)
+        Some(refused) => prepared(&markets(), text, at.marketplaces, at.staging, at.adapters)
             .map(Chosen::Held)
             .map_err(|missing| format!("{refused} — {missing}")),
+    }
+}
+
+/// The three directories an install may need, passed in rather than looked up.
+///
+/// One argument instead of three, because [`chosen`] already takes three and a
+/// fourth, fifth and sixth positional `&Path` is a call nobody can read. Grouped
+/// rather than resolved inside for this module's standing reason: a decision
+/// behind [`crate::home`] is a decision nothing under `tests/` can reach without
+/// moving the operator's home out from under a suite running in parallel.
+#[derive(Debug, Clone, Copy)]
+pub struct Homes<'a> {
+    /// Where marketplaces are cloned to.
+    pub marketplaces: &'a Path,
+    /// Where a clone is assembled before it is renamed into place.
+    pub staging: &'a Path,
+    /// Where io writes the manifests it generates.
+    pub adapters: &'a Path,
+}
+
+/// A bundle brought to the point where a `[[plugin]]` entry can name it.
+///
+/// Three directories rather than one, because for an adapted bundle they are three
+/// different places and every surface downstream needs a different one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prepared {
+    /// What the `[[plugin]]` entry names. The bundle's own directory for a native
+    /// bundle; the generated manifest's directory for an adapted one.
+    pub declare: PathBuf,
+    /// The bundle's own directory — the author's files. What the disclosure reads
+    /// hooks from, because the generated manifest carries none.
+    pub from: PathBuf,
+    /// The directory io created for this install, if it created one. Removed when
+    /// the operator declines, so a refused install leaves nothing behind.
+    pub made: Option<PathBuf>,
+}
+
+/// Resolve a word to a bundle and bring it to the point of being installable.
+///
+/// **This is the step 0.29.0 and 0.30.0 did not need and 0.31.0 cannot do
+/// without.** Until this release every bundle a marketplace held already carried
+/// a `plugin.toml`, so resolving a name to a directory *was* the install. A bundle
+/// published as a Claude Code or Codex plugin carries no manifest io-harness
+/// reads, and one in another repository is not on the disk at all, so the word has
+/// to be resolved, fetched and adapted before there is anything an entry can name.
+///
+/// Native bundles are untouched by every line of it: [`fetched`] returns their own
+/// directory unchanged and the generation is skipped, so `plugin add` on a
+/// `plugin.toml` marketplace does exactly what it did in 0.30.2.
+///
+/// **The adapter is written before consent and removed if consent is refused**,
+/// and that is the honest order rather than a convenience. The disclosure is
+/// io-harness reading the bundle, and io-harness has no loader that takes a
+/// foreign manifest — there is nothing to read until the manifest io generates
+/// exists. What the operator's *configuration* never sees is any of it:
+/// `Prepared::made` is what a declined install removes, and the scope file is not
+/// opened either way.
+pub fn prepared(
+    markets: &[Market],
+    query: &str,
+    marketplaces: &Path,
+    staging: &Path,
+    adapters: &Path,
+) -> Result<Prepared, String> {
+    let (market, bundle) = located(markets, query)?;
+    let from = fetched(bundle, &market.named, marketplaces, staging)?;
+    // **The disk decides, not how the bundle was listed.** `from_entry` stamps
+    // `Origin::Adapted` on every index entry, because an index is a foreign format
+    // — but the directory it points at may still carry io's own manifest, and a
+    // remote entry's repository is not even read until the fetch above has run. A
+    // rule keyed on `origin` would generate an adapter over an author's real
+    // `plugin.toml`, silently dropping the `[[hook]]`, `[[mcp]]` and `[[agent]]`
+    // blocks the generator has no source for. `holdings` says a native manifest
+    // wins its own directory; this is that same sentence on the install path.
+    if from.join(MANIFEST).is_file() {
+        return Ok(Prepared {
+            declare: from.clone(),
+            from,
+            made: None,
+        });
+    }
+    // The **normalised id**, not the label. It is what the generated manifest
+    // declares and what io-harness namespaces by, so a directory named anything
+    // else would put two spellings of one bundle on the disk — and on a
+    // case-insensitive filesystem two bundles labelled `Foo` and `foo` would share
+    // one adapter directory and the second install would overwrite the first.
+    let name = crate::adapt::normalised(&bundle.label()).ok_or_else(|| {
+        format!(
+            "`{}` is not a usable plugin id, so io cannot name a directory for it",
+            bundle.label()
+        )
+    })?;
+    let into = crate::adapt::at(adapters, &market.named.owner, &market.named.repo, &name);
+    crate::adapt::generate(&from, &name, &into)?;
+    Ok(Prepared {
+        declare: into.clone(),
+        from,
+        made: Some(into),
+    })
+}
+
+/// Take back what an install created, because the operator said no.
+///
+/// A no-op for a native bundle, which created nothing. Best effort by design: the
+/// operator has already declined and the entry was never written, so a directory
+/// that cannot be removed is a stale cache rather than anything they consented to,
+/// and a refusal reported *after* a refusal is noise about io's own housekeeping.
+pub fn unmake(made: Option<&Path>) {
+    if let Some(dir) = made {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -987,16 +1560,41 @@ pub fn chosen(
 pub enum Chosen {
     /// A directory on this machine, named by the operator.
     Path(PathBuf),
-    /// A bundle a marketplace holds, resolved by name.
-    Held(PathBuf),
+    /// A bundle a marketplace holds, resolved by name, fetched where it was
+    /// elsewhere and adapted where its manifest is not one io-harness reads.
+    Held(Prepared),
 }
 
 impl Chosen {
-    /// The directory either reading named.
+    /// The directory a `[[plugin]]` entry names.
     #[must_use]
     pub fn dir(&self) -> &Path {
         match self {
-            Self::Path(dir) | Self::Held(dir) => dir,
+            Self::Path(dir) => dir,
+            Self::Held(prepared) => &prepared.declare,
+        }
+    }
+
+    /// The bundle's **own** directory, which for an adapted bundle is not
+    /// [`Chosen::dir`].
+    ///
+    /// What the disclosure reads hooks from: the generated manifest carries none,
+    /// so asking io-harness what the bundle contributes cannot answer what its
+    /// author declared.
+    #[must_use]
+    pub fn from(&self) -> &Path {
+        match self {
+            Self::Path(dir) => dir,
+            Self::Held(prepared) => &prepared.from,
+        }
+    }
+
+    /// What a declined install must take back, if anything was created.
+    #[must_use]
+    pub fn made(&self) -> Option<&Path> {
+        match self {
+            Self::Path(_) => None,
+            Self::Held(prepared) => prepared.made.as_deref(),
         }
     }
 
@@ -1028,6 +1626,21 @@ pub struct Disclosure {
     /// the TUI writes into a terminal whose set the operator chose, and the argv
     /// form writes down a pipe in ASCII. [`Disclosure::said`] is the fold.
     pub rows: Vec<Row>,
+    /// One line per hook the bundle declares that io will **not** carry across,
+    /// each with its event, its command unshortened, and the reason.
+    ///
+    /// **Empty for a native bundle, and not because the field does not apply.** A
+    /// `plugin.toml` declares its hooks to io-harness, which runs them; there is
+    /// nothing being withheld and nothing to say. This list is only ever the hooks
+    /// of a Claude Code or Codex bundle, which cannot cross — see
+    /// [`crate::adapt::Hook`] for why no adapter closes that gap.
+    ///
+    /// A separate field rather than more [`Disclosure::rows`], so the count of
+    /// withheld hooks is a number a test can assert. One row per hook, and F11
+    /// asserts the count rather than a `contains`, because one row satisfies a
+    /// `contains` forever and a hook that exists and is not drawn is the failure
+    /// this exists to prevent.
+    pub withheld: Vec<String>,
 }
 
 impl Disclosure {
@@ -1103,6 +1716,38 @@ impl Disclosure {
 /// one that *does* show, the separator between a row's two fields, is applied by
 /// the door in [`Disclosure::said`].
 pub fn disclosure(scope: Scope, dir: &Path) -> Result<Disclosure, String> {
+    adapted_disclosure(scope, dir, None)
+}
+
+/// The sentence every withheld hook carries, spelled once.
+///
+/// **Three reasons and not one, because an operator who is told "unsupported"
+/// cannot tell whether to wait for a release or to stop expecting it.**
+/// io-harness's `Hook.run` is argv and deliberately never a shell string; its `on`
+/// takes the harness's own event tags; and 0.71.0 refuses `${env:}`, `${file:}`
+/// and `${cmd:}` inside a manifest in every scope. A Claude hook is a shell
+/// string, an unknown event and a refused substitution at once, so no adapter
+/// closes it — and an approximated hook is a program running on this machine that
+/// nobody described accurately.
+pub const NOT_CARRIED: &str = "io does not run this — a hook here is a shell line for another \
+                               tool's events, and io-harness takes argv against its own";
+
+/// [`disclosure`], plus the hooks a foreign bundle declares and io will not carry.
+///
+/// `from` is the bundle's **own** directory — the stranger's checkout — where
+/// `dir` is what io-harness is asked to load, which for an adapted bundle is the
+/// generated manifest's directory. The two differ precisely because the adapter
+/// carries no hooks: asking io-harness what the bundle contributes therefore
+/// cannot answer what it *declared*, and reading the author's own file is the only
+/// way to name what is being left behind.
+///
+/// `None` for a native bundle, where the two are the same directory and nothing is
+/// withheld.
+pub fn adapted_disclosure(
+    scope: Scope,
+    dir: &Path,
+    from: Option<&Path>,
+) -> Result<Disclosure, String> {
     let plugin = io_harness::Plugins::inspect(scope, dir).map_err(|error| error.to_string())?;
     // `true`, because nothing has been written: this is what the directory *is*,
     // not what some `[[plugin]]` entry said about it. See `pluginview::copy_out`.
@@ -1110,7 +1755,57 @@ pub fn disclosure(scope: Scope, dir: &Path) -> Result<Disclosure, String> {
     Ok(Disclosure {
         id: listed.id.clone(),
         rows: crate::pluginview::detail(&listed, u16::MAX, &crate::glyphs::ASCII),
+        withheld: from.map(withheld_hooks).unwrap_or_default(),
     })
+}
+
+/// One line per hook the bundle at `from` declares, with its command unshortened.
+///
+/// **The command is filtered and never bounded**, which is the one place this
+/// module's `LONGEST` deliberately does not apply: it is argv the operator is
+/// being asked to consent to being *absent*, and a shortened argv on a consent
+/// surface is the single thing that surface must never show.
+fn withheld_hooks(from: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for at in hook_files(from) {
+        for hook in crate::adapt::hooks_in(&at) {
+            let mut said = hook.event.clone();
+            said.push_str(" — ");
+            said.push_str(&hook.command);
+            said.push_str(" — ");
+            said.push_str(NOT_CARRIED);
+            found.push(said);
+        }
+    }
+    found
+}
+
+/// The hooks files a foreign bundle declares or keeps where they are conventional.
+///
+/// **Two places, and the manifest's own answer comes first.** A Codex manifest
+/// names `"hooks": "./hooks/hooks.json"`, and a Claude bundle generally names
+/// nothing and keeps the file at that same conventional path — so looking only at
+/// the manifest would miss most bundles and looking only at the convention would
+/// miss a bundle that moved it. The conventional path is not added twice when the
+/// manifest already named it.
+///
+/// The declared path is joined **component by component, plain names only**, the
+/// way every other value out of a stranger's file is: it decides which file io
+/// opens, and `../../.ssh/id_ed25519` must address nothing.
+///
+/// Path discovery only. The reading is [`crate::adapt`]'s, which is the module
+/// permitted to parse JSON.
+fn hook_files(from: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if let Some(said) = crate::adapt::manifest_at(from).and_then(|read| read.hooks) {
+        found.push(local_dir(from, &said));
+    }
+    let conventional = from.join("hooks").join("hooks.json");
+    if !found.contains(&conventional) {
+        found.push(conventional);
+    }
+    found.retain(|path| path.is_file());
+    found
 }
 
 /// Every bundle whose name or description carries `text`, in [`markets`]' order.

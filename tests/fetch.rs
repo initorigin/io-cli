@@ -389,3 +389,234 @@ fn f10_a_clone_that_works_is_renamed_into_place_and_the_staging_goes() {
          what it now has",
     );
 }
+
+// ---------------------------------------------------------------------------
+// 0.31.0 — F5 and F6. An index entry may live in another repository and may name
+// the commit it means, and neither may weaken the shape asserted above.
+// ---------------------------------------------------------------------------
+
+/// Every element of `argv` as a `String`, for reading in an assertion.
+fn said(argv: &[OsString]) -> Vec<String> {
+    argv.iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// **F6 — the five-element shape is what an unpinned fetch still runs.**
+///
+/// `f10_the_program_is_the_literal_git_and_the_argv_is_five_owned_elements` above
+/// asserts `argv` itself and is untouched by this release. This asserts the other
+/// half of F6: that the pinned work did not quietly re-route the ordinary
+/// marketplace add through some more general shape. A marketplace is added by
+/// name, there is nothing to pin it to, and it must still be one shallow clone.
+///
+/// Sabotage: give `Pin::Head` the four-step form. This fails on the step count,
+/// and the assertion above it fails on the elements.
+#[test]
+fn f6_an_unpinned_fetch_is_still_one_shallow_clone_of_five_elements() {
+    let steps = fetch::steps(
+        "https://example.invalid/x.git",
+        Path::new("/tmp/x"),
+        &fetch::Pin::Head,
+    );
+
+    assert_eq!(steps.len(), 1, "one invocation, counted");
+    assert_eq!(
+        said(&steps[0]),
+        vec![
+            "clone".to_string(),
+            "--depth".to_string(),
+            "1".to_string(),
+            "https://example.invalid/x.git".to_string(),
+            "/tmp/x".to_string(),
+        ],
+        "and it is byte for byte what `argv` builds — the shape 0.29.0 argued for",
+    );
+    assert_eq!(
+        steps[0],
+        fetch::argv("https://example.invalid/x.git", Path::new("/tmp/x")),
+        "asserted against `argv` itself as well as against the literal, so the two \
+         cannot drift apart without one of these two assertions saying so",
+    );
+}
+
+/// **F5/F6 — a commit is a sequence, and the sequence is its own shape.**
+///
+/// Four invocations rather than one, and that is git's constraint rather than a
+/// choice: `git clone --revision` landed in 2.49 and this product names no git
+/// floor. The five-element assertion above is **not** widened to accommodate it —
+/// this is a different builder input with its own test, which is exactly what F6
+/// requires.
+#[test]
+fn f5_a_commit_pinned_fetch_names_the_sha_in_its_fetch_and_checks_out_fetch_head() {
+    let at = fetch::Pin::named(None, Some("30287f5e3f122a646d1ac5ca3ab96e130c52a3ad"))
+        .expect("a real sha out of the official index");
+    let steps = fetch::steps(
+        "https://github.com/42Crunch-AI/claude-plugins.git",
+        Path::new("/tmp/x"),
+        &at,
+    );
+
+    assert_eq!(
+        steps.len(),
+        4,
+        "init, remote add, a shallow fetch of the commit, a detached checkout",
+    );
+    assert_eq!(
+        steps
+            .iter()
+            .filter(
+                |step| said(step).contains(&"30287f5e3f122a646d1ac5ca3ab96e130c52a3ad".to_string())
+            )
+            .count(),
+        1,
+        "the sha appears in exactly one invocation — the fetch that asks for it. \
+         Counted rather than `contains`ed, because a sha in two places is a sha in \
+         a checkout that should be naming FETCH_HEAD",
+    );
+    assert_eq!(
+        said(&steps[2]),
+        vec![
+            "-C".to_string(),
+            "/tmp/x".to_string(),
+            "fetch".to_string(),
+            "--depth".to_string(),
+            "1".to_string(),
+            "origin".to_string(),
+            "30287f5e3f122a646d1ac5ca3ab96e130c52a3ad".to_string(),
+        ],
+        "shallow, so a pin costs no more history than an unpinned add does",
+    );
+    assert!(
+        said(&steps[3]).contains(&"FETCH_HEAD".to_string()),
+        "the checkout names what came back rather than the commit again",
+    );
+}
+
+/// **F5 — a tag is one invocation, because `git clone` takes `--branch`.**
+#[test]
+fn f5_a_ref_pinned_fetch_is_one_clone_carrying_the_tag() {
+    let at = fetch::Pin::named(Some("v1.5.5"), None).expect("a real tag out of the official index");
+    let steps = fetch::steps("https://github.com/x/y.git", Path::new("/tmp/x"), &at);
+
+    assert_eq!(steps.len(), 1, "one invocation");
+    assert_eq!(
+        said(&steps[0]),
+        vec![
+            "clone".to_string(),
+            "--depth".to_string(),
+            "1".to_string(),
+            "--branch".to_string(),
+            "v1.5.5".to_string(),
+            "https://github.com/x/y.git".to_string(),
+            "/tmp/x".to_string(),
+        ],
+    );
+}
+
+/// **A commit beats a tag where an index names both, and it is not a preference.**
+///
+/// A tag is a name its author can move afterwards; a commit is not. An index that
+/// names both has named the commit it means, and 85 of the official index's
+/// entries carry both.
+#[test]
+fn f5_a_commit_beats_a_tag_where_an_entry_names_both() {
+    assert_eq!(
+        fetch::Pin::named(
+            Some("v1.5.5"),
+            Some("30287f5e3f122a646d1ac5ca3ab96e130c52a3ad")
+        ),
+        Some(fetch::Pin::Commit(
+            "30287f5e3f122a646d1ac5ca3ab96e130c52a3ad".to_string()
+        )),
+    );
+}
+
+/// **A pin out of a stranger's file is judged before it becomes an argument.**
+///
+/// The same rule `resolve` states for a name and for the same reason: a value
+/// beginning with `-` is an *option* to a program that parses options, whatever
+/// the argv looked like when it left the builder.
+#[test]
+fn f5_a_pin_that_could_become_an_argument_is_refused() {
+    for bad in [
+        "--upload-pack=touch /tmp/pwned",
+        "-x",
+        "not-hex-at-all",
+        "abc",
+    ] {
+        assert_eq!(
+            fetch::Pin::named(None, Some(bad)),
+            None,
+            "{bad:?} is offered as a commit and must be refused rather than trimmed",
+        );
+    }
+    for bad in ["--upload-pack=x", "-b", "", "..", "a/b"] {
+        assert_eq!(
+            fetch::Pin::named(Some(bad), None),
+            None,
+            "{bad:?} is offered as a ref and must be refused",
+        );
+    }
+    assert_eq!(
+        fetch::Pin::named(None, None),
+        Some(fetch::Pin::Head),
+        "the control: an entry naming neither is the unpinned case and is not a \
+         refusal. Without this a function answering None for everything would \
+         satisfy every assertion above",
+    );
+}
+
+/// **The URL a stranger wrote is never the URL that reaches git.**
+///
+/// `HOST`'s own documentation states the ceiling: the only string that can reach
+/// the program is one this module built out of that constant, because an argument
+/// somebody else chose is how `ext::sh -c …` becomes a remote shell. So an index
+/// entry's `url` is taken apart, judged by `resolve`'s rules, and thrown away.
+///
+/// The ceiling costs nothing that exists: all 238 remote entries of
+/// `anthropics/claude-plugins-official` and all ten of
+/// `obra/superpowers-marketplace` are two ordinary segments on this host.
+#[test]
+fn f5_a_remote_entrys_url_is_re_derived_and_never_passed_through() {
+    assert_eq!(
+        fetch::from_url("https://github.com/obra/superpowers.git"),
+        Some(Named {
+            owner: "obra".to_string(),
+            repo: "superpowers".to_string(),
+        }),
+        "the control — a real entry from a real index resolves",
+    );
+    assert_eq!(
+        fetch::url(&fetch::from_url("https://github.com/obra/superpowers.git").expect("a name")),
+        "https://github.com/obra/superpowers.git",
+        "and what reaches git is rebuilt from the module's own constant, which for \
+         a well-formed entry is the same string — the point is that it is a \
+         different string's twin rather than the same string",
+    );
+
+    for refused in [
+        // Another forge. io-cli's marketplace ceiling is one host and an entry
+        // inside a marketplace must not reach further than the marketplace could.
+        "https://gitlab.com/x/y.git",
+        // A host that merely begins with the permitted one.
+        "https://github.com.evil.test/x/y.git",
+        // Scheme downgrades and transports that are not fetches at all.
+        "http://github.com/x/y.git",
+        "git@github.com:x/y.git",
+        "ext::sh -c touch% /tmp/pwned",
+        // On the right host and still not two ordinary segments.
+        "https://github.com/x/y/z.git",
+        "https://github.com/x",
+        "https://github.com/-x/y.git",
+        "https://github.com/../y.git",
+    ] {
+        assert_eq!(
+            fetch::from_url(refused),
+            None,
+            "{refused:?} reached the name resolver. Every one of these is a url an \
+             index could carry, and the module's stated invariant is that git \
+             receives no string a stranger chose",
+        );
+    }
+}

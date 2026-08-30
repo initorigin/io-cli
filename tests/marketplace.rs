@@ -26,6 +26,36 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
 }
 
+/// The three directories an install may need, all inside one temporary tree.
+///
+/// Owned here and borrowed at the call, because `marketplace::Homes` is three
+/// borrows: a test that built it from temporaries inline would be building it out
+/// of values that die at the semicolon. Held as a type of its own so a test says
+/// *which* tree it is pointing io at, rather than repeating three joins.
+struct Homes {
+    marketplaces: PathBuf,
+    staging: PathBuf,
+    adapters: PathBuf,
+}
+
+impl Homes {
+    fn under(root: &Path) -> Self {
+        Self {
+            marketplaces: root.join("marketplaces"),
+            staging: root.join("staging"),
+            adapters: root.join("adapters"),
+        }
+    }
+
+    fn at(&self) -> marketplace::Homes<'_> {
+        marketplace::Homes {
+            marketplaces: &self.marketplaces,
+            staging: &self.staging,
+            adapters: &self.adapters,
+        }
+    }
+}
+
 /// The name used throughout, spelled once.
 fn named() -> Named {
     Named {
@@ -577,13 +607,16 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
         1,
         "exactly the bundle declared inside the clone depends on it: {depends:?}",
     );
-    let warned = marketplace::warning(&depends).expect("a dependent bundle is warned about");
+    // 0.31.0 gave `warning` a second list — the adapters a removal orphans, whose
+    // declarations point into the clone from outside it. This call passes an empty
+    // one, which is what a marketplace of native bundles costs.
+    let warned = marketplace::warning(&depends, &[]).expect("a dependent bundle is warned about");
     assert!(
         warned.contains("left exactly as they are"),
         "the warning must say the entries survive: {warned}",
     );
     assert!(
-        marketplace::warning(&[]).is_none(),
+        marketplace::warning(&[], &[]).is_none(),
         "an empty warning drawn as a row is a row an operator reads as a warning",
     );
 
@@ -841,8 +874,9 @@ fn f4_a_bundle_is_installed_by_name_and_install_is_add() {
     // which is the case a rule keyed on the word's shape gets wrong.
     let here = work.path().join("shared");
     manifest(&here, "name = \"shared\"\n");
-    let read_as =
-        marketplace::chosen(&here, || markets.clone(), "shared").expect("a real path is a path");
+    let homes = Homes::under(work.path());
+    let read_as = marketplace::chosen(&here, || markets.clone(), "shared", homes.at())
+        .expect("a real path is a path");
     assert_eq!(
         read_as,
         marketplace::Chosen::Path(here),
@@ -853,7 +887,7 @@ fn f4_a_bundle_is_installed_by_name_and_install_is_add() {
     // know which was meant and reporting one half hides the other.
     let plain = work.path().join("nope");
     std::fs::create_dir_all(&plain).expect("a directory that is not a bundle");
-    let refusal = marketplace::chosen(&plain, || markets.clone(), "nope")
+    let refusal = marketplace::chosen(&plain, || markets.clone(), "nope", homes.at())
         .expect_err("neither reading of `nope` holds");
     assert!(
         refusal.contains(io_cli::pluginview::MANIFEST),
@@ -1273,10 +1307,15 @@ fn holding(store: &Path) -> (Vec<Market>, PathBuf) {
 /// bottom is what holds `plan` to this order.
 fn install(work: &Path, markets: &[Market], word: &str) -> Result<String, String> {
     let file = work.join(io_harness::config::LOCAL_FILE);
-    let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word)?;
+    let homes = Homes::under(work);
+    let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word, homes.at())?;
     if chosen.discloses() {
         // The read that decides, before the file is opened for writing.
-        marketplace::disclosure(Scope::Local, chosen.dir())?;
+        marketplace::adapted_disclosure(
+            Scope::Local,
+            chosen.dir(),
+            (chosen.from() != chosen.dir()).then(|| chosen.from()),
+        )?;
     }
     let before = std::fs::read_to_string(&file).unwrap_or_default();
     let text = io_cli::edit::apply(
@@ -1314,13 +1353,24 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
 
     // The name reading, decided against the disk by the one function that decides
     // it. The word names no directory here, so it can only be a name.
+    let homes = Homes::under(work.path());
     let chosen = marketplace::chosen(
         &work.path().join("rust-review"),
         || markets.clone(),
         "rust-review",
+        homes.at(),
     )
     .expect("the marketplace holds it");
-    assert_eq!(chosen, marketplace::Chosen::Held(dir.clone()));
+    assert_eq!(
+        chosen,
+        marketplace::Chosen::Held(marketplace::Prepared {
+            declare: dir.clone(),
+            from: dir.clone(),
+            made: None,
+        }),
+        "a native bundle is declared at its own directory, io generates nothing \
+         for it, and a declined install therefore has nothing to take back",
+    );
     assert!(
         chosen.discloses(),
         "a bundle out of a marketplace was read as a directory the operator wrote, \
@@ -1867,12 +1917,21 @@ fn f16_and_f17_have_one_reader_and_one_validator() {
          unnecessary in 0.30.0 — and it was the last thing that wrote to an \
          operator's configuration before they had consented to anything",
     );
+    // **The needle moved with the call and the count did not, which is the point.**
+    // 0.31.0 replaced `disclosure` with `adapted_disclosure` at this one site — the
+    // second argument is the bundle's own directory, so a foreign bundle's hooks
+    // can be named while io-harness reads the generated manifest. The property
+    // being gated is unchanged: **one** validation stands between a stranger's
+    // directory and the operator's configuration file. Both spellings are counted
+    // together, so restoring the old call beside the new one fails here rather
+    // than passing because the needle only knew one of them.
+    let validations = planner.matches("marketplace::disclosure(").count()
+        + planner.matches("marketplace::adapted_disclosure(").count();
     assert_eq!(
-        planner.matches("marketplace::disclosure(").count(),
-        1,
-        "the validation that gates the write has {} call sites in src/manage.rs, not \
-         1 — a second is a second answer about whether a bundle may be declared",
-        planner.matches("marketplace::disclosure(").count(),
+        validations, 1,
+        "the validation that gates the write has {validations} call sites in \
+         src/manage.rs, not 1 — a second is a second answer about whether a bundle \
+         may be declared",
     );
 
     // The hand reader is gone from the one file whose job was reading somebody
@@ -1891,4 +1950,822 @@ fn f16_and_f17_have_one_reader_and_one_validator() {
         code_of("src/pluginview.rs").contains("plugin.hooks()"),
         "the hook rows do not come from `Plugin::hooks()`",
     );
+}
+
+// ---------------------------------------------------------------------------
+// 0.31.0 — the three manifest formats, and the precedence between them.
+//
+// `tests/adapt.rs` asserts what the reader makes of each file. These assert what
+// `marketplace::holdings` makes of a whole clone, which is the surface every
+// listing and every install actually goes through.
+// ---------------------------------------------------------------------------
+
+/// A clone directory, empty.
+fn clone_dir() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("a clone directory");
+    let root = dir.path().to_path_buf();
+    (dir, root)
+}
+
+/// Write `text` to `root/rel`, making the directories on the way.
+fn write(root: &Path, rel: &str, text: &str) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directories");
+    std::fs::write(&path, text).expect("the file");
+}
+
+#[test]
+fn f1_a_clone_laid_out_like_ultraship_holds_one_bundle_where_it_held_none() {
+    let (_dir, root) = clone_dir();
+    // `zeroonething/ultraship` as it actually is: no `.toml` anywhere, an index
+    // naming one plugin at the clone's own root, and ten skill directories.
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{
+  "name": "ultraship",
+  "owner": { "name": "Aakash Pawar (zeroonething)" },
+  "plugins": [
+    { "name": "ultraship", "description": "Ship at inference speed.", "source": "./" }
+  ]
+}"#,
+    );
+    write(
+        &root,
+        ".claude-plugin/plugin.json",
+        r#"{ "name": "ultraship" }"#,
+    );
+    for skill in ["brainstorm", "plan", "develop", "iterate", "complete"] {
+        write(&root, &format!("skills/{skill}/SKILL.md"), "# a skill\n");
+    }
+
+    let held = marketplace::holdings(&root);
+
+    assert_eq!(
+        held.len(),
+        1,
+        "exactly one bundle. Before 0.31.0 this returned none and the surface said \
+         so — `plugin marketplace add zeroonething/ultraship` cloned the repository \
+         and then answered that no directory in it carried a plugin.toml, which is \
+         the defect this release exists to fix",
+    );
+    assert_eq!(held[0].label(), "ultraship");
+    assert_eq!(
+        held[0].origin,
+        marketplace::Origin::Adapted,
+        "and it says it is adapted; the difference between what an author wrote and \
+         what io generated is never something an operator has to infer",
+    );
+}
+
+#[test]
+fn f2_a_native_manifest_wins_its_own_directory_and_the_bundle_is_one() {
+    let (_dir, root) = clone_dir();
+    manifest(
+        &root,
+        "name = \"native\"\ndescription = \"the author's own\"\n",
+    );
+    write(
+        &root,
+        ".claude-plugin/plugin.json",
+        r#"{ "name": "foreign", "description": "somebody else's format" }"#,
+    );
+
+    let held = marketplace::holdings(&root);
+
+    assert_eq!(
+        held.len(),
+        1,
+        "two bundles for one directory is the failure this asserts against",
+    );
+    assert_eq!(held[0].label(), "native", "the plugin.toml is the answer");
+    assert_eq!(held[0].origin, marketplace::Origin::Native);
+}
+
+#[test]
+fn f2_a_root_plugin_toml_suppresses_the_index_and_leaves_the_walk_alone() {
+    let (_dir, root) = clone_dir();
+    manifest(&root, "name = \"native-root\"\n");
+    // An index naming a plugin that does not exist on disk. If it were read, the
+    // count below would be its length rather than what the walk finds.
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{ "plugins": [ { "name": "from-the-index", "source": "./" } ] }"#,
+    );
+    manifest(&root.join("plugins").join("child"), "name = \"child\"\n");
+
+    let held = marketplace::holdings(&root);
+    let mut labels: Vec<String> = held.iter().map(marketplace::Bundle::label).collect();
+    labels.sort();
+
+    assert_eq!(
+        labels,
+        vec!["child".to_string(), "native-root".to_string()],
+        "an author who writes io's own manifest at the root has said what they \
+         publish in the format this crate owns, and a foreign index must not speak \
+         over it — but suppressing the index is all it does. A repository carrying \
+         a root manifest and bundles beneath it lists all of them, exactly as it \
+         did before this crate read any foreign format",
+    );
+    assert!(
+        marketplace::unreadable(&root).is_empty(),
+        "and the suppressed index reports nothing either",
+    );
+}
+
+#[test]
+fn f3_the_index_is_the_answer_and_the_walk_does_not_also_run() {
+    let (_dir, root) = clone_dir();
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{
+  "plugins": [
+    { "name": "first", "source": "./plugins/first" },
+    { "name": "second", "source": "./plugins/second" }
+  ]
+}"#,
+    );
+    // A third directory carrying a real `plugin.toml` the index does not name.
+    manifest(&root.join("plugins").join("third"), "name = \"third\"\n");
+
+    let held = marketplace::holdings(&root);
+    let labels: Vec<String> = held.iter().map(marketplace::Bundle::label).collect();
+
+    assert_eq!(
+        held.len(),
+        2,
+        "counted, not matched. A union of the index and the walk would list bundles \
+         the author did not publish beside the ones they did, and an operator would \
+         have no way to tell which was which — so the assertion is the count, and \
+         `contains` would pass over exactly the defect it is written for",
+    );
+    assert_eq!(labels, vec!["first".to_string(), "second".to_string()]);
+    assert!(
+        !labels.contains(&"third".to_string()),
+        "the walk did not also run",
+    );
+}
+
+#[test]
+fn f4_two_codex_manifests_at_two_directories_the_walk_visits_are_both_found() {
+    let (_dir, root) = clone_dir();
+    write(
+        &root,
+        "plugins/alpha/.codex-plugin/plugin.json",
+        r#"{ "name": "alpha" }"#,
+    );
+    write(
+        &root,
+        "plugins/beta/.codex-plugin/plugin.json",
+        r#"{ "name": "beta" }"#,
+    );
+
+    let held = marketplace::holdings(&root);
+    let mut labels: Vec<String> = held.iter().map(marketplace::Bundle::label).collect();
+    labels.sort();
+
+    assert_eq!(
+        labels,
+        vec!["alpha".to_string(), "beta".to_string()],
+        "no index and no plugin.toml, so the walk runs and reads the foreign \
+         manifest at each directory it already visits",
+    );
+    assert!(
+        held.iter()
+            .all(|bundle| bundle.origin == marketplace::Origin::Adapted),
+        "both adapted",
+    );
+}
+
+#[test]
+fn the_walk_still_never_descends_into_a_dot_directory() {
+    let (_dir, root) = clone_dir();
+    // A bundle inside `.git` is what every clone would otherwise offer, and a
+    // `.claude-plugin` directory of its own is the shape that makes reading a
+    // known path relative to an admitted directory look like descending into one.
+    write(
+        &root,
+        ".git/modules/x/.claude-plugin/plugin.json",
+        r#"{ "name": "should-not-appear" }"#,
+    );
+    write(
+        &root,
+        "plugins/real/.claude-plugin/plugin.json",
+        r#"{ "name": "real" }"#,
+    );
+
+    let labels: Vec<String> = marketplace::holdings(&root)
+        .iter()
+        .map(marketplace::Bundle::label)
+        .collect();
+
+    assert_eq!(
+        labels,
+        vec!["real".to_string()],
+        "reading `.claude-plugin` at a known path relative to a directory the walk \
+         already admitted is not the walk descending into a dot directory, and this \
+         is the assertion that keeps the two apart",
+    );
+}
+
+#[test]
+fn a_repository_that_is_no_bundle_at_all_says_so_without_naming_one_file() {
+    let (_dir, root) = clone_dir();
+    write(&root, "README.md", "# not a bundle\n");
+
+    let market = Market {
+        named: named(),
+        root: root.clone(),
+        bundles: marketplace::holdings(&root),
+    };
+
+    let held = market.held();
+    assert!(
+        held.contains(io_cli::pluginview::MANIFEST)
+            && held.contains(io_cli::adapt::INDEX_FILE)
+            && held.contains(io_cli::adapt::MANIFEST_FILE),
+        "three formats are read now, so the sentence names all three rather than \
+         the one filename that was the answer for every marketplace in the field: \
+         {held:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F10 — an index entry's name is a plugin id or it is refused by name.
+//
+// io-harness's `check_id` requires `[a-z0-9][a-z0-9-]{0,31}`, and `MAX_ID` is the
+// 32. An index is somebody else's file and nothing in it was written against that
+// rule, so the question is what io does with a name that is not one — and the
+// answer these assert is: an ASCII case fold, and otherwise a refusal naming the
+// entry. Mangling is what they are written to fail on.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f10_a_name_that_is_no_plugin_id_is_refused_by_name_and_never_mangled() {
+    let (_dir, root) = clone_dir();
+    // Every character legal, and one too many of them — the length half of the
+    // rule has its own entry, because a build that dropped `MAX_ID` entirely
+    // would otherwise pass every assertion below.
+    let too_long = "marketplace-plugin-with-a-very-long-name";
+    assert!(
+        too_long.len() > io_harness::MAX_ID,
+        "the fixture has to be over the bound to test it: {}",
+        too_long.len(),
+    );
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        &format!(
+            r#"{{
+  "plugins": [
+    {{ "name": "My.Plugin", "source": "./plugins/mine" }},
+    {{ "name": "{too_long}", "source": "./plugins/long" }},
+    {{ "name": "ordinary", "source": "./plugins/ordinary" }}
+  ]
+}}"#
+        ),
+    );
+
+    let labels: Vec<String> = marketplace::holdings(&root)
+        .iter()
+        .map(marketplace::Bundle::label)
+        .collect();
+    let said = marketplace::unreadable(&root);
+
+    assert_eq!(
+        labels,
+        vec!["ordinary".to_string()],
+        "the whole list, not a `contains`: a mangled `my-plugin` and a truncated \
+         id are both extra rows, and only the exact list fails on them. An id is \
+         what an operator types at `plugin add` and what io-harness namespaces \
+         every contribution with, so inventing one hands a person a name they \
+         never saw in the index",
+    );
+    assert_eq!(
+        said.len(),
+        2,
+        "refused, never dropped — one line per entry that yields no bundle, and \
+         two of the three yield none: {said:?}",
+    );
+    assert_eq!(
+        said.iter()
+            .filter(|line| line.contains("My.Plugin"))
+            .count(),
+        1,
+        "and the refusal names the entry as the index spells it, which is the only \
+         word the operator can search their own file for: {said:?}",
+    );
+    assert_eq!(
+        said.iter().filter(|line| line.contains(too_long)).count(),
+        1,
+        "the name past MAX_ID is refused by name too, not silently cut to fit: \
+         {said:?}",
+    );
+}
+
+#[test]
+fn f10_two_entries_that_reach_one_id_are_refused_naming_both() {
+    let (_dir, root) = clone_dir();
+    // Two spellings of one word, and a third entry that clashes with nothing. The
+    // third is what makes the count below decide something: without it, "one
+    // bundle" and "no bundles" would both be consistent with a rule that withheld
+    // only one of the pair.
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{
+  "plugins": [
+    { "name": "Reviewer", "source": "./plugins/one" },
+    { "name": "REVIEWER", "source": "./plugins/two" },
+    { "name": "formatter", "source": "./plugins/three" }
+  ]
+}"#,
+    );
+
+    let labels: Vec<String> = marketplace::holdings(&root)
+        .iter()
+        .map(marketplace::Bundle::label)
+        .collect();
+    let said = marketplace::unreadable(&root);
+
+    assert_eq!(
+        labels,
+        vec!["formatter".to_string()],
+        "neither half of the clash is offered. Installing whichever was found \
+         first installs one repository's code under a name the operator believed \
+         meant the other, and inside one index there is no qualifier to tell them \
+         apart the way `locate` offers one for two marketplaces",
+    );
+    assert_eq!(
+        said.len(),
+        1,
+        "one refusal for the pair, not one each: {said:?}",
+    );
+    // `Reviewer` and `REVIEWER` are each a substring of nothing else in the
+    // sentence — not of one another, and not of the id `reviewer` the two reach.
+    // A refusal that named only the id, or only the first entry, fails both.
+    assert!(
+        said[0].contains("Reviewer"),
+        "the refusal names the first entry as written: {said:?}",
+    );
+    assert!(
+        said[0].contains("REVIEWER"),
+        "and the second, which is the half a first-match rule would never mention: \
+         {said:?}",
+    );
+}
+
+#[test]
+fn f10_a_name_that_is_already_an_id_is_untouched_and_a_case_fold_still_installs() {
+    let (_dir, root) = clone_dir();
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        r#"{
+  "plugins": [
+    { "name": "rust-review", "source": "./plugins/one" },
+    { "name": "Codex-Bridge", "source": "./plugins/two" }
+  ]
+}"#,
+    );
+
+    let labels: Vec<String> = marketplace::holdings(&root)
+        .iter()
+        .map(marketplace::Bundle::label)
+        .collect();
+
+    assert_eq!(
+        labels,
+        vec!["rust-review".to_string(), "codex-bridge".to_string()],
+        "the control the two refusals above are worthless without: a rule that \
+         refused every name would satisfy both of them. A name that is already an \
+         id comes through as the index wrote it, and a name that becomes one under \
+         an ASCII case fold alone is folded — the one transformation a reader \
+         undoes by eye",
+    );
+    assert!(
+        marketplace::unreadable(&root).is_empty(),
+        "and nothing is reported, because nothing was withheld",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F5 — an entry the index placed in another repository, brought down.
+//
+// The clone itself is `tests/fetch.rs`'s and the argv shapes are asserted there.
+// What is asserted here is the decision `marketplace::fetched` makes before any
+// of that: which entries need no fetch at all, and which are refused before a
+// program is started rather than after.
+// ---------------------------------------------------------------------------
+
+/// A bundle as an index entry produces one, with `source` supplied.
+fn entry_bundle(dir: &Path, source: Option<io_cli::adapt::Source>) -> marketplace::Bundle {
+    marketplace::Bundle {
+        dir: dir.to_path_buf(),
+        name: Some("reviewer".to_string()),
+        description: None,
+        origin: marketplace::Origin::Adapted,
+        source,
+    }
+}
+
+/// **F13 — a removal names the adapters it orphans, and takes no entry away.**
+///
+/// The failure this is written for is silence. `dependents` finds a declared
+/// bundle whose *path is inside* the clone, which is every native install and no
+/// adapted one: an adapted bundle is declared under `~/.io-cli/adapters` and only
+/// its generated manifest points into the clone. So before this release the
+/// warning for a marketplace of adapted bundles would have been `None`, and the
+/// operator would have been told nothing at all.
+///
+/// Sabotage: have `orphaned` return an empty vector. `dependents` still finds the
+/// native bundle, `warning` still returns `Some`, and only the count and the
+/// adapter's own path fail — which is why both are asserted rather than the
+/// sentence merely being non-empty.
+#[test]
+fn f13_a_removal_names_the_adapters_it_orphans_and_leaves_every_entry() {
+    let (_dir, root) = clone_dir();
+    let clone = root
+        .join("marketplaces")
+        .join("zeroonething")
+        .join("ultraship");
+    let adapters = root.join("adapters");
+
+    // One native bundle inside the clone, and one adapter outside it whose
+    // generated manifest points back in. Both are declared; both stop loading.
+    manifest(&clone.join("native"), "name = \"native\"\n");
+    std::fs::create_dir_all(clone.join("skills")).expect("the skills directory");
+    let adapter = adapters
+        .join("zeroonething")
+        .join("ultraship")
+        .join("adapted");
+    manifest(
+        &adapter,
+        &format!(
+            "name = \"adapted\"\nskills = {}\n",
+            io_cli::edit::spell(&clone.join("skills").to_string_lossy()),
+        ),
+    );
+    // And a second adapter pointing at a different clone, which this removal must
+    // NOT name — without it, a rule that listed every adapter would pass.
+    let elsewhere = adapters.join("someone").join("else").join("untouched");
+    manifest(
+        &elsewhere,
+        &format!(
+            "name = \"untouched\"\nskills = {}\n",
+            io_cli::edit::spell(&root.join("other").to_string_lossy()),
+        ),
+    );
+    std::fs::create_dir_all(root.join("other")).expect("the other directory");
+
+    let scope = root.join("io.toml");
+    let declared = format!(
+        "[[plugin]]\npath = {}\n\n[[plugin]]\npath = {}\n\n[[plugin]]\npath = {}\n",
+        io_cli::edit::spell(&clone.join("native").to_string_lossy()),
+        io_cli::edit::spell(&adapter.to_string_lossy()),
+        io_cli::edit::spell(&elsewhere.to_string_lossy()),
+    );
+    std::fs::write(&scope, &declared).expect("the scope file");
+    let config = io_harness::Config::from_toml(&declared).expect("the declarations parse");
+    let view = io_cli::pluginview::view(&config);
+
+    let orphans = marketplace::orphaned(&view, &clone, &adapters);
+    assert_eq!(
+        orphans.len(),
+        1,
+        "exactly the adapter naming this clone — counted, so an implementation \
+         listing every adapter fails here: {orphans:?}",
+    );
+    assert_eq!(orphans[0], adapter, "and it is that adapter, by path");
+
+    let said = marketplace::removal_cost(&view, &clone, Some(&adapters))
+        .expect("two declared bundles stop loading");
+    assert!(
+        said.contains("2 declared bundles"),
+        "the native bundle and the adapted one are counted together, because the \
+         difference between them is not something an operator asked about: {said}",
+    );
+    assert!(
+        said.contains(&adapter.display().to_string()),
+        "the adapter is named, so the operator can find the file io wrote: {said}",
+    );
+    assert!(
+        !said.contains(&elsewhere.display().to_string()),
+        "and the adapter for another clone is not: {said}",
+    );
+    assert!(
+        said.contains("adapters/"),
+        "the sentence says what those paths are — an operator who goes looking \
+         finds a plugin.toml io wrote in a directory they never made: {said}",
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&scope).expect("the scope file survives"),
+        declared,
+        "and not one byte of the configuration changed. Naming a consequence is \
+         not acting on it, and a cache being emptied does not undo a decision the \
+         operator made",
+    );
+}
+
+/// **N8 — a 291-entry index costs one file read, asserted as a shape and never
+/// as a clock.**
+///
+/// **`tests/timing.rs` forbids a test from measuring elapsed time, and it is
+/// right.** The first draft of this test timed `holdings` against a two-second
+/// ceiling; that gate caught it on the first full-suite run. A wall-clock
+/// assertion is flaky on a loaded machine and tells you nothing about *why* a
+/// path is fast, so what is asserted here is the cost's shape and the number is
+/// recorded in the release record instead.
+///
+/// The shape: the index path opens **one** file and descends into nothing, where
+/// the walk it replaces is a recursive `read_dir` to `DEPTH`. A real bundle sits
+/// three directories down and must not appear — if the walk had run, it would
+/// have found it. That is a stronger statement than a duration, because it fails
+/// for the reason a regression would actually have.
+///
+/// The official marketplace's 291 entries are the first real input either path
+/// has had at that size, which is why this is a recorded criterion rather than an
+/// assumption.
+#[test]
+fn n8_an_index_of_291_entries_is_one_read_and_no_walk() {
+    let (_dir, root) = clone_dir();
+    let entries: Vec<String> = (0..291)
+        .map(|n| format!(r#"{{ "name": "plugin-{n}", "source": "./plugins/p{n}" }}"#))
+        .collect();
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        &format!(r#"{{ "plugins": [ {} ] }}"#, entries.join(",\n")),
+    );
+    // A real bundle the index does not name, deep enough that a walk would have
+    // had to descend to reach it.
+    manifest(
+        &root.join("vendor").join("nested").join("deep"),
+        "name = \"only-a-walk-finds-me\"\n",
+    );
+
+    let held = marketplace::holdings(&root);
+
+    assert_eq!(
+        held.len(),
+        291,
+        "every entry the index names, and only those — counted",
+    );
+    assert!(
+        !held
+            .iter()
+            .any(|bundle| bundle.label() == "only-a-walk-finds-me"),
+        "the walk did not run, which is where the cost of the old path was",
+    );
+}
+
+/// **F11 — every hook is disclosed, with its command unshortened and its reason.**
+///
+/// The count is the assertion. A `contains` is satisfied by one row forever, and
+/// the failure this is written for is a bundle whose second hook is not drawn —
+/// which is exactly what a surface built by hand around "the hook" produces.
+///
+/// The fixture's second command is 400 characters. `marketplace::LONGEST` bounds a
+/// description because a description is prose a repository fills in; it must not
+/// bound this, because this is argv an operator is being told will **not** run,
+/// and a shortened argv on a consent surface is the one thing it must never show.
+#[test]
+fn f11_every_hook_a_foreign_bundle_declares_is_disclosed_with_its_reason() {
+    let (_dir, root) = clone_dir();
+    let bundle = root.join("bundle");
+    // A real `plugin.toml`, so io-harness loads the directory and the disclosure
+    // has something to be *beside*. The hooks below are the author's own file and
+    // are not in it — which is the whole point: asking io-harness what the bundle
+    // contributes cannot answer what it declared.
+    manifest(
+        &bundle,
+        "name = \"hooked\"\ndescription = \"a bundle with hooks\"\n",
+    );
+    let long = "x".repeat(400);
+    write(
+        &bundle,
+        "hooks/hooks.json",
+        &format!(
+            r#"{{ "hooks": {{
+      "SessionStart": [ {{ "hooks": [
+        {{ "type": "command", "command": "\"${{CLAUDE_PLUGIN_ROOT}}/hooks/run.cmd\" start" }},
+        {{ "type": "command", "command": "{long}" }}
+      ] }} ],
+      "Stop": [ {{ "hooks": [ {{ "type": "command", "command": "echo done" }} ] }} ]
+    }} }}"#
+        ),
+    );
+
+    let said = marketplace::adapted_disclosure(Scope::User, &bundle, Some(&bundle))
+        .expect("io-harness loads the fixture");
+
+    assert_eq!(
+        said.withheld.len(),
+        3,
+        "one line per hook, counted — three declared, three disclosed",
+    );
+    assert_eq!(
+        said.withheld
+            .iter()
+            .filter(|line| line.contains(&long))
+            .count(),
+        1,
+        "the 400-character command is drawn whole. `LONGEST` bounds a description \
+         and must not bound argv",
+    );
+    assert!(
+        said.withheld
+            .iter()
+            .any(|line| line.contains("${CLAUDE_PLUGIN_ROOT}")),
+        "and the substitution is shown as the author wrote it, because that is what \
+         would have run",
+    );
+    assert_eq!(
+        said.withheld
+            .iter()
+            .filter(|line| line.contains(marketplace::NOT_CARRIED))
+            .count(),
+        3,
+        "every line carries the reason, not just the first — an operator reading \
+         the third row must not have to infer it from the first",
+    );
+    assert_eq!(
+        said.withheld
+            .iter()
+            .filter(|line| line.starts_with("Stop"))
+            .count(),
+        1,
+        "a second event's hooks are disclosed too",
+    );
+}
+
+#[test]
+fn f11_a_native_bundle_withholds_nothing_and_says_nothing() {
+    let (_dir, root) = clone_dir();
+    let bundle = root.join("bundle");
+    manifest(&bundle, "name = \"native\"\n");
+
+    let said = marketplace::disclosure(Scope::User, &bundle).expect("io-harness loads the fixture");
+
+    assert!(
+        said.withheld.is_empty(),
+        "a plugin.toml declares its hooks to io-harness, which runs them. Nothing \
+         is being withheld and a line saying so would be a warning about nothing: \
+         {:?}",
+        said.withheld,
+    );
+    assert!(
+        !said.rows.is_empty(),
+        "the control — the disclosure itself still has something to say, so the \
+         assertion above is not passing because the whole thing came back empty",
+    );
+}
+
+/// **A repository fetched for an index entry is not a marketplace of its own.**
+///
+/// `marketplace::fetched` clones into `marketplaces/.entries/<owner>/<repo>`, and
+/// the dot is load-bearing rather than cosmetic: `markets` skips a dot-named
+/// directory at both of its two levels, so what an entry pulled down can never be
+/// counted as a marketplace the operator added. Inside the tree rather than beside
+/// it so `plugin marketplace remove` still takes it away.
+///
+/// Sabotage: name the directory `entries`. `markets` then answers two, and the
+/// second is a repository nobody asked for, listed under an owner nobody typed.
+#[test]
+fn a_repository_fetched_for_an_entry_is_not_listed_as_a_marketplace() {
+    let (_dir, root) = clone_dir();
+    manifest(
+        &root.join("zeroonething").join("ultraship"),
+        "name = \"real\"\n",
+    );
+    // What a remote entry's fetch leaves behind, laid out exactly as `fetched`
+    // writes it.
+    manifest(
+        &root
+            .join(".entries")
+            .join("someone")
+            .join("their-plugin")
+            .join("bundle"),
+        "name = \"pulled-down-for-an-entry\"\n",
+    );
+
+    let found = marketplace::markets(&root);
+
+    assert_eq!(
+        found.len(),
+        1,
+        "one marketplace — the one the operator added. Counted, because a second \
+         entry here is a repository they never named: {:?}",
+        found
+            .iter()
+            .map(marketplace::Market::name)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(found[0].name(), "zeroonething/ultraship");
+}
+
+#[test]
+fn f5_a_local_source_is_already_here_and_starts_no_program() {
+    let (_dir, root) = clone_dir();
+    let here = root.join("plugins").join("reviewer");
+
+    assert_eq!(
+        marketplace::fetched(
+            &entry_bundle(
+                &here,
+                Some(io_cli::adapt::Source::Local(
+                    "./plugins/reviewer".to_string()
+                ))
+            ),
+            &named(),
+            &root.join("marketplaces"),
+            &root.join("staging"),
+        ),
+        Ok(here.clone()),
+        "53 of the official index's 291 entries are this shape, and none of them \
+         needs git at all",
+    );
+    assert_eq!(
+        marketplace::fetched(
+            &entry_bundle(&here, None),
+            &named(),
+            &root.join("marketplaces"),
+            &root.join("staging")
+        ),
+        Ok(here),
+        "and a bundle the walk found carries no source, which is the same answer",
+    );
+    assert!(
+        !root.join("staging").exists() && !root.join("marketplaces").exists(),
+        "neither path was so much as created — nothing was fetched",
+    );
+}
+
+#[test]
+fn f5_a_remote_entry_on_another_host_is_refused_before_anything_is_started() {
+    let (_dir, root) = clone_dir();
+
+    for url in [
+        "https://gitlab.com/x/y.git",
+        "https://github.com.evil.test/x/y.git",
+        "ext::sh -c touch% /tmp/pwned",
+        "https://github.com/x/y/z.git",
+    ] {
+        let bundle = entry_bundle(
+            &root,
+            Some(io_cli::adapt::Source::Remote(io_cli::adapt::Remote {
+                url: url.to_string(),
+                path: None,
+                reference: None,
+                sha: None,
+            })),
+        );
+        let said = marketplace::fetched(
+            &bundle,
+            &named(),
+            &root.join("marketplaces"),
+            &root.join("staging"),
+        )
+        .expect_err("a url io does not read is a refusal");
+        assert!(
+            said.contains(io_cli::fetch::HOST),
+            "the refusal says what io does read, so it is actionable rather than a \
+             dead end: {said:?}",
+        );
+    }
+    assert!(
+        !root.join("staging").exists(),
+        "and no clone was staged for any of them — the refusal is before the \
+         program, not after it",
+    );
+}
+
+#[test]
+fn f5_a_pin_that_could_become_an_argument_refuses_the_whole_entry() {
+    let (_dir, root) = clone_dir();
+    let bundle = entry_bundle(
+        &root,
+        Some(io_cli::adapt::Source::Remote(io_cli::adapt::Remote {
+            url: "https://github.com/x/y.git".to_string(),
+            path: None,
+            reference: Some("--upload-pack=touch /tmp/pwned".to_string()),
+            sha: None,
+        })),
+    );
+
+    let said = marketplace::fetched(
+        &bundle,
+        &named(),
+        &root.join("marketplaces"),
+        &root.join("staging"),
+    )
+    .expect_err("a pin that is an option is a refusal");
+    assert!(
+        said.contains("reviewer"),
+        "the refusal names the bundle it withheld: {said:?}",
+    );
+    assert!(!root.join("staging").exists(), "and nothing was started",);
 }

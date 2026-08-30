@@ -54,6 +54,25 @@ const SKILLS: &str = "skills";
 /// document.
 const MARKETPLACES: &str = "marketplaces";
 
+/// Where the `plugin.toml` io writes for a foreign bundle is kept.
+///
+/// A bundle in the field is a Claude Code or a Codex plugin and carries no
+/// `plugin.toml` at all; [`crate::adapt::generate`] writes one that io-harness
+/// loads, pointing at the clone. **The generated file is io's own and is never
+/// written inside the clone** — a marketplace is a stranger's checkout and
+/// `src/marketplace.rs` keeps it untouched — so it needs a directory of its own,
+/// and this is it.
+///
+/// Three levels under it, `<owner>/<repo>/<name>`, which is [`MARKETPLACES`]'s
+/// own two-level layout with the bundle's own name under it: one clone publishes
+/// many bundles, and a `plugin.toml` is recognised by sitting at a directory's
+/// root, so two bundles cannot share one.
+///
+/// Not created by [`adopt`], for [`STAGING`]'s reason: nothing is here until a
+/// bundle has been adapted, and a home carrying an empty `adapters` would be one
+/// more directory for an operator to wonder about.
+const ADAPTERS: &str = "adapters";
+
 /// Where a clone is assembled before it becomes a marketplace.
 ///
 /// **Dot-named, and deliberately outside [`MARKETPLACES`].** What is in here is by
@@ -206,12 +225,13 @@ pub fn path() -> Option<PathBuf> {
 
 /// Where marketplaces are cloned to, whether or not the directory exists yet.
 ///
-/// Derived from [`path`] rather than from [`in_force`], the way
-/// [`crate::contract::skills_dir`] derives the default skills directory
-/// (`src/contract.rs:528`): a marketplace is io-cli's own cache of other people's
-/// repositories, and an operator who pointed `$IO_CONFIG_HOME` somewhere else
-/// moved their *configuration*. Following that variable here would put the clones
-/// wherever the configuration is and leave the ones already fetched invisible.
+/// Derived from [`path`] rather than from [`in_force`], which is the opposite of
+/// what the default skills directory does: a marketplace is io-cli's own cache of
+/// other people's repositories, not something the operator wrote, and authored
+/// content follows the home in force while a cache stays with the crate that
+/// filled it. An operator who pointed `$IO_CONFIG_HOME` somewhere else moved their
+/// *configuration*; following that variable here would put the clones wherever the
+/// configuration is and leave the ones already fetched invisible.
 ///
 /// **The directory is not promised to exist.** [`adopt`] returns `None` without
 /// creating anything whenever either variable is set, so every caller creates it
@@ -219,6 +239,28 @@ pub fn path() -> Option<PathBuf> {
 #[must_use]
 pub fn marketplaces() -> Option<PathBuf> {
     Some(path()?.join(MARKETPLACES))
+}
+
+/// Where a foreign bundle's generated `plugin.toml` is written, whether or not the
+/// directory exists yet.
+///
+/// Derived from [`path`] rather than from [`in_force`], for [`marketplaces`]'s
+/// reason and it is the same reason one level on: an adapter is **io's own
+/// generated file** — a translation of a clone that this crate writes, that
+/// nobody authors and that is regenerated rather than edited — so it belongs with
+/// the crate's own home the way a cache does, not with the configuration the
+/// operator moved. An operator who pointed `$IO_CONFIG_HOME` somewhere else moved
+/// their *configuration*; following that variable here would put the adapters
+/// wherever the configuration is and leave every one already generated invisible,
+/// while the `[[plugin]]` entries naming them still pointed at the old path.
+///
+/// **The directory is not promised to exist**, exactly as [`marketplaces`] is
+/// not: [`adopt`] creates nothing at all when the operator has named their own
+/// location, so every caller makes it rather than assuming — which
+/// [`crate::adapt::generate`] does on the way past.
+#[must_use]
+pub fn adapters() -> Option<PathBuf> {
+    Some(path()?.join(ADAPTERS))
 }
 
 /// Where a clone is assembled before it is renamed into [`marketplaces`].
@@ -275,6 +317,27 @@ pub fn origin() -> Origin {
 /// [`io_harness::config::user_path`] rather than from [`path`]: under `$IO_CONFIG`
 /// the file is somewhere io-cli did not choose, and a row reporting the home this
 /// crate *would* have picked would be wrong in exactly the case the row exists for.
+/// The directory an operator's **own** content lives in.
+///
+/// **One answer for reading and for writing, and 0.31.0 exists partly because
+/// they were two.** A skill is something the operator wrote, like a memory note:
+/// it belongs beside the configuration they are actually using, not beside the one
+/// io-cli would have picked. But a directory that only the *read* followed would
+/// be worse than either — `/skills add` would write where nothing looks, and an
+/// operator who set `$IO_CONFIG_HOME` would watch skills they had installed stop
+/// reaching the model with nothing said. So every surface that reads or writes
+/// authored content asks this, and there is no second resolution to disagree with.
+///
+/// [`in_force`] with [`path`] as the fallback, because `user_path` answers `None`
+/// on a machine with no home at all and io-cli's own default is still the better
+/// guess than nothing. Deliberately **not** what [`marketplaces`] or [`adapters`]
+/// use: those hold other people's repositories and io's own generated files, which
+/// are a cache and belong with the crate.
+#[must_use]
+pub fn authored() -> Option<PathBuf> {
+    in_force().map(|(dir, _)| dir).or_else(path)
+}
+
 #[must_use]
 pub fn in_force() -> Option<(PathBuf, Origin)> {
     let dir = io_harness::config::user_path()?.parent()?.to_path_buf();

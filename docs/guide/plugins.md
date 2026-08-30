@@ -95,7 +95,7 @@ the hand-written reader could not: an inline `hook = [{…}]` array, and a
 ## Marketplaces
 
 **A marketplace is a git repository you name.** It is cloned into your own home
-and walked for directories carrying a `plugin.toml`:
+and read for the bundles it publishes:
 
 ```
 /plugin marketplace add zeroonething/ultraship
@@ -122,6 +122,69 @@ Installing is the verb you already had:
 **A bare name two marketplaces carry is refused**, naming both qualified
 spellings. They are two strangers' repositories, and installing whichever the
 walk reached first is installing code you did not choose.
+
+### Three manifest formats, and which one wins
+
+A capability bundle in the field is a Claude Code plugin or a Codex plugin.
+`plugin.toml` is a format this project writes and nobody else does, so io reads
+all three rather than asking anyone to adopt a fourth:
+
+| File | Read as |
+| --- | --- |
+| `plugin.toml` | A bundle, natively |
+| `.claude-plugin/marketplace.json` | The repository's own index of what it publishes |
+| `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json` | A bundle manifest |
+
+The precedence is stated rather than discovered:
+
+- **A `plugin.toml` at the repository's root suppresses the index.** An author who
+  writes io's own manifest has said what they publish in the format io owns, and a
+  foreign index does not speak over it. It suppresses the index and nothing else —
+  a repository with a root manifest and bundles beneath it still lists all of them.
+- **Where there is no root `plugin.toml`, the index is the answer** and the
+  directory walk does not also run. A union would list bundles the author did not
+  publish beside the ones they did, and you would have no way to tell which was
+  which.
+- **Where there is neither, the walk runs**, reading each directory as a
+  `plugin.toml` first and a foreign manifest only where it carries none.
+
+An entry in a shape io does not read is **listed with its reason**, never dropped.
+
+**An index may place a plugin in another repository**, and 238 of the 291 entries
+in `anthropics/claude-plugins-official` do. Those are fetched when you install
+one, at the commit the index names where it names one. io re-derives the
+repository from the url and rebuilds it: a url that is not `<owner>/<repo>` on
+GitHub is refused, because the only string io hands `git` is one io built.
+
+**An adapted bundle is marked as adapted in `/plugin`**, under its own mark, with
+the generated manifest's directory on the row — that file is what you open when
+io-harness drops the bundle, and nothing else names it. io writes it under
+`~/.io-cli/adapters/<owner>/<repo>/<name>/plugin.toml`, never inside the clone.
+The paths in it are absolute and point into the clone, so io-harness loads it as
+an ordinary bundle. The author's checkout is not written to.
+
+**A plugin name that is not a usable id is refused rather than mangled.** An id is
+what you type at `plugin add` and what prefixes every name the bundle
+contributes, so io accepts a name that is already an id, folds one that becomes an
+id by lowercasing, and refuses everything else. Two entries in one index reaching
+the same id are refused naming both.
+
+### Hooks do not cross, and that is not a gap
+
+**A Claude Code or Codex plugin's hooks are not carried across.** io-harness's
+hooks are argv against its own events, deliberately never a shell string; a hook
+in those formats is a shell line, an event io does not know, and a `${…}`
+substitution io-harness refuses inside a manifest in every scope. All three at
+once, and no adapter closes any of them.
+
+So io **shows** them instead. Every hook a bundle declares is drawn before you
+install it, with its event, its command **unshortened**, and the reason it will
+not run. An approximated hook is a program running on your machine that nobody
+described accurately, and a shortened one is a command you consented to without
+reading.
+
+If you want hooks under io, the repository's author adds a `plugin.toml` — one
+file, which then wins its own root.
 
 **Removing a marketplace removes the clone and nothing else.** A bundle you
 declared out of it keeps its `[[plugin]]` entry — a cache being emptied is not a

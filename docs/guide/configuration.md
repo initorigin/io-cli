@@ -261,7 +261,7 @@ Nine keys live there, and eight tables:
 | `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
-| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `~/.io-cli/skills`. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}`, and a tilde is none of the three. |
+| `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `skills/` under the home in force — `~/.io-cli/skills` unless `$IO_CONFIG` or `$IO_CONFIG_HOME` moved it. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}`, and a tilde is none of the three. |
 | `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
 | `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |
 | `detached_spawns` | whether a spawn may detach at all. Absent, it may. `false` buys a trace with every child's whole life in it, which a detached child gives up. |
@@ -289,6 +289,9 @@ configuration file is in it, and so is the run store `runs.db` with the `-wal`
 and `-shm` SQLite keeps beside it — which is where the agent's durable memory
 lives too, because that is rows inside the store rather than a file of its own —
 and the skills directory, which is `~/.io-cli/skills` when `skills` names none.
+That directory is the `skills/` of the home in force — the same home your
+`io.toml` and `IO.md` are in — so `$IO_CONFIG` or `$IO_CONFIG_HOME` moves all
+three together, and io reads and writes skills in whichever one is in force.
 `~/.io-cli/IO.md` is in it as well: the guidance you want in every project, which
 `/remember` writes when you pick that scope. That is one directory to copy to a
 new machine, and one path to put in a bug report — as long as you have named no
