@@ -107,9 +107,10 @@ that is why, and `/skills` is where you see which directory each name came from.
 **A bundle's skills are listed too, under the name the model actually uses.**
 Until 0.21.0 they reached the model and appeared on no surface that lists a skill,
 so `/skills` and the `/` palette were lists that disagreed with the catalogue the
-turn was handed. They are in both now, spelled `<bundle>__<name>` — io-harness's
-own namespacing, and the string a refusal or a tool call will name — with the
-bundle named as where the row came from.
+turn was handed. They are in both now, qualified by the bundle they came from —
+drawn `<bundle>:<name>` since 0.32.0, and addressed as io-harness's own
+`<bundle>__<name>`, which is what a refusal or a tool call will name. See *The
+name you read, and the name the model was shown* below.
 
 **Turning a bundle's skill on or off is refused, and the refusal is the honest
 answer.** Turning a skill off is moving its file into a `disabled/` directory
