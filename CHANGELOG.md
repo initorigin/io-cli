@@ -41,17 +41,24 @@ commit-pinned shallow fetch is four invocations rather than one.
 **An adapter manifest is generated** under
 `~/.io-cli/adapters/<owner>/<repo>/<name>/plugin.toml`, with absolute paths into
 the clone, so io-harness loads the bundle with no change to that crate. The
-stranger's checkout is never written to. An adapted bundle is marked as adapted
-wherever it is drawn, so the difference between what an author wrote and what io
-generated is never something you have to infer.
+stranger's checkout is never written to. `/plugin` draws an adapted bundle under
+its own mark with the generated manifest's directory on the row, so the
+difference between what an author wrote and what io generated is not something
+you have to infer, and the file to open when io-harness drops a bundle is named.
 
 ### Changed
 
-**The skills directory now follows `$IO_CONFIG_HOME`.** It resolved through
-io-cli's default home while your memory file resolved through the home actually in
-force, so pointing that variable elsewhere moved one and not the other. A skill is
-something you wrote, and it belongs where the rest of what you wrote is. The
-limitation this removes was recorded in `docs/CONTRACT.md` since 0.30.1.
+**Skills follow `$IO_CONFIG` and `$IO_CONFIG_HOME`, on both the read and the
+write.** They resolved through io-cli's default home while your memory file
+resolved through the home actually in force, so pointing either variable
+elsewhere moved one and not the other. A skill is something you wrote, and it
+belongs where the rest of what you wrote is. The limitation this removes was
+recorded in `docs/CONTRACT.md` since 0.30.1.
+
+**io does not move skills you already have**, and it says so rather than leaving
+you to notice. If you have set either variable and your old `~/.io-cli/skills`
+still holds anything, io names both directories at startup — a release that moved
+only the read would have had `/skills add` writing where nothing looks.
 
 ### Not included, deliberately
 

@@ -259,7 +259,7 @@ pub struct View {
 /// Every skill in `dir` and in `dir/disabled`.
 ///
 /// **`dir` is the directory the RUN reads, and it is not always io-cli's own.**
-/// `[run] skills` and `[app.io-cli] skills` both beat the `~/.io-cli/skills`
+/// `[run] skills` and `[app.io-cli] skills` both beat the default `skills/`
 /// default, so a surface that walked the home would list five files the model is
 /// never offered and hide the ones it is — which would make this module's whole
 /// premise false. The caller resolves it through `crate::contract::skills_dir`,
@@ -328,7 +328,7 @@ pub fn view(home: &Path, dir: &Path, bundles: &[(String, PathBuf)]) -> View {
 /// [`Origin::Bundle`] by construction.
 ///
 /// This is not a rare path. `crate::contract::skills_dir` answers `None` whenever
-/// the operator has never made `~/.io-cli/skills`, which is the ordinary state of
+/// the operator has never made the default `skills/` directory, which is the ordinary state of
 /// a fresh install — and it is exactly the state in which every skill the model
 /// is offered came from a bundle. Returning an empty view here would blank the
 /// surface precisely when it is the only listing there is.

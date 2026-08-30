@@ -649,7 +649,8 @@ pub fn server_notices(config: &Config, caps: &Capabilities) -> Vec<String> {
 ///
 /// **0.15.0 adds one thing an operator did not ask for, and it is conditional on
 /// the operator's own disk rather than on their file.** A contract that no key
-/// named a skills directory for carries `~/.io-cli/skills` — but only where that
+/// named a skills directory for carries the `skills/` directory under the home in
+/// force — but only where that
 /// directory exists, because `Skills::discover` fails the run on one that does
 /// not — `Error::Config("skills directory … does not exist")`, propagated by
 /// `TaskContract::discover_skills` before the first completion. An operator who
@@ -706,6 +707,6 @@ pub fn session(
     // applied by `Config::apply_to` inside [`configured`] and `[app.io-cli]
     // skills` two lines up, so this is where a `~` either of them carries becomes
     // a home directory and where a session that named neither picks up
-    // `~/.io-cli/skills`.
+    // the `skills/` directory under the home in force.
     resolve_skills(contract)
 }

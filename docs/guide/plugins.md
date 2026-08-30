@@ -156,8 +156,9 @@ one, at the commit the index names where it names one. io re-derives the
 repository from the url and rebuilds it: a url that is not `<owner>/<repo>` on
 GitHub is refused, because the only string io hands `git` is one io built.
 
-**An adapted bundle is marked as adapted** — in `/plugin`, in the listing and in
-the disclosure — and io writes the generated manifest under
+**An adapted bundle is marked as adapted in `/plugin`**, under its own mark, with
+the generated manifest's directory on the row — that file is what you open when
+io-harness drops the bundle, and nothing else names it. io writes it under
 `~/.io-cli/adapters/<owner>/<repo>/<name>/plugin.toml`, never inside the clone.
 The paths in it are absolute and point into the clone, so io-harness loads it as
 an ordinary bundle. The author's checkout is not written to.

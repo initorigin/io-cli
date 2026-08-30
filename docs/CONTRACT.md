@@ -104,7 +104,7 @@ One directory: `~/.io-cli` on Unix, `%USERPROFILE%\.io-cli` on Windows, created 
 | --- | --- |
 | `io.toml` | The user-scope configuration |
 | `runs.db` (+ `-wal`, `-shm`) | The session store |
-| `skills/` | Skills, with `skills/disabled/` for the ones switched off |
+| `skills/` | Skills, with `skills/disabled/` for the ones switched off. Read from and written to the home in force, so `$IO_CONFIG`/`$IO_CONFIG_HOME` moves it with `io.toml` and `IO.md`. io does not move files you already own; it says so at startup if the old directory still holds any |
 | `marketplaces/` | Cloned marketplaces, with `marketplaces/.entries/` for a repository an index pointed at |
 | `adapters/<owner>/<repo>/<name>/` | The `plugin.toml` io generates for a Claude Code or Codex bundle |
 | `.fetching/` | Staging for a clone in flight, renamed into place on success |

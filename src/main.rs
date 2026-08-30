@@ -2082,10 +2082,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // manifest before io-harness could read the bundle
                                 // at all, so there *is* something to take back
                                 // here even though the operator's configuration
-                                // was never opened. `manage::declined` is the one
-                                // place that decision lives, so this door and the
-                                // argv door cannot disagree about whether saying
-                                // no leaves something behind.
+                                // was never opened. `marketplace::unmake` is the
+                                // one place that decision lives, and `Esc` on this
+                                // same picker calls it too — the standard way out
+                                // of a modal must not be the one that leaves
+                                // something behind.
                                 io_cli::marketplace::unmake(made.as_deref());
                                 app.record(
                                     Tone::Muted,
@@ -4084,7 +4085,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // case that asked for it.
                     picker = descended;
                 }
-                Outcome::Cancelled => picker = None,
+                Outcome::Cancelled => {
+                    // **`Esc` is a decline, and one picker has something to take
+                    // back.** An install disclosure is drawn over an adapter io
+                    // already wrote — io-harness has no loader that takes a
+                    // foreign manifest, so there is nothing to disclose until the
+                    // generated one exists. The "leave it" row removes it; leaving
+                    // `Esc` out would make the standard way out of every other
+                    // modal in this product the one that leaves a directory nobody
+                    // agreed to under the operator's home, listed by no surface
+                    // and removed by no verb.
+                    if let Some((_, Pick::PluginInstall { made, .. })) = &picker {
+                        io_cli::marketplace::unmake(made.as_deref());
+                    }
+                    picker = None;
+                }
                 Outcome::Idle => {}
             }
             paint_picker(screen, &mut app, picker.as_mut())?;

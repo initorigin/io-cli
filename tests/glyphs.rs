@@ -1015,20 +1015,27 @@ fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
     // The marks survive the substitution and still mark. A set that mapped every
     // mark to a space would pass the sweep above and destroy the page.
     let (rows, _) = memory_page(&files, &entries, false, &ASCII);
-    let mut marks: Vec<&str> = rows.iter().filter_map(|row| row.mark).collect();
+    let marks: Vec<&str> = rows.iter().filter_map(|row| row.mark).collect();
     // `/plugin`'s own four, off the rows `pluginview::rows` drew for a list holding
     // one bundle of every kind. A mark that is declared and that no surface ever
     // puts on a row fails here rather than shipping as a constant nobody sees.
-    marks.extend(plugin_marks());
-    for mark in [
-        READ_MARK,
-        UNREAD_MARK,
-        PINNED_MARK,
-        LOOSE_MARK,
-        LOADED_MARK,
-        DISABLED_MARK,
-        REFUSED_MARK,
-        ADAPTED_MARK,
+    // **Each mark is looked for on the surface that draws it, not in the union.**
+    // `LOADED_MARK` is `+` and so is `READ_MARK`; `DISABLED_MARK` is `-` and so
+    // are `LOOSE_MARK` and `UNREAD_MARK`. Searching one merged set would find
+    // `/plugin`'s two commonest marks in the *memory page's* rows and pass however
+    // `/plugin` drew them — make every arm of its mark selector return
+    // `ADAPTED_MARK` and a union check notices nothing. Paired with its own
+    // surface, that sabotage fails here.
+    let drawn = plugin_marks();
+    for (mark, on) in [
+        (READ_MARK, &marks),
+        (UNREAD_MARK, &marks),
+        (PINNED_MARK, &marks),
+        (LOOSE_MARK, &marks),
+        (LOADED_MARK, &drawn),
+        (DISABLED_MARK, &drawn),
+        (REFUSED_MARK, &drawn),
+        (ADAPTED_MARK, &drawn),
     ] {
         assert!(mark.is_ascii(), "{mark:?} is not ASCII");
         assert_eq!(
@@ -1037,8 +1044,8 @@ fn n3_the_memory_page_draws_in_ascii_and_fits_a_narrow_terminal() {
             "{mark:?} is not one cell; a mark of an odd width shifts the column",
         );
         assert!(
-            marks.contains(&mark),
-            "{mark:?} is on no row of the fixture"
+            on.contains(&mark),
+            "{mark:?} is on no row of the surface that is supposed to draw it",
         );
     }
     assert_ne!(
