@@ -1,8 +1,8 @@
 //! The live rehearsal for F1.
 //!
-//! Every test here is `#[ignore]`d, so `cargo test` never runs one and CI — which
-//! holds no secrets — never tries. Run them by hand with a key in the
-//! environment:
+//! Every test that talks to a provider is `#[ignore]`d, so `cargo test` never
+//! runs one and CI — which holds no secrets — never tries. Run them by hand with
+//! a key in the environment:
 //!
 //! ```text
 //! export OPENROUTER_API_KEY=sk-or-...
@@ -20,6 +20,11 @@
 //! credential check against a real endpoint, the catalogue read, and a real turn
 //! driven through the real bridge and the real event renderer, editing a real
 //! file inside the sandbox.
+//!
+//! **One test here is not live and runs everywhere**, deliberately:
+//! `every_live_arm_that_watches_for_a_question_names_both_ask_variants` reads
+//! this file's own source. An arm nobody runs in CI is an arm nothing notices has
+//! stopped matching, and 0.33.0 paid for exactly that — see its own comment.
 
 mod support;
 
@@ -1254,22 +1259,33 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
                         crossterm::event::KeyModifiers::NONE,
                     ));
                 }
-                Some(asked) = questions.recv() => {
+                Some(delivery) = questions.recv() => {
+                    // **One delivery is one overlay, however many questions it
+                    // carries** (0.33.0). A batch is answered in place — one
+                    // question on screen at a time, deciding one moves to the next
+                    // undecided one, deciding the last delivers — so the operator's
+                    // side types an answer and presses Enter once per question. A
+                    // batch left part-answered is committed by nothing and parks the
+                    // whole run, which is why this loops rather than answering the
+                    // first and moving on.
+                    let count = delivery.len();
                     answered
                         .lock()
                         .expect("not poisoned")
-                        .push(format!("question: {}", asked.question.question));
-                    app.open_intent(asked);
-                    for character in "the second one".chars() {
+                        .push(format!("questions: {count}"));
+                    app.open_intent(delivery);
+                    for _ in 0..count {
+                        for character in "the second one".chars() {
+                            app.key(crossterm::event::KeyEvent::new(
+                                crossterm::event::KeyCode::Char(character),
+                                crossterm::event::KeyModifiers::NONE,
+                            ));
+                        }
                         app.key(crossterm::event::KeyEvent::new(
-                            crossterm::event::KeyCode::Char(character),
+                            crossterm::event::KeyCode::Enter,
                             crossterm::event::KeyModifiers::NONE,
                         ));
                     }
-                    app.key(crossterm::event::KeyEvent::new(
-                        crossterm::event::KeyCode::Enter,
-                        crossterm::event::KeyModifiers::NONE,
-                    ));
                 }
                 else => break,
             }
@@ -1351,9 +1367,22 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
     // **F3, and the opportunistic half.** Whether a model asks about intent is
     // its choice; what must hold is that an answer given here is the answer
     // recorded there.
+    //
+    // **Both ask variants, and that is a gate-integrity fix rather than a
+    // feature (0.33.0).** io-harness 0.72.0 emits `QuestionsAsked` for a batched
+    // ask and does *not* also emit the singular, so watching only the singular
+    // means the moment a model picks `ask_questions` this count is zero, the
+    // assertion below is skipped, and a live arm that proves nothing looks
+    // exactly like one that passed. `every_live_arm_that_watches_for_a_question`
+    // below keeps this pair together.
     let asked = events
         .iter()
-        .filter(|event| matches!(event.kind, EventKind::QuestionAsked { .. }))
+        .filter(|event| {
+            matches!(
+                event.kind,
+                EventKind::QuestionAsked { .. } | EventKind::QuestionsAsked { .. }
+            )
+        })
         .count();
     println!("live 0.10.0: {asked} questions asked");
     if asked > 0 {
@@ -1437,22 +1466,28 @@ async fn live_f1_a_question_is_answered_on_an_uncontained_turn() {
     let answered = Arc::clone(&answers);
     let operator = tokio::spawn(async move {
         let mut app = App::new(DARK, "live");
-        while let Some(asked) = questions.recv().await {
+        while let Some(delivery) = questions.recv().await {
+            // One answer and one Enter per question the delivery carries, for the
+            // reason the contained arm above records: a batch is answered in place
+            // and a part-answered one parks the run.
+            let count = delivery.len();
             answered
                 .lock()
                 .expect("not poisoned")
-                .push(asked.question.question.clone());
-            app.open_intent(asked);
-            for character in "the one under archive".chars() {
+                .push(format!("questions: {count}"));
+            app.open_intent(delivery);
+            for _ in 0..count {
+                for character in "the one under archive".chars() {
+                    app.key(crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Char(character),
+                        crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
                 app.key(crossterm::event::KeyEvent::new(
-                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyCode::Enter,
                     crossterm::event::KeyModifiers::NONE,
                 ));
             }
-            app.key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            ));
         }
     });
 
@@ -1476,9 +1511,17 @@ async fn live_f1_a_question_is_answered_on_an_uncontained_turn() {
     let _ = operator.await;
 
     let events = collected.lock().expect("not poisoned").clone();
+    // Both ask variants, for the reason the contained arm above records: a
+    // batched ask emits only the plural, and an arm watching one name would go
+    // silent rather than red the first time a model batches.
     let asked = events
         .iter()
-        .filter(|event| matches!(event.kind, EventKind::QuestionAsked { .. }))
+        .filter(|event| {
+            matches!(
+                event.kind,
+                EventKind::QuestionAsked { .. } | EventKind::QuestionsAsked { .. }
+            )
+        })
         .count();
     println!("live 0.12.0 F1: outcome {:?}", result.outcome);
     println!(
@@ -1498,6 +1541,239 @@ async fn live_f1_a_question_is_answered_on_an_uncontained_turn() {
             events.iter().map(|event| &event.kind).collect::<Vec<_>>(),
         );
     }
+}
+
+/// **F1 (0.33.0) — a batch asked in one call is answered on one overlay.**
+///
+/// The arm io-harness 0.72.0's `ask_questions` exists for, driven through `App`
+/// so what answers is the type a keystroke reaches. The goal names the tool
+/// rather than hoping for it: what is being verified here is that this crate's
+/// overlay answers a batch and the run takes the answers, not the model's
+/// judgement about when batching is the right move — that judgement is what the
+/// two arms above already leave to the model.
+///
+/// **Every answer is distinct, and that is the assertion.** io-harness emits one
+/// `QuestionAnswered` per answer, in the order the questions were asked, so the
+/// texts this side typed and the texts the run recorded are comparable as
+/// sequences. That is what makes this fail rather than go quiet:
+///
+/// * an overlay that answered the first question and delivered leaves the batch
+///   part-answered, io-harness commits a batch only when every entry is `Some`,
+///   the run parks, and **nothing** is recorded — zero answers against the two or
+///   three typed here;
+/// * an overlay that answered them in the wrong order, or that sent one answer to
+///   every question, records a sequence that is the wrong sequence;
+/// * a model that declined to ask at all types nothing, which is the model's
+///   choice and is printed rather than asserted, exactly as in the arms above.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f1_a_batched_ask_is_answered_on_one_overlay() {
+    use io_cli::app::App;
+    use io_cli::contract::Capabilities;
+
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+    std::fs::write(
+        root.join("notes.md"),
+        "# notes\n\nold line\n\n## archive\n\nold line\n",
+    )
+    .expect("the fixture file");
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let (answerer, mut questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::session(
+        "Add a short `## setup` section to notes.md. Before you touch the file, use ONE \
+         `ask_questions` call to ask me all three of these together: where the section goes, what \
+         its one line should say, and whether the `## archive` section stays. Do not edit anything \
+         until you have my answers.",
+        root.to_path_buf(),
+        &no_configuration(),
+        &no_configuration().plugins(),
+        &Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(12);
+
+    // A distinct answer per question, in the order they were asked, kept on this
+    // side so the recorded sequence has something to be compared against.
+    let spoken = Arc::new(Mutex::new(Vec::<String>::new()));
+    let typing = Arc::clone(&spoken);
+    let operator = tokio::spawn(async move {
+        let mut app = App::new(DARK, "live");
+        let mut nth = 0usize;
+        while let Some(delivery) = questions.recv().await {
+            let count = delivery.len();
+            println!("live 0.33.0: a delivery of {count}");
+            app.open_intent(delivery);
+            // One answer and one Enter per question: the batch is answered in
+            // place, deciding one moves to the next undecided one, and deciding
+            // the last is what delivers.
+            for _ in 0..count {
+                nth += 1;
+                let text = format!("answer {nth}");
+                typing.lock().expect("not poisoned").push(text.clone());
+                for character in text.chars() {
+                    app.key(crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Char(character),
+                        crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
+                app.key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Enter,
+                    crossterm::event::KeyModifiers::NONE,
+                ));
+            }
+        }
+    });
+
+    let result = session
+        .turn_bounded_observed(
+            &contract,
+            &provider,
+            &store,
+            &policy,
+            &io_harness::ApproveAll,
+            &observer,
+        )
+        .await
+        .expect("the turn runs");
+
+    // The contract first, for the reason the arms above record: the operator's
+    // loop ends when the responder inside it is dropped.
+    drop(contract);
+    drop(session);
+    let _ = operator.await;
+
+    let events = collected.lock().expect("not poisoned").clone();
+    let asked = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                EventKind::QuestionAsked { .. } | EventKind::QuestionsAsked { .. }
+            )
+        })
+        .count();
+    let batched: Vec<usize> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::QuestionsAsked { questions } => Some(questions.len()),
+            _ => None,
+        })
+        .collect();
+    let typed = spoken.lock().expect("not poisoned").clone();
+    println!("live 0.33.0: outcome {:?}", result.outcome);
+    println!("live 0.33.0: {asked} asks, batches of {batched:?}, typed {typed:?}");
+
+    if typed.is_empty() {
+        eprintln!("live 0.33.0: the model asked nothing, so there is no batch to answer");
+        return;
+    }
+
+    let recorded: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::QuestionAnswered { answer, by } if by == "responder" => {
+                Some(answer.trim().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        recorded, typed,
+        "every answer typed on the overlay must reach the run, in the order it was asked — a \
+         batch this side left part-answered is committed by nothing and parks the run with no \
+         answer recorded at all",
+    );
+}
+
+/// **The offline gate that keeps the three arms above from going silent
+/// (0.33.0).**
+///
+/// A live arm runs by hand, never in CI and not every release, so nothing else in
+/// this repository would notice the day one of them stopped matching. io-harness
+/// 0.72.0 emits the plural for a batched ask and does **not** also emit the
+/// singular, so an arm that filters on the singular alone matches nothing the
+/// moment a model picks `ask_questions`: the count goes to zero, the assertion
+/// behind `if asked > 0` never runs, and the arm passes having proved nothing.
+/// Silence is indistinguishable from a green gate, which is the one failure a
+/// test must not have.
+///
+/// **Why this is not a `contains`.** `source.contains("QuestionsAsked")` is
+/// satisfied by this very paragraph, by a `use`, by any prose anywhere in a file
+/// this size — it would go green on a file whose every arm still watched the
+/// singular alone. So the needle is pinned to the arm it has to appear in: every
+/// *pattern position* — a variant name followed by a braced rest pattern, which
+/// is a `matches!` arm and nothing else — must sit in an alternation with the
+/// other variant. Prose never trips this, because prose does not write a rest
+/// pattern after a name; and a comment can never satisfy it, because satisfying
+/// it means being the other half of an alternation.
+///
+/// Sabotage: drop the plural from either alternation above. This fails naming the
+/// file and the line it was dropped from.
+#[test]
+fn every_live_arm_that_watches_for_a_question_names_both_ask_variants() {
+    // Spelled in halves so this test's own source carries no occurrence of what
+    // it hunts for. A gate whose first finding is its own assertion message is a
+    // gate that gets deleted.
+    let one = concat!("Question", "Asked");
+    let many = concat!("Questions", "Asked");
+    let arm = format!("{one} {{ .. }}");
+    // Either order, and unqualified: the qualification is stripped below so that
+    // `EventKind::` being imported or spelled out is not what this gate decides.
+    let paired = [
+        format!("{arm} | {many} {{ .. }}"),
+        format!("{many} {{ .. }} | {arm}"),
+    ];
+
+    let lines: Vec<&str> = include_str!("live.rs").lines().collect();
+    let mut watching = 0usize;
+    let mut lone: Vec<String> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if !line.replace("EventKind::", "").contains(&arm) {
+            continue;
+        }
+        watching += 1;
+        // Two lines, whitespace flattened: an alternation rustfmt wrapped onto the
+        // next line is still one arm, and a gate that failed on formatting is a
+        // gate someone turns off inside a release.
+        let window = lines[index..(index + 2).min(lines.len())]
+            .join(" ")
+            .replace("EventKind::", "")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !paired.iter().any(|form| window.contains(form.as_str())) {
+            lone.push(format!("tests/live.rs:{}: {}", index + 1, line.trim()));
+        }
+    }
+
+    assert!(
+        lone.is_empty(),
+        "these live arms watch for one ask variant only, so a batched ask makes them match \
+         nothing and their assertions are skipped rather than failed — write `{arm} | {many} {{ \
+         .. }}`:\n{}",
+        lone.join("\n"),
+    );
+    // **And the gate is not vacuous.** A renamed variant, or a rewrite that stops
+    // matching on the kind at all, would leave the loop above finding nothing and
+    // passing — which is the same silence this file exists to close.
+    assert!(
+        watching >= 2,
+        "this gate found {watching} live arms watching for a question; it is watching nothing, \
+         so `{one}` is no longer how those arms are written",
+    );
 }
 
 /// **F2 (0.12.0) — a contained turn proposes no plan unless the operator asked.**
