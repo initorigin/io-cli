@@ -317,6 +317,27 @@ pub fn origin() -> Origin {
 /// [`io_harness::config::user_path`] rather than from [`path`]: under `$IO_CONFIG`
 /// the file is somewhere io-cli did not choose, and a row reporting the home this
 /// crate *would* have picked would be wrong in exactly the case the row exists for.
+/// The directory an operator's **own** content lives in.
+///
+/// **One answer for reading and for writing, and 0.31.0 exists partly because
+/// they were two.** A skill is something the operator wrote, like a memory note:
+/// it belongs beside the configuration they are actually using, not beside the one
+/// io-cli would have picked. But a directory that only the *read* followed would
+/// be worse than either — `/skills add` would write where nothing looks, and an
+/// operator who set `$IO_CONFIG_HOME` would watch skills they had installed stop
+/// reaching the model with nothing said. So every surface that reads or writes
+/// authored content asks this, and there is no second resolution to disagree with.
+///
+/// [`in_force`] with [`path`] as the fallback, because `user_path` answers `None`
+/// on a machine with no home at all and io-cli's own default is still the better
+/// guess than nothing. Deliberately **not** what [`marketplaces`] or [`adapters`]
+/// use: those hold other people's repositories and io's own generated files, which
+/// are a cache and belong with the crate.
+#[must_use]
+pub fn authored() -> Option<PathBuf> {
+    in_force().map(|(dir, _)| dir).or_else(path)
+}
+
 #[must_use]
 pub fn in_force() -> Option<(PathBuf, Origin)> {
     let dir = io_harness::config::user_path()?.parent()?.to_path_buf();

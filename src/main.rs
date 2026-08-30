@@ -107,7 +107,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     // says so below, and `/skills` lists the directory in force rather than this
     // one.
     if adopted.is_some() {
-        if let Some(home) = io_cli::home::path() {
+        if let Some(home) = io_cli::home::authored() {
             report.extend(io_cli::skills::install(&home));
         }
     }
@@ -414,7 +414,7 @@ async fn drive(
     // makes every row read as the operator's, which is the safe direction. It
     // never reaches a path that is joined to, so this cannot resolve anything
     // against the working directory.
-    let home = io_cli::home::path().unwrap_or_default();
+    let home = io_cli::home::authored().unwrap_or_default();
     let bundles = bundle_skills(&config);
     let (skills, complaint) = commands::skills(&home, skills_dir.as_deref(), &bundles);
     if let Some(complaint) = complaint {
@@ -424,12 +424,22 @@ async fn drive(
     // read**, said once, here, where the resolved directory is finally known.
     // Silence would leave an operator with a startup line saying five skills were
     // installed and a model that has never heard of them.
-    if let (Some(home), Some(in_force)) = (io_cli::home::path(), skills_dir.as_deref()) {
-        let ours = io_cli::skills::dir(&home);
-        if ours.is_dir() && ours != in_force {
+    //
+    // **Guarded on the two homes and never on the resolved directory, and 0.31.0
+    // is why.** The resolved directory is `None` whenever the one in force does
+    // not exist yet — which is the ordinary state for an operator who has just
+    // set `$IO_CONFIG_HOME` — so a guard on it stayed silent in exactly the case
+    // it was written for: skills sitting in io-cli's default home, unread, with
+    // nothing said. Comparing the homes themselves fires there.
+    if let (Some(default), Some(authored)) = (io_cli::home::path(), io_cli::home::authored()) {
+        let ours = io_cli::skills::dir(&default);
+        let now = io_cli::skills::dir(&authored);
+        if ours != now && ours.is_dir() {
             notices.push(format!(
-                "the skills in force are in {} — io's own are in {} and are not being read",
-                in_force.display(),
+                "skills are read from and written to {} now, and {} still holds some — \
+                 `$IO_CONFIG` or `$IO_CONFIG_HOME` moved where io keeps what you wrote, \
+                 and io does not move files you own",
+                now.display(),
                 ours.display(),
             ));
         }
@@ -555,7 +565,7 @@ fn skills_view(
     capabilities: &io_cli::contract::Capabilities,
     root: &std::path::Path,
 ) -> io_cli::skillview::View {
-    let Some(home) = io_cli::home::path() else {
+    let Some(home) = io_cli::home::authored() else {
         return io_cli::skillview::View::default();
     };
     let bundles = bundle_skills(config);
@@ -1113,7 +1123,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     paint(screen, &mut app)?;
 
     if !io_cli::home::import_offered() {
-        if let Some(home) = io_cli::home::path() {
+        if let Some(home) = io_cli::home::authored() {
             let found = io_cli::import::detect(
                 &io_cli::home::expand(std::path::Path::new("~")),
                 session.root(),
@@ -1494,7 +1504,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     .filter(|(_, on)| **on)
                                     .map(|(item, _)| item.clone())
                                     .collect();
-                                match (chosen.is_empty(), io_cli::home::path()) {
+                                match (chosen.is_empty(), io_cli::home::authored()) {
                                     (true, _) => app.record(
                                         Tone::Muted,
                                         "nothing was imported and nothing was written; \
@@ -2011,7 +2021,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `index`, for `Pick::PluginRemove`'s reason: the outer
                         // `index` is the row that was chosen and the entry's own
                         // position in the file is a different number entirely.
-                        Pick::PluginInstall { id, scope, edits } => {
+                        Pick::PluginInstall {
+                            id,
+                            scope,
+                            edits,
+                            made,
+                        } => {
                             if io_cli::store::acts(index) {
                                 // **The write happens here and nowhere earlier.**
                                 // `edits` is `manage::plan`'s own single
@@ -2062,6 +2077,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // `Plugins::inspect` validates a directory with
                                 // nothing on disk naming it, so there is now nothing
                                 // to leave behind and nothing to undo.
+                                // **And the adapter goes with the decline.** For a
+                                // Claude Code or Codex bundle io had to write a
+                                // manifest before io-harness could read the bundle
+                                // at all, so there *is* something to take back
+                                // here even though the operator's configuration
+                                // was never opened. `manage::declined` is the one
+                                // place that decision lives, so this door and the
+                                // argv door cannot disagree about whether saying
+                                // no leaves something behind.
+                                io_cli::marketplace::unmake(made.as_deref());
                                 app.record(
                                     Tone::Muted,
                                     format!(
@@ -2543,7 +2568,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         // under it. Leave it and `/` goes on
                                         // offering a skill whose file is gone.
                                         skills = io_cli::commands::skills(
-                                            &io_cli::home::path().unwrap_or_default(),
+                                            &io_cli::home::authored().unwrap_or_default(),
                                             io_cli::contract::skills_dir(
                                                 &config,
                                                 &capabilities,
@@ -2631,7 +2656,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         // harness refuses by name — or hides one
                                         // that has just come back.
                                         skills = io_cli::commands::skills(
-                                            &io_cli::home::path().unwrap_or_default(),
+                                            &io_cli::home::authored().unwrap_or_default(),
                                             io_cli::contract::skills_dir(
                                                 &config,
                                                 &capabilities,
@@ -4378,7 +4403,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // documents as working. The acts live in `manage_main`,
                         // which a session never calls.
                         Ok((io_cli::manage::Request::Skill(verb), None)) => {
-                            match io_cli::home::path() {
+                            match io_cli::home::authored() {
                                 None => app.record(
                                     Tone::Refused,
                                     "there is no home on this machine to keep skills in"
@@ -4522,6 +4547,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             for line in disclosure.said(&app.theme.glyphs) {
                                 app.record(Tone::Muted, line);
                             }
+                            // **Named individually, with the command unshortened.**
+                            // A hook in a Claude Code or Codex bundle cannot cross
+                            // — see `marketplace::NOT_CARRIED` for the three
+                            // reasons — and this is the surface where an operator
+                            // would otherwise reasonably assume it does. `Refused`
+                            // rather than `Muted`, because the rest of the list is
+                            // what the bundle *will* do and these are what it will
+                            // not.
+                            for line in &disclosure.withheld {
+                                app.record(Tone::Refused, line.clone());
+                            }
                             picker = Some((
                                 Picker::new(
                                     format!("Install {}?", disclosure.id),
@@ -4545,6 +4581,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     id: disclosure.id.clone(),
                                     scope: plan.scope,
                                     edits: plan.edits.clone(),
+                                    made: plan.made.clone(),
                                 },
                             ));
                         }
@@ -4972,7 +5009,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // `Esc` has still *seen* what io found. The picker then turns
                 // items on one at a time; nothing is written until the last row is
                 // chosen, which is why a cancelled import is never a partial one.
-                Action::Import => match io_cli::home::path() {
+                Action::Import => match io_cli::home::authored() {
                     None => app.record(
                         Tone::Refused,
                         "io has no home directory of its own, so there is nowhere to import into"
@@ -6345,7 +6382,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // rejected once — a line that repeats for the life of the
                     // file it is about stops being read.
                     skills = commands::skills(
-                        &io_cli::home::path().unwrap_or_default(),
+                        &io_cli::home::authored().unwrap_or_default(),
                         io_cli::contract::skills_dir(
                             &config,
                             &capabilities,
@@ -8656,6 +8693,15 @@ enum Pick {
         id: String,
         scope: io_harness::config::Scope,
         edits: Vec<io_cli::edit::Edit>,
+        /// The adapter directory io generated so that io-harness could read this
+        /// bundle at all, removed when the operator declines.
+        ///
+        /// `None` for a native bundle, which needed nothing generated. A Claude
+        /// Code or Codex bundle has no manifest io-harness reads, so there is
+        /// literally nothing to disclose until io has written one — the file is
+        /// io's own, in io's own home, and the operator's configuration is
+        /// untouched either way.
+        made: Option<std::path::PathBuf>,
     },
     /// The second half of removing a bundle: which entry, and are you sure.
     ///
@@ -8895,7 +8941,7 @@ async fn manage_main(
         // the acts live in `skillview`, which the keystroke calls too, and neither
         // door words an outcome for itself.
         io_cli::manage::Request::Skill(verb) => {
-            let Some(home) = io_cli::home::path() else {
+            let Some(home) = io_cli::home::authored() else {
                 return Err(
                     "there is no home on this machine to keep skills in; set `IO_CONFIG_HOME`"
                         .to_string(),
@@ -8981,6 +9027,14 @@ async fn manage_main(
             "{} — io-harness read, parsed and trust-checked this bundle. It contributes:",
             disclosure.id,
         );
+        // The hooks that will not cross, named individually and unshortened,
+        // before the lines saying what the bundle *will* do. On this door the
+        // typed command is the consent, so this is the operator's only chance to
+        // read it — and a bundle installed for its hooks with its hooks silently
+        // absent is the one outcome this release must not produce.
+        for line in &disclosure.withheld {
+            eprintln!("{line}");
+        }
         for line in disclosure.said(&io_cli::glyphs::ASCII) {
             eprintln!("{line}");
         }

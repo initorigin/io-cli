@@ -249,6 +249,17 @@ pub enum ConfigVerb {
 /// one, and that is a property worth keeping rather than a shape worth widening.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
+    /// A directory io created while building this plan, which a **declined**
+    /// install must take back.
+    ///
+    /// `Some` for exactly one request: `plugin add <name>` resolving to a Claude
+    /// Code or Codex bundle, where the generated manifest has to exist before
+    /// io-harness can read the bundle and there is therefore something to disclose
+    /// at all. The operator's configuration is never opened either way — this is
+    /// io's own file, in io's own home — and [`declined`] is the one place it is
+    /// removed, so two doors cannot disagree about whether saying no leaves
+    /// something behind.
+    pub made: Option<PathBuf>,
     /// The scope whose file is written.
     pub scope: Scope,
     /// What to write, applied together or not at all.
@@ -667,6 +678,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             scope: *scope,
             edits: vec![crate::servers::add(server)],
             disclosure: None,
+            made: None,
         },
         Request::Mcp(McpVerb::Edit { id, key, value }) => {
             let at = declared_server(root, id)?;
@@ -685,6 +697,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 scope: at.scope,
                 edits: vec![edit],
                 disclosure: None,
+                made: None,
             }
         }
         Request::Mcp(McpVerb::Remove { id }) => {
@@ -693,6 +706,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 scope: at.scope,
                 edits: vec![crate::servers::remove(&at)],
                 disclosure: None,
+                made: None,
             }
         }
         // **The entry is found and then edited, never removed and re-added.**
@@ -711,10 +725,21 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             //
             // `display()` gives back the word as typed: `path` is a `PathBuf` made
             // out of one token and is never rendered from components.
+            // **The three homes an install may need, resolved here because this is
+            // the door.** A remote entry is cloned, and a Claude Code or Codex
+            // bundle gets a manifest generated for it; neither directory exists
+            // when the word is typed. `marketplace::chosen` takes them rather than
+            // reading `crate::home` itself, which is that module's standing rule.
+            let homes = crate::marketplace::Homes {
+                marketplaces: &crate::home::marketplaces().ok_or(crate::marketplace::NOWHERE)?,
+                staging: &crate::home::staging().ok_or(crate::marketplace::NOWHERE)?,
+                adapters: &crate::home::adapters().ok_or(crate::marketplace::NOWHERE)?,
+            };
             let chosen = crate::marketplace::chosen(
                 &resolve(root, path),
                 || crate::marketplace::installed().unwrap_or_default(),
                 &path.display().to_string(),
+                homes,
             )?;
             let written = crate::pluginview::declared(root, chosen.dir());
             // **Which reading won decides whether anything is disclosed, and that
@@ -733,11 +758,26 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             // user-scope file and is refused whole in a committed one, and an
             // install that inspected at the wrong scope would disclose a bundle
             // that then dropped, or refuse one that would have loaded.
+            //
+            // **`adapted_disclosure` and not `disclosure`, and the second argument
+            // is the point.** For an adapted bundle the directory io-harness is
+            // asked to load is the generated manifest's, which carries no hooks —
+            // they do not cross. The author's own directory is where the hooks it
+            // declares are, and naming them is the whole of what io owes an
+            // operator who would otherwise reasonably assume they run.
             let disclosure = chosen
                 .discloses()
-                .then(|| crate::marketplace::disclosure(*scope, chosen.dir()))
-                .transpose()?;
+                .then(|| {
+                    crate::marketplace::adapted_disclosure(
+                        *scope,
+                        chosen.dir(),
+                        (chosen.from() != chosen.dir()).then(|| chosen.from()),
+                    )
+                })
+                .transpose()
+                .inspect_err(|_| crate::marketplace::unmake(chosen.made()))?;
             Plan {
+                made: chosen.made().map(Path::to_path_buf),
                 scope: *scope,
                 // One entry, switched on, written once. Through 0.29.0 a
                 // marketplace bundle was written `enabled = false` first and
@@ -762,12 +802,14 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
                 scope,
                 edits: vec![crate::pluginview::remove(index)],
                 disclosure: None,
+                made: None,
             }
         }
         Request::Config(ConfigVerb::Set { key, value, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
             edits: vec![Edit::set(key.clone(), value.clone())],
             disclosure: None,
+            made: None,
         },
         Request::Config(ConfigVerb::Unset { key, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
@@ -779,6 +821,7 @@ pub fn plan(root: &Path, request: &Request) -> Result<Option<Plan>, String> {
             // operator's entire block. See `Edit::unset`.
             edits: vec![Edit::unset(key.clone())],
             disclosure: None,
+            made: None,
         },
         // **A marketplace verb plans no write, and it is here beside the reads
         // rather than given a shape of its own.** `add` and `remove` are not
@@ -824,6 +867,7 @@ fn switched(root: &Path, id: &str, on: bool) -> Result<Plan, String> {
         scope: at.scope,
         edits: vec![crate::servers::switch(&at, on)],
         disclosure: None,
+        made: None,
     })
 }
 

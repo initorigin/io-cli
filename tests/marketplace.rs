@@ -26,6 +26,36 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
 }
 
+/// The three directories an install may need, all inside one temporary tree.
+///
+/// Owned here and borrowed at the call, because `marketplace::Homes` is three
+/// borrows: a test that built it from temporaries inline would be building it out
+/// of values that die at the semicolon. Held as a type of its own so a test says
+/// *which* tree it is pointing io at, rather than repeating three joins.
+struct Homes {
+    marketplaces: PathBuf,
+    staging: PathBuf,
+    adapters: PathBuf,
+}
+
+impl Homes {
+    fn under(root: &Path) -> Self {
+        Self {
+            marketplaces: root.join("marketplaces"),
+            staging: root.join("staging"),
+            adapters: root.join("adapters"),
+        }
+    }
+
+    fn at(&self) -> marketplace::Homes<'_> {
+        marketplace::Homes {
+            marketplaces: &self.marketplaces,
+            staging: &self.staging,
+            adapters: &self.adapters,
+        }
+    }
+}
+
 /// The name used throughout, spelled once.
 fn named() -> Named {
     Named {
@@ -844,8 +874,9 @@ fn f4_a_bundle_is_installed_by_name_and_install_is_add() {
     // which is the case a rule keyed on the word's shape gets wrong.
     let here = work.path().join("shared");
     manifest(&here, "name = \"shared\"\n");
-    let read_as =
-        marketplace::chosen(&here, || markets.clone(), "shared").expect("a real path is a path");
+    let homes = Homes::under(work.path());
+    let read_as = marketplace::chosen(&here, || markets.clone(), "shared", homes.at())
+        .expect("a real path is a path");
     assert_eq!(
         read_as,
         marketplace::Chosen::Path(here),
@@ -856,7 +887,7 @@ fn f4_a_bundle_is_installed_by_name_and_install_is_add() {
     // know which was meant and reporting one half hides the other.
     let plain = work.path().join("nope");
     std::fs::create_dir_all(&plain).expect("a directory that is not a bundle");
-    let refusal = marketplace::chosen(&plain, || markets.clone(), "nope")
+    let refusal = marketplace::chosen(&plain, || markets.clone(), "nope", homes.at())
         .expect_err("neither reading of `nope` holds");
     assert!(
         refusal.contains(io_cli::pluginview::MANIFEST),
@@ -1276,10 +1307,15 @@ fn holding(store: &Path) -> (Vec<Market>, PathBuf) {
 /// bottom is what holds `plan` to this order.
 fn install(work: &Path, markets: &[Market], word: &str) -> Result<String, String> {
     let file = work.join(io_harness::config::LOCAL_FILE);
-    let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word)?;
+    let homes = Homes::under(work);
+    let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word, homes.at())?;
     if chosen.discloses() {
         // The read that decides, before the file is opened for writing.
-        marketplace::disclosure(Scope::Local, chosen.dir())?;
+        marketplace::adapted_disclosure(
+            Scope::Local,
+            chosen.dir(),
+            (chosen.from() != chosen.dir()).then(|| chosen.from()),
+        )?;
     }
     let before = std::fs::read_to_string(&file).unwrap_or_default();
     let text = io_cli::edit::apply(
@@ -1317,13 +1353,24 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
 
     // The name reading, decided against the disk by the one function that decides
     // it. The word names no directory here, so it can only be a name.
+    let homes = Homes::under(work.path());
     let chosen = marketplace::chosen(
         &work.path().join("rust-review"),
         || markets.clone(),
         "rust-review",
+        homes.at(),
     )
     .expect("the marketplace holds it");
-    assert_eq!(chosen, marketplace::Chosen::Held(dir.clone()));
+    assert_eq!(
+        chosen,
+        marketplace::Chosen::Held(marketplace::Prepared {
+            declare: dir.clone(),
+            from: dir.clone(),
+            made: None,
+        }),
+        "a native bundle is declared at its own directory, io generates nothing \
+         for it, and a declined install therefore has nothing to take back",
+    );
     assert!(
         chosen.discloses(),
         "a bundle out of a marketplace was read as a directory the operator wrote, \
@@ -1870,12 +1917,21 @@ fn f16_and_f17_have_one_reader_and_one_validator() {
          unnecessary in 0.30.0 — and it was the last thing that wrote to an \
          operator's configuration before they had consented to anything",
     );
+    // **The needle moved with the call and the count did not, which is the point.**
+    // 0.31.0 replaced `disclosure` with `adapted_disclosure` at this one site — the
+    // second argument is the bundle's own directory, so a foreign bundle's hooks
+    // can be named while io-harness reads the generated manifest. The property
+    // being gated is unchanged: **one** validation stands between a stranger's
+    // directory and the operator's configuration file. Both spellings are counted
+    // together, so restoring the old call beside the new one fails here rather
+    // than passing because the needle only knew one of them.
+    let validations = planner.matches("marketplace::disclosure(").count()
+        + planner.matches("marketplace::adapted_disclosure(").count();
     assert_eq!(
-        planner.matches("marketplace::disclosure(").count(),
-        1,
-        "the validation that gates the write has {} call sites in src/manage.rs, not \
-         1 — a second is a second answer about whether a bundle may be declared",
-        planner.matches("marketplace::disclosure(").count(),
+        validations, 1,
+        "the validation that gates the write has {validations} call sites in \
+         src/manage.rs, not 1 — a second is a second answer about whether a bundle \
+         may be declared",
     );
 
     // The hand reader is gone from the one file whose job was reading somebody
@@ -2624,6 +2680,7 @@ fn f5_a_local_source_is_already_here_and_starts_no_program() {
                     "./plugins/reviewer".to_string()
                 ))
             ),
+            &named(),
             &root.join("marketplaces"),
             &root.join("staging"),
         ),
@@ -2634,6 +2691,7 @@ fn f5_a_local_source_is_already_here_and_starts_no_program() {
     assert_eq!(
         marketplace::fetched(
             &entry_bundle(&here, None),
+            &named(),
             &root.join("marketplaces"),
             &root.join("staging")
         ),
@@ -2665,8 +2723,13 @@ fn f5_a_remote_entry_on_another_host_is_refused_before_anything_is_started() {
                 sha: None,
             })),
         );
-        let said = marketplace::fetched(&bundle, &root.join("marketplaces"), &root.join("staging"))
-            .expect_err("a url io does not read is a refusal");
+        let said = marketplace::fetched(
+            &bundle,
+            &named(),
+            &root.join("marketplaces"),
+            &root.join("staging"),
+        )
+        .expect_err("a url io does not read is a refusal");
         assert!(
             said.contains(io_cli::fetch::HOST),
             "the refusal says what io does read, so it is actionable rather than a \
@@ -2693,8 +2756,13 @@ fn f5_a_pin_that_could_become_an_argument_refuses_the_whole_entry() {
         })),
     );
 
-    let said = marketplace::fetched(&bundle, &root.join("marketplaces"), &root.join("staging"))
-        .expect_err("a pin that is an option is a refusal");
+    let said = marketplace::fetched(
+        &bundle,
+        &named(),
+        &root.join("marketplaces"),
+        &root.join("staging"),
+    )
+    .expect_err("a pin that is an option is a refusal");
     assert!(
         said.contains("reviewer"),
         "the refusal names the bundle it withheld: {said:?}",

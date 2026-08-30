@@ -250,9 +250,14 @@ impl Bundle {
     /// The name of the manifest file this bundle's two keys came out of.
     #[must_use]
     pub fn read_from(&self) -> &'static str {
-        match self.origin {
-            Origin::Native => MANIFEST,
-            Origin::Adapted => crate::adapt::MANIFEST_FILE,
+        // **An index entry's two keys came out of the index**, not out of any
+        // `plugin.json`, and in the common case that file does not exist at the
+        // path the sentence would send an operator to. `source` is what says which
+        // read this was: the walk sets it `None`, `from_entry` sets it `Some`.
+        match (self.origin, self.source.is_some()) {
+            (Origin::Native, _) => MANIFEST,
+            (Origin::Adapted, true) => crate::adapt::INDEX_FILE,
+            (Origin::Adapted, false) => crate::adapt::MANIFEST_FILE,
         }
     }
 }
@@ -786,6 +791,16 @@ fn name_of(path: &Path) -> Option<String> {
 /// brought down.
 const ENTRIES: &str = ".entries";
 
+/// Where the repositories one marketplace's index pointed at are kept.
+///
+/// `<marketplaces>/.entries/<owner>/<repo>` — the marketplace's own name, so
+/// [`discard`] removes an index's fetched repositories with the index itself
+/// rather than leaving them in a directory no surface lists. Dot-named, so
+/// [`markets`] cannot count one as a marketplace the operator added.
+fn entries(marketplaces: &Path, market: &Named) -> PathBuf {
+    at(marketplaces.join(ENTRIES).as_path(), market)
+}
+
 /// The directory a bundle is actually in, fetching it where it is not here yet.
 ///
 /// **A local source is already on the disk and this does nothing at all.** 53 of
@@ -799,7 +814,12 @@ const ENTRIES: &str = ".entries";
 /// only**, exactly as a local source is: it is a value out of a stranger's file
 /// and the directory it addresses is inside the clone or the entry addresses the
 /// clone's root.
-pub fn fetched(bundle: &Bundle, marketplaces: &Path, staging: &Path) -> Result<PathBuf, String> {
+pub fn fetched(
+    bundle: &Bundle,
+    market: &Named,
+    marketplaces: &Path,
+    staging: &Path,
+) -> Result<PathBuf, String> {
     let Some(crate::adapt::Source::Remote(remote)) = &bundle.source else {
         return Ok(bundle.dir.clone());
     };
@@ -819,7 +839,21 @@ pub fn fetched(bundle: &Bundle, marketplaces: &Path, staging: &Path) -> Result<P
             out
         })?;
 
-    let into = at(marketplaces.join(ENTRIES).as_path(), &named);
+    // **Keyed on the marketplace that named it and on the pin, not on the
+    // repository alone**, and both halves are defects this would otherwise have.
+    //
+    // `clone_at` answers `Already` the instant the destination exists, before the
+    // pin is consulted, and nothing records which commit a directory holds. Two
+    // entries naming one repository at two commits — which is ordinary; 85 of the
+    // official index's entries are `git-subdir` into a handful of repositories —
+    // would give the second entry the first one's code, adapted from a tree the
+    // index did not name for it, with the disclosure truthfully describing the
+    // wrong commit. The pin in the path makes `Already` mean *this* commit.
+    //
+    // Under the marketplace's own `<owner>/<repo>` so that `discard` can take the
+    // entries away with the clone that named them. Keyed the other way they would
+    // outlive every removal in a directory nothing lists.
+    let into = at(&entries(marketplaces, market), &named).join(pin.spelling());
     match crate::fetch::clone_at(&crate::fetch::url(&named), &into, staging, &pin) {
         crate::fetch::Fetched::Cloned(dir) | crate::fetch::Fetched::Already(dir) => {
             Ok(match &remote.path {
@@ -974,6 +1008,14 @@ pub fn discard(root: &Path, named: &Named) -> Outcome {
             said,
         };
     }
+    // **The repositories this marketplace's index pointed at go with it.** They
+    // were fetched only because this index named them, they sit under
+    // `.entries/<owner>/<repo>` keyed on this marketplace for exactly that reason,
+    // and nothing lists them — a removal that left them behind would leave clones
+    // on the disk the operator has no surface to find or delete. Best effort and
+    // before the clone, so the sentence below is not written unless the clone
+    // itself went.
+    let _ = std::fs::remove_dir_all(entries(root, named));
     match std::fs::remove_dir_all(&clone) {
         Ok(()) => {
             let mut said = String::from("the clone is gone: ");
@@ -1202,6 +1244,22 @@ fn asked(query: &str) -> (&str, Option<&str>) {
 /// what makes `<name>@<owner>/<repo>` keep resolving to a clone's own root bundle
 /// when that root shares its label with something deeper.
 pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
+    located(markets, query).map(|(_, bundle)| bundle.dir.clone())
+}
+
+/// [`locate`], keeping the marketplace and the bundle rather than the path alone.
+///
+/// **The install needs all three and a `PathBuf` throws two of them away.** An
+/// adapted bundle's directory is not the directory a `[[plugin]]` entry names —
+/// the entry names the generated manifest, which lives under
+/// `<adapters>/<owner>/<repo>/<name>`, and the owner and the repository come from
+/// the [`Market`] while the name comes from the [`Bundle`]. A remote entry's
+/// directory does not exist at all until [`fetched`] has run, and what says so is
+/// [`Bundle::source`].
+///
+/// One matcher and two returns, so `plugin add` and every listing agree about
+/// which bundle a word names. [`locate`] is this, narrowed.
+pub fn located<'a>(markets: &'a [Market], query: &str) -> Result<(&'a Market, &'a Bundle), String> {
     let (name, qualifier) = asked(query);
     let hits: Vec<(&Market, &Bundle)> = markets
         .iter()
@@ -1226,7 +1284,7 @@ pub fn locate(markets: &[Market], query: &str) -> Result<PathBuf, String> {
     };
     let hits = if precise.len() == 1 { precise } else { hits };
     match hits.as_slice() {
-        [(_, bundle)] => Ok(bundle.dir.clone()),
+        [(market, bundle)] => Ok((market, bundle)),
         [] => Err(unheld(markets, query)),
         several => {
             let spellings = several
@@ -1365,12 +1423,123 @@ pub fn chosen(
     dir: &Path,
     markets: impl FnOnce() -> Vec<Market>,
     text: &str,
+    at: Homes<'_>,
 ) -> Result<Chosen, String> {
     match crate::pluginview::refusal(dir) {
         None => Ok(Chosen::Path(dir.to_path_buf())),
-        Some(refused) => locate(&markets(), text)
+        Some(refused) => prepared(&markets(), text, at.marketplaces, at.staging, at.adapters)
             .map(Chosen::Held)
             .map_err(|missing| format!("{refused} — {missing}")),
+    }
+}
+
+/// The three directories an install may need, passed in rather than looked up.
+///
+/// One argument instead of three, because [`chosen`] already takes three and a
+/// fourth, fifth and sixth positional `&Path` is a call nobody can read. Grouped
+/// rather than resolved inside for this module's standing reason: a decision
+/// behind [`crate::home`] is a decision nothing under `tests/` can reach without
+/// moving the operator's home out from under a suite running in parallel.
+#[derive(Debug, Clone, Copy)]
+pub struct Homes<'a> {
+    /// Where marketplaces are cloned to.
+    pub marketplaces: &'a Path,
+    /// Where a clone is assembled before it is renamed into place.
+    pub staging: &'a Path,
+    /// Where io writes the manifests it generates.
+    pub adapters: &'a Path,
+}
+
+/// A bundle brought to the point where a `[[plugin]]` entry can name it.
+///
+/// Three directories rather than one, because for an adapted bundle they are three
+/// different places and every surface downstream needs a different one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prepared {
+    /// What the `[[plugin]]` entry names. The bundle's own directory for a native
+    /// bundle; the generated manifest's directory for an adapted one.
+    pub declare: PathBuf,
+    /// The bundle's own directory — the author's files. What the disclosure reads
+    /// hooks from, because the generated manifest carries none.
+    pub from: PathBuf,
+    /// The directory io created for this install, if it created one. Removed when
+    /// the operator declines, so a refused install leaves nothing behind.
+    pub made: Option<PathBuf>,
+}
+
+/// Resolve a word to a bundle and bring it to the point of being installable.
+///
+/// **This is the step 0.29.0 and 0.30.0 did not need and 0.31.0 cannot do
+/// without.** Until this release every bundle a marketplace held already carried
+/// a `plugin.toml`, so resolving a name to a directory *was* the install. A bundle
+/// published as a Claude Code or Codex plugin carries no manifest io-harness
+/// reads, and one in another repository is not on the disk at all, so the word has
+/// to be resolved, fetched and adapted before there is anything an entry can name.
+///
+/// Native bundles are untouched by every line of it: [`fetched`] returns their own
+/// directory unchanged and the generation is skipped, so `plugin add` on a
+/// `plugin.toml` marketplace does exactly what it did in 0.30.2.
+///
+/// **The adapter is written before consent and removed if consent is refused**,
+/// and that is the honest order rather than a convenience. The disclosure is
+/// io-harness reading the bundle, and io-harness has no loader that takes a
+/// foreign manifest — there is nothing to read until the manifest io generates
+/// exists. What the operator's *configuration* never sees is any of it:
+/// `Prepared::made` is what a declined install removes, and the scope file is not
+/// opened either way.
+pub fn prepared(
+    markets: &[Market],
+    query: &str,
+    marketplaces: &Path,
+    staging: &Path,
+    adapters: &Path,
+) -> Result<Prepared, String> {
+    let (market, bundle) = located(markets, query)?;
+    let from = fetched(bundle, &market.named, marketplaces, staging)?;
+    // **The disk decides, not how the bundle was listed.** `from_entry` stamps
+    // `Origin::Adapted` on every index entry, because an index is a foreign format
+    // — but the directory it points at may still carry io's own manifest, and a
+    // remote entry's repository is not even read until the fetch above has run. A
+    // rule keyed on `origin` would generate an adapter over an author's real
+    // `plugin.toml`, silently dropping the `[[hook]]`, `[[mcp]]` and `[[agent]]`
+    // blocks the generator has no source for. `holdings` says a native manifest
+    // wins its own directory; this is that same sentence on the install path.
+    if from.join(MANIFEST).is_file() {
+        return Ok(Prepared {
+            declare: from.clone(),
+            from,
+            made: None,
+        });
+    }
+    // The **normalised id**, not the label. It is what the generated manifest
+    // declares and what io-harness namespaces by, so a directory named anything
+    // else would put two spellings of one bundle on the disk — and on a
+    // case-insensitive filesystem two bundles labelled `Foo` and `foo` would share
+    // one adapter directory and the second install would overwrite the first.
+    let name = crate::adapt::normalised(&bundle.label()).ok_or_else(|| {
+        format!(
+            "`{}` is not a usable plugin id, so io cannot name a directory for it",
+            bundle.label()
+        )
+    })?;
+    let into = crate::adapt::at(adapters, &market.named.owner, &market.named.repo, &name);
+    crate::adapt::generate(&from, &name, &into)?;
+    Ok(Prepared {
+        declare: into.clone(),
+        from,
+        made: Some(into),
+    })
+}
+
+/// Take back what an install created, because the operator said no.
+///
+/// A no-op for a native bundle, which created nothing. Best effort by design: the
+/// operator has already declined and the entry was never written, so a directory
+/// that cannot be removed is a stale cache rather than anything they consented to,
+/// and a refusal reported *after* a refusal is noise about io's own housekeeping.
+pub fn unmake(made: Option<&Path>) {
+    if let Some(dir) = made {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -1391,16 +1560,41 @@ pub fn chosen(
 pub enum Chosen {
     /// A directory on this machine, named by the operator.
     Path(PathBuf),
-    /// A bundle a marketplace holds, resolved by name.
-    Held(PathBuf),
+    /// A bundle a marketplace holds, resolved by name, fetched where it was
+    /// elsewhere and adapted where its manifest is not one io-harness reads.
+    Held(Prepared),
 }
 
 impl Chosen {
-    /// The directory either reading named.
+    /// The directory a `[[plugin]]` entry names.
     #[must_use]
     pub fn dir(&self) -> &Path {
         match self {
-            Self::Path(dir) | Self::Held(dir) => dir,
+            Self::Path(dir) => dir,
+            Self::Held(prepared) => &prepared.declare,
+        }
+    }
+
+    /// The bundle's **own** directory, which for an adapted bundle is not
+    /// [`Chosen::dir`].
+    ///
+    /// What the disclosure reads hooks from: the generated manifest carries none,
+    /// so asking io-harness what the bundle contributes cannot answer what its
+    /// author declared.
+    #[must_use]
+    pub fn from(&self) -> &Path {
+        match self {
+            Self::Path(dir) => dir,
+            Self::Held(prepared) => &prepared.from,
+        }
+    }
+
+    /// What a declined install must take back, if anything was created.
+    #[must_use]
+    pub fn made(&self) -> Option<&Path> {
+        match self {
+            Self::Path(_) => None,
+            Self::Held(prepared) => prepared.made.as_deref(),
         }
     }
 

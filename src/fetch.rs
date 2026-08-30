@@ -381,6 +381,30 @@ impl Pin {
     /// when it left here — the same reason [`resolve`] refuses such a segment, and
     /// the reason this returns `None` rather than trimming anything.
     ///
+    /// A directory name that says which pin this is.
+    ///
+    /// **A fetched repository is keyed on it**, because `clone_at` answers
+    /// `Already` on an existing destination before it looks at the pin and nothing
+    /// records which commit a directory holds. Two index entries naming one
+    /// repository at two commits are two directories, so the second cannot be
+    /// handed the first one's tree.
+    ///
+    /// Safe as a path component by construction rather than by filtering: a commit
+    /// is hex, a ref has already passed [`segment`], and the unpinned case is a
+    /// constant. Nothing an index wrote reaches this unjudged.
+    #[must_use]
+    pub fn spelling(&self) -> String {
+        match self {
+            Self::Head => String::from("head"),
+            Self::Ref(reference) => {
+                let mut out = String::from("ref-");
+                out.push_str(reference);
+                out
+            }
+            Self::Commit(commit) => commit.clone(),
+        }
+    }
+
     /// A commit is preferred over a tag where an entry carries both, because a tag
     /// is a name its author can move and a commit is not, and an index that names
     /// both has named the commit it means.

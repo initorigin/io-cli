@@ -257,7 +257,15 @@ impl Listed {
     /// through every one of them to be true anywhere.
     #[must_use]
     pub fn adapted(&self, adapters: &Path) -> bool {
-        self.root.starts_with(adapters)
+        // **Both sides resolved, and `src/marketplace.rs`'s `orphaned` argues why
+        // at length.** A temporary directory on macOS is reached through a
+        // symlink — `/var/folders/…` and `/private/var/folders/…` are one
+        // directory — and `starts_with` compares components. Comparing raw here
+        // and resolved there would have `removal_cost` name a bundle as an
+        // orphaned adapter while its own row drew the native mark: two surfaces,
+        // two answers, one bundle.
+        let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        resolve(&self.root).starts_with(resolve(adapters))
     }
 }
 

@@ -536,7 +536,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// directory beside a configuration file the session is not using and leave the
 /// skills sitting beside the one it is unread.
 fn default_skills() -> Option<PathBuf> {
-    let dir = crate::home::in_force()?.0.join("skills");
+    let dir = crate::home::authored()?.join("skills");
     dir.is_dir().then_some(dir)
 }
 

@@ -290,8 +290,12 @@ pub fn hooks_in(file: &Path) -> Vec<Hook> {
                     continue;
                 };
                 found.push(Hook {
-                    // Filtered, never bounded. The event is the file's own word
-                    // and is bounded, because it is a label rather than argv.
+                    // **The event is bounded and the command is not**, and the
+                    // asymmetry is the point rather than an oversight: an event is
+                    // a label, and a label a stranger made a megabyte long is a
+                    // row that buries the one above it. A command is argv the
+                    // operator is being told will not run, and a shortened argv on
+                    // a consent surface is the one thing it must never show.
                     event: bounded(&plain(&event)),
                     command: plain(&command),
                 });
@@ -592,12 +596,41 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
 /// with nobody told.
 fn directory(root: &Path, named: Option<&str>, conventional: &str) -> Option<PathBuf> {
     for candidate in named.into_iter().chain(std::iter::once(conventional)) {
-        let at = root.join(candidate);
+        // **Every component that is not a plain name is dropped, and this is the
+        // one value in the release that decides which directory io reads.** A
+        // manifest's `skills` is a stranger's string; `Path::join` replaces the
+        // base outright on an absolute argument and keeps `..` verbatim, so
+        // `"skills": "../../.."` would write the operator's own home into a
+        // generated manifest and `Skills::discover` would read every `*.md` in it
+        // into the prompt. The same filter `crate::marketplace` applies to a
+        // source path and to a hooks path, applied here for the same reason.
+        let Some(at) = inside(root, candidate) else {
+            continue;
+        };
         if at.is_dir() {
             return Some(std::fs::canonicalize(&at).unwrap_or(at));
         }
     }
     None
+}
+
+/// `said` resolved against `root`, or `None` where it addresses anything outside.
+///
+/// Plain names only. A `..`, an absolute path, a root or a prefix component is not
+/// dropped-and-continued but refuses the whole value, because a manifest that
+/// names `../../..` has not named a directory in this bundle at all and quietly
+/// reading `<root>` instead would be io choosing a directory the author did not.
+/// `.` is passed over, since `"./skills/"` is how both foreign formats spell it.
+fn inside(root: &Path, said: &str) -> Option<PathBuf> {
+    let mut at = root.to_path_buf();
+    for part in Path::new(said).components() {
+        match part {
+            std::path::Component::Normal(name) => at.push(name),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(at)
 }
 
 /// One path, as a manifest spells it.
