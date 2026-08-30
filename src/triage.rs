@@ -41,7 +41,7 @@ pub enum Disposition {
     Silent,
 }
 
-/// Every kind io-harness 0.69 declares, in its own declaration order.
+/// Every kind io-harness 0.71 declares, in its own declaration order.
 ///
 /// The order is the enum's rather than alphabetical so that this table can be
 /// read down the side of `observe.rs` when the pin moves.
@@ -106,7 +106,13 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         Disposition::Line,
         "the plan block, and the plan field",
     ),
-    ("question_asked", Disposition::Line, "the question line"),
+    (
+        "question_asked",
+        Disposition::Silent,
+        "the question overlay, which is on screen at the moment it is asked — and a committed line \
+         wherever nothing draws one: plain mode, and a resumed run whose overlay this process is \
+         not holding",
+    ),
     ("question_answered", Disposition::Line, "the answer line"),
     (
         "plan_proposed",
