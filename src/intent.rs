@@ -42,6 +42,13 @@
 //! **One question, unchanged.** A [`Questions`] of one is a delivery of one, the
 //! overlay has no batch chrome on it, and every key does what it did in 0.32.0.
 //!
+//! **A parked batch resumes as a batch.** The two ways in stay one surface: the
+//! store parks a whole `ask_questions` as one row whose own columns are a
+//! *rendering* of the ask rather than the ask, so [`Intent::resumed`] takes the
+//! questions out of `PendingQuestion::questions` and hands them to the same
+//! constructor a live batch goes through. Delivery is still singular, because the
+//! row is — see [`Intent::resolve`].
+//!
 //! # An offer can say more than its label (0.33.0)
 //!
 //! io-harness 0.72.0 turned a choice from a string into a `Choice`, which may
@@ -239,6 +246,36 @@ impl<T> Destination<T> {
     pub(crate) fn parked(&self) -> bool {
         matches!(self, Self::Stored)
     }
+}
+
+/// A resumed batch's decisions as the one text its row is answered with.
+///
+/// **Every answer beside the question it answers**, because a bare list of five
+/// sentences is not readable as an answer set and the model would have to re-derive
+/// the pairing from position — which is io-harness's own argument for the block it
+/// writes when a [`Responder`] answers a batch in the process that asked. This is
+/// deliberately the same shape, so the model reads the same thing whether the batch
+/// was answered live or a day later through `/resume`. It is spelled out here
+/// rather than called because the harness's own `assemble_answers` is private to
+/// its run loop; the cost is stated rather than hidden, and it is why the test for
+/// this asserts the pairing rather than a literal block.
+///
+/// **`None` when anything was left unanswered**, and that is the same rule the
+/// harness applies to a live batch: a batch is answered wholly or not at all, so a
+/// decline anywhere in it means there is no answer to resume with and the run stays
+/// parked on the row it was found on. Assembling a text with a hole in it would
+/// resolve the row — one compare-and-swap, no second chance — on an ask the
+/// operator did not finish.
+fn assembled(batch: &[Question], answers: &[Option<String>]) -> Option<String> {
+    if answers.len() != batch.len() || answers.iter().any(Option::is_none) {
+        return None;
+    }
+    let mut text = String::new();
+    for (at, (question, answer)) in batch.iter().zip(answers).enumerate() {
+        let answer = answer.as_deref().unwrap_or_default();
+        text.push_str(&format!("{}. {}\n   {answer}\n", at + 1, question.question));
+    }
+    Some(text.trim_end().to_string())
 }
 
 /// What the last row says. The offers are the agent's words; this one is the
@@ -468,6 +505,24 @@ impl Intent {
             batch.push(one.question);
             answers.push(Destination::Turn(one.answer));
         }
+        Self::opened(batch, answers)
+    }
+
+    /// The **one** way an overlay is built, whichever way in was taken.
+    ///
+    /// The two constructors differ in exactly one thing — where each answer goes —
+    /// and nothing else about a question overlay may depend on that. Before 0.33.0
+    /// [`Self::resumed`] assembled its own struct literal beside this one, and the
+    /// copy is precisely how a resumed batch came to be drawn as a single question
+    /// with no offers on it: the stored path built its own `Question` instead of
+    /// taking the ones the agent asked, and [`Self::list`] never saw them. One
+    /// construction, so a surface the live path has is a surface the stored path
+    /// has.
+    ///
+    /// `batch` is never empty — [`Questions`] cannot be, and [`Self::resumed`]
+    /// falls back to the row's own columns when the store holds no batch — which is
+    /// what lets this index it.
+    fn opened(batch: Vec<Question>, answers: Vec<Destination<Option<String>>>) -> Self {
         let offers = Self::list(&batch[0]);
         Self {
             decided: vec![None; batch.len()],
@@ -577,23 +632,49 @@ impl Intent {
     /// so neither reaches the overlay — an answered row is not something to ask
     /// again, and refusing to open on one is the caller's job, which is the only
     /// place that knows whether it is resuming or replaying.
+    ///
+    /// # A parked batch is a batch, and the row's own columns are not it (0.33.0)
+    ///
+    /// **`questions` is read first, and it is the only place a parked batch
+    /// survives.** io-harness 0.72.0 parks a whole `ask_questions` as *one*
+    /// `pending_questions` row, and that row's columns are a rendering rather than
+    /// the ask: `question` is the batch as numbered prose (`"1. …\n2. …"`),
+    /// `context` is the **first** question's context, and `choices` is empty
+    /// because the synthesised row question has none. Building from those three
+    /// gave a resumed batch one accent line holding embedded newlines — which
+    /// ratatui does not break a `Line` on, so every question ran together into one
+    /// wrapped paragraph — question one's context presented as everyone's, a picker
+    /// with no offers at all, and `multiple` defaulted to `false`, which is no
+    /// marks and no [`Question::answer_of`]. Everything the operator needed was in
+    /// `questions` and nothing read it.
+    ///
+    /// It is reachable through this release's own flow rather than at an edge: the
+    /// batch overlay's `Esc` decides a question as unanswered and moves on, the
+    /// harness commits a batch only when every entry is `Some`, so the run parks —
+    /// and `/resume` opens it here. `io exec` reaches it on the first ask, having
+    /// no [`Responder`] at all.
+    ///
+    /// **Empty `questions` is the singular ask and stays exactly as it was**, which
+    /// is not a fallback so much as the other half of the store's shape:
+    /// `Store::put_question` writes no `questions` value, and a row written by
+    /// 0.71.0 has no such column to write. Those rows are built from `question`,
+    /// `context` and `choices` as they always were.
     pub fn resumed(pending: &PendingQuestion) -> Self {
-        let mut question =
-            Question::new(pending.question.clone()).with_choices(pending.choices.clone());
-        if let Some(context) = pending.context.clone() {
-            question = question.with_context(context);
-        }
-        let offers = Self::list(&question);
-        Self {
-            batch: vec![question],
-            answers: vec![Destination::Stored],
-            decided: vec![None],
-            drafts: vec![String::new()],
-            at: 0,
-            composer: Composer::new(),
-            offers,
-            reserved: crate::app::COMPOSER_ROWS,
-        }
+        let batch = if pending.questions.is_empty() {
+            let mut question =
+                Question::new(pending.question.clone()).with_choices(pending.choices.clone());
+            if let Some(context) = pending.context.clone() {
+                question = question.with_context(context);
+            }
+            vec![question]
+        } else {
+            pending.questions.clone()
+        };
+        // One destination per question, as the live path has, so `record` and
+        // `key` cannot tell the two apart. What differs is delivery: the row is
+        // one row however many questions it parked, and `resolve` says so.
+        let answers = batch.iter().map(|_| Destination::Stored).collect();
+        Self::opened(batch, answers)
     }
 
     /// The question on screen, for whatever has to show or assert it.
@@ -878,9 +959,22 @@ impl Intent {
     /// the answer comes back out here and the caller delivers it with
     /// `io_harness::resume_with_answer_observed`. Dropping that value drops the
     /// operator's answer, which is why it is a return rather than a side effect.
-    /// Only the stored path can produce it, and a stored overlay is one question
-    /// by construction — a `PendingQuestion` is one row.
+    ///
+    /// **A resumed batch is still one answer, because it is still one row.** The
+    /// store parks a whole `ask_questions` under a single `question_id` and
+    /// `answer_question` is a single compare-and-swap, so there is exactly one text
+    /// to hand back however many questions the operator just worked through —
+    /// which is why this is a single `Option` and not a vector, and why there is no
+    /// loop resuming the run once per question. The text pairs every answer with
+    /// the question it answers, and a batch with anything left unanswered has no
+    /// text at all: it comes back `Some(None)` and the run stays parked.
     pub fn resolve(self, answers: Vec<Option<String>>) -> Option<Option<String>> {
+        // A stored batch: many decisions, one row, one text. Live batches fall
+        // through — each of their questions has a channel of its own that the
+        // harness is awaiting, and joining those would answer none of them.
+        if self.batch.len() > 1 && self.answers.iter().all(Destination::parked) {
+            return Some(assembled(&self.batch, &answers));
+        }
         let mut undelivered = None;
         for (destination, answer) in self.answers.into_iter().zip(answers) {
             if let Some(kept) = destination.deliver(answer) {

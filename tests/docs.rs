@@ -1992,7 +1992,7 @@ fn capitalised(word: &str) -> String {
 /// either sentence. Each fails, naming the command or the number.
 #[test]
 fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
-    use io_cli::commands::{runs_mid_turn, MID_TURN};
+    use io_cli::commands::runs_mid_turn;
 
     // Reached through their own arms rather than through the mid-turn set, and
     // named in the prose as exactly that.
@@ -2001,13 +2001,28 @@ fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
     let keys = guide("keys");
     let contract = read("docs/CONTRACT.md");
 
-    let count = spell(MID_TURN.len());
+    // **Counted from `COMMANDS`, not from `MID_TURN`.** `MID_TURN` holds
+    // *spellings*, and `/settings` is a second spelling of `/config` rather than a
+    // command of its own — `parse` reads `"config" | "settings"` in every arm, and
+    // `COMMANDS` carries one row for the pair. A count taken from `MID_TURN` would
+    // tell an operator there is a twelfth command and then fail to name it. The
+    // same reasoning already applies in the other direction to `/copy diff`, which
+    // is a `COMMANDS` row and not a command, so the set is deduplicated by first
+    // word before it is counted.
+    let mut admitted: Vec<&str> = COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| runs_mid_turn(name.trim_start_matches('/')))
+        .map(|name| name.split_whitespace().next().unwrap_or(name))
+        .collect();
+    admitted.dedup();
+    let count = spell(admitted.len());
     assert_ne!(
         count,
         "an unspelled number",
         "the mid-turn set is {} commands and `spell` has no word for it, so the \
          two sentences below cannot be checked at all",
-        MID_TURN.len(),
+        admitted.len(),
     );
 
     let opens = format!(
@@ -2017,8 +2032,8 @@ fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
     assert!(
         keys.contains(&opens),
         "docs/guide/keys.md should open the mid-turn paragraph {opens:?}; \
-         `MID_TURN` holds {} commands",
-        MID_TURN.len(),
+         `COMMANDS` admits {} of them",
+        admitted.len(),
     );
     assert!(
         flat(&contract).contains(&format!(
@@ -2027,18 +2042,22 @@ fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
         )),
         "docs/CONTRACT.md should say how many commands run mid-turn, and the code \
          admits {}",
-        MID_TURN.len(),
+        admitted.len(),
     );
 
-    // The admitted half, as the prose names it.
+    // The admitted half, as the prose names it. Compared against the same
+    // deduplicated set the count came from, so the sentence and the number in
+    // front of it cannot disagree — and so `/settings`, which is `/config`'s other
+    // spelling rather than a command, is not demanded of a page that lists
+    // commands.
     let mut named = slash_words(paragraph(&keys, &opens));
     named.sort();
-    let mut admitted: Vec<String> = MID_TURN.iter().map(|name| (*name).to_string()).collect();
-    admitted.sort();
+    let mut listed_admitted: Vec<String> = admitted.iter().map(|name| name.to_string()).collect();
+    listed_admitted.sort();
     assert_eq!(
-        named, admitted,
+        named, listed_admitted,
         "docs/guide/keys.md names a different set of mid-turn commands than \
-         `MID_TURN` holds",
+         `COMMANDS` admits",
     );
 
     // The refused half, likewise — read out of `COMMANDS` through the same

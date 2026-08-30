@@ -276,61 +276,73 @@ fn f13_the_deciding_file_is_the_one_actually_in_force() {
     );
 }
 
-// The cycling keys, and the property that makes them possible.
+// The arrow keys, and the two sentinels the surface they open matches on.
+//
+// `configure::cycled` was asserted here through 0.32.0 — the arrow's old
+// next-value-along. 0.33.0 removed the write-on-a-keystroke it fed and left the
+// function called by nothing, so it went the way every other tested-but-uncalled
+// function in this product has gone: deleted, with its tests. What the arrow does
+// now is open a descent, which is `value_rows` in the driver and is gated by
+// `tests/structure.rs`.
 
-/// A boolean and a closed enum cycle; a number does not.
+/// **The two rows of `prices.as_of`'s descent carry keys no configuration file can
+/// also name.**
 ///
-/// A number's ladder cannot be shown on the row it is changed on, and a held arrow
-/// would write the file once per key repeat.
+/// The rows travel as a parallel `Vec<String>` the driver matches on by value, and
+/// through 0.32.0 the decline row's entry in it was the bare label `leave it`.
+/// TOML accepts `"leave it" = true` as a quoted key and `configure::settings`
+/// sweeps every key out of `Config::origins()` onto the bare `/config` list, so
+/// such a key would have been handed a row of its own whose Enter reached the
+/// do-nothing arm and reported nothing — a setting an operator could see and could
+/// not change, with no message saying why. `!` is the character that makes that
+/// impossible, and it is why the act beside the decline row was already spelled
+/// `!refresh-prices`.
+///
+/// Sabotage: put `store::LEAVE_IT` back in `descent`'s `keys` vector, or drop the
+/// `!` from either sentinel. Both fail here, and neither is caught anywhere else —
+/// the labels the picker draws do not change under either edit.
 #[test]
-fn n4_only_booleans_and_closed_enums_cycle_in_place() {
-    assert_eq!(
-        configure::cycled(&Kind::Flag, Some("false"), true).as_deref(),
-        Some("true")
+fn the_two_descent_sentinels_are_distinct_and_cannot_be_a_configuration_key() {
+    assert_ne!(
+        configure::DECLINE,
+        configure::REFRESH_PRICES,
+        "two rows answering to one key means the first arm found wins and the other row is dead"
     );
-    assert_eq!(
-        configure::cycled(&Kind::Flag, Some("true"), true).as_deref(),
-        Some("false"),
-        "a closed set wraps rather than stopping"
-    );
-    let effects = Kind::Choice(configure::effects());
-    assert_eq!(
-        configure::cycled(&effects, Some("allow"), true).as_deref(),
-        Some("ask")
-    );
-    assert_eq!(
-        configure::cycled(&effects, Some("allow"), false).as_deref(),
-        Some("deny"),
-        "backwards from the first option wraps to the last"
-    );
-    for kind in [
-        Kind::Number { signed: false },
-        Kind::Model,
-        Kind::File,
-        Kind::List,
-        Kind::Text,
-        Kind::Machine,
-    ] {
-        assert_eq!(
-            configure::cycled(&kind, Some("x"), true),
-            None,
-            "{kind:?} must not cycle in place"
+    for sentinel in [configure::DECLINE, configure::REFRESH_PRICES] {
+        assert!(
+            sentinel.starts_with('!'),
+            "{sentinel:?} is a key a configuration file could also name, and the driver \
+             matches these by value"
         );
     }
-}
+    // The label is deliberately *not* a sentinel — it is the word the operator
+    // reads — which is the whole reason the key beside it has to be one.
+    assert!(
+        !io_cli::store::LEAVE_IT.starts_with('!'),
+        "the decline label is what an operator reads and must stay a plain phrase"
+    );
 
-/// An unset boolean turns on with one press of the forward key.
-#[test]
-fn n4_an_unset_flag_enters_the_list_at_its_far_end() {
+    let s = scopes("", "", "");
+    let (_, rows, keys) =
+        configure::descent(&s.config(), "prices.as_of").expect("`prices.as_of` has a descent");
     assert_eq!(
-        configure::cycled(&Kind::Flag, None, true).as_deref(),
-        Some("true"),
-        "forward on an unset flag enters at the last option, which turns it on"
+        keys,
+        vec![
+            configure::DECLINE.to_string(),
+            configure::REFRESH_PRICES.to_string()
+        ],
+        "the keys the driver matches on are the two sentinels, decline first"
     );
     assert_eq!(
-        configure::cycled(&Kind::Flag, None, false).as_deref(),
-        Some("false"),
-        "and backward enters at the first"
+        rows.len(),
+        keys.len(),
+        "the vectors are parallel and indexed by the same row: a row with no key \
+         reaches `paths.get(index)` as `None` and does nothing at all"
+    );
+    assert_eq!(
+        rows[0].label,
+        io_cli::store::LEAVE_IT,
+        "row 0 still reads as the decline every other confirmation in this product opens on"
     );
 }
 
@@ -339,11 +351,11 @@ fn n4_an_unset_flag_enters_the_list_at_its_far_end() {
 ///
 /// The owner's literal request was toggles on the spacebar, and it cannot be
 /// built: `Picker` consumes every printable as a fuzzy filter, so a two-word query
-/// would toggle a setting on its own space. This asserts the filter still owns the
+/// would open a descent on its own space. This asserts the filter still owns the
 /// space, which is what makes the arrows the right binding rather than a
 /// preference.
 ///
-/// Sabotage: bind the cycle to Space. Under it this fails, and it fails on the
+/// Sabotage: bind the descent to Space. Under it this fails, and it fails on the
 /// query an operator types to find a key among thirty-seven.
 #[test]
 fn n4_the_picker_filter_still_owns_the_space() {
@@ -366,7 +378,7 @@ fn n4_the_picker_filter_still_owns_the_space() {
         "the space must reach the query, or a two-word search is impossible"
     );
 
-    // And the arrows the cycling uses are still free: neither moves the marker
+    // And the arrows the descent uses are still free: neither moves the marker
     // nor chooses a row, so intercepting them takes nothing from any surface.
     let before = picker.selected();
     for code in [KeyCode::Left, KeyCode::Right] {

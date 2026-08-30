@@ -131,27 +131,68 @@ fn every_line_kind_has_an_arm_in_the_renderer() {
     let source = std::fs::read_to_string("src/events.rs")
         .expect("this crate's source is readable")
         .replace("\r\n", "\n");
+
+    // **The renderer's match, sliced out before anything is searched — and the
+    // twelve spaces alone are not enough to find it.**
+    //
+    // Two assertions live in this indentation. A bare `contains` was satisfied by
+    // the variant's name appearing in a doc comment, which is how this test went
+    // green through the whole of 0.14.0's sabotage pass with the `Dialed` arm
+    // deleted: the `Sandbox` arm's prose names `EventKind::Dialed` to explain why
+    // it draws nothing itself, and that mention alone answered the question. The
+    // indentation closed that one. It did not close the second: `Events::commit`
+    // opens with a *different* match on `&event.kind`, the one that decides
+    // `self.thinking`, and its arms sit at the same twelve spaces — so it names
+    // `EventKind::Reasoning` and `EventKind::Token` whatever the renderer below it
+    // does, and deleting either arm from the renderer left this test green. The
+    // comment that used to stand here claimed the indentation was unique to the
+    // renderer's arms. It never was.
+    //
+    // So the renderer is identified by the statement immediately above it, which
+    // belongs to no other match in the file, and the slice ends at the first
+    // top-level item after `Events::commit`. What is searched is the renderer and
+    // nothing else.
+    const OPENS: &str = "let dash = theme.glyphs.dash;\n        match &event.kind {";
+    const CLOSES: &str = "\nfn leader(";
+    let from = source
+        .find(OPENS)
+        .expect("`Events::commit` opens its renderer match under `let dash`")
+        + OPENS.len();
+    let to = source[from..]
+        .find(CLOSES)
+        .map(|at| from + at)
+        .expect("`fn leader` follows the impl `Events::commit` belongs to");
+    let renderer = &source[from..to];
+
+    // The slice starts *after* the thinking match, and that is the whole of what
+    // makes the search honest. `self.thinking = true` is written in that match and
+    // nowhere else, so finding it here would mean the slice had swallowed it and
+    // every assertion below had gone back to being satisfiable from two arms it
+    // does not care about.
+    assert!(
+        !renderer.contains("self.thinking = true"),
+        "the slice reaches back into the match that decides `thinking`, whose arms \
+         name `EventKind::Reasoning` and `EventKind::Token` at the same indentation",
+    );
+    assert!(
+        renderer.contains("\n            EventKind::"),
+        "the slice holds no match arms at all, so it is not the renderer",
+    );
+
     for (name, disposition, _) in TRIAGE {
         if *disposition != Disposition::Line {
             continue;
         }
-        // **At the match arm's own indentation, and not anywhere in the file.**
-        // A bare `contains` was satisfied by the variant's name appearing in a
-        // doc comment, which is how this test went green through the whole of
-        // 0.14.0's sabotage pass with the `Dialed` arm deleted: the `Sandbox`
-        // arm's prose names `EventKind::Dialed` to explain why it draws nothing
-        // itself, and that mention alone answered the question. That is the same
-        // defect this test was written in 0.11.0 to close, wearing the new
-        // table's clothes exactly as the comment above says — a name with no arm
-        // behind it. `tests/glyphs.rs` already reads arms this way, by the twelve
-        // spaces every match arm in that file sits at and no `use`, doc line or
-        // expression does.
+        // At the match arm's own indentation, within the renderer's own match: a
+        // name with no arm behind it is the defect this test was written in 0.11.0
+        // to close, and a mention in a comment is not an arm.
         let arm = format!("EventKind::{}", variant(name));
         let declared = format!("\n            {arm}");
         assert!(
-            source.contains(&declared),
-            "{name} is triaged as a line and `{arm}` has no arm in src/events.rs, so it commits \
-             nothing at all — a mention in a comment is not an arm",
+            renderer.contains(&declared),
+            "{name} is triaged as a line and `{arm}` has no arm in the renderer in \
+             src/events.rs, so it commits nothing at all — a mention in a comment is not an \
+             arm, and neither is the arm in the match that decides `thinking`",
         );
     }
 }

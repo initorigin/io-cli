@@ -858,8 +858,11 @@ fn f5_the_refresh_is_one_descent_below_the_date_it_writes() {
     );
     assert_eq!(
         keys[0],
-        io_cli::store::LEAVE_IT,
-        "row 0 must act on nothing"
+        configure::DECLINE,
+        "row 0 must act on nothing, and its KEY is the `!`-prefixed sentinel rather \
+         than the label above — a configuration file may hold a quoted bare key \
+         called `leave it`, and a sentinel that a real key can equal is not a \
+         sentinel"
     );
     assert_eq!(
         keys[1],

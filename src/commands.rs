@@ -2598,18 +2598,35 @@ fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Lin
 /// `/copy diff` is `/copy`'s second word rather than a command of its own here, so
 /// the first word decides and both forms are admitted; both only read.
 pub const MID_TURN: &[&str] = &[
-    "/status", "/context", "/cost", "/stats", "/help", "/theme", "/copy", "/expand", "/fleet",
-    "/image", "/config",
+    "/status",
+    "/context",
+    "/cost",
+    "/stats",
+    "/help",
+    "/theme",
+    "/copy",
+    "/expand",
+    "/fleet",
+    "/image",
+    "/config",
+    "/settings",
 ];
 
 /// The commands admitted mid-turn only when nothing follows the word.
 ///
-/// One entry, and the mechanism exists for it rather than the other way round:
-/// `/config` bare opens a list that reports, while `/config <key>` descends toward
-/// a write and `/config <key> <value>` is one. A command here is admitted by
-/// [`MID_TURN`] and then refused again by [`runs_mid_turn`] the moment it carries
-/// an argument.
-pub const BARE_ONLY_MID_TURN: &[&str] = &["/config"];
+/// The mechanism exists for `/config` rather than the other way round: bare it
+/// opens a list that reports, while `/config <key>` descends toward a write and
+/// `/config <key> <value>` is one. A command here is admitted by [`MID_TURN`] and
+/// then refused again by [`runs_mid_turn`] the moment it carries an argument.
+///
+/// **`/settings` is here because [`parse`] treats it as the same command.** Both
+/// spellings reach the same three arms, so admitting one and refusing the other
+/// would make a command's availability depend on which of its two names an
+/// operator typed. Adding it to [`MID_TURN`] alone would be worse than leaving it
+/// out: the bare-only refusal keys on the name, so `/settings <key> <value>` would
+/// have written into a running turn — the one thing this whole split exists to
+/// stop.
+pub const BARE_ONLY_MID_TURN: &[&str] = &["/config", "/settings"];
 
 /// Whether `word` is the first word of a command in [`COMMANDS`].
 ///
@@ -2769,7 +2786,18 @@ mod mid_turn_tests {
     /// of the command.
     #[test]
     fn the_bare_only_rule_reaches_config_alone() {
-        assert_eq!(BARE_ONLY_MID_TURN, &["/config"]);
+        assert_eq!(BARE_ONLY_MID_TURN, &["/config", "/settings"]);
+        // Both spellings of one command, held to one answer. `parse` reads
+        // `"config" | "settings"` in every arm, so a session that admitted one and
+        // refused the other would make availability depend on which name was
+        // typed — and admitting `/settings` without the bare-only rule would let
+        // `/settings <key> <value>` write into a running turn.
+        for spelling in ["config", "settings"] {
+            assert!(runs_mid_turn(spelling));
+            assert!(runs_mid_turn(&format!("{spelling}   ")));
+            assert!(!runs_mid_turn(&format!("{spelling} list")));
+            assert!(!runs_mid_turn(&format!("{spelling} run.max_steps 40")));
+        }
         assert!(runs_mid_turn("copy diff"));
         assert!(runs_mid_turn("theme dark"));
         assert!(runs_mid_turn("expand 3"));

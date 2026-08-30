@@ -519,8 +519,11 @@ impl App {
     /// caller must hand it to [`crate::resume`]. Discarding it there would drop
     /// the operator's answer in silence, which is why it is returned rather than
     /// swallowed as it was before 0.23.0. Still a single `Option` because only the
-    /// stored path can produce one, and a stored overlay is one question: a
-    /// `PendingQuestion` is one row of the store.
+    /// stored path can produce one, and a stored overlay answers **one row** —
+    /// not, since 0.33.0, one question. A batch parks as a single
+    /// `PendingQuestion` with one `question_id`, and io-harness resumes it with one
+    /// compare-and-swap, so several answers are assembled into the one text that
+    /// row takes.
     #[must_use = "a resumed question's answer is delivered by the caller, not by the overlay"]
     pub fn answer_intent(&mut self, answers: Vec<Option<String>>) -> Option<Option<String>> {
         let intent = self.intent.take()?;

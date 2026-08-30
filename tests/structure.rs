@@ -5,9 +5,11 @@
 //! written so that a later release cannot reintroduce fullscreen or a clear-based
 //! redraw without turning a named test red.
 //!
-//! O1 — and one assertion that is not about bytes at all: the order of two calls
-//! in `src/main.rs`. Nothing under `tests/` links the binary, so a decision made
-//! in the driver is one no test can drive; this file reads the driver instead.
+//! O1, F14 and F17 — and three assertions that are not about bytes at all: the
+//! order of two calls in `src/main.rs`, the writes reachable from a key handler,
+//! and the third argument two doors hand `manage::plan`. Nothing under `tests/`
+//! links the binary, so a decision made in the driver is one no test can drive;
+//! this file reads the driver instead.
 
 mod support;
 
@@ -198,5 +200,149 @@ fn f6_the_migration_report_is_recorded_rather_than_said() {
         text.contains("for line in report {\n        app.record(Tone::Muted, line);"),
         "the migration report reaches the scrollback through `App::record`; `App::say` would \
          put it on the footer's row, where the first keystroke replaces it",
+    );
+}
+
+/// **F14.** Neither arrow key writes a configuration file without a confirmation.
+///
+/// **Counted, not `contains`ed.** `configure::write` is called from two doors and
+/// nineteen places, so asking whether the driver contains it answers yes forever
+/// and answers nothing: the sabotage that matters adds a twentieth, on a
+/// keystroke, and every existing site keeps a `contains` green through it. The
+/// number is the assertion, and a release adding a write has to come here and say
+/// which door it belongs to.
+///
+/// **Where the nineteen are, so the number is a claim and not a constant.** One in
+/// `import_written`, the offer's own confirmation. Sixteen in `loop_over`: twelve
+/// under the picker's single `Outcome::Chosen` arm — Enter on a row, which is what
+/// a confirmation *is* in this product — and four under an `Action::` arm of a
+/// typed command (`Action::Manage`, two `Action::Profile` verbs and
+/// `Action::Config` with a value), where the Enter that submitted the line is the
+/// consent. One in `refresh_prices`, the act `prices.as_of`'s descent offers, one
+/// keystroke below the row it writes. One in `manage_main`, the headless
+/// `io config|mcp|plugin` door, which has no keyboard at all. Nineteen sites, no
+/// tenth surface, and none of them on a bare arrow.
+///
+/// **The arrow arm is read as a region, not searched for as a word**, because a
+/// count alone cannot see a write moved *into* the arm from somewhere else. The
+/// slice runs from the `Pick::Config` interception to the general picker arm below
+/// it, which is exactly the code a `Left` or `Right` runs before every other
+/// surface gets the key.
+///
+/// **The comment stripping is load-bearing and proves itself here.** This release
+/// deliberately left the word `cycle_setting` in a historical comment in
+/// `src/main.rs` — so the `cycle_setting` assertion below passes *only* while the
+/// stripper strips. A stripper that stopped stripping fails this test rather than
+/// quietly weakening every other assertion in this file.
+///
+/// Sabotage, each of which fails here and nowhere else: restore a `cycle_setting`
+/// that writes on the keystroke (the count moves to twenty, and the name comes
+/// back in code); call `configure::write` inside the arrow arm (the region);
+/// route `refresh_prices` onto an arrow (the region, and the count does not move).
+#[test]
+fn f14_no_arrow_key_writes_a_configuration_file() {
+    let text = driver_without_comments();
+
+    assert!(
+        !text.contains("cycle_setting"),
+        "`cycle_setting` is named in the driver's code: it wrote a scope file on a bare \
+         `Left`/`Right` and 0.33.0 removed it. If this fails with no such function in \
+         `src/main.rs`, the comment stripper has stopped stripping and every assertion \
+         in this file is weaker than it reads",
+    );
+
+    const OPENS: &str = "if let Some((open, Pick::Config(paths))) = picker.as_mut() {";
+    const CLOSES: &str = "if let Some((open, kind)) = picker.as_mut() {";
+    let from = text
+        .find(OPENS)
+        .expect("the idle loop intercepts the arrows over a `/config` row");
+    let to = text[from..]
+        .find(CLOSES)
+        .map(|at| from + at)
+        .expect("the general picker arm follows the interception");
+    let arm = &text[from..to];
+
+    // The slice is the arrow arm and not some other `if let`: both codes are
+    // matched inside it, and a region that lost them is a region pointing
+    // somewhere else — which would make every assertion below vacuous.
+    assert!(
+        arm.contains("KeyCode::Right") && arm.contains("KeyCode::Left"),
+        "the sliced region does not test either arrow, so it is not the interception",
+    );
+    assert!(
+        !arm.contains("configure::write"),
+        "the arrow interception writes a configuration file. An arrow is not a \
+         confirmation: it opens the values and `Enter` on one of them decides, which is \
+         the shape every other managed surface in this product already has",
+    );
+    assert!(
+        !arm.contains("refresh_prices("),
+        "the arrow interception starts the price refresh, which writes `prices.as_of` — \
+         a write on a bare keystroke that moves no call count, because the call site \
+         already existed one descent below",
+    );
+
+    assert_eq!(
+        text.matches("io_cli::configure::write(").count(),
+        19,
+        "the driver's configuration writes moved. Each one is a confirmed door — see \
+         this test's own documentation for the nineteen and what confirms them — so a \
+         new one is either a door that needs naming there or a write on a keystroke",
+    );
+}
+
+/// **F17.** Both `manage::plan` doors hand it a resolved bundle list.
+///
+/// `plan(root, request, declared)` gained its third argument this release so
+/// `plugin remove <name>` can resolve a word against what is declared instead of
+/// demanding a path. **The revert is one `&[]` away and turns nothing red**: an
+/// empty list is legal, is what every other verb on the headless door correctly
+/// passes, and returns the verb to path-only behaviour with the whole suite green.
+/// That is the widening shape — the gate does not fail, it stops being a gate.
+///
+/// So both spellings are pinned, and the resolve behind them is counted.
+/// `pluginview::ids` is called twice in the driver and nowhere else: once in
+/// `Action::Manage`, from the session's already-loaded holdings, and once in
+/// `manage_main`, inside the `PluginVerb::Remove` arm that is the only headless
+/// request needing it. Replacing either call with `Vec::new()` keeps the argument
+/// named `declared` and fails the count; replacing either argument with `&[]`
+/// fails its spelling.
+///
+/// Sabotage: pass `&[]` at either site, or drop either `pluginview::ids` call.
+/// Comments cannot satisfy any of it — the text is read with comments stripped.
+#[test]
+fn f17_both_manage_doors_pass_a_resolved_bundle_list() {
+    let text = driver_without_comments();
+
+    assert_eq!(
+        text.matches("io_cli::manage::plan(").count(),
+        2,
+        "there are two doors onto `manage::plan`, the session's `/mcp|/plugin|/config` \
+         and the headless `io mcp|plugin|config`; a third is a third place the argument \
+         can be got wrong",
+    );
+    assert!(
+        text.contains("io_cli::manage::plan(&root, &request, &declared)"),
+        "the session door no longer hands `plan` its resolved bundles, so \
+         `/plugin remove <name>` is back to refusing everything that is not a path",
+    );
+    assert!(
+        text.contains("io_cli::manage::plan(root, &request, &declared)"),
+        "the headless door no longer hands `plan` its resolved bundles, so \
+         `io plugin remove <name>` is back to refusing everything that is not a path",
+    );
+    assert!(
+        !text.contains("&request, &[]"),
+        "a door passes `plan` an empty declared list. That compiles, it is what every \
+         non-`remove` request on the headless door correctly passes, and it silently \
+         returns `plugin remove <name>` to path-only",
+    );
+    assert_eq!(
+        text.matches("io_cli::pluginview::ids(").count(),
+        2,
+        "each door resolves the declared bundles it hands in — the session from its \
+         loaded holdings, the headless door inside the `PluginVerb::Remove` arm. A \
+         `declared` bound to `Vec::new()` keeps every spelling above and takes the \
+         resolve away",
     );
 }

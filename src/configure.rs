@@ -471,52 +471,6 @@ pub fn ladder(current: Option<i64>, signed: bool) -> Vec<i64> {
     ordered.into_iter().map(|(_, rung)| rung).collect()
 }
 
-/// The next value along, for a kind that can be cycled where it stands.
-///
-/// **Booleans and closed enums only, and a number deliberately not.** A number's
-/// ladder cannot be shown on the row it is being changed on, and a held arrow
-/// would write the file once per key repeat; it descends into a value picker
-/// instead. So this answers `None` for every other kind, and the caller's arrow
-/// does nothing rather than doing something invisible.
-///
-/// **The keys are horizontal arrows because they are not printable.**
-/// `crate::picker::Picker` consumes every printable character as a fuzzy filter
-/// (`src/picker.rs:423-430`), so the obvious binding — Space — cannot be used: a
-/// two-word query contains one, and binding it would toggle a setting in the
-/// middle of typing a search. `Left` and `Right` fall to the picker's `_ =>
-/// Outcome::Idle` arm and are the only free keys that read as "the value beside
-/// this one".
-///
-/// `current` is the value in force as the file spells it, or `None` for a key no
-/// file names. An unset boolean cycles to `true` first, because the operator
-/// reached for the arrow in order to change something.
-#[must_use]
-pub fn cycled(kind: &Kind, current: Option<&str>, forward: bool) -> Option<String> {
-    let options: Vec<String> = match kind {
-        Kind::Flag => vec!["false".to_string(), "true".to_string()],
-        Kind::Choice(options) => options.clone(),
-        _ => return None,
-    };
-    let bare = current.map(|value| value.trim().trim_matches('"'));
-    let at = bare.and_then(|value| options.iter().position(|option| option == value));
-    let next = match at {
-        // Wrapping, because a closed set has no end to fall off: an operator
-        // arrowing past the last option means the first one.
-        Some(at) if forward => (at + 1) % options.len(),
-        Some(at) => (at + options.len() - 1) % options.len(),
-        // A key no file names, or one holding a value this build does not know.
-        // Either way there is no position to step from, so the two directions
-        // enter the list at its two ends — forward at the last option, backward at
-        // the first. For a boolean that means the first press of `Right` turns it
-        // on, which is what an operator reaching for the arrow on an unset flag
-        // meant; for a closed enum it is simply symmetric, and one more press
-        // reaches everything either way.
-        None if forward => options.len() - 1,
-        None => 0,
-    };
-    options.get(next).cloned()
-}
-
 /// A value as TOML spells it for that kind.
 ///
 /// **The serialized value, never the label**, which is the difference F3's own
@@ -701,6 +655,24 @@ pub fn widens_project(key: &str, value: &str) -> bool {
 /// test can assert on.
 pub const REFRESH_PRICES: &str = "!refresh-prices";
 
+/// The key the decline row of a `/config` descent carries.
+///
+/// **A sentinel and not the label, for exactly the reason [`REFRESH_PRICES`] is
+/// one.** The rows of [`descent`] travel in a `Vec<String>` the driver matches on,
+/// and until 0.33.0 the decline row's entry in it was the bare string
+/// [`crate::store::LEAVE_IT`] — `leave it`, with no `!` in front of it. TOML
+/// accepts `"leave it" = true` as a quoted key, [`settings`] sweeps every key out
+/// of `Config::origins()` onto the bare `/config` list, and the driver matches
+/// these keys by value: an operator with that key in a file would have got a real
+/// row whose Enter hit the do-nothing arm and reported nothing at all. `!` is the
+/// one character no key in this product's catalogue starts with, and it is why the
+/// act beside this row is spelled the way it is.
+///
+/// The *label* stays [`crate::store::LEAVE_IT`] — that is the word the operator
+/// reads, and every confirmation in this product opens on it. What changes is only
+/// the key underneath it, which nobody reads.
+pub const DECLINE: &str = "!leave-it";
+
 /// The label that sentinel wears on the picker.
 pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
     let detail = match &setting.value {
@@ -716,9 +688,11 @@ pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
 /// **The parallel `keys` vector is what the caller decides on, never the row's
 /// position or its label** — the same shape `/gates` already uses for
 /// [`crate::app::PROPOSED_GATE`]: a sentinel sits in the list where a real key
-/// would, so one `match` covers both kinds of row. Row 0 is
+/// would, so one `match` covers both kinds of row. Row 0 is labelled
 /// [`crate::store::LEAVE_IT`] and declines, which is this product's rule for every
-/// confirmation, and `crate::store::acts` is what reads that position.
+/// confirmation, and `crate::store::acts` is what reads that position. Its *key* is
+/// [`DECLINE`] rather than that label, because a key a file could also name is a
+/// key two different rows answer to.
 ///
 /// **Exactly one key answers `Some`, and it is named rather than derived from its
 /// [`Kind`].** `prices.as_of` is `Kind::Machine` and so is offered no value to
@@ -754,10 +728,11 @@ pub fn descent(
         ),
         refresh_row(&setting),
     ];
-    let keys = vec![
-        crate::store::LEAVE_IT.to_string(),
-        REFRESH_PRICES.to_string(),
-    ];
+    // **The label is `store::LEAVE_IT`; the key beside it is [`DECLINE`].** A row's
+    // label is what the operator reads and its key is what the driver matches on,
+    // and only the second one has to be a sentinel — see `DECLINE` for the
+    // collision that made it one.
+    let keys = vec![DECLINE.to_string(), REFRESH_PRICES.to_string()];
     Some((title, rows, keys))
 }
 

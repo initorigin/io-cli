@@ -821,9 +821,22 @@ async fn t07_declining_one_question_parks_the_batch_and_says_so() {
     }
 
     let said = said(&mut app);
+    // **Needled on words only the batch summary says.** `pauses` was the needle
+    // until the sabotage pass proved it vacuous: the per-question decline line
+    // committed for the third question is "left unanswered — the run pauses and
+    // keeps the question", so the whole summary could be deleted and this stayed
+    // green. What the summary alone carries is the count and the rule — that four
+    // answers buy nothing because a batch is committed whole — and those are what
+    // a transcript showing four `answered` lines is missing.
     assert!(
-        said.contains("pauses"),
-        "the scrollback reports a finished turn rather than a parked run: {said}",
+        said.contains("keeps all 5"),
+        "the scrollback never says the other four answers are parked with the \
+         decline, so it reads as a turn that carried on: {said}",
+    );
+    assert!(
+        said.contains("a batch is committed only when every question is answered"),
+        "the scrollback says the run stopped but not why four answers were not \
+         enough: {said}",
     );
 }
 
@@ -888,16 +901,23 @@ async fn f3_a_second_question_is_held_rather_than_replacing_the_first() {
     );
 }
 
-/// **A `multiple` question is submitted in io-harness's own spelling.**
+/// **A `multiple` question answers with the marked offers, in the caller's row
+/// order, spelled by whatever io-harness spells a several-part answer with.**
 ///
-/// Compared against `Question::answer_of`'s own output and never against a
-/// literal: the joiner lives in the harness so that two interfaces answering the
-/// same question produce the same text, and a literal here is io-cli quietly
-/// forking that spelling the next time the harness changes it.
+/// **What this gates, stated honestly.** `Question::answer_of` is `join(", ")`, so
+/// the equality below is satisfied by *any* io-cli that joins with `", "` —
+/// including one that writes the separator out itself. What it does gate is the
+/// selection and the order: which offers came back, and that they came back in the
+/// order the agent listed them rather than the order they were marked. The joiner
+/// half is a **drift** gate rather than a today gate — it goes red the release
+/// io-harness changes `answer_of`'s spelling and io-cli is not calling it, which is
+/// the only moment a forked joiner is detectable at all, and is why the right-hand
+/// side is a call and never a literal.
 ///
-/// Sabotage: join the labels in io-cli — with `" and "`, or with `", "` written out
-/// here — under which the first arm fails on any two-label answer and keeps passing
-/// on the one-label arm, which is exactly how a fork of a joiner goes unnoticed.
+/// Sabotage: mark the offers and answer with `chosen()`'s row order reversed, or
+/// with the row under the marker alone — under which the first arm fails on the
+/// pair and the second still passes, which is the half a one-label answer cannot
+/// see.
 #[test]
 fn t07_a_multiple_question_answers_in_the_harness_own_spelling() {
     let plural = || {
@@ -931,20 +951,55 @@ fn t07_a_multiple_question_answers_in_the_harness_own_spelling() {
     );
 }
 
-/// **The spacebar on a single-answer question is still a space.**
+/// **The spacebar on a single-answer question is still a space — including the
+/// first one, pressed while the marker is still on an offer.**
 ///
-/// `Picker::accepting_several` costs the spacebar, so a question that does not
-/// take several must never opt in — otherwise every two-word answer in the
-/// product loses its spaces to a mark nobody asked for.
+/// `Picker::accepting_several` costs the spacebar, so a question that does not take
+/// several must never opt in — otherwise every two-word answer in the product loses
+/// its spaces to a mark nobody asked for.
 ///
-/// Sabotage: call `accepting_several` unconditionally in `Intent::list`, under
-/// which the space is swallowed as a toggle and the answer comes back
-/// `"twowords"`.
+/// **The space is pressed BEFORE anything is typed, and that ordering is the whole
+/// test.** Until 0.33.0 this typed `"two words"` from an offer, which gated nothing:
+/// the printable arm moves the marker to the free-text row on the *first* character,
+/// so by the time the space arrived `writing()` was already true and the space
+/// reached the composer whatever `Intent::list` had opted into. Deleting the
+/// `multiple` routing condition outright left it green. Pressing space first is the
+/// only sequence in which a mark and a character are still distinguishable.
+///
+/// Two assertions, and each names its own failure. The marker must have *moved* to
+/// the row that takes prose — a space swallowed as a mark leaves it on the offer —
+/// and the answer must still carry that leading space, because a mark produces no
+/// character at all.
+///
+/// Sabotage: call `accepting_several` unconditionally in `Intent::list`, or drop
+/// `self.current().multiple` from the space arm in `Intent::decision` — under both
+/// the marker stays on the offer and the answer comes back `"two words"` with its
+/// first space missing.
 #[test]
 fn t07_the_spacebar_on_a_single_answer_question_is_still_a_space() {
     let (mut overlay, _reply) = live(five_choices());
+    // Five offers and the row that takes prose, which is the last one.
+    let free = overlay.offers().rows().len() - 1;
     // From an offer, which is the only place a mark could be made at all.
     overlay.key(key(KeyCode::Up));
+    assert_ne!(
+        overlay.offers().selected(),
+        free,
+        "the marker is on an offer"
+    );
+
+    assert_eq!(
+        overlay.key(key(KeyCode::Char(' '))),
+        None,
+        "a space does not close the overlay",
+    );
+    assert_eq!(
+        overlay.offers().selected(),
+        free,
+        "the space was swallowed as a mark: it never reached the composer, so the \
+         marker never moved to the row that takes prose",
+    );
+
     for ch in "two words".chars() {
         assert_eq!(
             overlay.key(key(KeyCode::Char(ch))),
@@ -954,7 +1009,7 @@ fn t07_the_spacebar_on_a_single_answer_question_is_still_a_space() {
     }
     assert_eq!(
         overlay.key(key(KeyCode::Enter)),
-        Some(vec![Some("two words".to_string())]),
+        Some(vec![Some(" two words".to_string())]),
         "the spacebar was taken from a question that takes one answer",
     );
 }
@@ -1375,5 +1430,303 @@ fn f4_choosing_an_offer_below_a_description_answers_with_that_offer() {
         overlay.key(key(KeyCode::Enter)),
         Some(vec![Some("updated_at".to_string())]),
         "the answer is the offer under the marker, not the one at that row index",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.33.0 — a batch that PARKED resumes as the batch the agent asked, not as the
+// row's rendering of it.
+// ---------------------------------------------------------------------------
+
+/// A batch the store itself parked as one row, written and read exactly as a
+/// resume reads it.
+///
+/// **`Store::put_questions`, and that is the point of the fixture.** Every stored
+/// test above goes through `put_question` — the *singular* writer — which leaves
+/// the row's `questions` empty, so nothing before this ever handed
+/// `Intent::resumed` a batch-shaped row. That gap is why a resumed batch shipped as
+/// one accent line holding embedded newlines, question one's context presented as
+/// everyone's, a picker with zero offers and `multiple` defaulted to false: the
+/// code path was never given the shape it fails on.
+fn stored_batch(questions: &[Question]) -> PendingQuestion {
+    let store = io_harness::Store::memory().expect("an in-memory store");
+    let run = store
+        .start_run("port the migration", "openrouter")
+        .expect("a run to hang the batch off");
+    let id = store
+        .put_questions(run, 1, questions)
+        .expect("the row is written");
+    store
+        .question(id)
+        .expect("the row reads back")
+        .expect("the row is there")
+}
+
+/// The batch every test below resumes.
+///
+/// **The second question carries everything**, deliberately: its own context, its
+/// own offers, a described offer and `multiple`. A fix that read `questions[0]` and
+/// built one question out of it would satisfy every assertion about the first one
+/// and fail every assertion about this one, which is the only reason the tests
+/// below page across before they assert.
+fn parked_batch() -> Vec<Question> {
+    vec![
+        Question::new("which database should the port target?")
+            .with_context("both are already in the lockfile")
+            .with_choices(["postgres", "sqlite"]),
+        Question::new("which platforms should the build cover?")
+            .with_context("the runner offers three and CI uses one")
+            .with_choices([
+                Choice::new("linux").describe("the only one CI has today"),
+                Choice::new("windows"),
+                Choice::new("macos"),
+            ])
+            .multiple(),
+    ]
+}
+
+/// **A parked batch resumes as the batch, with every question's own offers,
+/// context and `multiple` — reached through the live construction path.**
+///
+/// The defect: `Intent::resumed` built one `Question` out of the row's `question`,
+/// `context` and `choices` columns and never read `questions`. For a batch those
+/// three columns are a *rendering* — the whole ask as `"1. …\n2. …"`, the **first**
+/// question's context, and no choices at all — so a resumed batch was one
+/// `Tone::Accent` line with embedded newlines that ratatui does not break a `Line`
+/// on, one question's context presented as everyone's, an empty picker, and
+/// `multiple` false: no marks and no `Question::answer_of`. It is reachable through
+/// this release's own flow, since `Esc` on a batch parks the run and `/resume`
+/// opens it here, and `io exec` reaches it on the first ask.
+///
+/// Sabotage: build the batch from `pending.question`/`context`/`choices` as before,
+/// under which the very first assertion fails on a question line that is the whole
+/// numbered block. Sabotage by reading `pending.questions[0]` alone, under which
+/// `PageDown` moves nothing and every assertion about the second question fails
+/// while the first question's still pass.
+#[test]
+fn f2_a_parked_batch_resumes_as_the_batch_the_agent_asked() {
+    let row = stored_batch(&parked_batch());
+    // What the store actually holds, so the assertions below are known to be about
+    // the shape the defect was reachable through rather than a fixture that
+    // flattered the fix.
+    assert!(
+        row.choices.is_empty(),
+        "put_questions writes no choices column, so a surface reading it draws a \
+         picker with nothing to pick",
+    );
+    assert!(
+        row.question.contains('\n'),
+        "the row's question is the whole batch as numbered prose: {}",
+        row.question,
+    );
+    assert_eq!(
+        row.questions.len(),
+        2,
+        "and the ask itself is in `questions`"
+    );
+
+    let mut overlay = Intent::resumed(&row);
+    assert_eq!(
+        overlay.question().question,
+        "which database should the port target?",
+        "the overlay opened on the row's rendering rather than on the first \
+         question the agent asked",
+    );
+
+    // Tall enough that nothing asserted here is a row the picker elided: a batch's
+    // head is five lines before the offers start.
+    let first = drawn_overlay_at(&mut overlay, 80, 20, &DARK);
+    assert!(
+        first.contains("question 1 of 2"),
+        "a resumed batch has no batch chrome, so nothing on screen says another \
+         question is waiting behind this one: {first}",
+    );
+
+    overlay.key(key(KeyCode::PageDown));
+    assert_eq!(
+        overlay.question().question,
+        "which platforms should the build cover?",
+        "PgDn moved nothing, so the resumed overlay is holding one question",
+    );
+    assert!(
+        overlay.question().multiple,
+        "the second question's `multiple` did not survive the store, so the \
+         spacebar marks nothing and `Question::answer_of` never spells the answer",
+    );
+
+    let labels: Vec<&str> = overlay
+        .offers()
+        .rows()
+        .iter()
+        .map(|offer| offer.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "linux",
+            "  the only one CI has today",
+            "windows",
+            "macos",
+            io_cli::intent::OWN_WORDS,
+        ],
+        "the second question's offers, its described offer's own row, and the row \
+         that takes prose",
+    );
+
+    let second = drawn_overlay_at(&mut overlay, 80, 20, &DARK);
+    assert!(
+        second.contains("the runner offers three and CI uses one"),
+        "the second question is drawn under the FIRST question's context: {second}",
+    );
+    assert!(
+        !second.contains("both are already in the lockfile"),
+        "question one's context is presented as question two's: {second}",
+    );
+    assert!(
+        second.contains("space marks several"),
+        "the list did not opt into marks, so a `multiple` question cannot be \
+         answered with more than one offer: {second}",
+    );
+}
+
+/// **A resumed batch is delivered as ONE text, because it parked as one row.**
+///
+/// io-harness parks a whole `ask_questions` under a single `question_id` and
+/// `answer_question` is a single compare-and-swap, so there is one text to hand
+/// `resume_with_answer_observed` however many questions the operator worked
+/// through. Every answer is paired with the question it answers, because a bare
+/// list of sentences makes the model re-derive the pairing from position.
+///
+/// Sabotage: return the last answer alone — the shape a `Destination::Stored` per
+/// question falls into when `resolve` just zips and keeps the last delivery — under
+/// which the first question's words vanish and the run is resumed with half the ask
+/// answered. Sabotage the pairing by joining the answers with no question text
+/// between them, under which the equality fails on a block the model would have to
+/// re-derive the pairing of from position.
+#[test]
+fn f2_a_resumed_batch_comes_back_as_one_text_for_the_one_row_it_parked_as() {
+    let mut overlay = Intent::resumed(&stored_batch(&parked_batch()));
+
+    for ch in "postgres, and drop the old one".chars() {
+        overlay.key(key(KeyCode::Char(ch)));
+    }
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        None,
+        "one question of two decided, and something was delivered anyway",
+    );
+
+    // On the second question, which takes several. Up from the row that takes
+    // prose is `macos`, and one more is `windows`.
+    overlay.key(key(KeyCode::Up));
+    overlay.key(key(KeyCode::Char(' ')));
+    overlay.key(key(KeyCode::Up));
+    overlay.key(key(KeyCode::Char(' ')));
+    let answers = overlay
+        .key(key(KeyCode::Enter))
+        .expect("both questions are decided, so the batch is delivered");
+    assert_eq!(
+        answers,
+        vec![
+            Some("postgres, and drop the old one".to_string()),
+            Some(Question::answer_of(["windows", "macos"])),
+        ],
+    );
+
+    let delivered = overlay
+        .resolve(answers)
+        .expect("a resumed row has no turn awaiting it: the caller resumes with this")
+        .expect("every question was answered, so there is an answer");
+    assert_eq!(
+        delivered,
+        format!(
+            "1. which database should the port target?\n   postgres, and drop the old one\n\
+             2. which platforms should the build cover?\n   {}",
+            Question::answer_of(["windows", "macos"]),
+        ),
+        "every answer beside the question it answers, once, in the order asked",
+    );
+}
+
+/// **One decline anywhere in a resumed batch delivers no answer at all**, and the
+/// run stays parked on the row it was found on.
+///
+/// A batch is answered wholly or not at all — io-harness's own rule for the live
+/// path, and it binds harder here: resolving the row is one compare-and-swap with
+/// no second chance, so a text assembled around a hole would answer an ask the
+/// operator did not finish. `Some(None)` is what the driver reads as *the operator
+/// left it*, which is exactly what `Esc` has always promised.
+///
+/// Sabotage: assemble the text anyway with a placeholder for the missing answer,
+/// under which this returns `Some(Some(..))` and the run is resumed with an answer
+/// nobody gave.
+#[test]
+fn f2_one_decline_in_a_resumed_batch_leaves_the_run_parked() {
+    let mut overlay = Intent::resumed(&stored_batch(&parked_batch()));
+
+    for ch in "postgres".chars() {
+        overlay.key(key(KeyCode::Char(ch)));
+    }
+    assert_eq!(overlay.key(key(KeyCode::Enter)), None);
+    let answers = overlay
+        .key(key(KeyCode::Esc))
+        .expect("declining the last undecided question decides the batch");
+    assert_eq!(answers, vec![Some("postgres".to_string()), None]);
+
+    assert_eq!(
+        overlay.resolve(answers),
+        Some(None),
+        "an answer was assembled around a question nobody answered",
+    );
+}
+
+/// **A singular row is untouched by the batch path, including one written before
+/// `questions` existed.**
+///
+/// `Store::put_question` writes no `questions` value at all, and a row written by
+/// io-harness 0.71.0 has no such column — so the row's own `question`, `context` and
+/// `choices` are the ask, exactly as they were, and reading `questions` first must
+/// not change that. Its choices are bare labels, which io-harness serializes as a
+/// plain JSON array of strings byte for byte as 0.71.0 wrote it (its own `Choice`
+/// doctests gate that encoding); this asserts the consequence, which is that they
+/// come back as selectable offers answering with their own labels.
+///
+/// Sabotage: read `pending.questions` unconditionally, under which a singular row
+/// hands the constructor an empty batch and this panics on the first index before
+/// it asserts anything. Sabotage the fallback's `with_choices`, under which the
+/// offers are gone, `Home` rests on the row that takes prose, and the `Enter`
+/// assertion answers nothing at all.
+#[test]
+fn f2_a_singular_row_still_opens_on_its_own_columns() {
+    let row = stored(&question());
+    assert!(
+        row.questions.is_empty(),
+        "the singular writer wrote a batch, so this fixture is not the shape it \
+         claims to be",
+    );
+    assert!(
+        row.choices
+            .iter()
+            .all(|choice| choice.description.is_none() && choice.preview.is_none()),
+        "the fixture's offers are bare labels, which is the 0.71.0 spelling",
+    );
+
+    let mut overlay = Intent::resumed(&row);
+    let screen = drawn_overlay(&mut overlay, &DARK);
+    assert!(
+        !screen.contains("question 1 of"),
+        "a single question grew batch chrome: {screen}",
+    );
+    assert!(
+        screen.contains("drop the column or keep it?") && screen.contains("created_at"),
+        "the row's own columns are the ask: {screen}",
+    );
+
+    overlay.key(key(KeyCode::Home));
+    assert_eq!(
+        overlay.key(key(KeyCode::Enter)),
+        Some(vec![Some("created_at".to_string())]),
+        "a bare label round-tripped through the store is still an offer that \
+         answers with itself",
     );
 }

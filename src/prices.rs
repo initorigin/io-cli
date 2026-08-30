@@ -392,15 +392,27 @@ pub fn refusal(text: &str) -> Option<String> {
 /// against the rows it would replace in that same file. Swapping in the merged
 /// count would make a short write look safe whenever another scope happened to
 /// price enough models, which is the failure the guard exists to catch.
+///
+/// **Counted through [`crate::edit::keys`], and that is a crate rule rather than a
+/// preference.** `src/edit.rs` is the only file permitted to parse TOML —
+/// `tests/dependencies.rs` asserts it and `AGENTS.md` states it — and this
+/// function held a `text.parse::<toml::Value>()` that walked straight through the
+/// gate, because the gate named two literal spellings and `FromStr` is neither of
+/// them. The invariant the release states was false for exactly as long as that
+/// line stood, and the fix is the one the rule always pointed at: the need here
+/// was never a document, it is the keys of one table in one file, which is the
+/// same act [`shape`] already asks [`crate::edit::sections`] for, one level down.
+///
+/// Both call sites reach this only after [`refusal`] has answered `None`, so the
+/// table is [`Shape::Absent`] or [`Shape::Table`] — a flat block of rows, which is
+/// precisely what `edit::keys` counts. A `[prices]` that spells its table as an
+/// inline `models = { ... }` has no region of its own and counts zero here where
+/// the document parse counted its entries; that is not a regression, because
+/// io-cli cannot write into that spelling either way — [`has_models_section`]
+/// answers `false`, the write falls to the append arm, and `edit::apply`'s
+/// read-back refuses the duplicate key it would have made.
 pub fn priced_in(text: &str) -> usize {
-    let Ok(document) = text.parse::<toml::Value>() else {
-        return 0;
-    };
-    document
-        .get("prices")
-        .and_then(|prices| prices.get("models"))
-        .and_then(|models| models.as_table())
-        .map_or(0, |models| models.len())
+    crate::edit::keys(text, "prices.models").len()
 }
 
 /// The `[app.io-cli.prices]` edits that record where a table came from.

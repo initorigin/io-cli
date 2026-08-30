@@ -1230,11 +1230,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // picker stays a generic list and the nine other call sites keep the
         // keyboard they had.
         if let Some((open, Pick::Config(paths))) = picker.as_mut() {
-            let step = match key.code {
-                KeyCode::Right => Some(true),
-                KeyCode::Left => Some(false),
-                _ => None,
-            };
+            // One key, not two directions. Until 0.33.0 the direction chose the
+            // next value; an arrow now opens the list, and a list has no
+            // direction to open in — so `Left` and `Right` are the same
+            // keystroke and are written as one.
+            let arrow = matches!(key.code, KeyCode::Right | KeyCode::Left);
             // **An arrow opens the values; it no longer writes one.**
             //
             // Until 0.33.0 `Left`/`Right` here called `cycle_setting`, which wrote
@@ -1249,34 +1249,72 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // what this can be", and it opens on the value in force so the operator
             // can see where they are before they move. `Enter` on a value is the
             // confirmation, exactly as it is when the row is chosen rather than
-            // arrowed at. `Up`/`Down` move inside the descent; `Left`/`Right` end
-            // at `Outcome::Idle` there, which is what every other picker does.
-            if step.is_some() {
+            // arrowed at. `Up`/`Down` move inside the descent.
+            //
+            // **What `Left`/`Right` do inside a descent depends on which descent
+            // it is.** A values descent is a `Pick::ConfigValue`, so they miss this
+            // interception entirely and end at `Picker::key`'s `_ => Outcome::Idle`
+            // like every other surface. `prices.as_of`'s act descent is another
+            // `Pick::Config`, so an arrow there re-enters *this* arm — and what
+            // makes that harmless is the sentinel arm below, which names both of
+            // its rows and does nothing for either, rather than any property of
+            // `value_rows`.
+            if arrow {
                 let row = open.selection();
                 let chosen = row.and_then(|row| paths.get(row)).cloned();
-                if let Some(key_name) = chosen {
-                    if let Some((mut values, kind)) = value_rows(session.root(), &config, &key_name)
-                    {
-                        // The value in force, found by label rather than by an
-                        // index into the row list — the rows carry `leave it`,
-                        // `unset it` and sometimes `elsewhere`, and their positions
-                        // are `value_rows`' business rather than this arm's.
-                        let setting = io_cli::configure::setting(&config, &key_name);
-                        let bare = setting
-                            .value
-                            .as_deref()
-                            .map(|value| value.trim().trim_matches('"').to_string());
-                        if let Some(current) = bare {
-                            if let Some(at) = values
-                                .rows()
-                                .iter()
-                                .position(|candidate| candidate.label == current)
-                            {
-                                values.focus(at);
+                match chosen.as_deref() {
+                    // A descent's rows are acts, not keys: row 0 declines and the
+                    // other one re-reads the price catalogue. Neither has values to
+                    // open and neither is a key to say anything about.
+                    None
+                    | Some(io_cli::configure::DECLINE)
+                    | Some(io_cli::configure::REFRESH_PRICES) => {}
+                    Some(key_name) => match value_rows(session.root(), &config, key_name) {
+                        Some((mut values, kind)) => {
+                            // The value in force, found by label rather than by an
+                            // index into the row list — the rows carry `leave it`,
+                            // `unset it` and sometimes `elsewhere`, and their
+                            // positions are `value_rows`' business rather than this
+                            // arm's.
+                            let setting = io_cli::configure::setting(&config, key_name);
+                            let bare = setting
+                                .value
+                                .as_deref()
+                                .map(|value| value.trim().trim_matches('"').to_string());
+                            if let Some(current) = bare {
+                                if let Some(at) = values
+                                    .rows()
+                                    .iter()
+                                    .position(|candidate| candidate.label == current)
+                                {
+                                    values.focus(at);
+                                }
                             }
+                            picker = Some((values, kind));
                         }
-                        picker = Some((values, kind));
-                    }
+                        // **A key whose values cannot be offered still answers the
+                        // keystroke.** `value_rows` says `None` for a typed value
+                        // and for every key the catalogue does not name — which is
+                        // every operator-written key `settings()` sweeps in from
+                        // `config.origins()`. Silence would read as a broken key,
+                        // so it says what to do instead, and `record` rather than
+                        // `say` because the picker stays open over the footer the
+                        // next keystroke would take back anyway.
+                        None => {
+                            let said = if io_cli::configure::kind_of(key_name).is_none() {
+                                format!(
+                                    "{key_name} is not a key io-cli knows the values of; press \
+                                     Enter to type one"
+                                )
+                            } else {
+                                format!(
+                                    "{key_name} takes a value no list can hold; press Enter and \
+                                     the row says the shape it wants"
+                                )
+                            };
+                            app.record(Tone::Muted, said);
+                        }
+                    },
                 }
                 paint(screen, &mut app)?;
                 continue;
@@ -3291,7 +3329,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // this product opens on. Without this arm it falls into
                             // `Some(key)` and the surface opens a scope picker for a
                             // setting called "leave it".
-                            Some(io_cli::store::LEAVE_IT) => {}
+                            //
+                            // The key is `configure::DECLINE` (`!leave-it`) rather
+                            // than the label the operator reads: TOML admits
+                            // `"leave it" = true` as a quoted bare key, and
+                            // `settings` sweeps every key out of `config.origins`,
+                            // so the bare string would have been a sentinel inside
+                            // a space that admits real keys. `REFRESH_PRICES`
+                            // carries a `!` for the same reason.
+                            Some(io_cli::configure::DECLINE) => {}
                             // The one row on this surface that acts rather than
                             // naming something. It re-reads the catalogue the
                             // operator's provider serves and writes what moved
@@ -4462,6 +4508,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // confined to `src/resolved.rs` by `tests/dependencies.rs`.
                     // This session already resolved it once; passing it keeps the
                     // parse where the release put it.
+                    //
+                    // **Re-resolved first when the files moved, because this door
+                    // is reached without a turn in between.** `holdings` is
+                    // otherwise refreshed at the turn boundary alone, so `/plugin
+                    // add ./bundles/x` followed by `/plugin remove x` resolved the
+                    // name against the set from *before* the add and refused a
+                    // bundle that had just been declared — while `io plugin remove
+                    // x` in a shell worked, because the argument door loads fresh.
+                    refresh_holdings(&mut holdings, &config);
                     let declared =
                         io_cli::pluginview::ids(&io_cli::pluginview::view(holdings.loaded()));
                     match io_cli::manage::parse(&tokens).and_then(|request| {
@@ -5502,38 +5557,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     );
                 }
                 Action::Config(None) => {
-                    // **What the routing rules say, and where they will not fire**,
-                    // said on the surface that edits them. `/config` is where an
-                    // operator meets `[app.io-cli.routing]`, and a section they can
-                    // change here without being told it is inert for their session
-                    // is the defect this release exists partly to avoid. Read from
-                    // the configuration in force rather than the startup snapshot,
-                    // so an edit made this session is what is described.
-                    if let Some(routing) = io_cli::settings::stored(&config)
-                        .0
-                        .and_then(|stored| stored.routing)
-                    {
-                        if let Some(said) = io_cli::routing::describe(&routing) {
-                            app.record(Tone::Muted, said);
-                        }
-                        // **Why the section is not routing anything, if it is
-                        // not.** The pair of `contract::gate_notice`: this
-                        // surface lists the four routing keys, so a section
-                        // that is plainly in the operator's file and doing
-                        // nothing has to say why here or nowhere.
-                        if let Some(why) = io_cli::routing::notice(&routing) {
-                            app.record(Tone::Refused, why);
-                        }
-                        // `contained` and not `containment.is_some()`: `/contain off`
-                        // puts the session back on the flat loop, where the rules do
-                        // fire, so a warning keyed on the configuration would go on
-                        // being shown to an operator it no longer applies to.
-                        if let Some(notice) =
-                            io_cli::routing::inert_under_containment(&routing, contained)
-                        {
-                            app.record(Tone::Warning, notice);
-                        }
-                    }
+                    routing_notices(&mut app, &config, contained);
                     let settings = io_cli::configure::settings(&config);
                     let paths: Vec<String> = settings.iter().map(|s| s.path.clone()).collect();
                     let rows = io_cli::configure::rows(&settings);
@@ -6548,11 +6572,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // window shows on the next message — and `/plugin` and
                     // `/skills` read whatever this left, which is why opening
                     // them costs no resolution at all when nothing has changed.
-                    if tokio::task::block_in_place(|| holdings.stale(&config)) {
-                        holdings = tokio::task::block_in_place(|| {
-                            io_cli::resolved::Resolved::load(&config)
-                        });
-                    }
+                    refresh_holdings(&mut holdings, &config);
                     skills = commands::skills(
                         &io_cli::home::authored().unwrap_or_default(),
                         io_cli::contract::skills_dir(
@@ -6838,11 +6858,54 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
     }
 }
 
+/// **What the routing rules say, and where they will not fire**, said on the
+/// surface that edits them.
+///
+/// `/config` is where an operator meets `[app.io-cli.routing]`, and a section they
+/// can change here without being told it is inert for their session is the defect
+/// this release exists partly to avoid. Read from the configuration in force
+/// rather than the startup snapshot, so an edit made this session is what is
+/// described.
+///
+/// **One speller for two doors**, which is why it is a function rather than the
+/// block it was until 0.33.0: `/config` bare opens the same list at an idle prompt
+/// and while a turn is in flight, and this product's commonest defect is a surface
+/// answered one way by one door and another way by the other.
+///
+/// `contained` is the session's switch and not `containment.is_some()`: `/contain
+/// off` puts the session back on the flat loop, where the rules do fire, so a
+/// warning keyed on the configuration alone would go on being shown to an operator
+/// it no longer applies to. Inside `turn()` the two are the same fact — the caller
+/// hands the turn its caps as `contained.then_some(…)` — so the mid-turn door
+/// passes `containment.is_some()` and says exactly what the idle one says.
+fn routing_notices(app: &mut App, config: &Config, contained: bool) {
+    let Some(routing) = io_cli::settings::stored(config)
+        .0
+        .and_then(|stored| stored.routing)
+    else {
+        return;
+    };
+    if let Some(said) = io_cli::routing::describe(&routing) {
+        app.record(Tone::Muted, said);
+    }
+    // **Why the section is not routing anything, if it is not.** The pair of
+    // `contract::gate_notice`: this surface lists the four routing keys, so a
+    // section that is plainly in the operator's file and doing nothing has to say
+    // why here or nowhere.
+    if let Some(why) = io_cli::routing::notice(&routing) {
+        app.record(Tone::Refused, why);
+    }
+    if let Some(notice) = io_cli::routing::inert_under_containment(&routing, contained) {
+        app.record(Tone::Warning, notice);
+    }
+}
+
 /// A keystroke while a picker is open on top of a running turn.
 ///
-/// *(Two orphaned lines opened this block until 0.33.0 — the truncated tail of a
-/// doc for [`commit_image`], which has its own. Nothing in the suite can see a
-/// rustdoc summary attached to the wrong item, so it survived every gate.)*
+/// *(Two orphaned lines opened this block until 0.33.0 — the first half of
+/// [`commit_viewed`]'s doc, which had been left stranded above the wrong item and
+/// has since been put back on it. Nothing in the suite can see a rustdoc summary
+/// attached to the wrong item, so it survived every gate.)*
 ///
 /// **Only the four kinds `turn()` can open reach here**, and that is the whole
 /// safety argument: the palette and path completion set or paste into the
@@ -6867,10 +6930,13 @@ fn mid_turn_picker(
     policy: &Policy,
     templates: &io_harness::Templates,
     skills: &[io_cli::skillview::Listed],
-    // **Shared, never owned.** `/config` bare reports mid-turn, and what it reports
-    // is read from the configuration the running turn was built with — which is the
-    // point: a reader mid-turn must answer for the turn in flight, not for a file
-    // that has since been edited underneath it.
+    // **Shared, never owned**, and it decides the *origin* rather than the value.
+    // `configure::setting` uses this in-memory configuration only to find which
+    // file decided a key, then reads that key's value off the disk at call time —
+    // long-standing behaviour, shared with the idle door. So a report mid-turn is
+    // a mixed reading: the origin the turn was built with, the value as the file
+    // stands now. A key deleted underneath the turn therefore reads as "not set"
+    // with a scope still named beside it.
     config: &io_harness::config::Config,
     key: crossterm::event::KeyEvent,
 ) {
@@ -6936,9 +7002,10 @@ fn mid_turn_picker(
                 // Nothing needs guarding beyond this arm. `picker` is a local of
                 // `turn()`, so a picker opened here is dropped when the turn ends
                 // and can never reach the idle loop's write-capable arm; and the
-                // arrow-key value cycle is intercepted in the idle loop alone, so
-                // `Left`/`Right` reach `Picker::key` here and end at
-                // `Outcome::Idle`.
+                // arrow that opens a key's values is intercepted in the idle loop
+                // alone — there is no such interception in this function, so
+                // `Left`/`Right` do reach `Picker::key` here and end at its
+                // `_ => Outcome::Idle`.
                 Pick::Config(paths) => {
                     if let Some(key) = paths.get(index) {
                         let setting = io_cli::configure::setting(config, key);
@@ -7009,6 +7076,9 @@ fn commit_image<P: Provider>(
     Ok(())
 }
 
+/// **The agent's own look, committed where it looked.**
+///
+/// A wrapper over [`io_cli::attach::viewed`], which is where every decision
 /// lives. Nothing is decided here, deliberately: `src/main.rs` is linked by no
 /// integration test, so a branch written here could not be sabotaged and would
 /// not be covered.
@@ -7821,6 +7891,13 @@ async fn turn<P: Provider>(
                                     // inherited by the idle loop's write-capable
                                     // arm.
                                     Action::Config(None) => {
+                                        // The same prose the idle door says before
+                                        // it opens the same list — see
+                                        // `routing_notices`. `containment.is_some()`
+                                        // *is* the session's `contained` in here:
+                                        // the caps reach a turn only through
+                                        // `contained.then_some(…)`.
+                                        routing_notices(app, config, containment.is_some());
                                         let settings = io_cli::configure::settings(config);
                                         let paths: Vec<String> =
                                             settings.iter().map(|s| s.path.clone()).collect();
@@ -8521,6 +8598,29 @@ fn observing<T>(
         }
     }
     Ok(out)
+}
+
+/// Re-resolve the declared bundles, but only if the disk has moved under them.
+///
+/// **One function because there are two moments, and they must not drift.** The
+/// turn boundary refreshes so an edit made in another window shows on the next
+/// message; `/plugin` and `/mcp` refresh because a bundle added earlier in the
+/// same idle stretch has to be removable by name from the session, which it was
+/// not until 0.33.0 — `io plugin remove <name>` worked from a shell and the
+/// session answered that no bundle by that name was declared. Two doors, one
+/// answer, and this product's commonest defect is the release where only one of
+/// them got the fix.
+///
+/// `stale` stats the declared manifests and the configuration files and parses
+/// nothing, so the once-per-session resolution `src/resolved.rs` exists for is
+/// kept: a session that changes no file still resolves exactly once.
+/// `tests/dependencies.rs` counts the `Resolved::load` sites on the interactive
+/// path and holds them at two — this is one of them, and adding a third would be
+/// a resolution somebody put back on a per-turn path.
+fn refresh_holdings(holdings: &mut io_cli::resolved::Resolved, config: &Config) {
+    if tokio::task::block_in_place(|| holdings.stale(config)) {
+        *holdings = tokio::task::block_in_place(|| io_cli::resolved::Resolved::load(config));
+    }
 }
 
 /// The session facts a mid-turn report needs, read before the turn borrows the
