@@ -2312,6 +2312,164 @@ fn entry_bundle(dir: &Path, source: Option<io_cli::adapt::Source>) -> marketplac
     }
 }
 
+/// **N8 — a 291-entry index costs one file read, and the shape is what is
+/// asserted.**
+///
+/// A wall-clock threshold is a flaky test on a loaded machine, so the property is
+/// stated structurally and the number is only a ceiling wide enough that only a
+/// catastrophic regression reaches it. The shape: the index path opens **one**
+/// file and descends into nothing, where the walk it replaces is a recursive
+/// `read_dir` to `DEPTH`. That is asserted by putting a real bundle three
+/// directories down and requiring it not to appear — if the walk had run, it
+/// would have.
+///
+/// The official marketplace's 291 entries are the first real input either path
+/// has had at that size, which is why this is a recorded criterion rather than an
+/// assumption.
+#[test]
+fn n8_an_index_of_291_entries_is_one_read_and_no_walk() {
+    let (_dir, root) = clone_dir();
+    let entries: Vec<String> = (0..291)
+        .map(|n| format!(r#"{{ "name": "plugin-{n}", "source": "./plugins/p{n}" }}"#))
+        .collect();
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        &format!(r#"{{ "plugins": [ {} ] }}"#, entries.join(",\n")),
+    );
+    // A real bundle the index does not name, deep enough that a walk would have
+    // had to descend to reach it.
+    manifest(
+        &root.join("vendor").join("nested").join("deep"),
+        "name = \"only-a-walk-finds-me\"\n",
+    );
+
+    let began = std::time::Instant::now();
+    let held = marketplace::holdings(&root);
+    let took = began.elapsed();
+
+    assert_eq!(
+        held.len(),
+        291,
+        "every entry the index names, and only those — counted",
+    );
+    assert!(
+        !held
+            .iter()
+            .any(|bundle| bundle.label() == "only-a-walk-finds-me"),
+        "the walk did not run, which is where the cost of the old path was",
+    );
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "reading one file and building 291 rows took {took:?}. This ceiling is \
+         deliberately far above any real measurement — it is here to catch a \
+         regression that reintroduced a walk or a per-entry filesystem call, not \
+         to assert a performance number on a loaded machine",
+    );
+}
+
+/// **F11 — every hook is disclosed, with its command unshortened and its reason.**
+///
+/// The count is the assertion. A `contains` is satisfied by one row forever, and
+/// the failure this is written for is a bundle whose second hook is not drawn —
+/// which is exactly what a surface built by hand around "the hook" produces.
+///
+/// The fixture's second command is 400 characters. `marketplace::LONGEST` bounds a
+/// description because a description is prose a repository fills in; it must not
+/// bound this, because this is argv an operator is being told will **not** run,
+/// and a shortened argv on a consent surface is the one thing it must never show.
+#[test]
+fn f11_every_hook_a_foreign_bundle_declares_is_disclosed_with_its_reason() {
+    let (_dir, root) = clone_dir();
+    let bundle = root.join("bundle");
+    // A real `plugin.toml`, so io-harness loads the directory and the disclosure
+    // has something to be *beside*. The hooks below are the author's own file and
+    // are not in it — which is the whole point: asking io-harness what the bundle
+    // contributes cannot answer what it declared.
+    manifest(
+        &bundle,
+        "name = \"hooked\"\ndescription = \"a bundle with hooks\"\n",
+    );
+    let long = "x".repeat(400);
+    write(
+        &bundle,
+        "hooks/hooks.json",
+        &format!(
+            r#"{{ "hooks": {{
+      "SessionStart": [ {{ "hooks": [
+        {{ "type": "command", "command": "\"${{CLAUDE_PLUGIN_ROOT}}/hooks/run.cmd\" start" }},
+        {{ "type": "command", "command": "{long}" }}
+      ] }} ],
+      "Stop": [ {{ "hooks": [ {{ "type": "command", "command": "echo done" }} ] }} ]
+    }} }}"#
+        ),
+    );
+
+    let said = marketplace::adapted_disclosure(Scope::User, &bundle, Some(&bundle))
+        .expect("io-harness loads the fixture");
+
+    assert_eq!(
+        said.withheld.len(),
+        3,
+        "one line per hook, counted — three declared, three disclosed",
+    );
+    assert_eq!(
+        said.withheld
+            .iter()
+            .filter(|line| line.contains(&long))
+            .count(),
+        1,
+        "the 400-character command is drawn whole. `LONGEST` bounds a description \
+         and must not bound argv",
+    );
+    assert!(
+        said.withheld
+            .iter()
+            .any(|line| line.contains("${CLAUDE_PLUGIN_ROOT}")),
+        "and the substitution is shown as the author wrote it, because that is what \
+         would have run",
+    );
+    assert_eq!(
+        said.withheld
+            .iter()
+            .filter(|line| line.contains(marketplace::NOT_CARRIED))
+            .count(),
+        3,
+        "every line carries the reason, not just the first — an operator reading \
+         the third row must not have to infer it from the first",
+    );
+    assert_eq!(
+        said.withheld
+            .iter()
+            .filter(|line| line.starts_with("Stop"))
+            .count(),
+        1,
+        "a second event's hooks are disclosed too",
+    );
+}
+
+#[test]
+fn f11_a_native_bundle_withholds_nothing_and_says_nothing() {
+    let (_dir, root) = clone_dir();
+    let bundle = root.join("bundle");
+    manifest(&bundle, "name = \"native\"\n");
+
+    let said = marketplace::disclosure(Scope::User, &bundle).expect("io-harness loads the fixture");
+
+    assert!(
+        said.withheld.is_empty(),
+        "a plugin.toml declares its hooks to io-harness, which runs them. Nothing \
+         is being withheld and a line saying so would be a warning about nothing: \
+         {:?}",
+        said.withheld,
+    );
+    assert!(
+        !said.rows.is_empty(),
+        "the control — the disclosure itself still has something to say, so the \
+         assertion above is not passing because the whole thing came back empty",
+    );
+}
+
 #[test]
 fn f5_a_local_source_is_already_here_and_starts_no_program() {
     let (_dir, root) = clone_dir();
@@ -2319,7 +2477,12 @@ fn f5_a_local_source_is_already_here_and_starts_no_program() {
 
     assert_eq!(
         marketplace::fetched(
-            &entry_bundle(&here, Some(io_cli::adapt::Source::Local("./plugins/reviewer".to_string()))),
+            &entry_bundle(
+                &here,
+                Some(io_cli::adapt::Source::Local(
+                    "./plugins/reviewer".to_string()
+                ))
+            ),
             &root.join("marketplaces"),
             &root.join("staging"),
         ),
@@ -2328,7 +2491,11 @@ fn f5_a_local_source_is_already_here_and_starts_no_program() {
          needs git at all",
     );
     assert_eq!(
-        marketplace::fetched(&entry_bundle(&here, None), &root.join("marketplaces"), &root.join("staging")),
+        marketplace::fetched(
+            &entry_bundle(&here, None),
+            &root.join("marketplaces"),
+            &root.join("staging")
+        ),
         Ok(here),
         "and a bundle the walk found carries no source, which is the same answer",
     );
@@ -2391,8 +2558,5 @@ fn f5_a_pin_that_could_become_an_argument_refuses_the_whole_entry() {
         said.contains("reviewer"),
         "the refusal names the bundle it withheld: {said:?}",
     );
-    assert!(
-        !root.join("staging").exists(),
-        "and nothing was started",
-    );
+    assert!(!root.join("staging").exists(), "and nothing was started",);
 }

@@ -1341,6 +1341,21 @@ pub struct Disclosure {
     /// the TUI writes into a terminal whose set the operator chose, and the argv
     /// form writes down a pipe in ASCII. [`Disclosure::said`] is the fold.
     pub rows: Vec<Row>,
+    /// One line per hook the bundle declares that io will **not** carry across,
+    /// each with its event, its command unshortened, and the reason.
+    ///
+    /// **Empty for a native bundle, and not because the field does not apply.** A
+    /// `plugin.toml` declares its hooks to io-harness, which runs them; there is
+    /// nothing being withheld and nothing to say. This list is only ever the hooks
+    /// of a Claude Code or Codex bundle, which cannot cross — see
+    /// [`crate::adapt::Hook`] for why no adapter closes that gap.
+    ///
+    /// A separate field rather than more [`Disclosure::rows`], so the count of
+    /// withheld hooks is a number a test can assert. One row per hook, and F11
+    /// asserts the count rather than a `contains`, because one row satisfies a
+    /// `contains` forever and a hook that exists and is not drawn is the failure
+    /// this exists to prevent.
+    pub withheld: Vec<String>,
 }
 
 impl Disclosure {
@@ -1416,6 +1431,38 @@ impl Disclosure {
 /// one that *does* show, the separator between a row's two fields, is applied by
 /// the door in [`Disclosure::said`].
 pub fn disclosure(scope: Scope, dir: &Path) -> Result<Disclosure, String> {
+    adapted_disclosure(scope, dir, None)
+}
+
+/// The sentence every withheld hook carries, spelled once.
+///
+/// **Three reasons and not one, because an operator who is told "unsupported"
+/// cannot tell whether to wait for a release or to stop expecting it.**
+/// io-harness's `Hook.run` is argv and deliberately never a shell string; its `on`
+/// takes the harness's own event tags; and 0.71.0 refuses `${env:}`, `${file:}`
+/// and `${cmd:}` inside a manifest in every scope. A Claude hook is a shell
+/// string, an unknown event and a refused substitution at once, so no adapter
+/// closes it — and an approximated hook is a program running on this machine that
+/// nobody described accurately.
+pub const NOT_CARRIED: &str = "io does not run this — a hook here is a shell line for another \
+                               tool's events, and io-harness takes argv against its own";
+
+/// [`disclosure`], plus the hooks a foreign bundle declares and io will not carry.
+///
+/// `from` is the bundle's **own** directory — the stranger's checkout — where
+/// `dir` is what io-harness is asked to load, which for an adapted bundle is the
+/// generated manifest's directory. The two differ precisely because the adapter
+/// carries no hooks: asking io-harness what the bundle contributes therefore
+/// cannot answer what it *declared*, and reading the author's own file is the only
+/// way to name what is being left behind.
+///
+/// `None` for a native bundle, where the two are the same directory and nothing is
+/// withheld.
+pub fn adapted_disclosure(
+    scope: Scope,
+    dir: &Path,
+    from: Option<&Path>,
+) -> Result<Disclosure, String> {
     let plugin = io_harness::Plugins::inspect(scope, dir).map_err(|error| error.to_string())?;
     // `true`, because nothing has been written: this is what the directory *is*,
     // not what some `[[plugin]]` entry said about it. See `pluginview::copy_out`.
@@ -1423,7 +1470,57 @@ pub fn disclosure(scope: Scope, dir: &Path) -> Result<Disclosure, String> {
     Ok(Disclosure {
         id: listed.id.clone(),
         rows: crate::pluginview::detail(&listed, u16::MAX, &crate::glyphs::ASCII),
+        withheld: from.map(|from| withheld_hooks(from)).unwrap_or_default(),
     })
+}
+
+/// One line per hook the bundle at `from` declares, with its command unshortened.
+///
+/// **The command is filtered and never bounded**, which is the one place this
+/// module's `LONGEST` deliberately does not apply: it is argv the operator is
+/// being asked to consent to being *absent*, and a shortened argv on a consent
+/// surface is the single thing that surface must never show.
+fn withheld_hooks(from: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for at in hook_files(from) {
+        for hook in crate::adapt::hooks_in(&at) {
+            let mut said = hook.event.clone();
+            said.push_str(" — ");
+            said.push_str(&hook.command);
+            said.push_str(" — ");
+            said.push_str(NOT_CARRIED);
+            found.push(said);
+        }
+    }
+    found
+}
+
+/// The hooks files a foreign bundle declares or keeps where they are conventional.
+///
+/// **Two places, and the manifest's own answer comes first.** A Codex manifest
+/// names `"hooks": "./hooks/hooks.json"`, and a Claude bundle generally names
+/// nothing and keeps the file at that same conventional path — so looking only at
+/// the manifest would miss most bundles and looking only at the convention would
+/// miss a bundle that moved it. The conventional path is not added twice when the
+/// manifest already named it.
+///
+/// The declared path is joined **component by component, plain names only**, the
+/// way every other value out of a stranger's file is: it decides which file io
+/// opens, and `../../.ssh/id_ed25519` must address nothing.
+///
+/// Path discovery only. The reading is [`crate::adapt`]'s, which is the module
+/// permitted to parse JSON.
+fn hook_files(from: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if let Some(said) = crate::adapt::manifest_at(from).and_then(|read| read.hooks) {
+        found.push(local_dir(from, &said));
+    }
+    let conventional = from.join("hooks").join("hooks.json");
+    if !found.contains(&conventional) {
+        found.push(conventional);
+    }
+    found.retain(|path| path.is_file());
+    found
 }
 
 /// Every bundle whose name or description carries `text`, in [`markets`]' order.
