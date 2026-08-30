@@ -188,10 +188,15 @@ mod tests {
             last.contains("more rows"),
             "the surface dropped rows without saying so: {last:?}",
         );
-        // 20 rows asked for, 5 available, one of which is the count itself.
-        assert!(
-            last.contains("16"),
-            "the count must be the rows actually dropped, but it read {last:?}",
+        // **The whole rendered row, not a substring of the number.** `contains("16")`
+        // is satisfied by "116" and `contains("6")` by "16" — a count assertion
+        // that passes on a wrong count is the vacuity this product keeps finding
+        // in its own gates.
+        let theme = theme();
+        assert_eq!(
+            last,
+            more(16, &theme).to_string(),
+            "20 rows asked for and 5 available, one of which is the count itself,              so 16 were dropped",
         );
     }
 
@@ -208,9 +213,10 @@ mod tests {
         let out = elide(lines, 4, width, &theme());
         let last = out.last().expect("a count row").to_string();
         let dropped = total - wrapped(&out[..out.len() - 1], width);
-        assert!(
-            last.contains(&dropped.to_string()),
-            "counted items rather than rows: {last:?} with {dropped} rows dropped",
+        assert_eq!(
+            last,
+            more(dropped, &theme()).to_string(),
+            "counted items rather than rows, or counted the wrong number of them",
         );
     }
 

@@ -518,10 +518,16 @@ pub fn contract(
     goal: String,
     sandbox: Option<ExecMode>,
 ) -> TaskContract {
-    // `io exec` runs one goal and exits, so the resolution genuinely is once
-    // per run here — but it goes through the same module, because the gate that
-    // keeps the interactive path honest is a path allow-list and admits no
-    // exceptions for a caller that happens to be short-lived.
+    // Through the same module as the session's, because the gate that keeps the
+    // interactive path honest is a path allow-list and admits no exceptions for a
+    // caller that happens to be short-lived.
+    //
+    // **Twice per run, not once, and the comment used to claim otherwise.** The
+    // contract is built here and the hooks are built where the run is assembled,
+    // and threading one resolution between the two would reshape `Headless`'s
+    // construction for a process that resolves, runs one goal and exits. Bounded
+    // and stated rather than claimed away — the adversarial review caught the
+    // claim.
     let resolved = crate::resolved::Resolved::load(config);
     let contract = crate::contract::configured(
         goal,

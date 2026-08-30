@@ -262,8 +262,16 @@ pub struct Status {
     /// them. `None` until one does — a session that has spent nothing yet is not
     /// a session that has spent zero, and the difference is the whole of F9.
     pub tokens: Option<u64>,
-    /// Tokens the step now streaming looks like it has spent, estimated from the
-    /// deltas as they arrive.
+    /// Tokens the step now streaming has *produced*, estimated from the deltas as
+    /// they arrive.
+    ///
+    /// **Produced, not spent, and the difference is large.** The only per-chunk
+    /// signal is the assistant's own text, so this counts the completion and
+    /// nothing else — while the provider's `Step` total is prompt plus completion.
+    /// On a step with a big prompt the provisional figure is a small fraction of
+    /// the settled one and then jumps to it. That is why it is drawn with a tilde
+    /// and never added to a settled number: it is an honest lower bound on a
+    /// number nobody can know mid-stream, not an approximation of the total.
     ///
     /// **An estimate, and drawn as one.** `EventKind::Token` carries text and no
     /// count — providers do not bill per chunk, so neither crate can know a
