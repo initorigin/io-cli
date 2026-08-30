@@ -649,3 +649,135 @@ fn a_queue_behind_an_open_fleet_view_answers_no_key() {
         "and nothing was put in the composer the fleet is covering",
     );
 }
+
+// ---------------------------------------------------------------------------
+// O7/O8/O9 — the list is drawn in full, and it reaches the turn it was typed into
+// ---------------------------------------------------------------------------
+
+/// **O7 — four queued messages are four rows, with their positions, and nothing
+/// is elided.**
+///
+/// Through 0.31.0 the surface had exactly one row — released from the blank above
+/// the activity line — so four messages collapsed to `1. … 3 more` and the
+/// operator could see the first and a number. With the viewport sized to what the
+/// queue asks for, the collapse survives only for a terminal that genuinely
+/// cannot do better.
+#[test]
+fn o7_every_queued_message_is_listed_with_its_position() {
+    let mut app = with_queue(4);
+    let wanted = app.viewport_wanted(80, 40);
+    let rows = rows_at(&mut app, wanted);
+    let drawn = rows.join("\n");
+
+    for at in 0..4 {
+        let text = format!("queued prompt {at}");
+        assert!(
+            drawn.contains(&text),
+            "{text} is not on screen, so the queue is still eliding: {drawn}",
+        );
+        assert!(
+            drawn.contains(&format!("{}.", at + 1)),
+            "the position of {text} is missing: {drawn}",
+        );
+    }
+    assert!(
+        !drawn.contains("more"),
+        "nothing should be elided when the viewport grew to hold it: {drawn}",
+    );
+}
+
+/// **O7's other half — a terminal that cannot grow still says what it is
+/// holding.** The `room == 1` collapse is not deleted, it stops being what every
+/// real session sees, and the count it reports has to be right.
+#[test]
+fn o7_a_terminal_too_small_to_grow_reports_what_it_did_not_draw() {
+    let mut app = with_queue(4);
+    // The floor, not what the queue asked for.
+    let rows = rows_at(&mut app, io_cli::term::VIEWPORT_HEIGHT);
+    let drawn = rows.join("\n");
+    assert!(
+        drawn.contains("more"),
+        "a queue that cannot be drawn in full must say so: {drawn}",
+    );
+    assert!(
+        drawn.contains('3'),
+        "four queued with one drawn leaves three, and the count must be right: {drawn}",
+    );
+}
+
+/// **O8 — the queue is delivered in the order it was typed, and each delivery is
+/// recorded in the transcript.**
+///
+/// The loop lives in `App::deliver_queued` rather than in the driver because
+/// nothing under `tests/` links `src/main.rs`: a loop written there could be
+/// neither asserted nor sabotaged, and this one decides whether an operator's
+/// words are kept.
+#[test]
+fn o8_delivery_is_in_order_and_reaches_the_transcript() {
+    let mut app = with_queue(3);
+    let mut seen: Vec<String> = Vec::new();
+    let delivered = app.deliver_queued(|text| {
+        seen.push(text.to_string());
+        Ok(())
+    });
+
+    assert_eq!(delivered.sent, 3);
+    assert_eq!(delivered.refused, None);
+    assert_eq!(
+        seen,
+        vec![
+            "queued prompt 0".to_string(),
+            "queued prompt 1".to_string(),
+            "queued prompt 2".to_string(),
+        ],
+        "io-harness pushes one observation per message and the model reads them \
+         in order, so joining or reordering them is a paragraph the operator \
+         never wrote",
+    );
+    assert!(
+        app.queued_prompts().is_empty(),
+        "everything delivered leaves the queue",
+    );
+
+    let said = app
+        .take_pending()
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for at in 0..3 {
+        assert!(
+            said.contains(&format!("queued prompt {at}")),
+            "a steered line is part of the conversation, not a footer note: {said}",
+        );
+    }
+}
+
+/// **O9 — a message that cannot be delivered is kept, not lost.**
+///
+/// The one thing worse than a correction that arrives late is one that reports
+/// success and goes nowhere. Delivery stops at the first refusal, the message goes
+/// back to the front of the queue, and the caller is told why — so `sent` is never
+/// reported alongside a refusal as though both were true.
+#[test]
+fn o9_a_message_that_cannot_be_delivered_goes_back_on_the_queue() {
+    let mut app = with_queue(3);
+    let mut calls = 0;
+    let delivered = app.deliver_queued(|_| {
+        calls += 1;
+        if calls == 2 {
+            Err("nothing is listening".to_string())
+        } else {
+            Ok(())
+        }
+    });
+
+    assert_eq!(delivered.sent, 1, "only the first one landed");
+    assert_eq!(delivered.refused.as_deref(), Some("nothing is listening"));
+    assert_eq!(
+        app.queued_prompts(),
+        ["queued prompt 1", "queued prompt 2"],
+        "the message that failed is back at the front, with everything behind it",
+    );
+}

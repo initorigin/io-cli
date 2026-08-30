@@ -936,6 +936,49 @@ impl App {
         &self.prompts
     }
 
+    /// Hand everything queued to the turn that is running, oldest first.
+    ///
+    /// **Each on its own, in the order they were typed**, because io-harness
+    /// pushes one `Observation` per message and the model reads them in that
+    /// order. Joining them would be one paragraph the operator never wrote.
+    ///
+    /// Each delivered message is recorded into the transcript rather than the
+    /// footer: a steered line becomes an observation in the run's ledger, so it is
+    /// part of the conversation rather than about it — and it is the only part
+    /// that will never get an echo of its own, because it is not a turn.
+    ///
+    /// **Delivery stops at the first refusal and the message goes back.** The one
+    /// thing worse than a correction that arrives late is one that reports success
+    /// and goes nowhere, so the caller gets the reason and the queue keeps what
+    /// was not sent.
+    ///
+    /// It lives here rather than in the driver because nothing under `tests/`
+    /// links `src/main.rs`: a loop written there could be neither asserted nor
+    /// sabotaged, and this one decides whether an operator's words are kept.
+    pub fn deliver_queued<F>(&mut self, mut say: F) -> crate::queue::Delivered
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        let mut delivered = crate::queue::Delivered::default();
+        while let Some(waiting) = self.next_queued_prompt() {
+            if let Err(error) = say(&waiting) {
+                // **Back to the FRONT, not the back.** `queue_prompt` appends,
+                // which is right for a line the operator has just typed and wrong
+                // for one that was already first: appending it would put every
+                // message queued behind it ahead of it, so a refusal would
+                // silently reorder the operator's corrections and the agent would
+                // read them in an order nobody wrote.
+                self.prompts.insert(0, waiting);
+                self.status.queued_prompts = self.prompts.len();
+                delivered.refused = Some(error);
+                return delivered;
+            }
+            self.record(Tone::Muted, format!("[mid-turn] {}", waiting.trim()));
+            delivered.sent += 1;
+        }
+        delivered
+    }
+
     /// Whether the queue surface is on screen.
     ///
     /// **Three facts, and none of them is a fourth field.** It has been opened

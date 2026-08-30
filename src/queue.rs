@@ -499,3 +499,23 @@ pub fn render(
     // measured in prompts.
     frame.render_widget(Paragraph::new(lines), area);
 }
+
+/// What happened when a queue was handed to a running turn.
+///
+/// Returned by [`crate::app::App::deliver_queued`], which is where the loop and
+/// the transcript records live. This type exists so the driver has something to
+/// report from rather than a count it computed itself — `/steer` and the
+/// automatic drain say different sentences about the same outcome, and both have
+/// to agree about what the outcome was.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Delivered {
+    /// How many messages reached the turn, in the order they were typed.
+    pub sent: usize,
+    /// Why the rest did not, if delivery stopped.
+    ///
+    /// **A refusal is not a count.** When this is set the message that failed has
+    /// been put back at the front of the queue, so it is still the operator's, and
+    /// a surface that reported `sent` alongside it would be claiming success on
+    /// the one path where there was none.
+    pub refused: Option<String>,
+}
