@@ -6839,16 +6839,18 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
     }
 }
 
-/// **The agent's own look, committed where it looked.**
-///
-/// A wrapper over [`io_cli::attach::viewed`], which is where every decision
 /// A keystroke while a picker is open on top of a running turn.
 ///
-/// **Only the three kinds `turn()` can open reach here**, and that is the whole
+/// *(Two orphaned lines opened this block until 0.33.0 — the truncated tail of a
+/// doc for [`commit_image`], which has its own. Nothing in the suite can see a
+/// rustdoc summary attached to the wrong item, so it survived every gate.)*
+///
+/// **Only the four kinds `turn()` can open reach here**, and that is the whole
 /// safety argument: the palette and path completion set or paste into the
-/// composer, and `/theme` resolves a theme. None of them writes a file, touches
-/// the store, or reassigns anything the running turn is holding — which is the
-/// property that lets a picker be open at all while a turn owns the session.
+/// composer, `/theme` resolves a theme, and `/config` bare reports a setting.
+/// None of them writes a file, touches the store, or reassigns anything the
+/// running turn is holding — which is the property that lets a picker be open at
+/// all while a turn owns the session.
 ///
 /// It lives beside the loop rather than inside it so the `select!` arm stays
 /// readable; every decision in it is a library call.
@@ -8516,13 +8518,6 @@ fn observing<T>(
     Ok(out)
 }
 
-/// The last run of this session, if it has had one.
-///
-/// **Its doc comment was taken by an insertion in this release** — `undo_whole_turn`
-/// and `observing` were added directly beneath it, so this sentence became their
-/// summary line and this function was left with none. Found by the adversarial
-/// review, and worth noting because nothing in the suite can see a rustdoc
-/// summary attached to the wrong item.
 /// The session facts a mid-turn report needs, read before the turn borrows the
 /// session.
 ///
@@ -8535,6 +8530,13 @@ struct TurnFacts {
     last: Option<io_harness::TranscriptTurn>,
 }
 
+/// The last run of this session, if it has had one.
+///
+/// **This summary was attached to the wrong item for two releases.** An insertion
+/// put `TurnFacts` between the sentence and the function it describes, so
+/// `TurnFacts` opened with two summary lines and this function had none. Nothing
+/// in the suite can see a rustdoc summary attached to the wrong item, which is why
+/// it took a reading pass to find and is worth a note rather than a silent fix.
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)

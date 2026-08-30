@@ -533,9 +533,16 @@ impl Picker {
 
     /// Whether the unfolding row is the one under the marker right now.
     ///
-    /// The caller asks this to decide where a keystroke goes: with the block open
-    /// it belongs to whatever is drawn in it, and with it shut the picker filters
-    /// as it always has.
+    /// **Do not route a keystroke on this.** It said so until 0.33.0, and the
+    /// advice was safe only while exactly one row could unfold. Once several can —
+    /// an offer opening its preview beside the free-text row opening a composer —
+    /// the predicate is true over both, and `Enter` on an open preview goes to
+    /// whatever the *other* block holds. Ask the caller's own question instead:
+    /// `Intent::writing` asks whether the marker is on the row that takes typing,
+    /// which is what that routing ever meant.
+    ///
+    /// It remains as what it says: whether the block under the marker is open.
+    /// `src/` has no caller today — the one it had was the mistake above.
     pub fn unfolded_now(&self) -> bool {
         self.open_block() > 0
     }
