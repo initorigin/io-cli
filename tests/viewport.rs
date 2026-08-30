@@ -215,3 +215,176 @@ fn o17_a_viewport_never_exceeds_what_the_terminal_can_give() {
     );
     each_committed_once(&recorder, &["committed-on-a-small-terminal"]);
 }
+
+// ---------------------------------------------------------------------------
+// O16 — the viewport is the size of the surface on it, per surface.
+// ---------------------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use io_cli::app::{App, Command};
+use io_cli::term::SCROLLBACK_RESERVE;
+use io_cli::theme::DARK;
+use io_harness::{EventKind, Question, RunEvent};
+
+/// A terminal big enough that nothing here is testing the ceiling.
+const TERMINAL: u16 = 40;
+
+fn app() -> App {
+    App::new(DARK, "a-model")
+}
+
+fn running() -> App {
+    let mut app = app();
+    app.started();
+    app.event(
+        &RunEvent::new(
+            1,
+            1,
+            EventKind::Started {
+                goal: "count the tests".into(),
+                provider: "test".into(),
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    app
+}
+
+fn press(app: &mut App, code: KeyCode) -> Command {
+    app.key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// The question that filled the whole viewport through 0.31.0.
+fn five_choices() -> Question {
+    Question {
+        question: "which column should the migration drop?".to_string(),
+        context: Some("the table has 40 rows and one caller".to_string()),
+        choices: vec![
+            "created_at".to_string(),
+            "updated_at".to_string(),
+            "deleted_at".to_string(),
+            "archived_at".to_string(),
+            "expired_at".to_string(),
+        ],
+    }
+}
+
+/// **O16 — the question overlay.**
+///
+/// It is asserted per surface, not once, because one of them working proves
+/// nothing about the others: each asks through a different `rows_wanted`, and the
+/// two guards this release removed — the `Mode::Running` early return and the
+/// `modal()` one — hid all four behind the same two lines.
+#[test]
+fn o16_the_question_overlay_grows_the_viewport_and_gives_it_back() {
+    let mut app = running();
+    let floor = app.viewport_wanted(80, TERMINAL);
+    assert_eq!(
+        floor, VIEWPORT_HEIGHT,
+        "a running turn with nothing open sits at the floor",
+    );
+
+    let (answer, _reply) = tokio::sync::oneshot::channel();
+    app.open_intent(io_cli::intent::Asked {
+        question: five_choices(),
+        answer,
+    });
+    let asking = app.viewport_wanted(80, TERMINAL);
+    assert!(
+        asking > floor,
+        "the question asked for no more rows than an idle prompt: {asking}",
+    );
+
+    // Answered, and the rows go back.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.viewport_wanted(80, TERMINAL),
+        floor,
+        "the viewport kept the rows after the surface closed",
+    );
+}
+
+/// **O16 — the queue.** Four queued messages ask for four rows, which is O7's
+/// "all four are listed" expressed as the demand that makes it possible.
+#[test]
+fn o16_the_queue_grows_the_viewport_by_what_it_is_holding() {
+    let mut shallow = running();
+    shallow.queue_prompt("the first");
+    let one = shallow.viewport_wanted(80, TERMINAL);
+
+    let mut deep = running();
+    for at in 0..4 {
+        deep.queue_prompt(format!("queued prompt {at}"));
+    }
+    let four = deep.viewport_wanted(80, TERMINAL);
+
+    assert!(
+        four > one,
+        "four queued messages asked for no more rows than one: {four} against {one}",
+    );
+    assert_eq!(
+        four - one,
+        3,
+        "each queued message is worth exactly one row",
+    );
+}
+
+/// **O16 — a picker.** Its demand does not come from `App` at all: a picker is
+/// drawn *instead of* the session, so the driver sizes for it directly. Both
+/// paths clamp through `term::viewport_for`, which is the single ceiling.
+#[test]
+fn o16_a_picker_asks_for_its_own_rows_through_the_one_ceiling() {
+    let short = io_cli::picker::Picker::new(
+        "Which command?",
+        (0..3)
+            .map(|n| io_cli::picker::Row::new(format!("row {n}")))
+            .collect(),
+    );
+    let long = io_cli::picker::Picker::new(
+        "Which command?",
+        (0..30)
+            .map(|n| io_cli::picker::Row::new(format!("row {n}")))
+            .collect(),
+    );
+
+    assert!(
+        long.rows_wanted() > short.rows_wanted(),
+        "a thirty-row picker asked for no more than a three-row one",
+    );
+    assert_eq!(
+        io_cli::term::viewport_for(short.rows_wanted(), TERMINAL),
+        VIEWPORT_HEIGHT,
+        "a picker smaller than the floor still gets the floor",
+    );
+    assert!(
+        io_cli::term::viewport_for(long.rows_wanted(), TERMINAL) > VIEWPORT_HEIGHT,
+        "a picker larger than the floor is given rows",
+    );
+}
+
+/// **O17 — the ceiling is the terminal less the rows the conversation keeps.**
+///
+/// The bound is not a ration. The developer's decision is that a surface may take
+/// the screen when it needs it; what it may not take is the sight of the exchange
+/// it is about.
+#[test]
+fn o17_growth_stops_short_of_the_conversation() {
+    // A surface asking for far more than the terminal holds.
+    let taken = io_cli::term::viewport_for(1_000, TERMINAL);
+    assert_eq!(
+        taken,
+        TERMINAL - SCROLLBACK_RESERVE,
+        "growth did not stop at the reserve",
+    );
+
+    // On the product's supported floor, the reserve still holds and the result is
+    // still a usable viewport rather than a degraded one.
+    let narrow = io_cli::term::viewport_for(1_000, 24);
+    assert_eq!(narrow, 20, "80x24 should give a twenty-row viewport");
+    assert!(narrow >= VIEWPORT_HEIGHT);
+
+    // And a terminal too small for the reserve keeps a session rather than losing
+    // one: the floor wins over the ceiling, and `Screen::attach_with` clamps
+    // underneath both.
+    assert_eq!(io_cli::term::viewport_for(1_000, 6), VIEWPORT_HEIGHT);
+}

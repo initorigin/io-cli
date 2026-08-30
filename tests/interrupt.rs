@@ -225,8 +225,12 @@ fn f9_a_streaming_answer_of_any_length_leaves_the_viewport_the_same_size() {
     // because each line commits to the terminal's own scrollback as it finishes.
     // Only the unfinished tail is ever live, so there is nothing for the viewport
     // to grow to hold.
+    // Asked through `viewport_wanted`, which is the demand the driver acts on.
+    // Since 0.32.0 the viewport does grow — for a question, a plan, a queue or a
+    // picker — so "it does not move" has to be asserted against the number that
+    // can now move, rather than against a constant that never could.
     let mut app = App::new(DARK, "m");
-    let quiet = app.viewport_height();
+    let quiet = app.viewport_wanted(80, 40);
     assert!(quiet >= 3, "streaming tail, composer and status line");
 
     let mut committed = 0;
@@ -237,12 +241,16 @@ fn f9_a_streaming_answer_of_any_length_leaves_the_viewport_the_same_size() {
         committed, 200,
         "every finished line should have been committed as it arrived",
     );
-    assert_eq!(app.viewport_height(), quiet, "the viewport did not move");
+    assert_eq!(app.viewport_wanted(80, 40), quiet, "the viewport did not move");
 
     // A partial line stays live until something finishes it.
     app_lines(&mut app, "the tail with no newline yet");
     assert_eq!(app.events.live(), "the tail with no newline yet");
-    assert_eq!(app.viewport_height(), quiet);
+    assert_eq!(
+        app.viewport_wanted(80, 40),
+        quiet,
+        "a live tail is not a surface asking for rows",
+    );
 
     app.finished();
     assert_eq!(app.events.live(), "");

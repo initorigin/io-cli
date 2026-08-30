@@ -96,7 +96,7 @@ fn with_queue(count: usize) -> App {
 }
 
 /// The viewport's rows as text, blanks kept: a row's *index* is the assertion.
-fn rows_at(app: &App, viewport: u16) -> Vec<String> {
+fn rows_at(app: &mut App, viewport: u16) -> Vec<String> {
     let (mut screen, _recorder) = support::screen_of(80, 40, viewport);
     screen
         .draw(|frame| app.render(frame, frame.area()))
@@ -134,10 +134,10 @@ const TALL: u16 = 12;
 /// sent.
 #[test]
 fn f2_the_queued_lines_are_drawn_above_the_composer_in_send_order() {
-    let app = with_queue(3);
+    let mut app = with_queue(3);
     assert!(app.queue_open(), "queueing a line opens the surface");
 
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app,TALL);
     let first = row_of(&rows, "queued prompt 0");
     let second = row_of(&rows, "queued prompt 1");
     let third = row_of(&rows, "queued prompt 2");
@@ -207,7 +207,7 @@ fn f2_esc_closes_the_surface_and_leaves_the_turn_running() {
         "closing the view is not dropping the queue — the lines still run",
     );
 
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app,TALL);
     assert!(
         !rows.iter().any(|row| row.contains("queued prompt 0")),
         "a closed surface draws nothing: {rows:#?}"
@@ -282,7 +282,7 @@ fn f2_the_surface_draws_in_the_ascii_glyph_set_with_no_box_drawing_character() {
         send(&mut app, &format!("queued prompt {at}"));
     }
 
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app,TALL);
     let first = row_of(&rows, "queued prompt 0");
     let composer = row_of(&rows, io_cli::composer::PROMPT.trim_end());
     let drawn = rows[first..composer].join("\n");
@@ -309,23 +309,35 @@ fn f2_the_surface_draws_in_the_ascii_glyph_set_with_no_box_drawing_character() {
 }
 
 // ---------------------------------------------------------------------------
-// N2 — the frame does not grow
+// O7 — the queue asks for the rows it needs, and gives them back
 // ---------------------------------------------------------------------------
 
-/// N2's sabotage arm: growing the viewport by one row per queued line.
+/// **This test used to assert the opposite, and 0.32.0 reversed it on purpose.**
 ///
-/// **This is the test that kills it.** Every route to the frame's height is
-/// asserted, because the sabotage can be written at any of them: the fixed
-/// height the driver asks for between turns, the height it asks for while a turn
-/// is in flight, and the rows the frame actually draws into.
+/// 0.17.0 shipped the queue under a fixed viewport, so its whole surface had to
+/// fit in rows the layout could already spare — which came to exactly one, by
+/// releasing the blank above the activity line. Four queued messages therefore
+/// collapsed to `1. … 3 more`, and the old `n2_a_queue_of_any_depth_leaves_the_
+/// frame_the_same_height_as_an_empty_one` guarded that: it asserted the session
+/// never asked the terminal for another row, because doing so was "the scrollback
+/// being walked upward by its own queue".
+///
+/// The scrollback is still not walked — that is what `tests/viewport.rs` asserts
+/// over a growth, a shrink and a resize, against the byte stream — so the reason
+/// the constraint existed is now discharged somewhere it can actually be seen.
+/// What is left is the cost it was buying, which was the operator not being able
+/// to see what they had queued.
 #[test]
-fn n2_a_queue_of_any_depth_leaves_the_frame_the_same_height_as_an_empty_one() {
-    let empty = with_queue(0);
-    let quiet = empty.viewport_height();
-    let wanted = empty.viewport_wanted(80, 40);
-    let rows = rows_at(&empty, wanted).len();
+fn o7_the_queue_asks_for_one_row_per_message_and_returns_them_when_it_empties() {
+    let mut empty = with_queue(0);
+    let floor = empty.viewport_wanted(80, 40);
 
-    for depth in [1, 2, 3, 9, 40] {
+    // **The first queued message is free and the rest are not**, which is not an
+    // off-by-one: the layout releases the blank row above the activity line while
+    // the queue is open, and that released row is exactly where 0.17.0's single
+    // visible line came from. So one message still fits in the floor, and every
+    // message after it is a row the viewport has to grow by.
+    for depth in [1, 2, 3, 9] {
         let app = with_queue(depth);
         assert_eq!(
             app.queued_prompts().len(),
@@ -333,33 +345,37 @@ fn n2_a_queue_of_any_depth_leaves_the_frame_the_same_height_as_an_empty_one() {
             "the fixture queued what it meant to",
         );
         assert_eq!(
-            app.viewport_height(),
-            quiet,
-            "{depth} queued lines moved the viewport's own height",
-        );
-        assert_eq!(
             app.viewport_wanted(80, 40),
-            wanted,
-            "{depth} queued lines made the session ask the terminal for more rows \
-             — which is the scrollback being walked upward by its own queue",
-        );
-        // Through the height the session itself asks for, not the one this test
-        // measured off the empty queue: a frame drawn into a viewport the
-        // sabotage grew is the row an operator actually loses.
-        assert_eq!(
-            rows_at(&app, app.viewport_wanted(80, 40)).len(),
-            rows,
-            "{depth} queued lines drew outside the frame",
+            floor + u16::try_from(depth).expect("a small depth") - 1,
+            "{depth} queued lines asked for the wrong number of rows",
         );
     }
+
+    // **And the growth is bounded by the terminal, not by the queue.** Forty
+    // queued messages on a forty-row terminal cannot have forty rows; what they
+    // get is the ceiling, and `queue::rows_for`'s elision reports the rest.
+    let flooded = with_queue(40).viewport_wanted(80, 40);
+    assert_eq!(
+        flooded,
+        40 - io_cli::term::SCROLLBACK_RESERVE,
+        "the queue took rows the conversation above it needs",
+    );
+
+    // Emptied, the session returns to where it started.
+    empty.forget_queued_prompts();
+    assert_eq!(
+        empty.viewport_wanted(80, 40),
+        floor,
+        "the rows were not given back when the queue emptied",
+    );
 }
 
 /// N2 — the rows come out of the composer's allowance, so a queue deeper than
 /// the rows available takes no more of them.
 #[test]
 fn n2_the_queue_takes_the_composers_spare_rows_and_never_the_composers_own() {
-    let shallow = rows_at(&with_queue(1), TALL);
-    let deep = rows_at(&with_queue(40), TALL);
+    let shallow = rows_at(&mut with_queue(1), TALL);
+    let deep = rows_at(&mut with_queue(40), TALL);
     assert_eq!(shallow.len(), deep.len(), "the frame is the frame");
 
     let prompt = io_cli::composer::PROMPT.trim_end();
@@ -399,11 +415,11 @@ fn n2_the_queue_takes_the_composers_spare_rows_and_never_the_composers_own() {
 /// answer the status line already carries.
 #[test]
 fn n2_the_surface_is_visible_at_the_running_viewport_and_costs_it_no_height() {
-    let app = with_queue(3);
+    let mut app = with_queue(3);
     assert!(app.queue_open(), "queueing a line opens the surface");
 
     let height = io_cli::term::VIEWPORT_HEIGHT;
-    let rows = rows_at(&app, height);
+    let rows = rows_at(&mut app,height);
     let queued = row_of(&rows, "queued prompt 0");
     let prompt = row_of(&rows, io_cli::composer::PROMPT.trim_end());
     assert!(
@@ -417,7 +433,7 @@ fn n2_the_surface_is_visible_at_the_running_viewport_and_costs_it_no_height() {
     );
 
     // The blank is what it took, so the frame is the height it always was.
-    let quiet = rows_at(&with_queue(0), height);
+    let quiet = rows_at(&mut with_queue(0), height);
     assert_eq!(
         rows.len(),
         quiet.len(),
@@ -439,7 +455,7 @@ fn n2_the_queue_holds_at_eighty_columns_inside_the_synchronized_pair() {
     // not drawn at all — see `tests/frames.rs` — and a skipped frame would read
     // here as a missing wrapper.
     for depth in [1, 7] {
-        let app = with_queue(depth);
+        let mut app = with_queue(depth);
         screen
             .draw(|frame| app.render(frame, frame.area()))
             .expect("frame");
@@ -597,10 +613,10 @@ fn the_count_under_the_window_is_what_is_under_the_window() {
 #[test]
 fn a_queue_behind_an_open_fleet_view_takes_no_row_from_the_layout() {
     let mut app = with_queue(2);
-    let queued = rows_at(&app, TALL);
+    let queued = rows_at(&mut app,TALL);
 
     app.toggle_fleet();
-    let fleeted = rows_at(&app, TALL);
+    let fleeted = rows_at(&mut app,TALL);
     assert_eq!(
         queued.len(),
         fleeted.len(),

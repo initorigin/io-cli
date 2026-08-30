@@ -121,6 +121,26 @@ pub const VIEWPORT_HEIGHT: u16 = 8;
 /// known.
 pub const SCROLLBACK_RESERVE: u16 = 4;
 
+/// The viewport height a surface asking for `asked` rows should actually get on a
+/// terminal of `terminal_rows`.
+///
+/// **The one place the ceiling is applied**, so the session's own sizing and the
+/// driver's picker path cannot disagree about it — which is exactly the "two
+/// things sizing the same viewport for different reasons" the release was warned
+/// about. [`crate::app::App::viewport_wanted`] is the one owner of the *demand*;
+/// this is the one owner of the *limit*.
+///
+/// Growth is a request rather than a guarantee. A surface that asks for more than
+/// the terminal can spare gets what there is and degrades — every one of them
+/// elides with a count — and a surface asking for less than the floor still gets
+/// the floor, because [`VIEWPORT_HEIGHT`] is what a session needs to be a session.
+pub fn viewport_for(asked: u16, terminal_rows: u16) -> u16 {
+    let ceiling = terminal_rows
+        .saturating_sub(SCROLLBACK_RESERVE)
+        .max(VIEWPORT_HEIGHT);
+    asked.clamp(VIEWPORT_HEIGHT, ceiling)
+}
+
 /// Rows the wizard's viewport occupies.
 ///
 /// Much taller than the session's, and it has to be: the wizard's screens are
