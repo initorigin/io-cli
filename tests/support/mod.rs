@@ -219,6 +219,49 @@ pub fn screen_of(
     (io_cli::term::Screen::from_terminal(terminal), recorder)
 }
 
+/// Re-place the viewport at `viewport` rows, exactly the way `Screen::replace`
+/// does it against a real terminal.
+///
+/// This is the harness half of 0.32.0's growing viewport. `Screen::replace` and
+/// `Screen::rewind` both live on the stdout-backed impl, because both build their
+/// replacement with `Screen::attach_with`, which enables raw mode and asks a real
+/// tty where its cursor is — so neither is reachable from here, and until 0.32.0
+/// no test had ever executed a viewport re-placement. `Screen::replace_from`
+/// takes the constructor as an argument for exactly this reason, and what it runs
+/// is the same erase, restore, re-attach and fall-back the session runs.
+///
+/// **The recorder is deliberately the same one.** The property N5 asserts is
+/// about the byte stream across a growth — content committed before the
+/// re-placement must appear in it exactly once afterwards — and a fresh recorder
+/// per screen would throw away the only evidence that matters.
+pub fn replace(
+    screen: &mut io_cli::term::Screen<Fixed>,
+    recorder: &Recorder,
+    width: u16,
+    height: u16,
+    viewport: u16,
+) {
+    let row = screen
+        .terminal_mut()
+        .get_frame()
+        .area()
+        .y
+        .saturating_add(1);
+    let recorder = recorder.clone();
+    screen
+        .replace_from(row, viewport, move |rows| {
+            let backend = Fixed::new(recorder.clone(), width, height);
+            Terminal::with_options(
+                backend,
+                ratatui::TerminalOptions {
+                    viewport: ratatui::Viewport::Inline(rows),
+                },
+            )
+            .map(io_cli::term::Screen::from_terminal)
+        })
+        .expect("replace");
+}
+
 /// Resize the way a terminal does: the backend reports the new size *and* the
 /// application is told about it, in that order.
 pub fn resize(screen: &mut io_cli::term::Screen<Fixed>, width: u16, height: u16) {
