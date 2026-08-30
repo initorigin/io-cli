@@ -1561,7 +1561,7 @@ pub fn adapted_disclosure(
     Ok(Disclosure {
         id: listed.id.clone(),
         rows: crate::pluginview::detail(&listed, u16::MAX, &crate::glyphs::ASCII),
-        withheld: from.map(|from| withheld_hooks(from)).unwrap_or_default(),
+        withheld: from.map(withheld_hooks).unwrap_or_default(),
     })
 }
 

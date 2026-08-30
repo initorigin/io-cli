@@ -33,16 +33,34 @@ fn env_lock() -> MutexGuard<'static, ()> {
 /// A home of this test's own, put back when it drops.
 struct HomeFixture {
     dir: tempfile::TempDir,
-    previous: [(&'static str, Option<std::ffi::OsString>); 2],
+    previous: [(&'static str, Option<std::ffi::OsString>); 4],
 }
 
 impl HomeFixture {
+    /// **The fixture names the home in force as well as the operator's home,
+    /// because that is what `io` itself does.** `contract::default_skills` anchors
+    /// on `home::in_force` since 0.31.0 — a skill is authored content and belongs
+    /// wherever the operator put the rest of what they wrote — and in the binary
+    /// `home::adopt` runs immediately above the one `Config::discover` either arm
+    /// reaches and sets `IO_CONFIG_HOME` to `~/.io-cli`.
+    ///
+    /// A fixture that set only `HOME` would therefore be asserting about a state
+    /// the product never reaches, and would inherit whatever another test file had
+    /// last pointed the variable at — which is exactly how this test failed on the
+    /// first full-suite run after that change, with `configured` answering `None`
+    /// for a directory it had just installed five skills into.
+    ///
+    /// `IO_CONFIG` names a file outright and beats `IO_CONFIG_HOME`, so an
+    /// inherited one has to go. Every variable touched here is restored on drop.
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("a home directory");
-        let previous = ["HOME", "USERPROFILE"].map(|var| (var, std::env::var_os(var)));
-        for (var, _) in &previous {
-            std::env::set_var(var, dir.path());
-        }
+        let home = dir.path().to_path_buf();
+        let previous = ["HOME", "USERPROFILE", "IO_CONFIG_HOME", "IO_CONFIG"]
+            .map(|var| (var, std::env::var_os(var)));
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("IO_CONFIG_HOME", home.join(".io-cli"));
+        std::env::remove_var("IO_CONFIG");
         Self { dir, previous }
     }
 
