@@ -2402,3 +2402,107 @@ fn n2_the_speculation_line_fits_eighty_columns() {
         within_eighty(set, &text_of(&lines).join("\n"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// N6 — every surface this release touched has a defined narrow form
+// ---------------------------------------------------------------------------
+
+/// A question with everything on it: a context line, five offers, and words long
+/// enough to wrap at eighty columns.
+fn crowded_question() -> io_harness::Question {
+    io_harness::Question {
+        question: "which of the columns in this table should the migration drop, given \
+                   that it has forty rows and exactly one caller anywhere in the workspace?"
+            .to_string(),
+        context: Some(
+            "the table is referenced once, from the importer, and nothing reads it after \
+             the backfill finishes"
+                .to_string(),
+        ),
+        choices: vec![
+            "created_at".to_string(),
+            "updated_at".to_string(),
+            "deleted_at, which the soft-delete path still writes on every request".to_string(),
+            "archived_at".to_string(),
+            "expired_at".to_string(),
+        ],
+    }
+}
+
+/// **N6 — the question overlay has a defined form at 80x24 and at the floor.**
+///
+/// Both glyph sets, because the elision is one character in Unicode and three in
+/// ASCII, and a surface that reserved the wrong number of cells clips in exactly
+/// one of them.
+///
+/// At the floor there is not room for all of it — that is the point of asserting
+/// there — so what is checked is that it degrades: no row overflows, the question
+/// is still readable, and the composer is still on screen, because an overlay that
+/// cannot be typed into is the defect this release exists to fix and it must not
+/// come back at a small size.
+#[test]
+fn n6_the_question_overlay_is_defined_at_eighty_by_twenty_four_and_at_the_floor() {
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        for height in [HEIGHT, io_cli::term::VIEWPORT_HEIGHT] {
+            let (answer, _reply) = tokio::sync::oneshot::channel();
+            let mut overlay = io_cli::intent::Intent::new(io_cli::intent::Asked {
+                question: crowded_question(),
+                answer,
+            });
+            let (mut screen, _recorder) = support::screen_of(WIDTH, HEIGHT, height);
+            screen
+                .draw(|frame| overlay.render(frame, frame.area(), &theme))
+                .expect("a frame");
+            let drawn = screen.viewport_text().to_string();
+
+            within_eighty(set, &drawn);
+            assert!(
+                drawn.contains("which of the columns"),
+                "{set} at {height}: the question is not readable: {drawn:?}",
+            );
+            assert!(
+                drawn.contains(io_cli::composer::PROMPT.trim_end()),
+                "{set} at {height}: there is nothing to type into, which is the \
+                 defect this release exists to fix: {drawn:?}",
+            );
+        }
+    }
+}
+
+/// **N6 — the plan overlay keeps its footer at both sizes**, which is the one
+/// thing its own module doc forbids losing and the one thing it always lost first.
+#[test]
+fn n6_the_plan_overlay_keeps_its_footer_at_both_sizes() {
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        for height in [HEIGHT, io_cli::term::VIEWPORT_HEIGHT] {
+            let steps: Vec<io_harness::PlanStep> = (0..12)
+                .map(|n| io_harness::PlanStep {
+                    intent: format!(
+                        "step {n}: read every file the importer touches and report what \
+                         still references the column"
+                    ),
+                    agent: None,
+                })
+                .collect();
+            let (verdict, _reply) = tokio::sync::oneshot::channel();
+            let overlay = io_cli::plan::Review::new(io_cli::plan::Proposed {
+                plan: io_harness::Plan { steps },
+                verdict,
+            });
+            let (mut screen, _recorder) = support::screen_of(WIDTH, HEIGHT, height);
+            screen
+                .draw(|frame| overlay.render(frame, frame.area(), &theme))
+                .expect("a frame");
+            let drawn = screen.viewport_text().to_string();
+
+            within_eighty(set, &drawn);
+            assert!(
+                drawn.contains("Esc cancels"),
+                "{set} at {height}: the footer naming the keys is gone, which is \
+                 what a twelve-step plan always did to it: {drawn:?}",
+            );
+        }
+    }
+}
