@@ -13,12 +13,17 @@ is pushed directly to either.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --all-targets -- -D warnings
+cargo build --all-targets
+cargo test --all-targets
+cargo test --doc
 ```
 
-CI runs the same three on macOS, Linux and Windows. Windows is not optional: it
-is where a terminal renderer's assumptions break.
+CI runs the last three on macOS, Linux and Windows; the first two are a separate
+`lint` job on ubuntu-latest only, so a formatting or clippy failure is reported
+once rather than three times. Windows is not optional: it is where a terminal
+renderer's assumptions break. `cargo test --all-targets` does not run doctests,
+which is why `cargo test --doc` is its own line.
 
 ## What belongs here, and what does not
 

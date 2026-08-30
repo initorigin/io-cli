@@ -270,14 +270,16 @@ pub fn describe(outcome: &RunOutcome) -> String {
 /// `kind` flattened over an `event` tag — so a line reads
 /// `{"run_id":…,"step":…,"depth":…,"event":"step",…}`. It is the same
 /// serialization io-harness's `[[hook]]` writer appends to a file and the same
-/// string its store keeps in `run_events.json`; a consumer that can read one can
-/// read all three.
+/// string its store keeps in the `json` column of its `run_events` table; a
+/// consumer that can read one can read all three.
 ///
 /// That is also why this forwards rather than matches. `EventKind` is
-/// `#[non_exhaustive]` and io-cli's renderer handles eleven of its fifty
-/// variants; a struct of io-cli's own with the fields the renderer knows would
-/// pass every test written from the renderer's vocabulary and silently drop the
-/// other thirty-nine.
+/// `#[non_exhaustive]` and io-cli's renderer names only some of its variants; a
+/// struct of io-cli's own with the fields the renderer knows would pass every
+/// test written from the renderer's vocabulary and silently drop every kind the
+/// renderer has no way to draw. The two counts that used to stand here are gone
+/// rather than corrected: nothing checks a number written in prose, and both had
+/// gone stale by the 0.71.0 pin.
 ///
 /// The write is on the run's critical path, because `Observer::event` is
 /// synchronous and runs on the run's own task. For a headless run that is the

@@ -22,8 +22,11 @@ net   = "deny"
 Each is `allow`, `ask` or `deny`. `read` and `write` are separate acts — there is
 no single `fs` key, and inventing one is a file io-harness refuses to parse.
 
-Narrower rules go in `[[policy.layers]]`, which are evaluated after the defaults
-and may add capability but may never re-allow something an earlier layer denied.
+Narrower rules go in `[[policy.layers]]`. Order does not decide them: io-harness
+scans every layer strictest effect first, so a matching `deny` anywhere beats a
+matching `allow` anywhere, whichever layer each is in, and the defaults answer
+only where no rule matched at all. A later layer therefore cannot re-allow
+something any layer denied.
 A request like "never touch `.env`" is a layer, not a default:
 
 ```toml

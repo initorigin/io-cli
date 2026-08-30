@@ -500,7 +500,14 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             args.nothing("config list")?;
             Ok(Request::Config(ConfigVerb::List))
         }
-        ("mcp" | "plugin" | "config", Some(unknown)) => Err(format!(
+        // `skill` belongs here and was missing until 0.30.2, so a mistyped verb on
+        // that one surface fell through to the arm below and answered "`skill` is
+        // not a surface io manages; they are `mcp`, `plugin`, `skill` and
+        // `config`" — a sentence that denies and asserts the same fact in one
+        // breath, and never names the verbs the operator was reaching for. The
+        // bare-surface arm underneath already listed all four, which is what makes
+        // the omission an oversight rather than a decision.
+        ("mcp" | "plugin" | "config" | "skill", Some(unknown)) => Err(format!(
             "`{unknown}` is not a verb `{surface}` takes; it takes {}",
             verbs(surface)
         )),

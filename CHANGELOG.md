@@ -6,6 +6,95 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-08-30
+
+A documentation release. Thirty-one claims across the README, the changelog, the
+contributing and security policies, the configuration reference and the shipped
+skills did not survive being checked against the code that decides them. Two of
+the thirty-one turned out to be defects in the product rather than in the prose,
+which is the argument for treating a documentation pass as a gate: writing down
+what a surface does is how you find out it does something else.
+
+### Security
+
+**A vulnerability had nowhere to be reported.** `SECURITY.md` forbade opening a
+public issue and then gave a literal `<project-contact-email>` as the alternative,
+and `CODE_OF_CONDUCT.md` carried the same unfilled placeholder. The README routes
+every report at `SECURITY.md`, so the dead end was the only documented path, and
+it had been there since 0.1.0. Both now route through GitHub's private
+vulnerability reporting on this repository. No address is published.
+
+### Fixed
+
+**`io skill <bad-verb>` answered a sentence that contradicted itself.** The arm
+listing a surface's verbs covered `mcp`, `plugin` and `config`, so a mistyped verb
+on the fourth surface fell through to the unknown-*surface* arm and replied
+"`skill` is not a surface io manages; they are `mcp`, `plugin`, `skill` and
+`config`" — denying and asserting the same fact in one breath, and never naming
+`add`, `list` or `remove`. The arm beside it already listed all four. Nothing in
+the suite had ever read a refusal's words for this family.
+
+**The bundle example in the configuration reference was a trap.** It wrote
+`path = "~/bundles/rust-review"`, and no tilde is expanded for a `[[plugin]]`
+path — io-harness resolves `${env:}`, `${file:}` and `${cmd:}` and nothing else —
+so an operator copying it named a directory literally called `~` and got a bundle
+that is dropped: recorded by the loader, listed by `/plugin`, otherwise silent.
+The same file forbids tildes 130 lines earlier.
+
+### Changed
+
+**The README is a front page rather than a manual.** It was 2,847 lines with no
+contents list. It now carries the project's logo and screenshot from `assets/`, a
+contents list, what you get, install, first run and a table of guides; nineteen
+pages under `docs/guide/` carry the depth. The split moved byte ranges rather
+than rewriting: 2,695 lines moved, 175 kept, and no paragraph was reworded in
+transit.
+
+**New documentation surfaces.** `docs/CONTRACT.md` states what a script may
+depend on — the argv surface, the seven exit codes, the seventeen `[app.io-cli]`
+keys, the paths io writes, and the limits that hold today. `docs/CAPABILITIES.md`
+indexes the guides. `AGENTS.md`, `docs/STYLE.md` and `docs/RELEASE_PROCESS.md`
+write down what was previously held by imitation.
+
+**Corrections worth naming individually.** `/contain` was documented under "this
+turn" and is filed under `Group::Session`, which also made the printed table show
+eleven rows against a bound of ten stated on the same page. The plugin install
+was still described as writing `enabled = false` to your configuration before
+disclosing — the mechanism 0.30.0 replaced, so a reader was told their file is
+written to before they consent, when declining now writes no byte. One module was
+said to start a process where two are permitted. A bundle was said to contribute
+to four subsystems where it contributes to six. `io skill` was attributed to
+0.30.0, where it did not reach the binary until 0.30.1. `/mcp` was said to offer
+no disable, which `McpServer` has had since io-harness 0.70.0 and this crate
+already writes. Exit `6` was described as one route when the 0.71.0 pin gave it
+two. The viewport layout described a two-row composer where `COMPOSER_ROWS` is 1.
+
+**The home is one directory only until you name another.** Under a custom
+`IO_CONFIG_HOME`, `io.toml`, the run store and `IO.md` follow the variable while
+the skills directory, `.skills-manifest`, the marketplace clones and the session
+lock stay in `~/.io-cli`. Nothing said so. Copy both when you move machines.
+
+**Counts nothing checks were deleted rather than corrected.** The README claimed
+thirty-nine undrawn event kinds and `src/exec.rs` claimed eleven of fifty; there
+are 51 variants, 36 drawn and 15 undrawn. A number no test reads goes stale.
+
+**The changelog is a set of links again.** Thirty-three version headings had
+three link definitions, so thirty rendered as literal text while this file's own
+header claimed Keep a Changelog conformance, and `[Unreleased]` compared from a
+tag four releases old.
+
+### Added
+
+Gates, so the corrections cannot silently come undone: a command must be
+documented under the group the code files it in; the install disclosure must
+state that nothing is written before consent, and `Plugins::inspect` must really
+be called; a mistyped verb must name its surface's verbs; no guide page may be
+orphaned and no relative link may be dead; `docs/CONTRACT.md` must agree with
+`exec`'s constants, `clap`'s routing table and `CliSettings`' fields; no shipped
+document may carry a contact placeholder; the configuration reference must name
+every key the harness accepts; and every changelog heading must have a link
+definition.
+
 ## [0.30.1] - 2026-08-30
 
 ### Fixed
@@ -63,7 +152,11 @@ version that could.
   rather than overwritten, and a file whose `name:` is already claimed is refused
   even when its filename is free, because two skills answering to one name make
   every turn of the next session fail before its first completion. Until now the
-  only thing that had ever written a skill file was `/import`.
+  only thing that had ever written a skill file was `/import`. **The `io skill`
+  half of this entry did not ship in 0.30.0**: the parse and the plan were there,
+  but `src/cli.rs` named no `skill` subcommand, so the argv door answered
+  `unrecognized subcommand 'skill'` until 0.30.1 added it. The session commands
+  are as described.
 - **`/memory` edits and forgets an instruction note**, by line. Both splice the
   file, so your indent, your `*`, a `\r\n` and a last line with no newline all
   survive. A note changed underneath you is refused rather than overwritten. A
@@ -2574,7 +2667,38 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.27.0...HEAD
-[0.27.0]: https://github.com/initorigin/io-cli/releases/tag/v0.27.0
-[0.1.1]: https://github.com/initorigin/io-cli/releases/tag/v0.1.1
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.30.2...HEAD
+[0.30.2]: https://github.com/initorigin/io-cli/compare/v0.30.1...v0.30.2
+[0.30.1]: https://github.com/initorigin/io-cli/compare/v0.30.0...v0.30.1
+[0.30.0]: https://github.com/initorigin/io-cli/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/initorigin/io-cli/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/initorigin/io-cli/compare/v0.27.0...v0.28.0
+[0.27.0]: https://github.com/initorigin/io-cli/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/initorigin/io-cli/compare/v0.25.0...v0.26.0
+[0.25.0]: https://github.com/initorigin/io-cli/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/initorigin/io-cli/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/initorigin/io-cli/compare/v0.22.0...v0.23.0
+[0.22.0]: https://github.com/initorigin/io-cli/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/initorigin/io-cli/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/initorigin/io-cli/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/initorigin/io-cli/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/initorigin/io-cli/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/initorigin/io-cli/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/initorigin/io-cli/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/initorigin/io-cli/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/initorigin/io-cli/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/initorigin/io-cli/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/initorigin/io-cli/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/initorigin/io-cli/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/initorigin/io-cli/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/initorigin/io-cli/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/initorigin/io-cli/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/initorigin/io-cli/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/initorigin/io-cli/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/initorigin/io-cli/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/initorigin/io-cli/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/initorigin/io-cli/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/initorigin/io-cli/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/initorigin/io-cli/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/initorigin/io-cli/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/initorigin/io-cli/releases/tag/v0.1.0

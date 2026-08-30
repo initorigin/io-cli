@@ -35,8 +35,9 @@ the terminal session and not for `io exec`, and say so if you do.
 The user file `~/.io-cli/io.toml` for a server that belongs to this machine; the
 project's `io.toml` for one the whole team should have. **A credential never goes
 into a committed file**: write `${env:GITHUB_TOKEN}` and let the environment
-carry the secret. io-harness substitutes `${env:…}` and `${file:…}` and nothing
-else.
+carry the secret. io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}`
+and nothing else; `${cmd:…}` is refused in the project scope, because that file
+travels with a clone, so it belongs in `io.local.toml` or the user file.
 
 ## The surface
 
