@@ -166,8 +166,8 @@ impl Intent {
     /// The free-text row is **last and is a peer**, not a footer: it is chosen the
     /// way every other row is chosen, and io-harness's own documentation says an
     /// answer is not obliged to be one of `choices`, so the surface should not
-    /// imply otherwise. Its index is `choices.len()`, which is what
-    /// [`Self::free_text`] resolves and what the unfold is keyed on.
+    /// imply otherwise. Its index is `choices.len()`, which is what the unfold is
+    /// keyed on and what [`Intent::key`] focuses when the operator starts typing.
     fn list(question: &Question) -> Picker {
         let mut rows: Vec<Row> = question
             .choices
@@ -193,7 +193,6 @@ impl Intent {
         offers.focus(free);
         offers
     }
-
 
     /// Open on a question a run already paused on, read back off the store.
     ///
@@ -404,7 +403,6 @@ impl Intent {
     /// [`crate::app::App::viewport_wanted`] clamps it to what the terminal can
     /// spare, and [`Self::render`] degrades against whatever it is given.
     pub fn rows_wanted(&self, width: u16, theme: &Theme) -> u16 {
-        crate::rows::wrapped(&self.head(theme), width)
-            .saturating_add(self.offers.rows_wanted())
+        crate::rows::wrapped(&self.head(theme), width).saturating_add(self.offers.rows_wanted())
     }
 }

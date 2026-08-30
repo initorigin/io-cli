@@ -241,7 +241,11 @@ fn f9_a_streaming_answer_of_any_length_leaves_the_viewport_the_same_size() {
         committed, 200,
         "every finished line should have been committed as it arrived",
     );
-    assert_eq!(app.viewport_wanted(80, 40), quiet, "the viewport did not move");
+    assert_eq!(
+        app.viewport_wanted(80, 40),
+        quiet,
+        "the viewport did not move"
+    );
 
     // A partial line stays live until something finishes it.
     app_lines(&mut app, "the tail with no newline yet");

@@ -72,7 +72,11 @@ fn n5_a_growth_neither_duplicates_nor_loses_committed_rows() {
 
     // The question overlay asking for room: eight rows becomes twenty.
     support::replace(&mut screen, &recorder, 100, 30, 20);
-    assert_eq!(screen.rows(), 20, "the viewport did not take the rows it asked for");
+    assert_eq!(
+        screen.rows(),
+        20,
+        "the viewport did not take the rows it asked for"
+    );
 
     commit(&mut screen, "after-the-growth-gamma");
 

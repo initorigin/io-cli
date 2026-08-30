@@ -700,8 +700,14 @@ impl Picker {
             // for. Reserved as blank rows here and drawn by the caller into the
             // rectangle recorded after the loop, because only this widget knows
             // where the row landed once the list has scrolled.
-            if block > 0 && self.unfold.is_some_and(|(row, _)| row == self.matches[position]) {
-                let top = area.y.saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+            if block > 0
+                && self
+                    .unfold
+                    .is_some_and(|(row, _)| row == self.matches[position])
+            {
+                let top = area
+                    .y
+                    .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
                 if top.saturating_add(block) <= area.y.saturating_add(area.height) {
                     opened_at = Some(Rect {
                         x: area.x,
@@ -720,7 +726,11 @@ impl Picker {
         // What the list could not show. Counted against everything the query
         // admits rather than against what is below the window, because a row
         // scrolled off the top is just as absent as one below the bottom.
-        let drawn = taken.min(self.matches.len().saturating_sub(self.offset.min(self.matches.len())));
+        let drawn = taken.min(
+            self.matches
+                .len()
+                .saturating_sub(self.offset.min(self.matches.len())),
+        );
         let hidden = self.matches.len().saturating_sub(drawn);
         if hidden > 0 {
             let note = format!("{} {hidden} more", theme.glyphs.elision);

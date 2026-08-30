@@ -518,7 +518,11 @@ fn o2_enter_on_an_offer_sends_that_offer_verbatim() {
     let (mut overlay, _reply) = live(five_choices());
 
     // Up from the free-text row is the last offer.
-    assert_eq!(overlay.key(key(KeyCode::Up)), None, "moving does not answer");
+    assert_eq!(
+        overlay.key(key(KeyCode::Up)),
+        None,
+        "moving does not answer"
+    );
     assert_eq!(
         overlay.key(key(KeyCode::Enter)),
         Some(Some("expired_at".to_string())),

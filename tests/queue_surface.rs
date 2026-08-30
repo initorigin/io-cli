@@ -137,7 +137,7 @@ fn f2_the_queued_lines_are_drawn_above_the_composer_in_send_order() {
     let mut app = with_queue(3);
     assert!(app.queue_open(), "queueing a line opens the surface");
 
-    let rows = rows_at(&mut app,TALL);
+    let rows = rows_at(&mut app, TALL);
     let first = row_of(&rows, "queued prompt 0");
     let second = row_of(&rows, "queued prompt 1");
     let third = row_of(&rows, "queued prompt 2");
@@ -207,7 +207,7 @@ fn f2_esc_closes_the_surface_and_leaves_the_turn_running() {
         "closing the view is not dropping the queue — the lines still run",
     );
 
-    let rows = rows_at(&mut app,TALL);
+    let rows = rows_at(&mut app, TALL);
     assert!(
         !rows.iter().any(|row| row.contains("queued prompt 0")),
         "a closed surface draws nothing: {rows:#?}"
@@ -282,7 +282,7 @@ fn f2_the_surface_draws_in_the_ascii_glyph_set_with_no_box_drawing_character() {
         send(&mut app, &format!("queued prompt {at}"));
     }
 
-    let rows = rows_at(&mut app,TALL);
+    let rows = rows_at(&mut app, TALL);
     let first = row_of(&rows, "queued prompt 0");
     let composer = row_of(&rows, io_cli::composer::PROMPT.trim_end());
     let drawn = rows[first..composer].join("\n");
@@ -419,7 +419,7 @@ fn n2_the_surface_is_visible_at_the_running_viewport_and_costs_it_no_height() {
     assert!(app.queue_open(), "queueing a line opens the surface");
 
     let height = io_cli::term::VIEWPORT_HEIGHT;
-    let rows = rows_at(&mut app,height);
+    let rows = rows_at(&mut app, height);
     let queued = row_of(&rows, "queued prompt 0");
     let prompt = row_of(&rows, io_cli::composer::PROMPT.trim_end());
     assert!(
@@ -613,10 +613,10 @@ fn the_count_under_the_window_is_what_is_under_the_window() {
 #[test]
 fn a_queue_behind_an_open_fleet_view_takes_no_row_from_the_layout() {
     let mut app = with_queue(2);
-    let queued = rows_at(&mut app,TALL);
+    let queued = rows_at(&mut app, TALL);
 
     app.toggle_fleet();
-    let fleeted = rows_at(&mut app,TALL);
+    let fleeted = rows_at(&mut app, TALL);
     assert_eq!(
         queued.len(),
         fleeted.len(),

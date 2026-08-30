@@ -241,12 +241,7 @@ pub fn replace(
     height: u16,
     viewport: u16,
 ) {
-    let row = screen
-        .terminal_mut()
-        .get_frame()
-        .area()
-        .y
-        .saturating_add(1);
+    let row = screen.terminal_mut().get_frame().area().y.saturating_add(1);
     let recorder = recorder.clone();
     screen
         .replace_from(row, viewport, move |rows| {

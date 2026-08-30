@@ -2857,12 +2857,19 @@ fn the_gate_standing_survives_a_width_the_counters_do_not() {
 #[test]
 fn o13_the_token_figure_moves_between_steps_and_says_it_is_an_estimate() {
     let mut status = io_cli::status::Status::new("a-model");
-    assert_eq!(status.token_field(), None, "nothing spent is not zero spent");
+    assert_eq!(
+        status.token_field(),
+        None,
+        "nothing spent is not zero spent"
+    );
 
     // A settled figure from a step that has committed.
     status.tokens = Some(1_000);
     let settled = status.token_field().expect("a settled figure");
-    assert!(!settled.starts_with('~'), "a settled figure is not an estimate: {settled}");
+    assert!(
+        !settled.starts_with('~'),
+        "a settled figure is not an estimate: {settled}"
+    );
 
     // Deltas arriving inside the next step.
     status.streaming = Some(120);
@@ -2928,5 +2935,8 @@ fn o13_the_turns_own_figure_is_provisional_on_the_same_terms() {
     status.run_tokens = Some(300);
     assert!(!status.run_token_field().expect("settled").starts_with('~'));
     status.streaming = Some(40);
-    assert!(status.run_token_field().expect("provisional").starts_with('~'));
+    assert!(status
+        .run_token_field()
+        .expect("provisional")
+        .starts_with('~'));
 }

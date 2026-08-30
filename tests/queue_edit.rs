@@ -112,7 +112,7 @@ fn with_queue(count: usize) -> App {
 }
 
 /// The viewport's rows as text, blanks kept: a row's *index* is the assertion.
-fn rows_at(app: &App, viewport: u16) -> Vec<String> {
+fn rows_at(app: &mut App, viewport: u16) -> Vec<String> {
     let (mut screen, _recorder) = support::screen_of(80, 40, viewport);
     screen
         .draw(|frame| app.render(frame, frame.area()))
@@ -489,12 +489,12 @@ fn f3_up_and_down_move_the_selection_inside_the_surface() {
     let mut app = with_queue(3);
     assert!(app.queue_open());
     assert!(
-        marked(&rows_at(&app, TALL)).is_none(),
+        marked(&rows_at(&mut app, TALL)).is_none(),
         "a surface nobody has touched draws no mark",
     );
 
     assert_eq!(app.key(key(KeyCode::Up)), Command::None);
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert_eq!(
         marked(&rows).map(|row| row.contains("queued prompt 2")),
         Some(true),
@@ -509,12 +509,12 @@ fn f3_up_and_down_move_the_selection_inside_the_surface() {
 
     app.key(key(KeyCode::Up));
     assert_eq!(
-        marked(&rows_at(&app, TALL)).map(|row| row.contains("queued prompt 1")),
+        marked(&rows_at(&mut app, TALL)).map(|row| row.contains("queued prompt 1")),
         Some(true),
     );
     app.key(key(KeyCode::Down));
     assert_eq!(
-        marked(&rows_at(&app, TALL)).map(|row| row.contains("queued prompt 2")),
+        marked(&rows_at(&mut app, TALL)).map(|row| row.contains("queued prompt 2")),
         Some(true),
     );
 
@@ -557,7 +557,7 @@ fn f3_with_the_surface_closed_up_still_recalls_the_previous_prompt() {
     );
 
     assert_eq!(app.key(key(KeyCode::Up)), Command::None);
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert!(
         prompt_row(&rows).contains("queued prompt 1"),
         "Up at the first line of a shut surface is prompt history, which is what \
@@ -568,7 +568,7 @@ fn f3_with_the_surface_closed_up_still_recalls_the_previous_prompt() {
     // And the walk keeps going, which a mark being moved instead could not fake.
     app.key(key(KeyCode::Up));
     app.key(key(KeyCode::Up));
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert!(
         prompt_row(&rows).contains("the earlier prompt"),
         "three presses reach the prompt sent before the turn began: {rows:#?}",
@@ -602,7 +602,7 @@ fn f3_a_line_is_edited_in_the_composer_and_put_back_at_its_own_position() {
         ["queued prompt 0", "queued prompt 2"],
         "the line is out of the queue while it is being edited",
     );
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert!(
         prompt_row(&rows).contains("queued prompt 1"),
         "and it is in the prompt, where it can be seen: {rows:#?}",
@@ -630,7 +630,7 @@ fn f3_a_line_is_edited_in_the_composer_and_put_back_at_its_own_position() {
         Mode::Running,
         "and the turn underneath is untouched"
     );
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert_eq!(
         prompt_row(&rows),
         io_cli::composer::PROMPT.trim_end(),
@@ -651,7 +651,7 @@ fn f3_an_edit_never_starts_on_top_of_a_half_typed_prompt() {
     app.key(key(KeyCode::Up));
     typed(&mut app, "half typed");
 
-    let before = rows_at(&app, TALL);
+    let before = rows_at(&mut app, TALL);
     let marked_before = marked(&before).map(str::to_string);
     assert_eq!(
         app.key(key(KeyCode::Up)),
@@ -665,14 +665,14 @@ fn f3_an_edit_never_starts_on_top_of_a_half_typed_prompt() {
     // first draft of this test asserted that and failed against a feature older
     // than the queue — but that the QUEUE'S mark did not move. The key went to one
     // owner, and it was not this surface.
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert_eq!(
         marked(&rows).map(str::to_string),
         marked_before,
         "the surface took an arrow that belonged to the composer: {rows:#?}",
     );
     app.key(key(KeyCode::Down));
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert!(
         prompt_row(&rows).contains("half typed"),
         "and the composer's own recall gave the draft back: {rows:#?}",
@@ -717,7 +717,7 @@ fn f3_a_queued_line_is_dropped() {
          schedule for it",
     );
     assert_eq!(app.mode(), Mode::Running);
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     // **The queue no longer lists it, and the notice names it.** Those are two
     // different jobs and the first draft of this test conflated them: it swept the
     // whole frame for the text and failed on io-cli's own `dropped "…"` sentence.
@@ -770,7 +770,7 @@ fn f3_esc_during_an_edit_puts_the_line_back_unchanged() {
         Mode::Running,
         "the Esc that answered the edit did not reach the turn",
     );
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert_eq!(
         prompt_row(&rows),
         io_cli::composer::PROMPT.trim_end(),
@@ -791,7 +791,7 @@ fn f3_two_queued_lines_swap_order() {
         ["queued prompt 1", "queued prompt 0", "queued prompt 2"],
         "the marked line moved one place up the run order",
     );
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert_eq!(
         marked(&rows).map(|row| row.contains("queued prompt 1")),
         Some(true),
@@ -828,7 +828,7 @@ fn f3_a_turn_ending_under_an_edit_leaves_the_line_in_the_prompt() {
     app.finished();
     assert_eq!(app.mode(), Mode::Idle);
     assert!(!app.queue_open(), "no turn to be queued behind");
-    let rows = rows_at(&app, TALL);
+    let rows = rows_at(&mut app, TALL);
     assert!(
         prompt_row(&rows).contains("queued prompt 1"),
         "the line being edited is still in the prompt: {rows:#?}",

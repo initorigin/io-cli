@@ -691,9 +691,9 @@ fn f11_status_in_plain_mode_is_the_same_content_in_the_ascii_set() {
             &theme,
             80,
         )
-            .iter()
-            .map(text_of)
-            .collect()
+        .iter()
+        .map(text_of)
+        .collect()
     };
 
     let rich = page(Glyphs::resolve(false, true, None), DARK, false);

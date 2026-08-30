@@ -221,7 +221,12 @@ pub fn committed(
         }
         // What the cap held back. Silence here is indistinguishable from a
         // database with exactly five tables in it.
-        if let Some(rest) = size.tables.len().checked_sub(TABLES).filter(|rest| *rest > 0) {
+        if let Some(rest) = size
+            .tables
+            .len()
+            .checked_sub(TABLES)
+            .filter(|rest| *rest > 0)
+        {
             rows.push(Row::note(format!(
                 "{rest} smaller table{} not shown",
                 if rest == 1 { "" } else { "s" }

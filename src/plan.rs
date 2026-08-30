@@ -169,10 +169,17 @@ impl Review {
         // because these lines wrap.
         let head_rows = crate::rows::wrapped(std::slice::from_ref(&header), area.width);
         let foot_rows = crate::rows::wrapped(std::slice::from_ref(&footer), area.width);
-        let room = text_rows.saturating_sub(head_rows).saturating_sub(foot_rows);
+        let room = text_rows
+            .saturating_sub(head_rows)
+            .saturating_sub(foot_rows);
 
         let mut lines = vec![header];
-        lines.extend(crate::rows::elide(self.steps(theme), room, area.width, theme));
+        lines.extend(crate::rows::elide(
+            self.steps(theme),
+            room,
+            area.width,
+            theme,
+        ));
         lines.push(footer);
 
         frame.render_widget(

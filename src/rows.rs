@@ -80,7 +80,12 @@ pub fn more(rows: u16, theme: &Theme) -> Line<'static> {
 /// at least one row, so a prefix longer than `room` can never fit in `room` rows.
 /// That bounds the loop by the height of a viewport rather than by the length of
 /// the content, which matters for a picker over four hundred rows.
-pub fn elide(lines: Vec<Line<'static>>, room: u16, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+pub fn elide(
+    lines: Vec<Line<'static>>,
+    room: u16,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     if room == 0 {
         return Vec::new();
     }
@@ -122,7 +127,11 @@ mod tests {
 
         // The defect this module exists for: one line, several rows.
         let long = vec![Line::from("hello world this wraps")];
-        assert_eq!(wrapped(&long, 20), 2, "a wrapped line still counted as one row");
+        assert_eq!(
+            wrapped(&long, 20),
+            2,
+            "a wrapped line still counted as one row"
+        );
         assert!(
             wrapped(&long, 20) > u16::try_from(long.len()).unwrap(),
             "the wrapped height must exceed the line count, or the measurement is \
@@ -140,7 +149,10 @@ mod tests {
             wrapped(&[Line::from("anything")], 0) >= 1,
             "a zero-width area reported no rows, which reads as unlimited room",
         );
-        assert_eq!(wrapped(&[Line::from("anything")], 0), wrapped(&[Line::from("anything")], 1));
+        assert_eq!(
+            wrapped(&[Line::from("anything")], 0),
+            wrapped(&[Line::from("anything")], 1)
+        );
     }
 
     #[test]

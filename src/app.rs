@@ -1439,8 +1439,7 @@ impl App {
         let composer = self
             .composer
             .rows_wanted(width)
-            .min(COMPOSER_MAX)
-            .max(COMPOSER_ROWS);
+            .clamp(COMPOSER_ROWS, COMPOSER_MAX);
         let queued = if self.queue_open() {
             u16::try_from(self.prompts.len()).unwrap_or(u16::MAX)
         } else {
@@ -1744,7 +1743,6 @@ impl App {
         }
         lines
     }
-
 
     /// What a keystroke means to the session.
     ///
