@@ -64,6 +64,16 @@ pub const RECENT_RUNS: usize = 200;
 /// How many slow calls to name.
 const SLOWEST: usize = 5;
 
+/// How many tables to break the file down by.
+///
+/// A named constant since 0.32.0, where it was a bare `5` in the loop — and, more
+/// to the point, a cap that said nothing. **This is not a viewport problem at
+/// all**: `/stats` is a committed page with unlimited rows, so a database with
+/// nine tables was having four of them dropped on a page that had room for every
+/// one. The cap stays, because a page that lists forty tables is not a summary;
+/// what changes is that it says what it did not draw.
+const TABLES: usize = 5;
+
 /// The `/stats` page.
 pub fn committed(
     store: &Store,
@@ -206,8 +216,16 @@ pub fn committed(
             "this SQLite build cannot break the file down by table",
         ));
     } else {
-        for (name, count) in size.tables.iter().take(5) {
+        for (name, count) in size.tables.iter().take(TABLES) {
             rows.push(Row::fact(name.clone(), bytes(*count)));
+        }
+        // What the cap held back. Silence here is indistinguishable from a
+        // database with exactly five tables in it.
+        if let Some(rest) = size.tables.len().checked_sub(TABLES).filter(|rest| *rest > 0) {
+            rows.push(Row::note(format!(
+                "{rest} smaller table{} not shown",
+                if rest == 1 { "" } else { "s" }
+            )));
         }
     }
     if size.free_bytes > 0 {
