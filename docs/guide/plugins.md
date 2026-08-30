@@ -72,10 +72,15 @@ misjudged can do to your permission boundary is take something out of it.
 
 **A bundle id must match `[a-z0-9][a-z0-9-]{0,31}`**, and every name it
 contributes is rewritten by io-harness to `<bundle>__<name>` at load — an agent's
-name, an MCP server's id, a policy layer's name. `/plugin` draws that namespaced
-string unchanged rather than a prettier short form, because it is what a refusal
-will name, what a tool call will name, and what you will type to spawn the agent.
-A shorter name here would be a third spelling of the same thing.
+name, an MCP server's id, a policy layer's name. `/plugin` draws it **qualified**
+rather than shortened, because the qualifier is what a refusal will name, what a
+tool call will name, and what you will type to spawn the agent; a bare `reviewer`
+would say nothing about where it came from.
+
+Since 0.32.0 the qualifier is drawn with a colon — `rust-review:reviewer` — while
+io-harness keeps its own separator on the wire. That is a translation at the edge
+and not a third spelling: `io plugin list` and `io exec` report the underscore
+form, because a script addresses the wire.
 
 **Hooks are named, everywhere, from 0.30.0.** Each one gets a row: the event it
 fires on, or the tool call it sits in front of, and the command it runs. This is
