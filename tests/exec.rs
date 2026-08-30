@@ -1624,6 +1624,7 @@ fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
         question: "which environment?".into(),
         context: None,
         choices: vec![],
+        questions: vec![],
         step: 12,
     };
     let plain = exec::listed(41, &question, false).expect("a question is a row");
@@ -1708,6 +1709,7 @@ fn each_pause_produces_the_decision_that_carries_its_own_id() {
         question: "which environment?".into(),
         context: None,
         choices: vec![],
+        questions: vec![],
         step: 12,
     };
     assert_eq!(
@@ -1828,6 +1830,7 @@ fn a_flag_that_decides_the_wrong_pause_is_refused_and_names_the_right_one() {
         question: "which environment?".into(),
         context: None,
         choices: vec![],
+        questions: vec![],
         step: 12,
     };
     let wrong = exec::decision_for(
@@ -1910,6 +1913,151 @@ fn a_payload_without_its_verdict_and_a_verdict_without_its_payload_are_both_refu
     assert_eq!(
         exec::recovery_for(RecoveryFlag::Abandon, None).expect("abandon"),
         RecoveryDecision::Abort,
+    );
+}
+
+/// 0.33.0 F11 — the headless door tells the truth about a batched ask.
+///
+/// **What the door can and cannot do, stated because the difference is where this
+/// release found a promise it could not keep elsewhere.** io-harness 0.72.0 parks
+/// a whole batch as one `pending_questions` row under one `question_id`, and
+/// `resume_with_answer_observed` records one reply against it — so a single
+/// `io resume <run> --answer "…"` really does answer the whole batch, and the id
+/// carried here is the one it takes. What it cannot do is take the batch apart:
+/// the per-question breakdown, `PendingQuestion::answers`, is written only by a
+/// `Responder` inside the running process and stays empty for every answer that
+/// arrives through a resume. So the sentence has to say the one text covers all of
+/// them, and must not offer a per-question flag that does not exist.
+///
+/// Sabotage: leave `waiting_on`'s singular arm handling a batch. Nothing errors,
+/// the run really is answerable, and an operator reading `--answer "<your answer>"`
+/// sends one sentence to a five-part ask — which is answered, resolved and
+/// unrepeatable.
+#[test]
+fn a_parked_batch_is_listed_and_refused_as_the_several_questions_it_is() {
+    use io_cli::resume::Pending;
+
+    let batch = Pending::Question {
+        question_id: 219,
+        // What the store's own writer renders into this column. Carried here so
+        // the assertions below cannot be satisfied by it.
+        question: "1. which environment?\n2. which database?\n3. which region?".into(),
+        context: None,
+        // Empty, exactly as `Store::put_questions` leaves it — the offers are per
+        // question, and a batch row has none of its own.
+        choices: vec![],
+        questions: vec![
+            io_harness::Question::new("which environment?"),
+            io_harness::Question::new("which database?"),
+            io_harness::Question::new("which region?"),
+        ],
+        step: 12,
+    };
+
+    // The listing keeps naming what the run is waiting on. Renaming `question`
+    // would describe a difference the resume door does not have and break every
+    // script written against this stream.
+    let row = exec::listed(41, &batch, true).expect("a batch is a row");
+    let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
+    assert_eq!(value["waiting_on"], "question");
+    assert_eq!(value["id"], 219, "one row, one id, and it is the one to answer");
+    assert_eq!(
+        value["questions"], 3,
+        "and the one thing `waiting_on` cannot say: how much that one answer has \
+         to cover — {row}",
+    );
+
+    // A single question is `1` rather than absent, so a script reading this key
+    // does not have to know which release wrote the row it is reading.
+    let single = Pending::Question {
+        question_id: 219,
+        question: "which environment?".into(),
+        context: None,
+        choices: vec![],
+        questions: vec![],
+        step: 12,
+    };
+    let row = exec::listed(41, &single, true).expect("a question is a row");
+    let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
+    assert_eq!(value["questions"], 1);
+    // And the three pauses that are not questions say null rather than a count of
+    // something they do not hold — the shape `id` already uses for a died run.
+    for pending in [
+        Pending::Plan {
+            plan_id: 307,
+            steps: vec![],
+            step: 5,
+        },
+        Pending::Died { last_step: 6 },
+    ] {
+        let row = exec::listed(41, &pending, true).expect("a row");
+        let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
+        assert!(value["questions"].is_null(), "{row}");
+    }
+
+    // The plain stream says it too, and only when there is more than one: a
+    // `1 question` on every row is the mark nobody reads.
+    let plain = exec::listed(41, &batch, false).expect("a batch is a row");
+    assert!(plain.contains("3 questions"), "{plain}");
+    assert_eq!(
+        exec::listed(41, &single, false).expect("a question is a row"),
+        "run 41  question 219  step 12",
+        "a single question's plain row is byte for byte what it was, so nothing new \
+         appears on the rows an operator already reads",
+    );
+
+    // The refusal an operator gets when they type no `--answer`.
+    let asked = exec::decision_for(41, &batch, &resume_args(&["io", "resume", "41"]))
+        .expect_err("a question needs an answer");
+    assert!(
+        asked.contains("219") && asked.contains("--answer"),
+        "it must still name the id and the flag: {asked}",
+    );
+    // `"3 questions"` and not `'3'`: the sentence already carries `219` and `41`,
+    // and a bare digit is the kind of `contains` this suite has shipped green
+    // while meaning nothing.
+    assert!(
+        asked.contains("3 questions"),
+        "and say how many questions the one answer has to cover: {asked}",
+    );
+    // The half that keeps the line above from being satisfied by the singular
+    // sentence, which names no count and offers `<your answer>` — one sentence for
+    // a three-part ask.
+    assert_ne!(
+        asked,
+        exec::decision_for(41, &single, &resume_args(&["io", "resume", "41"]))
+            .expect_err("a question needs an answer"),
+        "a batch and a single question must not be told the same thing",
+    );
+    assert!(
+        !asked.contains("<your answer>"),
+        "the singular invitation is what sends one sentence to a several-part ask: {asked}",
+    );
+    assert!(
+        asked.contains("no per-question flag"),
+        "and the refusal must say the door has no way to answer them separately, \
+         rather than leaving an operator to discover it: {asked}",
+    );
+
+    // The door is not broken, only honest: one `--answer` answers the batch, and
+    // the decision carries the one id the harness's resume takes.
+    assert_eq!(
+        exec::decision_for(
+            41,
+            &batch,
+            &resume_args(&[
+                "io",
+                "resume",
+                "41",
+                "--answer",
+                "1. staging 2. postgres 3. eu-west"
+            ])
+        )
+        .expect("one answer answers the whole batch"),
+        io_cli::exec::Decision::Answer {
+            question_id: 219,
+            answer: "1. staging 2. postgres 3. eu-west".into(),
+        },
     );
 }
 

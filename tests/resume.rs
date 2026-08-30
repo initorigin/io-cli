@@ -61,6 +61,17 @@
 //!   re-enters the loop, and the rest of the budget goes on the approach that was
 //!   just refused.
 //!
+//! * **The batched-ask block** is 0.33.0's F11, and it is written against
+//!   `Store::put_questions` — io-harness's own batch writer — rather than against
+//!   a hand-built row, because a fixture is exactly what would hide the defect.
+//!   The batch's `choices` column is *empty*: the store writes the offers only
+//!   into the new `questions` column, and renders the ask itself into the
+//!   `question` column as numbered prose. So a fixture that set `choices` would
+//!   pass while the real row a run parks has nothing to pick. Sabotage the block
+//!   by dropping `questions` in `resume::pending_for`: every offer disappears, the
+//!   multi-select flag with them, and the surfaces go back to drawing a wall of
+//!   numbered text.
+//!
 //! * **The two wrong-owner blocks** catch a driver that trusts the ids it is
 //!   handed. Sabotage either by dropping the ownership check: io-harness refuses
 //!   it too, but as one `Error::Resume` whose `Display` is written for a library
@@ -72,8 +83,9 @@ mod support;
 use io_cli::resume::{self, Failure, Pending};
 use io_harness::provider::{CompletionRequest, CompletionResponse, ToolCall};
 use io_harness::{
-    ApproveAll, Ignore, Plan, PlanStep, PlanVerdict, Policy, Provider, RecoveryDecision,
-    RunOutcome, Session, StepRecord, Store, TaskContract, ToolRecovery, ASK_QUESTION_TOOL,
+    ApproveAll, Choice, Ignore, Plan, PlanStep, PlanVerdict, Policy, Provider, Question,
+    RecoveryDecision, RunOutcome, Session, StepRecord, Store, TaskContract, ToolRecovery,
+    ASK_QUESTION_TOOL,
 };
 use support::Scripted;
 
@@ -232,7 +244,14 @@ async fn a_paused_question_is_reported_with_its_own_row_and_nothing_is_driven() 
             question_id: fixture.question_id,
             question: QUESTION.to_string(),
             context: None,
-            choices: vec![CHOICE_A.to_string(), CHOICE_B.to_string()],
+            choices: vec![Choice::new(CHOICE_A), Choice::new(CHOICE_B)],
+            // An ordinary `ask_question` is not a batch, and the whole equality
+            // below is what holds 0.72.0's batch field to that. A reader that
+            // synthesised a one-element `questions` for every question — the
+            // tempting way to give one surface one code path — fails here, and
+            // would have `sessions::note` and `exec::listed` describing every
+            // single ask as a batch of one.
+            questions: vec![],
             step: before,
         },
         "the classification carries the row's own id and the agent's own words",
@@ -859,5 +878,321 @@ fn entering_a_session_releases_the_lock_on_the_one_being_left() {
     assert!(
         body.contains(".session_root(id)"),
         "the root written into the owner record must be read for the session being entered",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F11 — a batched ask reads back as the batch it is
+// ---------------------------------------------------------------------------
+
+/// A run parked on a batch, **written by io-harness's own batch writer**.
+///
+/// `Store::put_questions` and not a hand-built row, and the difference is the
+/// whole of what these blocks test. That writer renders the ask into the
+/// `question` column as numbered prose and leaves the `choices` column *empty* —
+/// the offers go only into the new `questions` column — so a fixture that set
+/// `choices` itself would be green against a reader that never learned to look at
+/// `questions`, which is exactly the reader this release replaced.
+fn parked_batch(questions: &[Question]) -> (tempfile::TempDir, Store, i64, i64) {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let store = Store::open(dir.path().join("runs.db")).expect("a store on disk");
+    let run_id = store
+        .start_run("port the parser", &dir.path().display().to_string())
+        .expect("a run row");
+    store
+        .record(run_id, &StepRecord::new(1, "asked the operator", "ok"))
+        .expect("a trace row");
+    let question_id = store
+        .put_questions(run_id, 1, questions)
+        .expect("a batch is parked as one row");
+    (dir, store, run_id, question_id)
+}
+
+/// The batch a classification is read out of, or a panic naming what came instead.
+fn read_back(store: &Store, run_id: i64) -> (i64, String, Vec<Choice>, Vec<Question>) {
+    match resume::pending_for(store, run_id).expect("the store answers") {
+        Pending::Question {
+            question_id,
+            question,
+            choices,
+            questions,
+            ..
+        } => (question_id, question, choices, questions),
+        other => panic!("a run parked on a batch is parked on a question, and got {other:?}"),
+    }
+}
+
+#[test]
+fn a_parked_batch_carries_every_question_with_its_own_offers_in_order() {
+    let batch = [
+        Question::new("Which database?")
+            .with_context("Both are configured.")
+            .with_choices([Choice::new("postgres").describe("the one CI runs")]),
+        Question::new("Which platforms?").with_choices(["linux", "windows"]),
+    ];
+    let (_dir, store, run_id, question_id) = parked_batch(&batch);
+    let (id, question, choices, questions) = read_back(&store, run_id);
+
+    // One row and one id. A batch is not a second handle, and a classification
+    // that grew one would be handing the resume driver an id no
+    // `resume_*_with_answer` takes.
+    assert_eq!(id, question_id);
+
+    // **The store's shape, asserted rather than assumed.** This is the line that
+    // makes the fixture have to be the harness's own writer: the batch row has no
+    // offers of its own, so every offer below can only have come through
+    // `questions`.
+    assert!(
+        choices.is_empty(),
+        "a batch row's `choices` column is empty, and this fixture proves it: {choices:?}",
+    );
+
+    assert_eq!(
+        questions
+            .iter()
+            .map(|q| q.question.as_str())
+            .collect::<Vec<_>>(),
+        ["Which database?", "Which platforms?"],
+        "both questions, in the order the agent asked them",
+    );
+    assert_eq!(
+        questions[0].choices,
+        vec![Choice::new("postgres").describe("the one CI runs")],
+        "the first question keeps its own offer and what was said about it",
+    );
+    assert_eq!(
+        questions[1]
+            .choices
+            .iter()
+            .map(|c| c.label.as_str())
+            .collect::<Vec<_>>(),
+        ["linux", "windows"],
+        "and the second keeps its own, which are not the first's",
+    );
+    assert_eq!(
+        questions[0].context.as_deref(),
+        Some("Both are configured."),
+        "per-question context survives too",
+    );
+    assert_eq!(questions, batch, "and nothing else about them changed");
+
+    // **Why the assertions above are not satisfied by the prose.** The `question`
+    // column holds both texts already, as `1. …\n2. …`, so a `contains` over it
+    // would pass for a reader that carried no questions at all. Both facts are
+    // asserted here so the distinction cannot quietly stop being true: the
+    // rendering has the numbers, and the questions do not.
+    assert!(
+        question.contains("1. Which database?") && question.contains("2. Which platforms?"),
+        "the store renders the whole ask into the question column: {question}",
+    );
+    assert!(
+        !questions[0].question.starts_with("1. ") && !questions[1].question.starts_with("2. "),
+        "and the carried questions are the agent's own words rather than a re-parse \
+         of that rendering",
+    );
+}
+
+/// **The multi-select flag, and the one place it is readable.**
+///
+/// `PendingQuestion` has no `multiple` column: the flag lives inside each
+/// `Question` of the batch, so it survives a park only for a batched ask.
+/// `Store::put_question` — the singular writer the run loop calls for
+/// `ask_question` — writes no `questions` value at all, so a singular
+/// multi-select's flag is lost by io-harness before io-cli ever sees the row.
+/// That is stated in `resume::Pending` and is not worked around here.
+#[test]
+fn a_batched_question_asked_as_a_multi_select_still_says_so_when_it_is_read_back() {
+    let batch = [
+        Question::new("Which platforms?")
+            .with_choices(["linux", "windows"])
+            .multiple(),
+        Question::new("Which release channel?").with_choices(["stable", "nightly"]),
+    ];
+    let (_dir, store, run_id, _) = parked_batch(&batch);
+    let (_, _, _, questions) = read_back(&store, run_id);
+
+    assert!(
+        questions[0].multiple,
+        "a question asked as pick-several is still pick-several after a park",
+    );
+    // The half that makes the line above mean something. A reader that defaulted
+    // every question to `multiple` — or one that read the flag off the batch
+    // rather than off each question — passes the assertion above and fails here,
+    // and would offer a pick-several form for an answer that must be one thing.
+    assert!(
+        !questions[1].multiple,
+        "and a pick-one is still pick-one; the flag is per question, not per batch",
+    );
+}
+
+/// **The back-compatibility io-harness promises, proved rather than assumed.**
+///
+/// A row written by 0.71.0 and earlier holds `choices` as a JSON array of plain
+/// strings and has no `questions` or `answers` columns at all. `Store::put_question`
+/// with undecorated offers writes exactly those bytes today — `Choice`'s
+/// hand-written `Serialize` emits a bare string when there is nothing extra to say,
+/// which is the guarantee that keeps a 0.72.0 store readable by a 0.71.0 binary —
+/// so this fixture is the old shape rather than an imitation of it.
+///
+/// Sabotage it by adding a second `choices` reader to io-cli: io-harness's
+/// deserializer already accepts both spellings, and a reader here that understood
+/// only one would drop every offer in every store written before this release.
+#[test]
+fn a_question_row_in_the_pre_0_72_0_shape_reads_back_with_its_offers() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let store = Store::open(dir.path().join("runs.db")).expect("a store on disk");
+    let run_id = store
+        .start_run("port the parser", &dir.path().display().to_string())
+        .expect("a run row");
+    let old = Question::new(QUESTION).with_choices([CHOICE_A, CHOICE_B]);
+
+    // The column this writes, in the bytes 0.71.0 wrote. Asserted here because the
+    // rest of the test would otherwise be claiming to exercise a compatibility path
+    // it had no evidence it was on.
+    assert_eq!(
+        serde_json::to_string(&old.choices).expect("choices serialize"),
+        format!("[\"{CHOICE_A}\",\"{CHOICE_B}\"]"),
+        "undecorated offers are written in the plain-string spelling, which is what \
+         makes this row the old shape",
+    );
+
+    let question_id = store.put_question(run_id, 1, &old).expect("a parked question");
+    let (id, question, choices, questions) = read_back(&store, run_id);
+
+    assert_eq!(id, question_id);
+    assert_eq!(question, QUESTION, "the agent's own words, unrendered");
+    assert_eq!(
+        choices,
+        vec![Choice::new(CHOICE_A), Choice::new(CHOICE_B)],
+        "the plain strings read back as labelled offers with nothing else claimed \
+         about them",
+    );
+    assert!(
+        choices.iter().all(|c| c.description.is_none() && c.preview.is_none()),
+        "and nothing was invented to fill the fields the old spelling never had",
+    );
+    assert!(
+        questions.is_empty(),
+        "the columns 0.72.0 added are null on this row, and null is not a batch of \
+         one: {questions:?}",
+    );
+}
+
+/// **What the widened `choices` was widened for**, and the gate that was missing.
+///
+/// Every other fixture in this suite builds offers from bare `&str`, so `description`
+/// and `preview` are `None` everywhere and `Pending::Question::choices` being
+/// `Vec<Choice>` rather than `Vec<String>` is unproven by all of them. Sabotage this
+/// by mapping the row's offers to their labels on the way into the classification:
+/// the whole rest of the file stays green while the two fields a surface renders are
+/// dropped between the store and the screen.
+#[test]
+fn an_offers_description_and_preview_reach_the_classification_intact() {
+    const WHY: &str = "Gitignored, so the change stays on this machine.";
+    const SHOWN: &str = "[provider]\nkey = \"...\"";
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let store = Store::open(dir.path().join("runs.db")).expect("a store on disk");
+    let run_id = store
+        .start_run("tidy the configuration", &dir.path().display().to_string())
+        .expect("a run row");
+    let described = Choice::new(CHOICE_B).describe(WHY).preview(SHOWN);
+
+    // The object spelling, which is the half of `Choice`'s serializer the previous
+    // test does not reach. Without this the fixture could be on the bare-string
+    // path and the test would be a second copy of the back-compatibility one.
+    assert!(
+        serde_json::to_string(&described)
+            .expect("a described choice serializes")
+            .starts_with('{'),
+        "an offer that carries a description is written as an object, and that is the \
+         path this test is about",
+    );
+
+    store
+        .put_question(
+            run_id,
+            1,
+            &Question::new(QUESTION).with_choices([Choice::new(CHOICE_A), described]),
+        )
+        .expect("a parked question");
+    let (_, _, choices, _) = read_back(&store, run_id);
+
+    assert_eq!(choices.len(), 2);
+    assert_eq!(
+        choices[1].description.as_deref(),
+        Some(WHY),
+        "the sentence saying what taking this offer means survives the store",
+    );
+    assert_eq!(
+        choices[1].preview.as_deref(),
+        Some(SHOWN),
+        "and so does the block showing what it would do",
+    );
+    // The undecorated sibling keeps its emptiness, so the two fields above cannot
+    // be a reader filling every offer from the same source.
+    assert!(
+        choices[0].description.is_none() && choices[0].preview.is_none(),
+        "an offer with nothing extra to say still says nothing extra",
+    );
+}
+
+/// **The session list says something true about a batch**, which the sentence it
+/// used to write did not.
+///
+/// `sessions::note` quoted the row's `question` column. For a batch that column is
+/// the numbered rendering, so the picker's one-line detail was handed several
+/// newline-separated questions — cut after `1.` and read as the whole ask, or
+/// wrapped in a row that has no second line.
+#[test]
+fn the_session_list_counts_a_batch_rather_than_quoting_the_rendering_of_it() {
+    let batch = [
+        Question::new("Which database?"),
+        Question::new("Which platforms?"),
+        Question::new("Which release channel?"),
+    ];
+    let (_dir, store, run_id, _) = parked_batch(&batch);
+    let pending = resume::pending_for(&store, run_id).expect("the store answers");
+
+    // The mark is unchanged on purpose: a batch is one parked row waiting on one
+    // answer, and the state column is four characters an operator reads at a glance.
+    assert_eq!(
+        io_cli::sessions::mark(&pending),
+        Some(io_cli::sessions::QUESTION_MARK),
+    );
+
+    let note = io_cli::sessions::note(&pending).expect("a parked batch has something to say");
+    // `"3 questions"` rather than a bare digit, which any id or step number in a
+    // future version of this sentence would satisfy on its own.
+    assert!(
+        note.contains("3 questions"),
+        "the note must say how many answers the operator owes: {note}",
+    );
+    // What stops the assertion above from being satisfied by the prose that used
+    // to be pasted here. Any of the question texts appearing, or a newline
+    // appearing, means the rendering leaked into a single-line detail.
+    assert!(
+        !note.contains('\n'),
+        "a picker detail is one line, and the batch's rendering is not: {note:?}",
+    );
+    for asked in ["Which database?", "Which platforms?", "Which release channel?"] {
+        assert!(
+            !note.contains(asked),
+            "quoting the ask is what this replaced — {asked:?} is in {note:?}",
+        );
+    }
+
+    // And a single question is still quoted, so the change is to the batch case
+    // alone rather than to every question in every list.
+    let (_single_dir, single, single_run, _) = parked_batch(&[Question::new(QUESTION)]);
+    let alone = resume::pending_for(&single, single_run).expect("the store answers");
+    let one = io_cli::sessions::note(&alone).expect("a parked question has something to say");
+    assert!(
+        one.contains(QUESTION),
+        "one question is still quoted in the operator's own reading order: {one}",
+    );
+    assert!(
+        !one.contains("1. "),
+        "and quoted as the agent asked it rather than as the store rendered it: {one}",
     );
 }
