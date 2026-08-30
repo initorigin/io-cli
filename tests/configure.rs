@@ -787,6 +787,137 @@ fn f1_the_dated_price_table_is_machine_written() {
     assert_eq!(machine, vec!["prices.as_of"]);
 }
 
+// F5 — the price refresh is an act one descent below the date it writes, and the
+// bare `/config` list is facts only.
+//
+// **These are the first tests this row has ever had.** `REFRESH_PRICES` carries a
+// doc comment saying it lives in the library "so a test can reach it", and through
+// 0.32.0 no test reached it — while that one row was the whole reason `/config` was
+// refused mid-turn. Nothing here can assert what `src/main.rs` pushes onto the
+// picker, because nothing under `tests/` links the binary; what they assert is that
+// the library offers the act in exactly one place and offers the bare list without
+// it, so a driver that put it back would have to spell the row itself.
+
+/// A user scope that dates its prices, so the act has a date to report.
+const DATED_PRICES: &str = "[prices]\nas_of = \"2026-08-29\"\n";
+
+/// The bare list is settings and nothing else: no act, and no sentinel among them.
+///
+/// Sabotage: append the refresh to `rows`, or let the sentinel through the sweep in
+/// `settings` — under which this fails by name.
+#[test]
+fn f5_the_bare_list_carries_no_act() {
+    let s = scopes(DATED_PRICES, "", "");
+    let config = s.config();
+    let settings = configure::settings(&config);
+    let rows = configure::rows(&settings);
+
+    let act = configure::refresh_row(&configure::setting(&config, "prices.as_of"));
+    assert!(
+        !rows.iter().any(|row| row.label == act.label),
+        "the price refresh is a row of the bare `/config` list, which is what made \
+         the bare command a write"
+    );
+    assert!(
+        !settings
+            .iter()
+            .any(|setting| setting.path == configure::REFRESH_PRICES),
+        "the sentinel reached `settings`, which may only name things a file can hold"
+    );
+    assert_eq!(
+        configure::kind_of(configure::REFRESH_PRICES),
+        None,
+        "the sentinel answered to a kind, which would make it a key"
+    );
+}
+
+/// The act is the row after `leave it` in `prices.as_of`'s own descent.
+///
+/// By index, because that is what the driver decides on: `store::acts` reads the
+/// position and row 0 declines, which is this product's rule for every
+/// confirmation. The date is asserted in the row as well as in the title — the act
+/// is offered *beside the fact it writes*, and a row that lost the date would be an
+/// offer to re-read a catalogue with no way to tell whether it needs re-reading.
+#[test]
+fn f5_the_refresh_is_one_descent_below_the_date_it_writes() {
+    let s = scopes(DATED_PRICES, "", "");
+    let config = s.config();
+    let (title, rows, keys) = configure::descent(&config, "prices.as_of")
+        .expect("prices.as_of descends into the act that writes it");
+
+    assert_eq!(
+        rows.len(),
+        keys.len(),
+        "the keys are read by the chosen row's index, so a shorter list decides the \
+         wrong row or none at all"
+    );
+    assert_eq!(
+        rows[0].label,
+        io_cli::store::LEAVE_IT,
+        "row 0 of a confirmation must decline"
+    );
+    assert_eq!(
+        keys[0],
+        io_cli::store::LEAVE_IT,
+        "row 0 must act on nothing"
+    );
+    assert_eq!(
+        keys[1],
+        configure::REFRESH_PRICES,
+        "the act is the row after the decline"
+    );
+    assert_eq!(
+        rows[1].label,
+        configure::refresh_row(&configure::setting(&config, "prices.as_of")).label
+    );
+    assert!(
+        rows[1]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("2026-08-29")),
+        "the act does not say when the catalogue was last read: {:?}",
+        rows[1].detail
+    );
+    assert!(
+        title.contains("2026-08-29") && title.contains("user"),
+        "the descent's title must state the date in force and the file that decided \
+         it: {title}"
+    );
+}
+
+/// One key opens the act, and it is the price table's own.
+///
+/// Sabotage: key the descent on `Kind::Machine` instead of on the key — under which
+/// this still passes today and fails the moment a second machine-written key exists,
+/// which is why the assertion is the whole list rather than a `contains`. Sabotage:
+/// return the act for every key — under which it fails naming all thirty-seven.
+#[test]
+fn f5_no_other_setting_descends_into_the_refresh() {
+    let s = scopes(DATED_PRICES, "", "");
+    let config = s.config();
+
+    let mut offering: Vec<&str> = Vec::new();
+    for key in configure::CATALOGUE {
+        let Some((_, rows, keys)) = configure::descent(&config, key) else {
+            continue;
+        };
+        assert_eq!(rows.len(), keys.len(), "{key}: the two lists disagree");
+        if keys.iter().any(|k| k == configure::REFRESH_PRICES) {
+            offering.push(key);
+        }
+    }
+    assert_eq!(
+        offering,
+        vec!["prices.as_of"],
+        "the price refresh is reachable from a key that is not the date it writes"
+    );
+
+    assert!(
+        configure::descent(&config, "something.nobody.declared").is_none(),
+        "a key io-cli has no schema for was given a descent it invented"
+    );
+}
+
 /// A key no catalogue entry names has no kind, and that is deliberate.
 ///
 /// `settings` lists keys an operator wrote that io-cli does not know about; a kind

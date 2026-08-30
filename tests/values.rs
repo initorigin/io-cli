@@ -197,14 +197,30 @@ fn f12_a_stated_shape_shows_an_example() {
     }
 }
 
-/// The machine-written key says so rather than offering to be typed.
+/// The machine-written key says so rather than offering to be typed, and points at
+/// where the act actually is.
+///
+/// **The second assertion is 0.33.0's.** This sentence used to send an operator to
+/// "the last row of `/config`", and since the refresh moved one descent below
+/// `prices.as_of` that instruction names a row that is not there any more —
+/// directions to a door that has been moved are worse than no directions.
 #[test]
 fn f12_the_machine_written_key_says_it_is_not_typed() {
     let s = scopes("", "", "");
-    let said = configure::shape_of("prices.as_of", &s.config()).expect("it says something");
+    let config = s.config();
+    let said = configure::shape_of("prices.as_of", &config).expect("it says something");
     assert!(
         said.contains("rather than typed"),
         "prices.as_of must say it is written by machinery: {said}"
+    );
+    assert!(
+        !said.contains("last row"),
+        "the refresh is no longer a row of the bare `/config` list, and this sends \
+         the operator to it: {said}"
+    );
+    assert!(
+        configure::descent(&config, "prices.as_of").is_some(),
+        "the sentence describes a descent this key does not offer"
     );
 }
 

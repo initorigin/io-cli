@@ -244,7 +244,10 @@ pub enum Kind {
     ///
     /// One key, `prices.as_of`. It is in the catalogue because a date an operator
     /// cannot see is a claim with no expiry they cannot check — but it is a fact to
-    /// read, and the act beside it is [`REFRESH_PRICES`].
+    /// read, and the act beside it is [`REFRESH_PRICES`], one descent below the row
+    /// through [`descent`]. A `Machine` key still has no value to type, which is
+    /// why `value_rows` answers `None` for it and `manage::config_value` refuses it
+    /// by name; the descent offers the act, never the key.
     Machine,
 }
 
@@ -562,8 +565,8 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
             "a URL returning a model catalogue — for example: https://openrouter.ai/api/v1/models"
         }
         "prices.as_of" => {
-            "written by the price refresh rather than typed; use the last row of `/config` to \
-             re-read the catalogue"
+            "written by the price refresh rather than typed; choose it on `/config` and the \
+             refresh that re-reads the catalogue is the row after `leave it`"
         }
         // A key the catalogue does not name. Its shape is the operator's own
         // business — io-cli has no schema for it and inventing one here would be
@@ -684,6 +687,15 @@ pub fn widens_project(key: &str, value: &str) -> bool {
 /// a key that is not in any file and never will be would show as "not set"
 /// forever on a surface whose whole job is saying what is in force.
 ///
+/// **It is not a row of the bare list, since 0.33.0.** Through 0.32.0 it was
+/// appended after the settings, and the bare `/config` therefore *was* a write and
+/// a reassignment of the running configuration — which is the whole of why the
+/// command was refused mid-turn (`crate::commands::MID_TURN`, and
+/// `US-IO-CLI-0.32.0-I11` with it). Moving it one descent below `prices.as_of`,
+/// where [`descent`] hands it out, is what makes the bare list a list of facts and
+/// nothing else; the act is still one keystroke further on, beside the very date it
+/// writes.
+///
 /// It lives here rather than in the driver so a test can reach it: nothing under
 /// `tests/` can link `src/main.rs`, and a row spelled in the driver is a row no
 /// test can assert on.
@@ -696,6 +708,57 @@ pub fn refresh_row(setting: &Setting) -> crate::picker::Row {
         None => "no prices are configured".to_string(),
     };
     crate::picker::Row::with_detail("prices: re-read the catalogue", detail)
+}
+
+/// The acts one key descends into, as `(title, rows, keys)`, or `None` where the
+/// key descends into values alone.
+///
+/// **The parallel `keys` vector is what the caller decides on, never the row's
+/// position or its label** — the same shape `/gates` already uses for
+/// [`crate::app::PROPOSED_GATE`]: a sentinel sits in the list where a real key
+/// would, so one `match` covers both kinds of row. Row 0 is
+/// [`crate::store::LEAVE_IT`] and declines, which is this product's rule for every
+/// confirmation, and `crate::store::acts` is what reads that position.
+///
+/// **Exactly one key answers `Some`, and it is named rather than derived from its
+/// [`Kind`].** `prices.as_of` is `Kind::Machine` and so is offered no value to
+/// type — but "machine-written" is not "has an act": a second `Machine` key added
+/// later would inherit a price refresh that has nothing to do with it. The act
+/// belongs to the price table, so it is the price table's key that opens it, and
+/// every other key — machine-written or not — descends exactly where it did.
+///
+/// This offers no way to *type* `prices.as_of`. `manage::config_value` still
+/// refuses that key by name and this changes nothing about it: a date typed by hand
+/// is a claim about a fetch that never happened. What the descent offers is the
+/// fetch.
+#[must_use]
+pub fn descent(
+    config: &Config,
+    key: &str,
+) -> Option<(String, Vec<crate::picker::Row>, Vec<String>)> {
+    if key != "prices.as_of" {
+        return None;
+    }
+    let setting = setting(config, key);
+    let title = match &setting.value {
+        Some(as_of) => format!(
+            "{key} is {as_of} ({}), and is written by the refresh rather than typed",
+            setting.decided.word()
+        ),
+        None => format!("{key} is not set, and is written by the refresh rather than typed"),
+    };
+    let rows = vec![
+        crate::picker::Row::with_detail(
+            crate::store::LEAVE_IT,
+            "nothing is read and nothing is written",
+        ),
+        refresh_row(&setting),
+    ];
+    let keys = vec![
+        crate::store::LEAVE_IT.to_string(),
+        REFRESH_PRICES.to_string(),
+    ];
+    Some((title, rows, keys))
 }
 
 /// Whether a key's value is a credential and must never be shown in full.
@@ -795,6 +858,23 @@ pub fn settings(config: &Config) -> Vec<Setting> {
     }
 
     rows
+}
+
+/// What one setting is, and which file decided it, as one sentence.
+///
+/// **One speller for two doors.** `/config <key>` in the idle loop and a row
+/// chosen on the bare `/config` list while a turn is in flight answer the same
+/// question, and since 0.33.0 both can be reached in one session. Two `format!`
+/// calls agreeing today is the shape this product has repeatedly found disagreeing
+/// later — most recently a guided browser that built a command string by hand and
+/// was a second implementation of the parse.
+///
+/// A key no file names reads `not set` rather than an empty value, because an
+/// empty string is a value an operator can actually write.
+#[must_use]
+pub fn said(setting: &Setting) -> String {
+    let what = setting.value.as_deref().unwrap_or("not set");
+    format!("{} is {what} ({})", setting.path, setting.decided.word())
 }
 
 /// One key, resolved.
