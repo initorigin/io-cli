@@ -31,6 +31,34 @@ fn read(name: &str) -> String {
     std::fs::read_to_string(repo().join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
+/// The pages that describe the product **as it is now**, for a sweep that
+/// forbids a stale claim.
+///
+/// `CHANGELOG.md` is excluded, and the exclusion is the point rather than a
+/// convenience. A changelog is a diary: its 0.16.0 entry records
+/// "a contained turn cannot be steered" under Known limitations, which was true
+/// when it was written and is exactly what a reader of that entry needs to see.
+/// Sweeping it for present-tense truth would force the history to be rewritten
+/// every time the product moved, which is the one thing a changelog must never do.
+fn shipped_prose() -> Vec<(String, String)> {
+    shipped_markdown()
+        .into_iter()
+        .filter(|(path, _)| path != "CHANGELOG.md")
+        .collect()
+}
+
+/// One guide page, by slug.
+///
+/// 0.30.2 moved the manual off the README and onto `docs/guide/`, and a needle
+/// left pointing at the README would have gone **vacuous rather than red** for
+/// every negative assertion — `!contains` is satisfied by any file that does not
+/// carry the claim, an empty one included. Every gate below names the page that
+/// carries the claim it is checking, and the positive ones fail loudly if that
+/// page is wrong, which is what makes the re-pointing checkable at all.
+fn guide(slug: &str) -> String {
+    read(&format!("docs/guide/{slug}.md"))
+}
+
 /// The text between two markers.
 fn section<'a>(text: &'a str, name: &str) -> &'a str {
     let start = format!("<!-- {name}:start -->");
@@ -47,17 +75,17 @@ fn section<'a>(text: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn the_readme_key_table_is_the_key_table() {
-    let readme = read("README.md");
-    let table = section(&readme, "keys");
+    let page = guide("keys");
+    let table = section(&page, "keys");
 
     for (key, what) in KEYS {
         assert!(
             table.contains(key),
-            "the README's key table is missing {key}",
+            "the guide's key table is missing {key}",
         );
         assert!(
             table.contains(what),
-            "the README describes {key} differently from the code",
+            "the guide describes {key} differently from the code",
         );
     }
 
@@ -65,7 +93,7 @@ fn the_readme_key_table_is_the_key_table() {
     assert_eq!(
         rows,
         KEYS.len(),
-        "the README's key table has {rows} rows and the code binds {}",
+        "the guide's key table has {rows} rows and the code binds {}",
         KEYS.len(),
     );
 }
@@ -84,21 +112,21 @@ fn the_readme_key_table_is_the_key_table() {
 fn the_readme_says_which_actions_can_be_rebound_and_to_what() {
     use io_cli::keys::{Action, Keys};
 
-    let readme = read("README.md");
+    let page = guide("keys");
     let keys = Keys::default();
 
     for action in Action::ALL.iter().copied() {
         let row = format!("| `{}` | `{}` |", action.name(), keys.binding(action));
         if action.rebindable() {
             assert!(
-                readme.contains(&row),
-                "the README should offer `{}` with its default, as `{row}`",
+                page.contains(&row),
+                "the guide should offer `{}` with its default, as `{row}`",
                 action.name(),
             );
         } else {
             assert!(
-                !readme.contains(&format!("| `{}` |", action.name())),
-                "the README offers `{}` as rebindable and the code refuses it",
+                !page.contains(&format!("| `{}` |", action.name())),
+                "the guide offers `{}` as rebindable and the code refuses it",
                 action.name(),
             );
         }
@@ -107,14 +135,14 @@ fn the_readme_says_which_actions_can_be_rebound_and_to_what() {
 
 #[test]
 fn the_readme_command_table_is_the_command_table() {
-    let readme = read("README.md");
-    let table = section(&readme, "commands");
+    let page = guide("commands");
+    let table = section(&page, "commands");
 
     for (name, what) in COMMANDS {
-        assert!(table.contains(name), "the README is missing {name}");
+        assert!(table.contains(name), "the guide is missing {name}");
         assert!(
             table.contains(what),
-            "the README describes {name} differently from the code",
+            "the guide describes {name} differently from the code",
         );
     }
 
@@ -142,11 +170,12 @@ fn the_readme_command_table_is_the_command_table() {
 /// gates.
 #[test]
 fn the_readme_documents_every_skill_this_crate_ships() {
-    let readme = read("README.md");
-    let (_, section) = readme
-        .split_once("## Skills")
-        .expect("the README should have a section about the shipped skills");
-    let section = section.split("\n## ").next().unwrap_or(section);
+    let page = guide("skills");
+    // The whole page is the section now. Splitting on a heading was how this
+    // narrowed a 2,847-line README to the part that was about skills; a guide
+    // page needs no narrowing, and keeping the split would have meant asserting
+    // against whatever happened to precede the first sub-heading.
+    let section = page.as_str();
 
     let mut shipped = 0;
     for entry in std::fs::read_dir(repo().join("skills")).expect("the shipped skills directory") {
@@ -162,7 +191,7 @@ fn the_readme_documents_every_skill_this_crate_ships() {
             .trim();
         assert!(
             section.contains(&format!("`{name}`")),
-            "the README should name the {name} skill and say what it is for",
+            "the guide should name the {name} skill and say what it is for",
         );
         shipped += 1;
     }
@@ -174,26 +203,26 @@ fn the_readme_documents_every_skill_this_crate_ships() {
     // session-killer it avoids.
     assert!(
         section.contains("every turn of that session"),
-        "the README should say what a duplicate skill name costs",
+        "the guide should say what a duplicate skill name costs",
     );
     assert!(
         section.contains("frontmatter"),
-        "the README should say the claimed name is the frontmatter name, not the filename",
+        "the guide should say the claimed name is the frontmatter name, not the filename",
     );
     assert!(
         section.contains("withheld"),
-        "the README should say io-cli withholds rather than overwrites a claimed name",
+        "the guide should say io-cli withholds rather than overwrites a claimed name",
     );
 
     // And the ceiling, with the number, because "a limit on skills" is not
     // actionable and 64 is.
     assert!(
         section.contains("64 skills"),
-        "the README should name the 64-skill ceiling",
+        "the guide should name the 64-skill ceiling",
     );
     assert!(
         section.contains("rejects the whole set"),
-        "the README should say the ceiling rejects the set rather than trimming it",
+        "the guide should say the ceiling rejects the set rather than trimming it",
     );
 }
 
@@ -221,8 +250,8 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
     // fails here instead of shipping undocumented. A scalar is written as
     // `theme`; a table is `[app.io-cli.keys]` and a list of tables is
     // `[[app.io-cli.mcp]]`, and any of the three spellings satisfies the row.
-    let readme = read("README.md");
-    let table = settings_table(&readme);
+    let page = guide("configuration");
+    let table = settings_table(&page);
 
     // Every field set, because `skip_serializing_if` drops a `None` — a default
     // value here would assert against a table with nothing in it.
@@ -289,7 +318,7 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         ];
         assert!(
             spellings.iter().any(|row| table.contains(row)),
-            "the README's [app.io-cli] table has no row for `{name}`",
+            "the guide's [app.io-cli] table has no row for `{name}`",
         );
         if held.is_object() || held.is_array() {
             tables += 1;
@@ -302,7 +331,7 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
     assert_eq!(
         rows,
         keys.len(),
-        "the README's [app.io-cli] table has {rows} rows and the section has {}",
+        "the guide's [app.io-cli] table has {rows} rows and the section has {}",
         keys.len(),
     );
 
@@ -319,8 +348,8 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         words[tables].to_lowercase(),
     );
     assert!(
-        readme.contains(&sentence),
-        "the README should say `{sentence}`",
+        page.contains(&sentence),
+        "the guide should say `{sentence}`",
     );
 }
 
@@ -329,7 +358,7 @@ fn the_readme_quotes_the_budget_fields_the_status_line_actually_draws() {
     // 0.14.0's F6. The budgets are the one part of the status line a README can
     // quote verbatim, and a quoted format that has drifted is worse than no
     // example: an operator reads it as the thing to grep their scrollback for.
-    let readme = read("README.md");
+    let page = guide("the-session");
     let mut status = io_cli::status::Status::new("a-model");
     status.budgets = io_cli::status::Budgets {
         steps: Some(20),
@@ -348,8 +377,8 @@ fn the_readme_quotes_the_budget_fields_the_status_line_actually_draws() {
     assert_eq!(drawn.len(), 3, "one field per budget in force: {drawn:?}");
     for text in drawn {
         assert!(
-            readme.contains(&format!("`{text}`")),
-            "the README should quote the budget field the line draws: `{text}`",
+            page.contains(&format!("`{text}`")),
+            "the guide should quote the budget field the line draws: `{text}`",
         );
     }
 
@@ -366,12 +395,16 @@ fn no_documentation_surface_still_claims_the_old_asymmetry() {
     // capabilities. The first stopped being true in 0.14.0 and the second in
     // 0.11.0. A claim this specific cannot be caught by reading the diff of the
     // release that falsifies it, so it is caught here.
-    let readme = read("README.md");
+    // Every shipped page rather than the two files that carried the claim in
+    // 0.13.1. A negative gate pointed at one file goes **vacuous** the moment the
+    // prose moves — `!contains` is satisfied by a file that never mentioned the
+    // subject — and 0.30.2 moved this claim onto a guide page. Scanning the whole
+    // set cannot go quiet that way, and costs nothing.
     let example = read("docs/config.example.toml");
-    for (name, text) in [
-        ("README.md", &readme),
-        ("docs/config.example.toml", &example),
-    ] {
+    let mut surfaces: Vec<(String, String)> = shipped_prose();
+    surfaces.push(("docs/config.example.toml".to_string(), example.clone()));
+
+    for (name, text) in &surfaces {
         for stale in [
             "Not read by an interactive session",
             "Contained turns only",
@@ -409,8 +442,9 @@ fn no_documentation_surface_still_claims_the_old_asymmetry() {
     // left to discover: `[web]` is a capability the *vendor* exercises, so the
     // local `net` rule is not what governs it, and `[browser]` is refused in a
     // project-scoped file by io-harness itself.
+    let configuration = guide("configuration");
     for (name, text) in [
-        ("README.md", &readme),
+        ("docs/guide/configuration.md", &configuration),
         ("docs/config.example.toml", &example),
     ] {
         let said = text.to_lowercase();
@@ -523,28 +557,46 @@ fn no_comment_still_says_a_turn_cannot_be_steered() {
         }
     }
 
-    // The README carries the same claim in prose rather than in comments, so the
-    // whole file is read.
-    let readme = read("README.md");
-    for claim in FALSEHOODS {
-        assert!(
-            !readme.contains(claim),
-            "README.md still says {claim:?}, which has not been true since 0.17.0",
-        );
+    // The prose carries the same claim in sentences rather than in comments, and
+    // it is spread across the guide pages now. Every shipped page is read, not
+    // just the README: a negative gate aimed at one file stops being a gate the
+    // moment the sentence it was watching moves to another.
+    for (name, text) in shipped_prose() {
+        for claim in FALSEHOODS {
+            assert!(
+                !text.contains(claim),
+                "{name} still says {claim:?}, which has not been true since 0.17.0",
+            );
+        }
     }
 
     // And the positive half, because a gate made only of absences passes on a
-    // file that says nothing at all. Somewhere the README has to state what is
-    // true now, or an operator reading it learns that containment costs a steer
-    // from the silence where the correction should be.
-    let said = readme.to_lowercase();
+    // file that says nothing at all. Somewhere the documentation has to state
+    // what is true now, or an operator learns that containment costs a steer from
+    // the silence where the correction should be.
+    // "Somewhere" is the original gate's own word, and translating it to one named
+    // page would be a stronger claim than the gate ever made — `/steer` is
+    // documented on the commands page and the keys page, and which of those owns
+    // the sentence is an editorial choice this test has no business deciding.
+    let stated = shipped_prose()
+        .into_iter()
+        .any(|(_, text)| {
+            let said = text.to_lowercase();
+            said.contains("steer inbox") || said.contains("/steer")
+        });
     assert!(
-        said.contains("steer inbox") || said.contains("/steer"),
-        "the README should say a turn can be spoken to while it runs",
+        stated,
+        "no page says a turn can be spoken to while it runs, so an operator \
+         learns that containment costs a steer from the silence where the \
+         correction should be",
     );
+    let corrected = shipped_prose()
+        .into_iter()
+        .any(|(_, text)| text.to_lowercase().contains("contained turn can be steered"));
     assert!(
-        said.contains("contained turn can be steered"),
-        "the README should say the containment switch no longer decides it",
+        corrected,
+        "no page says the containment switch no longer decides whether a turn \
+         can be steered, which is the half a reader who remembers 0.16.0 needs",
     );
 }
 
@@ -688,10 +740,10 @@ fn the_readme_states_what_the_checksum_does_not_defend_against() {
 /// naming a directory the binary no longer uses.
 #[test]
 fn the_readme_says_where_io_keeps_its_files() {
-    let readme = read("README.md");
-    let (_, section) = readme
+    let page = guide("configuration");
+    let (_, section) = page
         .split_once("### Where io keeps your things")
-        .expect("the README should have a section saying where io keeps its files");
+        .expect("the guide should have a section saying where io keeps its files");
     let section = section.split("\n## ").next().unwrap_or(section);
 
     let home = io_cli::home::path().expect("a home directory to take the name from");
@@ -714,7 +766,7 @@ fn the_readme_says_where_io_keeps_its_files() {
     ] {
         assert!(
             section.contains(&named),
-            "the README should name {named}, which is where io-cli actually looks",
+            "the guide should name {named}, which is where io-cli actually looks",
         );
     }
 
@@ -731,8 +783,8 @@ fn the_readme_says_where_io_keeps_its_files() {
     ] {
         let at = section
             .find(rung)
-            .unwrap_or_else(|| panic!("the README should name {rung} in the discovery order"));
-        assert!(at > walked, "{rung} is out of order in the README's ladder");
+            .unwrap_or_else(|| panic!("the guide should name {rung} in the discovery order"));
+        assert!(at > walked, "{rung} is out of order in the guide's ladder");
         walked = at;
     }
 
@@ -742,22 +794,22 @@ fn the_readme_says_where_io_keeps_its_files() {
     let var = io_harness::config::CONFIG_HOME_VAR;
     assert!(
         section.contains(var),
-        "the README should name the {var} io-cli sets to put the file there",
+        "the guide should name the {var} io-cli sets to put the file there",
     );
     assert!(
         section.contains("inherit") && section.contains("nested `io`"),
-        "the README should say every child a session starts inherits {var}",
+        "the guide should say every child a session starts inherits {var}",
     );
 
     // And the one act of this release that touches files io-cli did not create,
     // said where an operator upgrading will read it rather than in a changelog.
     assert!(
         section.contains("moved into the home"),
-        "the README should say an existing install is moved on the first run",
+        "the guide should say an existing install is moved on the first run",
     );
     assert!(
         section.contains("nothing is overwritten") && section.contains("Nothing is deleted"),
-        "the README should say what the move does not do",
+        "the guide should say what the move does not do",
     );
 }
 
@@ -866,9 +918,9 @@ fn the_workspace_directory_is_not_shipped_inside_the_crate() {
 #[test]
 fn the_readme_exit_table_is_the_exit_table() {
     // The exit codes are public contract from 0.5.0 onward: a script branches on
-    // them and cannot be migrated by fixing forward. A table in the README that
+    // them and cannot be migrated by fixing forward. A table in the guide that
     // drifted from the constants would be worse than no table at all.
-    let readme = read("README.md");
+    let page = guide("headless");
     for (code, what) in [
         (io_cli::exec::OK, "of its own accord"),
         (io_cli::exec::FAILED, "never got that far"),
@@ -879,12 +931,12 @@ fn the_readme_exit_table_is_the_exit_table() {
     ] {
         let row = format!("| `{code}` |");
         assert!(
-            readme.contains(&row),
-            "the README's exit table has no row for {code}",
+            page.contains(&row),
+            "the guide's exit table has no row for {code}",
         );
         assert!(
-            readme.contains(what),
-            "the README describes {code} differently from the code: {what}",
+            page.contains(what),
+            "the guide describes {code} differently from the code: {what}",
         );
     }
 
@@ -902,20 +954,20 @@ fn the_readme_exit_table_is_the_exit_table() {
          one of them cannot be migrated by fixing forward",
     );
     assert!(
-        readme.contains("| `6` |"),
-        "the README's exit table has no row for the gate that did not pass",
+        page.contains("| `6` |"),
+        "the guide's exit table has no row for the gate that did not pass",
     );
     assert!(
-        readme.contains("does not hold up"),
-        "the README should say what `6` means in the words the release uses: the \
+        page.contains("does not hold up"),
+        "the guide should say what `6` means in the words the release uses: the \
          agent finished and the work does not hold up",
     );
     // And the half a reader most needs: nothing above it moved. A release that
     // renumbered `5` would leave every script branching on it silently wrong,
     // which is the failure the sentence exists to rule out.
     assert!(
-        readme.contains("No exit code was renumbered"),
-        "the README should say, where the table is, that no existing code changed \
+        page.contains("No exit code was renumbered"),
+        "the guide should say, where the table is, that no existing code changed \
          meaning",
     );
 }
@@ -924,7 +976,7 @@ fn the_readme_exit_table_is_the_exit_table() {
 fn the_readme_lists_every_flag_io_exec_actually_takes() {
     use clap::CommandFactory;
 
-    let readme = read("README.md");
+    let page = guide("headless");
     let cli = io_cli::cli::Cli::command();
     let exec = cli
         .get_subcommands()
@@ -940,16 +992,16 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
     assert!(!flags.is_empty(), "there should be flags to check");
     for flag in &flags {
         assert!(
-            readme.contains(&format!("`{flag}")),
-            "`io exec` takes {flag} and the README does not mention it",
+            page.contains(&format!("`{flag}")),
+            "`io exec` takes {flag} and the guide does not mention it",
         );
     }
 
-    // And nothing the README promises has been removed from the binary.
+    // And nothing the guide promises has been removed from the binary.
     for promised in ["--json", "--sandbox", "--policy", "--provider"] {
         assert!(
             flags.iter().any(|flag| flag == promised),
-            "the README documents {promised} and `io exec` no longer takes it",
+            "the guide documents {promised} and `io exec` no longer takes it",
         );
     }
 }
@@ -967,7 +1019,7 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
 fn the_readme_documents_every_flag_io_resume_actually_takes() {
     use clap::CommandFactory;
 
-    let readme = read("README.md");
+    let page = guide("headless");
     let cli = io_cli::cli::Cli::command();
     let resume = cli
         .get_subcommands()
@@ -983,8 +1035,8 @@ fn the_readme_documents_every_flag_io_resume_actually_takes() {
     assert!(!flags.is_empty(), "there should be flags to check");
     for flag in &flags {
         assert!(
-            readme.contains(&format!("`{flag}")),
-            "`io resume` takes {flag} and the README does not mention it",
+            page.contains(&format!("`{flag}")),
+            "`io resume` takes {flag} and the guide does not mention it",
         );
     }
 
@@ -993,12 +1045,12 @@ fn the_readme_documents_every_flag_io_resume_actually_takes() {
     for promised in ["--list", "--answer", "--plan", "--recovery", "--goal"] {
         assert!(
             flags.iter().any(|flag| flag == promised),
-            "the README documents {promised} and `io resume` no longer takes it",
+            "the guide documents {promised} and `io resume` no longer takes it",
         );
     }
     assert!(
         !flags.iter().any(|flag| flag == "--sandbox"),
-        "the README says `io resume` takes no --sandbox, and it now does",
+        "the guide says `io resume` takes no --sandbox, and it now does",
     );
 }
 
@@ -1021,11 +1073,8 @@ fn the_readme_documents_every_flag_io_resume_actually_takes() {
 fn the_readme_says_which_pause_cannot_be_resumed() {
     use io_cli::sessions::{DIED_MARK, ENDED_MARK, PLAN_MARK, QUESTION_MARK, RECOVERY_MARK};
 
-    let readme = read("README.md");
-    let (_, section) = readme
-        .split_once("## When a run stops for you")
-        .expect("the README should have a section about a run that stopped for a person");
-    let section = section.split("\n## ").next().unwrap_or(section);
+    let page = guide("resume");
+    let section = page.as_str();
 
     for mark in [
         QUESTION_MARK,
@@ -1036,7 +1085,7 @@ fn the_readme_says_which_pause_cannot_be_resumed() {
     ] {
         assert!(
             section.contains(&format!("`{mark}`")),
-            "the README should name the `{mark}` mark and say what it means",
+            "the guide should name the `{mark}` mark and say what it means",
         );
     }
 
@@ -1045,15 +1094,15 @@ fn the_readme_says_which_pause_cannot_be_resumed() {
     // claim is what an author rewrites while leaving the claim standing.
     assert!(
         section.contains("cancelled"),
-        "the README should say what io-harness records a Ctrl+C as",
+        "the guide should say what io-harness records a Ctrl+C as",
     );
     assert!(
         section.contains("cannot be answered"),
-        "the README should say an interrupted turn is the one pause that cannot be resumed",
+        "the guide should say an interrupted turn is the one pause that cannot be resumed",
     );
     assert!(
         section.contains("`/fork`"),
-        "the README should offer /fork, which is what an ended turn leaves you",
+        "the guide should offer /fork, which is what an ended turn leaves you",
     );
 }
 
@@ -1383,8 +1432,8 @@ fn f4_every_guide_page_is_reachable_from_both_indexes() {
 fn f1_every_command_is_documented_under_its_own_group() {
     use io_cli::commands::{grouped, Group};
 
-    let readme = read("README.md");
-    let table = section(&readme, "commands");
+    let page = guide("commands");
+    let table = section(&page, "commands");
 
     // The prose draws each group under a bold title, which is `Group::title()` —
     // the same string the palette and `/help` draw, so the join is on a value the
@@ -1397,7 +1446,7 @@ fn f1_every_command_is_documented_under_its_own_group() {
     for (_, title) in &titles {
         assert!(
             table.contains(title.as_str()),
-            "the README's command section has no {title} heading",
+            "the guide's command section has no {title} heading",
         );
     }
 
@@ -1474,9 +1523,9 @@ fn f2_the_install_discloses_before_it_writes_and_says_so() {
          src/marketplace.rs calls it",
     );
 
-    let readme = read("README.md");
+    let page = guide("plugins");
     let section = under_heading(
-        &readme,
+        &page,
         "### What a bundle is allowed to do is shown before it is allowed to do it",
     );
 
