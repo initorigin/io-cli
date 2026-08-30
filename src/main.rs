@@ -2362,15 +2362,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // than in the confirmation's own arm because the
                                 // clone still exists at this point, so the entries
                                 // inside it can still be found.
-                                let inside = io_cli::marketplace::dependents(
-                                    &io_cli::pluginview::view(&config),
-                                    &market.root,
-                                );
                                 // `record` and never `say`: the footer is one slot
                                 // and is gone on the next keystroke, and this is a
                                 // consequence the operator has to still be able to
                                 // read after they have answered.
-                                if let Some(said) = io_cli::marketplace::warning(&inside) {
+                                if let Some(said) = io_cli::marketplace::removal_cost(
+                                    &io_cli::pluginview::view(&config),
+                                    &market.root,
+                                    io_cli::home::adapters().as_deref(),
+                                ) {
                                     app.record(Tone::Warning, said);
                                 }
                                 descended = Some((
@@ -4357,11 +4357,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // `Pick::Marketplace`, which asks the same question
                                 // before it offers the same removal.
                                 if let Some(clone) = io_cli::fetch::at(named) {
-                                    let inside = io_cli::marketplace::dependents(
+                                    if let Some(warned) = io_cli::marketplace::removal_cost(
                                         &io_cli::pluginview::view(&config),
                                         &clone,
-                                    );
-                                    if let Some(warned) = io_cli::marketplace::warning(&inside) {
+                                        io_cli::home::adapters().as_deref(),
+                                    ) {
                                         app.record(Tone::Warning, warned);
                                     }
                                 }
@@ -9065,9 +9065,11 @@ fn marketplace_main(
             // never touched — that is F3 — so this is the only place the operator
             // is told what stops loading.
             if let Some(clone) = io_cli::fetch::at(named) {
-                let inside =
-                    io_cli::marketplace::dependents(&io_cli::pluginview::view(config), &clone);
-                if let Some(warned) = io_cli::marketplace::warning(&inside) {
+                if let Some(warned) = io_cli::marketplace::removal_cost(
+                    &io_cli::pluginview::view(config),
+                    &clone,
+                    io_cli::home::adapters().as_deref(),
+                ) {
                     eprintln!("{warned}");
                 }
             }

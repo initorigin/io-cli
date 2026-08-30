@@ -1028,6 +1028,57 @@ pub fn dependents(view: &crate::pluginview::View, clone: &Path) -> Vec<PathBuf> 
         .collect()
 }
 
+/// The adapter directories that stop working when `clone` goes.
+///
+/// **[`dependents`] cannot see these, and that is a property of the design rather
+/// than an oversight.** A bundle installed from a `plugin.toml` is declared at a
+/// path *inside* the clone, so removing the clone is visibly removing it. A bundle
+/// installed from a Claude Code or Codex manifest is declared at a path under
+/// `~/.io-cli/adapters`, which is not inside the clone at all — the generated
+/// manifest merely *points* there. Removing the marketplace would leave that entry
+/// declared, loading a manifest whose every path has just been deleted, and
+/// `dependents` would have said nothing.
+///
+/// So the link is read where it actually is: the generated manifest's own
+/// `skills` and `templates` values, through [`crate::edit::value_at`], which is
+/// this crate's only permitted TOML reader. An adapter naming a path inside the
+/// clone is an adapter this removal orphans.
+///
+/// **The `[[plugin]]` entry is not touched and neither is the adapter directory.**
+/// 0.29.0's rule is that a cache being emptied does not undo a configuration
+/// decision, and an adapter is io's own file rather than the operator's — but it
+/// is still not this verb's to delete, because the entry that names it survives.
+/// What is owed is the consequence, said before anything goes.
+#[must_use]
+pub fn orphaned(view: &crate::pluginview::View, clone: &Path, adapters: &Path) -> Vec<PathBuf> {
+    let real = resolved(clone);
+    let under = resolved(adapters);
+    view.plugins
+        .iter()
+        .map(|listed| listed.root.clone())
+        .chain(view.refused.iter().map(|refused| refused.path.clone()))
+        .filter(|root| resolved(root).starts_with(&under))
+        .filter(|root| points_into(root, &real))
+        .collect()
+}
+
+/// Whether the adapter at `root` names a path inside `clone`.
+///
+/// Both of the generated manifest's directory keys are checked, not one: a bundle
+/// publishing only `commands/` has a `templates` and no `skills`, and a rule that
+/// read `skills` alone would call that adapter unaffected by a removal that guts
+/// it.
+fn points_into(root: &Path, clone: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(MANIFEST)) else {
+        return false;
+    };
+    ["skills", "templates"].iter().any(|key| {
+        crate::edit::value_at(&text, key)
+            .map(|raw| unquote(raw.trim()))
+            .is_some_and(|said| resolved(Path::new(&said)).starts_with(clone))
+    })
+}
+
 /// A path with its symlinks followed, or the path itself where it cannot be.
 ///
 /// The fallback is the honest one: a path that does not exist cannot be resolved,
@@ -1043,27 +1094,67 @@ fn resolved(path: &Path) -> PathBuf {
 /// One function so that the two doors cannot word this differently, and `None`
 /// rather than an empty string so that neither door has to decide whether to draw
 /// it — an empty warning drawn as a row is a row an operator reads as a warning.
+/// What removing `clone` costs, in one sentence, or `None` when it costs nothing.
+///
+/// **The one call a door makes**, so the three surfaces that offer this removal
+/// cannot ask different questions. Before 0.31.0 each of them called
+/// [`dependents`] and then [`warning`]; a release that added a second way for a
+/// bundle to depend on a clone would have had to be remembered at all three, and
+/// `src/main.rs` is linked by nothing under `tests/`, so forgetting one would have
+/// been invisible to every gate.
+///
+/// `adapters` is an `Option` because [`crate::home::adapters`] is: an operator
+/// with no home directory has no adapters, and a `None` there is not an error, it
+/// is an empty list.
 #[must_use]
-pub fn warning(inside: &[PathBuf]) -> Option<String> {
-    if inside.is_empty() {
+pub fn removal_cost(
+    view: &crate::pluginview::View,
+    clone: &Path,
+    adapters: Option<&Path>,
+) -> Option<String> {
+    let inside = dependents(view, clone);
+    let orphans = adapters
+        .map(|at| orphaned(view, clone, at))
+        .unwrap_or_default();
+    warning(&inside, &orphans)
+}
+
+/// The line that says what a removal is about to cost, given both lists.
+#[must_use]
+pub fn warning(inside: &[PathBuf], orphans: &[PathBuf]) -> Option<String> {
+    if inside.is_empty() && orphans.is_empty() {
         return None;
     }
-    let mut said = if inside.len() == 1 {
-        String::from("1 declared bundle lives inside it")
+    // **Counted together and listed together.** The two lists differ in where the
+    // declaration points and in nothing an operator cares about: both are bundles
+    // that stop loading, both keep their `[[plugin]]` entry, and both are named so
+    // the operator can decide before anything goes. Two sentences would ask them
+    // to work out which kind theirs was in order to read the consequence.
+    let all: Vec<&PathBuf> = inside.iter().chain(orphans.iter()).collect();
+    let mut said = if all.len() == 1 {
+        String::from("1 declared bundle stops loading")
     } else {
-        format!("{} declared bundles live inside it", inside.len())
+        format!("{} declared bundles stop loading", all.len())
     };
     said.push_str(
         ": the `[[plugin]]` entries are left exactly as they are, and io-harness will \
          report them as missing from the next turn — ",
     );
     said.push_str(
-        &inside
-            .iter()
+        &all.iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", "),
     );
+    if !orphans.is_empty() {
+        // Named as adapters rather than left to look like ordinary directories: an
+        // operator who goes looking finds a `plugin.toml` io wrote, in a directory
+        // they never made, and the sentence is the only thing that explains it.
+        said.push_str(
+            ". The ones under `adapters/` are manifests io generated; they are not \
+             removed, and they stop loading because the clone they name is going",
+        );
+    }
     Some(said)
 }
 

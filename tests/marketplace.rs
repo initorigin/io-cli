@@ -577,13 +577,16 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
         1,
         "exactly the bundle declared inside the clone depends on it: {depends:?}",
     );
-    let warned = marketplace::warning(&depends).expect("a dependent bundle is warned about");
+    // 0.31.0 gave `warning` a second list — the adapters a removal orphans, whose
+    // declarations point into the clone from outside it. This call passes an empty
+    // one, which is what a marketplace of native bundles costs.
+    let warned = marketplace::warning(&depends, &[]).expect("a dependent bundle is warned about");
     assert!(
         warned.contains("left exactly as they are"),
         "the warning must say the entries survive: {warned}",
     );
     assert!(
-        marketplace::warning(&[]).is_none(),
+        marketplace::warning(&[], &[]).is_none(),
         "an empty warning drawn as a row is a row an operator reads as a warning",
     );
 
@@ -2310,6 +2313,105 @@ fn entry_bundle(dir: &Path, source: Option<io_cli::adapt::Source>) -> marketplac
         origin: marketplace::Origin::Adapted,
         source,
     }
+}
+
+/// **F13 — a removal names the adapters it orphans, and takes no entry away.**
+///
+/// The failure this is written for is silence. `dependents` finds a declared
+/// bundle whose *path is inside* the clone, which is every native install and no
+/// adapted one: an adapted bundle is declared under `~/.io-cli/adapters` and only
+/// its generated manifest points into the clone. So before this release the
+/// warning for a marketplace of adapted bundles would have been `None`, and the
+/// operator would have been told nothing at all.
+///
+/// Sabotage: have `orphaned` return an empty vector. `dependents` still finds the
+/// native bundle, `warning` still returns `Some`, and only the count and the
+/// adapter's own path fail — which is why both are asserted rather than the
+/// sentence merely being non-empty.
+#[test]
+fn f13_a_removal_names_the_adapters_it_orphans_and_leaves_every_entry() {
+    let (_dir, root) = clone_dir();
+    let clone = root
+        .join("marketplaces")
+        .join("zeroonething")
+        .join("ultraship");
+    let adapters = root.join("adapters");
+
+    // One native bundle inside the clone, and one adapter outside it whose
+    // generated manifest points back in. Both are declared; both stop loading.
+    manifest(&clone.join("native"), "name = \"native\"\n");
+    std::fs::create_dir_all(clone.join("skills")).expect("the skills directory");
+    let adapter = adapters
+        .join("zeroonething")
+        .join("ultraship")
+        .join("adapted");
+    manifest(
+        &adapter,
+        &format!(
+            "name = \"adapted\"\nskills = {}\n",
+            io_cli::edit::spell(&clone.join("skills").to_string_lossy()),
+        ),
+    );
+    // And a second adapter pointing at a different clone, which this removal must
+    // NOT name — without it, a rule that listed every adapter would pass.
+    let elsewhere = adapters.join("someone").join("else").join("untouched");
+    manifest(
+        &elsewhere,
+        &format!(
+            "name = \"untouched\"\nskills = {}\n",
+            io_cli::edit::spell(&root.join("other").to_string_lossy()),
+        ),
+    );
+    std::fs::create_dir_all(root.join("other")).expect("the other directory");
+
+    let scope = root.join("io.toml");
+    let declared = format!(
+        "[[plugin]]\npath = {}\n\n[[plugin]]\npath = {}\n\n[[plugin]]\npath = {}\n",
+        io_cli::edit::spell(&clone.join("native").to_string_lossy()),
+        io_cli::edit::spell(&adapter.to_string_lossy()),
+        io_cli::edit::spell(&elsewhere.to_string_lossy()),
+    );
+    std::fs::write(&scope, &declared).expect("the scope file");
+    let config = io_harness::Config::from_toml(&declared).expect("the declarations parse");
+    let view = io_cli::pluginview::view(&config);
+
+    let orphans = marketplace::orphaned(&view, &clone, &adapters);
+    assert_eq!(
+        orphans.len(),
+        1,
+        "exactly the adapter naming this clone — counted, so an implementation \
+         listing every adapter fails here: {orphans:?}",
+    );
+    assert_eq!(orphans[0], adapter, "and it is that adapter, by path");
+
+    let said = marketplace::removal_cost(&view, &clone, Some(&adapters))
+        .expect("two declared bundles stop loading");
+    assert!(
+        said.contains("2 declared bundles"),
+        "the native bundle and the adapted one are counted together, because the \
+         difference between them is not something an operator asked about: {said}",
+    );
+    assert!(
+        said.contains(&adapter.display().to_string()),
+        "the adapter is named, so the operator can find the file io wrote: {said}",
+    );
+    assert!(
+        !said.contains(&elsewhere.display().to_string()),
+        "and the adapter for another clone is not: {said}",
+    );
+    assert!(
+        said.contains("adapters/"),
+        "the sentence says what those paths are — an operator who goes looking \
+         finds a plugin.toml io wrote in a directory they never made: {said}",
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&scope).expect("the scope file survives"),
+        declared,
+        "and not one byte of the configuration changed. Naming a consequence is \
+         not acting on it, and a cache being emptied does not undo a decision the \
+         operator made",
+    );
 }
 
 /// **N8 — a 291-entry index costs one file read, and the shape is what is
