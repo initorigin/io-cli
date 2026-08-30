@@ -162,7 +162,8 @@ fn f1_a_declared_bundle_reaches_the_turn_with_every_name_namespaced() {
     assert!(plugin.mcp_servers().is_empty());
 
     // And the contract a turn actually carries.
-    let contract = io_cli::contract::configured("review this", root.clone(), &config);
+    let contract =
+        io_cli::contract::configured("review this", root.clone(), &config, &config.plugins());
     assert!(
         contract.agents.get("rust-review__reviewer").is_some(),
         "the bundle's agent is not on the contract, so nothing can spawn it: {:?}",
@@ -182,7 +183,7 @@ fn f1_a_declared_bundle_reaches_the_turn_with_every_name_namespaced() {
     );
 
     // io-cli's own surface agrees with the harness it read.
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     assert!(!view.is_empty());
     assert_eq!(view.plugins.len(), 1);
     assert!(view.refused.is_empty());
@@ -280,7 +281,7 @@ fn f2_five_ways_a_bundle_breaks_each_cost_exactly_that_bundle() {
 
     // And io-cli's surface holds both facts at once rather than one instead of the
     // other — which is what `View::is_empty` reading both lists exists for.
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     assert_eq!(view.plugins.len(), 1);
     assert_eq!(view.refused.len(), 5);
     assert!(!view.is_empty());
@@ -338,7 +339,7 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
         );
 
         // **Nothing at all, rather than everything but the offending array.**
-        let contract = io_cli::contract::configured("go", root.clone(), &config);
+        let contract = io_cli::contract::configured("go", root.clone(), &config, &config.plugins());
         assert!(
             contract.agents.get("runner__reviewer").is_none(),
             "{kind}: the refused bundle's agent reached the turn anyway: {:?}",
@@ -357,7 +358,7 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
             "{kind}: the refused bundle's server reached the turn",
         );
         assert!(
-            io_cli::contract::hooks(&config, &root).is_none(),
+            io_cli::contract::hooks(&config, &config.plugins(), &root).is_none(),
             "{kind}: the refused bundle's hooks are installed",
         );
     }
@@ -400,7 +401,7 @@ fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
             plugin.contributions(),
         );
 
-        let contract = io_cli::contract::configured("go", root.clone(), &config);
+        let contract = io_cli::contract::configured("go", root.clone(), &config, &config.plugins());
         assert!(
             contract.agents.get("runner__reviewer").is_some(),
             "{kind}: the bundle loaded and its agent did not reach the turn: {:?}",
@@ -414,7 +415,7 @@ fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
                 contract.mcp.iter().map(|s| &s.id).collect::<Vec<_>>(),
             ),
             _ => assert!(
-                io_cli::contract::hooks(&config, &root).is_some(),
+                io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
                 "the bundle's hook is declared and nothing will run it",
             ),
         }
@@ -577,7 +578,7 @@ fn f11_a_bundle_is_switched_off_and_back_on_and_the_entry_survives() {
     std::fs::write(&file, &off).expect("the configuration");
 
     let config = Config::discover(&root).expect("the configuration loads");
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     let listed = view
         .plugins
         .iter()
@@ -609,7 +610,7 @@ fn f11_a_bundle_is_switched_off_and_back_on_and_the_entry_survives() {
     std::fs::write(&file, &on).expect("the configuration");
     let config = Config::discover(&root).expect("the configuration loads");
     assert!(
-        pluginview::view(&config)
+        pluginview::view(&config.plugins())
             .plugins
             .iter()
             .any(|plugin| plugin.id == "rust-review" && plugin.enabled),
@@ -676,7 +677,7 @@ fn one_of_each() -> (tempfile::TempDir, PathBuf, Config) {
 #[test]
 fn f2_a_refused_row_carries_the_harness_sentence_and_the_index_still_maps() {
     let (_dir, _root, config) = one_of_each();
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     assert_eq!(view.plugins.len(), 1);
     assert_eq!(view.refused.len(), 1);
 
@@ -734,7 +735,7 @@ fn f2_a_refused_row_carries_the_harness_sentence_and_the_index_still_maps() {
 #[test]
 fn n4_every_row_fits_eighty_columns_in_both_glyph_sets() {
     let (_dir, _root, config) = one_of_each();
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
 
     for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
         for row in pluginview::rows(&view, 80, glyphs) {
@@ -1245,7 +1246,7 @@ fn f11_an_added_bundle_loads_through_the_harness() {
     std::fs::write(root.join(PROJECT_FILE), &text).expect("the project file");
 
     let config = Config::discover(&root).expect("the written file loads");
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     // By id, for the reason `listed` below states: `Config::discover` layers the
     // user file of whoever is running the suite over this root, and a length or a
     // whole-list comparison would answer about their bundles as well as this one.
@@ -1389,7 +1390,7 @@ fn f7_a_configuration_declaring_only_a_switched_off_bundle_is_not_empty() {
 
     // And io-cli's surface, which is what the criterion is about. `listed` fails
     // by name where the bundle is on no list at all.
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     let off = listed(&view, OFF);
     assert!(
         !view.refused.iter().any(|refused| refused.id == OFF),
@@ -1428,7 +1429,7 @@ fn f7_a_switched_off_bundle_draws_under_its_own_mark() {
     bundle(&root, "bundles/rust-review", MINIMAL);
     declaring_off(&root, "bundles/rust-review");
     let config = Config::discover(&root).expect("the configuration loads");
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
 
     for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
         // Wide enough that nothing is shortened, so the words below are compared
@@ -1496,7 +1497,8 @@ fn f7_a_switched_off_bundle_reaches_no_turn_while_its_directories_still_read() {
     declaring_off(&root, "bundles/rust-review");
     let config = Config::discover(&root).expect("the configuration loads");
 
-    let contract = io_cli::contract::configured("review this", root.clone(), &config);
+    let contract =
+        io_cli::contract::configured("review this", root.clone(), &config, &config.plugins());
     assert!(
         contract.agents.get("rust-review__reviewer").is_none(),
         "a switched-off bundle put an agent on the contract: {:?}",
@@ -1512,7 +1514,7 @@ fn f7_a_switched_off_bundle_reaches_no_turn_while_its_directories_still_read() {
     // By id rather than by index, for the reason `listed` states: the user file of
     // whoever is running the suite is layered over this root and its bundles are
     // chained ahead of the switched-off ones.
-    let view = pluginview::view(&config);
+    let view = pluginview::view(&config.plugins());
     let off = listed(&view, OFF);
     assert!(
         off.skills.is_some(),
@@ -1562,7 +1564,7 @@ fn one_adapted_one_native() -> (tempfile::TempDir, pluginview::View) {
     bundle(&root, ADAPTED_AT, GENERATED);
     declaring(&root, LOCAL_FILE, &["bundles/rust-review", ADAPTED_AT]);
     let config = Config::discover(&root).expect("the configuration loads");
-    let mut view = pluginview::view(&config);
+    let mut view = pluginview::view(&config.plugins());
     view.adapters = Some(adapters_of(&view));
     (dir, view)
 }
@@ -1694,7 +1696,7 @@ fn an_adapted_bundle_that_is_switched_off_still_says_so_in_its_detail() {
     bundle(&root, ADAPTED_AT, GENERATED);
     declaring_off(&root, ADAPTED_AT);
     let config = Config::discover(&root).expect("the configuration loads");
-    let mut view = pluginview::view(&config);
+    let mut view = pluginview::view(&config.plugins());
     view.adapters = Some(adapters_of(&view));
 
     let rows = pluginview::rows(&view, 200, &io_cli::glyphs::ASCII);
@@ -1714,5 +1716,143 @@ fn an_adapted_bundle_that_is_switched_off_still_says_so_in_its_detail() {
         detail.starts_with("switched off"),
         "so the state must lead the detail, or spending the column lost it: \
          {detail:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// N1/N2/N3 — the plugin set is resolved once, and re-resolved only when it moved
+// ---------------------------------------------------------------------------
+
+/// **N2 — asking again, with nothing changed, resolves nothing.**
+///
+/// `Resolved::stale` stats each declared manifest and compares its modified time
+/// and its length. It parses no TOML and opens no skill file, so asking costs a
+/// bounded number of `metadata` calls rather than the resolution it is deciding
+/// whether to repeat — which is what makes `/plugin` and `/skills` free to open
+/// when the disk has not moved.
+#[test]
+fn n2_nothing_on_disk_moved_means_nothing_is_resolved_again() {
+    let (_guard, root) = root();
+    bundle(&root, "bundles/rust", MINIMAL);
+    declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
+    let config = io_harness::Config::discover(&root).expect("the configuration");
+
+    let resolved = io_cli::resolved::Resolved::load(&config);
+    assert_eq!(
+        resolved.loaded().len(),
+        1,
+        "the fixture declares one bundle"
+    );
+    for _ in 0..5 {
+        assert!(
+            !resolved.stale(&config),
+            "nothing was written, so nothing may be resolved again",
+        );
+    }
+}
+
+/// **N3 — an edited manifest is seen.**
+///
+/// The rule is stated in `src/resolved.rs` and in `docs/guide/plugins.md`, and it
+/// is asserted here rather than described: an operator who edits a bundle in
+/// another window and reopens `/plugin` must see the edit, or the cache has
+/// quietly replaced their file with a copy of it.
+#[test]
+fn n3_an_edited_manifest_is_seen() {
+    let (_guard, root) = root();
+    let dir = bundle(&root, "bundles/rust", MINIMAL);
+    declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
+    let config = io_harness::Config::discover(&root).expect("the configuration");
+
+    let resolved = io_cli::resolved::Resolved::load(&config);
+    assert!(!resolved.stale(&config));
+
+    // A real edit: the description changes, so the length changes with it.
+    std::fs::write(
+        dir.join(PLUGIN_FILE),
+        MINIMAL.replace(
+            "Everything our Rust reviews need.",
+            "Everything our Rust reviews need, and then some more besides.",
+        ),
+    )
+    .expect("the edited manifest");
+
+    assert!(
+        resolved.stale(&config),
+        "an edit to a declared manifest was not seen, so `/plugin` would draw the \
+         file the operator no longer has",
+    );
+}
+
+/// **N3 — a bundle installed or removed is always seen**, whatever the mtimes
+/// say, because the declared set itself is what is compared.
+#[test]
+fn n3_a_bundle_added_or_removed_is_always_seen() {
+    let (_guard, root) = root();
+    bundle(&root, "bundles/rust", MINIMAL);
+    declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
+    let config = io_harness::Config::discover(&root).expect("the configuration");
+    let resolved = io_cli::resolved::Resolved::load(&config);
+    assert!(!resolved.stale(&config));
+
+    bundle(
+        &root,
+        "bundles/docs",
+        &MINIMAL.replace("rust-review", "docs-review"),
+    );
+    declaring(
+        &root,
+        io_harness::config::LOCAL_FILE,
+        &["bundles/rust", "bundles/docs"],
+    );
+    let wider = io_harness::Config::discover(&root).expect("the configuration");
+    assert!(
+        resolved.stale(&wider),
+        "a second bundle was declared and the resolution did not notice — the \
+         stamps are compared whole for exactly this",
+    );
+}
+
+/// **N3's stated limit, asserted rather than described.**
+///
+/// A filesystem whose mtime granularity cannot separate two writes inside one
+/// second will not distinguish them, and if the length is unchanged too there is
+/// nothing left to compare. This is what the rule in `src/resolved.rs` and
+/// `docs/guide/plugins.md` says, and a cache that cannot prove freshness should
+/// say so rather than imply a guarantee it has not got.
+///
+/// Written by forcing the case directly — restoring both the content length and
+/// the modified time — because waiting for a same-second write would be a clock
+/// in a test, which `tests/timing.rs` forbids and is right to.
+#[test]
+fn n3_two_writes_in_one_second_of_the_same_length_are_the_documented_limit() {
+    let (_guard, root) = root();
+    let dir = bundle(&root, "bundles/rust", MINIMAL);
+    declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
+    let config = io_harness::Config::discover(&root).expect("the configuration");
+
+    let manifest = dir.join(PLUGIN_FILE);
+    let before = std::fs::metadata(&manifest)
+        .expect("the manifest")
+        .modified();
+    let resolved = io_cli::resolved::Resolved::load(&config);
+
+    // Same length, and the modified time put back to what it was.
+    std::fs::write(&manifest, MINIMAL.replace("cheap-model", "cheep-model"))
+        .expect("the second write");
+    if let Ok(at) = before {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&manifest)
+            .expect("the manifest");
+        let _ = file.set_modified(at);
+    }
+
+    assert!(
+        !resolved.stale(&config),
+        "this is the documented limit, and the documentation is what has to be \
+         true: a same-second write of the same length is not distinguishable by a \
+         stat, and the rule says so rather than claiming a freshness it cannot \
+         prove",
     );
 }

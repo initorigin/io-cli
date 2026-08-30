@@ -415,7 +415,14 @@ async fn drive(
     // never reaches a path that is joined to, so this cannot resolve anything
     // against the working directory.
     let home = io_cli::home::authored().unwrap_or_default();
-    let bundles = bundle_skills(&config);
+    // **Resolved once for the whole session, here, before the event loop
+    // exists.** `Config::plugins()` re-reads and re-parses every declared
+    // bundle's manifest on each call, and io-cli was doing that twice on the
+    // build path of every turn. `block_in_place` keeps the read off the task
+    // that will drive the loop; `src/resolved.rs` is the only module permitted
+    // to make the call at all, asserted by `tests/dependencies.rs`.
+    let holdings = tokio::task::block_in_place(|| io_cli::resolved::Resolved::load(&config));
+    let bundles = bundle_skills(holdings.loaded());
     let (skills, complaint) = commands::skills(&home, skills_dir.as_deref(), &bundles);
     if let Some(complaint) = complaint {
         notices.push(complaint);
@@ -448,7 +455,14 @@ async fn drive(
     // every turn and reported here, once. The file does not change while the
     // session runs, so the sentence is the same on the fiftieth turn as on the
     // first — and a warning that repeats is one an operator learns to read past.
-    notices.extend(io_cli::contract::server_notices(&config, &capabilities));
+    // The set already resolved a few lines above, not a second reading of the
+    // same disk. Caught by `n1_the_driver_resolves_the_plugin_set_once_and_again_
+    // only_when_it_moved`, which is the gate doing exactly what it is for.
+    notices.extend(io_cli::contract::server_notices(
+        &config,
+        holdings.loaded(),
+        &capabilities,
+    ));
     // Said only by a file that actually wrote `[app.io-cli] max_steps`, which is
     // why the answer comes from the field and not from the cap this session ended
     // up with — every session has one of those. The key keeps winning until
@@ -544,6 +558,7 @@ async fn drive(
             plain,
             containment,
             capabilities,
+            holdings,
             skills,
             profile,
             home: io_cli::home::path(),
@@ -562,13 +577,14 @@ async fn drive(
 /// there and not in the skills directory.
 fn skills_view(
     config: &Config,
+    plugins: &io_harness::Plugins,
     capabilities: &io_cli::contract::Capabilities,
     root: &std::path::Path,
 ) -> io_cli::skillview::View {
     let Some(home) = io_cli::home::authored() else {
         return io_cli::skillview::View::default();
     };
-    let bundles = bundle_skills(config);
+    let bundles = bundle_skills(plugins);
     match io_cli::contract::skills_dir(config, capabilities, root.to_path_buf()) {
         Some(dir) => io_cli::skillview::view(&home, &dir, &bundles),
         // **Still the bundles, with no directory of the operator's own.** A home
@@ -750,8 +766,8 @@ fn import_rows(
 /// and the run would fail on a skill the surface said was there. It would also
 /// make `/plugin` report a missing skills directory as a per-turn error for a
 /// bundle no turn touches.
-fn bundle_skills(config: &Config) -> Vec<(String, std::path::PathBuf)> {
-    io_cli::pluginview::view(config)
+fn bundle_skills(plugins: &io_harness::Plugins) -> Vec<(String, std::path::PathBuf)> {
+    io_cli::pluginview::view(plugins)
         .plugins
         .into_iter()
         .filter(|listed| listed.enabled)
@@ -801,6 +817,8 @@ struct Interactive<'a, 'b> {
     /// a caller's contract. 0.12.0 is a different change: it is where the plan
     /// gate stopped riding containment.
     capabilities: io_cli::contract::Capabilities,
+    /// The plugin set, resolved once at startup and handed to the session.
+    holdings: io_cli::resolved::Resolved,
     /// What io-harness discovered in the configured skills directory, walked once
     /// at startup. Empty when nothing is configured and empty when the walk
     /// failed — the notice above is what tells those two apart.
@@ -852,6 +870,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.plain,
             self.containment,
             self.capabilities,
+            self.holdings,
             self.skills,
             self.profile,
             self.home,
@@ -890,6 +909,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // `Config` would leave every `[app.io-cli]` answer stale while the rest of
     // the session moved on.
     mut capabilities: io_cli::contract::Capabilities,
+    // **The plugin set, resolved once for the session.** Mutable because it is
+    // re-resolved when the disk moves — `Resolved::stale` stats the declared
+    // manifests and nothing more, so asking costs a bounded number of `metadata`
+    // calls rather than the resolution it is deciding whether to repeat.
+    mut holdings: io_cli::resolved::Resolved,
     // Mutable from 0.19.0, and for a reason that did not exist before it: this is
     // the list the `/` palette offers, walked once at startup, and until this
     // release the directory behind it only ever changed out of band. `/skills`
@@ -982,6 +1006,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         String::new(),
         session.root().to_path_buf(),
         &config,
+        holdings.loaded(),
         &capabilities,
         std::sync::Arc::new(answerer),
         None,
@@ -1373,6 +1398,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                     &mut session,
                                                     &effective,
                                                     &config,
+                                                    holdings.loaded(),
                                                     contained
                                                         .then_some(containment.as_ref())
                                                         .flatten(),
@@ -2393,7 +2419,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // consequence the operator has to still be able to
                                 // read after they have answered.
                                 if let Some(said) = io_cli::marketplace::removal_cost(
-                                    &io_cli::pluginview::view(&config),
+                                    &io_cli::pluginview::view(holdings.loaded()),
                                     &market.root,
                                     io_cli::home::adapters().as_deref(),
                                 ) {
@@ -2486,7 +2512,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // Getting a *different* skill than the row you read,
                             // silently, is worse than being told it moved.
                             let drawn = drawn.get(index).cloned();
-                            let view = skills_view(&config, &capabilities, session.root());
+                            let view = skills_view(
+                                &config,
+                                holdings.loaded(),
+                                &capabilities,
+                                session.root(),
+                            );
                             let found = drawn.as_ref().and_then(|(name, path)| {
                                 view.skills
                                     .iter()
@@ -2561,7 +2592,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // reason it goes to the move: the refusal lives
                                 // inside `skillview::remove`, so a second caller
                                 // cannot walk past it.
-                                match io_cli::skillview::remove(path, &bundle_skills(&config)) {
+                                match io_cli::skillview::remove(
+                                    path,
+                                    &bundle_skills(holdings.loaded()),
+                                ) {
                                     Ok(gone) => {
                                         // The palette walks its list once at
                                         // startup, and this is the second thing in
@@ -2576,7 +2610,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 session.root().to_path_buf(),
                                             )
                                             .as_deref(),
-                                            &bundle_skills(&config),
+                                            &bundle_skills(holdings.loaded()),
                                         )
                                         // `.0` for the reason the sibling refresh
                                         // below takes it: the second half is the
@@ -2640,7 +2674,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // parent, so a bundle path reaching the move
                                 // creates `disabled/` inside somebody else's
                                 // bundle and takes their file into it.
-                                let bundles = bundle_skills(&config);
+                                let bundles = bundle_skills(holdings.loaded());
                                 let moved = if *enabled {
                                     io_cli::skillview::disable(path, &bundles)
                                 } else {
@@ -2671,7 +2705,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             // carried list would go on offering a
                                             // bundle's skills after the bundle was
                                             // removed.
-                                            &bundle_skills(&config),
+                                            &bundle_skills(holdings.loaded()),
                                         )
                                         .0;
                                         app.record(
@@ -4453,7 +4487,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // before it offers the same removal.
                                 if let Some(clone) = io_cli::fetch::at(named) {
                                     if let Some(warned) = io_cli::marketplace::removal_cost(
-                                        &io_cli::pluginview::view(&config),
+                                        &io_cli::pluginview::view(holdings.loaded()),
                                         &clone,
                                         io_cli::home::adapters().as_deref(),
                                     ) {
@@ -4480,8 +4514,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         .to_string(),
                                 ),
                                 Some(home) => {
-                                    let view = skills_view(&config, &capabilities, session.root());
-                                    let bundles = bundle_skills(&config);
+                                    let view = skills_view(&config, holdings.loaded(), &capabilities, session.root());
+                                    let bundles = bundle_skills(holdings.loaded());
                                     let done = match &verb {
                                         io_cli::manage::SkillVerb::Add { source } => {
                                             io_cli::skillview::install(&home, source)
@@ -4541,7 +4575,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                         session.root().to_path_buf(),
                                                     )
                                                     .as_deref(),
-                                                    &bundle_skills(&config),
+                                                    &bundle_skills(holdings.loaded()),
                                                 )
                                                 .0;
                                                 app.record(Tone::Success, said);
@@ -4922,7 +4956,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // a directory discovery never looks at and is exactly where the
                 // operator's next move probably is.
                 Action::Skills => {
-                    let view = skills_view(&config, &capabilities, session.root());
+                    let view = skills_view(&config, holdings.loaded(), &capabilities, session.root());
                     if let Some(sentence) = &view.failed {
                         app.record(Tone::Refused, sentence.clone());
                     }
@@ -4998,7 +5032,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // the operator has just edited on disk is reflected without a
                     // reload — and a bundle they have just broken shows up as a
                     // refusal in the same breath.
-                    let view = io_cli::pluginview::view(&config);
+                    let view = io_cli::pluginview::view(holdings.loaded());
                     // **The same call `/skills` makes, deliberately.** A bundle
                     // whose declared skills directory is absent ends every turn of
                     // the session, and both surfaces have to say so — but saying
@@ -5009,7 +5043,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // agree. `Plugins::dropped` cannot cover this: the bundle
                     // loaded fine, and it is the directory it names that is gone.
                     for (id, sentence) in
-                        io_cli::skillview::view_of_bundles(&bundle_skills(&config)).bundles_failed
+                        io_cli::skillview::view_of_bundles(&bundle_skills(holdings.loaded())).bundles_failed
                     {
                         app.record(
                             Tone::Refused,
@@ -5906,6 +5940,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         String::new(),
                         session.root().to_path_buf(),
                         &config,
+                        holdings.loaded(),
                         &capabilities,
                         std::sync::Arc::new(answerer),
                         None,
@@ -6212,6 +6247,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         String::new(),
                         session.root().to_path_buf(),
                         &config,
+                        holdings.loaded(),
                         &capabilities,
                         std::sync::Arc::new(answerer),
                         None,
@@ -6429,6 +6465,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // Committing it again every turn is the shape 0.19.0 already
                     // rejected once — a line that repeats for the life of the
                     // file it is about stops being read.
+                    // **And the plugin set itself, but only where the disk has
+                    // moved.** `Resolved::stale` stats each declared manifest and
+                    // compares its modified time and its length; it parses
+                    // nothing and opens no skill file, so asking is a bounded
+                    // number of `metadata` calls rather than the resolution it is
+                    // deciding whether to repeat. `block_in_place` keeps both the
+                    // question and the answer off the task turning the loop.
+                    //
+                    // This is the turn boundary, so an edit made in another
+                    // window shows on the next message — and `/plugin` and
+                    // `/skills` read whatever this left, which is why opening
+                    // them costs no resolution at all when nothing has changed.
+                    if tokio::task::block_in_place(|| holdings.stale(&config)) {
+                        holdings = tokio::task::block_in_place(|| {
+                            io_cli::resolved::Resolved::load(&config)
+                        });
+                    }
                     skills = commands::skills(
                         &io_cli::home::authored().unwrap_or_default(),
                         io_cli::contract::skills_dir(
@@ -6437,7 +6490,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             session.root().to_path_buf(),
                         )
                         .as_deref(),
-                        &bundle_skills(&config),
+                        &bundle_skills(holdings.loaded()),
                     )
                     .0;
                     let effective =
@@ -6462,6 +6515,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `/` at an idle prompt offers.
                         &templates,
                         &skills,
+                        holdings.loaded(),
                         &seen,
                         planning,
                         // Taken rather than read: one request, one turn. A queue
@@ -6909,6 +6963,10 @@ async fn turn<P: Provider>(
     // mid-turn palette offers is exactly what the idle one offers.
     templates: &io_harness::Templates,
     skills: &[io_cli::skillview::Listed],
+    // Resolved once for the session — see [`io_cli::resolved`]. The turn's
+    // contract and its hooks both used to re-read every bundle's manifest off
+    // disk here, which is two full resolutions per message.
+    plugins: &io_harness::Plugins,
     // The last request this session's provider was handed. `/context` reads it to
     // say what is in the window, and `ctx N%` reads it so the two say the same
     // thing — see `note_context`, and the live run that found them disagreeing.
@@ -7052,6 +7110,7 @@ async fn turn<P: Provider>(
         text.clone(),
         root.clone(),
         config,
+        plugins,
         capabilities,
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
@@ -7113,7 +7172,7 @@ async fn turn<P: Provider>(
     // The order is deliberate: `Broadcast` outermost, so an event is durable
     // before either the interface or a hook is told about it, and a hook that
     // cancels the turn cannot leave a gap in the sequence a reader is following.
-    let hooks = io_cli::contract::hooks(config, session.root());
+    let hooks = io_cli::contract::hooks(config, plugins, &root);
     let mut observers: Vec<&dyn io_harness::Observer> = vec![&observer];
     if let Some(hooks) = &hooks {
         observers.push(hooks);
@@ -7289,7 +7348,15 @@ async fn turn<P: Provider>(
                         // untouched: a keystroke the picker took is a keystroke
                         // the session did not see.
                         let command = if picker.is_some() {
-                            mid_turn_picker(&mut picker, app, &root, policy, templates, skills, key);
+                            mid_turn_picker(
+                                &mut picker,
+                                app,
+                                &root,
+                                policy,
+                                templates,
+                                skills,
+                                key,
+                            );
                             Command::None
                         } else if commands::opens_palette(key, app.composer.is_empty(), app.armed())
                         {
@@ -9314,7 +9381,7 @@ async fn manage_main(
             }
         }
         io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {
-            let view = io_cli::pluginview::view(config);
+            let view = io_cli::pluginview::view(io_cli::resolved::Resolved::load(config).loaded());
             for listed in &view.plugins {
                 // **A third column, and it is not decoration.** From 0.29.0 this
                 // list carries the bundles declared `enabled = false` as well as
@@ -9398,7 +9465,10 @@ async fn manage_main(
             };
             let (stored, _) = io_cli::settings::stored(config);
             let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
-            let view = skills_view(config, &capabilities, root);
+            // `io skill …` is one command and exits; the resolution is genuinely
+            // once, and it goes through the same module the session's does.
+            let plugins = io_cli::resolved::Resolved::load(config);
+            let view = skills_view(config, plugins.loaded(), &capabilities, root);
             match verb {
                 io_cli::manage::SkillVerb::Add { source } => {
                     let at = io_cli::skillview::install(&home, source)?;
@@ -9426,7 +9496,8 @@ async fn manage_main(
                             "no skill answers to `{name}`; `io skill list` names the ones that do"
                         ));
                     };
-                    let gone = io_cli::skillview::remove(&skill.path, &bundle_skills(config))?;
+                    let gone =
+                        io_cli::skillview::remove(&skill.path, &bundle_skills(plugins.loaded()))?;
                     println!("{}", gone.display());
                 }
             }
@@ -9569,7 +9640,7 @@ fn marketplace_main(
             // is told what stops loading.
             if let Some(clone) = io_cli::fetch::at(named) {
                 if let Some(warned) = io_cli::marketplace::removal_cost(
-                    &io_cli::pluginview::view(config),
+                    &io_cli::pluginview::view(io_cli::resolved::Resolved::load(config).loaded()),
                     &clone,
                     io_cli::home::adapters().as_deref(),
                 ) {
@@ -10247,6 +10318,8 @@ async fn resume_pending<P: Provider>(
     session: &mut Session,
     policy: &Policy,
     config: &Config,
+    // Resolved once for the session — see [`io_cli::resolved`].
+    plugins: &io_harness::Plugins,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
     // The same record the turn loop reads, and it is here for the same reason: a
@@ -10348,6 +10421,7 @@ async fn resume_pending<P: Provider>(
         goal,
         session.root().to_path_buf(),
         config,
+        plugins,
         capabilities,
         std::sync::Arc::new(answerer),
         // No plan gate. A resumed run that proposed a plan is one this surface

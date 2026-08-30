@@ -1220,6 +1220,7 @@ async fn live_f1_f3_f4_a_contained_turn_carries_this_crates_contract() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         Some(Arc::new(gate) as Arc<dyn io_harness::PlanGate>),
@@ -1419,6 +1420,7 @@ async fn live_f1_a_question_is_answered_on_an_uncontained_turn() {
          line`. If it is not clear which one is meant, ask before editing.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1535,6 +1537,7 @@ async fn live_f2_a_contained_turn_does_not_plan_unless_asked() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1649,6 +1652,7 @@ async fn live_f2_a_gate_the_operator_asked_for_reaches_the_run() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         Some(Arc::new(gate) as Arc<dyn io_harness::PlanGate>),
@@ -2357,6 +2361,7 @@ async fn live_what_the_system_prompt_costs_on_one_model() {
                 "How are you?",
                 root.to_path_buf(),
                 &no_configuration(),
+                &no_configuration().plugins(),
                 &io_cli::contract::Capabilities::default(),
                 responder,
                 None,
@@ -2429,6 +2434,7 @@ async fn live_f5_an_ordinary_question_is_answered_rather_than_worked_on() {
         "How are you?",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &io_cli::contract::Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -2522,6 +2528,7 @@ async fn live_f2_a_parked_question_is_answered_and_the_run_carries_on() {
         goal,
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -2672,6 +2679,7 @@ async fn live_f2_a_command_criterion_that_passes_makes_the_run_succeed() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &config,
+        &config.plugins(),
     )
     .with_max_steps(12);
 
@@ -2753,6 +2761,7 @@ async fn live_f2_f8_a_failing_criterion_is_recorded_and_exits_six() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &config,
+        &config.plugins(),
     )
     .with_max_steps(6);
 
@@ -2843,6 +2852,7 @@ async fn live_f5_a_rubric_is_judged_by_a_second_model() {
         "Replace the line `old line` in notes.md with `new line`. Nothing else.",
         root.to_path_buf(),
         &config,
+        &config.plugins(),
     )
     .with_max_steps(12);
 
@@ -2976,6 +2986,7 @@ async fn live_f8_a_worktree_child_works_in_a_checkout_of_its_own() {
          notes.md with `new line`. Wait for it.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -3057,6 +3068,7 @@ async fn live_f5_a_commit_the_agent_made_reads_back_with_its_message() {
          commit that change with a message describing it.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -3187,6 +3199,7 @@ async fn live_f1_f2_an_asking_posture_asks_about_git_and_the_answer_is_honoured(
         "Run `git status` to see what has changed in this repository, then say what it said.",
         root.to_path_buf(),
         &no_configuration(),
+        &no_configuration().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -3281,6 +3294,7 @@ async fn live_f1_a_reasoning_level_reaches_the_wire_and_the_turn_still_finishes(
             "What is in notes.md? Answer in one sentence.",
             root.to_path_buf(),
             &no_configuration(),
+            &no_configuration().plugins(),
             &io_cli::contract::Capabilities::default(),
             Arc::new(answerer),
             None,
@@ -3388,6 +3402,7 @@ async fn live_f5_an_unreachable_primary_falls_through_to_the_provider_underneath
                 "Reply with the single word: ready.",
                 self.root.clone(),
                 &no_configuration(),
+                &no_configuration().plugins(),
                 &io_cli::contract::Capabilities::default(),
                 Arc::new(answerer),
                 None,

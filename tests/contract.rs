@@ -285,6 +285,7 @@ fn f2_nothing_configured_is_the_contract_the_session_built_before() {
         "bring the docs up to date",
         root.clone(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         responder.clone(),
         None,
@@ -452,6 +453,7 @@ fn f8_the_conversational_key_reaches_the_contract_in_both_directions() {
             "say hello",
             root,
             &config,
+            &config.plugins(),
             &Capabilities::default(),
             responder.clone(),
             None,
@@ -498,6 +500,7 @@ fn f3_a_routing_section_reaches_the_contract_and_an_absent_one_leaves_it_unset()
             "bring the docs up to date",
             root,
             &config,
+            &config.plugins(),
             &Capabilities::default(),
             responder.clone(),
             None,
@@ -646,6 +649,7 @@ fn every_turn_carries_io_clis_own_system_prompt() {
         "bring the docs up to date",
         root(),
         &nothing(),
+        &nothing().plugins(),
         &Capabilities::default(),
         responder,
         None,
@@ -790,6 +794,7 @@ async fn f4_io_harnesss_own_sections_survive_the_append() {
         "say hello",
         dir.path().to_path_buf(),
         &nothing(),
+        &nothing().plugins(),
         &Capabilities {
             skills: Some(skills),
             ..Capabilities::default()
@@ -954,6 +959,7 @@ fn the_responder_is_unconditional_and_the_gate_is_not() {
         "bring the docs up to date",
         root(),
         &nothing(),
+        &nothing().plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1002,6 +1008,7 @@ fn what_the_file_asks_for_is_what_the_contract_carries() {
         "add a test",
         root(),
         &nothing(),
+        &nothing().plugins(),
         &caps,
         Arc::new(answerer),
         None,
@@ -1047,6 +1054,7 @@ fn f6_both_arms_are_handed_one_contract() {
         "a goal",
         root(),
         &nothing(),
+        &nothing().plugins(),
         &Capabilities::default(),
         responder.clone(),
         None,
@@ -1055,6 +1063,7 @@ fn f6_both_arms_are_handed_one_contract() {
         "a goal",
         root(),
         &nothing(),
+        &nothing().plugins(),
         &Capabilities::default(),
         responder,
         None,
@@ -1183,6 +1192,7 @@ fn a_turn_is_not_capped_at_twelve_steps() {
         "bring the docs up to date",
         root(),
         &nothing(),
+        &nothing().plugins(),
         &Capabilities::default(),
         responder.clone(),
         None,
@@ -1198,6 +1208,7 @@ fn a_turn_is_not_capped_at_twelve_steps() {
         "bring the docs up to date",
         root(),
         &file,
+        &file.plugins(),
         &Capabilities::default(),
         responder,
         None,
@@ -1247,6 +1258,7 @@ fn f1_both_arms_carry_the_same_configuration_field_by_field() {
         "make the suite pass",
         root,
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         Some(Arc::new(gate) as Arc<dyn io_harness::PlanGate>),
@@ -1344,6 +1356,7 @@ fn f3_every_applicable_section_of_the_file_reaches_a_session_turn() {
         "make the suite pass",
         dir.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1496,6 +1509,7 @@ fn f4_the_step_floor_sits_under_the_file_and_over_the_harness() {
         "a goal",
         written.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         responder.clone(),
         None,
@@ -1511,6 +1525,7 @@ fn f4_the_step_floor_sits_under_the_file_and_over_the_harness() {
         "a goal",
         bare.path().to_path_buf(),
         &empty,
+        &empty.plugins(),
         &Capabilities::default(),
         responder.clone(),
         None,
@@ -1529,6 +1544,7 @@ fn f4_the_step_floor_sits_under_the_file_and_over_the_harness() {
         "a goal",
         written.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         responder,
         None,
@@ -1596,6 +1612,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
         "a goal",
         dir.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &caps,
         Arc::new(answerer),
         None,
@@ -1627,7 +1644,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
 
     // And the dropped entry is named, so an operator who wrote a server twice is
     // told which of the two the session is running rather than discovering it.
-    let notices = server_notices(&config, &caps);
+    let notices = server_notices(&config, &config.plugins(), &caps);
     assert_eq!(notices.len(), 2, "one per collision: {notices:?}");
     assert!(
         notices[0].contains("`shared`")
@@ -1649,7 +1666,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
     )]);
     let _ = &quiet;
     assert!(
-        server_notices(&one_scope, &Capabilities::default()).is_empty(),
+        server_notices(&one_scope, &one_scope.plugins(), &Capabilities::default()).is_empty(),
         "a notice about a duplicate nobody wrote is noise that teaches operators \
          to stop reading the start-up lines",
     );
@@ -1682,6 +1699,7 @@ fn f7_a_tilde_in_run_skills_is_the_operators_home() {
         "read the notes",
         dir.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1727,6 +1745,7 @@ fn f7_a_tilde_in_the_app_table_is_the_operators_home_and_beats_run() {
         "read the notes",
         dir.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &caps,
         Arc::new(answerer),
         None,
@@ -1760,14 +1779,19 @@ fn f7_skills_default_to_io_clis_own_home() {
         "read the notes",
         dir.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
     );
     assert_eq!(contract.skills, Some(skills.clone()), "the session arm");
 
-    let headless =
-        io_cli::contract::configured("read the notes", dir.path().to_path_buf(), &config);
+    let headless = io_cli::contract::configured(
+        "read the notes",
+        dir.path().to_path_buf(),
+        &config,
+        &config.plugins(),
+    );
     assert_eq!(
         headless.skills,
         Some(skills),
@@ -1799,6 +1823,7 @@ fn a_home_with_no_skills_directory_is_the_contract_of_the_release_before() {
         "read the notes",
         dir.path().to_path_buf(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -1840,7 +1865,7 @@ detached_spawns = false
     let config = io_harness::Config::from_toml(toml).expect("the fixture parses");
 
     // The headless arm builds from `configured` and nothing else.
-    let headless = io_cli::contract::configured("a goal", root(), &config);
+    let headless = io_cli::contract::configured("a goal", root(), &config, &config.plugins());
     assert_eq!(
         headless.max_parallel_reads, 3,
         "io exec: max_parallel_reads"
@@ -1859,6 +1884,7 @@ detached_spawns = false
         "a goal",
         root(),
         &config,
+        &config.plugins(),
         &Capabilities::default(),
         responder,
         None,
@@ -1884,7 +1910,7 @@ detached_spawns = false
 #[test]
 fn f11_a_file_that_asks_for_nothing_leaves_every_default_alone() {
     let bare = io_harness::Config::from_toml("").unwrap();
-    let built = io_cli::contract::configured("a goal", root(), &bare);
+    let built = io_cli::contract::configured("a goal", root(), &bare, &bare.plugins());
     let untouched = io_harness::TaskContract::workspace("a goal", root());
 
     assert_eq!(
@@ -1909,7 +1935,7 @@ fn f11_a_file_that_asks_for_nothing_leaves_every_default_alone() {
 #[test]
 fn f11_asking_for_the_default_explicitly_changes_nothing() {
     let agrees = io_harness::Config::from_toml("[app.io-cli]\ndetached_spawns = true\n").unwrap();
-    let built = io_cli::contract::configured("a goal", root(), &agrees);
+    let built = io_cli::contract::configured("a goal", root(), &agrees, &agrees.plugins());
     assert!(built.detached_spawns);
 }
 

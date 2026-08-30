@@ -587,7 +587,7 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     std::fs::write(&file, &text).expect("the configuration");
 
     let config = io_harness::Config::discover(&root).expect("the configuration loads");
-    let view = io_cli::pluginview::view(&config);
+    let view = io_cli::pluginview::view(&config.plugins());
     // By id and never by count: `Config::discover` layers the operator's own user
     // file over this one, so a developer whose `~/.io-cli` declares a bundle would
     // fail a length assertion for a reason that has nothing to do with the
@@ -633,7 +633,9 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     );
 
     let after = io_cli::pluginview::view(
-        &io_harness::Config::discover(&root).expect("the configuration still loads"),
+        &io_harness::Config::discover(&root)
+            .expect("the configuration still loads")
+            .plugins(),
     );
     assert!(
         after
@@ -1573,7 +1575,7 @@ fn f7_declining_writes_nothing() {
     );
 
     let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let view = io_cli::pluginview::view(&config);
+    let view = io_cli::pluginview::view(&config.plugins());
     assert!(
         view.plugins.iter().all(|listed| listed.id != "rust-review")
             && view
@@ -2440,7 +2442,7 @@ fn f13_a_removal_names_the_adapters_it_orphans_and_leaves_every_entry() {
     );
     std::fs::write(&scope, &declared).expect("the scope file");
     let config = io_harness::Config::from_toml(&declared).expect("the declarations parse");
-    let view = io_cli::pluginview::view(&config);
+    let view = io_cli::pluginview::view(&config.plugins());
 
     let orphans = marketplace::orphaned(&view, &clone, &adapters);
     assert_eq!(

@@ -109,6 +109,7 @@ pub mod queue;
 pub mod recall;
 pub mod reload;
 pub mod repo;
+pub mod resolved;
 pub mod resume;
 pub mod reviewer;
 pub mod rewind;

@@ -447,8 +447,7 @@ fn hook_line(hook: &io_harness::Hook) -> (String, String) {
 /// an operator opens after editing a manifest must see the edit, and a set cached
 /// at session start would not.
 #[must_use]
-pub fn view(config: &io_harness::Config) -> View {
-    let plugins = config.plugins();
+pub fn view(plugins: &io_harness::Plugins) -> View {
     View {
         // Loaded first and switched off after, which is the order [`rows`] draws
         // and the order the positional contract there is written against.
@@ -1611,7 +1610,11 @@ mod tests {
         .expect("the configuration");
 
         let config = io_harness::Config::discover(root).expect("the configuration loads");
-        let view = view(&config);
+        // Through the one permitted module, like every other caller — the gate
+        // that confines the resolution sweeps `src/` whole, `#[cfg(test)]` included,
+        // and a test that reached past it would be the first crack in the rule.
+        let resolved = crate::resolved::Resolved::load(&config);
+        let view = view(resolved.loaded());
         assert!(!view.is_empty());
 
         let plugin = view

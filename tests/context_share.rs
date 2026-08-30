@@ -55,6 +55,7 @@ fn from_config(toml: &str) -> TaskContract {
         "summarise the module",
         std::path::PathBuf::from("/tmp/io-cli-context-share"),
         &config,
+        &config.plugins(),
     )
 }
 
@@ -487,15 +488,15 @@ fn the_status_page_names_the_window_before_anything_has_been_assembled() {
             &DARK,
             100,
         )
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
     };
 
     let fresh = page(&under(&contract));

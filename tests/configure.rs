@@ -434,7 +434,12 @@ fn f3_the_reloaded_config_is_what_the_next_turn_is_built_from() {
     std::env::set_var("IO_CONFIG", &s.user);
 
     let (before, _) = configure::reload(s.root.path()).unwrap();
-    let opening = io_cli::contract::configured("go", s.root.path().to_path_buf(), &before);
+    let opening = io_cli::contract::configured(
+        "go",
+        s.root.path().to_path_buf(),
+        &before,
+        &before.plugins(),
+    );
     assert_eq!(opening.max_steps, 10);
 
     configure::write(
@@ -445,7 +450,8 @@ fn f3_the_reloaded_config_is_what_the_next_turn_is_built_from() {
     .unwrap();
 
     let (after, _) = configure::reload(s.root.path()).unwrap();
-    let next = io_cli::contract::configured("go", s.root.path().to_path_buf(), &after);
+    let next =
+        io_cli::contract::configured("go", s.root.path().to_path_buf(), &after, &after.plugins());
     assert_eq!(
         next.max_steps, 42,
         "the next turn was built from the configuration as it was at session start"
@@ -676,13 +682,20 @@ fn f10_applying_a_profile_overlays_it_for_the_session() {
     );
     let config = s.config();
     assert_eq!(
-        io_cli::contract::configured("go", s.root.path().to_path_buf(), &config).max_steps,
+        io_cli::contract::configured(
+            "go",
+            s.root.path().to_path_buf(),
+            &config,
+            &config.plugins()
+        )
+        .max_steps,
         10
     );
 
     let fast = configure::with_profile(&config, "fast").unwrap();
     assert_eq!(
-        io_cli::contract::configured("go", s.root.path().to_path_buf(), &fast).max_steps,
+        io_cli::contract::configured("go", s.root.path().to_path_buf(), &fast, &fast.plugins())
+            .max_steps,
         99,
         "the profile did not reach the contract a turn is built from"
     );
