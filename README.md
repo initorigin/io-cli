@@ -548,6 +548,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/resume` | reopen an earlier session and answer whatever its last run is waiting on |
 | `/fork` | continue from an earlier turn of this conversation |
 | `/profile` | switch to a named profile for this session, or create, remove and clear one |
+| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/setup` | run the first-run wizard again |
 | `/exit` | leave |
 
@@ -558,7 +559,6 @@ above a row that ranked there for reasons having nothing to do with it.
 | `/model` | change the model the next turn is sent to |
 | `/effort` | how much reasoning the next turn buys: low, medium, high, or off |
 | `/undo` | put work back: `<path>` for one file, `step <n>` for one step, bare for the run |
-| `/contain` | run turns contained, so the agent can fan out: on, off, or ask |
 | `/plan` | make turns propose a plan before they work: on, off, or ask |
 | `/steer` | send what is queued into the turn that is already running |
 | `/compact` | fold this conversation into a summary, at the next step |
@@ -1209,22 +1209,20 @@ A bundle contributes to six subsystems at once, and until 0.29.0 every one you
 declared came from a directory you had read. A marketplace removes that reading,
 so the install puts it back.
 
-The entry is written **`enabled = false`** first. io-harness then reads, parses,
-validates and trust-checks the bundle for real — there is no public way to ask it
-about a directory that no configuration declares — and hands it back contributing
-nothing at all. What you are shown is what io-harness parsed: the skills and
-template directories, the agents, the MCP servers and the policy layers, in the
-**namespaced** names you will actually see in a trace and type to spawn an agent.
-A bundle io-harness would refuse is refused at that point, in its own words,
-before you are asked anything.
+**Nothing is written to your configuration before you agree to it.** io-harness
+reads, parses, validates and trust-checks the directory with your file untouched,
+and hands the bundle back contributing nothing. What you are shown is what
+io-harness parsed: the skills and template directories, the agents, the MCP
+servers, the hooks and the policy layers, in the **namespaced** names you will
+actually see in a trace and type to spawn an agent. A bundle io-harness would
+refuse is refused at that point, in its own words, before you are asked anything.
 
-Saying yes changes one key. Saying no leaves the bundle declared, switched off,
-and listed in `/plugin` — visible, and one keystroke from being switched on if
-you change your mind.
+Saying yes writes the `[[plugin]]` entry, once. Saying no writes no byte at all —
+there is nothing left behind to find later, and nothing to undo.
 
-Hooks are named here too, read from the manifest, because `enabled = false` is
-still not enough to make io-harness tell you what a hook runs. Consenting on the
-bare word "hooks" is consenting to programs nobody named.
+Hooks are disclosed from the same reading as everything else, so the list names
+the programs rather than the bare word "hooks". Consenting on the bare word is
+consenting to programs nobody named.
 
 **Writing `enabled` costs something and io says so at the time.** An io-cli built
 against io-harness 0.69.0 does not know the key and refuses the *whole file*

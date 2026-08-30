@@ -1365,6 +1365,143 @@ fn f4_every_guide_page_is_reachable_from_both_indexes() {
     );
 }
 
+/// **F1 — a command is documented under the group the code files it in.**
+///
+/// `the_readme_command_table_is_the_command_table` above checks that every
+/// command appears with its description, and that the row count matches. Both
+/// were true while `/contain` sat under **this turn** in the prose and under
+/// `Group::Session` in `GROUPS` — the name was present, the description matched,
+/// and the total was right, because a row in the wrong table is still a row.
+///
+/// The cost was not only a misfiled command. `Group::Turn` is capped at ten and
+/// the same page says so, so the printed table showed eleven rows against a bound
+/// stated three hundred lines below it. It drifted for three releases because
+/// nothing joined a command to its heading.
+///
+/// Sabotage: move any row into another group's table. Only this fails.
+#[test]
+fn f1_every_command_is_documented_under_its_own_group() {
+    use io_cli::commands::{grouped, Group};
+
+    let readme = read("README.md");
+    let table = section(&readme, "commands");
+
+    // The prose draws each group under a bold title, which is `Group::title()` —
+    // the same string the palette and `/help` draw, so the join is on a value the
+    // code owns rather than on a heading a writer chose.
+    let titles: Vec<(Group, String)> = Group::all()
+        .into_iter()
+        .map(|group| (group, format!("**{}**", group.title())))
+        .collect();
+
+    for (_, title) in &titles {
+        assert!(
+            table.contains(title.as_str()),
+            "the README's command section has no {title} heading",
+        );
+    }
+
+    for (group, rows) in grouped() {
+        let title = format!("**{}**", group.title());
+        let from = table.find(&title).expect("checked above") + title.len();
+        let rest = &table[from..];
+        // Up to the next group heading, whichever comes first.
+        let to = titles
+            .iter()
+            .filter_map(|(_, other)| {
+                if *other == title {
+                    None
+                } else {
+                    rest.find(other.as_str())
+                }
+            })
+            .min()
+            .unwrap_or(rest.len());
+        let block = &rest[..to];
+
+        for (name, _) in rows {
+            let row = format!("| `{name}` |");
+            assert!(
+                block.contains(&row),
+                "`{name}` is filed under `{}` in GROUPS and is not in the \
+                 README's {title} table, so the palette and the documentation \
+                 disagree about where an operator should look for it",
+                group.title(),
+            );
+        }
+    }
+}
+
+/// The text under a heading, up to the next heading at the same level or above.
+///
+/// The `<!-- name:start -->` markers above are for tables a test needs to read
+/// exactly. This is for prose, where wrapping a section in comment markers to
+/// make it checkable would put scaffolding in the file a reader sees.
+fn under_heading<'a>(text: &'a str, heading: &str) -> &'a str {
+    let from = text
+        .find(heading)
+        .unwrap_or_else(|| panic!("no heading {heading:?}"))
+        + heading.len();
+    let rest = &text[from..];
+    let to = rest.find("\n## ").unwrap_or(rest.len());
+    &rest[..to]
+}
+
+/// **F2 — the plugin install is described as it behaves since 0.30.0.**
+///
+/// Through 0.29.0 there was no io-harness loader that took a directory, so the
+/// only way to have a stranger's bundle validated was to declare it: the install
+/// wrote `enabled = false`, re-discovered, and disclosed off the result. A bundle
+/// io-harness then refused left an entry behind in a file the operator had agreed
+/// to nothing about. 0.71.0 published `Plugins::inspect` and 0.30.0 switched to
+/// it — and the README went on describing the mechanism that had been deleted,
+/// telling a reader their configuration is written to before they consent.
+///
+/// Both halves are asserted. The prose half alone would pass if the feature were
+/// ripped out; the code half alone would pass while the prose stayed wrong.
+///
+/// Sabotage: restore the write-then-rediscover paragraph, or delete the
+/// `Plugins::inspect` call. Each fails on its own.
+#[test]
+fn f2_the_install_discloses_before_it_writes_and_says_so() {
+    // The mechanism exists in the code the prose is describing.
+    let marketplace = std::fs::read_to_string(repo().join("src/marketplace.rs"))
+        .expect("src/marketplace.rs exists");
+    assert!(
+        marketplace.contains("Plugins::inspect"),
+        "the disclosure is documented as reading the bundle with the operator's \
+         file untouched, which is `Plugins::inspect`; nothing in \
+         src/marketplace.rs calls it",
+    );
+
+    let readme = read("README.md");
+    let section = under_heading(
+        &readme,
+        "### What a bundle is allowed to do is shown before it is allowed to do it",
+    );
+
+    assert!(
+        section.contains("Nothing is written to your configuration before you agree"),
+        "the disclosure section should state the property that makes it a \
+         disclosure rather than a fait accompli",
+    );
+
+    // The retracted narrative, in its own words. Taken from the bytes 0.29.0
+    // shipped rather than from a paraphrase — a needle written from memory is how
+    // this repository has shipped four gates that matched nothing.
+    for retracted in [
+        "The entry is written **`enabled = false`** first",
+        "Saying no leaves the bundle declared, switched off",
+        "read from the manifest",
+    ] {
+        assert!(
+            !section.contains(retracted),
+            "the install section describes the pre-0.30.0 mechanism, which wrote \
+             to the operator's configuration before asking: {retracted:?}",
+        );
+    }
+}
+
 /// **Every CHANGELOG heading is a link, and every link definition has a heading.**
 ///
 /// Thirty of thirty-three version headings had no link definition, so they
