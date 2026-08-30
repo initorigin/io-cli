@@ -813,6 +813,37 @@ fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
          behavioural assertions in tests/fetch.rs are what must be re-argued \
          first.",
     );
+    // **0.31.0 pins a second builder, and this is where that gate was re-argued
+    // rather than relaxed.** An index entry may name a commit, and a shallow clone
+    // checked out at one is not a single `git clone`: `--revision` landed in git
+    // 2.49, this product names no git floor, so the portable route is four
+    // invocations. The literal that used to be asserted here — `.args(argv(` at
+    // the spawn — cannot survive that, because the spawn now takes a finished list
+    // from a loop rather than calling one builder inline.
+    //
+    // What replaces it is stronger rather than weaker, and the difference is worth
+    // stating because 0.31.0's own risk list names "relaxing F10 to fit both
+    // shapes" as a failure mode. Before: one builder's signature pinned, and the
+    // spawn asserted to call it. After: **two** builders' signatures pinned, and
+    // the spawn asserted to take a `Vec<OsString>` **parameter** — so it cannot
+    // add an element at the call site even in principle, which the inline form
+    // could have done and was only prevented from doing by `!contains(".arg(")`.
+    // The count of spawns is unchanged at one, and every other absence below still
+    // holds.
+    assert!(
+        code.contains("pub fn steps(url: &str, into: &Path, at: &Pin) -> Vec<Vec<OsString>>"),
+        "the pinned-fetch builder no longer takes a URL, a destination and a pin \
+         and nothing else. It is the second place an argv element could be \
+         interpolated from something a stranger's index wrote, so its signature is \
+         pinned for the reason `argv`'s is.",
+    );
+    assert!(
+        code.contains("fn run(argv: Vec<OsString>)"),
+        "the one spawn no longer takes a finished argv as a parameter. That is the \
+         property that makes the assertions above load-bearing: the spawn never \
+         sees the parts, so every element it passes was built by a pure function \
+         `tests/fetch.rs` asserts the output of.",
+    );
     // The backstop, and it is a backstop: this module builds every string it
     // produces with `String::push_str`, so an interpolation written in its own
     // idiom would pass this and die on the assertion above instead. Kept because
@@ -832,9 +863,16 @@ fn f10_the_fetch_spawns_git_and_builds_no_argument_out_of_a_string() {
          hides from both.",
     );
     assert!(
-        code.contains(".args(argv("),
-        "the spawn no longer takes its arguments from `argv`, so tests/fetch.rs is \
-         asserting the shape of a function nothing runs",
+        code.contains(".args(argv)"),
+        "the spawn no longer takes its arguments from the finished list handed to \
+         it, so tests/fetch.rs is asserting the shape of a function nothing runs",
+    );
+    assert_eq!(
+        code.matches(".args(").count(),
+        1,
+        "src/fetch.rs passes arguments in more than one place. Every element goes \
+         through a pure builder and reaches the program through the single `run`, \
+         so a second `.args(` is a second argv nothing asserts the shape of.",
     );
 }
 
