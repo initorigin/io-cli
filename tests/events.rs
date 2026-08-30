@@ -472,11 +472,20 @@ fn a_turn_that_ends_waiting_for_a_human_says_what_to_do_about_it() {
         assert_eq!(outcome_tone(outcome), Tone::Warning, "{outcome}");
         let help = outcome_help(outcome)
             .unwrap_or_else(|| panic!("{outcome} leaves the operator with no next action"));
+        // **`/resume` since 0.32.0, and "next prompt" is gone on purpose.** The
+        // two sentences that told an operator a parked question or plan could not
+        // be answered by this release had been false since 0.23.0 — `/resume`
+        // reopens both. An approval keeps `Shift+Tab`, because an approval belongs
+        // to the turn that asked for it and there is nothing left to authorize.
         assert!(
-            ["io setup", "Shift+Tab", "next prompt"]
+            ["io setup", "Shift+Tab", "/resume"]
                 .iter()
                 .any(|way| help.contains(way)),
             "{outcome} should name something the operator can do: {help}",
+        );
+        assert!(
+            !help.contains("no way to answer") && !help.contains("this release has no"),
+            "{outcome} still claims a capability this product shipped in 0.23.0: {help}",
         );
     }
 
@@ -529,7 +538,7 @@ fn the_awaiting_help_reaches_the_transcript() {
     assert!(line.contains("awaiting_answer"), "{line:?}");
     assert!(line.contains("warning"), "{line:?}");
     assert!(
-        line.contains("next prompt"),
+        line.contains("/resume"),
         "the way out should be in the transcript, not only in the docs: {line:?}",
     );
     assert!(!line.contains("error"), "nothing went wrong: {line:?}");
@@ -2435,4 +2444,144 @@ fn f9_a_stall_names_the_step_it_stopped_on_and_how_long_it_has_been_there() {
     // otherwise assume the opposite of: the run is over rather than working.
     assert!(stalled.contains("circles"), "{stalled:?}");
     assert!(stalled.contains("stops here"), "{stalled:?}");
+}
+
+// ---------------------------------------------------------------------------
+// O3 — a question is committed exactly where nothing else will draw it
+// ---------------------------------------------------------------------------
+
+/// A question the agent asked, as io-harness emits it.
+fn a_question() -> EventKind {
+    EventKind::QuestionAsked {
+        question: "drop the column or keep it?".to_string(),
+        choices: vec!["drop".to_string(), "keep".to_string()],
+    }
+}
+
+/// **O3 — with an overlay holding the question, the transcript stays quiet.**
+///
+/// Through 0.31.0 this line was committed unconditionally and the overlay redrew
+/// the same question through `Tone::Warning`, so the operator was asked twice and
+/// told the second time was a warning. Two renderers, neither aware of the other.
+///
+/// **The sabotage pass is why this test exists.** The condition was written, the
+/// suite was green, and replacing it with `if true` — the exact defect it guards —
+/// failed nothing at all. The fix had no gate until the arm was run.
+#[test]
+fn o3_a_question_is_not_committed_when_an_overlay_will_draw_it() {
+    let mut events = Events::new(DARK);
+    events.set_answering(true);
+    let line = rendered(&mut events, a_question());
+    assert!(
+        line.is_empty(),
+        "the overlay is holding this question, so committing it asks the operator \
+         twice: {line:?}",
+    );
+}
+
+/// **O3's other direction, and it is the one that matters more.** Suppressing a
+/// question everywhere is a worse defect than printing it twice, so every path
+/// that has no overlay must still commit the line.
+#[test]
+fn o3_a_question_is_committed_wherever_nothing_will_draw_it() {
+    // A resumed run: this process attached a responder but dropped the receiver,
+    // so no overlay exists here. `answering` is false and the line is the only
+    // thing that renders the question at all.
+    let mut resumed = Events::new(DARK);
+    resumed.set_answering(false);
+    let line = rendered(&mut resumed, a_question());
+    assert!(
+        line.contains("drop the column or keep it?"),
+        "a resumed run's question reached no surface at all: {line:?}",
+    );
+    assert!(
+        line.contains("drop") && line.contains("keep"),
+        "the offers go with it, or the operator is asked a question whose choices \
+         they cannot see: {line:?}",
+    );
+
+    // Plain mode draws no overlay, whatever this process is holding.
+    let mut plain = Events::new(DARK);
+    plain.set_answering(true);
+    plain.set_plain(true);
+    let line = rendered(&mut plain, a_question());
+    assert!(
+        line.contains("drop the column or keep it?"),
+        "plain mode draws no overlay, so the transcript is the only renderer: {line:?}",
+    );
+}
+
+/// **O3 — and it is not drawn as a warning.** `Tone::Warning`'s word is literally
+/// `warning`, so under `MONO` every question the agent ever asked announced itself
+/// as one.
+#[test]
+fn o3_the_committed_question_is_not_a_warning() {
+    let mut events = Events::new(io_cli::theme::MONO);
+    events.set_answering(false);
+    let line = rendered(&mut events, a_question());
+    assert!(line.contains("the agent asks:"), "{line:?}");
+    assert!(
+        !line.contains("warning"),
+        "a question is not a warning: {line:?}",
+    );
+}
+
+/// **A path that contains io-harness's separator is drawn as itself.**
+///
+/// The display translation belongs to `read_skill`, whose target is a *name*. The
+/// first draft applied it to every tool call, on the reasoning that no path
+/// contains `__` — which is false and commonly so. `read src/__init__.py` was
+/// drawn `read src/:init__.py`, a path that does not exist, in the one place an
+/// operator checks what the agent touched.
+#[test]
+fn a_tool_targets_path_is_never_translated_however_it_is_spelled() {
+    for path in [
+        "src/__init__.py",
+        "src/__pycache__/thing.pyc",
+        "app/__tests__/login.test.ts",
+        "src/__mocks__/fs.js",
+        "snapshots/__snapshots__/App.snap",
+        "src/snake__case.rs",
+    ] {
+        let mut events = Events::new(DARK);
+        let opened = rendered(
+            &mut events,
+            EventKind::ToolCall {
+                name: "read_file".to_string(),
+                target: path.to_string(),
+            },
+        );
+        // The call is held open and committed by the `Step` that follows it, so
+        // the name is read off the live row rather than the scrollback.
+        assert!(opened.is_empty(), "a tool call commits nothing on its own");
+        let live = events.live().to_string();
+        assert!(
+            !live.contains(':'),
+            "the separator was translated inside a path, so the operator is shown \
+             a file that does not exist: {live:?} for {path}",
+        );
+        assert!(
+            live.contains("__"),
+            "the path lost its own characters: {live:?} for {path}",
+        );
+    }
+}
+
+/// And the one tool whose target really is a name still reads as a name.
+#[test]
+fn a_skills_target_is_still_drawn_the_way_the_operator_reads_it() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: io_cli::events::READ_SKILL.to_string(),
+            target: "ultraship__brainstorm".to_string(),
+        }),
+        Duration::ZERO,
+    );
+    let live = events.live().to_string();
+    assert!(
+        live.contains("ultraship:brainstorm"),
+        "a skill is addressed by a name, and the name is the one drawn everywhere \
+         else: {live:?}",
+    );
 }

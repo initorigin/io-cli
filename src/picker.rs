@@ -161,6 +161,27 @@ pub struct Picker {
     intent: Option<usize>,
     /// The first row currently drawn, so a long list scrolls instead of being cut.
     offset: usize,
+    /// A row that opens a block beneath itself while it holds the marker, and the
+    /// rows that block wants.
+    ///
+    /// **The index is into `rows`, like [`Self::intent`] and never like
+    /// [`Self::cursor`]**, so a query that reorders the list keeps the unfold on
+    /// the row it belongs to rather than on whatever ranked into that position.
+    ///
+    /// Only one row can carry it, which is the whole mechanic: an accordion with
+    /// two panels open is two things competing for the rows beneath one marker.
+    /// 0.32.0 ships it with exactly one caller — the question overlay's free-text
+    /// row, which unfolds a composer — because a mechanic built without one is a
+    /// mode nobody can see, and this product shipped a whole pipeline reachable
+    /// only from its own tests one release ago.
+    unfold: Option<(usize, u16)>,
+    /// Where the unfolded block was drawn by the last [`Self::render`], for the
+    /// caller to draw into.
+    ///
+    /// Set by rendering rather than computed by the caller, because only this
+    /// widget knows where the row landed after scrolling — and a caller doing that
+    /// arithmetic itself is a second implementation of the scroll.
+    opened: Option<Rect>,
 }
 
 impl Picker {
@@ -173,6 +194,8 @@ impl Picker {
             query: String::new(),
             cursor: 0,
             offset: 0,
+            unfold: None,
+            opened: None,
         };
         // A grouped list opens with a heading in the first slot, and the marker
         // may not rest on one. Stepping here rather than only in `refilter`
@@ -335,6 +358,69 @@ impl Picker {
         Outcome::Idle
     }
 
+    /// Let the row at `row` open a block of `height` rows beneath itself whenever
+    /// it holds the marker.
+    ///
+    /// `row` indexes the caller's own `rows`, the same as [`Outcome::Chosen`].
+    pub fn set_unfold(&mut self, row: usize, height: u16) {
+        self.unfold = Some((row, height));
+    }
+
+    /// Put the marker on `row`, an index into the caller's own `rows`.
+    ///
+    /// Answers whether it could: a query that hides the row leaves the marker
+    /// where it was rather than moving it somewhere arbitrary.
+    pub fn focus(&mut self, row: usize) -> bool {
+        match self.matches.iter().position(|index| *index == row) {
+            Some(at) => {
+                self.cursor = at;
+                self.intent = Some(row);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the unfolding row is the one under the marker right now.
+    ///
+    /// The caller asks this to decide where a keystroke goes: with the block open
+    /// it belongs to whatever is drawn in it, and with it shut the picker filters
+    /// as it always has.
+    pub fn unfolded_now(&self) -> bool {
+        match (self.unfold, self.matches.get(self.cursor)) {
+            (Some((row, height)), Some(under)) => height > 0 && row == *under,
+            _ => false,
+        }
+    }
+
+    /// Where the unfolded block was drawn by the last [`Self::render`].
+    ///
+    /// `None` when nothing is unfolded, or when the terminal had no room for it —
+    /// growth is a request rather than a guarantee, and a caller that drew into a
+    /// rectangle this widget never reserved would paint over the list.
+    pub fn opened(&self) -> Option<Rect> {
+        self.opened
+    }
+
+    /// Rows this picker would like: its head, every row it holds, and whatever an
+    /// unfolded block is asking for.
+    ///
+    /// A request, not a demand — [`crate::app::App::viewport_wanted`] clamps it to
+    /// what the terminal can spare, and [`Self::render`] elides against whatever it
+    /// is actually given.
+    pub fn rows_wanted(&self) -> u16 {
+        let list = u16::try_from(self.matches.len()).unwrap_or(u16::MAX);
+        // **Reserved whenever a row is configured to unfold, not only while it
+        // holds the marker.** Asking for the block only when it is open makes the
+        // demand oscillate by its height on every arrow key — and the driver
+        // re-places the viewport whenever the demand changes, which is a terminal
+        // tear-down and a cursor query per keystroke, on a surface that is open
+        // while a turn is in flight. `render` still draws the block only when it
+        // is open, so the reserved rows simply show more of the list meanwhile.
+        let block = self.unfold.map_or(0, |(_, height)| height);
+        list.saturating_add(block).saturating_add(1)
+    }
+
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
         // `Ctrl+C` leaves, exactly as `Esc` does. The picker owns the keyboard
         // while it is open, and the shipped keybinding table promises `Ctrl+C`
@@ -390,7 +476,29 @@ impl Picker {
                 self.step_off_heading(-1);
                 self.moved()
             }
-            KeyCode::Enter => {
+            // **`Shift+Tab` steps the marker back, and it is spelled twice on
+            // purpose.** A terminal may send `BackTab`, or `Tab` with the shift
+            // modifier set; `crate::keys` normalises the first into the second for
+            // a *binding*, but a picker reads raw key events and never goes
+            // through that table, so both spellings arrive here as themselves.
+            // Matching one of them is a key that works on some terminals.
+            KeyCode::BackTab => {
+                self.cursor = self.cursor.saturating_sub(1);
+                self.step_off_heading(-1);
+                self.moved()
+            }
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.cursor = self.cursor.saturating_sub(1);
+                self.step_off_heading(-1);
+                self.moved()
+            }
+            // **`Tab` accepts what is under the marker**, in every picker in the
+            // product rather than in the palette alone, because the product ships
+            // one `Picker`. It is the completion key an operator arrives with, and
+            // until 0.32.0 it fell into the catch-all below and did nothing at all
+            // — a key that looks like it should work and silently does not is
+            // worse than one that is not bound.
+            KeyCode::Tab | KeyCode::Enter => {
                 // A heading under the marker cannot happen — every path that
                 // moves it steps off one — but `Enter` is the key that would turn
                 // a mistake here into the wrong action, so it declines rather
@@ -469,7 +577,26 @@ impl Picker {
             theme.style(tone),
         ))];
 
-        let visible = area.height.saturating_sub(1) as usize;
+        self.opened = None;
+        // The rows the head and an open block take before any row is drawn. The
+        // block is reserved rather than borrowed from the list, because a composer
+        // squeezed into rows the list is also using is the overlap 0.32.0 exists to
+        // end.
+        let block = if self.unfolded_now() {
+            self.unfold.map_or(0, |(_, height)| height)
+        } else {
+            0
+        };
+        let room = (area.height as usize).saturating_sub(1 + block as usize);
+        // **A row is spent saying what is not shown, and only when something is
+        // not.** Until 0.32.0 a picker over four hundred rows drew the twenty it
+        // had room for and said nothing at all, so a list that had been filtered
+        // to nothing looked the same as one scrolled to its end.
+        let visible = if self.matches.len() > room {
+            room.saturating_sub(1)
+        } else {
+            room
+        };
         self.scroll_to_selection(visible);
 
         // A query that admits nothing says so. Without this the screen is a query
@@ -487,13 +614,15 @@ impl Picker {
             )));
         }
 
+        let taken = visible.max(1);
+        let mut opened_at: Option<Rect> = None;
         for (position, row) in self
             .matches
             .iter()
             .map(|index| &self.rows[*index])
             .enumerate()
             .skip(self.offset)
-            .take(visible.max(1))
+            .take(taken)
         {
             // A heading is a label and nothing else: no marker, no mark, no
             // detail, and never under the cursor. It exists only while the list
@@ -567,6 +696,51 @@ impl Picker {
                 }
             }
             lines.push(Line::from(spans));
+
+            // **The block opens directly beneath the row that owns it**, which is
+            // the whole of the accordion: the operator reads top to bottom, and
+            // what they are typing into sits under the row that says what it is
+            // for. Reserved as blank rows here and drawn by the caller into the
+            // rectangle recorded after the loop, because only this widget knows
+            // where the row landed once the list has scrolled.
+            if block > 0
+                && self
+                    .unfold
+                    .is_some_and(|(row, _)| row == self.matches[position])
+            {
+                let top = area
+                    .y
+                    .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+                if top.saturating_add(block) <= area.y.saturating_add(area.height) {
+                    opened_at = Some(Rect {
+                        x: area.x,
+                        y: top,
+                        width: area.width,
+                        height: block,
+                    });
+                    for _ in 0..block {
+                        lines.push(Line::from(""));
+                    }
+                }
+            }
+        }
+        self.opened = opened_at;
+
+        // What the list could not show. Counted against everything the query
+        // admits rather than against what is below the window, because a row
+        // scrolled off the top is just as absent as one below the bottom.
+        let drawn = taken.min(
+            self.matches
+                .len()
+                .saturating_sub(self.offset.min(self.matches.len())),
+        );
+        let hidden = self.matches.len().saturating_sub(drawn);
+        if hidden > 0 {
+            let note = format!("{} {hidden} more", theme.glyphs.elision);
+            lines.push(Line::from(Span::styled(
+                fit(&note, width, &theme.glyphs),
+                theme.style(Tone::Muted),
+            )));
         }
 
         frame.render_widget(Paragraph::new(lines), area);

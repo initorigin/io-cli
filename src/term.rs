@@ -100,6 +100,47 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 /// instead of a prompt that has to grow.
 pub const VIEWPORT_HEIGHT: u16 = 8;
 
+/// Rows of committed conversation that stay visible above a grown viewport.
+///
+/// **The floor above, rather than the ceiling below.** Since 0.32.0 a surface
+/// states the rows it wants and the viewport grows to give them, so the bound is
+/// no longer a ration — the developer's decision, 2026-08-30, is that a surface
+/// may take the screen when it needs it, and that usable beats tidy. What this
+/// reserves is the only thing growth can genuinely destroy: the sight of the
+/// exchange the surface is about. A question overlay filling the terminal to the
+/// last row is a question with no visible reason for being asked.
+///
+/// Four rows is what that costs. On the 80x24 this product supports rather than
+/// degrades it leaves a twenty-row viewport — enough for a twelve-step plan with
+/// its footer, or a five-choice question with its context line and its composer —
+/// with the last exchange still on screen above it.
+///
+/// [`Screen::attach_with`] clamps to `rows - 2` underneath this, and that stays:
+/// it is the backstop that keeps a viewport from being taller than the terminal
+/// whatever asks, including the wizard, which is placed before any of this is
+/// known.
+pub const SCROLLBACK_RESERVE: u16 = 4;
+
+/// The viewport height a surface asking for `asked` rows should actually get on a
+/// terminal of `terminal_rows`.
+///
+/// **The one place the ceiling is applied**, so the session's own sizing and the
+/// driver's picker path cannot disagree about it — which is exactly the "two
+/// things sizing the same viewport for different reasons" the release was warned
+/// about. [`crate::app::App::viewport_wanted`] is the one owner of the *demand*;
+/// this is the one owner of the *limit*.
+///
+/// Growth is a request rather than a guarantee. A surface that asks for more than
+/// the terminal can spare gets what there is and degrades — every one of them
+/// elides with a count — and a surface asking for less than the floor still gets
+/// the floor, because [`VIEWPORT_HEIGHT`] is what a session needs to be a session.
+pub fn viewport_for(asked: u16, terminal_rows: u16) -> u16 {
+    let ceiling = terminal_rows
+        .saturating_sub(SCROLLBACK_RESERVE)
+        .max(VIEWPORT_HEIGHT);
+    asked.clamp(VIEWPORT_HEIGHT, ceiling)
+}
+
 /// Rows the wizard's viewport occupies.
 ///
 /// Much taller than the session's, and it has to be: the wizard's screens are
@@ -213,18 +254,7 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         // left there, which is also where `compute_inline_size` will place the
         // next viewport — so the new one starts exactly where the old one did.
         let top = self.terminal.get_frame().area().y;
-        self.escape(&format!("\x1b[{};1H\x1b[0J", top.saturating_add(1)))?;
-        self.restore();
-        match Self::attach_with(height) {
-            Ok(fresh) => {
-                *self = fresh;
-                Ok(())
-            }
-            Err(error) => {
-                *self = Self::attach_with(VIEWPORT_HEIGHT)?;
-                Err(error)
-            }
-        }
+        self.replace_from(top.saturating_add(1), height, Self::attach_with)
     }
 
     /// Take `rows` of committed content back off the screen, and bring the
@@ -264,18 +294,7 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         // From the first row being taken back, down. That clears the rows
         // themselves and the viewport under them, and leaves the cursor exactly
         // where the next viewport is to be placed.
-        self.escape(&format!("\x1b[{};1H\x1b[0J", top - up + 1))?;
-        self.restore();
-        match Self::attach_with(height) {
-            Ok(fresh) => {
-                *self = fresh;
-                Ok(())
-            }
-            Err(error) => {
-                *self = Self::attach_with(VIEWPORT_HEIGHT)?;
-                Err(error)
-            }
-        }
+        self.replace_from(top - up + 1, height, Self::attach_with)
     }
 
     fn attach_raw(height: u16) -> io::Result<Self> {
@@ -548,6 +567,52 @@ impl<B: Backend<Error = io::Error> + Write> Screen<B> {
         let backend = self.terminal.backend_mut();
         backend.write_all(sequence.as_bytes())?;
         Write::flush(backend)
+    }
+
+    /// Erase this viewport from `row` down, give the terminal back, and take a
+    /// fresh one of `height` rows in its place.
+    ///
+    /// **The shared body of [`Screen::replace`] and [`Screen::rewind`]**, and the
+    /// reason it is here rather than beside them: both of those live on the
+    /// stdout-backed impl, because both build their replacement with
+    /// [`Screen::attach_with`], which enables raw mode and asks a real tty where
+    /// its cursor is. Nothing under `tests/` can reach either — so until 0.32.0 no
+    /// test in the suite had ever executed a viewport re-placement, which is the
+    /// one operation the growing viewport is made of. Taking the constructor as an
+    /// argument moves the whole sequence — the erase, the restore, the re-attach
+    /// and the fall back to the session's own height — onto the generic impl,
+    /// where a test can supply a recorder-backed constructor and assert over the
+    /// bytes that actually leave the process.
+    ///
+    /// `row` is 1-based, because it is written straight into a CUP sequence.
+    ///
+    /// **Erase before letting go.** These rows are the terminal's screen, not its
+    /// scrollback: nothing scrolls them away and nothing repaints them once this
+    /// `Screen` is gone. Without the erase the next viewport is placed at the
+    /// cursor and draws OVER the old rows, which leaves half a palette standing
+    /// behind a composer. `ESC[0J` from `row`, so the committed transcript above
+    /// is untouched and everything below is cleared; the cursor is left there,
+    /// which is also where `compute_inline_size` will place the next viewport.
+    ///
+    /// If the new height cannot be placed, the session's own is placed instead and
+    /// the error returned: an operator who asked for a taller list and cannot have
+    /// one keeps their session rather than losing the viewport with it.
+    pub fn replace_from<F>(&mut self, row: u16, height: u16, attach: F) -> io::Result<()>
+    where
+        F: Fn(u16) -> io::Result<Self>,
+    {
+        self.escape(&format!("\x1b[{row};1H\x1b[0J"))?;
+        self.restore();
+        match attach(height) {
+            Ok(fresh) => {
+                *self = fresh;
+                Ok(())
+            }
+            Err(error) => {
+                *self = attach(VIEWPORT_HEIGHT)?;
+                Err(error)
+            }
+        }
     }
 
     /// Tell the renderer the terminal is a different size now.

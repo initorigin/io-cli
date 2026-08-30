@@ -276,6 +276,12 @@ fn f5_the_view_takes_the_composers_rows_and_not_the_status_line() {
     app.event(&tier(1, 2, 5, 0), Duration::ZERO);
     app.toggle_fleet();
 
+    // **Four rows on purpose: this is the terminal that cannot give the view what
+    // it asks for.** Since 0.32.0 the fleet states the rows it needs and a real
+    // session grows to hold them — `o14_a_view_that_cannot_show_everything_says_
+    // how_much_it_held_back` covers the demand — but what *this* test is about is
+    // the layout under pressure: the view takes the composer's rows and leaves
+    // the status line alone, whatever it has to drop to do it.
     let (mut screen, _) = support::screen_of(80, 24, 4);
     screen
         .draw(|frame| app.render(frame, frame.area()))
@@ -285,7 +291,14 @@ fn f5_the_view_takes_the_composers_rows_and_not_the_status_line() {
         viewport.contains("5 queued"),
         "the tier line is first: {viewport:?}"
     );
-    assert!(viewport.contains("run 7"), "{viewport:?}");
+    // **And what it could not draw is a count rather than a silence.** At four
+    // rows there is no room for both children; through 0.31.0 the second simply
+    // vanished, on the one surface whose whole job is saying what a fan-out is
+    // doing.
+    assert!(
+        viewport.contains("more"),
+        "rows were dropped without a word: {viewport:?}",
+    );
     assert!(
         viewport.contains("spend 1.2k/9.2k"),
         "the status line stays under the view, so what the fan-out costs is \
@@ -674,5 +687,42 @@ fn f9_an_unknown_address_is_not_marked_and_the_mark_is_not_kept_stale() {
     assert!(
         !fleet.children()[0].worktree,
         "the row was still saying what a definition used to say",
+    );
+}
+
+/// **O14 — a fan-out too big for the terminal says how much it is not showing.**
+///
+/// Messages sort after every child, so they are the first thing off the bottom of
+/// this view — and until 0.32.0 they went with no count at all, on the one surface
+/// whose entire job is saying what a fan-out is doing. A view that quietly drew
+/// two of nine children looked exactly like a fan-out with two children in it.
+#[test]
+fn o14_a_view_that_cannot_show_everything_says_how_much_it_held_back() {
+    let mut app = App::new(DARK, "a-model");
+    for child in 0..8 {
+        app.event(
+            &spawned(1, 0, child, "read every file under src/"),
+            Duration::ZERO,
+        );
+    }
+    app.event(&tier(1, 8, 0, 0), Duration::ZERO);
+    app.toggle_fleet();
+
+    // Deliberately smaller than the view asks for: this is the terminal that
+    // cannot give it what it wants, which is the case the count exists for.
+    let (mut screen, _) = support::screen_of(80, 24, 6);
+    screen
+        .draw(|frame| app.render(frame, frame.area()))
+        .expect("frame");
+    let viewport = screen.viewport_text();
+
+    assert!(
+        viewport.contains("more"),
+        "eight children in a six-row viewport were dropped without a word: {viewport:?}",
+    );
+    // And the view still asked for enough to have shown them all.
+    assert!(
+        app.viewport_wanted(80, 24) > 6,
+        "the view did not ask the viewport for the rows it needed",
     );
 }

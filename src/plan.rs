@@ -28,6 +28,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::app::COMPOSER_ROWS;
 use crate::composer::{Composer, Reply};
 use crate::intent::Destination;
 use crate::theme::{Theme, Tone};
@@ -147,55 +148,118 @@ impl Review {
     /// unlike [`crate::intent`], where declining defers and the two paths defer
     /// to different places.
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if area.height == 0 {
+        if area.height == 0 || area.width == 0 {
             return;
         }
-        let mut lines: Vec<Line<'static>> = vec![theme.notice(
-            Tone::Warning,
-            format!(
-                "a plan, before any of it runs {} {} steps",
-                theme.glyphs.dash,
-                self.plan.steps.len()
-            ),
-        )];
-        for (index, step) in self.plan.steps.iter().enumerate() {
-            let owner = match &step.agent {
-                Some(agent) => format!(" [{agent}]"),
-                None => String::new(),
-            };
-            lines.push(theme.notice(
-                Tone::Normal,
-                format!("{}. {}{owner}", index + 1, step.intent),
-            ));
-        }
-        lines.push(theme.notice(
-            Tone::Muted,
-            format!(
-                "Enter approves {} type a correction and Enter sends it back {} Esc cancels",
-                theme.glyphs.dash, theme.glyphs.dash
-            ),
-        ));
+        let header = self.header(theme);
+        let footer = self.footer(theme);
+        // The composer keeps its row wherever there is one to keep. Below that
+        // there is no correction to type and the plan is approved or cancelled by
+        // a key, which are the two verdicts a single row can carry.
+        let composer_rows = if area.height > 2 { COMPOSER_ROWS } else { 0 };
+        let text_rows = area.height.saturating_sub(composer_rows);
 
-        let head = u16::try_from(lines.len())
-            .unwrap_or(u16::MAX)
-            .min(area.height);
+        // **The header and the footer are reserved; the steps are what gives
+        // way.** Through 0.31.0 every line went into one `Paragraph` sized to
+        // `lines.len()`, and a `Paragraph` simply stops painting at the bottom of
+        // its area — so the last thing pushed was the first thing lost, and the
+        // last thing pushed is the footer. That made the one overlay whose own
+        // module doc forbids losing its footer the only overlay that always lost
+        // it first, and it lost it before `lines.len()` even reached the height,
+        // because these lines wrap.
+        let head_rows = crate::rows::wrapped(std::slice::from_ref(&header), area.width);
+        let foot_rows = crate::rows::wrapped(std::slice::from_ref(&footer), area.width);
+        let room = text_rows
+            .saturating_sub(head_rows)
+            .saturating_sub(foot_rows);
+
+        let mut lines = vec![header];
+        lines.extend(crate::rows::elide(
+            self.steps(theme),
+            room,
+            area.width,
+            theme,
+        ));
+        lines.push(footer);
+
         frame.render_widget(
             Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
             Rect {
-                height: head,
+                height: text_rows,
                 ..area
             },
         );
-        if area.height > head {
+        if composer_rows > 0 {
             self.composer.render(
                 frame,
                 Rect {
-                    y: area.y + head,
-                    height: area.height - head,
+                    y: area.y.saturating_add(text_rows),
+                    height: composer_rows,
                     ..area
                 },
                 theme,
             );
         }
+    }
+
+    /// What this is, and how much of it there is.
+    ///
+    /// **`Tone::Accent`, not `Tone::Warning`.** A plan the agent is asking
+    /// permission to run is not a warning, and `Tone::Warning`'s word is literally
+    /// `warning` — so under `NO_COLOR` every proposal announced itself as one.
+    /// `Tone::Refused` is left meaning what its own doc says it means, and the
+    /// rest of the vocabulary has to be worth the same.
+    fn header(&self, theme: &Theme) -> Line<'static> {
+        theme.notice(
+            Tone::Accent,
+            format!(
+                "a plan, before any of it runs {} {} steps",
+                theme.glyphs.dash,
+                self.plan.steps.len()
+            ),
+        )
+    }
+
+    /// The three ways out. Never elided: an operator who cannot see the keys is an
+    /// operator guessing at a surface that is holding a run.
+    fn footer(&self, theme: &Theme) -> Line<'static> {
+        theme.notice(
+            Tone::Muted,
+            format!(
+                "Enter approves {} type a correction and Enter sends it back {} Esc cancels",
+                theme.glyphs.dash, theme.glyphs.dash
+            ),
+        )
+    }
+
+    fn steps(&self, theme: &Theme) -> Vec<Line<'static>> {
+        self.plan
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                let owner = match &step.agent {
+                    Some(agent) => format!(" [{agent}]"),
+                    None => String::new(),
+                };
+                theme.notice(
+                    Tone::Normal,
+                    format!("{}. {}{owner}", index + 1, step.intent),
+                )
+            })
+            .collect()
+    }
+
+    /// Rows this overlay would like the viewport to be: its header, every step as
+    /// it will actually wrap, its footer, and the composer.
+    ///
+    /// A twelve-step plan asks for a twelve-step plan. Whether it gets one is
+    /// [`crate::app::App::viewport_wanted`]'s decision, and what it does when it
+    /// does not is the elision above.
+    pub fn rows_wanted(&self, width: u16, theme: &Theme) -> u16 {
+        let mut lines = vec![self.header(theme)];
+        lines.extend(self.steps(theme));
+        lines.push(self.footer(theme));
+        crate::rows::wrapped(&lines, width).saturating_add(COMPOSER_ROWS)
     }
 }

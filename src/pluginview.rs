@@ -447,8 +447,7 @@ fn hook_line(hook: &io_harness::Hook) -> (String, String) {
 /// an operator opens after editing a manifest must see the edit, and a set cached
 /// at session start would not.
 #[must_use]
-pub fn view(config: &io_harness::Config) -> View {
-    let plugins = config.plugins();
+pub fn view(plugins: &io_harness::Plugins) -> View {
     View {
         // Loaded first and switched off after, which is the order [`rows`] draws
         // and the order the positional contract there is written against.
@@ -673,13 +672,28 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         out.push(Row::heading("prompt templates"));
         out.push(Row::new(fit_left(&dir.display().to_string(), room, glyphs)));
     }
+    // **Drawn with a colon since 0.32.0.** io-harness qualifies every contribution
+    // a bundle makes with `io_harness::NAMESPACE`, so these arrive as
+    // `<bundle>__<name>`; `crate::naming` translates that for the reader and back
+    // again for anything that has to address it. The names themselves are
+    // untouched — this is the last surface before the screen.
     if !plugin.agents.is_empty() {
         out.push(Row::heading("agents"));
-        out.extend(plugin.agents.iter().map(|name| Row::new(name.clone())));
+        out.extend(
+            plugin
+                .agents
+                .iter()
+                .map(|name| Row::new(crate::naming::display(name))),
+        );
     }
     if !plugin.servers.is_empty() {
         out.push(Row::heading("mcp servers"));
-        out.extend(plugin.servers.iter().map(|id| Row::new(id.clone())));
+        out.extend(
+            plugin
+                .servers
+                .iter()
+                .map(|id| Row::new(crate::naming::display(id))),
+        );
     }
     if !plugin.hooks.is_empty() {
         // **One row per hook, naming the event and the command.** A bundle's hooks
@@ -700,7 +714,12 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
     }
     if !plugin.layers.is_empty() {
         out.push(Row::heading("policy layers, deny only"));
-        out.extend(plugin.layers.iter().map(|name| Row::new(name.clone())));
+        out.extend(
+            plugin
+                .layers
+                .iter()
+                .map(|name| Row::new(crate::naming::display(name))),
+        );
     }
 
     if out.is_empty() {
@@ -1384,16 +1403,32 @@ mod tests {
             let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
             assert!(labels.contains(&"skills"), "{}: {labels:?}", glyphs.name);
             assert!(labels.contains(&"agents"), "{}: {labels:?}", glyphs.name);
+            // **Qualified, and never stripped.** The property is the provenance:
+            // a row drawn as the bare `reviewer` would put a bundle's agent on the
+            // pane under a name that says nothing about where it came from. Since
+            // 0.32.0 the qualifier is drawn with a colon rather than io-harness's
+            // `__`; what io-harness wrote is unchanged, and `crate::naming` is the
+            // only thing between the two.
             assert!(
-                labels.contains(&"rust-review__reviewer"),
-                "{}: the namespaced name io-harness wrote, not a stripped one: {labels:?}",
+                labels.contains(&"rust-review:reviewer"),
+                "{}: the qualified name, not a stripped one: {labels:?}",
                 glyphs.name
             );
             assert!(
-                labels.contains(&"rust-review__no-secrets"),
+                labels.contains(&"rust-review:no-secrets"),
                 "{}: {labels:?}",
                 glyphs.name
             );
+            // The half that makes the two above mean something: the separator
+            // io-harness uses never reaches a reader.
+            for label in &labels {
+                assert!(
+                    !label.contains(io_harness::NAMESPACE),
+                    "{}: {label} reached the pane with io-harness's own separator \
+                     in it: {labels:?}",
+                    glyphs.name
+                );
+            }
             assert!(
                 !labels.contains(&"mcp servers"),
                 "{}: a group with nothing in it is not drawn: {labels:?}",
@@ -1575,7 +1610,11 @@ mod tests {
         .expect("the configuration");
 
         let config = io_harness::Config::discover(root).expect("the configuration loads");
-        let view = view(&config);
+        // Through the one permitted module, like every other caller — the gate
+        // that confines the resolution sweeps `src/` whole, `#[cfg(test)]` included,
+        // and a test that reached past it would be the first crack in the rule.
+        let resolved = crate::resolved::Resolved::load(&config);
+        let view = view(resolved.loaded());
         assert!(!view.is_empty());
 
         let plugin = view

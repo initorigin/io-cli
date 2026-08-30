@@ -107,9 +107,10 @@ that is why, and `/skills` is where you see which directory each name came from.
 **A bundle's skills are listed too, under the name the model actually uses.**
 Until 0.21.0 they reached the model and appeared on no surface that lists a skill,
 so `/skills` and the `/` palette were lists that disagreed with the catalogue the
-turn was handed. They are in both now, spelled `<bundle>__<name>` — io-harness's
-own namespacing, and the string a refusal or a tool call will name — with the
-bundle named as where the row came from.
+turn was handed. They are in both now, qualified by the bundle they came from —
+drawn `<bundle>:<name>` since 0.32.0, and addressed as io-harness's own
+`<bundle>__<name>`, which is what a refusal or a tool call will name. See *The
+name you read, and the name the model was shown* below.
 
 **Turning a bundle's skill on or off is refused, and the refusal is the honest
 answer.** Turning a skill off is moving its file into a `disabled/` directory
@@ -130,3 +131,29 @@ as well.
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)
+
+## The name you read, and the name the model was shown
+
+A bundle's skill is qualified with the bundle it came from, so two bundles can
+each contribute a `review` and both are addressable. io-harness joins the two
+halves with a double underscore — `ultraship__brainstorm` — and that string is
+load-bearing: it is what goes into the model's own catalogue, and `read_skill`
+resolves it by exact match, so the model can only ask for the string it was shown.
+
+**Since 0.32.0 you read `ultraship:brainstorm` instead.** The `/skills` list, the
+`/` palette, the `Read skill` line in your scrollback, `/plugin`'s inventory and
+`/status`'s policy rows all draw the colon form, and typing `/ultraship:brainstorm`
+runs it. Nothing about the wire changed: io translates at the two edges — once on
+the way to your screen, once on the way back from your keyboard — and io-harness
+never sees a colon.
+
+`io exec`, `io plugin` and `io skill` report the underscore form, because a script
+reads their output and a script addresses the wire.
+
+**Choosing a skill from the palette now writes a command rather than a sentence.**
+It used to put `use the <name> skill: ` into the composer, which submits as an
+ordinary prompt — so whether the skill actually ran depended on how the model read
+an English request. It writes `/ultraship:brainstorm` now, and that dispatches.
+
+A skill whose name collides with a built-in command resolves to the command. No
+command contains a colon, so the two can always be told apart.

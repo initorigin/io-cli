@@ -127,8 +127,12 @@ fn f1_the_contract_a_turn_is_built_from_names_all_five() {
     );
 
     let (workspace, config) = discovered();
-    let headless =
-        io_cli::contract::configured("read the notes", workspace.path().to_path_buf(), &config);
+    let headless = io_cli::contract::configured(
+        "read the notes",
+        workspace.path().to_path_buf(),
+        &config,
+        &config.plugins(),
+    );
     assert_eq!(
         headless.skills.as_deref(),
         Some(dir.as_path()),

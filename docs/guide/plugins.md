@@ -72,10 +72,15 @@ misjudged can do to your permission boundary is take something out of it.
 
 **A bundle id must match `[a-z0-9][a-z0-9-]{0,31}`**, and every name it
 contributes is rewritten by io-harness to `<bundle>__<name>` at load — an agent's
-name, an MCP server's id, a policy layer's name. `/plugin` draws that namespaced
-string unchanged rather than a prettier short form, because it is what a refusal
-will name, what a tool call will name, and what you will type to spawn the agent.
-A shorter name here would be a third spelling of the same thing.
+name, an MCP server's id, a policy layer's name. `/plugin` draws it **qualified**
+rather than shortened, because the qualifier is what a refusal will name, what a
+tool call will name, and what you will type to spawn the agent; a bare `reviewer`
+would say nothing about where it came from.
+
+Since 0.32.0 the qualifier is drawn with a colon — `rust-review:reviewer` — while
+io-harness keeps its own separator on the wire. That is a translation at the edge
+and not a third spelling: `io plugin list` and `io exec` report the underscore
+form, because a script addresses the wire.
 
 **Hooks are named, everywhere, from 0.30.0.** Each one gets a row: the event it
 fires on, or the tool call it sits in front of, and the command it runs. This is
@@ -220,3 +225,29 @@ rather than ignoring it. Remove the `enabled` keys before downgrading.
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)
+
+## When io re-reads your bundles
+
+Reading a bundle is not free: every declared `plugin.toml` is opened, parsed,
+validated and trust-checked, and every skill file inside it is read in full to
+recover its name and description. Until 0.32.0 io did all of that **twice for every
+message you sent**, and again each time you opened `/plugin` or `/skills`. With a
+few bundles installed that is a pause before every turn.
+
+**It is now read once for the session**, at startup, and again only when something
+on disk has moved.
+
+**How io decides it moved.** It stats each declared bundle's `plugin.toml` and
+compares the modified time and the length against what it recorded. That is a
+handful of `metadata` calls, not a re-read — which is why `/plugin` and `/skills`
+open instantly when nothing has changed.
+
+A bundle installed or removed is **always** seen, because the declared set itself is
+compared rather than each entry in it.
+
+**The limit, stated rather than implied.** On a filesystem whose modified-time
+granularity cannot separate two writes inside one second, a second edit that leaves
+the file exactly the same length is not distinguishable from the first, and io will
+not notice it until something else about the bundle changes. Restart the session,
+or touch the file, if you have hit that. io says this rather than claiming a
+freshness it cannot prove.

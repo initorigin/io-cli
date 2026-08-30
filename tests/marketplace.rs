@@ -587,7 +587,7 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     std::fs::write(&file, &text).expect("the configuration");
 
     let config = io_harness::Config::discover(&root).expect("the configuration loads");
-    let view = io_cli::pluginview::view(&config);
+    let view = io_cli::pluginview::view(&config.plugins());
     // By id and never by count: `Config::discover` layers the operator's own user
     // file over this one, so a developer whose `~/.io-cli` declares a bundle would
     // fail a length assertion for a reason that has nothing to do with the
@@ -633,7 +633,9 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     );
 
     let after = io_cli::pluginview::view(
-        &io_harness::Config::discover(&root).expect("the configuration still loads"),
+        &io_harness::Config::discover(&root)
+            .expect("the configuration still loads")
+            .plugins(),
     );
     assert!(
         after
@@ -1392,14 +1394,25 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
         marketplace::disclosure(Scope::Local, &dir).expect("io-harness read the directory");
     assert_eq!(disclosure.id, "rust-review");
     let said = disclosure.said(&io_cli::glyphs::UNICODE).join("\n");
+    // **The name the operator will meet again, which since 0.32.0 is the
+    // qualified one with a colon.** The point of the assertion is unchanged and
+    // if anything sharper: consent has to be given to the name that appears on
+    // `/plugin`, `/skills`, the palette and the `Read skill` line, or the operator
+    // agrees to one thing and then reads about another. Before this release those
+    // surfaces all drew io-harness's `__`; now they all draw `:`, and the
+    // disclosure has to move with them.
     assert!(
-        said.contains("rust-review__reviewer"),
-        "the agent is not named as io-harness namespaced it, so the operator is \
-         consenting to a name they will never see again: {said}",
+        said.contains("rust-review:reviewer"),
+        "the agent is not named as the operator will see it everywhere else, so \
+         they are consenting to a name that appears nowhere: {said}",
     );
     assert!(
-        said.contains("rust-review__no-secrets"),
-        "the policy layer is not named as io-harness namespaced it: {said}",
+        !said.contains(io_harness::NAMESPACE),
+        "io-harness's own separator reached the consent surface: {said}",
+    );
+    assert!(
+        said.contains("rust-review:no-secrets"),
+        "the policy layer is not named as the operator will see it on /status: {said}",
     );
     assert!(
         !said.contains("switched off"),
@@ -1562,7 +1575,7 @@ fn f7_declining_writes_nothing() {
     );
 
     let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let view = io_cli::pluginview::view(&config);
+    let view = io_cli::pluginview::view(&config.plugins());
     assert!(
         view.plugins.iter().all(|listed| listed.id != "rust-review")
             && view
@@ -2429,7 +2442,7 @@ fn f13_a_removal_names_the_adapters_it_orphans_and_leaves_every_entry() {
     );
     std::fs::write(&scope, &declared).expect("the scope file");
     let config = io_harness::Config::from_toml(&declared).expect("the declarations parse");
-    let view = io_cli::pluginview::view(&config);
+    let view = io_cli::pluginview::view(&config.plugins());
 
     let orphans = marketplace::orphaned(&view, &clone, &adapters);
     assert_eq!(

@@ -166,40 +166,44 @@ fn f5_the_stop_key_stays_on_the_observers_flag() {
     );
 }
 
-/// F5 — what is sent is what was queued, and it is sent because the operator
-/// asked.
+/// F5/O8 — what is sent is what was queued, and there are exactly two sites that
+/// can send it.
 ///
-/// **The open question this release had to answer.** A line typed mid-turn must
-/// not reach the agent by itself. A delivered steer emits no event, so an
-/// interface cannot show that the agent heard it — a line sent by default would
-/// leave the screen with no echo, no cell and no confirmation, which is the same
-/// shape as the keystroke 0.16.0 lost and `App::compose` has just been fixed to
-/// stop losing. A queue is visible state a surface can draw; a steer is not. And
-/// `Steer::say` has no undo, so an operator writing themselves a note while an
-/// agent works would be steering it, once per stray sentence.
+/// **This test asserted the opposite until 0.32.0, and the reversal is the
+/// release.** It read: "a line typed mid-turn must not reach the agent by
+/// itself", on two arguments. The first was that a delivered steer emits no
+/// event, so a line sent by default would leave the screen with no echo — that is
+/// answered, because `App::deliver_queued` records every delivered message into
+/// the transcript exactly as `/steer` recorded one, and the contract requires it.
+/// The second was that `Steer::say` has no undo, so a stray note becomes a steer
+/// — which is true, and was already true of the queue: an unsent line ran as its
+/// own turn against the same conversation a moment later. What changed is *when*
+/// the agent reads it, not whether.
 ///
-/// So the queue keeps its promise — three lines are three turns — and `/steer` is
-/// the one word that spends it differently.
+/// What the queue bought by waiting was a correction typed thirty seconds into a
+/// ten-minute turn arriving nine and a half minutes late, against work it was
+/// meant to change. That is the trade this release reverses.
 ///
-/// Sabotage: send every queued prompt as it is typed. Only this test fails, and
-/// it fails on the count: a second `steer.say(` is a second path, and a path
-/// nobody asked for is the accident.
+/// The count stays a count, because it is still the thing worth guarding: **two**
+/// sites, named, so a third is caught exactly as the second would have been.
+///
+/// Sabotage: add a third `steer.say(` anywhere in the driver. Only this test
+/// fails, and it fails on the count.
 #[test]
-fn f5_the_queue_is_sent_on_the_operators_word_and_not_before() {
+fn f5_o8_the_queue_reaches_the_turn_from_exactly_two_named_sites() {
     let text = driver();
     assert_eq!(
         text.matches("steer.say(").count(),
-        1,
-        "one send site. Two means something else in the driver can steer a turn, and the operator \
-         did not ask it to",
+        2,
+        "two send sites: the step boundary, which is the default since 0.32.0, and `/steer`, which \
+         is the operator saying it now. A third means something else in the driver can steer a \
+         turn, and nobody asked it to",
     );
 
-    // And that one site reads the queue rather than a line of its own: F5 is
-    // about a *queued* line reaching the running turn.
-    // The FIRST WORD, not the whole trimmed line. `/steer do the thing` used to
-    // miss this guard and fall to the mid-turn refusal below it, which told the
-    // operator to interrupt the turn first — the opposite of what the command
-    // does.
+    // The explicit one. The FIRST WORD, not the whole trimmed line: `/steer do
+    // the thing` used to miss this guard and fall to the mid-turn refusal below
+    // it, which told the operator to interrupt the turn first — the opposite of
+    // what the command does.
     let arm = text
         .split_once("line.split_whitespace().next() == Some(\"steer\")")
         .expect("the driver answers /steer while a turn is running")
@@ -209,19 +213,40 @@ fn f5_the_queue_is_sent_on_the_operators_word_and_not_before() {
         .expect("the arm sits above the refusal it is an exception to")
         .0;
     assert!(
-        arm.contains("app.next_queued_prompt()"),
-        "what is sent is what was queued: {arm}",
+        arm.contains("app.deliver_queued("),
+        "what is sent is what was queued, through the one loop that records it: {arm}",
     );
     assert!(
         arm.contains("steer.say("),
         "and it goes into the inbox the two arms were handed: {arm}",
     );
-    // Said, never claimed delivered. Nothing on the way in confirms a message
-    // landed, so the sentence may not say it did.
+
+    // The default one, and it is anchored on the step because that is what O8
+    // asks for — and because flushing on the keystroke would empty the queue into
+    // the inbox instantly and leave the queue surface with nothing to draw.
+    let boundary = text
+        .split_once("EventKind::Step { .. })")
+        .expect("the driver delivers the queue at a step boundary")
+        .1;
+    let boundary = boundary
+        .split_once("commit_edits(")
+        .expect("the delivery sits above the commits that follow an event")
+        .0;
     assert!(
-        !arm.contains("delivered"),
-        "`Ok` from a send means the channel took the words, not that a step read them",
+        boundary.contains("app.deliver_queued(") && boundary.contains("steer.say("),
+        "the default drain is the same loop and the same inbox as `/steer`'s: {boundary}",
     );
+
+    // Said, never claimed delivered. Nothing on the way in confirms a message
+    // landed, so no sentence either site prints may say one did. Asserted over
+    // the string literals rather than over the arm's text, because the binding
+    // that carries the outcome is itself called `delivered`.
+    for said in [arm, boundary] {
+        assert!(
+            !said.contains("\"delivered"),
+            "`Ok` from a send means the channel took the words, not that a step read them: {said}",
+        );
+    }
 }
 
 /// F5 — the words are not lost when the turn ends before a step reads them.

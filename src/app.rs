@@ -400,6 +400,16 @@ impl App {
         self.events.set_plain(plain);
     }
 
+    /// Say that this process holds the overlay a question is answered through.
+    ///
+    /// Handed down to [`crate::events::Events`], which decides whether the durable
+    /// transcript line is committed. Set by the interactive driver, which is the
+    /// one place that keeps the receiving end of the responder's channel; every
+    /// other path — a resumed run above all — leaves it `false` and gets the line.
+    pub fn set_answering(&mut self, answering: bool) {
+        self.events.set_answering(answering);
+    }
+
     /// Whether this session runs in plain mode.
     pub fn plain(&self) -> bool {
         self.status.plain
@@ -458,8 +468,13 @@ impl App {
                 Tone::Muted,
                 format!("answered {} {text}", self.theme.glyphs.dash),
             ),
+            // **Declining is a real answer, so it is not a warning.** io-harness
+            // documents `None` as "nobody here can answer this": the question is
+            // persisted and the run pauses, resumable. Nothing has gone wrong and
+            // nothing was refused — the operator chose the option the surface
+            // offers them, and `Tone::Warning`'s own word is `warning`.
             None => self.record(
-                Tone::Warning,
+                Tone::Muted,
                 format!(
                     "left unanswered {} the run pauses and keeps the question",
                     self.theme.glyphs.dash
@@ -503,8 +518,11 @@ impl App {
                 Tone::Muted,
                 format!("plan approved {dash} {} steps", plan.plan().steps.len()),
             ),
+            // Sending a plan back for revision is the surface working, not a
+            // warning about it: the operator read the plan and said what they
+            // wanted instead, which is the whole reason the overlay takes prose.
             io_harness::PlanVerdict::Revise { correction } => {
-                (Tone::Warning, format!("sent back {dash} {correction}"))
+                (Tone::Muted, format!("sent back {dash} {correction}"))
             }
             io_harness::PlanVerdict::Cancel => {
                 (Tone::Refused, format!("plan cancelled {dash} nothing ran"))
@@ -918,6 +936,49 @@ impl App {
         &self.prompts
     }
 
+    /// Hand everything queued to the turn that is running, oldest first.
+    ///
+    /// **Each on its own, in the order they were typed**, because io-harness
+    /// pushes one `Observation` per message and the model reads them in that
+    /// order. Joining them would be one paragraph the operator never wrote.
+    ///
+    /// Each delivered message is recorded into the transcript rather than the
+    /// footer: a steered line becomes an observation in the run's ledger, so it is
+    /// part of the conversation rather than about it — and it is the only part
+    /// that will never get an echo of its own, because it is not a turn.
+    ///
+    /// **Delivery stops at the first refusal and the message goes back.** The one
+    /// thing worse than a correction that arrives late is one that reports success
+    /// and goes nowhere, so the caller gets the reason and the queue keeps what
+    /// was not sent.
+    ///
+    /// It lives here rather than in the driver because nothing under `tests/`
+    /// links `src/main.rs`: a loop written there could be neither asserted nor
+    /// sabotaged, and this one decides whether an operator's words are kept.
+    pub fn deliver_queued<F>(&mut self, mut say: F) -> crate::queue::Delivered
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        let mut delivered = crate::queue::Delivered::default();
+        while let Some(waiting) = self.next_queued_prompt() {
+            if let Err(error) = say(&waiting) {
+                // **Back to the FRONT, not the back.** `queue_prompt` appends,
+                // which is right for a line the operator has just typed and wrong
+                // for one that was already first: appending it would put every
+                // message queued behind it ahead of it, so a refusal would
+                // silently reorder the operator's corrections and the agent would
+                // read them in an order nobody wrote.
+                self.prompts.insert(0, waiting);
+                self.status.queued_prompts = self.prompts.len();
+                delivered.refused = Some(error);
+                return delivered;
+            }
+            self.record(Tone::Muted, format!("[mid-turn] {}", waiting.trim()));
+            delivered.sent += 1;
+        }
+        delivered
+    }
+
     /// Whether the queue surface is on screen.
     ///
     /// **Three facts, and none of them is a fourth field.** It has been opened
@@ -1029,6 +1090,14 @@ impl App {
     /// interrupted turn keeps its partial output in the scrollback instead of
     /// losing it with the turn.
     pub fn finished(&mut self) {
+        // **The estimate dies with the turn, however the turn died.** It is
+        // cleared at `Step` and at `Finished`, but not every ending emits one: a
+        // provider error propagating out mid-stream is exactly the case where
+        // tokens have streamed, and a deferred decision returns without
+        // finishing. Left standing, a tilde-marked guess sat on an idle prompt
+        // for a turn that was over, and then bled into the next one — a settled
+        // number and a guess added together, which the field's own doc forbids.
+        self.status.streaming = None;
         self.mode = Mode::Idle;
         self.status.working = false;
         // A per-turn fact, cleared with the turn. Left standing, an idle session
@@ -1329,23 +1398,78 @@ impl App {
 
     /// The viewport height this session wants right now.
     ///
-    /// [`VIEWPORT_HEIGHT`] until the prompt outgrows its two rows, and then as
-    /// many as the prompt needs, up to [`COMPOSER_MAX`]. The driver compares this
-    /// with the viewport it has and re-places when they differ — which is the
-    /// one operation in this product that re-queries the cursor, so it is done at
-    /// an idle prompt and nowhere else.
+    /// **The one owner of the demand, which is what makes the growing viewport a
+    /// single decision rather than several.** The driver compares this with the
+    /// viewport it has and re-places when they differ; [`crate::term::viewport_for`]
+    /// owns the ceiling, so the session's sizing and the driver's picker path
+    /// cannot disagree about how many rows the terminal can spare.
     ///
-    /// The cap is not a matter of taste. The viewport is subtracted from the
-    /// terminal, and a composer allowed to take all of it would push the
-    /// transcript it is being written against off the screen.
+    /// **Until 0.32.0 this returned the fixed height whenever a turn was running
+    /// or an overlay was open**, which is the guard the whole release removes. A
+    /// question with five choices, a twelve-step plan and four queued messages all
+    /// arrive during a turn, and every one of them was drawing into eight rows
+    /// because of these two lines. The re-placement itself is not new — the
+    /// composer has grown the viewport since 0.7.0 and `Screen::replace` has done
+    /// the erase-restore-reattach since then. What is new is letting the surfaces
+    /// that actually need rows ask for them.
+    ///
+    /// An open surface answers for the whole viewport, because it is drawn instead
+    /// of the session rather than beside it — that is [`App::render`]'s own rule,
+    /// and the demand has to be measured the same way the drawing is.
     pub fn viewport_wanted(&self, width: u16, rows: u16) -> u16 {
-        if self.mode == Mode::Running || self.modal() {
+        crate::term::viewport_for(self.rows_wanted(width), rows)
+    }
+
+    /// The rows the surface currently on screen would like, before any ceiling.
+    fn rows_wanted(&self, width: u16) -> u16 {
+        // An approval keeps the floor deliberately. It is answered with one of
+        // three keys, it has carried its own measured elision since 0.2.0, and it
+        // is the one modal surface with nothing to type into — so there is nothing
+        // for extra rows to buy that its own suffix does not already say.
+        if self.approval.is_some() {
             return VIEWPORT_HEIGHT;
         }
-        let wanted = self.composer.rows_wanted(width).min(COMPOSER_MAX);
-        VIEWPORT_HEIGHT
-            .saturating_add(wanted.saturating_sub(COMPOSER_ROWS))
-            .min(rows.saturating_sub(2).max(VIEWPORT_HEIGHT))
+        if let Some(open) = &self.intent {
+            return open.rows_wanted(width, &self.theme);
+        }
+        if let Some(open) = &self.plan {
+            return open.rows_wanted(width, &self.theme);
+        }
+        // The ordinary session: the chrome it always draws, whatever the prompt
+        // needs, and whatever the queue is holding.
+        //
+        // The chrome is the streaming row, the blank above the activity line, the
+        // activity line, the rule, and three rows of footer — and the blank is
+        // released while the queue is open, which is where the queue's one visible
+        // row has come from since 0.17.0. With the viewport able to grow, the
+        // queue asks for its rows outright instead, and `queue::rows_for`'s
+        // `room == 1` collapse stops being what every real session sees.
+        let composer = self
+            .composer
+            .rows_wanted(width)
+            .clamp(COMPOSER_ROWS, COMPOSER_MAX);
+        let queued = if self.queue_open() {
+            u16::try_from(self.prompts.len()).unwrap_or(u16::MAX)
+        } else {
+            0
+        };
+        // The fleet view is drawn **instead of** the queue, in the composer's own
+        // rect, so it asks in the composer's place rather than beside it. Without
+        // this it kept the rows a composer needs and elided a fan-out into two
+        // lines — and since 0.32.0 one of those two would be the count saying so.
+        let surface = if self.fleet_open {
+            self.fleet.rows_wanted().max(composer)
+        } else {
+            composer.saturating_add(queued)
+        };
+        // **The same predicate `render` uses, not a restatement of it.** `render`
+        // keeps the blank above the activity line unless the queue is *drawn*,
+        // and the queue is not drawn while the fleet view has the composer's
+        // rect. Spelling it as `queued == 0 && !fleet_open` dropped the row
+        // whenever the fleet was open, so the demand under-asked by one — masked,
+        // until now, by `Fleet::rows_wanted` counting its summary row twice.
+        let chrome = 6 + u16::from(!self.queue_drawn());
+        chrome.saturating_add(surface)
     }
 
     /// Start a new conversation, or refuse because a turn is in flight.
@@ -1426,7 +1550,24 @@ impl App {
             io_harness::EventKind::Routed { to, .. } if !to.is_empty() => {
                 self.status.model = to.clone();
             }
+            // **The one signal that arrives while a step is spending (0.32.0).**
+            // `EventKind::Token` carries text and no count — providers do not
+            // bill per chunk — so the figure a reader sees moving is necessarily
+            // an estimate, taken from the delta through io-harness's own
+            // `estimate_tokens`, which is what `/context` already estimates with.
+            // It is drawn with a leading tilde and replaced by the provider's own
+            // number the moment the step commits.
+            io_harness::EventKind::Token { text } => {
+                let estimate = io_harness::context::estimate_tokens(text) as u64;
+                self.status.streaming =
+                    Some(self.status.streaming.unwrap_or(0).saturating_add(estimate));
+            }
             io_harness::EventKind::Step { tokens, .. } => {
+                // **The estimate is discarded, never added to.** The provider's
+                // number is what this step actually cost, and carrying the guess
+                // forward beside it would make every later figure the sum of a
+                // measurement and a guess — which is worse than either.
+                self.status.streaming = None;
                 // The session's total, not the step's own. A field that swings
                 // rather than climbs cannot be read at a glance.
                 self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
@@ -1437,6 +1578,10 @@ impl App {
                 self.status.steps = Some(event.step);
             }
             io_harness::EventKind::Finished { tokens, steps, .. } => {
+                // Same as `Step`: the run's own total settles the figure, and a
+                // turn that ended without one must not leave an estimate standing
+                // as though it were the answer.
+                self.status.streaming = None;
                 // The run's own totals, which are authoritative over the sum of
                 // the steps we happened to see. The token guard is on the value
                 // rather than on the tag: a run that reported no usage at all
@@ -1611,12 +1756,6 @@ impl App {
                 .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
         }
         lines
-    }
-
-    /// Rows the viewport uses. Fixed — see [`VIEWPORT_HEIGHT`] for why, and for
-    /// what that costs.
-    pub fn viewport_height(&self) -> u16 {
-        VIEWPORT_HEIGHT
     }
 
     /// What a keystroke means to the session.
@@ -2056,7 +2195,7 @@ impl App {
     ///
     /// Content before metadata, top to bottom, so a reader reaches the model's
     /// words before the token count.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if area.height == 0 {
             return;
         }
@@ -2069,7 +2208,12 @@ impl App {
         }
         // The same rule for the same reason: the run is stopped waiting on prose,
         // so there is nothing behind this worth half a screen.
-        if let Some(open) = &self.intent {
+        //
+        // Taken mutably since 0.32.0: the overlay's offers are a `Picker`, which
+        // scrolls to its selection as it draws and records where it reserved the
+        // rows the composer unfolds into. Only this overlay needs it, and the
+        // borrows are disjoint fields.
+        if let Some(open) = &mut self.intent {
             open.render(frame, area, &self.theme);
             return;
         }

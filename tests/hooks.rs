@@ -119,11 +119,11 @@ fn f9_a_configuration_with_no_hook_attaches_no_hooks_at_all() {
     // The text-only reading, which no file on this machine can influence.
     let bare = Config::from_toml("").expect("an empty configuration");
     assert!(
-        io_cli::contract::hooks(&bare, &root).is_none(),
+        io_cli::contract::hooks(&bare, &bare.plugins(), &root).is_none(),
         "a configuration with nothing in it was handed a Hooks",
     );
     assert!(
-        io_cli::contract::configured("go", root.clone(), &bare)
+        io_cli::contract::configured("go", root.clone(), &bare, &bare.plugins())
             .tool_hooks
             .is_none(),
         "an empty configuration put a Hooks on the contract, which turns off read \
@@ -140,10 +140,10 @@ fn f9_a_configuration_with_no_hook_attaches_no_hooks_at_all() {
     let config = Config::discover(&busy).expect("the configuration loads");
     assert!(config.hooks().is_empty());
     assert!(
-        io_cli::contract::hooks(&config, &busy).is_none(),
+        io_cli::contract::hooks(&config, &config.plugins(), &busy).is_none(),
         "a configuration with servers and a step cap and no hook was handed a Hooks",
     );
-    let contract = io_cli::contract::configured("go", busy.clone(), &config);
+    let contract = io_cli::contract::configured("go", busy.clone(), &config, &config.plugins());
     assert!(
         contract.tool_hooks.is_none(),
         "the same, on the contract the turn carries",
@@ -175,10 +175,11 @@ fn f9_a_declared_hook_reaches_both_the_contract_and_the_fan_out() {
     );
     let config = Config::discover(&root).expect("the configuration loads");
 
-    let hooks = io_cli::contract::hooks(&config, &root).expect("the file declares two hooks");
+    let hooks = io_cli::contract::hooks(&config, &config.plugins(), &root)
+        .expect("the file declares two hooks");
     assert!(!hooks.is_empty());
 
-    let contract = io_cli::contract::configured("go", root.clone(), &config);
+    let contract = io_cli::contract::configured("go", root.clone(), &config, &config.plugins());
     assert!(
         contract.tool_hooks.is_some(),
         "the lifecycle half of the file is accepted and never consulted",
@@ -218,11 +219,11 @@ fn f9_a_hook_a_bundle_contributes_is_a_declared_hook() {
     );
 
     assert!(
-        io_cli::contract::hooks(&config, &root).is_some(),
+        io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
         "the bundle's hook is declared and nothing in this session will run it",
     );
     assert!(
-        io_cli::contract::configured("go", root.clone(), &config)
+        io_cli::contract::configured("go", root.clone(), &config, &config.plugins())
             .tool_hooks
             .is_some(),
         "the same, on the contract the turn carries",
@@ -322,7 +323,7 @@ fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed()
     // spelling rather than about the key.
     let (_dir, spelled) = written(LOCAL_FILE, EVENT_HOOK);
     let config = Config::discover(&spelled).expect("the configuration loads");
-    assert!(io_cli::contract::hooks(&config, &spelled).is_some());
+    assert!(io_cli::contract::hooks(&config, &config.plugins(), &spelled).is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +386,7 @@ fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
         "the fixture already had the file, so its appearance below proves nothing",
     );
     assert!(
-        io_cli::contract::hooks(&config, &root).is_some(),
+        io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
         "a declared hook with a root is a Hooks",
     );
     assert!(
@@ -397,12 +398,12 @@ fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
     // And the same configuration with no root writes nothing, because it builds
     // nothing.
     assert!(
-        io_cli::contract::hooks(&config, std::path::Path::new("")).is_none(),
+        io_cli::contract::hooks(&config, &config.plugins(), std::path::Path::new("")).is_none(),
         "a rootless caller was handed a Hooks, which created `audit.jsonl` in \
          whatever directory `io` was launched from",
     );
     assert!(
-        io_cli::contract::configured("", PathBuf::new(), &config)
+        io_cli::contract::configured("", PathBuf::new(), &config, &config.plugins())
             .tool_hooks
             .is_none(),
         "the road `server_notices` actually takes at startup: an empty root put a \
@@ -453,7 +454,11 @@ fn server_notices_leaves_no_append_file_in_the_directory_io_was_launched_from() 
     let stray = std::path::Path::new("audit.jsonl");
     let before = stray.exists();
 
-    let _ = io_cli::contract::server_notices(&config, &io_cli::contract::Capabilities::default());
+    let _ = io_cli::contract::server_notices(
+        &config,
+        &config.plugins(),
+        &io_cli::contract::Capabilities::default(),
+    );
 
     assert_eq!(
         stray.exists(),
