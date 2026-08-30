@@ -1551,6 +1551,105 @@ fn f2_the_install_discloses_before_it_writes_and_says_so() {
     }
 }
 
+/// **F6 — `docs/CONTRACT.md` agrees with the code it describes.**
+///
+/// A contract page is the one document a script author depends on, so a wrong
+/// exit code or a missing configuration key there is worse than no page. All
+/// three halves are asked of the code rather than of a second copy of the list:
+/// the exit codes come from `exec`'s own constants, the configuration keys from
+/// `CliSettings`' fields, and the subcommands from `clap` itself.
+///
+/// Sabotage: add a field to `CliSettings`, add a subcommand, or change an exit
+/// constant, without documenting it. Each fails.
+#[test]
+fn f6_the_contract_page_agrees_with_the_code() {
+    use clap::CommandFactory as _;
+
+    let contract = read("docs/CONTRACT.md");
+
+    // The exit codes, by number and by name.
+    for (code, name) in [
+        (io_cli::exec::OK, "OK"),
+        (io_cli::exec::FAILED, "FAILED"),
+        (io_cli::exec::REFUSED, "REFUSED"),
+        (io_cli::exec::CEILING, "CEILING"),
+        (io_cli::exec::PAUSED, "PAUSED"),
+        (io_cli::exec::UNFINISHED, "UNFINISHED"),
+        (io_cli::exec::UNVERIFIED, "UNVERIFIED"),
+    ] {
+        let row = format!("| `{code}` | {name} |");
+        assert!(
+            contract.contains(&row),
+            "docs/CONTRACT.md should carry the exit code {name} as `{row}`; a \
+             script keying on an exit code reads this table and nothing else",
+        );
+    }
+
+    // Every subcommand clap routes is named on the page.
+    for sub in io_cli::cli::Cli::command().get_subcommands() {
+        let name = sub.get_name();
+        assert!(
+            contract.contains(&format!("`io {name}")),
+            "clap routes `io {name}` and docs/CONTRACT.md does not name it",
+        );
+    }
+
+    // Every `[app.io-cli]` key. The field list is read out of the struct's own
+    // source rather than hand-listed here, so a field added without a row on the
+    // page fails instead of arriving undocumented.
+    let settings = std::fs::read_to_string(repo().join("src/settings.rs"))
+        .expect("src/settings.rs exists");
+    let body = settings
+        .split_once("pub struct CliSettings")
+        .expect("CliSettings is declared")
+        .1;
+    let body = body.split_once("\n}").expect("the struct closes").0;
+
+    let mut keys = 0;
+    for line in body.lines() {
+        let Some(field) = line.trim().strip_prefix("pub ") else {
+            continue;
+        };
+        let Some(field) = field.split(':').next() else {
+            continue;
+        };
+        assert!(
+            contract.contains(&format!("| `{field}` |")),
+            "`[app.io-cli] {field}` is a field of CliSettings and has no row in \
+             docs/CONTRACT.md, so it is a key an operator has no way to learn \
+             exists from the one page that promises to list them",
+        );
+        keys += 1;
+    }
+    assert!(
+        keys > 10,
+        "only {keys} fields were read out of CliSettings, so the parse above is \
+         matching almost nothing and this gate is not checking what it claims",
+    );
+    assert!(
+        contract.contains(&format!("carries **{}** keys", spell(keys))),
+        "docs/CONTRACT.md should say how many keys `[app.io-cli]` carries, and \
+         the code has {keys}",
+    );
+}
+
+/// A small number as the word this repository's prose uses.
+fn spell(n: usize) -> &'static str {
+    match n {
+        11 => "eleven",
+        12 => "twelve",
+        13 => "thirteen",
+        14 => "fourteen",
+        15 => "fifteen",
+        16 => "sixteen",
+        17 => "seventeen",
+        18 => "eighteen",
+        19 => "nineteen",
+        20 => "twenty",
+        _ => "an unspelled number",
+    }
+}
+
 /// **Every CHANGELOG heading is a link, and every link definition has a heading.**
 ///
 /// Thirty of thirty-three version headings had no link definition, so they
