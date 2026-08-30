@@ -10884,19 +10884,29 @@ fn paint_picker(
     // prompt, which `tests/viewport.rs` asserts over a growth, a shrink, a
     // grow-to-grow and a resize while grown.
     //
-    // A picker sizes for itself. It is drawn *instead of* the app, so `App` is
-    // not holding the surface that knows how many rows are wanted — which is the
-    // one case the demand cannot come from `viewport_wanted`. Both paths clamp
-    // through `term::viewport_for`, so there is still exactly one ceiling.
-    let wanted = match picker.as_ref() {
-        Some((open, _)) => io_cli::term::viewport_for(open.rows_wanted(), screen.terminal_rows()),
-        None => app.viewport_wanted(screen.width(), screen.terminal_rows()),
-    };
-    if wanted != screen.rows() {
-        // A failure here leaves the session's own height in place — see
-        // `Screen::replace` — so a terminal that will not answer keeps a
-        // usable prompt rather than losing one over a row.
-        let _ = replace_viewport(screen, wanted);
+    // **A picker does not re-place the viewport, and that is 0.13.0's rule kept
+    // rather than an omission.** Re-placing asks the terminal where its cursor is
+    // and waits for the answer; up to 0.12.0 the palette grew the viewport on open
+    // and shrank it on close, which put that round trip on `/` — the fastest thing
+    // an operator does — with a two-second wait on a terminal that never answers.
+    // 0.13.0 removed it deliberately and `live_f6_the_palette_opens_without_asking_
+    // the_terminal_anything` asserts it against a real pty.
+    //
+    // **0.32.0 tried to grow pickers too and the live suite caught it**, which is
+    // the whole argument for running that suite: the property is about bytes on a
+    // wire, `Screen::replace` re-attaches to a real terminal, and no `Fixed`
+    // backend can see either. What a picker gets instead is the elision this
+    // release added — it draws the rows the session's viewport has and says how
+    // many it did not, which is the improvement that does not cost a round trip.
+    // See `US-IO-CLI-0.32.0-I12`.
+    if picker.is_none() {
+        let wanted = app.viewport_wanted(screen.width(), screen.terminal_rows());
+        if wanted != screen.rows() {
+            // A failure here leaves the session's own height in place — see
+            // `Screen::replace` — so a terminal that will not answer keeps a
+            // usable prompt rather than losing one over a row.
+            let _ = replace_viewport(screen, wanted);
+        }
     }
     let theme = app.theme;
     screen

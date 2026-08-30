@@ -333,11 +333,20 @@ fn o16_the_queue_grows_the_viewport_by_what_it_is_holding() {
     );
 }
 
-/// **O16 — a picker.** Its demand does not come from `App` at all: a picker is
-/// drawn *instead of* the session, so the driver sizes for it directly. Both
-/// paths clamp through `term::viewport_for`, which is the single ceiling.
+/// **A picker states its rows, and the driver deliberately does not act on it.**
+///
+/// This asserted that the driver grew the viewport for a picker until the live
+/// suite refused it: 0.13.0 removed exactly that, because re-placing asks the
+/// terminal where its cursor is and the round trip lands on `/`. See
+/// `US-IO-CLI-0.32.0-I12`, and `live_f6_the_palette_opens_without_asking_the_
+/// terminal_anything`, which is the gate — the property is about bytes on a wire
+/// and no `Fixed` backend can see it.
+///
+/// What is left is still worth asserting: the demand is honest and passes through
+/// the one ceiling, so a later release that decides the round trip is affordable
+/// has a correct number to use. What a picker gets today is the elision.
 #[test]
-fn o16_a_picker_asks_for_its_own_rows_through_the_one_ceiling() {
+fn a_picker_states_its_rows_and_they_pass_through_the_one_ceiling() {
     let short = io_cli::picker::Picker::new(
         "Which command?",
         (0..3)
@@ -362,7 +371,26 @@ fn o16_a_picker_asks_for_its_own_rows_through_the_one_ceiling() {
     );
     assert!(
         io_cli::term::viewport_for(long.rows_wanted(), TERMINAL) > VIEWPORT_HEIGHT,
-        "a picker larger than the floor is given rows",
+        "a picker larger than the floor would be given rows, if the driver asked",
+    );
+
+    // **And the driver does not ask.** Asserted over the driver's own text,
+    // because `src/main.rs` is linked by no test and this is the half that
+    // regressed: the re-placement must stay behind `picker.is_none()`.
+    let driver = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("the driver");
+    let paint = driver
+        .split_once("fn paint_picker(")
+        .expect("the one place a viewport is re-placed")
+        .1
+        .split_once("\nfn ")
+        .expect("the end of the function")
+        .0;
+    assert!(
+        paint.contains("if picker.is_none() {"),
+        "the viewport is re-placed with a picker open, which puts a cursor query          on `/` — the round trip 0.13.0 removed: {paint}",
     );
 }
 
