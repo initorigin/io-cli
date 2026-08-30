@@ -515,7 +515,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
     resolve_skills(contract).skills
 }
 
-/// `~/.io-cli/skills`, when there is something there to discover.
+/// `skills/` under the home in force, when there is something there to discover.
 ///
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
@@ -524,10 +524,19 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
-/// Filtered, an operator with no `~/.io-cli/skills` gets a contract with no
-/// skills directory, which is exactly the contract they got before this release.
+/// Filtered, an operator with no such directory gets a contract with no skills
+/// directory, which is exactly the contract they got before this release.
+///
+/// **The home is [`crate::home::in_force`]'s, not [`crate::home::path`]'s.** An
+/// operator who set `$IO_CONFIG` or `$IO_CONFIG_HOME` moved the directory their
+/// own authored content lives in, and a skill is authored content — a file that
+/// person wrote — in the same class as the memory note `crate::memory` anchors on
+/// the same home for the same reason (`src/memory.rs`), not a cache io-cli
+/// fetched on their behalf. Reading io-cli's default home instead would offer a
+/// directory beside a configuration file the session is not using and leave the
+/// skills sitting beside the one it is unread.
 fn default_skills() -> Option<PathBuf> {
-    let dir = crate::home::path()?.join("skills");
+    let dir = crate::home::in_force()?.0.join("skills");
     dir.is_dir().then_some(dir)
 }
 

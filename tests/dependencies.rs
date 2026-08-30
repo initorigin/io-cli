@@ -1036,6 +1036,150 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
     }
 }
 
+/// The modules permitted to turn somebody else's JSON into a value.
+///
+/// **Two, and they are files rather than modules.** `src/import.rs` has read the
+/// operator's own `~/.claude.json` and Codex settings since 0.21.0;
+/// `src/adapt.rs` reads the three foreign plugin manifest formats. Sorted here
+/// for the reason `spawning_modules` is sorted: `read_dir` answers in whatever
+/// order the filesystem holds, and a test that passes on one machine and fails on
+/// another is worse than no test.
+fn json_reading_modules() -> Vec<PathBuf> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut permitted = vec![src.join("adapt.rs"), src.join("import.rs")];
+    permitted.sort();
+    permitted
+}
+
+/// Is `found` **exactly** the set permitted to deserialize JSON?
+///
+/// Named for the reason `only_the_permitted_spawn` is named, and it is the same
+/// reason: the sabotage arm for this criterion is "widen the set to a substring
+/// or stem match", which makes the gate *more* permissive — so nothing fails and
+/// it goes vacuous without going red, and the call site cannot observe it because
+/// the call site's own list is the thing being widened.
+fn only_the_permitted_json_reader(found: &[PathBuf]) -> bool {
+    found == json_reading_modules().as_slice()
+}
+
+/// **N1 — a second reader of a stranger's file is a second opinion about it, and
+/// JSON must not spread before it is confined.**
+///
+/// This is `f7_the_configuration_is_read_through_the_harness_and_never_parsed_
+/// here`'s rule applied to the other format, and it is written in the same
+/// release as the first line that reads a stranger's JSON rather than after it.
+/// The TOML rule was learned expensively: `src/edit.rs` is the one exemption and
+/// it is held to properties, because a module that decides what somebody else's
+/// file *means* is a second answer to a question that already has one.
+///
+/// **Deserialization only, and the asymmetry is the whole argument.** The TOML
+/// rule forbids `toml::from_str` — the parse — and says why in its own words at
+/// `f7`'s comment: a `from_str` into a shape of our own is the second opinion.
+/// Writing is not that. `src/exec.rs` builds `--json` event lines with
+/// `serde_json::to_string` and `serde_json::json!`, reading nobody's file and
+/// deciding nothing about anybody's format, and a gate that banned it would have
+/// to exempt that module for a property which is not the one being protected —
+/// an exemption granted for the wrong reason is how a permission list starts
+/// widening itself.
+#[test]
+fn n1_json_is_deserialized_in_the_permitted_modules_and_nowhere_else() {
+    let permitted = json_reading_modules();
+    let mut readers = Vec::new();
+
+    for (path, text) in sources() {
+        // Comments stripped, for the reason the TOML sweep strips them and the
+        // reason 0.16.0, 0.19.0, 0.25.0 and 0.26.0 each paid for: a gate that
+        // reads prose forbids a file from explaining itself, and this module's
+        // own documentation has to name the call it is permitted to make.
+        let code = code_of(&text);
+
+        // Spelling the name around is the same act as writing it, exactly as it
+        // is for a spawn. `use serde_json as j` puts a parse in a file where the
+        // literal below never appears, so the aliased forms are forbidden
+        // everywhere — the permitted modules included, which therefore write the
+        // call out in full and are found by the sweep like anything else.
+        for evasion in [
+            "use serde_json as ",
+            "use serde_json::{",
+            "use serde_json::*",
+        ] {
+            assert!(
+                !code.contains(evasion),
+                "{} imports serde_json under another spelling; a JSON parse is \
+                 written out in full or it is not written",
+                path.display(),
+            );
+        }
+
+        if ["serde_json::from_str", "serde_json::from_slice", "serde_json::from_reader"]
+            .iter()
+            .any(|call| code.contains(call))
+        {
+            readers.push(path);
+        }
+    }
+
+    readers.sort();
+    assert!(
+        only_the_permitted_json_reader(&readers),
+        "JSON is deserialized somewhere other than the two modules permitted to do \
+         it. Found {readers:?}; exactly these are permitted, by exact path: \
+         {permitted:?} — one for the operator's own Claude and Codex files, one for \
+         the foreign plugin manifests. A third is a second opinion about what \
+         somebody else's file means, which is the defect the TOML rule beside this \
+         one exists to prevent.",
+    );
+}
+
+/// **N1's second half — the permitted set is exact paths, and widening it is an
+/// edit somebody makes on purpose.**
+///
+/// The sibling arm — a third file parsing JSON — is covered by the sweep above.
+/// This covers the arm that sweep cannot see, because a gate that has been
+/// widened refuses nothing and therefore fails nothing. Each near-miss shares a
+/// stem, a stem prefix or a module directory with a permitted path and is a
+/// different file.
+#[test]
+fn n1_the_permitted_json_set_is_exact_paths_and_never_a_substring() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let permitted = json_reading_modules();
+
+    // The control. Without it a predicate answering `false` for everything would
+    // satisfy every assertion below while refusing the real modules too.
+    assert!(
+        only_the_permitted_json_reader(&permitted),
+        "the permitted set does not admit itself, so nothing below means anything",
+    );
+
+    for near in [
+        // Its stem opens with a permitted stem, which a `file_stem` prefix match
+        // admits.
+        src.join("adapter.rs"),
+        // A permitted stem, whole, followed by a separator of its own — what an
+        // extension-dropped text match admits.
+        src.join("adapt_hooks.rs"),
+        // A module directory named for a permitted file, which is what
+        // `p.starts_with(q.with_extension(""))` admits.
+        src.join("adapt").join("mod.rs"),
+        // And the same shapes against the other permitted module, so the property
+        // is asserted for both rather than for the new one only.
+        src.join("importer.rs"),
+        src.join("import").join("mod.rs"),
+    ] {
+        let mut widened = permitted.clone();
+        widened.push(near.clone());
+        widened.sort();
+        assert!(
+            !only_the_permitted_json_reader(&widened),
+            "{} is admitted beside the permitted modules. The set is compared by \
+             exact path for exactly this reason: a substring, stem or prefix match \
+             is a permission list that widens itself, and a third module would then \
+             read a stranger's JSON while this file went on passing.",
+            near.display(),
+        );
+    }
+}
+
 #[test]
 fn n1_the_binary_is_named_io_and_there_is_exactly_one() {
     let manifest = manifest();

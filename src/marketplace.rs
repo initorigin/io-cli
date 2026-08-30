@@ -331,7 +331,7 @@ const LONGEST: usize = 200;
 /// Plain dots rather than [`Glyphs::ellipsis`]: this is a property of the data and
 /// runs before any renderer is chosen, and a value that arrives at both glyph sets
 /// already carrying a `…` is a value that is wrong in one of them.
-fn bounded(value: &str) -> String {
+pub(crate) fn bounded(value: &str) -> String {
     if value.chars().count() <= LONGEST {
         return value.to_string();
     }

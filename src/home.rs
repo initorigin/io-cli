@@ -206,12 +206,13 @@ pub fn path() -> Option<PathBuf> {
 
 /// Where marketplaces are cloned to, whether or not the directory exists yet.
 ///
-/// Derived from [`path`] rather than from [`in_force`], the way
-/// [`crate::contract::skills_dir`] derives the default skills directory
-/// (`src/contract.rs:528`): a marketplace is io-cli's own cache of other people's
-/// repositories, and an operator who pointed `$IO_CONFIG_HOME` somewhere else
-/// moved their *configuration*. Following that variable here would put the clones
-/// wherever the configuration is and leave the ones already fetched invisible.
+/// Derived from [`path`] rather than from [`in_force`], which is the opposite of
+/// what the default skills directory does: a marketplace is io-cli's own cache of
+/// other people's repositories, not something the operator wrote, and authored
+/// content follows the home in force while a cache stays with the crate that
+/// filled it. An operator who pointed `$IO_CONFIG_HOME` somewhere else moved their
+/// *configuration*; following that variable here would put the clones wherever the
+/// configuration is and leave the ones already fetched invisible.
 ///
 /// **The directory is not promised to exist.** [`adopt`] returns `None` without
 /// creating anything whenever either variable is set, so every caller creates it
