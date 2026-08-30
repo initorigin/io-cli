@@ -2445,3 +2445,83 @@ fn f9_a_stall_names_the_step_it_stopped_on_and_how_long_it_has_been_there() {
     assert!(stalled.contains("circles"), "{stalled:?}");
     assert!(stalled.contains("stops here"), "{stalled:?}");
 }
+
+// ---------------------------------------------------------------------------
+// O3 — a question is committed exactly where nothing else will draw it
+// ---------------------------------------------------------------------------
+
+/// A question the agent asked, as io-harness emits it.
+fn a_question() -> EventKind {
+    EventKind::QuestionAsked {
+        question: "drop the column or keep it?".to_string(),
+        choices: vec!["drop".to_string(), "keep".to_string()],
+    }
+}
+
+/// **O3 — with an overlay holding the question, the transcript stays quiet.**
+///
+/// Through 0.31.0 this line was committed unconditionally and the overlay redrew
+/// the same question through `Tone::Warning`, so the operator was asked twice and
+/// told the second time was a warning. Two renderers, neither aware of the other.
+///
+/// **The sabotage pass is why this test exists.** The condition was written, the
+/// suite was green, and replacing it with `if true` — the exact defect it guards —
+/// failed nothing at all. The fix had no gate until the arm was run.
+#[test]
+fn o3_a_question_is_not_committed_when_an_overlay_will_draw_it() {
+    let mut events = Events::new(DARK);
+    events.set_answering(true);
+    let line = rendered(&mut events, a_question());
+    assert!(
+        line.is_empty(),
+        "the overlay is holding this question, so committing it asks the operator \
+         twice: {line:?}",
+    );
+}
+
+/// **O3's other direction, and it is the one that matters more.** Suppressing a
+/// question everywhere is a worse defect than printing it twice, so every path
+/// that has no overlay must still commit the line.
+#[test]
+fn o3_a_question_is_committed_wherever_nothing_will_draw_it() {
+    // A resumed run: this process attached a responder but dropped the receiver,
+    // so no overlay exists here. `answering` is false and the line is the only
+    // thing that renders the question at all.
+    let mut resumed = Events::new(DARK);
+    resumed.set_answering(false);
+    let line = rendered(&mut resumed, a_question());
+    assert!(
+        line.contains("drop the column or keep it?"),
+        "a resumed run's question reached no surface at all: {line:?}",
+    );
+    assert!(
+        line.contains("drop") && line.contains("keep"),
+        "the offers go with it, or the operator is asked a question whose choices \
+         they cannot see: {line:?}",
+    );
+
+    // Plain mode draws no overlay, whatever this process is holding.
+    let mut plain = Events::new(DARK);
+    plain.set_answering(true);
+    plain.set_plain(true);
+    let line = rendered(&mut plain, a_question());
+    assert!(
+        line.contains("drop the column or keep it?"),
+        "plain mode draws no overlay, so the transcript is the only renderer: {line:?}",
+    );
+}
+
+/// **O3 — and it is not drawn as a warning.** `Tone::Warning`'s word is literally
+/// `warning`, so under `MONO` every question the agent ever asked announced itself
+/// as one.
+#[test]
+fn o3_the_committed_question_is_not_a_warning() {
+    let mut events = Events::new(io_cli::theme::MONO);
+    events.set_answering(false);
+    let line = rendered(&mut events, a_question());
+    assert!(line.contains("the agent asks:"), "{line:?}");
+    assert!(
+        !line.contains("warning"),
+        "a question is not a warning: {line:?}",
+    );
+}
