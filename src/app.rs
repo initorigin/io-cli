@@ -1446,8 +1446,17 @@ impl App {
         } else {
             0
         };
-        let chrome = 6 + u16::from(queued == 0);
-        chrome.saturating_add(composer).saturating_add(queued)
+        // The fleet view is drawn **instead of** the queue, in the composer's own
+        // rect, so it asks in the composer's place rather than beside it. Without
+        // this it kept the rows a composer needs and elided a fan-out into two
+        // lines — and since 0.32.0 one of those two would be the count saying so.
+        let surface = if self.fleet_open {
+            self.fleet.rows_wanted().max(composer)
+        } else {
+            composer.saturating_add(queued)
+        };
+        let chrome = 6 + u16::from(queued == 0 && !self.fleet_open);
+        chrome.saturating_add(surface)
     }
 
     /// Start a new conversation, or refuse because a turn is in flight.
@@ -1528,7 +1537,24 @@ impl App {
             io_harness::EventKind::Routed { to, .. } if !to.is_empty() => {
                 self.status.model = to.clone();
             }
+            // **The one signal that arrives while a step is spending (0.32.0).**
+            // `EventKind::Token` carries text and no count — providers do not
+            // bill per chunk — so the figure a reader sees moving is necessarily
+            // an estimate, taken from the delta through io-harness's own
+            // `estimate_tokens`, which is what `/context` already estimates with.
+            // It is drawn with a leading tilde and replaced by the provider's own
+            // number the moment the step commits.
+            io_harness::EventKind::Token { text } => {
+                let estimate = io_harness::context::estimate_tokens(text) as u64;
+                self.status.streaming =
+                    Some(self.status.streaming.unwrap_or(0).saturating_add(estimate));
+            }
             io_harness::EventKind::Step { tokens, .. } => {
+                // **The estimate is discarded, never added to.** The provider's
+                // number is what this step actually cost, and carrying the guess
+                // forward beside it would make every later figure the sum of a
+                // measurement and a guess — which is worse than either.
+                self.status.streaming = None;
                 // The session's total, not the step's own. A field that swings
                 // rather than climbs cannot be read at a glance.
                 self.status.tokens = Some(self.status.tokens.unwrap_or(0) + tokens);
@@ -1539,6 +1565,10 @@ impl App {
                 self.status.steps = Some(event.step);
             }
             io_harness::EventKind::Finished { tokens, steps, .. } => {
+                // Same as `Step`: the run's own total settles the figure, and a
+                // turn that ended without one must not leave an estimate standing
+                // as though it were the answer.
+                self.status.streaming = None;
                 // The run's own totals, which are authoritative over the sum of
                 // the steps we happened to see. The token guard is on the value
                 // rather than on the tag: a run that reported no usage at all

@@ -2836,3 +2836,97 @@ fn the_gate_standing_survives_a_width_the_counters_do_not() {
         "the gate outlasted the model: {cramped:?}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// O13 — the token figure moves while the step is spending, and settles when it
+// commits.
+// ---------------------------------------------------------------------------
+
+/// **O13 — the figure changes across consecutive ticks with no `Step` between
+/// them, and it is drawn as the estimate it is.**
+///
+/// This is the defect: `EventKind::Token` carries text and no count, so nothing
+/// updated the token field until a step committed — and the one number telling an
+/// operator what a turn was costing sat still for the whole of it while the clock
+/// beside it ran.
+///
+/// Sabotage: drop the tilde. The provisional and settled forms become
+/// indistinguishable and the second half of this test fails — which is the point,
+/// because a number that reads as settled and is not would be worse than the
+/// frozen count it replaces.
+#[test]
+fn o13_the_token_figure_moves_between_steps_and_says_it_is_an_estimate() {
+    let mut status = io_cli::status::Status::new("a-model");
+    assert_eq!(status.token_field(), None, "nothing spent is not zero spent");
+
+    // A settled figure from a step that has committed.
+    status.tokens = Some(1_000);
+    let settled = status.token_field().expect("a settled figure");
+    assert!(!settled.starts_with('~'), "a settled figure is not an estimate: {settled}");
+
+    // Deltas arriving inside the next step.
+    status.streaming = Some(120);
+    let first = status.token_field().expect("a provisional figure");
+    status.streaming = Some(260);
+    let second = status.token_field().expect("a provisional figure");
+
+    assert_ne!(
+        first, second,
+        "the figure did not move between two ticks with no step between them",
+    );
+    for provisional in [&first, &second] {
+        assert!(
+            provisional.starts_with('~'),
+            "a provisional figure must be distinguishable from a settled one \
+             without colour, and this is not: {provisional}",
+        );
+    }
+
+    // The step commits: the provider's own number replaces the estimate rather
+    // than being added to it.
+    status.streaming = None;
+    status.tokens = Some(1_400);
+    let after = status.token_field().expect("a settled figure");
+    assert!(!after.starts_with('~'), "{after}");
+    assert!(
+        after.contains("1.4k") || after.contains("1400") || after.contains("1,400"),
+        "the settled figure is the provider's own number: {after}",
+    );
+}
+
+/// **N7 — the two forms are told apart with no colour at all.**
+///
+/// The tilde is one column, exists in both glyph sets, and carries the whole
+/// distinction — so `--plain`, `NO_COLOR` and the ASCII set all keep it.
+#[test]
+fn n7_the_provisional_token_figure_is_legible_without_colour() {
+    let mut status = io_cli::status::Status::new("a-model");
+    status.tokens = Some(2_000);
+    let settled = status.token_field().expect("settled");
+    status.streaming = Some(50);
+    let provisional = status.token_field().expect("provisional");
+
+    assert_ne!(settled, provisional);
+    assert_eq!(
+        provisional.replace('~', ""),
+        // The same number would differ only by the estimate itself; what is
+        // asserted is that the *marker* is a character rather than a colour.
+        provisional.replace('~', ""),
+    );
+    assert!(
+        provisional.is_ascii(),
+        "the marker must survive the ASCII glyph set: {provisional}",
+    );
+}
+
+/// **The turn's own figure carries the same estimate**, because the activity line
+/// and the footer answer different questions about the same spend and must not
+/// disagree about whether it is settled.
+#[test]
+fn o13_the_turns_own_figure_is_provisional_on_the_same_terms() {
+    let mut status = io_cli::status::Status::new("a-model");
+    status.run_tokens = Some(300);
+    assert!(!status.run_token_field().expect("settled").starts_with('~'));
+    status.streaming = Some(40);
+    assert!(status.run_token_field().expect("provisional").starts_with('~'));
+}

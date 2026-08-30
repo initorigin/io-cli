@@ -262,6 +262,23 @@ pub struct Status {
     /// them. `None` until one does — a session that has spent nothing yet is not
     /// a session that has spent zero, and the difference is the whole of F9.
     pub tokens: Option<u64>,
+    /// Tokens the step now streaming looks like it has spent, estimated from the
+    /// deltas as they arrive.
+    ///
+    /// **An estimate, and drawn as one.** `EventKind::Token` carries text and no
+    /// count — providers do not bill per chunk, so neither crate can know a
+    /// mid-stream number — and until 0.32.0 the consequence was that the token
+    /// field sat still for the whole of a turn while the clock beside it ran. The
+    /// one number telling an operator what a turn is costing them was stationary
+    /// exactly while it was being spent.
+    ///
+    /// So it is derived from the delta text through io-harness's own
+    /// `estimate_tokens`, which is what `/context` already estimates with, and it
+    /// is rendered with a leading tilde so it can never be read as settled.
+    /// **Cleared at `Step` and at `Finished`**, where the provider's own total
+    /// arrives and replaces it: the estimate is never added to a settled number,
+    /// because two different kinds of number in one figure is worse than either.
+    pub streaming: Option<u64>,
     /// Tokens the turn now running has spent.
     ///
     /// **A second counter, because the two rows answer different questions.**
@@ -573,6 +590,7 @@ impl Status {
             model: model.into(),
             provider: None,
             effort: None,
+            streaming: None,
             steps: None,
             unknown: 0,
             policy: None,
@@ -637,6 +655,11 @@ impl Status {
     /// branch, so clearing it here would blank a fact that is still true.
     pub fn forget_run(&mut self) {
         self.tokens = None;
+        // The estimate belongs to a step of the conversation being put down. It
+        // is cleared here as well as at every `Step` for the same reason the
+        // count above it is: nothing may survive into a session that is no longer
+        // the one it was measured in.
+        self.streaming = None;
         // **The money goes with the tokens it was derived from.** `start_run`
         // clears this too, and clearing it there alone is not enough: `/clear`,
         // `/resume`, `/fork` and a rewind all reach here *without* starting a run,
@@ -1069,6 +1092,44 @@ impl Status {
     /// them, because this line has no room to. `/cost` is the surface that tells
     /// an empty price table from an unpriced model from a run that has called
     /// nothing, and it is one keystroke away.
+    /// The session's token count, provisional while a step is streaming.
+    ///
+    /// **`~1.2k tok` while it is an estimate, `1.2k tok` once it is not.** One
+    /// column, present in both glyph sets, and legible under `NO_COLOR` — which
+    /// matters, because a number that reads as settled and is not would be worse
+    /// than the frozen count it replaces. The tilde says *approximately* rather
+    /// than *still arriving*, which is the honest claim: what is uncertain is the
+    /// figure, not whether more is coming.
+    ///
+    /// The estimate is added to the settled session total rather than replacing
+    /// it, so the number only ever moves the way the spend does.
+    pub fn token_field(&self) -> Option<String> {
+        match (self.tokens, self.streaming) {
+            (None, None) => None,
+            (settled, streaming) => {
+                let total = settled.unwrap_or(0).saturating_add(streaming.unwrap_or(0));
+                Some(match streaming {
+                    Some(_) => format!("~{} tok", format_tokens(total)),
+                    None => format!("{} tok", format_tokens(total)),
+                })
+            }
+        }
+    }
+
+    /// The same, for the turn now running rather than for the session.
+    pub fn run_token_field(&self) -> Option<String> {
+        match (self.run_tokens, self.streaming) {
+            (None, None) => None,
+            (settled, streaming) => {
+                let total = settled.unwrap_or(0).saturating_add(streaming.unwrap_or(0));
+                Some(match streaming {
+                    Some(_) => format!("~{} tok", format_tokens(total)),
+                    None => format!("{} tok", format_tokens(total)),
+                })
+            }
+        }
+    }
+
     pub fn cost_field(&self) -> Option<String> {
         self.cost.map(crate::cost::money)
     }
@@ -1256,11 +1317,8 @@ impl Status {
                 Tone::Muted,
             ));
         }
-        if let Some(tokens) = self.tokens {
-            fields.push(Field::new(
-                format!("{} tok", format_tokens(tokens)),
-                Tone::Muted,
-            ));
+        if let Some(text) = self.token_field() {
+            fields.push(Field::new(text, Tone::Muted));
         }
         if let Some(context) = self.context {
             fields.push(Field::new(format!("ctx {context}%"), Tone::Muted));
@@ -1472,9 +1530,7 @@ impl Status {
         if let Some(steps) = self.steps {
             counts.push(format!("{steps} step{}", if steps == 1 { "" } else { "s" }));
         }
-        if let Some(tokens) = self.tokens {
-            counts.push(format!("{} tok", format_tokens(tokens)));
-        }
+        counts.extend(self.token_field());
         if let Some(context) = self.context {
             counts.push(format!("ctx {context}%"));
         }
@@ -1700,11 +1756,8 @@ impl Status {
         fields.push(Field::new(format_elapsed(self.elapsed), Tone::Muted));
         // This turn's own spend, not the session's. The footer carries the
         // session total; a row about the turn in front of you carries the turn.
-        if let Some(tokens) = self.run_tokens {
-            fields.push(Field::new(
-                format!("{} tok", format_tokens(tokens)),
-                Tone::Muted,
-            ));
+        if let Some(text) = self.run_token_field() {
+            fields.push(Field::new(text, Tone::Muted));
         }
 
         let kept = fits(&fields, width as usize, theme);
