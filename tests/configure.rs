@@ -263,6 +263,138 @@ fn f2_the_catalogue_is_documented_rather_than_invented() {
     }
 }
 
+// --- F8: what the example documents is what io-harness actually accepts -------
+
+/// Does `docs/config.example.toml` name `key` *as a key*, rather than merely
+/// using the word in a sentence?
+///
+/// Nearly every key in that file is commented out, so what a reader would
+/// uncomment is a `#`, the name, and an `=`. Plain `contains` stopped being a
+/// check for exactly this reason once the file grew prose: `run`, `test`, `build`
+/// and `format` are all English words that occur dozens of times in there, and
+/// `contains("run")` is satisfied by "how long one command may run".
+fn names_key(example: &str, key: &str) -> bool {
+    example.lines().any(|line| {
+        let line = line.trim_start().trim_start_matches('#').trim_start();
+        line.strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    })
+}
+
+/// F8 — every key the example names deserializes, and 0.30.2's additions are
+/// there.
+///
+/// **The two sides of every assertion come from different places, on purpose.**
+/// The key names below are written out by hand, here. Whether io-harness accepts
+/// them is decided by `Config::from_toml`, which is io-harness's own reader.
+/// Whether the operator can find them is decided by reading the checked-in file.
+/// Nothing is derived from the thing it is checking, which is what the five
+/// vacuous assertions this repository has shipped all had in common.
+///
+/// **What deleting a key makes fail.** Cut `max_wait_secs` (or `templates`,
+/// `headers`, `timeout_secs`, or any of the seven `[toolchain.cargo]` keys) out of
+/// `docs/config.example.toml` and the `names_key` assertion for it fails by name —
+/// the `from_toml` half still passes, because io-harness has not changed. Have
+/// io-harness drop a key instead and `from_toml` fails first: every section
+/// written below carries `deny_unknown_fields`, so one unknown key refuses the
+/// WHOLE fragment rather than being ignored, which is the same failure an operator
+/// would get on their own file.
+#[test]
+fn f8_every_documented_harness_key_deserialises() {
+    let example = std::fs::read_to_string("docs/config.example.toml")
+        .expect("docs/config.example.toml is checked in");
+
+    // (the keys this section names, a file that writes every one of them)
+    //
+    // Narrowing values only: `from_toml` parses as the PROJECT scope and runs
+    // `refuse_widening`, so a fragment written with `exec = "allow"` here would
+    // fail for a reason that has nothing to do with what is being tested.
+    let sections: &[(&[&str], &str)] = &[
+        (
+            &["read", "write", "exec", "net"],
+            "[policy.defaults]\nread = \"allow\"\nwrite = \"ask\"\nexec = \"deny\"\nnet = \"deny\"\n",
+        ),
+        (
+            &[
+                "max_steps",
+                "max_tokens",
+                "max_duration_secs",
+                "max_retries",
+                "exec_timeout_secs",
+                "max_read_chars",
+                "max_wait_secs",
+                "templates",
+            ],
+            "[run]\n\
+             max_steps = 40\n\
+             max_tokens = 250000\n\
+             max_duration_secs = 900\n\
+             max_retries = 3\n\
+             exec_timeout_secs = 120\n\
+             max_read_chars = 200000\n\
+             max_wait_secs = 300\n\
+             templates = \"/srv/io/prompt-templates\"\n",
+        ),
+        (
+            &["mode", "allow_network", "force_floor"],
+            "[sandbox]\nmode = \"workspace-write\"\nallow_network = false\nforce_floor = true\n",
+        ),
+        (
+            &["max_entries", "max_chars", "max_entry_chars"],
+            "[memory]\nmax_entries = 500\nmax_chars = 200000\nmax_entry_chars = 4000\n",
+        ),
+        (
+            &["manager", "install", "build", "test", "lint", "format", "run"],
+            "[toolchain.cargo]\n\
+             manager = \"cargo\"\n\
+             install = [\"cargo\", \"fetch\"]\n\
+             build = [\"cargo\", \"build\", \"--all-targets\"]\n\
+             test = [\"cargo\", \"test\", \"--all-features\"]\n\
+             lint = [\"cargo\", \"clippy\", \"--all-targets\"]\n\
+             format = [\"cargo\", \"fmt\", \"--check\"]\n\
+             run = [\"cargo\", \"run\"]\n",
+        ),
+        (
+            &["id", "transport", "command", "args", "env", "enabled"],
+            "[[mcp]]\n\
+             id = \"github\"\n\
+             transport = \"stdio\"\n\
+             command = \"npx\"\n\
+             args = [\"-y\", \"@modelcontextprotocol/server-github\"]\n\
+             env = { GITHUB_TOKEN = \"a-literal-for-this-test\" }\n\
+             enabled = false\n",
+        ),
+        (
+            &["url", "headers", "timeout_secs"],
+            "[[mcp]]\n\
+             id = \"issues\"\n\
+             transport = \"http\"\n\
+             url = \"https://mcp.example.com/v1\"\n\
+             headers = { Authorization = \"a-literal-for-this-test\" }\n\
+             timeout_secs = 30\n",
+        ),
+        (&["path"], "[[plugin]]\npath = \"/srv/io/bundles/rust-review\"\n"),
+    ];
+
+    for (keys, toml) in sections {
+        if let Err(e) = Config::from_toml(toml) {
+            panic!(
+                "docs/config.example.toml documents {keys:?} and io-harness refuses the \
+                 section they are in: {e}. The example is now telling operators to write \
+                 a file that does not parse."
+            );
+        }
+        for key in *keys {
+            assert!(
+                names_key(&example, key),
+                "io-harness takes `{key}` and docs/config.example.toml names it nowhere as \
+                 a key — only, at most, in prose. A key the harness accepts and the example \
+                 does not write is a key an operator has no way to learn exists."
+            );
+        }
+    }
+}
+
 // --- F3: the write lands in the scope that was picked, and takes effect -------
 
 #[test]

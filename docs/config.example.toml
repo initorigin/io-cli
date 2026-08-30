@@ -21,6 +21,15 @@
 # the first 0.15.0 run an existing pair is moved into the home together, each
 # file named on screen, nothing overwritten and nothing deleted.
 #
+# SET $IO_CONFIG_HOME YOURSELF AND THE HOME IS TWO DIRECTORIES, NOT ONE. `io.toml`,
+# `runs.db` and `IO.md` follow the variable. The skills directory, its
+# `.skills-manifest`, `marketplaces/`, the staging directory and the session lock
+# do NOT: io-cli builds all five from `~/.io-cli` (`%USERPROFILE%\.io-cli` on
+# Windows) unconditionally, because pointing at a different *configuration* is a
+# different act from moving a cache of other people's repositories. So when you
+# move machines, copy BOTH — the directory the variable names and `~/.io-cli` —
+# or you arrive with your settings and none of your skills.
+#
 # A project's own `io.toml` and a gitignored `io.local.toml` layer on top.
 
 # --- The provider -----------------------------------------------------------
@@ -90,8 +99,14 @@ write = "allow"
 exec = "allow"
 net = "deny"
 
-# Named layers, evaluated after the built-in ones. A later layer may add
-# capability and may never re-allow an earlier deny.
+# Named layers. A DENY ANYWHERE BEATS AN ALLOW ANYWHERE, AND LAYER ORDER IS NOT
+# WHAT DECIDES IT. io-harness walks `Effect::ALL` reversed — strictest effect
+# first — and for each effect it scans EVERY layer before it moves on, so the
+# first deny found anywhere wins over an allow found anywhere, whether that allow
+# was written before it or after it. The defaults above are not a layer at all:
+# they are the fallback, returned only when no rule in any layer matched. A layer
+# can therefore add capability the defaults withheld, and no layer can ever
+# re-allow what another one denied.
 #
 # [[policy.layers]]
 # name = "no-secrets"
@@ -118,6 +133,10 @@ net = "deny"
 #                          adds `worktree`; see the block below
 #   [web]                  provider-executed search and fetch
 #   [memory]               how much durable memory a run may keep
+#   [toolchain.<eco>]      how THIS repository is built, tested and linted — one
+#                          table per ecosystem, `[toolchain.cargo]`,
+#                          `[toolchain.npm]`. It is what `/gates` detection reads
+#                          to offer you a command; see the block below
 #   [[plugin]]             capability bundles, declared by path. 0.20.0; see the
 #                          block below
 #   [[hook]]               what to do on an event, or in front of a tool call.
@@ -172,12 +191,26 @@ net = "deny"
 # what io-cli offers is a defect in one of the two, and the comment is the half
 # you can check.
 #
-# [run]                      # every key here is a WHOLE NUMBER, none negative
+# [run]                      # every NUMBER here is a WHOLE one, none negative
 # max_steps = 40             # how many steps one turn may take
 # max_tokens = 250000        # the token ceiling for one turn
 # max_duration_secs = 900    # wall clock for one turn
 # max_retries = 3            # how many times a failed step is retried
 # exec_timeout_secs = 120    # how long one command may run
+# max_read_chars = 200000    # the ceiling ONE read is refused against
+# max_wait_secs = 300        # the ceiling on ONE blocking mailbox read
+# templates = "/srv/io/prompt-templates"   # a DIRECTORY of prompt templates —
+#                            # a path, not a number, and no tilde (see below)
+#
+# THAT IS EIGHT OF THIRTEEN, AND THE OTHER FIVE ARE NOT MISSING. `[run]` takes
+# thirteen keys; the eight above are the eight that are a plain value on a line.
+# `skills` is a directory — and note it is a DIFFERENT key from io-cli's own
+# `[app.io-cli] skills` further down, which is the one tilde exception in this
+# file. `commit_identity` is the sub-table indexed above. `retry`, `stall` and
+# `context` are policies of io-harness's own, each its own table. A key `[run]`
+# does not know is refused WITH THE WHOLE FILE rather than dropped, so a typo
+# here is a configuration that stops parsing rather than a budget that quietly
+# is not in force.
 #
 # [sandbox]
 # mode = "workspace-write"   # read-only | workspace-write | full-access
@@ -196,6 +229,27 @@ net = "deny"
 # max_entries = 500          # how many durable entries are kept
 # max_chars = 200000         # the total size of them
 # max_entry_chars = 4000     # the size of any one of them
+#
+# [toolchain.cargo]          # ONE TABLE PER ECOSYSTEM, and the name after the
+#                            # dot is yours: `cargo`, `npm`, `go`, whatever this
+#                            # repository actually uses. `manager` is a STRING;
+#                            # the other six are ARGV ARRAYS, never shell strings,
+#                            # for the reason every other command key in this file
+#                            # is an array — nothing is word-split or expanded.
+# manager = "cargo"
+# install = ["cargo", "fetch"]
+# build = ["cargo", "build", "--all-targets"]
+# test = ["cargo", "test", "--all-features"]
+# lint = ["cargo", "clippy", "--all-targets"]
+# format = ["cargo", "fmt", "--check"]
+# run = ["cargo", "run"]
+#
+# WHAT THIS IS FOR, IN io-cli. It is what `/gates` detection reads: the offer it
+# puts in front of you — the row you accept, which then writes
+# `[app.io-cli.gates] command` in full further down — comes from io-harness
+# reading this repository, and this table is how you tell it the answer rather
+# than letting it guess. io-cli holds no list of build tools of its own,
+# deliberately, and that is stated again where the gates section says so.
 
 # --- MCP servers ------------------------------------------------------------
 #
@@ -208,6 +262,18 @@ net = "deny"
 #   command      the program, for a stdio server
 #   args         its arguments, as an ARRAY — never a shell string
 #   env          variables handed to that program
+#   url          the endpoint, for an http server
+#   headers      headers sent with every call to an http server, as a table. This
+#                is where a bearer token goes, and it takes the same ${env:NAME}
+#                reference the paragraph below describes rather than a literal
+#   timeout_secs how long ONE call to this server may take. 60 WHEN ABSENT, which
+#                is a real ceiling and not "no limit": a server that answers
+#                slowly fails the call rather than holding the turn open
+#
+# NEITHER OF THE LAST TWO IS A KEY YOU HAVE TO TYPE. `io mcp add` takes
+# `--header 'Authorization=Bearer ${env:TOKEN}'` and `--timeout-secs 30` and
+# writes exactly the two rows above; `io mcp edit <id> --timeout-secs 30` changes
+# the second afterwards. Both are in the README with the rest of those flags.
 #
 # A CREDENTIAL IS A REFERENCE AND NOT A LITERAL. io-harness resolves ${env:NAME}
 # from the environment at the moment it reads this file, so the secret stays in
@@ -239,6 +305,8 @@ net = "deny"
 # id = "issues"
 # transport = "http"
 # url = "https://mcp.example.com/v1"
+# headers = { Authorization = "Bearer ${env:ISSUES_TOKEN}" }
+# timeout_secs = 30
 #
 # `enabled` (io-harness 0.70.0, absent means true) declares a server WITHOUT
 # starting it. io-harness skips it at connect, so no process is spawned and no
@@ -355,8 +423,18 @@ net = "deny"
 # there is no accessor, so `/plugin` reports that a bundle contributed hooks and
 # nothing about how many there are or what they run.
 #
+# `path` IS TAKEN LITERALLY, AND A TILDE HERE IS A TRAP THAT MAKES NO NOISE. The
+# three `${...}` substitutions are the whole of what io-harness rewrites — the
+# rule stated under the MCP block above — and a plugin path never reaches io-cli's
+# own tilde expansion either, which is the `[app.io-cli] skills` key and nothing
+# else. So `~/bundles/rust-review` names a directory literally called `~`, that
+# directory is not there, and the bundle is DROPPED: recorded by the loader,
+# listed by `/plugin` with io-harness's reason beside it, and otherwise silent.
+# Write the path out absolutely, or relative to the discovery root, or with
+# ${env:HOME}.
+#
 # [[plugin]]
-# path = "~/bundles/rust-review"
+# path = "/Users/you/bundles/rust-review"   # or "${env:HOME}/bundles/rust-review"
 
 # --- Hooks (0.20.0) ---------------------------------------------------------
 #
@@ -682,10 +760,15 @@ fleet = "ctrl+f"
 #                RATHER THAN BY HAND: it is what the surfaces that draw money
 #                cite, and a number attributed to a vendor that never published
 #                one is the thing it exists to prevent.
-#   models       how many models the last read priced. `PriceTable` has no length
-#                and no iterator — it answers `price(model)` and nothing else — so
-#                this is the only count there is, and it is what refuses a refetch
-#                that comes back far shorter than the table it would replace.
+#   models       how many models the last read priced. io-harness 0.71.0 gave
+#                `PriceTable` `models()`, `len()` and `is_empty()`, so a live count
+#                IS available now — and a live count still cannot do this job. It
+#                answers what the merged table holds at the moment you ask; a
+#                refetch has to be measured against what ONE PARTICULAR READ priced
+#                AT THE TIME IT WAS WRITTEN, and by the moment that comparison is
+#                made the live number is a count of the very table being replaced.
+#                So this key stays, and it is what refuses a refetch that comes
+#                back far shorter than the table it would replace.
 #
 # [app.io-cli.prices]
 # source_url = "https://openrouter.ai/api/v1/models"
@@ -850,7 +933,7 @@ fleet = "ctrl+f"
 #
 # THERE IS NO `require_primary` KEY, AND THAT IS A DECISION. io-harness's own
 # Routing carries the field; it gates on Provider::reachable, a defaulted trait
-# method whose body answers yes and which no provider in io-harness 0.69
+# method whose body answers yes and which no provider in the pinned harness
 # overrides. A key for it would be accepted from this file, believed, and
 # permanently inert — you would set it, expect an unattended run to refuse to
 # start against a dead endpoint, and get exactly the behaviour you had before. It
