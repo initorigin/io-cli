@@ -2598,6 +2598,25 @@ pub const MID_TURN: &[&str] = &[
     "/image",
 ];
 
+/// Whether `word` is the first word of a command in [`COMMANDS`].
+///
+/// **The precedence rule for a skill invocation, and it points the safe way.** A
+/// skill whose name collides with a command resolves to the command, because a
+/// surface that already works must not be taken away by something an operator
+/// installed. The driver asks this before it resolves a word against the skill
+/// inventory.
+///
+/// The first word, because `/copy diff` is one entry and `copy` is what a typed
+/// line begins with.
+pub fn names_a_command(word: &str) -> bool {
+    COMMANDS.iter().any(|(name, _)| {
+        name.trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first == word)
+    })
+}
+
 /// Whether this typed line may run while a turn is in flight.
 ///
 /// Takes the whole line rather than a name, so a command whose admission ever

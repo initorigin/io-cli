@@ -529,16 +529,18 @@ impl Fleet {
     /// Counted rather than measured, because these rows are fitted to the width
     /// rather than wrapped: `rows` cuts each one, so one row is one line.
     pub fn rows_wanted(&self) -> u16 {
+        // `rows` yields one row per child and one per message, with the tier
+        // summary at their head — so the content is those three and nothing more.
+        // Counting the summary again as "the head row `render` reserves" asked for
+        // one row too many, which happened to cancel an equal-and-opposite
+        // under-ask in `App::rows_wanted`. Two compensating errors are not a
+        // correct answer; they agree only where the arithmetic happens to line up.
         let content = self
             .children
             .len()
             .saturating_add(self.messages.len())
-            // The tier line.
             .saturating_add(1);
-        u16::try_from(content)
-            .unwrap_or(u16::MAX)
-            // The head row `render` reserves.
-            .saturating_add(1)
+        u16::try_from(content).unwrap_or(u16::MAX)
     }
 
     pub fn rows(&self, width: u16, glyphs: &Glyphs) -> Vec<String> {

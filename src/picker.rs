@@ -410,11 +410,14 @@ impl Picker {
     /// is actually given.
     pub fn rows_wanted(&self) -> u16 {
         let list = u16::try_from(self.matches.len()).unwrap_or(u16::MAX);
-        let block = if self.unfolded_now() {
-            self.unfold.map_or(0, |(_, height)| height)
-        } else {
-            0
-        };
+        // **Reserved whenever a row is configured to unfold, not only while it
+        // holds the marker.** Asking for the block only when it is open makes the
+        // demand oscillate by its height on every arrow key — and the driver
+        // re-places the viewport whenever the demand changes, which is a terminal
+        // tear-down and a cursor query per keystroke, on a surface that is open
+        // while a turn is in flight. `render` still draws the block only when it
+        // is open, so the reserved rows simply show more of the list meanwhile.
+        let block = self.unfold.map_or(0, |(_, height)| height);
         list.saturating_add(block).saturating_add(1)
     }
 

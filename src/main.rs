@@ -4219,7 +4219,41 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // a static table and has no way to know what is installed, which is
         // exactly why it recognises the *shape* and leaves the *resolution* here.
         if let Command::Slash(text) = &command {
-            if let Action::Skill(wire, args) = commands::parse(text, app.keys(), &app.theme) {
+            // **Resolved against the inventory by name, qualified or not**, and
+            // that breadth is the fix for a regression this release introduced.
+            // `invoke_skill` writes `/<name>`, and `commands::parse` answers
+            // `Action::Skill` only for a name carrying a colon — so a bundle's
+            // skill round-tripped and io-cli's own skills and the operator's own,
+            // which have no qualifier at all, fell to the unknown-command notice.
+            // Choosing one from the palette printed "there is no /x" and the whole
+            // command listing. In 0.31.0 they worked, because `invoke_skill` wrote
+            // prose that submitted as an ordinary prompt.
+            //
+            // A word the static table claims is the command, never a skill: a
+            // surface that already works must not be taken away by something an
+            // operator installed. `commands::names_a_command` is that rule, in the
+            // library where it can be asserted.
+            let word = text
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let wire = io_cli::naming::wire(&word);
+            if !word.is_empty()
+                && !commands::names_a_command(&word)
+                && skills.iter().any(|listed| listed.name == wire)
+            {
+                let args = text
+                    .split_once(char::is_whitespace)
+                    .map(|(_, rest)| rest.trim().to_string())
+                    .unwrap_or_default();
+                command = Command::Submit(if args.is_empty() {
+                    wire
+                } else {
+                    format!("{wire}\n\n{args}")
+                });
+            } else if let Action::Skill(wire, args) = commands::parse(text, app.keys(), &app.theme)
+            {
                 command = if skills.iter().any(|listed| listed.name == wire) {
                     // The name io-harness put in the model's catalogue, then
                     // whatever the operator added. Not a sentence asking the model
@@ -7358,7 +7392,8 @@ async fn turn<P: Provider>(
                                 key,
                             );
                             Command::None
-                        } else if commands::opens_palette(key, app.composer.is_empty(), app.armed())
+                        } else if !app.modal()
+                            && commands::opens_palette(key, app.composer.is_empty(), app.armed())
                         {
                             picker = Some((
                                 Picker::new(
@@ -7368,7 +7403,8 @@ async fn turn<P: Provider>(
                                 Pick::Palette,
                             ));
                             Command::None
-                        } else if complete::opens(key, &app.composer.text(), app.armed()) {
+                        } else if !app.modal() && complete::opens(key, &app.composer.text(), app.armed())
+                        {
                             let effective = approval::session_policy(
                                 policy,
                                 app.posture(),
@@ -7972,6 +8008,15 @@ async fn turn<P: Provider>(
             }
         }
     }
+    // **The promise ends with the turn that made it.** `set_answering(true)` at the
+    // head of this function says an overlay in *this* process will draw a
+    // question; past this line no overlay is being opened for anything, and two
+    // paths still route question events into `Events` — the post-loop drain just
+    // below, and `watch_child`, which draws no overlay at all and whose watched
+    // child can ask. Leaving it set suppressed the durable line on both, so a
+    // question reached no surface anywhere. The flag's own doc names `false` as
+    // the safe direction; this is the line that keeps it there.
+    app.set_answering(false);
     app.status.elapsed = started.elapsed();
     paint(screen, app)?;
     Ok(Turned { stopped, ran })

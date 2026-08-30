@@ -258,6 +258,12 @@ pub struct Events {
     root: std::path::PathBuf,
 }
 
+/// io-harness's name for the tool that opens a skill.
+///
+/// Named here because it is the one tool whose `target` is a *name* rather than a
+/// path, which is what decides whether the display translation applies to it.
+pub const READ_SKILL: &str = "read_skill";
+
 impl Events {
     pub fn new(theme: Theme) -> Self {
         Self {
@@ -741,17 +747,24 @@ impl Events {
                     name: shown.to_string(),
                     raw: name.clone(),
                     // **A skill's target is a name, not a path, and since 0.32.0
-                    // it is drawn the way the operator reads it.** `relative`
-                    // passes a non-path through unchanged, so `read_skill` used to
-                    // put io-harness's own `bundle__skill` straight into the
-                    // scrollback — the one place the separator reached a person
-                    // without going through a picker. `crate::naming::display`
-                    // leaves every other target alone, because no path contains
-                    // the separator.
+                    // it is drawn the way the operator reads it** — `read_skill`
+                    // was the one place io-harness's `bundle__skill` reached a
+                    // person without going through a picker.
+                    //
+                    // **Gated on the tool, and the first draft was not.** It
+                    // translated every target, on the reasoning that no path
+                    // contains the separator — which is false and commonly so:
+                    // `__init__.py`, `__pycache__`, `__tests__`, `__mocks__`,
+                    // `__snapshots__`. `read src/__init__.py` was drawn as
+                    // `read src/:init__.py`, a path that does not exist, in the one
+                    // place an operator checks what the agent touched. Every Python
+                    // and Jest repository would have met it on the first turn.
                     target: if target == name {
                         shown.to_string()
+                    } else if name == crate::events::READ_SKILL {
+                        crate::naming::display(target)
                     } else {
-                        crate::naming::display(&relative(target, &self.root))
+                        relative(target, &self.root)
                     },
                     opened_at: at,
                     measured: None,

@@ -29,16 +29,25 @@
 //!
 //! # Freshness
 //!
-//! [`Resolved::stale`] stats each declared bundle's manifest and compares its
-//! modified time **and** its length against what was recorded. Two writes inside
-//! one second that leave the length unchanged are the case a filesystem with
-//! one-second mtime granularity cannot distinguish, and this will not see the
+//! [`Resolved::stale`] **re-stats the paths it recorded and nothing else.** It
+//! opens no manifest and calls no loader, which is the whole point: a check that
+//! resolved the set in order to decide whether to resolve the set would leave the
+//! per-turn cost exactly where it was. The first draft did precisely that — it
+//! compared `stamp_of(&config.plugins())`, and `Config::plugins()` is the full
+//! read — so the release halved a cost it claimed to have removed. The adversarial
+//! review caught it; the claim and the code now agree.
+//!
+//! Two kinds of path are stamped. Each bundle's `plugin.toml`, so an **edit** is
+//! seen; and every file [`Config::sources`] names, so a bundle **declared or
+//! undeclared** is seen — a new `[[plugin]]` entry changes the file that holds it.
+//! A bundle whose directory is removed fails its stat, which is a change too.
+//!
+//! Each path is compared on its modified time **and** its length. Two writes
+//! inside one second that leave the length unchanged are the case a filesystem
+//! with one-second mtime granularity cannot distinguish, and this will not see the
 //! second one until something else about the bundle changes. That is stated here,
 //! in `docs/guide/plugins.md`, and asserted — a cache that cannot prove freshness
 //! should say so rather than imply a guarantee it has not got.
-//!
-//! A bundle that appears or disappears changes the declared set, which is compared
-//! whole, so an install or a removal is always seen.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -68,7 +77,7 @@ impl Resolved {
     /// disk I/O.
     pub fn load(config: &Config) -> Self {
         let plugins = config.plugins();
-        let stamp = stamp_of(&plugins);
+        let stamp = stamp_of(watched(&plugins, config));
         Self { plugins, stamp }
     }
 
@@ -85,37 +94,58 @@ impl Resolved {
 
     /// Whether anything on disk has moved since this was resolved.
     ///
-    /// Stats only — no manifest is parsed and no skill file is opened — so asking
-    /// costs a bounded number of `metadata` calls rather than the resolution it
-    /// is deciding whether to repeat.
+    /// **Stats only.** No manifest is opened and no loader is called, so asking
+    /// costs a bounded number of `metadata` calls rather than the resolution it is
+    /// deciding whether to repeat — which is the difference between removing the
+    /// per-turn cost and merely halving it.
+    ///
+    /// The paths re-stated here are the ones recorded at load: each bundle's
+    /// manifest, and every configuration file `Config::sources` named. Comparing
+    /// the whole set is what catches a bundle declared or undeclared, because a
+    /// new `[[plugin]]` entry changes the file that holds it, and what catches a
+    /// bundle directory that has been removed, because its stat then fails.
     pub fn stale(&self, config: &Config) -> bool {
-        // The declared set can itself change, and comparing the stamps whole is
-        // what catches a bundle installed or removed: a per-entry comparison over
-        // the *old* list would never look at a new one.
-        stamp_of(&config.plugins()) != self.stamp
+        let paths: Vec<PathBuf> = self
+            .stamp
+            .iter()
+            .map(|(path, _)| path.clone())
+            .chain(config.sources().iter().map(|(_, path)| path.clone()))
+            .collect();
+        stamp_of(paths) != self.stamp
     }
 }
 
-/// The manifest facts for every bundle a set holds, loaded and disabled alike.
+/// Every path whose movement means the plugin set has to be read again: each
+/// bundle's manifest, and each configuration file that could declare one.
 ///
-/// **Disabled bundles are stamped too.** A bundle switched off is still declared,
-/// still parsed by `Plugins::load`, and still something an operator can edit — and
-/// leaving it out would mean an edit to a disabled bundle never showed up when it
-/// was switched back on.
-fn stamp_of(plugins: &Plugins) -> Stamp {
-    let mut out: Stamp = plugins
+/// **Disabled bundles are watched too.** A bundle switched off is still declared,
+/// still parsed by the loader, and still something an operator can edit — leaving
+/// it out would mean an edit to a disabled bundle never showed up when it was
+/// switched back on.
+fn watched(plugins: &Plugins, config: &Config) -> Vec<PathBuf> {
+    plugins
         .iter()
         .chain(plugins.disabled())
-        .map(|plugin| {
-            let manifest = plugin.root().join(io_harness::PLUGIN_FILE);
-            let facts = std::fs::metadata(&manifest)
+        .map(|plugin| plugin.root().join(io_harness::PLUGIN_FILE))
+        .chain(config.sources().iter().map(|(_, path)| path.clone()))
+        .collect()
+}
+
+/// What a stat says about each of `paths`, right now.
+fn stamp_of(paths: impl IntoIterator<Item = PathBuf>) -> Stamp {
+    let mut out: Stamp = paths
+        .into_iter()
+        .map(|path| {
+            let facts = std::fs::metadata(&path)
                 .ok()
                 .and_then(|meta| meta.modified().ok().map(|at| (at, meta.len())));
-            (manifest, facts)
+            (path, facts)
         })
         .collect();
-    // Ordered, so two resolutions of the same disk compare equal however the
-    // declarations were listed.
+    // Ordered and deduplicated, so two readings of the same disk compare equal
+    // however the declarations were listed — and so a path named by both a bundle
+    // and a configuration file is stamped once.
     out.sort();
+    out.dedup();
     out
 }

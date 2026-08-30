@@ -1090,6 +1090,14 @@ impl App {
     /// interrupted turn keeps its partial output in the scrollback instead of
     /// losing it with the turn.
     pub fn finished(&mut self) {
+        // **The estimate dies with the turn, however the turn died.** It is
+        // cleared at `Step` and at `Finished`, but not every ending emits one: a
+        // provider error propagating out mid-stream is exactly the case where
+        // tokens have streamed, and a deferred decision returns without
+        // finishing. Left standing, a tilde-marked guess sat on an idle prompt
+        // for a turn that was over, and then bled into the next one — a settled
+        // number and a guess added together, which the field's own doc forbids.
+        self.status.streaming = None;
         self.mode = Mode::Idle;
         self.status.working = false;
         // A per-turn fact, cleared with the turn. Left standing, an idle session
@@ -1454,7 +1462,13 @@ impl App {
         } else {
             composer.saturating_add(queued)
         };
-        let chrome = 6 + u16::from(queued == 0 && !self.fleet_open);
+        // **The same predicate `render` uses, not a restatement of it.** `render`
+        // keeps the blank above the activity line unless the queue is *drawn*,
+        // and the queue is not drawn while the fleet view has the composer's
+        // rect. Spelling it as `queued == 0 && !fleet_open` dropped the row
+        // whenever the fleet was open, so the demand under-asked by one — masked,
+        // until now, by `Fleet::rows_wanted` counting its summary row twice.
+        let chrome = 6 + u16::from(!self.queue_drawn());
         chrome.saturating_add(surface)
     }
 

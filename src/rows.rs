@@ -93,8 +93,19 @@ pub fn elide(
     if total <= room {
         return lines;
     }
+    // **The suffix is measured, not assumed to be one row.** `⋯ N more rows` is
+    // fourteen characters in Unicode and sixteen in ASCII, so below about fifteen
+    // columns it wraps — and reserving one row for it returned content a row
+    // taller than the caller had.
+    let suffix = wrapped(std::slice::from_ref(&more(total, theme)), width).max(1);
+    if room <= suffix {
+        // No room for content *and* a count. The count wins: a surface drawing
+        // nothing and saying nothing is indistinguishable from one with nothing to
+        // draw, which is the whole failure this function exists to prevent.
+        return vec![more(total, theme)];
+    }
     let mut keep = lines.len().min(usize::from(room));
-    while keep > 0 && wrapped(&lines[..keep], width).saturating_add(1) > room {
+    while keep > 0 && wrapped(&lines[..keep], width).saturating_add(suffix) > room {
         keep -= 1;
     }
     let mut out = lines[..keep].to_vec();

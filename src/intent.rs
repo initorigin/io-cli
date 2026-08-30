@@ -278,10 +278,13 @@ impl Intent {
                 .choices
                 .get(index)
                 .map(|choice| Some(choice.clone())),
-            // `Ctrl+C` inside the list. It means what `Esc` means here — nobody is
-            // answering — and `None` parks the run rather than denying it.
-            Outcome::Cancelled => Some(None),
-            Outcome::Idle => None,
+            // **`Cancelled` cannot arrive, and saying so is the point.** The only
+            // key a `Picker` cancels on is `Ctrl+C`, and `App::key` takes that
+            // before this overlay ever sees it — its own comment settles the
+            // question "does Ctrl+C decline, or interrupt?" with *it interrupts*.
+            // An arm answering `Some(None)` here would be a second, contradictory
+            // answer to that question, in a different file.
+            Outcome::Cancelled | Outcome::Idle => None,
         }
     }
 

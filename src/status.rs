@@ -711,6 +711,10 @@ impl Status {
     /// is costing, and a number that only climbs across an hour says nothing
     /// about it.
     pub fn start_run(&mut self) {
+        // Defensively, beside `run_tokens`: a new turn must not inherit the
+        // previous one's estimate even if that turn ended by a path that emitted
+        // no `Finished`.
+        self.streaming = None;
         self.elapsed = Duration::ZERO;
         self.run_tokens = None;
         // Back to "no answer" rather than to zero, and it is the same distinction
@@ -1130,6 +1134,11 @@ impl Status {
         }
     }
 
+    /// What the last turn cost, in money, or `None` where nothing prices it.
+    ///
+    /// (Its own doc, restored: 0.32.0 inserted `token_field` above it and left
+    /// this function describing itself with `token_field`'s paragraph — so
+    /// rustdoc had the `/cost` explanation attached to the token figure.)
     pub fn cost_field(&self) -> Option<String> {
         self.cost.map(crate::cost::money)
     }
