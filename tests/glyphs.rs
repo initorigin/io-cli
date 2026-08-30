@@ -35,7 +35,7 @@ use io_cli::glyphs::{self, Glyphs, ASCII, UNICODE};
 use io_cli::picker::{fit, fit_left, Picker, Row};
 use io_cli::status::Status;
 use io_cli::theme::{Background, Theme, DARK, MONO};
-use io_harness::{Edit, EventKind, RunEvent, TodoItem, TodoState};
+use io_harness::{Edit, EventKind, Question, RunEvent, TodoItem, TodoState};
 use ratatui::text::Line;
 
 /// The theme every sweep below renders in: the ordinary dark palette, fully
@@ -542,6 +542,16 @@ fn every_event_this_release_renders_draws_in_ascii() {
         EventKind::QuestionAsked {
             question: "which of the two parsers did you mean?".into(),
             choices: vec!["the tokenizer".into(), "the expression parser".into()],
+        },
+        // 0.33.0 — the batched ask io-harness 0.72.0 added. Its rows carry the
+        // muted leader, a separator between the ordinal and the question, and the
+        // bullet in front of each offer, and all three differ between the sets.
+        EventKind::QuestionsAsked {
+            questions: vec![
+                Question::new("which of the two parsers did you mean?")
+                    .with_choices(["the tokenizer", "the expression parser"]),
+                Question::new("port the error paths with it?"),
+            ],
         },
         EventKind::QuestionAnswered {
             answer: "the tokenizer".into(),
@@ -1259,6 +1269,77 @@ fn the_worktree_mark_is_the_same_word_in_both_sets() {
         unicode.replace(UNICODE.separator.trim(), ASCII.separator.trim()),
         plain,
         "the sets draw more than a separator apart\nunicode: {unicode:?}\nascii:   {plain:?}",
+    );
+}
+
+/// **F5 — a batched ask is legible as a batch in both sets (0.33.0).**
+///
+/// The sweep above already proves the rows are ASCII-clean. What it cannot prove
+/// is that they still *say* anything: a substitution that dropped the ordinal, or
+/// one that reached for a numbered mark in Unicode and a bare number in ASCII,
+/// would pass it. So the batch is rendered twice and the two renderings are
+/// compared.
+///
+/// The claim is the same one `the_worktree_mark_is_the_same_word_in_both_sets`
+/// makes and it is deliberate: what makes a batch legible as a batch is the word
+/// `n of m`, which needs no entry in [`Glyphs`] at all. The two sets differ by
+/// their separator and their bullet and by nothing else, which is asserted as a
+/// whole-string equality after normalising exactly those two — and each set is
+/// then required to have actually drawn its own pair, so the equality is not two
+/// strings that carry no mark at all.
+#[test]
+fn a_batched_ask_numbers_its_questions_in_both_sets() {
+    let batch = || EventKind::QuestionsAsked {
+        questions: vec![
+            Question::new("which of the two parsers did you mean?")
+                .with_choices(["the tokenizer", "the expression parser"]),
+            Question::new("port the error paths with it?"),
+        ],
+    };
+    let render = |theme: Theme| {
+        let mut events = io_cli::events::Events::new(theme);
+        text(&events.event(&RunEvent::new(1, 1, batch()), Duration::ZERO))
+    };
+    let unicode = render(DARK.with_glyphs(UNICODE));
+    let plain = render(ascii());
+
+    assert_ascii("the batched ask", &plain);
+    for drawn in [&unicode, &plain] {
+        assert!(
+            drawn.contains("2 questions together"),
+            "the heading stopped saying the ask was a batch: {drawn:?}",
+        );
+        assert!(
+            drawn.contains("1 of 2") && drawn.contains("2 of 2"),
+            "the ordinals are what make the batch legible once the reader is past \
+             the heading, and one of them is gone: {drawn:?}",
+        );
+        assert!(
+            drawn.contains("port the error paths with it?"),
+            "a question of the batch went missing: {drawn:?}",
+        );
+    }
+
+    // Each set drew its own marks. Without this the equality below would hold for
+    // a renderer that had stopped drawing a bullet and a separator entirely.
+    for (set, drawn) in [(UNICODE, &unicode), (ASCII, &plain)] {
+        assert!(
+            drawn.contains(set.bullet) && drawn.contains(set.separator.trim()),
+            "the {} set drew neither its bullet nor its separator: {drawn:?}",
+            set.name,
+        );
+    }
+
+    // The separator and the bullet are the *only* difference. A batch that had
+    // reached for a mark with no ASCII form would fail the sweep; one that had
+    // reached for a different mark per set would pass the sweep and fail this.
+    assert_eq!(
+        unicode
+            .replace(UNICODE.separator.trim(), ASCII.separator.trim())
+            .replace(UNICODE.bullet, ASCII.bullet),
+        plain,
+        "the sets draw more than a separator and a bullet apart\n\
+         unicode: {unicode:?}\nascii:   {plain:?}",
     );
 }
 

@@ -3,7 +3,7 @@
 //! Three rules shape this module.
 //!
 //! **Every kind is triaged, and nothing falls through.** `EventKind` is
-//! `#[non_exhaustive]` and has fifty-one variants today, so a wildcard arm is not
+//! `#[non_exhaustive]` and has fifty-two variants today, so a wildcard arm is not
 //! a shortcut here, it is required by the type. Until 0.11.0 that wildcard
 //! *rendered*, committing the variant's own snake-cased name in a muted line —
 //! which is why a transcript said `prompt_composed` and `answered` at whoever was
@@ -1247,6 +1247,66 @@ impl Events {
                             format!("  {} {choice}", theme.glyphs.bullet),
                             theme.style(Tone::Muted),
                         )));
+                    }
+                }
+                lines
+            }
+            // **A whole ask, and the fact that it *is* one (0.33.0).** io-harness
+            // 0.72.0 emits this instead of a `QuestionAsked` per question when the
+            // agent asks several together, and deliberately does not emit both — so
+            // an interface that knows only the singular arm above renders a batch
+            // as nothing at all.
+            //
+            // The count is committed whatever else is on screen, and that is the
+            // difference from the arm above rather than an oversight in it.
+            // `crate::intent::Answerer` implements `Responder::answer` alone, so
+            // io-harness's `answer_all` walks the batch and the overlay draws one
+            // question at a time; nothing there says the three arrived together.
+            // The questions themselves keep the singular's rule and are drawn only
+            // where no overlay will draw them, because asking an operator the same
+            // thing twice is the defect 0.32.0 removed and a batch would repeat it
+            // once per question.
+            EventKind::QuestionsAsked { questions } => {
+                let mut lines = self.flush_text();
+                let asked = questions.len();
+                // A batch of one is a real batch — io-harness rejects an empty
+                // list and accepts a single-element one — so the sentence is
+                // written for it rather than saying `1 questions`.
+                lines.push(theme.notice(
+                    Tone::Accent,
+                    if asked == 1 {
+                        "the agent asks one question".to_string()
+                    } else {
+                        format!("the agent asks {asked} questions together")
+                    },
+                ));
+                if self.plain || !self.answering {
+                    for (index, asked_question) in questions.iter().enumerate() {
+                        lines.push(Line::from(vec![
+                            Span::styled(leader(separator), theme.style(Tone::Muted)),
+                            // The ordinal is the whole of what makes this legible
+                            // as a batch once the reader is past the heading, and
+                            // it is words rather than a mark so that it survives
+                            // both glyph sets unchanged.
+                            Span::styled(
+                                format!("{} of {asked}", index + 1),
+                                theme.style(Tone::Muted),
+                            ),
+                            Span::styled(separator, theme.style(Tone::Muted)),
+                            Span::styled(
+                                asked_question.question.clone(),
+                                theme.style(Tone::Normal),
+                            ),
+                        ]));
+                        // `Question::choices` is `Vec<Choice>` from 0.72.0 — the
+                        // label is what an answer is spelled with, and the rest of
+                        // a `Choice` belongs to the overlay that can lay it out.
+                        for choice in &asked_question.choices {
+                            lines.push(Line::from(Span::styled(
+                                format!("    {} {}", theme.glyphs.bullet, choice.label),
+                                theme.style(Tone::Muted),
+                            )));
+                        }
                     }
                 }
                 lines
