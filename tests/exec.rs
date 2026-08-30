@@ -1912,3 +1912,69 @@ fn a_payload_without_its_verdict_and_a_verdict_without_its_payload_are_both_refu
         RecoveryDecision::Abort,
     );
 }
+
+// ---------------------------------------------------------------------------
+// O15 — the whole release stayed on the interactive side of the event stream
+// ---------------------------------------------------------------------------
+
+/// **O15 — no interface change reached the headless path.**
+///
+/// 0.32.0 is entirely an interface release: a viewport that grows, an answerable
+/// question overlay, a name translated for display, a mid-turn command list, a
+/// provisional token figure. Every one of those is a renderer or a keyboard, and
+/// `io exec` has neither — it writes `serde_json::to_string` of io-harness's own
+/// `RunEvent`, one per line, and defines no shape of its own.
+///
+/// Asserted as a **source property** rather than by diffing two binaries' output,
+/// because the byte comparison needs a provider and this suite has none: what
+/// makes the NDJSON identical is that nothing in this release is reachable from
+/// here, and that is checkable exactly. The end-to-end comparison is the live
+/// suite's, and the release record carries it.
+///
+/// The one thing that did change in `src/exec.rs` is where the plugin set comes
+/// from — resolved explicitly through `crate::resolved` instead of implicitly
+/// inside the contract builder. That is the same value by a different route, so
+/// the contract it produces is unchanged.
+///
+/// Sabotage: render a token estimate, or a `bundle:name`, anywhere in the headless
+/// path. Only this fails.
+#[test]
+fn o15_none_of_this_releases_interface_reaches_the_headless_path() {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/exec.rs"),
+    )
+    .expect("the headless driver");
+
+    for surface in [
+        // The display translation: `io exec` reports io-harness's own names,
+        // because a script reads its output and a script addresses the wire.
+        "naming::display",
+        "naming::wire",
+        // The wrapped-row measurement and the counted elision are viewport
+        // concerns, and there is no viewport here.
+        "rows::wrapped",
+        "rows::elide",
+        // The provisional token figure is a render of events already emitted.
+        "streaming",
+        // The mid-turn command list and the queue's delivery are keyboard
+        // concerns, and there is no keyboard here.
+        "runs_mid_turn",
+        "deliver_queued",
+        // The growing viewport.
+        "viewport_for",
+        "replace_from",
+    ] {
+        assert!(
+            !text.contains(surface),
+            "`{surface}` reached the headless path, so `io exec`'s output is no \
+             longer the 0.31.0 stream a script was written against",
+        );
+    }
+
+    // And the line is still io-harness's own serialization, with no shape of
+    // io-cli's between the event and the byte stream.
+    assert!(
+        text.contains("serde_json::to_string(event)"),
+        "the NDJSON line is io-harness's `RunEvent`, serialized whole",
+    );
+}

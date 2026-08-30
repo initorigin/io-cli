@@ -17,7 +17,8 @@
 | `Ctrl+F` | show the fleet: the children this turn has spawned |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
 | `Esc` | stop the running turn, or close a picker without choosing |
-| `/` | at an empty prompt, open the command palette |
+| `Tab` | in any list, take the row under the marker; `Shift+Tab` steps back |
+| `/` | open the command palette — at the prompt or while a turn runs |
 | `@` | after a space, complete a path from the workspace |
 | `!` | run the rest of the line in your shell; the agent never sees it |
 
@@ -134,3 +135,30 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)
+
+## While a turn is running
+
+**Ten commands report while the agent works.** `/status`, `/context`, `/cost`,
+`/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet` and `/image` all answer
+mid-turn, `/` opens the palette and `@` completes a path, and `/compact` and
+`/steer` reach the running turn as they always have.
+
+Until 0.32.0 every slash but those last two was refused with *not while a turn is
+running — Ctrl+C interrupts it first*, so reading a status page meant stopping
+your own work to do it. None of these was a missing capability; each was one the
+product had and withheld.
+
+**Everything else keeps that refusal, and the rule is what a command does rather
+than how harmless it looks.** A command that reassigns the session or the
+provider, writes the store or a configuration file, or submits a turn of its own
+is refused: `/clear`, `/resume`, `/fork`, `/model`, `/undo`, `/setup`, `/import`,
+`/profile`, `/effort`, `/contain`, `/plan`, `/gates`, `/remember`, `/commit`,
+`/config`, `/plugin`, `/mcp`, `/provider`, `/skills`, `/memory`, `/store`, and a
+`!` line.
+
+**`/config` is refused even bare**, and that is worth saying because it looks like
+a report. Its picker offers a row that re-reads your provider's catalogue, writes
+the prices into a scope file and reassigns the configuration the running turn is
+holding. The guard is on the whole command rather than on the verb, deliberately:
+splitting a reading form from a writing one is where a mistake ships a write into
+a turn that is already running.

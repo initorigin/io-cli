@@ -586,7 +586,10 @@ pub fn rows(skills: &[Listed], width: u16, glyphs: &Glyphs) -> Vec<Row> {
                 ));
             }
 
-            Row::with_detail(skill.name.clone(), detail)
+            // **Displayed with a colon, addressed with the separator.** `name` is
+            // the string io-harness put in the model's catalogue and resolves by
+            // equality; what is drawn here is only what a person reads.
+            Row::with_detail(crate::naming::display(&skill.name), detail)
         })
         .collect()
 }

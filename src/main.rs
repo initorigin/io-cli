@@ -415,7 +415,14 @@ async fn drive(
     // never reaches a path that is joined to, so this cannot resolve anything
     // against the working directory.
     let home = io_cli::home::authored().unwrap_or_default();
-    let bundles = bundle_skills(&config);
+    // **Resolved once for the whole session, here, before the event loop
+    // exists.** `Config::plugins()` re-reads and re-parses every declared
+    // bundle's manifest on each call, and io-cli was doing that twice on the
+    // build path of every turn. `block_in_place` keeps the read off the task
+    // that will drive the loop; `src/resolved.rs` is the only module permitted
+    // to make the call at all, asserted by `tests/dependencies.rs`.
+    let holdings = tokio::task::block_in_place(|| io_cli::resolved::Resolved::load(&config));
+    let bundles = bundle_skills(holdings.loaded());
     let (skills, complaint) = commands::skills(&home, skills_dir.as_deref(), &bundles);
     if let Some(complaint) = complaint {
         notices.push(complaint);
@@ -448,7 +455,14 @@ async fn drive(
     // every turn and reported here, once. The file does not change while the
     // session runs, so the sentence is the same on the fiftieth turn as on the
     // first — and a warning that repeats is one an operator learns to read past.
-    notices.extend(io_cli::contract::server_notices(&config, &capabilities));
+    // The set already resolved a few lines above, not a second reading of the
+    // same disk. Caught by `n1_the_driver_resolves_the_plugin_set_once_and_again_
+    // only_when_it_moved`, which is the gate doing exactly what it is for.
+    notices.extend(io_cli::contract::server_notices(
+        &config,
+        holdings.loaded(),
+        &capabilities,
+    ));
     // Said only by a file that actually wrote `[app.io-cli] max_steps`, which is
     // why the answer comes from the field and not from the cap this session ended
     // up with — every session has one of those. The key keeps winning until
@@ -544,6 +558,7 @@ async fn drive(
             plain,
             containment,
             capabilities,
+            holdings,
             skills,
             profile,
             home: io_cli::home::path(),
@@ -562,13 +577,14 @@ async fn drive(
 /// there and not in the skills directory.
 fn skills_view(
     config: &Config,
+    plugins: &io_harness::Plugins,
     capabilities: &io_cli::contract::Capabilities,
     root: &std::path::Path,
 ) -> io_cli::skillview::View {
     let Some(home) = io_cli::home::authored() else {
         return io_cli::skillview::View::default();
     };
-    let bundles = bundle_skills(config);
+    let bundles = bundle_skills(plugins);
     match io_cli::contract::skills_dir(config, capabilities, root.to_path_buf()) {
         Some(dir) => io_cli::skillview::view(&home, &dir, &bundles),
         // **Still the bundles, with no directory of the operator's own.** A home
@@ -750,8 +766,8 @@ fn import_rows(
 /// and the run would fail on a skill the surface said was there. It would also
 /// make `/plugin` report a missing skills directory as a per-turn error for a
 /// bundle no turn touches.
-fn bundle_skills(config: &Config) -> Vec<(String, std::path::PathBuf)> {
-    io_cli::pluginview::view(config)
+fn bundle_skills(plugins: &io_harness::Plugins) -> Vec<(String, std::path::PathBuf)> {
+    io_cli::pluginview::view(plugins)
         .plugins
         .into_iter()
         .filter(|listed| listed.enabled)
@@ -801,6 +817,8 @@ struct Interactive<'a, 'b> {
     /// a caller's contract. 0.12.0 is a different change: it is where the plan
     /// gate stopped riding containment.
     capabilities: io_cli::contract::Capabilities,
+    /// The plugin set, resolved once at startup and handed to the session.
+    holdings: io_cli::resolved::Resolved,
     /// What io-harness discovered in the configured skills directory, walked once
     /// at startup. Empty when nothing is configured and empty when the walk
     /// failed — the notice above is what tells those two apart.
@@ -852,6 +870,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.plain,
             self.containment,
             self.capabilities,
+            self.holdings,
             self.skills,
             self.profile,
             self.home,
@@ -890,6 +909,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // `Config` would leave every `[app.io-cli]` answer stale while the rest of
     // the session moved on.
     mut capabilities: io_cli::contract::Capabilities,
+    // **The plugin set, resolved once for the session.** Mutable because it is
+    // re-resolved when the disk moves — `Resolved::stale` stats the declared
+    // manifests and nothing more, so asking costs a bounded number of `metadata`
+    // calls rather than the resolution it is deciding whether to repeat.
+    mut holdings: io_cli::resolved::Resolved,
     // Mutable from 0.19.0, and for a reason that did not exist before it: this is
     // the list the `/` palette offers, walked once at startup, and until this
     // release the directory behind it only ever changed out of band. `/skills`
@@ -982,6 +1006,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         String::new(),
         session.root().to_path_buf(),
         &config,
+        holdings.loaded(),
         &capabilities,
         std::sync::Arc::new(answerer),
         None,
@@ -1373,6 +1398,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                     &mut session,
                                                     &effective,
                                                     &config,
+                                                    holdings.loaded(),
                                                     contained
                                                         .then_some(containment.as_ref())
                                                         .flatten(),
@@ -2393,7 +2419,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // consequence the operator has to still be able to
                                 // read after they have answered.
                                 if let Some(said) = io_cli::marketplace::removal_cost(
-                                    &io_cli::pluginview::view(&config),
+                                    &io_cli::pluginview::view(holdings.loaded()),
                                     &market.root,
                                     io_cli::home::adapters().as_deref(),
                                 ) {
@@ -2486,7 +2512,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             // Getting a *different* skill than the row you read,
                             // silently, is worse than being told it moved.
                             let drawn = drawn.get(index).cloned();
-                            let view = skills_view(&config, &capabilities, session.root());
+                            let view = skills_view(
+                                &config,
+                                holdings.loaded(),
+                                &capabilities,
+                                session.root(),
+                            );
                             let found = drawn.as_ref().and_then(|(name, path)| {
                                 view.skills
                                     .iter()
@@ -2561,7 +2592,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // reason it goes to the move: the refusal lives
                                 // inside `skillview::remove`, so a second caller
                                 // cannot walk past it.
-                                match io_cli::skillview::remove(path, &bundle_skills(&config)) {
+                                match io_cli::skillview::remove(
+                                    path,
+                                    &bundle_skills(holdings.loaded()),
+                                ) {
                                     Ok(gone) => {
                                         // The palette walks its list once at
                                         // startup, and this is the second thing in
@@ -2576,7 +2610,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                 session.root().to_path_buf(),
                                             )
                                             .as_deref(),
-                                            &bundle_skills(&config),
+                                            &bundle_skills(holdings.loaded()),
                                         )
                                         // `.0` for the reason the sibling refresh
                                         // below takes it: the second half is the
@@ -2640,7 +2674,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // parent, so a bundle path reaching the move
                                 // creates `disabled/` inside somebody else's
                                 // bundle and takes their file into it.
-                                let bundles = bundle_skills(&config);
+                                let bundles = bundle_skills(holdings.loaded());
                                 let moved = if *enabled {
                                     io_cli::skillview::disable(path, &bundles)
                                 } else {
@@ -2671,7 +2705,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             // carried list would go on offering a
                                             // bundle's skills after the bundle was
                                             // removed.
-                                            &bundle_skills(&config),
+                                            &bundle_skills(holdings.loaded()),
                                         )
                                         .0;
                                         app.record(
@@ -3211,7 +3245,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             ),
                                         );
                                     }
-                                    Err(refusal) => app.record(Tone::Error, refusal),
+                                    // `Tone::Refused`, like every sibling arm in
+                                    // this same `match`. A profile that cannot be
+                                    // switched to is refused by the same rules
+                                    // those arms are refused by, and being the one
+                                    // arm drawn as an error made it read as a
+                                    // failure of the program rather than an answer
+                                    // from it.
+                                    Err(refusal) => app.record(Tone::Refused, refusal),
                                 }
                             }
                         }
@@ -4168,6 +4209,81 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // neither asserted nor sabotaged. This arm holds the wiring: build the
         // policy actually in force, ask, and either say why not or submit.
         let mut command = app.key(key);
+        // **A skill invocation is a submit too, and for the same reason.** It
+        // hands work to the agent rather than reporting something, so it becomes
+        // the `Command::Submit` a typed prompt becomes.
+        //
+        // **Resolved here rather than in the parse, because this is where the
+        // inventory lives.** `skills` is re-walked at every turn boundary, so
+        // `/plugin` and `/import` cannot leave it stale; `commands::parse` matches
+        // a static table and has no way to know what is installed, which is
+        // exactly why it recognises the *shape* and leaves the *resolution* here.
+        if let Command::Slash(text) = &command {
+            // **Resolved against the inventory by name, qualified or not**, and
+            // that breadth is the fix for a regression this release introduced.
+            // `invoke_skill` writes `/<name>`, and `commands::parse` answers
+            // `Action::Skill` only for a name carrying a colon — so a bundle's
+            // skill round-tripped and io-cli's own skills and the operator's own,
+            // which have no qualifier at all, fell to the unknown-command notice.
+            // Choosing one from the palette printed "there is no /x" and the whole
+            // command listing. In 0.31.0 they worked, because `invoke_skill` wrote
+            // prose that submitted as an ordinary prompt.
+            //
+            // A word the static table claims is the command, never a skill: a
+            // surface that already works must not be taken away by something an
+            // operator installed. `commands::names_a_command` is that rule, in the
+            // library where it can be asserted.
+            let word = text
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let wire = io_cli::naming::wire(&word);
+            if !word.is_empty()
+                && !commands::names_a_command(&word)
+                && skills.iter().any(|listed| listed.name == wire)
+            {
+                let args = text
+                    .split_once(char::is_whitespace)
+                    .map(|(_, rest)| rest.trim().to_string())
+                    .unwrap_or_default();
+                command = Command::Submit(if args.is_empty() {
+                    wire
+                } else {
+                    format!("{wire}\n\n{args}")
+                });
+            } else if let Action::Skill(wire, args) = commands::parse(text, app.keys(), &app.theme)
+            {
+                command = if skills.iter().any(|listed| listed.name == wire) {
+                    // The name io-harness put in the model's catalogue, then
+                    // whatever the operator added. Not a sentence asking the model
+                    // to please use a skill — that was 0.31.0's `invoke_skill`,
+                    // and whether the skill ran at all depended on how the English
+                    // read.
+                    //
+                    // **This is as structural as io-cli can make it, and the limit
+                    // is io-harness's.** `read_skill` is the *model's* tool and
+                    // there is no public call that runs a skill on the model's
+                    // behalf, so what io-cli controls is that the prompt is the
+                    // catalogue name and nothing else.
+                    Command::Submit(if args.is_empty() {
+                        wire
+                    } else {
+                        format!("{wire}\n\n{args}")
+                    })
+                } else {
+                    let dash = app.theme.glyphs.dash;
+                    app.say(
+                        Tone::Warning,
+                        format!(
+                            "there is no {} skill {dash} /skills lists what is installed",
+                            io_cli::naming::display(&wire),
+                        ),
+                    );
+                    Command::None
+                };
+            }
+        }
         if let Command::Slash(text) = &command {
             if let Action::Commit(allow) = commands::parse(text, app.keys(), &app.theme) {
                 // **Asked first, allowed second, and the order is the fix for a
@@ -4267,6 +4383,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
             }
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
+                // Rewritten into a `Command::Submit` above, for the reason
+                // `/commit` is: invoking a skill hands work to the agent, so it
+                // has to become the same submit a typed prompt becomes.
+                Action::Skill(..) => debug_assert!(
+                    false,
+                    "a skill invocation is rewritten into a submit before the match"
+                ),
                 Action::Print(lines) => {
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
@@ -4398,7 +4521,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // before it offers the same removal.
                                 if let Some(clone) = io_cli::fetch::at(named) {
                                     if let Some(warned) = io_cli::marketplace::removal_cost(
-                                        &io_cli::pluginview::view(&config),
+                                        &io_cli::pluginview::view(holdings.loaded()),
                                         &clone,
                                         io_cli::home::adapters().as_deref(),
                                     ) {
@@ -4425,8 +4548,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         .to_string(),
                                 ),
                                 Some(home) => {
-                                    let view = skills_view(&config, &capabilities, session.root());
-                                    let bundles = bundle_skills(&config);
+                                    let view = skills_view(&config, holdings.loaded(), &capabilities, session.root());
+                                    let bundles = bundle_skills(holdings.loaded());
                                     let done = match &verb {
                                         io_cli::manage::SkillVerb::Add { source } => {
                                             io_cli::skillview::install(&home, source)
@@ -4486,7 +4609,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                         session.root().to_path_buf(),
                                                     )
                                                     .as_deref(),
-                                                    &bundle_skills(&config),
+                                                    &bundle_skills(holdings.loaded()),
                                                 )
                                                 .0;
                                                 app.record(Tone::Success, said);
@@ -4867,7 +4990,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // a directory discovery never looks at and is exactly where the
                 // operator's next move probably is.
                 Action::Skills => {
-                    let view = skills_view(&config, &capabilities, session.root());
+                    let view = skills_view(&config, holdings.loaded(), &capabilities, session.root());
                     if let Some(sentence) = &view.failed {
                         app.record(Tone::Refused, sentence.clone());
                     }
@@ -4943,7 +5066,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // the operator has just edited on disk is reflected without a
                     // reload — and a bundle they have just broken shows up as a
                     // refusal in the same breath.
-                    let view = io_cli::pluginview::view(&config);
+                    let view = io_cli::pluginview::view(holdings.loaded());
                     // **The same call `/skills` makes, deliberately.** A bundle
                     // whose declared skills directory is absent ends every turn of
                     // the session, and both surfaces have to say so — but saying
@@ -4954,7 +5077,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // agree. `Plugins::dropped` cannot cover this: the bundle
                     // loaded fine, and it is the directory it names that is gone.
                     for (id, sentence) in
-                        io_cli::skillview::view_of_bundles(&bundle_skills(&config)).bundles_failed
+                        io_cli::skillview::view_of_bundles(&bundle_skills(holdings.loaded())).bundles_failed
                     {
                         app.record(
                             Tone::Refused,
@@ -5317,9 +5440,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Profile(io_cli::commands::ProfileVerb::Unknown(word)) => {
-                    // Refused by name and never guessed at, which is `/effort`'s
-                    // rule for the same reason: choosing the nearest verb here
-                    // would remove a profile the operator did not name.
+                    // Named and never guessed at: choosing the nearest verb here
+                    // would remove a profile the operator did not name. This one
+                    // keeps `Tone::Refused` where `/effort`'s mistyped level gave
+                    // it up in 0.32.0, and the difference is the consequence — a
+                    // wrong `/effort` word buys the wrong amount of reasoning, a
+                    // wrong `/profile` verb deletes something. The tone is the
+                    // refusal to act on a destructive word.
                     app.record(
                         Tone::Refused,
                         format!(
@@ -5693,10 +5820,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // the line drew the half nothing wrote.
                         app.status.effort = level;
                     }
-                    // A word that is not a level is refused rather than
-                    // reported, so the tone is the refusal's.
+                    // **A word that is not a level is a typo, not a refusal.**
+                    // Through 0.31.0 this was `Tone::Refused` and the comment
+                    // here argued for it — but `Tone::Refused`'s own doc
+                    // (`theme.rs`) says it means an act the permission boundary
+                    // refused, and it is the one tone whose word an operator must
+                    // be able to trust. Spending it on a mistyped argument is how
+                    // `refused:` stops meaning anything. The sentence still says
+                    // what the levels are; it just no longer claims a boundary
+                    // turned something down.
                     let tone = match said {
-                        io_cli::commands::Reasoning::Unknown(_) => Tone::Refused,
+                        io_cli::commands::Reasoning::Unknown(_) => Tone::Warning,
                         _ => Tone::Muted,
                     };
                     app.record(tone, io_cli::app::reasoning_said(&said, effort));
@@ -5798,53 +5932,17 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // The picture, drawn now, at the bottom. It cannot open the row
                 // it was announced on: that row is in the terminal's scrollback,
                 // which nothing here reaches.
+                // One implementation, two doors — see `commit_image`. `/image`
+                // reached this arm alone until 0.32.0 gave it a second at the
+                // mid-turn loop, and a surface answered one way by its key and
+                // another by its name is a defect this product has shipped twice.
                 Action::Image(which) => {
-                    let total = app.images();
-                    match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
-                        Some((number, path)) => {
-                            let effective =
-                                approval::session_policy(&policy, app.posture(), app.remembered());
-                            match io_cli::attach::prepare(
-                                session.root(),
-                                &effective,
-                                provider.accepts_images(),
-                                &path,
-                            ) {
-                                Ok(staged) => {
-                                    let (drawable, graphics) = forms(&app);
-                                    let drawn = io_cli::picture::render(
-                                        &staged.bytes,
-                                        &staged.path,
-                                        staged.media_type,
-                                        drawable,
-                                        graphics,
-                                        screen.width(),
-                                    );
-                                    let caption = app.theme.notice(
-                                        Tone::Muted,
-                                        io_cli::picture::caption(
-                                            number,
-                                            &staged.path,
-                                            staged.media_type,
-                                            staged.bytes.len(),
-                                        ),
-                                    );
-                                    commit_drawn(screen, &mut app, drawn, Some(caption))?;
-                                }
-                                Err(error) => app.say(Tone::Error, error),
-                            }
-                        }
-                        None if total == 0 => {
-                            app.say(Tone::Muted, "no image has been attached in this session")
-                        }
-                        None => app.say(
-                            Tone::Muted,
-                            format!("say which one: /image 1 to /image {total}"),
-                        ),
-                    }
+                    let root = session.root().to_path_buf();
+                    commit_image(&mut app, screen, &root, &policy, &provider, which)?;
                 }
                 Action::Expand => {
-                    let lines = expand(&session, &store, &app.theme, app.events.thought());
+                    let last = last_run(&session, &store);
+                    let lines = expand(last.as_ref(), &store, &app.theme, app.events.thought());
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 // **Committed upward, exactly as `/expand` and `Ctrl+T` are.**
@@ -5876,13 +5974,16 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         String::new(),
                         session.root().to_path_buf(),
                         &config,
+                        holdings.loaded(),
                         &capabilities,
                         std::sync::Arc::new(answerer),
                         None,
                     );
                     let lines = io_cli::status::committed(
                         &app.status,
-                        &session,
+                        session.root(),
+                        session.id(),
+                        session.head(),
                         &policy,
                         &reading,
                         // What the NEXT turn would run under, which is why
@@ -6180,6 +6281,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         String::new(),
                         session.root().to_path_buf(),
                         &config,
+                        holdings.loaded(),
                         &capabilities,
                         std::sync::Arc::new(answerer),
                         None,
@@ -6194,7 +6296,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     screen.commit(&lines).map_err(|error| error.to_string())?;
                 }
                 Action::Copy(what) => {
-                    let (payload, said) = to_copy(&session, &store, what);
+                    let last = last_run(&session, &store);
+                    let (payload, said) = to_copy(last.as_ref(), &store, what);
                     match payload {
                         Some(payload) => {
                             screen
@@ -6396,6 +6499,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // Committing it again every turn is the shape 0.19.0 already
                     // rejected once — a line that repeats for the life of the
                     // file it is about stops being read.
+                    // **And the plugin set itself, but only where the disk has
+                    // moved.** `Resolved::stale` stats each declared manifest and
+                    // compares its modified time and its length; it parses
+                    // nothing and opens no skill file, so asking is a bounded
+                    // number of `metadata` calls rather than the resolution it is
+                    // deciding whether to repeat. `block_in_place` keeps both the
+                    // question and the answer off the task turning the loop.
+                    //
+                    // This is the turn boundary, so an edit made in another
+                    // window shows on the next message — and `/plugin` and
+                    // `/skills` read whatever this left, which is why opening
+                    // them costs no resolution at all when nothing has changed.
+                    if tokio::task::block_in_place(|| holdings.stale(&config)) {
+                        holdings = tokio::task::block_in_place(|| {
+                            io_cli::resolved::Resolved::load(&config)
+                        });
+                    }
                     skills = commands::skills(
                         &io_cli::home::authored().unwrap_or_default(),
                         io_cli::contract::skills_dir(
@@ -6404,7 +6524,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             session.root().to_path_buf(),
                         )
                         .as_deref(),
-                        &bundle_skills(&config),
+                        &bundle_skills(holdings.loaded()),
                     )
                     .0;
                     let effective =
@@ -6425,6 +6545,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // steered, so that is not the word for the difference.
                         contained.then_some(containment.as_ref()).flatten(),
                         &capabilities,
+                        // The palette's rows, so `/` mid-turn offers exactly what
+                        // `/` at an idle prompt offers.
+                        &templates,
+                        &skills,
+                        holdings.loaded(),
                         &seen,
                         planning,
                         // Taken rather than read: one request, one turn. A queue
@@ -6679,6 +6804,143 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
 /// **The agent's own look, committed where it looked.**
 ///
 /// A wrapper over [`io_cli::attach::viewed`], which is where every decision
+/// A keystroke while a picker is open on top of a running turn.
+///
+/// **Only the three kinds `turn()` can open reach here**, and that is the whole
+/// safety argument: the palette and path completion set or paste into the
+/// composer, and `/theme` resolves a theme. None of them writes a file, touches
+/// the store, or reassigns anything the running turn is holding — which is the
+/// property that lets a picker be open at all while a turn owns the session.
+///
+/// It lives beside the loop rather than inside it so the `select!` arm stays
+/// readable; every decision in it is a library call.
+fn mid_turn_picker(
+    picker: &mut Option<(Picker, Pick)>,
+    app: &mut App,
+    // The workspace root, captured before the turn borrowed the session.
+    root: &std::path::Path,
+    policy: &Policy,
+    templates: &io_harness::Templates,
+    skills: &[io_cli::skillview::Listed],
+    key: crossterm::event::KeyEvent,
+) {
+    let Some((open, kind)) = picker.as_mut() else {
+        return;
+    };
+    match open.key(key) {
+        Outcome::Chosen(index) => {
+            let label = open.rows()[index].label.clone();
+            // Built while `kind` still borrows the picker, installed once the
+            // borrow ends — the same shape the idle loop's `descended` uses, and
+            // for the same reason: a completion that descends replaces itself.
+            let mut descended = None;
+            match kind {
+                Pick::Theme => {
+                    if let Some(chosen) = Theme::by_name(&label) {
+                        // Resolved, not assigned, exactly as the idle picker
+                        // does it: a mid-session picker that beat `NO_COLOR`
+                        // would make the variable mean *until you touch
+                        // anything*.
+                        let applied = Theme::from_env(Some(chosen.name), app.theme.glyphs);
+                        app.theme = applied;
+                        app.events.set_theme(applied);
+                    }
+                }
+                Pick::Palette => match commands::palette_pick(templates, skills, index) {
+                    Some(commands::Chosen::Command(command)) => app.composer.set(command),
+                    Some(commands::Chosen::Template(name)) => {
+                        match commands::expand(templates, &name) {
+                            Ok(prompt) => app.composer.set(&prompt),
+                            Err(error) => app.say(Tone::Error, error),
+                        }
+                    }
+                    Some(commands::Chosen::Skill(name)) => {
+                        app.composer.set(&commands::invoke_skill(&name));
+                    }
+                    None => {}
+                },
+                Pick::Complete(entries) => match complete::pick(entries, index) {
+                    Some(complete::Picked::Insert(path)) => app.composer.paste(&path),
+                    Some(complete::Picked::Descend(dir)) => {
+                        let effective =
+                            approval::session_policy(policy, app.posture(), app.remembered());
+                        match completion(root, &effective, &dir, &app.theme.glyphs) {
+                            Ok(Some(open)) => descended = Some(open),
+                            Ok(None) => {
+                                app.say(Tone::Muted, format!("nothing to complete in {dir}"))
+                            }
+                            Err(error) => app.say(Tone::Error, error),
+                        }
+                    }
+                    None => app.say(
+                        Tone::Muted,
+                        "that row is the note, not a file — the rest of the listing is not shown",
+                    ),
+                },
+                // `turn()` opens no other kind. An assertion rather than a
+                // silence, so opening one without wiring it here is caught in a
+                // debug build.
+                _ => debug_assert!(false, "a picker kind reached the mid-turn loop with no arm"),
+            }
+            *picker = descended;
+        }
+        Outcome::Cancelled => *picker = None,
+        Outcome::Idle => {}
+    }
+}
+
+/// Draw an attached image back into the scrollback, at either loop.
+///
+/// One implementation because there are two doors since 0.32.0 — `/image` at an
+/// idle prompt and `/image` while a turn runs — and this product has shipped the
+/// same defect twice from having two: a surface answered one way by its key and
+/// another by its name. Every decision inside it is a library call.
+fn commit_image<P: Provider>(
+    app: &mut App,
+    screen: &mut Screen<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    root: &std::path::Path,
+    policy: &Policy,
+    provider: &P,
+    which: Option<usize>,
+) -> Result<(), String> {
+    let total = app.images();
+    match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
+        Some((number, path)) => {
+            let effective = approval::session_policy(policy, app.posture(), app.remembered());
+            match io_cli::attach::prepare(root, &effective, provider.accepts_images(), &path) {
+                Ok(staged) => {
+                    let (drawable, graphics) = forms(app);
+                    let drawn = io_cli::picture::render(
+                        &staged.bytes,
+                        &staged.path,
+                        staged.media_type,
+                        drawable,
+                        graphics,
+                        screen.width(),
+                    );
+                    let caption = app.theme.notice(
+                        Tone::Muted,
+                        io_cli::picture::caption(
+                            number,
+                            &staged.path,
+                            staged.media_type,
+                            staged.bytes.len(),
+                        ),
+                    );
+                    commit_drawn(screen, app, drawn, Some(caption))?;
+                }
+                Err(error) => app.say(Tone::Error, error),
+            }
+        }
+        None if total == 0 => app.say(Tone::Muted, "no image has been attached in this session"),
+        None => app.say(
+            Tone::Muted,
+            format!("say which one: /image 1 to /image {total}"),
+        ),
+    }
+    Ok(())
+}
+
 /// lives. Nothing is decided here, deliberately: `src/main.rs` is linked by no
 /// integration test, so a branch written here could not be sabotaged and would
 /// not be covered.
@@ -6729,6 +6991,16 @@ async fn turn<P: Provider>(
     config: &Config,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
+    // **The palette's rows, since 0.32.0 opens it while a turn runs.** Both are
+    // the driver's session-lifetime state — `skills` is re-walked at every turn
+    // boundary — and they are handed down rather than rebuilt, so what the
+    // mid-turn palette offers is exactly what the idle one offers.
+    templates: &io_harness::Templates,
+    skills: &[io_cli::skillview::Listed],
+    // Resolved once for the session — see [`io_cli::resolved`]. The turn's
+    // contract and its hooks both used to re-read every bundle's manifest off
+    // disk here, which is two full resolutions per message.
+    plugins: &io_harness::Plugins,
     // The last request this session's provider was handed. `/context` reads it to
     // say what is in the window, and `ctx N%` reads it so the two say the same
     // thing — see `note_context`, and the live run that found them disagreeing.
@@ -6751,6 +7023,11 @@ async fn turn<P: Provider>(
     text: String,
     started: Instant,
 ) -> Result<Turned, String> {
+    // **A picker can be open while the agent works, since 0.32.0.** Only the
+    // three kinds `mid_turn_picker` names ever land here — the palette, path
+    // completion and `/theme` — because those are the ones whose outcome touches
+    // nothing the running turn is holding.
+    let mut picker: Option<(Picker, Pick)> = None;
     let (observer, mut events) = bridge::channel();
     // The one way a turn is stopped from the interface, contained or not. Both
     // arms take a contract **and** a steer inbox since 0.17.0, and the stop key
@@ -6766,6 +7043,14 @@ async fn turn<P: Provider>(
     // and never spoken to — which is exactly what a session with no responder
     // does today: the question pauses the run instead.
     let (answerer, mut questions) = io_cli::intent::channel();
+    // **This is the one site that keeps the receiver, and therefore the one site
+    // that can promise an overlay.** `Events` commits the durable question line
+    // wherever nothing will draw one; saying so here is what stops the operator
+    // being asked twice, and *not* saying it anywhere else is what keeps a
+    // resumed run's question visible. Set per turn rather than once at startup
+    // because it is a fact about this turn's contract, and the `/resume`
+    // continuation builds its own.
+    app.set_answering(true);
     // The fourth, and the only one that can stop the work before it starts.
     // Registering it is what turns io-harness's planning phase on, so it is put
     // on the contract only where the contract itself reaches the run.
@@ -6822,6 +7107,22 @@ async fn turn<P: Provider>(
     // Taken before the future borrows the session, because it is needed inside the
     // loop and `running` holds `&mut session` for the whole of it.
     let root = session.root().to_path_buf();
+    // **What the mid-turn reports need, captured before the turn takes the
+    // session.** The future below holds `&mut Session` for the whole of the
+    // select loop, so nothing inside it can read the session at all — and since
+    // 0.32.0 `/status`, `/cost`, `/copy` and `/expand` run inside it.
+    //
+    // Every fact here is one the running turn cannot change while it runs: the id
+    // is the session's, the head is the turn *before* this one until this one
+    // commits, and the last on-path turn is likewise the previous one. So the
+    // snapshot is not an approximation of the live reading — mid-turn it **is**
+    // the live reading, and taking it here is what makes the reports reachable at
+    // all without a second `&Session` the borrow checker is right to refuse.
+    let facts = TurnFacts {
+        id: session.id(),
+        head: session.head(),
+        last: last_run(session, store),
+    };
     app.contained = containment.is_some();
     // Built before the future borrows it, and for both arms alike.
     // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
@@ -6843,6 +7144,7 @@ async fn turn<P: Provider>(
         text.clone(),
         root.clone(),
         config,
+        plugins,
         capabilities,
         std::sync::Arc::new(answerer),
         planning.then(|| std::sync::Arc::new(gate) as std::sync::Arc<dyn io_harness::PlanGate>),
@@ -6904,7 +7206,7 @@ async fn turn<P: Provider>(
     // The order is deliberate: `Broadcast` outermost, so an event is durable
     // before either the interface or a hook is told about it, and a hook that
     // cancels the turn cannot leave a gap in the sequence a reader is following.
-    let hooks = io_cli::contract::hooks(config, session.root());
+    let hooks = io_cli::contract::hooks(config, plugins, &root);
     let mut observers: Vec<&dyn io_harness::Observer> = vec![&observer];
     if let Some(hooks) = &hooks {
         observers.push(hooks);
@@ -6961,7 +7263,7 @@ async fn turn<P: Provider>(
             result = &mut running => break Some(result),
             _ = ticker.tick() => {
                 if app.tick(started.elapsed()) {
-                    paint(screen, app)?;
+                    paint_picker(screen, app, picker.as_mut())?;
                 }
             }
             Some(event) = events.recv() => {
@@ -6971,6 +7273,43 @@ async fn turn<P: Provider>(
                 let at = started.elapsed();
                 app.status.elapsed = at;
                 app.event(&event, at);
+                // **A queued message reaches the turn it was typed into
+                // (0.32.0).** `App::compose` queues a prompt typed mid-turn and
+                // answers `Command::None`, and until this release nothing did
+                // anything with it until the turn had ended — so a correction
+                // typed thirty seconds into a ten-minute turn waited nine and a
+                // half minutes and then ran as a turn of its own, against work it
+                // was meant to change.
+                //
+                // **At the step boundary, and that is not merely where O8 puts
+                // it.** Flushing the moment the operator pressed Enter would empty
+                // io-cli's queue into io-harness's inbox instantly, and the queue
+                // surface — the operator's only view of what they have typed and
+                // not yet had answered — would never have anything in it. Held
+                // until a step lands, the list is visible for as long as it is
+                // genuinely waiting, and goes when it is genuinely gone.
+                //
+                // Both arms have carried a `SteerInbox` since 0.17.0, so this
+                // needs no io-harness entry point — only a default. `/steer` is
+                // unchanged and still flushes explicitly; what it flushes is now
+                // whatever has been typed since the last step.
+                //
+                // **And a message delivered into a turn that reaches no further
+                // step boundary is not lost.** The inbox still holds it, and the
+                // drain after this loop reads `inbox.pending().messages` back and
+                // re-queues them to run as their own turns — the existing path,
+                // which is O9's fallback and says which of the two happened.
+                if matches!(event.kind, io_harness::EventKind::Step { .. })
+                    && !app.queued_prompts().is_empty()
+                {
+                    let dash = app.theme.glyphs.dash;
+                    let delivered = app.deliver_queued(|text| {
+                        steer.say(text.to_string()).map_err(|e| e.to_string())
+                    });
+                    if let Some(error) = delivered.refused {
+                        app.say(Tone::Warning, format!("nothing is listening {dash} {error}"));
+                    }
+                }
                 commit_edits(app, store, &event, screen.width());
                 commit_commits(app, store, &event);
                 // The live half of `ctx N%`. Anchored on a step rather than on
@@ -6987,7 +7326,7 @@ async fn turn<P: Provider>(
                 note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(ask) = asks.recv() => {
                 // The run is now stopped inside `Approver::decide_in_context` and
@@ -6995,7 +7334,7 @@ async fn turn<P: Provider>(
                 // which is what leaves `Ctrl+C` reachable while a question is up.
                 app.open_approval(ask);
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(proposed) = plans.recv() => {
                 // The run is stopped inside `PlanGate::review`, and while it is
@@ -7003,7 +7342,7 @@ async fn turn<P: Provider>(
                 // the workspace behind this overlay cannot change while it is up.
                 app.open_plan(proposed);
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(asked) = questions.recv() => {
                 // The same shape one seam over: the run is stopped inside
@@ -7014,7 +7353,7 @@ async fn turn<P: Provider>(
                 // since.)
                 app.open_intent(asked);
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
             Some(input) = inputs.recv() => {
                 match input {
@@ -7022,7 +7361,66 @@ async fn turn<P: Provider>(
                         // Bound rather than tested inside the guard: `App::key`
                         // changes state, and a match guard is not a place to put
                         // something that does.
-                        let command = app.key(key);
+                        // **The command surface opens while the agent works
+                        // (0.32.0, O10).** `commands::opens_palette` and
+                        // `complete::opens` carry no run-state check at all and
+                        // never did — the mid-turn loop simply never called them,
+                        // and went straight to `App::key`, where `/` and `@` are
+                        // ordinary characters. So the palette typed a literal
+                        // slash into the composer and said nothing.
+                        //
+                        // Neither predicate changes; only the call sites, which
+                        // is what the contract asked for. The pickers reachable
+                        // here are exactly those whose outcome touches nothing
+                        // but the interface — the palette and path completion set
+                        // or paste into the composer, and `/theme` resolves a
+                        // theme. Anything that writes a file or reassigns
+                        // session-lifetime state keeps its refusal, which is why
+                        // `/config` is not among them.
+                        //
+                        // Answered as `Command::None` so the match below is
+                        // untouched: a keystroke the picker took is a keystroke
+                        // the session did not see.
+                        let command = if picker.is_some() {
+                            mid_turn_picker(
+                                &mut picker,
+                                app,
+                                &root,
+                                policy,
+                                templates,
+                                skills,
+                                key,
+                            );
+                            Command::None
+                        } else if !app.modal()
+                            && commands::opens_palette(key, app.composer.is_empty(), app.armed())
+                        {
+                            picker = Some((
+                                Picker::new(
+                                    "Which command?",
+                                    commands::palette(templates, skills),
+                                ),
+                                Pick::Palette,
+                            ));
+                            Command::None
+                        } else if !app.modal() && complete::opens(key, &app.composer.text(), app.armed())
+                        {
+                            let effective = approval::session_policy(
+                                policy,
+                                app.posture(),
+                                app.remembered(),
+                            );
+                            match completion(&root, &effective, "", &app.theme.glyphs) {
+                                Ok(Some(open)) => picker = Some(open),
+                                Ok(None) => {
+                                    app.say(Tone::Muted, "nothing in this workspace to complete")
+                                }
+                                Err(error) => app.say(Tone::Error, error),
+                            }
+                            Command::None
+                        } else {
+                            app.key(key)
+                        };
                         match command {
                             Command::Interrupt => {
                                 // **One path for both kinds of turn, and it is
@@ -7163,51 +7561,30 @@ async fn turn<P: Provider>(
                             // first — the opposite of what this command does.
                             Command::Slash(ref line)
                                 if line.split_whitespace().next() == Some("steer") => {
+                                // The loop, the ordering and the transcript
+                                // records are `App::deliver_queued`'s, in the
+                                // library, because nothing under `tests/` links
+                                // this file. What is left here is the sentence,
+                                // and `/steer`'s sentence is unchanged from
+                                // 0.31.0 — including its refusal path, and
+                                // including the summary being skipped on a
+                                // refusal, since `App::say` keeps one notice and
+                                // a count written over the error would report
+                                // success on the one path where there was none.
                                 let dash = app.theme.glyphs.dash;
-                                let mut sent = 0usize;
-                                // The summary below is skipped when this is set,
-                                // because a count is not the answer to a refusal
-                                // — and `App::say` keeps one notice, so a
-                                // summary written over the error would be the
-                                // interface reporting success on the one path
-                                // where there was none.
-                                let mut refused = false;
-                                // Each on its own, in the order they were typed:
-                                // io-harness pushes one `Observation` per message
-                                // and the model reads them in that order. Joining
-                                // them would be one paragraph the operator never
-                                // wrote.
-                                while let Some(waiting) = app.next_queued_prompt() {
-                                    if let Err(error) = steer.say(waiting.clone()) {
-                                        // Unreachable while `inbox` is alive —
-                                        // and said rather than swallowed anyway,
-                                        // because the one thing worse than a
-                                        // correction that arrives late is one
-                                        // that reports success and goes nowhere.
-                                        app.queue_prompt(waiting);
-                                        app.say(
-                                            Tone::Warning,
-                                            format!("nothing is listening {dash} {error}"),
-                                        );
-                                        refused = true;
-                                        break;
-                                    }
-                                    // Into the transcript, not the footer. A
-                                    // steered line becomes an observation in the
-                                    // run's ledger, so it is part of the
-                                    // conversation rather than about it — and it
-                                    // is the only part that will never get an
-                                    // echo of its own, because it is not a turn.
-                                    app.record(
+                                let delivered = app.deliver_queued(|text| {
+                                    steer.say(text.to_string()).map_err(|e| e.to_string())
+                                });
+                                match delivered.refused {
+                                    // Unreachable while `inbox` is alive, and said
+                                    // rather than swallowed anyway.
+                                    Some(error) => app.say(
+                                        Tone::Warning,
+                                        format!("nothing is listening {dash} {error}"),
+                                    ),
+                                    None => app.say(
                                         Tone::Muted,
-                                        format!("[mid-turn] {}", waiting.trim()),
-                                    );
-                                    sent += 1;
-                                }
-                                if !refused {
-                                    app.say(
-                                        Tone::Muted,
-                                        match sent {
+                                        match delivered.sent {
                                             0 => format!(
                                                 "nothing queued {dash} type a line first, then \
                                                  /steer"
@@ -7220,7 +7597,7 @@ async fn turn<P: Provider>(
                                                  next step"
                                             ),
                                         },
-                                    );
+                                    ),
                                 }
                             }
                             // Refused with a sentence rather than dropped in
@@ -7239,6 +7616,141 @@ async fn turn<P: Provider>(
                             // be unreadable for as long as the command took. So
                             // the block is confined to the idle prompt, where
                             // there is no turn for it to stall.
+                            // **The refusal is a list now, not a blanket
+                            // (0.32.0).** Through 0.31.0 every slash but
+                            // `/compact` and `/steer` was declined here, so
+                            // `/status` was refused for the same reason `/clear`
+                            // is and the sentence told the operator to interrupt
+                            // their turn to read a report. Every one of the ten
+                            // admitted below was a capability the product already
+                            // had, withheld by a guard nobody revisited.
+                            //
+                            // The decision is `commands::runs_mid_turn`, in the
+                            // library, because nothing under `tests/` links this
+                            // file: a list written here could be neither asserted
+                            // exhaustively nor sabotaged, and it is a list about
+                            // what may happen while a turn holds the session, the
+                            // store and the provider.
+                            Command::Slash(ref line) if commands::runs_mid_turn(line) => {
+                                match commands::parse(line, app.keys(), &app.theme) {
+                                    Action::Print(lines) => {
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Fleet => app.toggle_fleet(),
+                                    Action::Expand => {
+                                        let lines = expand(
+                                            facts.last.as_ref(),
+                                            store,
+                                            &app.theme,
+                                            app.events.thought(),
+                                        );
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Stats => {
+                                        let lines = io_cli::stats::committed(
+                                            store,
+                                            &app.theme,
+                                            screen.width(),
+                                        )?;
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Cost => {
+                                        let (settings, _) = settings::stored(config);
+                                        let table = io_cli::cost::table(config);
+                                        let provenance = io_cli::cost::Provenance::of(
+                                            config,
+                                            settings.as_ref(),
+                                        );
+                                        let lines = io_cli::cost::committed(
+                                            store,
+                                            &table,
+                                            &provenance,
+                                            facts.last.as_ref().map(|turn| turn.run_id),
+                                            Some(facts.id),
+                                            &app.theme,
+                                            screen.width(),
+                                        )?;
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    // **The turn's own contract, not a sixth
+                                    // one.** The idle arms build a `reading`
+                                    // contract because there is no turn to read
+                                    // one off; here there is, and it is the one
+                                    // actually in force — which is both the more
+                                    // truthful answer mid-turn and what keeps
+                                    // `tests/contract.rs`'s count of
+                                    // `contract::session` call sites intact.
+                                    Action::Status => {
+                                        let lines = io_cli::status::committed(
+                                            &app.status,
+                                            &root,
+                                            facts.id,
+                                            facts.head,
+                                            policy,
+                                            &contract,
+                                            containment,
+                                            &app.theme,
+                                            screen.width(),
+                                        );
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Context => {
+                                        let lines = io_cli::context::committed(
+                                            seen.latest().as_ref(),
+                                            &contract,
+                                            contract.max_tokens,
+                                            &app.theme,
+                                            screen.width(),
+                                        );
+                                        screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    Action::Copy(what) => {
+                                        let (payload, said) = to_copy(facts.last.as_ref(), store, what);
+                                        match payload {
+                                            Some(payload) => {
+                                                screen
+                                                    .escape(&io_cli::clipboard::sequence(&payload))
+                                                    .map_err(|e| e.to_string())?;
+                                                app.say(
+                                                    Tone::Muted,
+                                                    io_cli::clipboard::describe(&payload),
+                                                );
+                                            }
+                                            None => app.say(Tone::Muted, said),
+                                        }
+                                    }
+                                    Action::Image(which) => commit_image(
+                                        app,
+                                        screen,
+                                        &root,
+                                        policy,
+                                        provider,
+                                        which,
+                                    )?,
+                                    Action::Theme => {
+                                        picker = Some((
+                                            Picker::new(
+                                                "Which theme?",
+                                                io_cli::theme::THEMES
+                                                    .iter()
+                                                    .map(|theme| Row::new(theme.name))
+                                                    .collect(),
+                                            ),
+                                            Pick::Theme,
+                                        ));
+                                    }
+                                    // `runs_mid_turn` admits exactly the words
+                                    // above, so nothing else can reach here. It
+                                    // is an assertion rather than a wildcard so
+                                    // that widening the list without wiring the
+                                    // command is caught in a debug build rather
+                                    // than by silence.
+                                    _ => debug_assert!(
+                                        false,
+                                        "runs_mid_turn admitted a command with no arm here"
+                                    ),
+                                }
+                            }
                             Command::Slash(_) | Command::Shell(_) => {
                                 let dash = app.theme.glyphs.dash;
                                 app.say(
@@ -7297,7 +7809,7 @@ async fn turn<P: Provider>(
                     _ => {}
                 }
                 app.status.elapsed = started.elapsed();
-                paint(screen, app)?;
+                paint_picker(screen, app, picker.as_mut())?;
             }
         }
     };
@@ -7496,6 +8008,15 @@ async fn turn<P: Provider>(
             }
         }
     }
+    // **The promise ends with the turn that made it.** `set_answering(true)` at the
+    // head of this function says an overlay in *this* process will draw a
+    // question; past this line no overlay is being opened for anything, and two
+    // paths still route question events into `Events` — the post-loop drain just
+    // below, and `watch_child`, which draws no overlay at all and whose watched
+    // child can ask. Leaving it set suppressed the durable line on both, so a
+    // question reached no surface anywhere. The flag's own doc names `false` as
+    // the safe direction; this is the line that keeps it there.
+    app.set_answering(false);
     app.status.elapsed = started.elapsed();
     paint(screen, app)?;
     Ok(Turned { stopped, ran })
@@ -7916,6 +8437,18 @@ fn observing<T>(
 /// summary line and this function was left with none. Found by the adversarial
 /// review, and worth noting because nothing in the suite can see a rustdoc
 /// summary attached to the wrong item.
+/// The session facts a mid-turn report needs, read before the turn borrows the
+/// session.
+///
+/// See where it is built in `turn`: each of these is unchanged for as long as the
+/// turn runs, which is what makes a snapshot the honest reading rather than a
+/// stale one.
+struct TurnFacts {
+    id: i64,
+    head: Option<i64>,
+    last: Option<io_harness::TranscriptTurn>,
+}
+
 fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTurn> {
     session
         .transcript(store)
@@ -7933,7 +8466,12 @@ fn last_run(session: &Session, store: &Store) -> Option<io_harness::TranscriptTu
 /// so the only copy of a fitted thought is the one [`Events`](io_cli::events::Events) kept, and this is
 /// where it is spent.
 fn expand(
-    session: &Session,
+    // **The last on-path turn rather than the session (0.32.0).** `/expand` runs
+    // while a turn is in flight now, and a turn in flight holds `&mut Session`
+    // for the whole select loop — so a reader that took `&Session` could not be
+    // reached from there. Mid-turn the last completed run *is* the previous one,
+    // so the captured value is the same answer a live read would give.
+    last: Option<&io_harness::TranscriptTurn>,
     store: &Store,
     theme: &Theme,
     thought: Option<&str>,
@@ -7948,7 +8486,7 @@ fn expand(
         );
         lines.push(Line::from(""));
     }
-    lines.extend(step_detail(session, store, theme));
+    lines.extend(step_detail(last, store, theme));
     lines
 }
 
@@ -7958,8 +8496,12 @@ fn expand(
 /// archive, so the output goes to the store when it happens and comes back here
 /// when somebody asks for it. Committed upward like everything else that shows
 /// more of something.
-fn step_detail(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'static>> {
-    let Some(turn) = last_run(session, store) else {
+fn step_detail(
+    last: Option<&io_harness::TranscriptTurn>,
+    store: &Store,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let Some(turn) = last else {
         return vec![theme.notice(Tone::Muted, "nothing has run in this session yet")];
     };
     let steps = match store.steps(turn.run_id) {
@@ -7992,12 +8534,16 @@ fn step_detail(session: &Session, store: &Store, theme: &Theme) -> Vec<Line<'sta
 }
 
 /// What `/copy` should put on the clipboard, or why there is nothing to put.
-fn to_copy(session: &Session, store: &Store, what: Copied) -> (Option<String>, String) {
-    let Some(turn) = last_run(session, store) else {
+fn to_copy(
+    last: Option<&io_harness::TranscriptTurn>,
+    store: &Store,
+    what: Copied,
+) -> (Option<String>, String) {
+    let Some(turn) = last else {
         return (None, "nothing has run in this session yet".into());
     };
     match what {
-        Copied::Answer => match turn.reply {
+        Copied::Answer => match turn.reply.clone() {
             Some(reply) if !reply.trim().is_empty() => (Some(reply), String::new()),
             // A turn that stopped on a ceiling, a refusal or an interrupt has no
             // closing message, and inventing one would misreport the ending.
@@ -8880,7 +9426,7 @@ async fn manage_main(
             }
         }
         io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {
-            let view = io_cli::pluginview::view(config);
+            let view = io_cli::pluginview::view(io_cli::resolved::Resolved::load(config).loaded());
             for listed in &view.plugins {
                 // **A third column, and it is not decoration.** From 0.29.0 this
                 // list carries the bundles declared `enabled = false` as well as
@@ -8964,7 +9510,10 @@ async fn manage_main(
             };
             let (stored, _) = io_cli::settings::stored(config);
             let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
-            let view = skills_view(config, &capabilities, root);
+            // `io skill …` is one command and exits; the resolution is genuinely
+            // once, and it goes through the same module the session's does.
+            let plugins = io_cli::resolved::Resolved::load(config);
+            let view = skills_view(config, plugins.loaded(), &capabilities, root);
             match verb {
                 io_cli::manage::SkillVerb::Add { source } => {
                     let at = io_cli::skillview::install(&home, source)?;
@@ -8992,7 +9541,8 @@ async fn manage_main(
                             "no skill answers to `{name}`; `io skill list` names the ones that do"
                         ));
                     };
-                    let gone = io_cli::skillview::remove(&skill.path, &bundle_skills(config))?;
+                    let gone =
+                        io_cli::skillview::remove(&skill.path, &bundle_skills(plugins.loaded()))?;
                     println!("{}", gone.display());
                 }
             }
@@ -9135,7 +9685,7 @@ fn marketplace_main(
             // is told what stops loading.
             if let Some(clone) = io_cli::fetch::at(named) {
                 if let Some(warned) = io_cli::marketplace::removal_cost(
-                    &io_cli::pluginview::view(config),
+                    &io_cli::pluginview::view(io_cli::resolved::Resolved::load(config).loaded()),
                     &clone,
                     io_cli::home::adapters().as_deref(),
                 ) {
@@ -9813,6 +10363,8 @@ async fn resume_pending<P: Provider>(
     session: &mut Session,
     policy: &Policy,
     config: &Config,
+    // Resolved once for the session — see [`io_cli::resolved`].
+    plugins: &io_harness::Plugins,
     containment: Option<&io_harness::Containment>,
     capabilities: &io_cli::contract::Capabilities,
     // The same record the turn loop reads, and it is here for the same reason: a
@@ -9903,10 +10455,18 @@ async fn resume_pending<P: Provider>(
     // `answer` resolves `None` — which is io-harness's own "nobody can answer",
     // so the run parks again and `/resume` finds it.
     let (answerer, _) = io_cli::intent::channel();
+    // **And because the receiver is dropped, this run has no overlay — so the
+    // durable question line has to come back.** The turn loop sets this `true`
+    // for a turn it is holding the overlay for; a resumed run continues in the
+    // same process, so leaving the flag alone would inherit that promise and a
+    // question asked here would be rendered by nothing at all. This is the exact
+    // path a `--plain`-only gate would have blanked.
+    app.set_answering(false);
     let continuing = io_cli::contract::session(
         goal,
         session.root().to_path_buf(),
         config,
+        plugins,
         capabilities,
         std::sync::Arc::new(answerer),
         // No plan gate. A resumed run that proposed a plan is one this surface
@@ -10182,12 +10742,17 @@ async fn watch_child(
         }
         // No row, or a store that cannot answer. Neither is a reason to open a
         // watch that would show nothing; both are worth saying.
+        // A run that is not there is a fact about the store, not something a
+        // permission boundary turned down.
         Ok(None) => {
-            app.record(Tone::Refused, format!("run {run_id} is not in the store"));
+            app.record(Tone::Muted, format!("run {run_id} is not in the store"));
             return Ok(());
         }
+        // And a store that cannot answer is an error, which is a third thing
+        // again. Drawing all three as refusals made the one tone that has to mean
+        // something mean "anything that did not work".
         Err(error) => {
-            app.record(Tone::Refused, format!("cannot watch run {run_id}: {error}"));
+            app.record(Tone::Error, format!("cannot watch run {run_id}: {error}"));
             return Ok(());
         }
     }
@@ -10196,8 +10761,9 @@ async fn watch_child(
         Err(error) => {
             // The store is readable — the session is running out of it — so this
             // is the run being unknown to it, which is a fact worth saying rather
-            // than a silence to interpret.
-            app.record(Tone::Refused, format!("cannot watch run {run_id}: {error}"));
+            // than a silence to interpret. `Tone::Error` and not `Tone::Refused`:
+            // nothing declined this, the attach simply failed.
+            app.record(Tone::Error, format!("cannot watch run {run_id}: {error}"));
             return Ok(());
         }
     };
@@ -10236,7 +10802,7 @@ async fn watch_child(
                 }
             }
             Err(error) => {
-                app.record(Tone::Refused, format!("stopped watching: {error}"));
+                app.record(Tone::Error, format!("stopped watching: {error}"));
                 paint(screen, app)?;
                 return Ok(());
             }
@@ -10305,11 +10871,34 @@ fn paint_picker(
     if !pending.is_empty() {
         screen.commit(&pending).map_err(|error| error.to_string())?;
     }
-    // **The prompt takes the rows it needs, and gives them back.** Only with no
-    // picker open and only at an idle prompt — `App::viewport_wanted` returns the
-    // fixed height in every other case — because re-placing the viewport
-    // re-queries the cursor, and doing that under a streaming turn would land the
-    // viewport somewhere the output underneath it has already moved past.
+    // **Every surface takes the rows it needs, and gives them back.**
+    //
+    // Through 0.31.0 this ran only with no picker open and only at an idle
+    // prompt, because re-placing the viewport re-queries the cursor and doing
+    // that under a streaming turn would land the viewport somewhere the output
+    // underneath it has already moved past. **The ordering above is what makes
+    // that safe, and it was always here**: `take_pending` is drained and
+    // committed before anything is measured, so by this line there is no output
+    // waiting to go above the viewport and nothing underneath it can move. A
+    // re-placement mid-turn is therefore the same operation as one at an idle
+    // prompt, which `tests/viewport.rs` asserts over a growth, a shrink, a
+    // grow-to-grow and a resize while grown.
+    //
+    // **A picker does not re-place the viewport, and that is 0.13.0's rule kept
+    // rather than an omission.** Re-placing asks the terminal where its cursor is
+    // and waits for the answer; up to 0.12.0 the palette grew the viewport on open
+    // and shrank it on close, which put that round trip on `/` — the fastest thing
+    // an operator does — with a two-second wait on a terminal that never answers.
+    // 0.13.0 removed it deliberately and `live_f6_the_palette_opens_without_asking_
+    // the_terminal_anything` asserts it against a real pty.
+    //
+    // **0.32.0 tried to grow pickers too and the live suite caught it**, which is
+    // the whole argument for running that suite: the property is about bytes on a
+    // wire, `Screen::replace` re-attaches to a real terminal, and no `Fixed`
+    // backend can see either. What a picker gets instead is the elision this
+    // release added — it draws the rows the session's viewport has and says how
+    // many it did not, which is the improvement that does not cost a round trip.
+    // See `US-IO-CLI-0.32.0-I12`.
     if picker.is_none() {
         let wanted = app.viewport_wanted(screen.width(), screen.terminal_rows());
         if wanted != screen.rows() {

@@ -102,7 +102,14 @@ pub const KEYS: &[(&str, &str)] = &[
         "Esc",
         "stop the running turn, or close a picker without choosing",
     ),
-    ("/", "at an empty prompt, open the command palette"),
+    (
+        "Tab",
+        "in any list, take the row under the marker; `Shift+Tab` steps back",
+    ),
+    (
+        "/",
+        "open the command palette \u{2014} at the prompt or while a turn runs",
+    ),
     ("@", "after a space, complete a path from the workspace"),
     (
         "!",
@@ -760,15 +767,16 @@ fn entries(templates: &Templates, skills: &[crate::skillview::Listed]) -> Vec<En
             out.push(Entry {
                 row: Row::marked(
                     SKILL_MARK,
-                    skill.name.clone(),
+                    crate::naming::display(&skill.name),
                     // **The bundle is named in the detail, and the name carries
                     // the real signal.** A narrow terminal drops the detail column
                     // first, which is the 0.16.0 lesson about marks — so the
                     // origin must never be the only place the provenance lives.
-                    // It is not: a bundle's skill is listed under the namespaced
-                    // `<id>__<name>` the model actually addresses, and that prefix
-                    // is in the label, which is the column that survives and the
-                    // one `crate::fuzzy` ranks.
+                    // It is not: a bundle's skill is listed under the qualified
+                    // `<id>:<name>`, and that prefix is in the label, which is the
+                    // column that survives and the one `crate::fuzzy` ranks. Since
+                    // 0.32.0 the separator drawn is a colon; the name io-harness
+                    // resolves is unchanged, and `crate::naming` holds the rule.
                     match &skill.origin {
                         crate::skillview::Origin::Bundle(id) => {
                             format!("{SKILL}{} · from the {id} bundle", skill.description)
@@ -822,7 +830,14 @@ pub fn palette_pick(
         .and_then(|entry| entry.chosen)
 }
 
-/// The prompt a chosen skill puts in the composer.
+/// The command a chosen skill puts in the composer.
+///
+/// **A command, not a sentence, and that is 0.32.0's whole change here.** Until
+/// this release it built `use the {name} skill: ` — prose with no leading slash,
+/// which `App::compose` therefore submitted as an ordinary prompt for the model to
+/// interpret. Choosing a skill from the palette was a suggestion to the agent
+/// rather than an instruction to the program, and whether it was honoured depended
+/// on how the sentence read.
 ///
 /// **By name, and nothing else.** io-harness gives the model a catalogue of the
 /// skills discovered for the run and the model opens the file itself, under the
@@ -831,8 +846,12 @@ pub fn palette_pick(
 /// this crate is forbidden to grow. It is left in the composer rather than sent,
 /// like every other palette row, because the operator has more to say than the
 /// name.
+///
+/// The name is written the way it is read — `bundle:skill` — and turned back into
+/// io-harness's own spelling by [`crate::naming::wire`] when the run is asked for
+/// it.
 pub fn invoke_skill(name: &str) -> String {
-    format!("use the {name} skill: ")
+    format!("/{} ", crate::naming::display(name))
 }
 
 /// What a chosen palette row is.
@@ -998,6 +1017,20 @@ pub enum Reasoning {
 /// What the driver should do about a slash command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Run a bundle's skill by the name it is drawn under: the resolved wire name
+    /// io-harness knows it by, and whatever the operator typed after it.
+    ///
+    /// **The wire name, already translated.** `parse` turns `ultraship:brainstorm`
+    /// back into `ultraship__brainstorm` here, because that is the string
+    /// `Skills::get` matches by equality and the one the model was shown in its
+    /// catalogue. Everything downstream of this variant is talking to io-harness,
+    /// so nothing downstream should have to know that a colon was ever involved.
+    ///
+    /// Not `Action::Print` with a sentence in it: until 0.32.0 choosing a skill
+    /// wrote `use the <name> skill: ` into the composer and submitted it as an
+    /// ordinary prompt, so whether the skill ran at all depended on the model's
+    /// reading of an English request.
+    Skill(String, String),
     /// Commit these lines and carry on.
     Print(Vec<Line<'static>>),
     Quit,
@@ -1778,12 +1811,18 @@ pub fn pinned_said(
 
 /// What withdrawing one note is reported as.
 ///
-/// **[`crate::recall::Forgotten::Refused`] is a refusal and names why, never a
-/// success.** The note is pinned, so it is not a run's to withdraw and io-cli
-/// asks on a run's behalf; it stands, unchanged, and it will go on being carried
-/// into every later prompt. Reporting that as a removal is the same failure the
-/// pin flag exists to prevent one level down — the operator believes the note is
-/// gone and it is not.
+/// **[`crate::recall::Forgotten::Refused`] names why and is never a success** —
+/// but it is not a refusal either, and 0.32.0 stopped drawing it as one. The note
+/// is pinned, so it is not a run's to withdraw and io-cli asks on a run's behalf;
+/// it stands, unchanged, and it will go on being carried into every later prompt.
+/// Reporting that as a removal is the same failure the pin flag exists to prevent
+/// one level down — the operator believes the note is gone and it is not.
+///
+/// What carries that is the sentence, which says the note is still there and what
+/// to do about it. `Tone::Refused` means an act the permission boundary refused,
+/// and nothing here went near one: spending the word `refused` on this crate's own
+/// bookkeeping is how `refused:` stops meaning anything on the surface where it
+/// has to.
 ///
 /// [`crate::recall::Forgotten::Absent`] is a third thing again: not an error and
 /// not a removal.
@@ -1802,7 +1841,7 @@ pub fn forgotten_said(
             ),
         ),
         crate::recall::Forgotten::Refused => (
-            Tone::Refused,
+            Tone::Muted,
             format!(
                 "{key} is pinned, so it is not a run's to withdraw {} it is still there, and \
                  still carried into every later prompt. Unpin it, then forget it.",
@@ -1821,14 +1860,16 @@ pub fn forgotten_said(
 
 /// What putting a withdrawn memory back actually put back.
 ///
-/// **An empty answer is a refusal and never a success.** [`crate::recall::unforget`]
-/// returns the keys the rewind genuinely restored, and reporting "restored" over an
-/// empty slice is the same lie [`forgotten_said`]'s own refusal arm exists to
-/// prevent — the operator would be told the note is back and find it gone.
+/// **An empty answer is never a success**, and since 0.32.0 it is not drawn as a
+/// refusal either. [`crate::recall::unforget`] returns the keys the rewind
+/// genuinely restored, and reporting "restored" over an empty slice is the same
+/// lie [`forgotten_said`]'s own arm exists to prevent — the operator would be told
+/// the note is back and find it gone. The sentence says so; the tone does not have
+/// to claim a permission boundary that was never consulted.
 pub fn unforgotten_said(key: &str, restored: &[String]) -> (Tone, String) {
     if restored.is_empty() {
         return (
-            Tone::Refused,
+            Tone::Muted,
             format!(
                 "{key} was not put back: that restore point no longer holds it, and nothing \
                  was changed"
@@ -2404,6 +2445,18 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             input.split_whitespace().nth(1),
             Some("allow") | Some("allow-git")
         )),
+        // **A bundle's contribution, addressed by the name it is drawn under.**
+        // Placed after the whole static table on purpose: a skill whose name
+        // collides with a command resolves to the command, which is the direction
+        // that cannot break a surface that already works. In practice no command
+        // carries a colon at all — `naming`'s own test asserts it over `COMMANDS`
+        // — so the shape is unambiguous, and that is what lets this arm exist
+        // without `parse` taking the skills list. Whether the name resolves to
+        // anything installed is the driver's question, because the driver is what
+        // holds the live inventory and re-walks it at every turn boundary.
+        qualified if crate::naming::is_qualified(qualified) => {
+            Action::Skill(crate::naming::wire(qualified), rest(input))
+        }
         unknown => {
             let mut lines = vec![theme.notice(
                 Tone::Warning,
@@ -2414,6 +2467,14 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
             Action::Print(lines)
         }
     }
+}
+
+/// Everything after the first word, trimmed. Empty when there is nothing.
+fn rest(input: &str) -> String {
+    input
+        .split_once(char::is_whitespace)
+        .map(|(_, rest)| rest.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// The `/help` output: the keys in force, then the commands.
@@ -2500,4 +2561,195 @@ fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Lin
             ])
         })
         .collect()
+}
+
+/// The commands that run while a turn is in flight.
+///
+/// **The rule is what a command *does*, not how harmless it looks.** A command
+/// runs mid-turn when it only reads, or only commits into the scrollback, or only
+/// changes something the interface owns. It keeps its refusal when it reassigns
+/// the session or the provider, writes the store or a configuration file, or
+/// submits a turn of its own — because the turn that is running holds all three of
+/// those and a second writer is a race the operator did not ask for.
+///
+/// Through 0.31.0 the mid-turn arm refused **every** slash but `/compact` and
+/// `/steer`, so `/status` was declined for the same reason `/clear` was, and the
+/// sentence told the operator to interrupt their turn first. Every one of these
+/// eleven was a capability the product already had, withheld by a guard nobody
+/// revisited.
+///
+/// **`/config` is refused in every form, and that is `US-IO-CLI-0.32.0-I11`.**
+/// The release contract listed it among the eleven; it cannot be admitted even
+/// bare. `/config` alone opens a picker whose rows include
+/// [`crate::configure::REFRESH_PRICES`], which re-reads the provider's catalogue,
+/// **writes a scope file**, and then reassigns both the `Config` and the
+/// `Capabilities` the running turn is holding — a reassignment that is not
+/// expressible behind the shared reference a turn has, quite apart from being a
+/// write. Admitting the command while filtering that one row out is the
+/// bare-from-argued split the contract's own `risks` section says not to make: the
+/// guard is on the whole command precisely so a mistake cannot ship a write into a
+/// running turn. Recorded as an iteration with the developer's approval rather
+/// than quietly dropped.
+///
+/// `/copy diff` is `/copy`'s second word rather than a command of its own here, so
+/// the first word decides and both forms are admitted; both only read.
+pub const MID_TURN: &[&str] = &[
+    "/status", "/context", "/cost", "/stats", "/help", "/theme", "/copy", "/expand", "/fleet",
+    "/image",
+];
+
+/// Whether `word` is the first word of a command in [`COMMANDS`].
+///
+/// **The precedence rule for a skill invocation, and it points the safe way.** A
+/// skill whose name collides with a command resolves to the command, because a
+/// surface that already works must not be taken away by something an operator
+/// installed. The driver asks this before it resolves a word against the skill
+/// inventory.
+///
+/// The first word, because `/copy diff` is one entry and `copy` is what a typed
+/// line begins with.
+pub fn names_a_command(word: &str) -> bool {
+    COMMANDS.iter().any(|(name, _)| {
+        name.trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first == word)
+    })
+}
+
+/// Whether this typed line may run while a turn is in flight.
+///
+/// Takes the whole line rather than a name, so a command whose admission ever
+/// depends on its arguments has somewhere to say so. None does today —
+/// `MID_TURN`'s doc records why `/config` is refused outright — and the first word
+/// decides. `line` is what `Command::Slash` carries: the leading slash already
+/// stripped, and trimmed.
+pub fn runs_mid_turn(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if !MID_TURN.contains(&format!("/{first}").as_str()) {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod mid_turn_tests {
+    use super::*;
+
+    /// **O12 — the partition is exhaustive over `COMMANDS`.**
+    ///
+    /// Written out rather than derived, so a command added later lands in the
+    /// failure message by name instead of defaulting quietly into either half.
+    /// That is the idiom `tests/commands.rs`'s inert-command filter already uses,
+    /// and the defect it exists for: a permissive default is a write in a running
+    /// turn that nobody chose.
+    #[test]
+    fn o12_every_command_is_either_admitted_or_refused_and_the_lists_are_written_out() {
+        let admitted: Vec<&str> = COMMANDS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| runs_mid_turn(name.trim_start_matches('/')))
+            .collect();
+        assert_eq!(
+            admitted,
+            vec![
+                "/help",
+                "/theme",
+                "/expand",
+                "/status",
+                "/context",
+                "/copy",
+                "/copy diff",
+                "/fleet",
+                "/image",
+                "/cost",
+                "/stats",
+            ],
+            "the mid-turn half of COMMANDS changed; every entry here is a decision \
+             about what may happen while a turn holds the session, the store and \
+             the provider",
+        );
+
+        let refused: Vec<&str> = COMMANDS
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| !runs_mid_turn(name.trim_start_matches('/')))
+            .collect();
+        assert_eq!(
+            refused,
+            vec![
+                "/exit",
+                "/setup",
+                "/model",
+                "/resume",
+                "/fork",
+                "/steer",
+                "/compact",
+                "/commit",
+                "/config",
+                "/remember",
+                "/memory",
+                "/skills",
+                "/mcp",
+                "/provider",
+                "/plugin",
+                "/import",
+                "/profile",
+                "/effort",
+                "/contain",
+                "/undo",
+                "/plan",
+                "/clear",
+                "/store",
+                "/export",
+                "/gates",
+            ],
+            "the refused half of COMMANDS changed",
+        );
+
+        assert_eq!(
+            admitted.len() + refused.len(),
+            COMMANDS.len(),
+            "every command is in exactly one half",
+        );
+    }
+
+    /// **`/config` is refused in every form**, including the bare one the release
+    /// contract originally admitted. Its picker carries a row that writes a scope
+    /// file and reassigns the running turn's `Config`, and a filter that removed
+    /// just that row would be the bare-from-argued split this product decided not
+    /// to make. Asserted in all four shapes so the decision cannot be undone by
+    /// half.
+    #[test]
+    fn config_is_refused_in_every_form_including_the_bare_one() {
+        assert!(!runs_mid_turn("config"));
+        assert!(!runs_mid_turn("config   "));
+        assert!(!runs_mid_turn("config list"));
+        assert!(!runs_mid_turn("config get run.max_steps"));
+        assert!(!runs_mid_turn("config run.max_steps 40"));
+    }
+
+    #[test]
+    fn a_word_that_is_not_a_command_is_refused() {
+        assert!(!runs_mid_turn(""));
+        assert!(!runs_mid_turn("   "));
+        assert!(!runs_mid_turn("definitely-not-a-command"));
+        // A skill invocation hands work to the agent, which is a submit.
+        assert!(!runs_mid_turn("ultraship:brainstorm"));
+    }
+
+    #[test]
+    fn the_two_that_already_ran_mid_turn_are_not_in_this_list() {
+        // `/steer` and `/compact` reach the turn through their own guarded arms,
+        // ahead of the refusal, and they act on the `Steer` handle rather than on
+        // the app. Admitting them here as well would give each two routes into one
+        // turn, which is the shape `/fleet` had — answered one way by its key and
+        // another by its name — and that inconsistency is one of the things this
+        // release exists to remove.
+        assert!(!runs_mid_turn("steer"));
+        assert!(!runs_mid_turn("compact"));
+    }
 }

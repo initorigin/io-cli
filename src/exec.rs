@@ -518,7 +518,23 @@ pub fn contract(
     goal: String,
     sandbox: Option<ExecMode>,
 ) -> TaskContract {
-    let contract = crate::contract::configured(goal, session.root().to_path_buf(), config);
+    // Through the same module as the session's, because the gate that keeps the
+    // interactive path honest is a path allow-list and admits no exceptions for a
+    // caller that happens to be short-lived.
+    //
+    // **Twice per run, not once, and the comment used to claim otherwise.** The
+    // contract is built here and the hooks are built where the run is assembled,
+    // and threading one resolution between the two would reshape `Headless`'s
+    // construction for a process that resolves, runs one goal and exits. Bounded
+    // and stated rather than claimed away — the adversarial review caught the
+    // claim.
+    let resolved = crate::resolved::Resolved::load(config);
+    let contract = crate::contract::configured(
+        goal,
+        session.root().to_path_buf(),
+        config,
+        resolved.loaded(),
+    );
     // The flag last, so it beats the file, and applied with `with_exec_mode`
     // rather than by replacing the whole `SandboxConfig` — the limits the file
     // set are the operator's and are not this flag's to discard.
@@ -655,7 +671,8 @@ impl WithProvider for Headless {
         // `Broadcast` is here too, and for `io exec` it is the more useful half:
         // a headless run is the one somebody else's process is most likely to
         // want to attach to.
-        let hooks = crate::contract::hooks(&self.config, self.session.root());
+        let resolved = crate::resolved::Resolved::load(&self.config);
+        let hooks = crate::contract::hooks(&self.config, resolved.loaded(), self.session.root());
         let mut observers: Vec<&dyn Observer> = vec![observer];
         if let Some(hooks) = &hooks {
             observers.push(hooks);
@@ -1168,7 +1185,8 @@ impl WithProvider for Resuming {
         // `[[hook]]` that fired on the run and then went quiet the moment it was
         // carried on would leave an audit log with a hole in exactly the half
         // nobody watched happen.
-        let hooks = crate::contract::hooks(&self.config, &self.root);
+        let resolved = crate::resolved::Resolved::load(&self.config);
+        let hooks = crate::contract::hooks(&self.config, resolved.loaded(), &self.root);
         let mut observers: Vec<&dyn Observer> = vec![observer];
         if let Some(hooks) = &hooks {
             observers.push(hooks);
@@ -1193,7 +1211,13 @@ impl WithProvider for Resuming {
             .and_then(|turn_id| self.store.session_turn(turn_id).ok().flatten())
             .and_then(|turn| self.store.session_head(turn.session_id).ok().flatten());
 
-        let contract = crate::contract::configured(self.goal, self.root.clone(), &self.config);
+        let resolved = crate::resolved::Resolved::load(&self.config);
+        let contract = crate::contract::configured(
+            self.goal,
+            self.root.clone(),
+            &self.config,
+            resolved.loaded(),
+        );
         // `None` on every arm: a containment is a fleet's shared budget, this
         // subcommand takes no flag that expresses one, and `crate::resume::recover`
         // refuses a contained run outright because io-harness publishes no

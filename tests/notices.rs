@@ -304,6 +304,7 @@ fn the_removed_step_cap_no_longer_wins_and_the_file_is_told() {
         "a goal",
         std::path::PathBuf::from("."),
         &config,
+        &config.plugins(),
         &io_cli::contract::Capabilities::stored(stored.as_ref()),
         responder,
         None,

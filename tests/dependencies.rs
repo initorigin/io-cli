@@ -1475,3 +1475,105 @@ fn n1_this_release_hands_the_model_no_new_capability() {
         );
     }
 }
+
+/// **N4 — the plugin set is resolved in one module, and nowhere on a turn's
+/// path.**
+///
+/// `Config::plugins()` looks like an accessor and is not: it is
+/// `Plugins::load(&self.plugin_decls, &self.dir)`, a fresh read of every declared
+/// bundle's manifest off disk, parsed, validated and trust-checked, on every call.
+/// io-cli called it twice on the build path of every turn, twice more each time
+/// `/plugin` opened, and again for `/skills` — so a session paid for it on every
+/// message, scaling with the number of installed bundles that 0.29.0 through
+/// 0.31.0 made it easy to grow.
+///
+/// This is the gate that keeps the fix true. A cache in front of a call anyone may
+/// still make is a cache that stops being one the first time somebody reaches
+/// past it, so the call is confined **by exact path** to `src/resolved.rs`, in the
+/// same shape this file already confines `std::process::Command` — and for the
+/// same reason: the property is not "there is a faster way", it is "there is no
+/// other way".
+///
+/// Sabotage: put `config.plugins()` back in `src/contract.rs`. Only this fails.
+#[test]
+fn n4_the_plugin_set_is_resolved_in_one_module_and_nowhere_else() {
+    // Built the way `sources()` yields them, which is absolute — comparing a
+    // relative literal against an absolute path is a gate that can only fail.
+    let permitted: Vec<PathBuf> = spawning_modules()
+        .first()
+        .map(|p| vec![p.parent().expect("src/").join("resolved.rs")])
+        .expect("at least one permitted module to take the directory from");
+    let mut found: Vec<PathBuf> = Vec::new();
+    for (path, text) in sources() {
+        // Comments stripped first, so a doc block naming the call is not a
+        // finding — the same rule the TOML and JSON sweeps in this file follow.
+        let text = code_of(&text);
+        if text.contains(".plugins()") || text.contains("Config::plugins(") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found.dedup();
+    assert_eq!(
+        found, permitted,
+        "`Config::plugins()` re-reads and re-parses every declared bundle from \
+         disk on every call. It is permitted in {permitted:?} and nowhere else; \
+         found in {found:?}",
+    );
+}
+
+/// **N1 — the driver resolves the plugin set once, and again only when the disk
+/// moved.**
+///
+/// The counterpart to `n4_the_plugin_set_is_resolved_in_one_module_and_nowhere_else`:
+/// that one proves there is no other *way* to resolve, this one proves the one
+/// way is not being taken per turn. Asserted over the driver's text because
+/// nothing under `tests/` links `src/main.rs`, and asserted as a **call count**
+/// rather than a duration because `tests/timing.rs` forbids a clock in any test
+/// and is right to — a wall-clock assertion is flaky and says nothing about why a
+/// path is fast.
+///
+/// The wall-clock improvement is a measurement for the release record, not an
+/// assertion here.
+///
+/// Sabotage: put a `Resolved::load` back on the turn's build path. The count goes
+/// to three and this fails.
+#[test]
+fn n1_the_driver_resolves_the_plugin_set_once_and_again_only_when_it_moved() {
+    let driver = sources()
+        .into_iter()
+        .find(|(path, _)| path.ends_with("main.rs"))
+        .map(|(_, text)| code_of(&text))
+        .expect("the driver");
+
+    // The interactive session's two: once at startup, before the event loop
+    // exists, and once at the turn boundary behind the staleness check. Every
+    // other `Resolved::load` in this file belongs to a one-shot subcommand that
+    // resolves and exits.
+    let interactive = driver
+        .split_once("async fn drive(")
+        .expect("the session's entry point")
+        .1
+        .split_once("async fn manage_main(")
+        .map(|(before, _)| before)
+        .unwrap_or(&driver);
+
+    assert_eq!(
+        interactive.matches("Resolved::load(").count(),
+        2,
+        "the interactive path resolves the plugin set at startup and when the \
+         disk has moved, and at no other time. A third site is a resolution \
+         somebody put back on a per-turn path",
+    );
+    assert!(
+        interactive.contains("holdings.stale("),
+        "the second resolution is guarded by the staleness check rather than run \
+         unconditionally, or the cache is a cache that always misses",
+    );
+    // And it is kept off the task turning the loop.
+    assert_eq!(
+        interactive.matches("block_in_place(").count(),
+        3,
+        "both resolutions and the staleness check run off the event-loop task",
+    );
+}

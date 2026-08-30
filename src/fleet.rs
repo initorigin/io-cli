@@ -519,6 +519,30 @@ impl Fleet {
     ///
     /// Bounded per call by what this holds — one pass, one row each, no history
     /// walked.
+    /// Rows this view would like the viewport to be.
+    ///
+    /// The tier line, every child, every message, and the row it draws its own
+    /// elision on. A request rather than a demand —
+    /// [`crate::app::App::viewport_wanted`] clamps it to what the terminal can
+    /// spare, and `render` elides against whatever it is given.
+    ///
+    /// Counted rather than measured, because these rows are fitted to the width
+    /// rather than wrapped: `rows` cuts each one, so one row is one line.
+    pub fn rows_wanted(&self) -> u16 {
+        // `rows` yields one row per child and one per message, with the tier
+        // summary at their head — so the content is those three and nothing more.
+        // Counting the summary again as "the head row `render` reserves" asked for
+        // one row too many, which happened to cancel an equal-and-opposite
+        // under-ask in `App::rows_wanted`. Two compensating errors are not a
+        // correct answer; they agree only where the arithmetic happens to line up.
+        let content = self
+            .children
+            .len()
+            .saturating_add(self.messages.len())
+            .saturating_add(1);
+        u16::try_from(content).unwrap_or(u16::MAX)
+    }
+
     pub fn rows(&self, width: u16, glyphs: &Glyphs) -> Vec<String> {
         let room = width as usize;
         let sep = glyphs.separator.trim();
@@ -603,8 +627,18 @@ impl Fleet {
             theme.style(Tone::Accent),
         ))];
 
-        let visible = area.height.saturating_sub(1) as usize;
         let rows = self.rows(area.width, &theme.glyphs);
+        // **A row spent saying what is not shown, and only when something is
+        // not (0.32.0).** Messages sort after every child, so they are the first
+        // thing off the bottom of this view — and until this release they went
+        // with no count at all, which on the surface that exists to say what a
+        // fan-out is doing is the one thing it must not do silently.
+        let room = area.height.saturating_sub(1) as usize;
+        let visible = if rows.len() > room {
+            room.saturating_sub(1)
+        } else {
+            room
+        };
         // The window follows the marker rather than the newest row: a list that
         // scrolled itself while an operator was reading one row would take the
         // row away from them.
@@ -629,6 +663,13 @@ impl Fleet {
                 Tone::Muted
             };
             lines.push(Line::from(Span::styled(row.clone(), theme.style(tone))));
+        }
+        let drawn = visible.min(rows.len().saturating_sub(first.min(rows.len())));
+        if let Some(hidden) = rows.len().checked_sub(drawn).filter(|hidden| *hidden > 0) {
+            lines.push(Line::from(Span::styled(
+                format!("{} {hidden} more", theme.glyphs.elision),
+                theme.style(Tone::Muted),
+            )));
         }
         frame.render_widget(Paragraph::new(lines), area);
         // A cursor on every frame that accepts input, which this one does: the

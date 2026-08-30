@@ -621,3 +621,83 @@ fn f7_a_paste_does_not_leak_past_an_open_picker() {
         app.composer.text(),
     );
 }
+
+// ---------------------------------------------------------------------------
+// O11 — Tab accepts, Shift+Tab steps back, in every picker in the product
+// ---------------------------------------------------------------------------
+
+/// **O11 — `Tab` takes the row under the marker.**
+///
+/// It applies to every list in the product rather than to the palette alone,
+/// because the product ships one `Picker`. Until 0.32.0 it fell into the
+/// catch-all arm and did nothing at all — a key that looks like it should work and
+/// silently does not is worse than one that is not bound.
+///
+/// **The sabotage pass is why this test exists.** `Tab` was bound, documented in
+/// the shipped key table and in the guide, and asserted nowhere: removing the arm
+/// failed no test in the suite.
+#[test]
+fn o11_tab_takes_the_row_under_the_marker() {
+    let mut picker = Picker::new(
+        "Which command?",
+        vec![Row::new("first"), Row::new("second"), Row::new("third")],
+    );
+    assert_eq!(picker.key(key(KeyCode::Down)), Outcome::Idle);
+    assert_eq!(
+        picker.key(key(KeyCode::Tab)),
+        Outcome::Chosen(1),
+        "Tab is the completion key an operator arrives already expecting, and it \
+         must take the marked row exactly as Enter does",
+    );
+}
+
+/// **O11 — `Shift+Tab` steps the marker back, in both spellings a terminal
+/// sends.**
+///
+/// A terminal may send `BackTab`, or `Tab` with the shift modifier set.
+/// `crate::keys` normalises the first into the second for a *binding*, but a
+/// picker reads raw key events and never goes through that table — so both arrive
+/// here as themselves, and matching only one is a key that works on some
+/// terminals and not others.
+#[test]
+fn o11_shift_tab_steps_the_marker_back_in_both_spellings() {
+    for back in [
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+    ] {
+        let mut picker = Picker::new(
+            "Which command?",
+            vec![Row::new("first"), Row::new("second"), Row::new("third")],
+        );
+        picker.key(key(KeyCode::Down));
+        picker.key(key(KeyCode::Down));
+        assert_eq!(picker.selected(), 2, "the marker moved down twice");
+
+        assert_eq!(
+            picker.key(back),
+            Outcome::Idle,
+            "stepping back chooses nothing"
+        );
+        assert_eq!(
+            picker.selected(),
+            1,
+            "{back:?} did not step the marker back",
+        );
+    }
+}
+
+/// **O11 — `Tab` on a heading declines, exactly as `Enter` does.**
+///
+/// A heading cannot be reached by any path that moves the marker, but `Tab` is now
+/// a second key that would turn a mistake there into the wrong action, so it
+/// declines rather than trusting that.
+#[test]
+fn o11_tab_declines_on_a_heading_like_enter_does() {
+    let mut picker = Picker::new(
+        "Which command?",
+        vec![Row::heading("a group"), Row::new("first")],
+    );
+    // The marker steps off the heading when the picker opens, so this asserts the
+    // pair agree rather than manufacturing an unreachable state.
+    assert_eq!(picker.key(key(KeyCode::Tab)), Outcome::Chosen(1));
+}

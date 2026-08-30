@@ -204,7 +204,19 @@ refer to earlier output by where it is on the screen — it has scrolled.";
 ///
 /// `[app.io-cli]` is the fifth and strongest layer, and it belongs to [`session`]
 /// alone: it is io-cli's own table and `io exec` does not read it.
-pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> TaskContract {
+pub fn configured(
+    text: impl Into<String>,
+    root: PathBuf,
+    config: &Config,
+    // **The plugin set, already resolved.** `Config::plugins()` is not an
+    // accessor — it re-reads and re-parses every declared bundle's manifest off
+    // disk on each call — and this function is on the build path of every turn,
+    // so it was doing that once here and once again in `hooks` for every message
+    // an operator sent. It is handed in now, resolved once per session by
+    // [`crate::resolved::Resolved`], which is also the only module permitted to
+    // call `Config::plugins()` at all.
+    plugins: &io_harness::Plugins,
+) -> TaskContract {
     // Kept before `root` is moved into the contract: both the plugin hook merge
     // and nothing else needs it, and cloning a `PathBuf` once per turn is not a
     // cost worth threading an argument to avoid.
@@ -238,7 +250,6 @@ pub fn configured(text: impl Into<String>, root: PathBuf, config: &Config) -> Ta
     // shared configuration file from costing a whole team their session, and
     // which is why `/plugin` is the surface that reads it rather than this
     // function returning a `Result`.
-    let plugins = config.plugins();
     let contract = plugins.apply_to(contract);
     // **The hooks, and the `is_empty` guard is not an optimisation.** io-harness
     // disables read speculation on any run carrying a `Hooks` at all — even one
@@ -485,14 +496,18 @@ pub fn gate_notice(config: &Config) -> Option<String> {
 /// `None` where the file declares no hook, so the caller can leave the fan-out at
 /// one observer and keep read speculation — the same guard [`configured`] makes,
 /// made once here so the two cannot drift apart.
-pub fn hooks(config: &Config, root: &std::path::Path) -> Option<io_harness::Hooks> {
+pub fn hooks(
+    config: &Config,
+    plugins: &io_harness::Plugins,
+    root: &std::path::Path,
+) -> Option<io_harness::Hooks> {
     // The same empty-root guard [`configured`] makes, and for the same reason:
     // building a `Hooks` creates its `append` files, so a rootless caller would
     // leave them in the process working directory.
     if root.as_os_str().is_empty() {
         return None;
     }
-    let hooks = config.plugins().apply_to_hooks(config.hooks(), root);
+    let hooks = plugins.apply_to_hooks(config.hooks(), root);
     (!hooks.is_empty()).then_some(hooks)
 }
 
@@ -616,8 +631,12 @@ fn merged<T: Clone>(wide: &[T], narrow: &[T], id: impl Fn(&T) -> String) -> (Vec
 /// keeps both lists private and exposes no accessor for either — so the shortest
 /// way to ask the question is to apply the configuration to a contract nothing
 /// runs.
-pub fn server_notices(config: &Config, caps: &Capabilities) -> Vec<String> {
-    let applied = configured(String::new(), PathBuf::new(), config);
+pub fn server_notices(
+    config: &Config,
+    plugins: &io_harness::Plugins,
+    caps: &Capabilities,
+) -> Vec<String> {
+    let applied = configured(String::new(), PathBuf::new(), config, plugins);
     let (_, mcp) = merged(&applied.mcp, &caps.mcp, |server| server.id.clone());
     let (_, lsp) = merged(&applied.lsp, &caps.lsp, |server| server.id.clone());
     let mut notices = Vec::with_capacity(mcp.len() + lsp.len());
@@ -660,6 +679,9 @@ pub fn session(
     text: impl Into<String>,
     root: PathBuf,
     config: &Config,
+    // Resolved once for the session — see [`crate::resolved`] for why this is a
+    // parameter rather than a call.
+    plugins: &io_harness::Plugins,
     caps: &Capabilities,
     responder: Arc<dyn io_harness::Responder>,
     plan_gate: Option<Arc<dyn io_harness::PlanGate>>,
@@ -672,7 +694,7 @@ pub fn session(
     // is built.** Both arms are handed this value, so the manner cannot depend on
     // whether a turn can fan out — which is the drift `tests/contract.rs`'s F6
     // exists to make unrepresentable.
-    let mut contract = configured(text, root, config)
+    let mut contract = configured(text, root, config, plugins)
         .with_responder(responder)
         .with_system_prompt(io_harness::SystemPrompt::Append(PROMPT.to_string()));
     // **Registering a gate is how the planning phase is turned on**, so this is

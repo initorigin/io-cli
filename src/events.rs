@@ -184,6 +184,11 @@ pub struct Events {
     /// still committed — in the status line's vocabulary rather than the removed
     /// rows' own, so there is one spelling of each fact in the product.
     plain: bool,
+    /// Whether an overlay in *this* process will draw a question that is asked.
+    ///
+    /// See [`Events::set_answering`] for why this is not the same question as
+    /// whether a responder exists, and why `false` is the right default.
+    answering: bool,
     /// Events whose kind [`crate::triage`] has never heard of.
     ///
     /// Counted rather than printed. A kind with no disposition is one io-harness
@@ -253,6 +258,12 @@ pub struct Events {
     root: std::path::PathBuf,
 }
 
+/// io-harness's name for the tool that opens a skill.
+///
+/// Named here because it is the one tool whose `target` is a *name* rather than a
+/// path, which is what decides whether the display translation applies to it.
+pub const READ_SKILL: &str = "read_skill";
+
 impl Events {
     pub fn new(theme: Theme) -> Self {
         Self {
@@ -261,6 +272,7 @@ impl Events {
             open: Vec::new(),
             refused_this_step: false,
             plain: false,
+            answering: false,
             unknown: 0,
             step_at: Duration::ZERO,
             thought: None,
@@ -318,6 +330,22 @@ impl Events {
     /// [`crate::settings::plain`], and handed down through [`crate::app::App`].
     pub fn set_plain(&mut self, plain: bool) {
         self.plain = plain;
+    }
+
+    /// Say whether this process is holding the overlay that answers a question.
+    ///
+    /// **Not "is a responder registered" — that is always true.** io-cli attaches
+    /// an `Answerer` to every contract it builds, so the harness always has
+    /// somebody to ask. What varies is whether io-cli kept the receiving end: four
+    /// sites drop it, three of them on contracts that never drive a turn, and one
+    /// — the `/resume` continuation — that does. A question asked by that run
+    /// reaches no overlay, so the durable transcript line has to render it.
+    ///
+    /// Default `false`, which is the safe direction: a path that forgets to say so
+    /// prints the question twice, and a path that wrongly claimed an overlay would
+    /// not print it at all.
+    pub fn set_answering(&mut self, answering: bool) {
+        self.answering = answering;
     }
 
     /// How many events arrived carrying a kind with no disposition.
@@ -718,8 +746,23 @@ impl Events {
                 self.open.push(Pending {
                     name: shown.to_string(),
                     raw: name.clone(),
+                    // **A skill's target is a name, not a path, and since 0.32.0
+                    // it is drawn the way the operator reads it** — `read_skill`
+                    // was the one place io-harness's `bundle__skill` reached a
+                    // person without going through a picker.
+                    //
+                    // **Gated on the tool, and the first draft was not.** It
+                    // translated every target, on the reasoning that no path
+                    // contains the separator — which is false and commonly so:
+                    // `__init__.py`, `__pycache__`, `__tests__`, `__mocks__`,
+                    // `__snapshots__`. `read src/__init__.py` was drawn as
+                    // `read src/:init__.py`, a path that does not exist, in the one
+                    // place an operator checks what the agent touched. Every Python
+                    // and Jest repository would have met it on the first turn.
                     target: if target == name {
                         shown.to_string()
+                    } else if name == crate::events::READ_SKILL {
+                        crate::naming::display(target)
                     } else {
                         relative(target, &self.root)
                     },
@@ -1182,12 +1225,29 @@ impl Events {
             // it is what an operator sees at all on a turn that has no responder.
             EventKind::QuestionAsked { question, choices } => {
                 let mut lines = self.flush_text();
-                lines.push(theme.notice(Tone::Accent, format!("the agent asks: {question}")));
-                for choice in choices {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {} {choice}", theme.glyphs.bullet),
-                        theme.style(Tone::Muted),
-                    )));
+                // **Committed only where nothing else will draw it (0.32.0).**
+                // Until this release the line was committed unconditionally and
+                // the overlay redrew the same question through `Tone::Warning`, so
+                // an operator was asked twice and told the second time was a
+                // warning. Two renderers, neither aware of the other.
+                //
+                // The condition is two facts and not one, and the second is the
+                // one a `--plain`-only gate would have missed: an `Answerer` is
+                // attached to **every** contract, so "no responder" never happens
+                // in io-harness's sense — what varies is whether this process kept
+                // the receiver. The `/resume` continuation drops it and then
+                // drives a real turn, so a resumed run asking a new question has
+                // no overlay anywhere and this line is the only thing that renders
+                // it. Suppressing a question everywhere is a worse defect than
+                // printing it twice.
+                if self.plain || !self.answering {
+                    lines.push(theme.notice(Tone::Accent, format!("the agent asks: {question}")));
+                    for choice in choices {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {} {choice}", theme.glyphs.bullet),
+                            theme.style(Tone::Muted),
+                        )));
+                    }
                 }
                 lines
             }
@@ -1892,20 +1952,29 @@ pub fn outcome_tone(outcome: &str) -> Tone {
 /// and the session had no way to give it.
 pub fn outcome_help(outcome: &str) -> Option<&'static str> {
     match outcome {
-        // Still a dead end, and a different one: a question about *intent*, which
-        // io-harness deliberately distinguishes from an approval about permission.
-        // Answering one needs a responder on a caller-supplied contract, which is
-        // the same entry point that would cost `Ctrl+C`. 0.7.0.
+        // **Both of the sentences that stood here were false, and had been since
+        // 0.23.0.** They told an operator that a run waiting on an answer or a
+        // plan could not be answered by this release and to say it in the next
+        // prompt — while `Intent::resumed`, `Review::resumed` and the `/resume`
+        // continuation had all existed for nine releases. The product was
+        // documenting the absence of a capability it shipped, in the one place an
+        // operator reads when they are stuck.
         "awaiting_answer" => Some(
-            "the agent asked what you meant, and this release has no way to answer \
-             that. Say it in your next prompt.",
+            "the agent asked what you meant and the turn ended before it was \
+             answered. `/resume` reopens the question and carries the run on from \
+             where it stopped.",
         ),
-        // A turn that still ends here after 0.2.0 is one whose question was never
-        // answered — the overlay was dropped when the turn ended, or the run asked
-        // for something this interface does not bind, such as a plan gate.
-        "awaiting_approval" | "awaiting_plan" => Some(
-            "the run stopped waiting on a decision it never got. Ask again, or \
-             press Shift+Tab to choose a posture that does not need one.",
+        // **Split, because `/resume` answers one of these and not the other.** A
+        // parked plan is a run io-harness can continue; an approval belongs to a
+        // turn that is over, and there is nothing left to authorize.
+        "awaiting_plan" => Some(
+            "the run proposed a plan and the turn ended before it was decided. \
+             `/resume` reopens the plan and continues from there.",
+        ),
+        "awaiting_approval" => Some(
+            "the run stopped waiting on a decision it never got, and an approval \
+             belongs to the turn that asked for it. Ask again, or press Shift+Tab \
+             to choose a posture that does not need one.",
         ),
         "denied" | "refused" => Some(
             "the permission boundary stopped it. The line above names the rule and \
