@@ -920,3 +920,54 @@ fn every_managed_surface_has_a_subcommand_clap_will_route() {
         );
     }
 }
+
+/// **F3 — a mistyped verb names the verbs that surface does take.**
+///
+/// The bare-surface gate above covers `io skill` with nothing after it. This
+/// covers `io skill bogus`, which took a different arm and was wrong there until
+/// 0.30.2: the unknown-verb arm listed `mcp`, `plugin` and `config`, so a
+/// mistyped verb on the fourth surface fell through to the unknown-*surface* arm
+/// and answered "`skill` is not a surface io manages; they are `mcp`, `plugin`,
+/// `skill` and `config`" — a sentence that denies and asserts the same fact, and
+/// never names `add`, `list` or `remove`.
+///
+/// Two doors reach this parse and neither could see it: the sentence is
+/// well-formed, the exit code is right, and only its *content* is wrong. Nothing
+/// in the suite read a refusal's words for this family before this release.
+///
+/// Sabotage: remove `"skill"` from the unknown-verb arm in `src/manage.rs`. Only
+/// this fails — and it fails on the `skill` row alone, which is why the loop
+/// asserts per surface rather than over a joined string.
+#[test]
+fn f3_a_mistyped_verb_names_the_verbs_that_surface_takes() {
+    // One distinctive verb per surface, chosen so no needle matches another
+    // surface's list: `probe` is only mcp's, `marketplace` only plugin's, `unset`
+    // only config's, and `<path>` only skill's argument spelling.
+    let surfaces = [
+        ("mcp", "probe"),
+        ("plugin", "marketplace"),
+        ("config", "unset"),
+        ("skill", "<path>"),
+    ];
+
+    for (surface, distinctive) in surfaces {
+        let refusal = manage::parse(&argv(&[surface, "definitely-not-a-verb"]))
+            .expect_err("a verb no surface takes is refused");
+
+        assert!(
+            !refusal.contains("is not a surface io manages"),
+            "`{surface} definitely-not-a-verb` was read as an unknown SURFACE \
+             rather than an unknown verb, so the refusal denies that `{surface}` \
+             is managed while listing it among the surfaces io manages: {refusal}",
+        );
+        assert!(
+            refusal.contains("is not a verb"),
+            "`{surface}` should refuse the word as a verb: {refusal}",
+        );
+        assert!(
+            refusal.contains(distinctive),
+            "the refusal for `{surface}` should name the verbs it takes, and \
+             `{distinctive}` is the one only `{surface}` has: {refusal}",
+        );
+    }
+}
