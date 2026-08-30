@@ -976,16 +976,20 @@ fn skill_plan(candidates: &[(Source, PathBuf)], home: &Path) -> Vec<Item> {
     let mut incoming = 0usize;
 
     for (source, path) in candidates {
-        let name = skill_name(path);
+        // What the run will resolve this file to: the frontmatter `name:`, the
+        // directory for a `SKILL.md`, the file stem otherwise. That last fallback
+        // used to live here as a wrapper; it is io-harness's own `default_name`
+        // rule and now lives in `describe`, which is where every surface asking
+        // this question already asks it.
+        let (name, _) = crate::skillview::describe(path);
         // **A frontmatter `name:` is somebody else's text and it is about to
-        // become a path component.** `skill_name` answers with the declared name
-        // because that is the name a skill is *addressed* by — but `Path::join`
-        // treats `../../../x` as an escape and an absolute path as a replacement
-        // for everything to its left, so the declared name reaching `join`
-        // unchecked lets a third-party bundle write a file anywhere the process
-        // can reach. Nothing else on the path catches it: the collision guard
-        // asks whether the target exists, and creating a *new* file somewhere
-        // else answers that happily.
+        // become a path component.** The resolved name is the name a skill is
+        // *addressed* by — but `Path::join` treats `../../../x` as an escape and
+        // an absolute path as a replacement for everything to its left, so the
+        // declared name reaching `join` unchecked lets a third-party bundle write
+        // a file anywhere the process can reach. Nothing else on the path catches
+        // it: the collision guard asks whether the target exists, and creating a
+        // *new* file somewhere else answers that happily.
         //
         // Refused rather than sanitised. A name is how the model addresses a
         // skill, so quietly rewriting it would install a skill under a name the
@@ -1071,14 +1075,6 @@ fn skill_plan(candidates: &[(Source, PathBuf)], home: &Path) -> Vec<Item> {
     items
 }
 
-/// What a skill file resolves to, the way `Skills::discover` will resolve it.
-///
-/// [`crate::skillview::describe`] reads the frontmatter `name:` and falls back to
-/// the file stem — which is right for a loose `foo.md` and wrong for
-/// `foo/SKILL.md`, whose stem is the literal word `SKILL`. io-harness's own
-/// `default_name` special-cases exactly that (`skills.rs:345-356`), so this does
-/// too; a plan that named three imported skills `SKILL` would collide all three
-/// against each other.
 /// Whether `name` is exactly one ordinary path component.
 ///
 /// The question is asked of a name that came out of somebody else's file and is
@@ -1092,22 +1088,16 @@ fn skill_plan(candidates: &[(Source, PathBuf)], home: &Path) -> Vec<Item> {
 /// refused, and anything with more than one component is refused. A NUL is
 /// refused too: it cannot reach the filesystem and would otherwise fail far from
 /// here with an error naming neither the skill nor the file it came from.
-fn one_path_component(name: &str) -> bool {
+///
+/// `pub(crate)` because [`crate::skillview::install`] joins a resolved name onto
+/// the same directory and so asks the same question. One definition, because a
+/// trust rule stated twice is a trust rule that will be right in one place.
+pub(crate) fn one_path_component(name: &str) -> bool {
     if name.is_empty() || name.contains('\0') {
         return false;
     }
     let mut parts = Path::new(name).components();
     matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none()
-}
-
-fn skill_name(path: &Path) -> String {
-    let (name, _) = crate::skillview::describe(path);
-    if name.eq_ignore_ascii_case("SKILL") {
-        if let Some(parent) = path.parent().and_then(Path::file_name) {
-            return parent.to_string_lossy().to_string();
-        }
-    }
-    name
 }
 
 // ---------------------------------------------------------------------------

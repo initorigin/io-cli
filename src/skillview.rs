@@ -134,6 +134,13 @@ use crate::skills;
 /// string comes from `Skills::discover` — or disabled, where it comes from here.
 const NO_DESCRIPTION: &str = "(no description)";
 
+/// The file a folder skill is written as: `<name>/SKILL.md`.
+///
+/// The one spelling this module compares against, always case-insensitively —
+/// io-harness joins this literal when it walks a directory, and a Windows or macOS
+/// filesystem will hand back `Skill.md` for it.
+const SKILL_FILE: &str = "SKILL.md";
+
 /// The narrowest a path may be drawn at, before the separator in front of it.
 ///
 /// Twenty cells is `...cli/skills/io-mcp.md` — the last two segments and the mark
@@ -406,13 +413,18 @@ fn origin(home: &Path, name: &str, path: &Path) -> Origin {
     }
 }
 
-/// The `*.md` files sitting in `skills/disabled`, sorted, absolute.
+/// The skills sitting in `skills/disabled`, sorted, absolute.
 ///
-/// Top-level files only, which is what [`disable`] ever puts there — see the note
-/// on it about the bundle it declines to move. A directory that is not there at
-/// all is no disabled skills, which is the ordinary case: `disabled/` is created
-/// by the first disable and never before, so that an operator who has turned
-/// nothing off has no directory to wonder about.
+/// **`Skills::discover`'s walk, one level down included**: a `*.md` file at the
+/// top, and a `<name>/SKILL.md` for a directory. Both are shapes [`disable`] puts
+/// there — it moves a folder skill whole — and a listing that read only the files
+/// would take a disabled folder skill off the surface that turns it back on, which
+/// is a one-way door dressed up as a toggle.
+///
+/// A directory that is not there at all is no disabled skills, which is the
+/// ordinary case: `disabled/` is created by the first disable and never before,
+/// so that an operator who has turned nothing off has no directory to wonder
+/// about.
 ///
 /// Canonicalised the way `Skills::discover` canonicalises, so a path off this
 /// surface is comparable with a path off that one and neither depends on the
@@ -424,11 +436,16 @@ fn disabled_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
+        .filter_map(|path| {
+            if path.is_dir() {
+                let inside = path.join(SKILL_FILE);
+                return inside.is_file().then_some(inside);
+            }
+            (path.is_file()
                 && path
                     .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md")))
+            .then_some(path)
         })
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .collect();
@@ -446,19 +463,38 @@ fn disabled_files(dir: &Path) -> Vec<PathBuf> {
 /// same directory: it has to know whether a *disabled* file already answers to a
 /// name before it writes its own file under that name, and answering it any other
 /// way would be a second reading of what a skill is called.
+///
+/// # The fallback is the directory for a `SKILL.md`, and the file stem otherwise
+///
+/// The stem alone is right for a loose `foo.md` and wrong for `foo/SKILL.md`,
+/// whose stem is the literal word `SKILL` — io-harness's own `default_name`
+/// special-cases exactly that (`skills.rs:345-356`), so this does too. It is one
+/// rule rather than two because *every* caller here is asking what the run will
+/// resolve: [`install`] names its destination from it, [`enable`] asks whether
+/// anything already answers to it, [`crate::import`] plans a whole directory of
+/// them — and a reading that answered `SKILL` would have three imported skills
+/// collide against each other and an added one land under a name nothing
+/// addresses.
 pub(crate) fn describe(path: &Path) -> (String, String) {
     let stem = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .unwrap_or_default();
+    let fallback = if stem.eq_ignore_ascii_case("SKILL") {
+        path.parent()
+            .and_then(Path::file_name)
+            .map_or(stem, |parent| parent.to_string_lossy().to_string())
+    } else {
+        stem
+    };
     let Ok(text) = std::fs::read_to_string(path) else {
         // Unreadable, and this surface still lists it: a file the operator cannot
         // read is one they especially need to be shown the path of.
-        return (stem, NO_DESCRIPTION.to_string());
+        return (fallback, NO_DESCRIPTION.to_string());
     };
     let (name, description, body) = front_matter(&text);
     (
-        name.unwrap_or(stem),
+        name.unwrap_or(fallback),
         description
             .or_else(|| first_prose_line(body))
             .unwrap_or_else(|| NO_DESCRIPTION.to_string()),
@@ -629,23 +665,50 @@ pub fn rows(skills: &[Listed], width: u16, glyphs: &Glyphs) -> Vec<Row> {
 /// [`view`] took to produce the row being acted on — and buys that the move is
 /// unreachable with a bundle path from anywhere.
 ///
-/// ponytail: declines a `SKILL.md` bundle rather than moving its directory. Moving
-/// the file alone would leave an empty directory behind and land as `disabled/SKILL.md`,
-/// which collides with the next bundle disabled and resolves to the name `SKILL`;
-/// moving the directory is the correct answer and is what this grows if an operator
-/// asks for it. Declining is the one option that cannot lose a file.
+/// # A folder skill moves as a folder
+///
+/// `<skills>/<name>/SKILL.md` goes to `<skills>/disabled/<name>/SKILL.md`, the
+/// directory renamed whole. Moving the file alone would leave an empty directory
+/// behind and land as `disabled/SKILL.md`, which collides with the next folder
+/// skill disabled and resolves to the name `SKILL` — so `subject` answers with
+/// the directory, and `disabled_files` walks one level down to find it again.
+/// A folder io-cli did not lay out is still declined, which is the one option
+/// that cannot lose somebody's file. **A loose `SKILL.md` is declined too**, and
+/// for the destination's sake rather than the file's: parked under its own name it
+/// would make `disabled/` itself discover as a skill. [`remove`] takes that file
+/// away; nothing can park it.
 pub fn disable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, String> {
     if let Some(refusal) = refuse_bundle(path, bundles) {
         return Err(refusal);
     }
-    if is_bundle(path) {
+    let target = match subject(path) {
+        Ok(target) => target,
+        Err(folder) => {
+            return Err(format!(
+                "{} is a skill folder io-cli did not lay out; move {} into the \
+                 disabled one by hand to turn it off",
+                path.display(),
+                folder.display(),
+            ))
+        }
+    };
+    // **The one refusal here that is about the destination rather than the file.**
+    // `relocate` keeps the name, so a loose `SKILL.md` moved as a file lands as
+    // `disabled/SKILL.md` — and a directory holding a `SKILL.md` is precisely what
+    // `Skills::discover` walks into. The off-switch would put the file back in
+    // front of the model under the name `disabled`, taking every other parked
+    // skill's hiding place with it. [`remove`] takes such a file away; there is no
+    // answer for parking one, so this says so instead of inventing a name for it.
+    if target == path && is_skill_file(path) {
         return Err(format!(
-            "{} is a skill folder rather than a single file; move the folder into the disabled \
-             one by hand to turn it off",
-            path.display()
+            "{} is a loose `{SKILL_FILE}`, so moving it into `{}/` would make that \
+             directory discover as a skill of its own and put the file back in \
+             front of the model. Rename it to `<name>.md` first, or remove it.",
+            path.display(),
+            skills::DISABLED,
         ));
     }
-    let Some(dir) = path.parent() else {
+    let Some(dir) = target.parent() else {
         return Err(format!("{} is not in a skills directory", path.display()));
     };
     let disabled = dir.join(skills::DISABLED);
@@ -655,7 +718,7 @@ pub fn disable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, St
     if let Err(error) = crate::home::create(&disabled) {
         return Err(format!("could not create {}: {error}", disabled.display()));
     }
-    relocate(path, &disabled)
+    relocate(target, &disabled)
 }
 
 /// Move a disabled skill's file back out of `skills/disabled/`. Answers with
@@ -672,12 +735,26 @@ pub fn enable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
     if let Some(refusal) = refuse_bundle(path, bundles) {
         return Err(refusal);
     }
+    // The folder for a folder skill, exactly as [`disable`] moved it, so the pair
+    // is still one rename in each direction and not a rename one way and a file
+    // left orphaned in a directory the other.
+    let target = match subject(path) {
+        Ok(target) => target,
+        Err(folder) => {
+            return Err(format!(
+                "{} is a skill folder io-cli did not lay out; move {} out of the \
+                 disabled one by hand to turn it on",
+                path.display(),
+                folder.display(),
+            ))
+        }
+    };
     // Out of `disabled/` and into its parent, which is the skills directory. Two
-    // levels up from the file rather than a path recomputed from the home,
+    // levels up from what is moving rather than a path recomputed from the home,
     // because the caller has a path off [`view`] and the home it came from is not
     // on this call — and a file that is not two levels deep is not one this
     // surface put there.
-    let Some(dir) = path.parent().and_then(Path::parent) else {
+    let Some(dir) = target.parent().and_then(Path::parent) else {
         return Err(format!(
             "{} is not in a disabled skills directory",
             path.display()
@@ -708,7 +785,7 @@ pub fn enable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
             ));
         }
     }
-    relocate(path, dir)
+    relocate(target, dir)
 }
 
 /// Copy the file at `source` into this home's skills directory. Answers with
@@ -726,7 +803,21 @@ pub fn enable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
 /// crate with somebody else's work, which is the same misattribution
 /// [`crate::home::origin`] exists to prevent one level up.
 ///
-/// Two refusals, and the second is the one that matters. A destination that
+/// # The destination is named from the RESOLVED name, never from the source's
+///
+/// `<name>.md` in this home's skills directory, where `<name>` is what
+/// `describe` answers — the frontmatter `name:`, the directory for a
+/// `SKILL.md`, the file stem otherwise. The dominant skill layout on disk is
+/// `<name>/SKILL.md`, so a destination taken from the source's file name wrote
+/// `SKILL.md` into the skills directory: a file `is_bundle` reads as a folder
+/// skill, that both levers then refused forever with a sentence about deleting a
+/// folder that is not there. Naming from the resolved name also makes the two
+/// checks below ask about the name the run will resolve, which is the only name
+/// a collision can happen under.
+///
+/// Three refusals, and the last two are the ones that matter. A resolved name
+/// that is not one ordinary path component is refused before anything is joined
+/// to it, because that name came out of somebody else's file. A destination that
 /// already exists is refused rather than overwritten, because a skill file is
 /// prose somebody wrote and this verb has no undo. And a source whose **resolved
 /// name** is already claimed is refused even when its filename is free — that
@@ -743,9 +834,30 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
             source.display()
         ));
     }
-    let Some(file_name) = source.file_name() else {
-        return Err(format!("{} has no file name", source.display()));
-    };
+    // The question the run will ask, asked before anything is named after the
+    // answer — and this is where the source's *file name* used to be taken
+    // instead. A `<name>/SKILL.md` source landed here as `SKILL.md`, which
+    // [`is_bundle`] then read as a folder skill and both levers refused forever,
+    // while every name check below asked about the literal word `SKILL` rather
+    // than about the name the run resolves.
+    let (name, _) = describe(source);
+
+    // **A frontmatter `name:` is somebody else's text and it is about to become a
+    // file name in io's own home.** `crate::import::one_path_component` refuses
+    // the same value for the same reason and is called rather than restated: one
+    // definition of a trust rule is one place for it to be wrong. Refused rather
+    // than sanitised, for that function's reason — a name is how the model
+    // addresses a skill, and rewriting it would add one under a name the
+    // operator's other tool does not use.
+    if !crate::import::one_path_component(&name) {
+        return Err(format!(
+            "`{name}` is the name {} resolves to, and a skill's name becomes its \
+             file name here — that one is not a single path component, so io-cli \
+             did not join it onto its own skills directory. Rename it in the file \
+             and add it again.",
+            source.display()
+        ));
+    }
 
     let dir = skills::dir(home);
     // Made here for [`disable`]'s reason: the surface that first moves a file in
@@ -753,18 +865,14 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
     if let Err(error) = crate::home::create(&dir) {
         return Err(format!("could not create {}: {error}", dir.display()));
     }
-    let destination = dir.join(file_name);
+    let destination = dir.join(format!("{name}.md"));
     if destination.exists() {
         return Err(format!(
-            "{} is already there; remove it first, or rename the file you are \
-             installing",
+            "{} is already there; remove it first, or give the file you are \
+             installing another `name:`",
             destination.display()
         ));
     }
-
-    // The question the run will ask, asked before the file is in a position to
-    // make the run fail.
-    let (name, _) = describe(source);
 
     // **A directory that will not discover is a refusal, never a skipped check.**
     // `discover` errors on a set above the ceiling, on two files already sharing a
@@ -797,10 +905,16 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
     // install claim a name a parked skill holds. The operator would then never be
     // able to turn that one back on: [`enable`] refuses a name already claimed,
     // and it would refuse forever. `crate::skills::install` has consulted the
-    // disabled set for this reason since 0.21.0 and this must agree with it.
-    if crate::skills::disabled_names(&dir.join(skills::DISABLED))
+    // disabled set for this reason since 0.21.0 and this agrees with it on every
+    // loose file, because both resolve a parked name through [`describe`].
+    //
+    // Asked of [`disabled_files`] rather than of `crate::skills::disabled_names`
+    // for the one place they differ: [`disable`] parks a folder skill as a folder,
+    // which has no `.md` extension for that function to match on, and a name held
+    // by one of those strands it exactly as a loose one would.
+    if disabled_files(&dir)
         .iter()
-        .any(|held| held == &name)
+        .any(|parked| describe(parked).0 == name)
     {
         return Err(format!(
             "a skill switched off in {}/{} already answers to `{name}`; installing \
@@ -842,23 +956,35 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
 /// refusal lives here rather than at the call site so a second caller cannot walk
 /// past it.
 ///
-/// The folder form is refused too, for [`disable`]'s reason: `<name>/SKILL.md` is
-/// one skill spread over a directory, and unlinking the file alone would leave the
-/// directory behind holding nothing that discovery can see.
+/// **The folder form takes the folder.** `<name>/SKILL.md` is one skill spread
+/// over a directory, so unlinking the file alone would leave the directory behind
+/// holding nothing discovery can see — an undeletable ghost on the surface whose
+/// subject is what is where. A folder io-cli did not lay out is refused instead,
+/// and the sentence names the folder rather than describing one that is not
+/// there: every loose `SKILL.md` used to be told to delete a directory it never
+/// had.
 pub fn remove(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, String> {
     if let Some(refusal) = refuse_bundle(path, bundles) {
         return Err(refusal);
     }
-    if is_bundle(path) {
-        return Err(format!(
-            "{} is a skill folder rather than a single file; delete the folder by \
-             hand to take it away",
-            path.display()
-        ));
-    }
-    std::fs::remove_file(path)
-        .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
-    Ok(path.to_path_buf())
+    let target = match subject(path) {
+        Ok(target) => target,
+        Err(folder) => {
+            return Err(format!(
+                "{} is a skill folder io-cli did not lay out; delete {} by hand to \
+                 take it away",
+                path.display(),
+                folder.display(),
+            ))
+        }
+    };
+    let gone = if target == path {
+        std::fs::remove_file(target)
+    } else {
+        std::fs::remove_dir_all(target)
+    };
+    gone.map_err(|error| format!("could not remove {}: {error}", target.display()))?;
+    Ok(target.to_path_buf())
 }
 
 /// The sentence for a path that lives inside a `[[plugin]]` bundle, if it does.
@@ -888,14 +1014,101 @@ fn refuse_bundle(path: &Path, bundles: &[(String, PathBuf)]) -> Option<String> {
     ))
 }
 
-/// Whether a path is a `SKILL.md` inside its own directory.
+/// Whether a path is a `SKILL.md` that has a directory of **its own**.
 ///
 /// A different sense of the word from [`refuse_bundle`]'s: this one is a *file
 /// shape* — one skill spread over a directory — and says nothing about whose
 /// directory it is in. Both are checked, and neither substitutes for the other.
+///
+/// **The basename alone is not the shape, and reading it as the shape was the
+/// defect.** [`install`] used to name its destination from the source's file
+/// name, so a `<name>/SKILL.md` source landed as `<skills>/SKILL.md` — a loose
+/// file with no directory of its own, which this answered `true` about, and which
+/// [`remove`] and [`disable`] then refused forever with a sentence about deleting
+/// a folder that did not exist. A directory is the skill's when it is named after
+/// the skill, which is the layout io-harness's own `default_name` assumes, or
+/// when it sits inside a skills directory as [`own_folder`] describes. A skills
+/// directory itself is neither.
 fn is_bundle(path: &Path) -> bool {
+    if !is_skill_file(path) {
+        return false;
+    }
+    // By position first: it costs no read of the file, and it is the shape every
+    // skill io-cli or `/import` ever wrote is in.
+    own_folder(path).is_some()
+        || path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|folder| folder.to_string_lossy() == describe(path).0)
+}
+
+/// Whether the file is named `SKILL.md`, in whatever case the filesystem kept.
+fn is_skill_file(path: &Path) -> bool {
     path.file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+        .is_some_and(|name| name.eq_ignore_ascii_case(SKILL_FILE))
+}
+
+/// Whether `dir` is a skills directory laid out the way io-cli lays one out.
+///
+/// Asked of [`crate::skills::dir`] rather than against a name written out here,
+/// so the two cannot drift and this module needs no copy of a constant that is
+/// private to that one.
+fn is_skills_dir(dir: &Path) -> bool {
+    dir.parent().is_some_and(|home| skills::dir(home) == dir)
+}
+
+/// Whether `dir` is the `disabled/` inside a skills directory of io-cli's own.
+fn is_disabled_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|name| name == skills::DISABLED)
+        && dir.parent().is_some_and(is_skills_dir)
+}
+
+/// The directory a folder skill owns, when it is one io-cli may rename or delete.
+///
+/// `<skills>/<name>/SKILL.md`, and the parked form
+/// `<skills>/disabled/<name>/SKILL.md` that [`disable`] makes of it. The answer is
+/// a directory about to be moved or unlinked *whole*, so the question is asked
+/// narrowly and every other shape keeps the refusal it already had.
+///
+/// **Two directories are never the answer, and both matter.** A skills directory
+/// is not a skill's folder, and neither is the `disabled/` inside one: a stray
+/// `<skills>/SKILL.md` would otherwise have [`remove`] delete every skill beside
+/// it, and a hand-placed `<skills>/disabled/SKILL.md` would have it delete every
+/// skill the operator had switched off. Both are declined here, and so is a
+/// candidate whose own parent is neither. And a bundle's
+/// `<name>/SKILL.md` never reaches here: [`refuse_bundle`] has already refused it
+/// by canonicalised containment, independently of any file name, which is why
+/// this may answer about *shape* alone.
+///
+/// ponytail: io-cli's own layout and nothing else. A run pointed elsewhere by
+/// `[run] skills` gets the refusal this surface always gave, never an act on a
+/// directory whose shape io-cli did not choose. The day a call site can hand the
+/// resolved skills directory in, this takes it as an argument and the layout test
+/// goes with it.
+fn own_folder(path: &Path) -> Option<&Path> {
+    if !is_skill_file(path) {
+        return None;
+    }
+    let folder = path.parent()?;
+    if is_skills_dir(folder) || is_disabled_dir(folder) {
+        return None;
+    }
+    let above = folder.parent()?;
+    (is_skills_dir(above) || is_disabled_dir(above)).then_some(folder)
+}
+
+/// What a lever moves or deletes: a folder skill's own directory where it has one
+/// io-cli laid out, and the file itself otherwise.
+///
+/// `Err` carries the directory to name in the refusal — the file's parent — so
+/// each lever writes the sentence its own verb needs and none of them describes a
+/// folder that is not there, which is what the old wording did for every loose
+/// `SKILL.md`.
+fn subject(path: &Path) -> Result<&Path, &Path> {
+    if !is_bundle(path) {
+        return Ok(path);
+    }
+    own_folder(path).ok_or_else(|| path.parent().unwrap_or(path))
 }
 
 /// Move one file into `into`, keeping its name.
