@@ -429,11 +429,7 @@ async fn drive(
     // Appended and never prepended, and nothing is written to disk — see
     // `src/bundle_path.rs` for both reasons.
     for (declared, actual) in io_cli::bundle_path::mismatched(holdings.loaded()) {
-        notices.push(format!(
-            "a bundle declares the program {declared} but ships it as {actual} — io puts the \
-             directory on the path and writes nothing, so it answers to {actual} and not to \
-             {declared}",
-        ));
+        notices.push(io_cli::bundle_path::mismatch_notice(&declared, &actual));
     }
     io_cli::bundle_path::install(holdings.loaded());
     let bundles = bundle_skills(holdings.loaded());

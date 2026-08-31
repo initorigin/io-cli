@@ -114,6 +114,37 @@ pub fn appended(current: Option<&OsStr>, dirs: &[PathBuf]) -> Option<OsString> {
     std::env::join_paths(all).ok()
 }
 
+/// Resolve `config`'s bundles and place their programs, reporting any mismatch.
+///
+/// **The headless doors' way in, and they need their own because they leave
+/// before the session's does.** `io exec` and `io resume` return from `main` long
+/// before the interactive path resolves anything, so a placement written once on
+/// the session's startup reaches neither — which is this product's two-entry-point
+/// asymmetry, and it was caught here by a live run rather than by the suite: the
+/// model found the program by walking the workspace and reported honestly that it
+/// was *not* on `PATH`, so a check that grepped for the program's own output
+/// would have passed over a placement that never happened.
+pub fn install_for(config: &io_harness::config::Config) -> Vec<String> {
+    let holdings = crate::resolved::Resolved::load(config);
+    let notices = mismatched(holdings.loaded())
+        .into_iter()
+        .map(|(declared, actual)| mismatch_notice(&declared, &actual))
+        .collect();
+    install(holdings.loaded());
+    notices
+}
+
+/// What an operator is told when a declaration renames its own program.
+///
+/// One sentence, written once, so the session and the two headless doors say the
+/// same thing about the same manifest.
+pub fn mismatch_notice(declared: &str, actual: &str) -> String {
+    format!(
+        "a bundle declares the program {declared} but ships it as {actual} — io puts the \
+         directory on the path and writes nothing, so it answers to {actual} and not to {declared}",
+    )
+}
+
 /// Put every loaded bundle's program directory on this process's `PATH`.
 ///
 /// The process's own variable and not a field on a contract, because that is

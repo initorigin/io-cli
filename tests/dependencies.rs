@@ -1892,3 +1892,107 @@ fn n6_no_shipped_page_states_a_harness_bound_as_io_clis_own() {
         );
     }
 }
+
+/// **F9 — every door that can run a program places a bundle's programs.**
+///
+/// **Written because the release shipped this defect and a live run found it.**
+/// The placement went on the interactive session's startup, and `io exec` and
+/// `io resume` return from `main` hundreds of lines before that — so neither
+/// headless door placed anything. The live arm caught it only because the model
+/// said so in words: it found the program by walking the workspace and reported
+/// that it was *not* on `PATH`. A check grepping for the program's own output
+/// would have passed over a placement that never happened.
+///
+/// Counted, never `contains`. Three doors reach a run, and a `contains` is
+/// satisfied forever by whichever one was written first — which is precisely how
+/// this was shipped.
+#[test]
+fn f9_every_door_that_reaches_a_run_places_a_bundles_programs() {
+    let mut sites: Vec<(PathBuf, usize)> = Vec::new();
+    for (path, text) in sources() {
+        let code = code_of(&text);
+        let calls = code.matches("bundle_path::install").count();
+        if calls > 0 {
+            sites.push((path, calls));
+        }
+    }
+    sites.sort();
+
+    let src = spawning_modules()
+        .first()
+        .map(|p| p.parent().expect("src/").to_path_buf())
+        .expect("a module to take the directory from");
+    assert_eq!(
+        sites,
+        vec![
+            // `install_for` twice: `exec::main` and `exec::resume_main`. Both are
+            // in the library, so unlike the driver's they can be reached from a
+            // test at all.
+            (src.join("exec.rs"), 2),
+            // And the interactive session's own, which already holds a resolved
+            // set and so calls `install` rather than resolving a second time.
+            (src.join("main.rs"), 1),
+        ],
+        "every entry point that can reach a run places a bundle's programs, and \
+         a door that stops doing it fails here rather than in a session where a \
+         command silently is not found",
+    );
+}
+
+/// **F5 — the echo is set where, and only where, the submitted prompt is not the
+/// typed text.**
+///
+/// The driver is the only place that knows a submission was a skill invocation,
+/// and `src/main.rs` is linked by no test binary — so this criterion has no
+/// runnable site at all and a source-text gate is what it gets instead. Said
+/// plainly rather than dressed up as a behavioural test.
+///
+/// **Counted, never `contains`.** Two doors submit a skill by its catalogue name —
+/// the qualified word typed at the prompt, and the palette's own `Action::Skill` —
+/// and a `contains` is satisfied forever by either one of them. Losing the echo on
+/// the second door is exactly the shape this product has shipped before: correct
+/// through the surface the test used, wrong through the one it did not.
+#[test]
+fn f5_every_submission_that_rewrites_the_prompt_also_carries_the_typed_text() {
+    let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let mut callers = Vec::new();
+    for (path, text) in sources() {
+        let code = code_of(&text);
+        // `.set_echo(` and not `set_echo(`: the second also matches the method's
+        // own definition, which would make the module that declares it look like
+        // a caller of it.
+        let calls = code.matches(".set_echo(").count();
+        if calls > 0 {
+            callers.push((path, calls, code));
+        }
+    }
+    callers.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let sites: Vec<(PathBuf, usize)> = callers
+        .iter()
+        .map(|(path, calls, _)| (path.clone(), *calls))
+        .collect();
+    assert_eq!(
+        sites,
+        vec![(driver.clone(), 2)],
+        "the echo is carried by the driver and by nothing else, at exactly the two \
+         sites that submit a skill under its catalogue name. A third site is a \
+         third place the two strings can drift apart; a second is what the palette \
+         door needs and what a `contains` would never have asked for.",
+    );
+
+    // And each call sits with the submission it belongs to: a `Command::Submit`
+    // carrying `wire`, which is the catalogue name and the only string
+    // `read_skill` resolves. An echo set anywhere else would show the operator
+    // text that was never sent.
+    let code = &callers[0].2;
+    for (index, _) in code.match_indices("set_echo(") {
+        let window = &code[index..code.len().min(index + 320)];
+        assert!(
+            window.contains("Command::Submit(") && window.contains("wire"),
+            "a `set_echo` at byte {index} is not beside a submission of the \
+             catalogue name, so the echoed text and the sent prompt are not the \
+             pair this criterion is about",
+        );
+    }
+}
