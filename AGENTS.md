@@ -136,10 +136,13 @@ person, no "powerful"/"robust"/"simply".
 dispatch and every event `target` carry it — so `naming::display` is applied at the moment a name
 reaches a person and `naming::wire` to a name they typed. `tests/namespacing.rs` walks the drawn
 output of six operator-facing surfaces (the transcript, the status line, the pickers, and the
-plugin, skill and marketplace panes) and fails if the separator appears in any of it, so a new
-surface that draws a contributed name inherits the rule instead of rediscovering it. Translate the
-qualifier only: a path is not a name, and `read src/__init__.py` drawn through `display` is a file
-that does not exist.
+plugin, skill and marketplace panes) and fails when one of them draws a name still in the wire
+spelling, so a new surface that draws a contributed name inherits the rule instead of rediscovering
+it. **Not "the separator appears nowhere"** — that is a different and wrong property, and the
+release that set this rule shipped the defect proving it. Translate the qualifier only: a path is
+not a name, and `read src/__init__.py` drawn through `display` is a file that does not exist; and
+only the FIRST separator is the join, so `bundle__deep__nested` is drawn `bundle:deep__nested` and
+keeps one. A gate spelled as the blanket rule reads `display` written with `replace` as a fix.
 
 **Comments carry the argument.** This codebase keeps long "why" comments — `Cargo.toml`'s
 dependency notes, `tests/dependencies.rs`'s exemption rationale. Match that density; do not strip
