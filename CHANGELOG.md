@@ -38,7 +38,10 @@ a `[[bin]]` whose `name` is not that name is named at startup and does not
 resolve, rather than being papered over with a wrapper io would then own inside
 somebody else's directory. A bundle declared in the committed `io.toml` that
 carries one is refused whole, exactly as one carrying a `[[hook]]` or an `[[mcp]]`
-is.
+is. A bundle installed mid-session has its program placed at the next turn, with
+everything else it contributes; on Windows a declared `review` shipped as
+`review.exe` is correctly authored and is not reported, because `PATHEXT` is what
+decides there.
 
 **A skill can read the files beside it without a shell.** `read_skill` takes an
 optional `path` on io-harness 0.73.0, so a bundle's `shared/*.md` and
@@ -48,8 +51,11 @@ qualifier takes the colon and the path is left exactly as it was asked for.
 
 **`tests/namespacing.rs` walks six operator-facing surfaces** — the transcript,
 the status line, the pickers, and the plugin, skill and marketplace panes — and
-fails if `io_harness::NAMESPACE` appears in the output any of them draws. The rule
-had three exceptions and no gate, which is how it had three exceptions.
+fails when one of them draws a contributed name still in its wire spelling. Not
+"the separator appears nowhere": a path carries one legitimately, and only the
+first separator is the join, so `bundle__deep__nested` is drawn
+`bundle:deep__nested` and keeps one. The rule had three exceptions and no gate,
+which is how it had three exceptions.
 
 ### Changed
 
