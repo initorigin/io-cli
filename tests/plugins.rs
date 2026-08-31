@@ -24,7 +24,7 @@ use io_harness::config::{Config, LOCAL_FILE, PROJECT_FILE};
 use io_harness::PLUGIN_FILE;
 
 /// The manifest io-harness's own module docs open with: a bundle contributing
-/// something of five of the six kinds, and nothing that runs a program.
+/// something of four of the seven kinds, and nothing that runs a program.
 ///
 /// Written out here rather than assembled from parts, because it is the shape a
 /// bundle author copies out of the documentation and it has to keep loading.
@@ -296,13 +296,19 @@ fn executing(kind: &str) -> String {
     let block = match kind {
         "hook" => "[[hook]]\non = [\"finished\"]\nrun = [\"touch\", \"ran\"]\n",
         "mcp" => "[[mcp]]\nid = \"docs\"\ntransport = \"stdio\"\ncommand = \"mcp-docs\"\n",
+        // io-harness 0.73.0's third one. The path is relative and stays inside
+        // the bundle, so what this fixture varies is the trust rule and never
+        // `check_bins` — a `[[bin]]` refused for its path would be dropped by
+        // both scopes and the pair of tests below would agree for the wrong
+        // reason.
+        "bin" => "[[bin]]\nname = \"review\"\npath = \"bin/review.mjs\"\n",
         other => panic!("no such contribution: {other}"),
     };
     format!("name = \"runner\"\nskills = \"skills\"\n\n[[agent]]\nname = \"reviewer\"\n\n{block}")
 }
 
 /// **F3.** A bundle declared in the committed `io.toml` that contributes a
-/// `[[hook]]` or an `[[mcp]]` is dropped **whole**.
+/// `[[hook]]`, an `[[mcp]]` or a `[[bin]]` is dropped **whole**.
 ///
 /// The assertion is deliberately not "the hook was skipped". A half-applied
 /// stranger's manifest is the failure the rule exists to prevent: the bundle's
@@ -310,14 +316,14 @@ fn executing(kind: &str) -> String {
 /// and a loader that kept them would be trusting the author it just refused.
 ///
 /// Sabotage: change `refuse_executing_contributions` from an error into a filter
-/// that clears `manifest.hook` and `manifest.mcp` and lets the rest load — which is
-/// the reading a reviewer would call the friendlier fix. Under it only this test
-/// fails, and what ships is a `git clone` that installs an agent definition and a
-/// skills directory of the cloned repository's choosing into every session run in
-/// it.
+/// that clears `manifest.hook`, `manifest.mcp` and `manifest.bin` and lets the
+/// rest load — which is the reading a reviewer would call the friendlier fix.
+/// Under it only this test fails, and what ships is a `git clone` that installs
+/// an agent definition and a skills directory of the cloned repository's choosing
+/// into every session run in it.
 #[test]
 fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
-    for kind in ["hook", "mcp"] {
+    for kind in ["hook", "mcp", "bin"] {
         let (_dir, root) = root();
         bundle(&root, "runner", &executing(kind));
         declaring(&root, PROJECT_FILE, &["runner"]);
@@ -365,12 +371,12 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
 }
 
 /// **F3, the other half.** The same manifest declared in `io.local.toml` loads,
-/// with all six kinds.
+/// with all seven kinds.
 ///
 /// Without this the rule above is indistinguishable from "a bundle may never
-/// contribute a hook or a server", which would make the feature useless rather
-/// than safe — and a fix that refused everywhere would pass every assertion in the
-/// test above.
+/// contribute a hook, a server or an executable", which would make the feature
+/// useless rather than safe — and a fix that refused everywhere would pass every
+/// assertion in the test above.
 ///
 /// Sabotage: apply `refuse_executing_contributions` in every scope rather than
 /// under `if scope == Scope::Project`. Under it only this test fails, and the
@@ -378,7 +384,7 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
 /// declared by anyone.
 #[test]
 fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
-    for kind in ["hook", "mcp"] {
+    for kind in ["hook", "mcp", "bin"] {
         let (_dir, root) = root();
         bundle(&root, "runner", &executing(kind));
         // The local file, which does not travel with a clone — and no `io.toml` at
@@ -414,6 +420,18 @@ fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
                 "the namespaced server is not on the contract: {:?}",
                 contract.mcp.iter().map(|s| &s.id).collect::<Vec<_>>(),
             ),
+            // **Not on the contract, and that is io-harness's decision.** A
+            // `[[bin]]` is handed back resolved and placed nowhere: io-harness
+            // puts nothing on a `PATH`, so what the local scope has to prove
+            // here is that the entry survived the load with its own name and a
+            // path inside the bundle, which is the pair a run needs to make it
+            // resolvable at all.
+            "bin" => assert_eq!(
+                plugin.bin(),
+                vec![("review", root.join("runner/bin/review.mjs"))],
+                "the bundle's executable did not come back resolved against its \
+                 own root",
+            ),
             _ => assert!(
                 io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
                 "the bundle's hook is declared and nothing will run it",
@@ -428,6 +446,8 @@ fn kind_name(kind: &str) -> &'static str {
     match kind {
         "hook" => "hooks",
         "mcp" => "mcp",
+        // The one kind whose array and whose reported name are the same word.
+        "bin" => "bin",
         other => panic!("no such contribution: {other}"),
     }
 }

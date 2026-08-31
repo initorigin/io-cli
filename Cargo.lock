@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "io-cli"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -1867,9 +1867,9 @@ dependencies = [
 
 [[package]]
 name = "io-harness"
-version = "0.72.0"
+version = "0.73.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d116567f264ba451d220c30b42eaa7be505b0ff2b89289257751e542beb82de"
+checksum = "1de74280eb7a5984f677008c4288922d5dbe17233e2c67688c84b29ede389559"
 dependencies = [
  "base64 0.23.1",
  "calamine",

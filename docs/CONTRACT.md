@@ -174,7 +174,19 @@ together.
 **A bundle's contributions are displayed with a colon and addressed with io-harness's separator.**
 `ultraship:brainstorm` is what you read; `ultraship__brainstorm` is what the model was shown and
 what `read_skill` resolves. `io exec`, `io plugin` and `io skill` report the wire name, because a
-script addresses the wire.
+script addresses the wire. From 0.34.0 the separator reaches no operator-facing surface at all —
+including an MCP tool call, drawn `Call github:create_issue` — and a gate walks six of those
+surfaces and fails on `io_harness::NAMESPACE` appearing in any of them. Invoking a bundle's skill
+as a command is the one place the two forms are side by side on purpose: the scrollback echoes the
+line you typed, `/ultraship:brainstorm …`, and the prompt behind it carries `ultraship__brainstorm`.
+
+**A bundle's `[[bin]]` is resolvable inside a run and nowhere else.** io-harness 0.73.0 accepts the
+key, resolves the path against the bundle root and places nothing; io-cli **appends** the directory
+holding that file to its own process `PATH`, which every command a run spawns inherits. Appended
+and never prepended, so nothing a bundle ships can shadow a system command. No file is written and
+nothing is linked, so the program resolves under the name it already has on disk — a `[[bin]]`
+whose `name` is not that name is reported at startup and does not resolve. Your shell's `PATH` is
+untouched, and a bundle switched off contributes no entry.
 
 ## What may change
 

@@ -78,6 +78,15 @@ io-harness's own `read_skill` tool, under this session's policy, like any other
 read. So a skill costs the prompt one line until it is relevant, and it is
 subject to the same boundary as everything else in the session.
 
+**A skill can also read the files beside it.** On io-harness 0.73.0 `read_skill`
+takes an optional `path`, so a skill whose bundle ships `shared/style.md` or a
+`references/` directory reaches them through the same tool and the same policy —
+where before the only route was a shell command, which is a program run for what
+is a read. Such a call is drawn with its path intact: the qualifier is
+translated to the colon form and the path is not touched at all, because a path
+is the bundle author's spelling and a translation applied to one is how
+`src/__init__.py` becomes a file that does not exist.
+
 **An upgrade refreshes what nobody touched and leaves the rest alone.** io-cli
 records the bytes it last wrote for each shipped skill; a file that still
 matches gets the new text, and a file you have edited is kept exactly as it is
@@ -162,14 +171,28 @@ load-bearing: it is what goes into the model's own catalogue, and `read_skill`
 resolves it by exact match, so the model can only ask for the string it was shown.
 
 **Since 0.32.0 you read `ultraship:brainstorm` instead.** The `/skills` list, the
-`/` palette, the `Read skill` line in your scrollback, `/plugin`'s inventory and
-`/status`'s policy rows all draw the colon form, and typing `/ultraship:brainstorm`
-runs it. Nothing about the wire changed: io translates at the two edges — once on
-the way to your screen, once on the way back from your keyboard — and io-harness
-never sees a colon.
+`/` palette, the line in your scrollback, `/plugin`'s inventory and `/status`'s
+policy rows all draw the colon form, and typing `/ultraship:brainstorm` runs it.
+Nothing about the wire changed: io translates at the two edges — once on the way
+to your screen, once on the way back from your keyboard — and io-harness never
+sees a colon.
 
 `io exec`, `io plugin` and `io skill` report the underscore form, because a script
 reads their output and a script addresses the wire.
+
+**A skill being read is drawn as a skill being loaded**, `Skill ultraship:plan ·
+loaded`, and io-harness's own sentence about that call is not drawn beside it.
+That sentence names the skill on the wire, so it was the one place the separator
+reached you without passing through the translation — and the row above already
+says what the call did. A read that fails or is refused still says so, in
+io-harness's words: what is dropped is the decision, never the outcome.
+
+**What you typed and what the model was sent deliberately differ.** Running
+`/ultraship:brainstorm draft the release note` echoes your own line into the
+scrollback, colon and all, because a transcript that rewrote what you typed would
+be the only place in the session that does. The prompt behind it carries
+`ultraship__brainstorm`, which is the string the model's catalogue holds and the
+only string `read_skill` will resolve.
 
 **Choosing a skill from the palette now writes a command rather than a sentence.**
 It used to put `use the <name> skill: ` into the composer, which submits as an

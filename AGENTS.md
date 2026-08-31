@@ -70,7 +70,7 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
 - **No agent loop.** The sweep strips comments first, so a doc comment containing "while" is not
   a finding; `src/provider.rs` is exempted by path and held to four properties of its own.
 
-**Module map (`src/`, 75 files).**
+**Module map (`src/`, 79 files).**
 
 - Session surface — `app.rs` (state), `term.rs` (an inline viewport, never the alternate
   screen), `events.rs` + `triage.rs` (what each io-harness event does; a kind with no
@@ -89,7 +89,8 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
 - Store — `store.rs`, `export.rs`, `undo.rs`, `rewind.rs`, `sessions.rs`.
 - Bundles — `skills.rs`, `skillview.rs`, `plugin`-facing `pluginview`, `marketplace.rs`,
   `fetch.rs`, `import.rs`, `adapt.rs` (the three manifest formats io did not invent, read; and the
-  `plugin.toml` io generates for one, written and never parsed).
+  `plugin.toml` io generates for one, written and never parsed), `bundle_path.rs` (where a
+  declared `[[bin]]` goes, appended and creating no file — io-harness places nothing itself).
 - Media and git — `picture.rs`, `attach.rs`, `repo.rs`, `commit.rs`.
 
 **Nothing under `tests/` links `src/main.rs`.** A guard written in the driver cannot be tested
@@ -129,6 +130,19 @@ sites; never `contains`** — one site satisfies a `contains` forever.
 tense, no diary (history goes in `CHANGELOG.md`; a version number in a sentence is a citation,
 not a story). Name the reason for a non-obvious decision where the decision is, once. No first
 person, no "powerful"/"robust"/"simply".
+
+**A bundle's name is translated where it is drawn, never renamed.**
+`io_harness::NAMESPACE` is `__` and it is load-bearing on the wire — the system prompt, the tool
+dispatch and every event `target` carry it — so `naming::display` is applied at the moment a name
+reaches a person and `naming::wire` to a name they typed. `tests/namespacing.rs` walks the drawn
+output of six operator-facing surfaces (the transcript, the status line, the pickers, and the
+plugin, skill and marketplace panes) and fails when one of them draws a name still in the wire
+spelling, so a new surface that draws a contributed name inherits the rule instead of rediscovering
+it. **Not "the separator appears nowhere"** — that is a different and wrong property, and the
+release that set this rule shipped the defect proving it. Translate the qualifier only: a path is
+not a name, and `read src/__init__.py` drawn through `display` is a file that does not exist; and
+only the FIRST separator is the join, so `bundle__deep__nested` is drawn `bundle:deep__nested` and
+keeps one. A gate spelled as the blanket rule reads `display` written with `replace` as a fix.
 
 **Comments carry the argument.** This codebase keeps long "why" comments — `Cargo.toml`'s
 dependency notes, `tests/dependencies.rs`'s exemption rationale. Match that density; do not strip

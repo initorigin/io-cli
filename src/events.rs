@@ -84,7 +84,10 @@ pub const VERBS: &[(&str, &str)] = &[
     ("lsp_references", "References"),
     ("lsp_rename", "Rename"),
     ("lsp_symbols", "Symbols"),
-    ("read_skill", "Read skill"),
+    // `Skill` and not `Read skill`: from 0.34.0 this cell is a loaded-skill row
+    // rather than a read of a file that happens to be a skill, and the verb is
+    // the column that says which of the two a reader is looking at.
+    ("read_skill", "Skill"),
     ("todo_write", "Todo"),
     ("remember", "Remember"),
     ("forget", "Forget"),
@@ -114,8 +117,25 @@ pub const VERBS: &[(&str, &str)] = &[
     ("barcode_decode", "Decode"),
 ];
 
+/// The verb an MCP tool is drawn under.
+///
+/// A word rather than nothing, so the first column stays the column a reader
+/// skims down. Every other cell in this transcript opens with a verb in accent
+/// and bold and puts its target after it muted; an MCP cell that opened with the
+/// server and the tool would be the one row whose first column is a target.
+pub const MCP_VERB: &str = "Call";
+
 /// The verb for a tool name, or the name exactly as it arrived.
+///
+/// **An MCP tool is answered before the table is consulted.** Its name is built
+/// by io-harness from a prefix, a server id and the tool's own name, so it can
+/// never appear in a static table — and up to 0.33.0 it fell through this
+/// function unchanged and reached the transcript whole, separators and all. The
+/// server and the tool are drawn as the cell's target; see `announce`.
 pub fn verb(name: &str) -> &str {
+    if name.starts_with(MCP_TOOL_PREFIX) {
+        return MCP_VERB;
+    }
     VERBS
         .iter()
         .find(|(tool, _)| *tool == name)
@@ -135,6 +155,21 @@ struct Pending {
     /// the verb and the sentence said the same thing twice in two vocabularies.
     raw: String,
     target: String,
+    /// io-harness's own target, before the display translation was applied to it.
+    ///
+    /// **The translation broke the deduplication, and this is the repair at the
+    /// cause.** [`trim_result`] drops the step's decision sentence when the
+    /// sentence only repeats what the cell already says, and it decides that by
+    /// comparing words. Once 0.32.0 translated the target *in place*, the
+    /// harness's `bundle__skill` stopped matching the cell's `bundle:skill` — so
+    /// the sentence was no longer recognised as a repetition and the one string
+    /// the translation existed to hide was printed in full, beside the
+    /// translation of it.
+    ///
+    /// Kept *beside* the displayed form rather than instead of it, because a
+    /// sentence may legitimately repeat either spelling and both have to count
+    /// as things the cell has already said.
+    target_raw: String,
     /// The session age at which the call was announced. An age handed in by the
     /// driver, never a clock read here: this module has no timer, and N1 is what
     /// keeps it that way.
@@ -256,13 +291,71 @@ pub struct Events {
     /// nothing: a path is printed whole rather than trimmed against a guess at
     /// where the session is. `App::set_root` is the one caller.
     root: std::path::PathBuf,
+    /// What the operator actually typed, when it is not what was submitted.
+    ///
+    /// **The prompt echo is io-harness's own event field, not a string io-cli
+    /// holds** — the row is drawn from `EventKind::Started`'s `goal`, which is
+    /// the text that was sent. For a slash-invoked skill those two deliberately
+    /// differ: the submitted prompt is the catalogue name `ultraship__brainstorm`
+    /// because that is the only string `read_skill` resolves, and the operator
+    /// typed `/ultraship:brainstorm`. Up to 0.33.0 the machine's spelling was
+    /// what came back.
+    ///
+    /// Carried rather than derived, and that is the point. Translating the goal
+    /// in the `Started` arm would run the display translation over arbitrary
+    /// operator prose — which is how `src/__init__.py` became `src/:init__.py` in
+    /// 0.32.0's first draft, on the largest text surface in the product. Only the
+    /// driver knows a submission was an invocation, so only the driver says so.
+    ///
+    /// Taken by the arm that draws it, so it cannot outlive the turn it belongs
+    /// to and be shown over the next prompt.
+    echo: Option<String>,
 }
 
 /// io-harness's name for the tool that opens a skill.
 ///
-/// Named here because it is the one tool whose `target` is a *name* rather than a
-/// path, which is what decides whether the display translation applies to it.
+/// Named here because it is the one tool whose `target` can be a *name* rather
+/// than a path, which is what decides whether the display translation applies to
+/// it.
 pub const READ_SKILL: &str = "read_skill";
+
+/// What a `read_skill` cell says when the read returned and said nothing more.
+pub const LOADED: &str = "loaded";
+
+/// What a `read_skill` cell says when the call asked for the bundle itself.
+///
+/// io-harness writes an empty `path` into its own sentence as `.`, and says why
+/// in its own comment: the empty path resolves to the root and lists it, and the
+/// dot keeps that listing distinguishable from a body read in the durable trace.
+/// A dot alone is that distinction spelled for a trace rather than for a person,
+/// so the cell says the word.
+pub const LISTED: &str = "listed";
+
+/// Whether a `read_skill` target is a skill's *name* rather than a file inside
+/// one.
+///
+/// **This stopped being a property of the tool in io-harness 0.73.0.** That
+/// version gave `read_skill` an optional `path`, so a skill can read its own
+/// bundle's `shared/` and `references/` files — and the announcement picks the
+/// first argument present out of an ordered list in which `path` is checked
+/// *before* `name`. So the same tool now announces a relative file path where
+/// every earlier version announced a skill's name.
+///
+/// The display translation must not reach that path. It rewrites the first
+/// separator to a colon, and a companion file called `__init__.py` would be
+/// drawn as `:init__.py` — a path that does not exist, on the one surface an
+/// operator checks to see what the agent touched. That is verbatim the failure
+/// 0.32.0 found and gated against; 0.73.0 moved the ground under the gate.
+///
+/// A path separator or a dot is what tells them apart. A skill's name is a
+/// directory or file stem io-harness joined to a bundle id, and the two things
+/// this refuses — a separator and an extension — are what a path has and a name
+/// does not. The authority is the step's own decision sentence, which carries
+/// the skill and the file as two words; this is only what the *live* row can
+/// know, before any sentence has arrived.
+fn names_a_skill(target: &str) -> bool {
+    !target.is_empty() && !target.contains('/') && !target.contains('\\') && !target.contains('.')
+}
 
 impl Events {
     pub fn new(theme: Theme) -> Self {
@@ -283,7 +376,18 @@ impl Events {
             last_prose: true,
             thinking: false,
             root: std::path::PathBuf::new(),
+            echo: None,
         }
+    }
+
+    /// Say what the operator typed, for the turn about to start.
+    ///
+    /// Called by the driver immediately before submitting a prompt that is not
+    /// the text that was typed — today, a slash-invoked skill, whose submitted
+    /// form is the catalogue name. Every other prompt submits what was typed and
+    /// needs no call at all.
+    pub fn set_echo(&mut self, typed: impl Into<String>) {
+        self.echo = Some(typed.into());
     }
 
     /// Forget everything this module holds about a conversation.
@@ -305,6 +409,7 @@ impl Events {
         self.last_prose = true;
         self.thinking = false;
         self.step_at = Duration::ZERO;
+        self.echo = None;
     }
 
     /// Say which workspace this session is held over, so a target inside it can
@@ -432,7 +537,7 @@ impl Events {
         let mut lines = self.flush_text();
         let theme = self.theme;
         for call in std::mem::take(&mut self.open) {
-            lines.push(cell_line(theme, &call, "unfinished", None));
+            lines.push(cell_line(theme, &call, "unfinished", None, false));
         }
         self.refused_this_step = false;
         // The turn is over, so nothing is thinking and nobody is being waited
@@ -443,6 +548,14 @@ impl Events {
         self.awaiting = None;
         self.after_cell = false;
         self.thinking = false;
+        // **And the typed text, for the same reason.** A turn can end without the
+        // harness ever emitting `Started` — it validates the contract, discovers
+        // skills, opens the run, takes the store lease and sets the provider
+        // first, and every one of those can fail — so `Started`'s `take()` is not
+        // on its own a guarantee that the echo dies with the turn it belongs to.
+        // Left behind, it is drawn over the NEXT prompt: the one row in the
+        // transcript the reader wrote, showing something they did not type.
+        self.echo = None;
         lines
     }
 
@@ -584,9 +697,16 @@ impl Events {
                 // words. The rest of the prompt is indented under the first
                 // character rather than under the mark, so the block reads as one
                 // thing said once.
+                //
+                // **What the operator typed, when the driver said it differed
+                // from what was sent.** Taken rather than read, so a turn cannot
+                // show the previous turn's typing; a prompt submitted as itself
+                // sets nothing and falls back to the goal, which is the same
+                // string.
                 let marker = theme.glyphs.marker;
                 let indent = " ".repeat(marker.chars().count());
-                let mut lines: Vec<Line<'static>> = goal
+                let typed = self.echo.take().unwrap_or_else(|| goal.clone());
+                let mut lines: Vec<Line<'static>> = typed
                     .split('\n')
                     .enumerate()
                     .map(|(row, line)| {
@@ -669,7 +789,7 @@ impl Events {
                     } else {
                         verdict
                     };
-                    lines.push(cell_line(theme, call, result, Some(at)));
+                    lines.push(cell_line(theme, call, result, Some(at), paired));
                     self.after_cell = true;
                 }
 
@@ -759,13 +879,27 @@ impl Events {
                     // `read src/:init__.py`, a path that does not exist, in the one
                     // place an operator checks what the agent touched. Every Python
                     // and Jest repository would have met it on the first turn.
-                    target: if target == name {
+                    //
+                    // **An MCP tool's identity IS its target, and it is answered
+                    // first.** io-harness builds the name as a prefix, the server
+                    // and the tool, so the cell's useful fact is which server ran
+                    // which tool; the call's arguments go to the durable trace,
+                    // where a whole argument list belongs. The prefix is stripped
+                    // *before* translating, and that order is load-bearing: the
+                    // prefix itself ends with the separator, so translating the
+                    // whole name splits at the prefix's own join and yields
+                    // `mcp:github__create_issue` — a string that is both wrong and
+                    // still carrying the thing the translation exists to remove.
+                    target: if let Some(tool) = name.strip_prefix(MCP_TOOL_PREFIX) {
+                        crate::naming::display(tool)
+                    } else if target == name {
                         shown.to_string()
-                    } else if name == crate::events::READ_SKILL {
+                    } else if name == crate::events::READ_SKILL && names_a_skill(target) {
                         crate::naming::display(target)
                     } else {
                         relative(target, &self.root)
                     },
+                    target_raw: target.clone(),
                     opened_at: at,
                     measured: None,
                 });
@@ -1479,9 +1613,16 @@ impl Events {
                 //
                 // A connect, a discover or a disconnect carries no tool and no
                 // duration, and matches nothing.
+                // **Matched on the wire name and never on the drawn one.** From
+                // 0.34.0 an MCP cell is drawn as a verb and a translated target,
+                // so the field this used to compare against no longer holds the
+                // string being rebuilt here. `raw` is io-harness's own name for
+                // the tool and is the only field that still does — and getting
+                // this wrong loses the measurement silently, on the one event in
+                // the whole enum that reports how long a tool actually ran.
                 if let (Some(tool), Some(millis)) = (tool, millis) {
                     let name = format!("{MCP_TOOL_PREFIX}{server}{NAMESPACE}{tool}");
-                    if let Some(call) = self.open.iter_mut().rev().find(|c| c.name == name) {
+                    if let Some(call) = self.open.iter_mut().rev().find(|c| c.raw == name) {
                         call.measured = Some(Duration::from_millis(*millis));
                     }
                 }
@@ -1824,11 +1965,20 @@ fn trim_result(result: &str, call: &Pending) -> String {
             .to_lowercase()
     }
 
+    // **Both spellings of the target, because the cell shows one and the sentence
+    // is written in the other.** io-harness writes its decision in its own
+    // vocabulary, so a translated target leaves the sentence saying
+    // `bundle__skill` while the cell says `bundle:skill`. Comparing against the
+    // displayed form alone stopped recognising the repetition the moment 0.32.0
+    // introduced a translation — and `plain` keeps `_` while dropping `:`, so the
+    // two sides do not merely differ by a character, they differ by the separator
+    // itself, which is the whole string being hidden.
     let said = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         plain(&call.raw),
         plain(&call.name),
-        plain(&call.target)
+        plain(&call.target),
+        plain(&call.target_raw)
     );
     let mut rest = result.trim_start();
     while let Some((head, tail)) = rest.split_once(char::is_whitespace) {
@@ -1852,8 +2002,15 @@ fn trim_result(result: &str, call: &Pending) -> String {
     // The WHOLE target, never its last word. Stripping one token turned
     // `Run cargo test · ran cargo test` into `ran cargo`, which is a sentence
     // this interface made up out of one the harness wrote.
-    if !call.target.is_empty() {
-        if let Some(head) = rest.strip_suffix(call.target.as_str()) {
+    //
+    // Tried in both spellings for the same reason `said` holds both: the sentence
+    // ends in the words io-harness chose, which for a translated target are not
+    // the words the cell is showing.
+    for tail in [call.target.as_str(), call.target_raw.as_str()] {
+        if tail.is_empty() {
+            continue;
+        }
+        if let Some(head) = rest.strip_suffix(tail) {
             let head = head.trim_end();
             if !plain(head).is_empty() {
                 return head.to_string();
@@ -1874,8 +2031,106 @@ fn ends_blank(lines: &[Line<'static>]) -> bool {
         .is_none_or(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
 }
 
-fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -> Line<'static> {
+/// A `read_skill` decision split into the skill that loaded and what it read.
+///
+/// io-harness writes this decision as the skill's own name and, when the call
+/// carried one, the companion file's relative path — two words, in that order.
+/// The first is a *name* by construction, which makes it the one place the
+/// display translation is certainly right rather than probably right: the live
+/// row has to guess from the target's shape ([`names_a_skill`]) because no
+/// sentence has arrived yet, and this does not have to guess at all.
+///
+/// `None` when the decision is not in that shape, which is every case where the
+/// harness did not write a sentence for this call — a refusal, a step verdict
+/// standing in for one, or a cell closed unfinished. Those keep the ordinary
+/// cell, because a row asserting a skill loaded is exactly what must not be
+/// drawn when the read did not happen.
+fn skill_and_file(decision: &str) -> Option<(String, String)> {
+    /// io-harness's own sentence for a skill that was read.
+    const READ: &str = "read skill ";
+    /// And for one that could not be. Both are matched rather than guessed at,
+    /// because the difference between them is the difference between a row that
+    /// says a skill loaded and a row that says so wrongly.
+    const FAILED_HEAD: &str = "skill ";
+    const FAILED_TAIL: &str = " read error";
+
+    let decision = decision.trim();
+    let (label, failed) = match decision.strip_prefix(READ) {
+        Some(label) => (label, false),
+        None => (
+            decision
+                .strip_prefix(FAILED_HEAD)?
+                .strip_suffix(FAILED_TAIL)?,
+            true,
+        ),
+    };
+    // The label is the skill's name and, when the call carried one, the companion
+    // file's relative path — io-harness builds it that way and writes it into the
+    // decision, the observation header and the supersede target alike.
+    let (skill, file) = match label.split_once(char::is_whitespace) {
+        Some((skill, rest)) => (skill, rest.trim()),
+        None => (label, ""),
+    };
+    if skill.is_empty() {
+        return None;
+    }
+    // **`.` is spelled as a word only where it describes what happened.** On a
+    // failure the harness's `.` is still the *path that was asked for*, and
+    // `listed read error` would be a row saying the bundle was listed and that
+    // the listing failed.
+    let detail = match (failed, file) {
+        (false, "") => LOADED.to_string(),
+        (false, ".") => LISTED.to_string(),
+        (false, file) => file.to_string(),
+        (true, "") => FAILED_TAIL.trim().to_string(),
+        (true, file) => format!("{file}{FAILED_TAIL}"),
+    };
+    Some((crate::naming::display(skill), detail))
+}
+
+fn cell_line(
+    theme: Theme,
+    call: &Pending,
+    result: &str,
+    at: Option<Duration>,
+    paired: bool,
+) -> Line<'static> {
     let separator = theme.glyphs.separator;
+    // **A loaded skill is drawn as a loaded skill, in io-cli's own words.**
+    //
+    // This is what removes the separator at its source rather than filtering it
+    // downstream: io-harness's decision sentence for this tool is not drawn at
+    // all, so the string that used to carry the separator into the transcript is
+    // no longer a thing the cell prints. The two facts a reader wants — which
+    // skill, and what came of it — are taken from that sentence and said once
+    // each.
+    //
+    // Gated on `paired`, so the sentence being read really is this call's. A
+    // refusal, a step verdict or an unfinished flush all fall through to the
+    // ordinary cell, because `loaded` is an assertion and the one thing worse
+    // than an unreadable row is a confident wrong one.
+    if paired && call.raw == READ_SKILL {
+        if let Some((skill, detail)) = skill_and_file(result) {
+            return with_duration(
+                theme,
+                vec![
+                    Span::styled(
+                        format!("  {} ", theme.glyphs.bullet),
+                        theme.style(Tone::Muted),
+                    ),
+                    Span::styled(
+                        call.name.clone(),
+                        theme.style(Tone::Accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!(" {skill}"), theme.style(Tone::Muted)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(detail, theme.style(Tone::Normal)),
+                ],
+                call,
+                at,
+            );
+        }
+    }
     let mut spans = vec![
         Span::styled(
             format!("  {} ", theme.glyphs.bullet),
@@ -1910,15 +2165,32 @@ fn cell_line(theme: Theme, call: &Pending, result: &str, at: Option<Duration>) -
         spans.push(Span::styled(result, theme.style(Tone::Normal)));
     }
 
-    // Two different kinds of number, told apart on the line itself. A measured
-    // duration is io-harness's own and is printed plainly; anything else is the
-    // interval io-cli observed between two events — which includes the model's
-    // own turnaround and the queue in front of the tool — and wears a `~` to say
-    // that it is an observation rather than how long the tool ran.
-    //
-    // `at` is `None` when the cell is closed with nothing having reported on it.
-    // io-cli does not know a duration there and says none, rather than printing
-    // the age of the announcement as though it were one.
+    with_duration(theme, spans, call, at)
+}
+
+/// A cell's spans with its duration appended, whichever shape the cell took.
+///
+/// Shared by the ordinary cell and the loaded-skill row so that the two kinds of
+/// number below are told apart in one place. A second copy of this reasoning is
+/// how one of the two rows ends up printing an observation as though it were a
+/// measurement.
+///
+/// Two different kinds of number, told apart on the line itself. A measured
+/// duration is io-harness's own and is printed plainly; anything else is the
+/// interval io-cli observed between two events — which includes the model's own
+/// turnaround and the queue in front of the tool — and wears a `~` to say that it
+/// is an observation rather than how long the tool ran.
+///
+/// `at` is `None` when the cell is closed with nothing having reported on it.
+/// io-cli does not know a duration there and says none, rather than printing the
+/// age of the announcement as though it were one.
+fn with_duration(
+    theme: Theme,
+    mut spans: Vec<Span<'static>>,
+    call: &Pending,
+    at: Option<Duration>,
+) -> Line<'static> {
+    let separator = theme.glyphs.separator;
     let observed = at.map(|at| format!("~{}", format_millis(at.saturating_sub(call.opened_at))));
     if let Some(duration) = call.measured.map(format_millis).or(observed) {
         spans.push(Span::styled(
@@ -2145,4 +2417,162 @@ pub fn kind_name(kind: &EventKind) -> String {
         snake.push(character.to_ascii_lowercase());
     }
     snake
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A call as `announce` would have built it, for the two functions below.
+    ///
+    /// In-crate because both are private, and they have to be: `trim_result` is
+    /// the comparison this release repairs and `skill_and_file` is the parse that
+    /// decides whether a row may say a skill loaded. A criterion about either is
+    /// gated by nothing if the only way to reach it is through a rendered line
+    /// that also exercises six other decisions.
+    ///
+    /// At the foot of the file, because `clippy::items_after_test_module` refuses
+    /// a test module with production items below it.
+    fn call(raw: &str, name: &str, target: &str, target_raw: &str) -> Pending {
+        Pending {
+            name: name.to_string(),
+            raw: raw.to_string(),
+            target: target.to_string(),
+            target_raw: target_raw.to_string(),
+            opened_at: Duration::ZERO,
+            measured: None,
+        }
+    }
+
+    /// **F3 — the exact pair from the live session that opened this release.**
+    ///
+    /// 0.32.0 translated the cell's target and left io-harness's sentence beside
+    /// it in the untranslated vocabulary, so the comparison that exists to drop a
+    /// repetition stopped recognising one — and printed in full the single string
+    /// the translation had been added to hide.
+    #[test]
+    fn f3_a_decision_repeating_a_translated_target_is_dropped() {
+        let call = call(
+            READ_SKILL,
+            "Skill",
+            "ultraship:using-ultraship",
+            "ultraship__using-ultraship",
+        );
+        assert_eq!(
+            trim_result("read skill ultraship__using-ultraship", &call),
+            "",
+            "the sentence only repeats the cell and must leave the result column \
+             empty, in either vocabulary",
+        );
+    }
+
+    /// And the displayed spelling is dropped too, so the repair does not depend
+    /// on which of the two io-harness happens to have written.
+    #[test]
+    fn f3_a_decision_repeating_the_displayed_target_is_also_dropped() {
+        let call = call(
+            READ_SKILL,
+            "Skill",
+            "ultraship:using-ultraship",
+            "ultraship__using-ultraship",
+        );
+        assert_eq!(
+            trim_result("read skill ultraship:using-ultraship", &call),
+            ""
+        );
+    }
+
+    /// **F4 — and a genuine result is still not stripped.**
+    ///
+    /// The whole target at the end is a repetition; one token of it is a sentence
+    /// this interface made up out of one the harness wrote. `Run cargo test · ran
+    /// cargo` was that mistake.
+    #[test]
+    fn f4_a_genuine_result_survives_and_a_whole_repeated_target_does_not() {
+        // **`ran`, not the empty string.** The cell has already said `Run` and
+        // `cargo test`, so what the sentence *adds* is the one word `ran`, and
+        // that is what it carries — the rule is "what the result adds, and not
+        // what it repeats", never "drop a sentence that mentions the target".
+        // 0.34.0's contract said this column was empty; the behaviour it
+        // describes has been asserted since 0.11.0 and is the one that is right.
+        let run = call("shell", "Run", "cargo test", "cargo test");
+        assert_eq!(trim_result("ran cargo test", &run), "ran");
+        let list = call("list_dir", "List", "src", "src");
+        assert_eq!(trim_result("list_dir  (4 entries)", &list), "(4 entries)");
+    }
+
+    /// **The success sentence and the failure sentence are told apart.**
+    ///
+    /// A row saying a skill loaded is an assertion, so it is made only from the
+    /// sentence io-harness writes when one did.
+    #[test]
+    fn a_loaded_skill_is_parsed_and_a_failed_read_is_not_mistaken_for_one() {
+        assert_eq!(
+            skill_and_file("read skill ultraship__plan"),
+            Some(("ultraship:plan".to_string(), LOADED.to_string())),
+        );
+        assert_eq!(
+            skill_and_file("read skill ultraship__plan shared/principles.md"),
+            Some((
+                "ultraship:plan".to_string(),
+                "shared/principles.md".to_string()
+            )),
+        );
+        // An empty `path` lists the bundle, which io-harness spells `.`.
+        assert_eq!(
+            skill_and_file("read skill ultraship__plan ."),
+            Some(("ultraship:plan".to_string(), LISTED.to_string())),
+        );
+        // The failure sentence says the read failed and never says `loaded`.
+        assert_eq!(
+            skill_and_file("skill ultraship__plan read error"),
+            Some(("ultraship:plan".to_string(), "read error".to_string())),
+        );
+        assert_eq!(
+            skill_and_file("skill ultraship__plan missing.md read error"),
+            Some((
+                "ultraship:plan".to_string(),
+                "missing.md read error".to_string()
+            )),
+        );
+        // Anything else is not this tool's sentence and takes the ordinary cell:
+        // a refusal, a step verdict standing in for a sentence, an unfinished
+        // flush. None of the three may become a row claiming a skill loaded.
+        for other in ["refused", "no change", "changed files", "unfinished", ""] {
+            assert_eq!(
+                skill_and_file(other),
+                None,
+                "{other:?} is not io-harness's sentence for a skill that was read",
+            );
+        }
+    }
+
+    /// **F11 — a companion path is not a name, and the pin made that a live
+    /// question rather than a theoretical one.**
+    ///
+    /// io-harness 0.73.0 announces the path in preference to the skill's name, so
+    /// the target this tool arrives with is now sometimes a file. Translating one
+    /// draws a path that does not exist.
+    #[test]
+    fn f11_a_companion_path_is_never_taken_for_a_skills_name() {
+        for name in ["ultraship__plan", "brainstorm", "a__b"] {
+            assert!(
+                names_a_skill(name),
+                "{name} is a skill name and must still be translated",
+            );
+        }
+        for path in [
+            "references/__init__.py",
+            "shared/principles.md",
+            "__init__.py",
+            "NOTES.md",
+            "a\\b__c.md",
+            "",
+        ] {
+            assert!(
+                !names_a_skill(path),
+                "{path} is a file and translating it draws a path that does not exist",
+            );
+        }
+    }
 }

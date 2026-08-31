@@ -15,14 +15,15 @@ There is still no registry either; from 0.29.0 there are
 [marketplaces](#marketplaces), which are repositories you name and clone, and
 installing out of one writes exactly the entry above.
 
-One directory can hand over six kinds of thing at once: skills, prompt templates,
-`[[agent]]` definitions for a fan-out to draw children from, `[[mcp]]` servers,
-`[[hook]]` tables, and policy layers. That breadth is why `/plugin` exists.
-Every other capability in a session is one you put there — a skill file is yours
-or io-cli's, an `[[mcp]]` entry is a line you wrote, a policy layer came from a
-posture you chose. A bundle is a directory somebody else wrote that adds names to
-six subsystems on one line, and *what did that directory put in my session* is a
-question whose only previous answer was to open the manifest.
+One directory can hand over seven kinds of thing at once: skills, prompt
+templates, `[[agent]]` definitions for a fan-out to draw children from,
+`[[mcp]]` servers, `[[hook]]` tables, `[[bin]]` executables, and policy layers.
+That breadth is why `/plugin` exists. Every other capability in a session is one
+you put there — a skill file is yours or io-cli's, an `[[mcp]]` entry is a line
+you wrote, a policy layer came from a posture you chose. A bundle is a directory
+somebody else wrote that adds names to seven subsystems on one line, and *what
+did that directory put in my session* is a question whose only previous answer
+was to open the manifest.
 
 **`/plugin` answers it, and it answers the dropped ones too.** One row per bundle
 with its id, its root and what it contributed; choosing one opens what it brought,
@@ -78,11 +79,12 @@ something you type more comfortably into your own file than into a picker.
 **Which file declared a bundle decides what it may contribute.** A bundle named
 in the project-scoped `io.toml` — the file a `git clone` delivers — may
 contribute skills, templates, agents and policy, and may **not** contribute
-hooks or MCP servers, because both of those run a program on this machine. A
-project-scoped bundle that tries is refused **whole**: it contributes nothing at
-all, not the half that would have been safe. Move the `[[plugin]]` line into
-`io.local.toml` or into your user file and the same directory loads completely.
-The rule is about which file names it, exactly as it is for `[browser]`.
+hooks, MCP servers or executables, because each of those three names a program
+this machine would run. A project-scoped bundle that tries is refused **whole**:
+it contributes nothing at all, not the half that would have been safe. Move the
+`[[plugin]]` line into `io.local.toml` or into your user file and the same
+directory loads completely. The rule is about which file names it, exactly as it
+is for `[browser]`.
 
 **A bundle's policy may only narrow.** Its layers may deny and may never allow: a
 `[policy] defaults` table in a manifest is refused by name, and a single rule
@@ -101,6 +103,15 @@ io-harness keeps its own separator on the wire. That is a translation at the edg
 and not a third spelling: `io plugin list` and `io exec` report the underscore
 form, because a script addresses the wire.
 
+**From 0.34.0 the translation has no exceptions left.** Three places still put
+`__` in front of a person: the cell for a skill read, the sentence io-harness
+writes about that read, and an MCP tool call, which was drawn as the raw
+`mcp__github__create_issue` and now reads `Call github:create_issue`. A gate
+walks the drawn output of the transcript, the status line, the pickers and the
+plugin, skill and marketplace panes and fails if the separator appears in any of
+it, so the next surface to draw a bundle's name cannot reintroduce the underscore
+quietly.
+
 **Hooks are named, everywhere, from 0.30.0.** Each one gets a row: the event it
 fires on, or the tool call it sits in front of, and the command it runs. This is
 the contribution kind that runs programs, so it is the one you most need itemised
@@ -115,6 +126,58 @@ surfaces now read `Plugin::hooks()`, so what you are shown is what the harness
 parsed rather than what io-cli made of the same bytes — and it sees two shapes
 the hand-written reader could not: an inline `hook = [{…}]` array, and a
 `[[hook]]` header with a comment after it.
+
+## An executable a bundle ships
+
+**A bundle can carry a program, and from 0.34.0 a run can find it.** io-harness
+0.73.0 adds a `[[bin]]` table naming one:
+
+```toml
+[[bin]]
+name = "review"
+path = "bin/review"
+```
+
+`path` is relative to the bundle and may be neither absolute nor a climb out of
+it with `..`; a manifest that tries is refused whole. A bundle contributes an
+executable it ships, not one it points at somewhere else on your machine.
+
+**io-harness places nothing and says so in its own contract.** What it hands back
+is the declared name and the path resolved against the bundle root. Making that
+program invocable is io-cli's, and it is one edit: the directory the declared
+file sits in is **appended** to io's own `PATH`, which every command a run spawns
+inherits. Appended, never prepended — a prepended directory lets anything a
+bundle ships answer to `git`, `cargo` or `ls` for every tool call in the session,
+and the permission gate that would stop it matches a binary *name*, which the
+wrong program under the right name satisfies. Appended, a collision resolves to
+the system command and the bundle's program is simply unreachable under that
+name: the failure you can read rather than the one you cannot. Your shell's own
+`PATH` is untouched.
+
+One entry per directory, sorted, and only from bundles that are switched on — a
+bundle written `enabled = false` is parsed in full and contributes nothing, and
+its programs would otherwise be the one thing it still contributed.
+
+**io creates no file.** The program resolves under the name it already has on
+disk, so a `[[bin]]` whose `name` is not that name is reported at startup and
+does not resolve: `name = "review"` against `path = "bin/review.mjs"` puts the
+directory on the path and leaves a program that answers to `review.mjs`. Nothing
+is written to close that gap — a wrapper or a link io wrote inside somebody
+else's bundle is a file io would then own in a directory it did not install, and
+io-cli installing a program is outside what this product does. Renaming it is the
+bundle author's edit to make.
+
+**A `[[bin]]` names a program, so the project-scope rule covers it.** A bundle
+declared in the committed `io.toml` that carries one is refused whole, exactly as
+one carrying a `[[hook]]` or an `[[mcp]]` is.
+
+**And writing one costs an older binary the whole bundle.** An io-cli built
+against io-harness 0.72.0 or earlier does not know the key, and a manifest is
+`deny_unknown_fields` — so a `plugin.toml` carrying a `[[bin]]` is refused
+entirely by that binary, taking every skill, agent, hook and layer in the bundle
+with it. That matters for the manifests io generates for a Claude Code or Codex
+bundle under `~/.io-cli/adapters/`, because two versions of io reading one home
+is the ordinary case during a downgrade.
 
 ## Marketplaces
 
@@ -218,7 +281,7 @@ it deletes anything.
 
 ### What a bundle is allowed to do is shown before it is allowed to do it
 
-A bundle contributes to six subsystems at once, and until 0.29.0 every one you
+A bundle contributes to seven subsystems at once, and until 0.29.0 every one you
 declared came from a directory you had read. A marketplace removes that reading,
 so the install puts it back.
 
