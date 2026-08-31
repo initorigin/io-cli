@@ -64,7 +64,7 @@
 //! instead, and every path inside it is **absolute** and points back into the
 //! clone. That is not a convenience:
 //! [`Plugin::skills_dir`](io_harness::Plugin::skills_dir) is `self.root.join(d)`
-//! (`io-harness-0.72.0/src/plugin.rs:268`), and `Path::join` of an absolute
+//! (`io-harness-0.73.0/src/plugin.rs:311`), and `Path::join` of an absolute
 //! argument discards the base — so an absolute `skills` is the one spelling that
 //! reaches a directory outside the manifest's own root.
 //!
@@ -367,7 +367,7 @@ pub const SKILLS_DIR: &str = "skills";
 /// io-harness calls the same thing a **template**, and the two formats are the
 /// same file: markdown, optional frontmatter, `$ARGUMENTS` for what the operator
 /// typed. `Templates::discover` takes every `*.md` in a directory
-/// (`io-harness-0.72.0/src/template.rs:279`), so what is translated is the
+/// (`io-harness-0.73.0/src/template.rs:279`), so what is translated is the
 /// directory and never the files in it — nothing is copied and nothing is
 /// rewritten.
 pub const COMMANDS_DIR: &str = "commands";
@@ -437,7 +437,7 @@ pub fn at(root: &Path, owner: &str, repo: &str, name: &str) -> PathBuf {
 /// `agents/*.md` becomes an `[[agent]]`, and each server in `.mcp.json` becomes an
 /// `[[mcp]]`. Every path written is **absolute** and points into the clone:
 /// `Plugin::skills_dir` is `self.root.join(d)`
-/// (`io-harness-0.72.0/src/plugin.rs:268`) and `Path::join` of an absolute
+/// (`io-harness-0.73.0/src/plugin.rs:311`) and `Path::join` of an absolute
 /// argument discards the base, so an absolute path is what lets a manifest in
 /// io's home name a directory in somebody else's checkout.
 ///
@@ -543,7 +543,7 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
     // `expanded`, which refuses a substitution by the field it was written in —
     // this catches the case that check has not been wired to yet. io-harness
     // refuses a `${` anywhere in a manifest, in every scope
-    // (`io-harness-0.72.0/src/plugin.rs:774`), and the refusal takes the whole
+    // (`io-harness-0.73.0/src/plugin.rs:841`), and the refusal takes the whole
     // bundle rather than the one key: a single missed value would cost the
     // operator every capability the bundle carries, reported against a file they
     // did not write. Nothing is written when this fires.
@@ -705,7 +705,7 @@ fn substitution(text: &str) -> Option<String> {
 /// adapted, so expanding it reads nothing of the host — it writes down a path io
 /// already knew. `${env:…}`, `${file:…}`, `${cmd:…}` and every shell variable a
 /// bundle writes are the opposite: io-harness refuses each of them inside a
-/// manifest in every scope (`io-harness-0.72.0/src/plugin.rs:774`), because a
+/// manifest in every scope (`io-harness-0.73.0/src/plugin.rs:841`), because a
 /// bundle is a third party's directory even when the file naming it is the
 /// operator's own.
 ///
@@ -921,7 +921,7 @@ fn unquoted(said: &str) -> &str {
 ///
 /// **A transport io-harness does not speak is a refusal naming the server**, not
 /// a server quietly left out. io-harness speaks stdio and streamable HTTP
-/// (`io-harness-0.72.0/src/mcp.rs:289`), so a bundle declaring `sse` is declaring
+/// (`io-harness-0.73.0/src/mcp.rs:289`), so a bundle declaring `sse` is declaring
 /// a capability no adapter can deliver — and a manifest carrying one fewer server
 /// than the bundle does is exactly the silent absence this module's docs exist to
 /// end. The whole generation stops, because a bundle is installed for what it

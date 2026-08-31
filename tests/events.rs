@@ -2759,3 +2759,366 @@ fn a_skills_target_is_still_drawn_the_way_the_operator_reads_it() {
          else: {live:?}",
     );
 }
+
+/// A `read_skill` call announced, then closed by the step that ran it.
+///
+/// The pair is the unit under test throughout this section: the announcement
+/// decides what the live row says and the step's own sentence decides what the
+/// committed cell says, and the defects this release fixes are all in the
+/// relationship between the two.
+fn skill_cell(target: &str, decision: &str) -> String {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: io_cli::events::READ_SKILL.to_string(),
+            target: target.to_string(),
+        }),
+        Duration::ZERO,
+    );
+    rendered(
+        &mut events,
+        EventKind::Step {
+            decision: decision.to_string(),
+            tool_call: String::new(),
+            tokens: 12,
+            changed: false,
+        },
+    )
+}
+
+/// **F1 — a loaded skill says which skill loaded, and says nothing in the
+/// machine's spelling.**
+///
+/// This is the line that opened the release. `Read skill ultraship:using-ultraship
+/// · ultraship__using-ultraship` was drawn: the target translated, io-harness's
+/// sentence beside it untouched, and the one string the translation existed to
+/// hide printed in full next to the translation of it.
+#[test]
+fn f1_a_loaded_skill_is_drawn_as_a_loaded_skill_row() {
+    let cell = skill_cell(
+        "ultraship__using-ultraship",
+        "read skill ultraship__using-ultraship",
+    );
+    assert!(
+        cell.contains("ultraship:using-ultraship"),
+        "the row must name the skill the operator reads: {cell:?}",
+    );
+    assert!(
+        cell.contains("loaded"),
+        "the row must say what became of it: {cell:?}",
+    );
+    assert!(
+        !cell.contains("__"),
+        "io-harness's separator reached the transcript: {cell:?}",
+    );
+    assert!(
+        !cell.contains("read skill"),
+        "the harness's own sentence is not drawn for this tool, which is what \
+         removes the separator at its source: {cell:?}",
+    );
+}
+
+/// **F2 — and a skill no bundle contributed gets the same row.**
+///
+/// An unqualified skill carries no separator, so nothing here is about
+/// translation. The row must not be a bundle-only surface: a skill an operator
+/// wrote themselves loads exactly as visibly.
+#[test]
+fn f2_an_unqualified_skill_gets_the_same_row_with_its_bare_name() {
+    let cell = skill_cell("brainstorm", "read skill brainstorm");
+    assert!(cell.contains("brainstorm"), "{cell:?}");
+    assert!(cell.contains("loaded"), "{cell:?}");
+    assert!(!cell.contains(':'), "there is no bundle to name: {cell:?}");
+}
+
+/// **The row is an assertion, so it is not made when the read did not happen.**
+///
+/// Drawing `loaded` from io-cli's own words rather than from the harness's
+/// sentence is what removes the separator, and it is also what makes this row
+/// able to be wrong in a way the old one could not. A failed read still says the
+/// read failed.
+#[test]
+fn a_failed_skill_read_says_so_and_never_says_loaded() {
+    let cell = skill_cell("ultraship__plan", "skill ultraship__plan read error");
+    assert!(
+        cell.contains("read error"),
+        "a failed read must say it failed: {cell:?}",
+    );
+    assert!(
+        !cell.contains("loaded"),
+        "the row claimed a skill loaded when the read failed: {cell:?}",
+    );
+    assert!(!cell.contains("__"), "{cell:?}");
+}
+
+/// **F11 — a companion path is drawn as itself.**
+///
+/// io-harness 0.73.0 gave `read_skill` an optional `path` and announces it in
+/// preference to the skill's name, so this tool's target is now sometimes a file.
+/// The translation rewrites the first separator to a colon, so a companion file
+/// called `__init__.py` would be drawn as `:init__.py` — a path that does not
+/// exist, in the one place an operator checks what the agent touched. That is
+/// verbatim the failure 0.32.0 found; the pin moved the ground under the gate.
+#[test]
+fn f11_a_companion_path_is_drawn_intact_and_the_skill_is_still_named() {
+    for path in ["references/__init__.py", "shared/principles.md"] {
+        let mut events = Events::new(DARK);
+        events.event(
+            &event(EventKind::ToolCall {
+                name: io_cli::events::READ_SKILL.to_string(),
+                target: path.to_string(),
+            }),
+            Duration::ZERO,
+        );
+        let live = events.live().to_string();
+        assert!(
+            live.contains(path),
+            "the companion path lost its own characters on the live row: \
+             {live:?} for {path}",
+        );
+        let cell = skill_cell(path, &format!("read skill ultraship__plan {path}"));
+        assert!(
+            cell.contains(path),
+            "the committed cell must show the file that was read: {cell:?}",
+        );
+        assert!(
+            cell.contains("ultraship:plan"),
+            "and must still say which skill it belonged to: {cell:?}",
+        );
+        // The mangled spelling, not "no separator anywhere" — a companion file
+        // called `__init__.py` carries one legitimately, and a gate that forbade
+        // it would force the very translation this asserts against.
+        assert!(
+            !cell.contains(":init__"),
+            "the path was translated and now names a file that does not exist: \
+             {cell:?}",
+        );
+    }
+}
+
+/// And an empty `path`, which asks for the bundle itself, still names the skill.
+///
+/// The announced target is empty for this call, so a cell drawn from the target
+/// alone would be blank. It is drawn from the harness's sentence, which is not.
+#[test]
+fn f11_an_empty_path_names_the_skill_rather_than_drawing_a_blank() {
+    let cell = skill_cell("", "read skill ultraship__plan .");
+    assert!(cell.contains("ultraship:plan"), "{cell:?}");
+    assert!(
+        cell.contains("listed"),
+        "an empty path lists the bundle, and `.` is a spelling for a trace \
+         rather than for a person: {cell:?}",
+    );
+}
+
+/// **F6 — an MCP tool says its server and its tool.**
+///
+/// `verb` fell an unknown name through unchanged, so `mcp__github__create_issue`
+/// reached the transcript whole. The prefix is stripped before translating: it
+/// ends with the separator itself, so translating the whole name splits at the
+/// prefix's own join and yields `mcp:github__create_issue`, which is both wrong
+/// and still carrying the thing being removed.
+#[test]
+fn f6_an_mcp_tool_cell_names_the_server_and_the_tool() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "mcp__github__create_issue".to_string(),
+            target: "mcp__github__create_issue".to_string(),
+        }),
+        Duration::ZERO,
+    );
+    let live = events.live().to_string();
+    assert!(
+        live.contains("Call") && live.contains("github:create_issue"),
+        "the cell must keep a verb and name both halves: {live:?}",
+    );
+    assert!(!live.contains("__"), "{live:?}");
+    assert!(
+        !live.contains("mcp:"),
+        "the prefix was translated instead of stripped: {live:?}",
+    );
+}
+
+/// A server id carrying the separator splits on the prefix and the first join
+/// only, and the tool's own name is left exactly as it was found.
+#[test]
+fn f6_a_server_id_containing_the_separator_still_splits_at_the_first_join() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "mcp__deep__nested__tool".to_string(),
+            target: "mcp__deep__nested__tool".to_string(),
+        }),
+        Duration::ZERO,
+    );
+    let live = events.live().to_string();
+    assert!(
+        live.contains("deep:nested__tool"),
+        "only the first join after the prefix is the server boundary: {live:?}",
+    );
+}
+
+/// **The measured duration still reaches an MCP cell.**
+///
+/// `EventKind::Mcp` is the only event in the whole enum carrying a per-tool
+/// duration, and it is matched to its open cell by rebuilding io-harness's own
+/// namespaced name. Translating the field that match compares against loses the
+/// measurement silently — nothing fails, the cell simply falls back to io-cli's
+/// own observation and wears a `~` that says it is one.
+#[test]
+fn an_mcp_calls_measured_duration_survives_the_translation() {
+    let mut events = Events::new(DARK);
+    events.event(
+        &event(EventKind::ToolCall {
+            name: "mcp__github__create_issue".to_string(),
+            target: "mcp__github__create_issue".to_string(),
+        }),
+        Duration::ZERO,
+    );
+    events.event(
+        &event(EventKind::Mcp {
+            server: "github".to_string(),
+            tool: Some("create_issue".to_string()),
+            ok: Some(true),
+            millis: Some(1234),
+            tools: None,
+        }),
+        Duration::ZERO,
+    );
+    let cell = rendered(
+        &mut events,
+        EventKind::Step {
+            decision: "called create_issue".to_string(),
+            tool_call: String::new(),
+            tokens: 12,
+            changed: false,
+        },
+    );
+    assert!(
+        cell.contains("1.2s"),
+        "io-harness's own measurement must reach the cell: {cell:?}",
+    );
+    assert!(
+        !cell.contains("~1.2s"),
+        "a measurement was drawn as an observation: {cell:?}",
+    );
+}
+
+/// **F5 — the operator's own command comes back, and the model's does not.**
+///
+/// The echo row is drawn from io-harness's own `Started` event, whose `goal` is
+/// the text that was *sent* — and for a slash-invoked skill that is deliberately
+/// the catalogue name, because it is the only string `read_skill` resolves. Up to
+/// 0.33.0 the machine's spelling was what the operator read back.
+#[test]
+fn f5_a_slash_invoked_skill_echoes_what_was_typed_not_what_was_sent() {
+    let mut events = Events::new(DARK);
+    events.set_echo("/ultraship:brainstorm make me a portfolio");
+    let echoed = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "ultraship__brainstorm\n\nmake me a portfolio".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    assert!(
+        echoed.contains("/ultraship:brainstorm"),
+        "the operator's own command must come back: {echoed:?}",
+    );
+    assert!(
+        echoed.contains("make me a portfolio"),
+        "and so must the argument: {echoed:?}",
+    );
+    assert!(
+        !echoed.contains("__"),
+        "the machine's spelling reached the row the reader wrote: {echoed:?}",
+    );
+}
+
+/// And it is taken, not held — the next turn shows the next prompt.
+///
+/// A carried string that outlives its turn is the second-use defect this
+/// product's adversarial review has found in fifteen consecutive releases: right
+/// on a fresh process, wrong from the second turn onward.
+#[test]
+fn f5_an_echo_does_not_outlive_the_turn_it_belongs_to() {
+    let mut events = Events::new(DARK);
+    events.set_echo("/ultraship:brainstorm");
+    let _ = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "ultraship__brainstorm".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    let second = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "now write the tests".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    assert!(
+        second.contains("now write the tests"),
+        "the second turn drew the first turn's typing: {second:?}",
+    );
+    assert!(
+        !second.contains("brainstorm"),
+        "the echo outlived its turn: {second:?}",
+    );
+}
+
+/// **And a turn that ends without ever starting does not leave it behind.**
+///
+/// Found by the adversarial review. `Started`'s `take()` is not on its own a
+/// guarantee: io-harness validates the contract, discovers skills, opens the run,
+/// takes the store lease and sets the provider all *before* it emits `Started`,
+/// and every one of those can fail — as can an interrupt in that window. The turn
+/// then ends through `flush`, and an echo left there is drawn over the next
+/// prompt: the one row in the transcript the reader wrote, showing something they
+/// did not type.
+#[test]
+fn f5_an_echo_dies_with_a_turn_that_never_started() {
+    let mut events = Events::new(DARK);
+    events.set_echo("/ultraship:plan");
+    // The turn ends the way an early failure ends it — no `Started` ever arrived.
+    let _ = events.flush();
+    let next = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "now write the tests".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    assert!(
+        next.contains("now write the tests"),
+        "a turn that never started left its echo behind: {next:?}",
+    );
+    assert!(!next.contains("plan"), "{next:?}");
+}
+
+/// **The echo carries the slash, and the driver is what puts it back.**
+///
+/// `Command::Slash` arrives with the slash already stripped — it has to be, since
+/// the driver matches the first word against the skills catalogue — so an echo
+/// built from that text alone comes back as an ordinary prompt that happens to
+/// contain a colon. The first version of the test above hand-fed the slash and so
+/// could never have seen it; the driver's own re-adding is gated in
+/// `tests/dependencies.rs`, because nothing here links `src/main.rs`.
+#[test]
+fn f5_the_echoed_line_reads_as_a_command_and_not_as_a_prompt() {
+    let mut events = Events::new(DARK);
+    events.set_echo("/ultraship:brainstorm make me a portfolio");
+    let echoed = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "ultraship__brainstorm\n\nmake me a portfolio".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    assert!(
+        echoed.contains("/ultraship:brainstorm"),
+        "the row must read as the command that was typed: {echoed:?}",
+    );
+}

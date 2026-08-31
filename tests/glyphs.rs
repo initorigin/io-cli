@@ -930,6 +930,7 @@ fn plugin_marks() -> Vec<&'static str> {
         agents: Vec::new(),
         servers: Vec::new(),
         hooks: Vec::new(),
+        bin: Vec::new(),
         layers: Vec::new(),
     };
     let mut off = bundle(

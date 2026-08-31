@@ -2,15 +2,15 @@
 //! one brought, and which ones io-harness refused to load.
 //!
 //! A plugin is a directory with a `plugin.toml` contributing skills, templates,
-//! agents, MCP servers, hooks and deny-only policy layers, and io-cli has never
-//! had a surface for one. It needs one for a reason the other management panels
-//! do not: **every other capability an operator sees is one they put there.** A
-//! skill file is theirs or io-cli's, an `[[mcp]]` entry is a line they wrote, a
-//! policy layer came from a posture they chose. A bundle is none of those — it is
-//! a directory somebody else wrote, named once by path, that then adds names to
-//! four subsystems at once. The question this surface exists to answer is *what
-//! did that directory put in my session*, and until now the only way to answer it
-//! was to open the manifest.
+//! agents, MCP servers, hooks, executables and deny-only policy layers, and
+//! io-cli has never had a surface for one. It needs one for a reason the other
+//! management panels do not: **every other capability an operator sees is one
+//! they put there.** A skill file is theirs or io-cli's, an `[[mcp]]` entry is a
+//! line they wrote, a policy layer came from a posture they chose. A bundle is
+//! none of those — it is a directory somebody else wrote, named once by path,
+//! that then adds names to four subsystems at once. The question this surface
+//! exists to answer is *what did that directory put in my session*, and until now
+//! the only way to answer it was to open the manifest.
 //!
 //! # A dropped bundle is the state this surface is really for
 //!
@@ -38,9 +38,10 @@
 //! rather than two: `Plugins::iter` is what loaded, `Plugins::dropped` is what was
 //! refused, and [`io_harness::Plugins::disabled`] is what was written
 //! `enabled = false` — read, parsed, held to the whole trust rule, and
-//! contributing nothing to any of the six kinds. That is a third *state*, never a
-//! second kind of failure: everything on `dropped` is something an operator has to
-//! fix, and a switched-off bundle is doing exactly what the file asked of it.
+//! contributing nothing to any of the seven kinds. That is a third *state*,
+//! never a second kind of failure: everything on `dropped` is something an
+//! operator has to fix, and a switched-off bundle is doing exactly what the file
+//! asked of it.
 //!
 //! **It is listed, under its own mark, and it counts against [`View::is_empty`].**
 //! Before 0.29.0 [`view`] read `iter()` and `dropped()` and nothing else, so a
@@ -206,7 +207,7 @@ pub struct Listed {
     /// The directory the manifest was read from.
     pub root: PathBuf,
     /// Which kinds of contribution it declared, in io-harness's own fixed order:
-    /// skills, templates, agents, mcp, hooks, policy.
+    /// skills, templates, agents, mcp, hooks, bin, policy.
     pub contributions: Vec<&'static str>,
     /// The skills directory it contributes, absolute, if it declared one.
     pub skills: Option<PathBuf>,
@@ -224,6 +225,18 @@ pub struct Listed {
     /// namespaces: a `[[hook]]` contributes no name, it names events, a path and
     /// an argv, and all three belong to the operator's tree.
     pub hooks: Vec<(String, String)>,
+    /// The executables it contributes, one `(declared name, path)` pair each.
+    ///
+    /// **The same argument as `hooks`, one contribution kind over.** `bin` is a
+    /// word that tells an operator nothing about what they are consenting to, and
+    /// from 0.34.0 consenting to it is consenting to a program that will be on the
+    /// run's `PATH` — so the pane names the program and where it lives, the way it
+    /// names a hook's event and its command.
+    ///
+    /// Not namespaced, and nothing io-harness namespaces: the declared name is
+    /// what a model or an operator would type, and `rust-review__review` is not a
+    /// name anyone types. See [`crate::bundle_path`] for what is done with it.
+    pub bin: Vec<(String, String)>,
     /// The policy layer names it contributes, already namespaced. Deny rules
     /// only — io-harness drops a bundle whose layer carries anything else.
     pub layers: Vec<String>,
@@ -373,6 +386,11 @@ pub fn copy_out(plugin: &io_harness::Plugin, enabled: bool) -> Listed {
             .map(|server| server.id.clone())
             .collect(),
         hooks: plugin.hooks().iter().map(hook_line).collect(),
+        bin: plugin
+            .bin()
+            .into_iter()
+            .map(|(name, path)| (name.to_string(), path.display().to_string()))
+            .collect(),
         layers: plugin
             .policy_layers()
             .iter()
@@ -709,6 +727,23 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
                     room.saturating_sub(event.chars().count() + 2),
                     glyphs,
                 ),
+            )
+        }));
+    }
+    if !plugin.bin.is_empty() {
+        // **One row per executable, naming the program and the file.** The other
+        // contribution that runs a program, and until 0.34.0 nothing was done with
+        // it — so the bare word cost nothing. It costs something now.
+        out.push(Row::heading("executables"));
+        out.extend(plugin.bin.iter().map(|(name, path)| {
+            // `fit_left` and not `fit`, because the detail is a path: shortening
+            // one from the right keeps the bundle root every row shares and drops
+            // the file name that identifies it — and the file name is the one
+            // string the mismatch notice tells an operator their program answers
+            // to. The skills and templates rows above shorten the same way.
+            Row::with_detail(
+                name.clone(),
+                fit_left(path, room.saturating_sub(name.chars().count() + 2), glyphs),
             )
         }));
     }
@@ -1181,6 +1216,7 @@ mod tests {
             agents: vec!["rust-review__reviewer".to_string()],
             servers: Vec::new(),
             hooks: vec![("tool_call".to_string(), "[cargo fmt]".to_string())],
+            bin: vec![("review".to_string(), "/x/bin/review.mjs".to_string())],
             layers: vec!["rust-review__no-secrets".to_string()],
         }
     }
@@ -1479,6 +1515,23 @@ mod tests {
                 "{}: a group with nothing in it is not drawn: {labels:?}",
                 glyphs.name
             );
+            // **The executables group names the program, and this is its only
+            // gate.** The adversarial review found the whole block could be
+            // deleted with the suite still green — and what it discloses is a
+            // program that will be on the run's `PATH`, on the surface an
+            // operator consents from. `hooks` earned its rows for the same
+            // reason: consenting to a bare word is consenting to programs nobody
+            // named.
+            assert!(
+                labels.contains(&"executables"),
+                "{}: the group naming a bundle's programs is not drawn: {labels:?}",
+                glyphs.name
+            );
+            assert!(
+                labels.contains(&"review"),
+                "{}: the executables group must name the program: {labels:?}",
+                glyphs.name
+            );
             assert!(
                 rows.iter().any(|row| row.heading),
                 "{}: the groups are headings",
@@ -1538,6 +1591,7 @@ mod tests {
             agents: Vec::new(),
             servers: Vec::new(),
             hooks: Vec::new(),
+            bin: Vec::new(),
             layers: Vec::new(),
         };
         let rows = detail(&plugin, 80, &ASCII);

@@ -608,6 +608,13 @@ pub async fn main(
     // a refused posture costs nothing and leaves no run behind.
     let posture = args.policy.map(posture_for).transpose()?;
 
+    // **A bundle's own program, placed here as well as on the session's startup.**
+    // This door returns from `main` before the interactive path resolves
+    // anything, so the placement written there reaches neither headless door.
+    for notice in crate::bundle_path::install_for(&config) {
+        eprintln!("{notice}");
+    }
+
     let spec = spec_for(args.provider, &config, model_override.as_deref())?;
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
@@ -1146,6 +1153,11 @@ pub async fn resume_main(
     // no store, no session and no provider.
     let posture = args.policy.map(posture_for).transpose()?;
 
+    // The second headless door, and it resumes runs that execute things too.
+    for notice in crate::bundle_path::install_for(&config) {
+        eprintln!("{notice}");
+    }
+
     let path = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&path).map_err(|error| error.to_string())?;
 
@@ -1281,11 +1293,11 @@ impl WithProvider for Resuming {
         // refuses a contained run outright because io-harness publishes no
         // tree-aware recovery entry point to keep those limits with.
         //
-        // **Still true at 0.72.0, and the shape of the gap is worth naming.** Every
+        // **Still true at 0.73.0, and the shape of the gap is worth naming.** Every
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.72.0/src/run.rs:1770`, `:2089`, `:3003`). Recovery has
+        // (`io-harness-0.73.0/src/run.rs:1770`, `:2089`, `:3003`). Recovery has
         // `resume_with_recovery_observed` (`:2551`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree

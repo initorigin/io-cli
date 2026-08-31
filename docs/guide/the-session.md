@@ -57,9 +57,14 @@ turn spent, on both rows.
 What lands in the scrollback is designed rather than defaulted. A tool call reads
 as a verb and a workspace-relative path — `Read src/lib.rs`, not `read_file` and
 an absolute path — and a tool this release has never seen keeps the name
-io-harness sent, because a verb invented for it would mean nothing. A turn ends
-on its answer: the run's step and token counts are on the status line beside the
-provider, which is where every other number in this interface lives.
+io-harness sent, because a verb invented for it would mean nothing. **An MCP tool
+is the exception from 0.34.0**: its wire name is assembled out of a prefix, the
+server and io-harness's own separator, so `mcp__github__create_issue` is a string
+nobody wrote and nobody reads. It is drawn `Call github:create_issue` — the
+server and the tool, under the same colon every other contributed name is drawn
+with. A turn ends on its answer: the run's step and token counts are on the
+status line beside the provider, which is where every other number in this
+interface lives.
 
 **Three more things reach the transcript in 0.14.0**, all of them facts
 io-harness has been emitting into every ordinary session and this interface has

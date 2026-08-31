@@ -62,6 +62,7 @@ pub mod app;
 pub mod approval;
 pub mod attach;
 pub mod bridge;
+pub mod bundle_path;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;

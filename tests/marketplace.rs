@@ -1249,7 +1249,7 @@ fn nothing_out_of_a_stranger_s_manifest_reaches_a_surface_unfiltered() {
 
 // --- F6, F16, F17 and F20: disclosure before anything is written ---------------
 //
-// A marketplace bundle is code from a stranger that contributes to six subsystems
+// A marketplace bundle is code from a stranger that contributes to seven subsystems
 // at once. Through 0.29.0 io-harness published no loader that took a directory —
 // `load_one` was private and `Plugins::load` was `pub(crate)` — so the only way to
 // have a bundle read, parsed, validated and trust-checked was to *declare* it: the
