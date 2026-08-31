@@ -80,13 +80,53 @@ pub fn mismatched(plugins: &Plugins) -> Vec<(String, String)> {
                 .map(OsStr::to_string_lossy)
                 .unwrap_or_default()
                 .to_string();
-            if actual != declared {
+            if !answers_to(&actual, declared) {
                 out.push((declared.to_string(), actual));
             }
         }
     }
     out
 }
+
+/// Whether a file called `actual` is found by typing `declared`.
+///
+/// **The answer is the platform's, not this crate's opinion.** On unix a program
+/// is found by its whole file name, extension included: `review.sh` is not
+/// `review`. On Windows the shell appends each `PATHEXT` extension in turn, so a
+/// bundle shipping `review.exe` and declaring `review` is correctly authored —
+/// and it is the *only* thing it can ship there. Reporting that as a mismatch
+/// would print a sentence that is false on the platform it is printed on, once
+/// per `io exec`, on a door a script reads.
+///
+/// `PATHEXT` is read rather than assumed, because an operator may have added to
+/// it; its documented default is used when it is unset or empty.
+fn answers_to(actual: &str, declared: &str) -> bool {
+    if actual == declared {
+        return true;
+    }
+    if !cfg!(windows) {
+        return false;
+    }
+    let Some(rest) = actual
+        .get(..declared.len())
+        .filter(|head| head.eq_ignore_ascii_case(declared))
+        .and(actual.get(declared.len()..))
+    else {
+        return false;
+    };
+    let pathext = std::env::var("PATHEXT").unwrap_or_default();
+    let pathext = if pathext.trim().is_empty() {
+        DEFAULT_PATHEXT.to_string()
+    } else {
+        pathext
+    };
+    pathext
+        .split(';')
+        .any(|ext| !ext.is_empty() && rest.eq_ignore_ascii_case(ext))
+}
+
+/// What Windows uses when `PATHEXT` is unset, per its own documentation.
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC";
 
 /// `current` with `dirs` appended, skipping any already present.
 ///
@@ -111,6 +151,11 @@ pub fn appended(current: Option<&OsStr>, dirs: &[PathBuf]) -> Option<OsString> {
     if all.len() == before {
         return None;
     }
+    // **A join that fails is not "nothing to add", and the two must not wear the
+    // same value.** A directory containing the platform's own separator cannot be
+    // put on `PATH` at all; swallowing that into `None` would place *no* bundle's
+    // program and leave the operator with "command not found" from the model and
+    // nothing said. `install` reports it.
     std::env::join_paths(all).ok()
 }
 
@@ -126,11 +171,20 @@ pub fn appended(current: Option<&OsStr>, dirs: &[PathBuf]) -> Option<OsString> {
 /// would have passed over a placement that never happened.
 pub fn install_for(config: &io_harness::config::Config) -> Vec<String> {
     let holdings = crate::resolved::Resolved::load(config);
-    let notices = mismatched(holdings.loaded())
+    notices_for(holdings.loaded())
+}
+
+/// Place every loaded bundle's programs and return everything worth saying.
+///
+/// Takes the resolved set rather than a `Config` so a caller that already holds
+/// one does not pay for a second full parse of every declared manifest — which is
+/// what `src/resolved.rs` exists to prevent.
+pub fn notices_for(plugins: &Plugins) -> Vec<String> {
+    let mut notices: Vec<String> = mismatched(plugins)
         .into_iter()
         .map(|(declared, actual)| mismatch_notice(&declared, &actual))
         .collect();
-    install(holdings.loaded());
+    notices.extend(install(plugins));
     notices
 }
 
@@ -152,19 +206,33 @@ pub fn mismatch_notice(declared: &str, actual: &str) -> String {
 /// environment and the commands it spawns inherit it. `src/home.rs` sets io-cli's
 /// configuration home the same way and for the same reason.
 ///
-/// Returns the directories appended, for the caller to report, and an empty
-/// vector when nothing was.
-pub fn install(plugins: &Plugins) -> Vec<PathBuf> {
+/// Returns nothing when every directory was already there — which is the
+/// ordinary case at a turn boundary — and a sentence when a directory could not
+/// be put on `PATH` at all.
+pub fn install(plugins: &Plugins) -> Option<String> {
     let dirs = entries(plugins);
     if dirs.is_empty() {
-        return Vec::new();
+        return None;
     }
     let current = std::env::var_os(PATH_VAR);
+    let already = dirs.iter().all(|dir| {
+        current
+            .as_deref()
+            .map(|value| std::env::split_paths(value).any(|on| &on == dir))
+            .unwrap_or(false)
+    });
     match appended(current.as_deref(), &dirs) {
         Some(value) => {
             std::env::set_var(PATH_VAR, value);
-            dirs
+            None
         }
-        None => Vec::new(),
+        // Nothing added and nothing already there means the join refused it, and
+        // the operator hears about it rather than meeting it as a missing command.
+        None if !already => Some(format!(
+            "a bundle's program directory could not be put on {PATH_VAR} — a path \
+             holding this platform's own separator cannot go on it, so no bundle's \
+             program is reachable by name in this session",
+        )),
+        None => None,
     }
 }

@@ -548,6 +548,14 @@ impl Events {
         self.awaiting = None;
         self.after_cell = false;
         self.thinking = false;
+        // **And the typed text, for the same reason.** A turn can end without the
+        // harness ever emitting `Started` — it validates the contract, discovers
+        // skills, opens the run, takes the store lease and sets the provider
+        // first, and every one of those can fail — so `Started`'s `take()` is not
+        // on its own a guarantee that the echo dies with the turn it belongs to.
+        // Left behind, it is drawn over the NEXT prompt: the one row in the
+        // transcript the reader wrote, showing something they did not type.
+        self.echo = None;
         lines
     }
 
@@ -2064,12 +2072,13 @@ fn skill_and_file(decision: &str) -> Option<(String, String)> {
     if skill.is_empty() {
         return None;
     }
-    let file = match file {
-        "." => LISTED,
-        other => other,
-    };
+    // **`.` is spelled as a word only where it describes what happened.** On a
+    // failure the harness's `.` is still the *path that was asked for*, and
+    // `listed read error` would be a row saying the bundle was listed and that
+    // the listing failed.
     let detail = match (failed, file) {
         (false, "") => LOADED.to_string(),
+        (false, ".") => LISTED.to_string(),
         (false, file) => file.to_string(),
         (true, "") => FAILED_TAIL.trim().to_string(),
         (true, file) => format!("{file}{FAILED_TAIL}"),
@@ -2099,12 +2108,7 @@ fn cell_line(
     // ordinary cell, because `loaded` is an assertion and the one thing worse
     // than an unreadable row is a confident wrong one.
     if paired && call.raw == READ_SKILL {
-        if let Some((skill, file)) = skill_and_file(result) {
-            let detail = if file.is_empty() {
-                LOADED.to_string()
-            } else {
-                file
-            };
+        if let Some((skill, detail)) = skill_and_file(result) {
             return with_duration(
                 theme,
                 vec![

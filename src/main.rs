@@ -428,10 +428,7 @@ async fn drive(
     // inherits what is set before the run, and there is no contract field for it.
     // Appended and never prepended, and nothing is written to disk — see
     // `src/bundle_path.rs` for both reasons.
-    for (declared, actual) in io_cli::bundle_path::mismatched(holdings.loaded()) {
-        notices.push(io_cli::bundle_path::mismatch_notice(&declared, &actual));
-    }
-    io_cli::bundle_path::install(holdings.loaded());
+    notices.extend(io_cli::bundle_path::notices_for(holdings.loaded()));
     let bundles = bundle_skills(holdings.loaded());
     let (skills, complaint) = commands::skills(&home, skills_dir.as_deref(), &bundles);
     if let Some(complaint) = complaint {
@@ -4345,7 +4342,11 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // differ — the echo row is drawn from io-harness's own `Started`
                 // event, and translating that field on the way past would run the
                 // display translation over every prompt an operator ever writes.
-                app.events.set_echo(text.to_string());
+                // `Command::Slash` arrives with the slash already stripped, and
+                // the echo is what was *typed* — so it goes back on. Without it
+                // the one row the reader wrote comes back as an ordinary prompt
+                // that happens to contain a colon.
+                app.events.set_echo(format!("/{text}"));
                 command = Command::Submit(if args.is_empty() {
                     wire
                 } else {
@@ -4365,7 +4366,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // there is no public call that runs a skill on the model's
                     // behalf, so what io-cli controls is that the prompt is the
                     // catalogue name and nothing else.
-                    app.events.set_echo(text.to_string());
+                    app.events.set_echo(format!("/{text}"));
                     Command::Submit(if args.is_empty() {
                         wire
                     } else {
@@ -8637,6 +8638,14 @@ fn observing<T>(
 fn refresh_holdings(holdings: &mut io_cli::resolved::Resolved, config: &Config) {
     if tokio::task::block_in_place(|| holdings.stale(config)) {
         *holdings = tokio::task::block_in_place(|| io_cli::resolved::Resolved::load(config));
+        // **A bundle installed mid-session gets its program placed too.**
+        // Everything else a bundle contributes comes into force at the next turn
+        // — the install says so in those words — and up to this point its
+        // `[[bin]]` was the one contribution that did not, until the operator
+        // restarted. `install` is idempotent and returns without touching the
+        // environment when every directory is already there, which is what makes
+        // it safe on a path that runs at every turn boundary.
+        io_cli::bundle_path::install(holdings.loaded());
     }
 }
 

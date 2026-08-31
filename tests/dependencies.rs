@@ -1911,7 +1911,8 @@ fn f9_every_door_that_reaches_a_run_places_a_bundles_programs() {
     let mut sites: Vec<(PathBuf, usize)> = Vec::new();
     for (path, text) in sources() {
         let code = code_of(&text);
-        let calls = code.matches("bundle_path::install").count();
+        let calls = code.matches("bundle_path::install").count()
+            + code.matches("bundle_path::notices_for").count();
         if calls > 0 {
             sites.push((path, calls));
         }
@@ -1929,9 +1930,13 @@ fn f9_every_door_that_reaches_a_run_places_a_bundles_programs() {
             // in the library, so unlike the driver's they can be reached from a
             // test at all.
             (src.join("exec.rs"), 2),
-            // And the interactive session's own, which already holds a resolved
-            // set and so calls `install` rather than resolving a second time.
-            (src.join("main.rs"), 1),
+            // And the interactive session's TWO: once at startup, and once at the
+            // turn boundary where a bundle installed mid-session is resolved.
+            // **The second was missing and the adversarial review found it** —
+            // everything else a bundle contributes came into force at the next
+            // turn and its program did not, until the operator restarted, while
+            // the install said in words that it was in force.
+            (src.join("main.rs"), 2),
         ],
         "every entry point that can reach a run places a bundle's programs, and \
          a door that stops doing it fails here rather than in a session where a \
@@ -1995,4 +2000,16 @@ fn f5_every_submission_that_rewrites_the_prompt_also_carries_the_typed_text() {
              pair this criterion is about",
         );
     }
+
+    // **And each puts the slash back.** `Command::Slash` arrives stripped — the
+    // driver has to strip it to match the first word against the catalogue — so
+    // an echo built from that text alone draws the operator's command as an
+    // ordinary prompt that happens to carry a colon. Asserted here because the
+    // test that renders the row is handed its argument by hand and so cannot see
+    // which string the driver actually passes.
+    assert_eq!(
+        code.matches("set_echo(format!(\"/{text}\"))").count(),
+        2,
+        "both echo sites must re-add the slash the parse removed",
+    );
 }

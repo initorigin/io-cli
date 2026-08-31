@@ -3068,3 +3068,57 @@ fn f5_an_echo_does_not_outlive_the_turn_it_belongs_to() {
         "the echo outlived its turn: {second:?}",
     );
 }
+
+/// **And a turn that ends without ever starting does not leave it behind.**
+///
+/// Found by the adversarial review. `Started`'s `take()` is not on its own a
+/// guarantee: io-harness validates the contract, discovers skills, opens the run,
+/// takes the store lease and sets the provider all *before* it emits `Started`,
+/// and every one of those can fail — as can an interrupt in that window. The turn
+/// then ends through `flush`, and an echo left there is drawn over the next
+/// prompt: the one row in the transcript the reader wrote, showing something they
+/// did not type.
+#[test]
+fn f5_an_echo_dies_with_a_turn_that_never_started() {
+    let mut events = Events::new(DARK);
+    events.set_echo("/ultraship:plan");
+    // The turn ends the way an early failure ends it — no `Started` ever arrived.
+    let _ = events.flush();
+    let next = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "now write the tests".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    assert!(
+        next.contains("now write the tests"),
+        "a turn that never started left its echo behind: {next:?}",
+    );
+    assert!(!next.contains("plan"), "{next:?}");
+}
+
+/// **The echo carries the slash, and the driver is what puts it back.**
+///
+/// `Command::Slash` arrives with the slash already stripped — it has to be, since
+/// the driver matches the first word against the skills catalogue — so an echo
+/// built from that text alone comes back as an ordinary prompt that happens to
+/// contain a colon. The first version of the test above hand-fed the slash and so
+/// could never have seen it; the driver's own re-adding is gated in
+/// `tests/dependencies.rs`, because nothing here links `src/main.rs`.
+#[test]
+fn f5_the_echoed_line_reads_as_a_command_and_not_as_a_prompt() {
+    let mut events = Events::new(DARK);
+    events.set_echo("/ultraship:brainstorm make me a portfolio");
+    let echoed = rendered(
+        &mut events,
+        EventKind::Started {
+            goal: "ultraship__brainstorm\n\nmake me a portfolio".to_string(),
+            provider: "openrouter".to_string(),
+        },
+    );
+    assert!(
+        echoed.contains("/ultraship:brainstorm"),
+        "the row must read as the command that was typed: {echoed:?}",
+    );
+}

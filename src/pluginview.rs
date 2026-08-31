@@ -736,9 +736,14 @@ pub fn detail(plugin: &Listed, width: u16, glyphs: &Glyphs) -> Vec<Row> {
         // it — so the bare word cost nothing. It costs something now.
         out.push(Row::heading("executables"));
         out.extend(plugin.bin.iter().map(|(name, path)| {
+            // `fit_left` and not `fit`, because the detail is a path: shortening
+            // one from the right keeps the bundle root every row shares and drops
+            // the file name that identifies it — and the file name is the one
+            // string the mismatch notice tells an operator their program answers
+            // to. The skills and templates rows above shorten the same way.
             Row::with_detail(
                 name.clone(),
-                fit(path, room.saturating_sub(name.chars().count() + 2), glyphs),
+                fit_left(path, room.saturating_sub(name.chars().count() + 2), glyphs),
             )
         }));
     }
@@ -1508,6 +1513,23 @@ mod tests {
             assert!(
                 !labels.contains(&"mcp servers"),
                 "{}: a group with nothing in it is not drawn: {labels:?}",
+                glyphs.name
+            );
+            // **The executables group names the program, and this is its only
+            // gate.** The adversarial review found the whole block could be
+            // deleted with the suite still green — and what it discloses is a
+            // program that will be on the run's `PATH`, on the surface an
+            // operator consents from. `hooks` earned its rows for the same
+            // reason: consenting to a bare word is consenting to programs nobody
+            // named.
+            assert!(
+                labels.contains(&"executables"),
+                "{}: the group naming a bundle's programs is not drawn: {labels:?}",
+                glyphs.name
+            );
+            assert!(
+                labels.contains(&"review"),
+                "{}: the executables group must name the program: {labels:?}",
                 glyphs.name
             );
             assert!(

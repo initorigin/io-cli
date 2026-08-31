@@ -59,6 +59,23 @@ name = "caveman"
 path = "bin/cm.mjs"
 "#;
 
+/// Two programs in one directory, so the deduplication has something to do.
+///
+/// Named `zebra` and declared first, so the sort has something to do as well: an
+/// unsorted `entries` returns it before `alpha` and the test says so.
+const ZEBRA_TWO_PROGRAMS: &str = r#"
+name = "zebra"
+description = "Ships two programs from one directory."
+
+[[bin]]
+name = "zebra"
+path = "bin/zebra"
+
+[[bin]]
+name = "zebra-too"
+path = "bin/zebra-too"
+"#;
+
 /// A bundle contributing something, and nothing that runs a program.
 const NO_PROGRAM: &str = r#"
 name = "quiet"
@@ -130,6 +147,69 @@ fn f9_a_declared_program_puts_its_own_directory_on_the_path() {
             .iter()
             .any(|(declared, _)| declared == "ultraship"),
         "the declared name is the file's own name, so there is nothing to report",
+    );
+}
+
+/// **A bundle switched off contributes no program, and nothing asserted this.**
+///
+/// Found by the adversarial review. A disabled bundle comes back from io-harness
+/// as a fully parsed `Plugin` on `disabled()`, contributing nothing — and putting
+/// its programs on `PATH` would be the one contribution it still made. Changing
+/// `entries` to `iter().chain(disabled())` left the whole suite green before this
+/// test existed.
+#[test]
+fn a_switched_off_bundle_puts_no_program_on_the_path() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    bundle(root, "ultraship", SHIPS_A_PROGRAM);
+    std::fs::write(
+        root.join(LOCAL_FILE),
+        "[[plugin]]\npath = \"ultraship\"\nenabled = false\n",
+    )
+    .expect("the configuration");
+    let plugins = Config::discover(root)
+        .expect("the configuration loads")
+        .plugins();
+    assert!(
+        !plugins.disabled().is_empty(),
+        "the fixture must actually declare a switched-off bundle, or this test \
+         asserts over nothing",
+    );
+    assert!(
+        ours(&plugins, root).is_empty(),
+        "a switched-off bundle's program reached the path: {:?}",
+        ours(&plugins, root),
+    );
+    assert!(
+        !bundle_path::mismatched(&plugins)
+            .iter()
+            .any(|(declared, _)| declared == "ultraship"),
+        "a switched-off bundle was reported on",
+    );
+}
+
+/// **Two bundles, two directories: deduplicated and in a stable order.**
+///
+/// `entries` is where the sort and the dedup live, and the test that named them
+/// drove `appended` instead — so a plain `Vec` with no sort passed. A `PATH` that
+/// reorders itself between sessions makes a collision intermittent, which is the
+/// worst way for one to present.
+#[test]
+fn f9_entries_are_deduplicated_and_ordered_across_bundles() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let root = dir.path();
+    let plugins = loaded(
+        root,
+        &[("zebra", ZEBRA_TWO_PROGRAMS), ("alpha", SHIPS_A_PROGRAM)],
+    );
+    assert_eq!(
+        ours(&plugins, root),
+        vec![
+            root.join("alpha").join("bin"),
+            root.join("zebra").join("bin")
+        ],
+        "two programs in one directory are one entry, and the order is the same \
+         on every run rather than the manifest's",
     );
 }
 
