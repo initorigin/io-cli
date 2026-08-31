@@ -422,6 +422,20 @@ async fn drive(
     // that will drive the loop; `src/resolved.rs` is the only module permitted
     // to make the call at all, asserted by `tests/dependencies.rs`.
     let holdings = tokio::task::block_in_place(|| io_cli::resolved::Resolved::load(&config));
+    // **A bundle's own program goes on this process's `PATH`, appended.** Done
+    // here because it is the same answer for both entry points and because
+    // io-harness's executable resolver reads the environment: a command it spawns
+    // inherits what is set before the run, and there is no contract field for it.
+    // Appended and never prepended, and nothing is written to disk — see
+    // `src/bundle_path.rs` for both reasons.
+    for (declared, actual) in io_cli::bundle_path::mismatched(holdings.loaded()) {
+        notices.push(format!(
+            "a bundle declares the program {declared} but ships it as {actual} — io puts the \
+             directory on the path and writes nothing, so it answers to {actual} and not to \
+             {declared}",
+        ));
+    }
+    io_cli::bundle_path::install(holdings.loaded());
     let bundles = bundle_skills(holdings.loaded());
     let (skills, complaint) = commands::skills(&home, skills_dir.as_deref(), &bundles);
     if let Some(complaint) = complaint {
@@ -2536,7 +2550,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // `Chosen::Held`, and `Held` is what makes the
                                 // entry `enabled = false` and earns the operator
                                 // the disclosure before a stranger's bundle
-                                // contributes to six subsystems. Prefilling the
+                                // contributes to seven subsystems. Prefilling the
                                 // directory would take the path reading, which
                                 // exists for a directory the operator wrote
                                 // themselves, and switch this one straight on.
@@ -4330,6 +4344,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     .split_once(char::is_whitespace)
                     .map(|(_, rest)| rest.trim().to_string())
                     .unwrap_or_default();
+                // The prompt is the catalogue name; the echo is what was typed.
+                // Said here because this is the only place that knows the two
+                // differ — the echo row is drawn from io-harness's own `Started`
+                // event, and translating that field on the way past would run the
+                // display translation over every prompt an operator ever writes.
+                app.events.set_echo(text.to_string());
                 command = Command::Submit(if args.is_empty() {
                     wire
                 } else {
@@ -4349,6 +4369,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // there is no public call that runs a skill on the model's
                     // behalf, so what io-cli controls is that the prompt is the
                     // catalogue name and nothing else.
+                    app.events.set_echo(text.to_string());
                     Command::Submit(if args.is_empty() {
                         wire
                     } else {
@@ -9783,7 +9804,7 @@ async fn manage_main(
     // `io_harness::Plugins::inspect` — so a bundle io-harness refuses returned `Err`
     // from `plan` above and nothing reached this line.
     //
-    // What an operator gets here is therefore the same six contribution kinds the
+    // What an operator gets here is therefore the same seven contribution kinds the
     // session shows, on stderr, before anything is written; and then the install
     // happens, because they named this bundle in the command they typed. A `--yes`
     // was considered and refused for the reason it was refused in 0.29.0: it is a
