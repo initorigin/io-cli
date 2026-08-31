@@ -354,10 +354,7 @@ pub const LISTED: &str = "listed";
 /// the skill and the file as two words; this is only what the *live* row can
 /// know, before any sentence has arrived.
 fn names_a_skill(target: &str) -> bool {
-    !target.is_empty()
-        && !target.contains('/')
-        && !target.contains('\\')
-        && !target.contains('.')
+    !target.is_empty() && !target.contains('/') && !target.contains('\\') && !target.contains('.')
 }
 
 impl Events {
@@ -2198,158 +2195,6 @@ fn with_duration(
     Line::from(spans)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A call as `announce` would have built it, for the two functions below.
-    ///
-    /// In-crate because both are private, and they have to be: `trim_result` is
-    /// the comparison this release repairs and `skill_and_file` is the parse that
-    /// decides whether a row may say a skill loaded. A criterion about either is
-    /// gated by nothing if the only way to reach it is through a rendered line
-    /// that also exercises six other decisions.
-    fn call(raw: &str, name: &str, target: &str, target_raw: &str) -> Pending {
-        Pending {
-            name: name.to_string(),
-            raw: raw.to_string(),
-            target: target.to_string(),
-            target_raw: target_raw.to_string(),
-            opened_at: Duration::ZERO,
-            measured: None,
-        }
-    }
-
-    /// **F3 — the exact pair from the live session that opened this release.**
-    ///
-    /// 0.32.0 translated the cell's target and left io-harness's sentence beside
-    /// it in the untranslated vocabulary, so the comparison that exists to drop a
-    /// repetition stopped recognising one — and printed in full the single string
-    /// the translation had been added to hide.
-    #[test]
-    fn f3_a_decision_repeating_a_translated_target_is_dropped() {
-        let call = call(
-            READ_SKILL,
-            "Skill",
-            "ultraship:using-ultraship",
-            "ultraship__using-ultraship",
-        );
-        assert_eq!(
-            trim_result("read skill ultraship__using-ultraship", &call),
-            "",
-            "the sentence only repeats the cell and must leave the result column \
-             empty, in either vocabulary",
-        );
-    }
-
-    /// And the displayed spelling is dropped too, so the repair does not depend
-    /// on which of the two io-harness happens to have written.
-    #[test]
-    fn f3_a_decision_repeating_the_displayed_target_is_also_dropped() {
-        let call = call(
-            READ_SKILL,
-            "Skill",
-            "ultraship:using-ultraship",
-            "ultraship__using-ultraship",
-        );
-        assert_eq!(trim_result("read skill ultraship:using-ultraship", &call), "");
-    }
-
-    /// **F4 — and a genuine result is still not stripped.**
-    ///
-    /// The whole target at the end is a repetition; one token of it is a sentence
-    /// this interface made up out of one the harness wrote. `Run cargo test · ran
-    /// cargo` was that mistake.
-    #[test]
-    fn f4_a_genuine_result_survives_and_a_whole_repeated_target_does_not() {
-        // **`ran`, not the empty string.** The cell has already said `Run` and
-        // `cargo test`, so what the sentence *adds* is the one word `ran`, and
-        // that is what it carries — the rule is "what the result adds, and not
-        // what it repeats", never "drop a sentence that mentions the target".
-        // 0.34.0's contract said this column was empty; the behaviour it
-        // describes has been asserted since 0.11.0 and is the one that is right.
-        let run = call("shell", "Run", "cargo test", "cargo test");
-        assert_eq!(trim_result("ran cargo test", &run), "ran");
-        let list = call("list_dir", "List", "src", "src");
-        assert_eq!(trim_result("list_dir  (4 entries)", &list), "(4 entries)");
-    }
-
-    /// **The success sentence and the failure sentence are told apart.**
-    ///
-    /// A row saying a skill loaded is an assertion, so it is made only from the
-    /// sentence io-harness writes when one did.
-    #[test]
-    fn a_loaded_skill_is_parsed_and_a_failed_read_is_not_mistaken_for_one() {
-        assert_eq!(
-            skill_and_file("read skill ultraship__plan"),
-            Some(("ultraship:plan".to_string(), LOADED.to_string())),
-        );
-        assert_eq!(
-            skill_and_file("read skill ultraship__plan shared/principles.md"),
-            Some((
-                "ultraship:plan".to_string(),
-                "shared/principles.md".to_string()
-            )),
-        );
-        // An empty `path` lists the bundle, which io-harness spells `.`.
-        assert_eq!(
-            skill_and_file("read skill ultraship__plan ."),
-            Some(("ultraship:plan".to_string(), LISTED.to_string())),
-        );
-        // The failure sentence says the read failed and never says `loaded`.
-        assert_eq!(
-            skill_and_file("skill ultraship__plan read error"),
-            Some(("ultraship:plan".to_string(), "read error".to_string())),
-        );
-        assert_eq!(
-            skill_and_file("skill ultraship__plan missing.md read error"),
-            Some((
-                "ultraship:plan".to_string(),
-                "missing.md read error".to_string()
-            )),
-        );
-        // Anything else is not this tool's sentence and takes the ordinary cell:
-        // a refusal, a step verdict standing in for a sentence, an unfinished
-        // flush. None of the three may become a row claiming a skill loaded.
-        for other in ["refused", "no change", "changed files", "unfinished", ""] {
-            assert_eq!(
-                skill_and_file(other),
-                None,
-                "{other:?} is not io-harness's sentence for a skill that was read",
-            );
-        }
-    }
-
-    /// **F11 — a companion path is not a name, and the pin made that a live
-    /// question rather than a theoretical one.**
-    ///
-    /// io-harness 0.73.0 announces the path in preference to the skill's name, so
-    /// the target this tool arrives with is now sometimes a file. Translating one
-    /// draws a path that does not exist.
-    #[test]
-    fn f11_a_companion_path_is_never_taken_for_a_skills_name() {
-        for name in ["ultraship__plan", "brainstorm", "a__b"] {
-            assert!(
-                names_a_skill(name),
-                "{name} is a skill name and must still be translated",
-            );
-        }
-        for path in [
-            "references/__init__.py",
-            "shared/principles.md",
-            "__init__.py",
-            "NOTES.md",
-            "a\\b__c.md",
-            "",
-        ] {
-            assert!(
-                !names_a_skill(path),
-                "{path} is a file and translating it draws a path that does not exist",
-            );
-        }
-    }
-}
-
 /// `420ms`, `1.4s`, `92.0s`. A tool cell's own duration.
 ///
 /// Separate from [`format_elapsed`](crate::status::format_elapsed), which floors
@@ -2566,4 +2411,162 @@ pub fn kind_name(kind: &EventKind) -> String {
         snake.push(character.to_ascii_lowercase());
     }
     snake
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A call as `announce` would have built it, for the two functions below.
+    ///
+    /// In-crate because both are private, and they have to be: `trim_result` is
+    /// the comparison this release repairs and `skill_and_file` is the parse that
+    /// decides whether a row may say a skill loaded. A criterion about either is
+    /// gated by nothing if the only way to reach it is through a rendered line
+    /// that also exercises six other decisions.
+    ///
+    /// At the foot of the file, because `clippy::items_after_test_module` refuses
+    /// a test module with production items below it.
+    fn call(raw: &str, name: &str, target: &str, target_raw: &str) -> Pending {
+        Pending {
+            name: name.to_string(),
+            raw: raw.to_string(),
+            target: target.to_string(),
+            target_raw: target_raw.to_string(),
+            opened_at: Duration::ZERO,
+            measured: None,
+        }
+    }
+
+    /// **F3 — the exact pair from the live session that opened this release.**
+    ///
+    /// 0.32.0 translated the cell's target and left io-harness's sentence beside
+    /// it in the untranslated vocabulary, so the comparison that exists to drop a
+    /// repetition stopped recognising one — and printed in full the single string
+    /// the translation had been added to hide.
+    #[test]
+    fn f3_a_decision_repeating_a_translated_target_is_dropped() {
+        let call = call(
+            READ_SKILL,
+            "Skill",
+            "ultraship:using-ultraship",
+            "ultraship__using-ultraship",
+        );
+        assert_eq!(
+            trim_result("read skill ultraship__using-ultraship", &call),
+            "",
+            "the sentence only repeats the cell and must leave the result column \
+             empty, in either vocabulary",
+        );
+    }
+
+    /// And the displayed spelling is dropped too, so the repair does not depend
+    /// on which of the two io-harness happens to have written.
+    #[test]
+    fn f3_a_decision_repeating_the_displayed_target_is_also_dropped() {
+        let call = call(
+            READ_SKILL,
+            "Skill",
+            "ultraship:using-ultraship",
+            "ultraship__using-ultraship",
+        );
+        assert_eq!(
+            trim_result("read skill ultraship:using-ultraship", &call),
+            ""
+        );
+    }
+
+    /// **F4 — and a genuine result is still not stripped.**
+    ///
+    /// The whole target at the end is a repetition; one token of it is a sentence
+    /// this interface made up out of one the harness wrote. `Run cargo test · ran
+    /// cargo` was that mistake.
+    #[test]
+    fn f4_a_genuine_result_survives_and_a_whole_repeated_target_does_not() {
+        // **`ran`, not the empty string.** The cell has already said `Run` and
+        // `cargo test`, so what the sentence *adds* is the one word `ran`, and
+        // that is what it carries — the rule is "what the result adds, and not
+        // what it repeats", never "drop a sentence that mentions the target".
+        // 0.34.0's contract said this column was empty; the behaviour it
+        // describes has been asserted since 0.11.0 and is the one that is right.
+        let run = call("shell", "Run", "cargo test", "cargo test");
+        assert_eq!(trim_result("ran cargo test", &run), "ran");
+        let list = call("list_dir", "List", "src", "src");
+        assert_eq!(trim_result("list_dir  (4 entries)", &list), "(4 entries)");
+    }
+
+    /// **The success sentence and the failure sentence are told apart.**
+    ///
+    /// A row saying a skill loaded is an assertion, so it is made only from the
+    /// sentence io-harness writes when one did.
+    #[test]
+    fn a_loaded_skill_is_parsed_and_a_failed_read_is_not_mistaken_for_one() {
+        assert_eq!(
+            skill_and_file("read skill ultraship__plan"),
+            Some(("ultraship:plan".to_string(), LOADED.to_string())),
+        );
+        assert_eq!(
+            skill_and_file("read skill ultraship__plan shared/principles.md"),
+            Some((
+                "ultraship:plan".to_string(),
+                "shared/principles.md".to_string()
+            )),
+        );
+        // An empty `path` lists the bundle, which io-harness spells `.`.
+        assert_eq!(
+            skill_and_file("read skill ultraship__plan ."),
+            Some(("ultraship:plan".to_string(), LISTED.to_string())),
+        );
+        // The failure sentence says the read failed and never says `loaded`.
+        assert_eq!(
+            skill_and_file("skill ultraship__plan read error"),
+            Some(("ultraship:plan".to_string(), "read error".to_string())),
+        );
+        assert_eq!(
+            skill_and_file("skill ultraship__plan missing.md read error"),
+            Some((
+                "ultraship:plan".to_string(),
+                "missing.md read error".to_string()
+            )),
+        );
+        // Anything else is not this tool's sentence and takes the ordinary cell:
+        // a refusal, a step verdict standing in for a sentence, an unfinished
+        // flush. None of the three may become a row claiming a skill loaded.
+        for other in ["refused", "no change", "changed files", "unfinished", ""] {
+            assert_eq!(
+                skill_and_file(other),
+                None,
+                "{other:?} is not io-harness's sentence for a skill that was read",
+            );
+        }
+    }
+
+    /// **F11 — a companion path is not a name, and the pin made that a live
+    /// question rather than a theoretical one.**
+    ///
+    /// io-harness 0.73.0 announces the path in preference to the skill's name, so
+    /// the target this tool arrives with is now sometimes a file. Translating one
+    /// draws a path that does not exist.
+    #[test]
+    fn f11_a_companion_path_is_never_taken_for_a_skills_name() {
+        for name in ["ultraship__plan", "brainstorm", "a__b"] {
+            assert!(
+                names_a_skill(name),
+                "{name} is a skill name and must still be translated",
+            );
+        }
+        for path in [
+            "references/__init__.py",
+            "shared/principles.md",
+            "__init__.py",
+            "NOTES.md",
+            "a\\b__c.md",
+            "",
+        ] {
+            assert!(
+                !names_a_skill(path),
+                "{path} is a file and translating it draws a path that does not exist",
+            );
+        }
+    }
 }

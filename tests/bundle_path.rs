@@ -158,8 +158,7 @@ fn a_declared_name_that_is_not_the_files_name_is_reported() {
     let root = dir.path();
     let plugins = loaded(root, &[("caveman", RENAMES_ITS_PROGRAM)]);
     assert!(
-        bundle_path::mismatched(&plugins)
-            .contains(&("caveman".to_string(), "cm.mjs".to_string())),
+        bundle_path::mismatched(&plugins).contains(&("caveman".to_string(), "cm.mjs".to_string())),
         "the declared name and the name the file actually answers to must both \
          be reported: {:?}",
         bundle_path::mismatched(&plugins),
@@ -199,8 +198,11 @@ fn f10_entries_are_appended_so_a_bundle_cannot_shadow_a_system_command() {
 #[test]
 fn appending_the_same_entry_twice_adds_it_once() {
     let added = PathBuf::from("/opt/x/bin");
-    let first = bundle_path::appended(Some(&OsString::from("/usr/bin")), std::slice::from_ref(&added))
-        .expect("the first append adds it");
+    let first = bundle_path::appended(
+        Some(&OsString::from("/usr/bin")),
+        std::slice::from_ref(&added),
+    )
+    .expect("the first append adds it");
     assert!(
         bundle_path::appended(Some(&first), std::slice::from_ref(&added)).is_none(),
         "an entry already on the path is not appended again, and `None` says so \
@@ -215,8 +217,7 @@ fn appending_the_same_entry_twice_adds_it_once() {
 #[test]
 fn two_programs_in_one_directory_are_one_entry() {
     let dirs = vec![PathBuf::from("/a/bin"), PathBuf::from("/a/bin")];
-    let joined =
-        bundle_path::appended(None, &dirs).expect("something is added to an empty path");
+    let joined = bundle_path::appended(None, &dirs).expect("something is added to an empty path");
     assert_eq!(
         std::env::split_paths(&joined).collect::<Vec<_>>(),
         vec![PathBuf::from("/a/bin")],
