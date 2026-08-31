@@ -387,9 +387,14 @@ net = "deny"
 # exactly the `[[plugin]]` entry below. The clone is a `git` invocation; there
 # is no HTTP client here and no network path beside io-harness's.
 #
-# One directory can contribute six kinds of thing at once — skills, prompt
-# templates, [[agent]] definitions, [[mcp]] servers, [[hook]] tables and policy
-# layers — which is why there is a surface for it. `/plugin` lists THREE sets:
+# One directory can contribute seven kinds of thing at once — skills, prompt
+# templates, [[agent]] definitions, [[mcp]] servers, [[hook]] tables, [[bin]]
+# executables and policy layers — which is why there is a surface for it. A
+# [[bin]] is io-harness 0.73.0's, and io places it by appending the declaring
+# file's own directory to the run's PATH: appended so nothing a bundle ships can
+# shadow a system command, and no file is written, so the program answers to the
+# name it already has rather than to the name the manifest gave it.
+# `/plugin` lists THREE sets:
 # what loaded and what each bundle contributed; what was declared `enabled =
 # false`, under its own mark, with what switching it back on would bring; and
 # every bundle that was declared and DROPPED with io-harness's own reason beside

@@ -146,7 +146,7 @@ the limits that capability actually has.
 | [When a run stops for you](docs/guide/resume.md) | A question, a plan or an interrupted call answered where it was left — and one `io` at a time on one conversation |
 | [What it costs](docs/guide/accounting.md) | The money and the token split, where a price comes from, and why an unpriced model makes a total a floor |
 | [Skills](docs/guide/skills.md) | The five shipped, yours, and what a duplicate name costs |
-| [Capability bundles](docs/guide/plugins.md) | A directory contributing to six subsystems, marketplaces, installing a Claude Code or Codex plugin, and what a bundle is allowed to do being shown before it may do it |
+| [Capability bundles](docs/guide/plugins.md) | A directory contributing to seven subsystems, the executable one of them ships and where a run finds it, marketplaces, installing a Claude Code or Codex plugin, and what a bundle is allowed to do being shown before it may do it |
 | [Hooks](docs/guide/hooks.md) | Reacting to a run from `io.toml`, and the failure that is quiet |
 | [The fleet](docs/guide/fleet.md) | Contained turns, the tree `Ctrl+F` shows, and the plan a contained turn proposes |
 | [Verification gates](docs/guide/verification.md) | The criterion, what it costs per step, and exit `6` |

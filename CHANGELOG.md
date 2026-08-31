@@ -6,6 +6,98 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-31
+
+0.32.0 made io-harness's `__` a wire detail: a bundle's contribution is drawn with
+a colon and translated back at the keyboard. It left three places where the
+separator still reached a person — the sentence io-harness writes about a skill
+read, the repetition guard that stopped recognising that sentence, and every MCP
+tool call, drawn as the raw `mcp__github__create_issue`. This release closes all
+three and puts a gate under the rule, so the next surface to draw a contributed
+name cannot reintroduce the underscore quietly.
+
+The pin moves to io-harness 0.73.0, which adds a seventh kind of contribution. A
+bundle can ship an executable, and until now it contributed it to nothing: a model
+could not tell *not installed* from *installed somewhere I may not look*. io-cli
+makes it resolvable by appending the file's own directory to the run's `PATH` —
+appended, so nothing a bundle ships can shadow a system command — and creates no
+file to do it.
+
+### Added
+
+**A bundle's `[[bin]]` is invocable inside a run.** io-harness 0.73.0 accepts the
+key, checks that the path stays inside the bundle, and places nothing itself; io
+appends the directory holding the declared file to its own `PATH`, which every
+command a run spawns inherits. Appended and never prepended: a prepended directory
+lets anything a bundle ships answer to `git`, `cargo` or `ls` for every tool call
+in the session, and the permission gate that would stop it matches a binary
+*name*, which the wrong program under the right name satisfies. One entry per
+directory, sorted, and none from a bundle switched off. No file is written and
+nothing is linked, so the program resolves under the name it already has on disk —
+a `[[bin]]` whose `name` is not that name is named at startup and does not
+resolve, rather than being papered over with a wrapper io would then own inside
+somebody else's directory. A bundle declared in the committed `io.toml` that
+carries one is refused whole, exactly as one carrying a `[[hook]]` or an `[[mcp]]`
+is.
+
+**A skill can read the files beside it without a shell.** `read_skill` takes an
+optional `path` on io-harness 0.73.0, so a bundle's `shared/*.md` and
+`references/*` reach the model through the same tool and the same policy as the
+skill body. Such a call is drawn with its path intact and untranslated: the
+qualifier takes the colon and the path is left exactly as it was asked for.
+
+**`tests/namespacing.rs` walks six operator-facing surfaces** — the transcript,
+the status line, the pickers, and the plugin, skill and marketplace panes — and
+fails if `io_harness::NAMESPACE` appears in the output any of them draws. The rule
+had three exceptions and no gate, which is how it had three exceptions.
+
+### Changed
+
+**A skill read is drawn as a skill loaded**, `Skill ultraship:plan · loaded`, and
+io-harness's own decision sentence is not drawn for that tool. That sentence names
+the skill on the wire, and the row above it already says what the call did — so
+this removes the separator at its source rather than translating a sentence
+io-cli did not write. A read that fails or is refused still says so, in
+io-harness's words.
+
+**An MCP tool call reads `Call github:create_issue`.** Its wire name is assembled
+from a prefix, the server id and io-harness's separator, so
+`mcp__github__create_issue` was a string nobody wrote and nobody reads.
+
+**Invoking a bundle's skill echoes what you typed.** `/ultraship:brainstorm …`
+goes into the scrollback as you wrote it, colon and all, while the prompt behind
+it carries `ultraship__brainstorm` — the string the model's catalogue holds and
+the only one `read_skill` resolves. The two differ deliberately: a transcript that
+rewrote the line you typed would be the only place in the session that does.
+
+**A bundle contributes seven kinds of thing, not six.** `Plugin::contributions()`
+reports `bin` after `hooks` and before `policy`, and the pane, the guide and the
+README say seven.
+
+### Fixed
+
+**The repetition guard stopped recognising io-harness's decision sentence.** A
+pending call kept only the displayed target, so `trim_result` compared a sentence
+naming the wire name against a call naming the colon form and printed both. The
+pending call now keeps io-harness's own target beside the drawn one, which repairs
+it at the cause rather than by matching two spellings at the comparison.
+
+### Dependencies
+
+- io-harness 0.72 → **0.73.0**. `Plugin::contributions()` gains `bin`, a manifest
+  gains `[[bin]]`, and `read_skill` gains an optional `path`. The direct dependency
+  set is unchanged at ten names.
+
+### Upgrading
+
+- **A `plugin.toml` carrying a `[[bin]]` cannot be read by an io-cli built against
+  io-harness 0.72.0 or earlier.** `Manifest` is `deny_unknown_fields`, so that
+  binary refuses the manifest **whole** and drops the bundle entirely — every
+  skill, agent, hook and layer in it, not just the `[[bin]]`. This matters where
+  two versions of io read one home: once io has written a `[[bin]]` into a manifest
+  it generates under `~/.io-cli`, the older binary sees the bundle as gone rather
+  than as shortened. Remove the `[[bin]]` tables before downgrading.
+
 ## [0.33.0] - 2026-08-31
 
 io-harness 0.72.0 lets an agent ask several things at once and lets a choice carry
@@ -2977,7 +3069,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/initorigin/io-cli/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/initorigin/io-cli/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/initorigin/io-cli/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/initorigin/io-cli/compare/v0.30.2...v0.31.0

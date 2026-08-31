@@ -80,7 +80,7 @@
 //! # A marketplace install discloses before it writes, and io-harness does the reading
 //!
 //! A bundle out of a marketplace is a directory **nobody on this machine has
-//! read**, and it contributes to six subsystems at once. Every other bundle io-cli
+//! read**, and it contributes to seven subsystems at once. Every other bundle io-cli
 //! declares came from a directory the operator typed the path of; this one came
 //! from a stranger's repository, and [`Chosen`] is where the two part.
 //!
