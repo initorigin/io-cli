@@ -257,7 +257,13 @@ fn a_declared_name_that_is_not_the_files_name_is_reported() {
 /// program under the right name.
 #[test]
 fn f10_entries_are_appended_so_a_bundle_cannot_shadow_a_system_command() {
-    let existing = OsString::from("/usr/bin:/bin");
+    // **Joined with the platform's own separator, not a literal `:`.** Windows
+    // splits on `;`, so a hand-spelled unix `PATH` arrives there as one entry
+    // whose name contains a colon and the assertion fails for a reason that has
+    // nothing to do with the order being tested. CI caught exactly that; the
+    // production code was right and the fixture was not.
+    let existing = std::env::join_paths([PathBuf::from("/usr/bin"), PathBuf::from("/bin")])
+        .expect("two ordinary directories join");
     let added = PathBuf::from("/home/someone/.io-cli/plugins/x/bin");
     let joined = bundle_path::appended(Some(&existing), std::slice::from_ref(&added))
         .expect("an entry was added");

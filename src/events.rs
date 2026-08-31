@@ -2055,12 +2055,14 @@ fn skill_and_file(decision: &str) -> Option<(String, String)> {
     const FAILED_TAIL: &str = " read error";
 
     let decision = decision.trim();
-    let (label, failed) = if let Some(label) = decision.strip_prefix(READ) {
-        (label, false)
-    } else if let Some(rest) = decision.strip_prefix(FAILED_HEAD) {
-        (rest.strip_suffix(FAILED_TAIL)?, true)
-    } else {
-        return None;
+    let (label, failed) = match decision.strip_prefix(READ) {
+        Some(label) => (label, false),
+        None => (
+            decision
+                .strip_prefix(FAILED_HEAD)?
+                .strip_suffix(FAILED_TAIL)?,
+            true,
+        ),
     };
     // The label is the skill's name and, when the call carried one, the companion
     // file's relative path — io-harness builds it that way and writes it into the
