@@ -62,7 +62,31 @@ fn main() -> ExitCode {
 }
 
 async fn run(report: &mut Vec<String>) -> Result<u8, String> {
-    let cli = Cli::parse();
+    // **A parse failure is `FAILED`, not `REFUSED`, and clap's default was the
+    // second one.** `Cli::parse()` exits with clap's usage code, which is 2 —
+    // the same 2 `exec::REFUSED` has meant since 0.5.0. `docs/CONTRACT.md`
+    // publishes those codes as a contract a CI job branches on, so the default
+    // told every such job that a mistyped flag was a boundary refusal, at the
+    // one surface this product offers to be scripted against. io-cli's own
+    // argument refusals — `--policy ask-writes` and the rest — already come back
+    // as `Err(String)` and exit 1, so the collision was not even consistent with
+    // the crate's own behaviour.
+    //
+    // Taken here rather than on the builder because clap 4 publishes no knob for
+    // it: there is no `error_exit_code` anywhere in `clap_builder` 4.6.6. The
+    // split is clap's own `use_stderr` — `--help` and `--version` are writes to
+    // stdout that are not failures and keep their 0, and everything clap sends
+    // to stderr is a usage error, which is what `FAILED` means.
+    let cli = Cli::try_parse().unwrap_or_else(|error| {
+        // Swallowing the print error is clap's own behaviour in `Error::exit`:
+        // a broken pipe on the way out is not worth a second failure.
+        let _ = error.print();
+        std::process::exit(i32::from(if error.use_stderr() {
+            io_cli::exec::FAILED
+        } else {
+            io_cli::exec::OK
+        }));
+    });
     let root = match cli.dir {
         Some(dir) => dir,
         None => std::env::current_dir().map_err(|error| error.to_string())?,

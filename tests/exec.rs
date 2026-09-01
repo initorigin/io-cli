@@ -11,6 +11,10 @@
 //! N1 — no interface code on the headless path.
 //! N6 — the plain output is not composed to a width.
 //!
+//! 0.34.1 F1 — a clap parse failure exits 1, and `--help`/`--version` still 0.
+//! 0.34.1 F2 — `docs/CONTRACT.md`'s exit-code table is the constants, row by row.
+//! 0.34.1 F3 — io-cli's own argument refusals exit 1, on the same door.
+//!
 //! 0.23.0 F8 — `io resume`: the parked runs are listable, one is resumable by id,
 //! the parked line names the id that addresses the pause, and the two pauses that
 //! cannot be carried on are refused in words rather than by a failed drive.
@@ -2128,4 +2132,224 @@ fn o15_none_of_this_releases_interface_reaches_the_headless_path() {
         text.contains("serde_json::to_string(event)"),
         "the NDJSON line is io-harness's `RunEvent`, serialized whole",
     );
+}
+
+/// The argv the door is driven with, and what the process said back.
+///
+/// Every exit-code criterion in 0.34.1 is about a decision taken in
+/// `src/main.rs`, which nothing under `tests/` links — so the only instrument
+/// that can see it is the built binary. `-C` and the environment are not set
+/// here on purpose: a clap parse failure happens before io-cli reads anything at
+/// all, and a test that isolates a home it never reaches would be describing a
+/// run that does not exist.
+fn door(argv: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_io"))
+        .args(argv)
+        .output()
+        .unwrap_or_else(|error| panic!("the built binary runs: {error}"))
+}
+
+/// **0.34.1 F1 — a mistyped flag is `FAILED`, and it used to be `REFUSED`.**
+///
+/// `Cli::parse()` exits with clap's usage code, which is `2`, and `exec::REFUSED`
+/// has been `2` since 0.5.0. `docs/CONTRACT.md` publishes those codes as a
+/// contract a CI job branches on, so every typo told such a job that a boundary
+/// had said no — at the one surface this product offers to be scripted against,
+/// and while io-cli's own argument refusals correctly exited `1`.
+///
+/// Sabotage: put `Cli::parse()` back in `src/main.rs`. Only this fails.
+#[test]
+fn f1_an_unknown_flag_exits_failed_rather_than_refused() {
+    for argv in [
+        // The global door, before any subcommand is chosen.
+        &["--nonexistent-flag"][..],
+        // And inside the subcommand, which is a different clap parser and the
+        // one a CI job actually invokes.
+        &["exec", "--nonexistent-flag"][..],
+        &["exec", "--nonexistent-flag", "a goal"][..],
+        // A flag that exists carrying a value it does not accept: still a usage
+        // error, and the shape a script is likeliest to produce by hand.
+        &["exec", "--policy", "not-a-posture", "a goal"][..],
+    ] {
+        let run = door(argv);
+
+        assert_eq!(
+            run.status.code(),
+            Some(i32::from(io_cli::exec::FAILED)),
+            "`io {}` did not exit FAILED ({}). clap's own default is {}, which is \
+             what REFUSED means, and that collision is what this release removes. \
+             stderr was:\n{}",
+            argv.join(" "),
+            io_cli::exec::FAILED,
+            io_cli::exec::REFUSED,
+            String::from_utf8_lossy(&run.stderr),
+        );
+    }
+}
+
+/// **0.34.1 F1, the other half — `--help` and `--version` are not failures.**
+///
+/// clap reports both as errors and separates them from real ones by the stream
+/// it writes to, so a fix that reads "any clap error exits 1" would make `io
+/// --help` a failing command. That is the neighbour this release must not shift,
+/// and it is one a script notices immediately.
+#[test]
+fn f1_help_and_version_are_still_not_failures() {
+    for argv in [
+        &["--help"][..],
+        &["-h"][..],
+        &["--version"][..],
+        &["exec", "--help"][..],
+    ] {
+        let run = door(argv);
+
+        assert_eq!(
+            run.status.code(),
+            Some(i32::from(io_cli::exec::OK)),
+            "`io {}` is a request, not a failure, and it exited non-zero. \
+             stderr was:\n{}",
+            argv.join(" "),
+            String::from_utf8_lossy(&run.stderr),
+        );
+        assert!(
+            !run.stdout.is_empty(),
+            "`io {}` exited 0 without writing anything, so the code is right for \
+             the wrong reason",
+            argv.join(" "),
+        );
+    }
+}
+
+/// **0.34.1 F3 — io-cli's own argument refusals exit `FAILED` too.**
+///
+/// They already did; the assertion exists so the two paths are proven to agree
+/// rather than assumed to. `--policy ask-writes` is refused by
+/// [`io_cli::exec::posture_for`] before a store is opened, a session is created
+/// or a provider is built, so this drives the real binary with no credential and
+/// reaches no network.
+///
+/// The home is isolated because this argv gets past clap and into `run`, which
+/// adopts a home and discovers a configuration — pointed at a fixture so the
+/// test cannot read, move or create anything in the developer's own `~/.io-cli`.
+#[test]
+fn f3_io_clis_own_argument_refusal_exits_failed_too() {
+    let fixture = tempfile::tempdir().expect("a fixture");
+    let root = fixture.path();
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .arg("-C")
+        .arg(root)
+        .arg("exec")
+        .arg("--policy")
+        .arg("ask-writes")
+        .arg("say nothing")
+        .env_remove(io_harness::config::CONFIG_VAR)
+        .env_remove(io_harness::config::CONFIG_HOME_VAR);
+    #[cfg(windows)]
+    command
+        .env("USERPROFILE", root)
+        .env("APPDATA", root.join("AppData").join("Roaming"));
+    #[cfg(not(windows))]
+    command.env("HOME", root).env_remove("XDG_CONFIG_HOME");
+
+    let run = command.output().expect("the built binary runs");
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+
+    assert_eq!(
+        run.status.code(),
+        Some(i32::from(io_cli::exec::FAILED)),
+        "`io exec --policy ask-writes` is io-cli's own refusal of an argument, \
+         which is FAILED and not REFUSED — the boundary never got a chance to \
+         say anything. stderr was:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("cannot be honoured without a terminal"),
+        "the refusal did not come from `posture_for`, so this test exited 1 for \
+         some other reason and proves nothing. stderr was:\n{stderr}",
+    );
+}
+
+/// **0.34.1 F2 — the documented table is the constants, row by row.**
+///
+/// The fix changes what clap does for one class of failure, and clap governs
+/// more paths than the one it has in mind. A sentence asserting "the codes are
+/// unchanged" is satisfiable by any table; this reads `docs/CONTRACT.md`'s rows
+/// as data and holds each one against the constant of its own name, so a release
+/// that traded one collision for a neighbour would have to say which row moved.
+///
+/// The distinctness assertion is the property the whole release is about: two
+/// documented codes sharing a number is exactly the defect being removed, and it
+/// is invisible to a per-row check.
+#[test]
+fn f2_the_documented_exit_code_table_is_the_constants() {
+    // git hands Windows a CRLF working copy, and a section split on "\n## "
+    // would find no boundary there and take the rest of the document.
+    let page = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/CONTRACT.md"),
+    )
+    .expect("the contract page")
+    .replace("\r\n", "\n");
+
+    let section = page
+        .split("\n## Exit codes\n")
+        .nth(1)
+        .expect("`docs/CONTRACT.md` no longer has an `Exit codes` section")
+        .split("\n## ")
+        .next()
+        .expect("the section's own text");
+
+    // `| `0` | OK | The run finished |` — the code, then the name. The header and
+    // the separator carry no number and drop out here rather than by position.
+    let documented: Vec<(u8, String)> = section
+        .lines()
+        .filter_map(|line| {
+            let mut cells = line.trim().strip_prefix('|')?.split('|').map(str::trim);
+            let code = cells.next()?.trim_matches('`').parse::<u8>().ok()?;
+            Some((code, cells.next()?.to_string()))
+        })
+        .collect();
+
+    let constants = [
+        ("OK", io_cli::exec::OK),
+        ("FAILED", io_cli::exec::FAILED),
+        ("REFUSED", io_cli::exec::REFUSED),
+        ("CEILING", io_cli::exec::CEILING),
+        ("PAUSED", io_cli::exec::PAUSED),
+        ("UNFINISHED", io_cli::exec::UNFINISHED),
+        ("UNVERIFIED", io_cli::exec::UNVERIFIED),
+    ];
+
+    assert_eq!(
+        documented.len(),
+        constants.len(),
+        "the page documents {} codes and this crate defines {}; whichever moved, \
+         the contract and the binary now disagree. Parsed:\n{documented:?}",
+        documented.len(),
+        constants.len(),
+    );
+
+    for (name, value) in constants {
+        let (code, _) = documented
+            .iter()
+            .find(|(_, documented)| documented == name)
+            .unwrap_or_else(|| {
+                panic!("`{name}` is a code this crate exits with and the page does not name it")
+            });
+        assert_eq!(
+            *code, value,
+            "the page documents `{name}` as {code} and `io_cli::exec::{name}` is {value}",
+        );
+    }
+
+    for (index, (code, name)) in documented.iter().enumerate() {
+        for (other, other_name) in documented.iter().skip(index + 1) {
+            assert_ne!(
+                code, other,
+                "`{name}` and `{other_name}` are both documented as {code}, which \
+                 is the collision 0.34.1 removed — a script branching on it cannot \
+                 tell the two endings apart",
+            );
+        }
+    }
 }
