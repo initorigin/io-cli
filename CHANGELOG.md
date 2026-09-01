@@ -9,11 +9,11 @@ All notable changes to this project are documented here. The format follows
 ## [0.34.1] - 2026-09-01
 
 A patch about honesty rather than capability. This product machine-enforces its own
-marketing — the build fails if a HTTP client, a TLS stack, a database or a sandbox
-appears in the crate, and fails again if a scripted session writes an alternate-screen
-or mouse-capture sequence — and four published claims got past all of it, because no
-test decided any of them. One of the four was a real defect that a script hits
-silently and never investigates.
+marketing — a test fails if a HTTP client, a TLS stack, a database or a sandbox appears
+in the crate, and another fails if a scripted session writes an alternate-screen or
+mouse-capture sequence — and four published claims got past all of it, because no test
+decided any of them. One of the four was a real defect that a script hits silently and
+never investigates.
 
 ### Changed
 
@@ -83,19 +83,28 @@ is 0.35.0's.
 ### Dependencies
 
 **Unchanged.** The io-harness pin stays at 0.73.0 where 0.34.0 put it, and the direct
-dependency set is the same eleven names. A patch that moved a pin across a minor with
-declared breaks would not be a patch.
+dependency set is the same ten names. A patch that moved a pin across a minor with declared
+breaks would not be a patch.
 
 ### Upgrading
 
-**Read this if a script branches on `io exec`'s exit status.** `2` no longer means
-"refused or a usage error"; it means refused. A usage error is `1`. A script that
-tested for `2` to detect a mistyped flag now sees `1`, and one that tested for `2` to
-detect a policy refusal now gets a `2` that only ever means that. Nothing else moved:
-`0`, `3`, `4`, `5` and `6` mean what they have meant since 0.5.0 and 0.24.0.
+**Read this if a script branches on any `io` command's exit status**, not only `io exec`.
+The change is at the top-level parser, so `io resume`, `io mcp`, `io plugin`, `io config`
+and `io skill` are affected the same way. `2` no longer means "refused or a usage error";
+it means refused. A usage error is `1`. A script that tested for `2` to detect a mistyped
+flag now sees `1`, and one that tested for `2` to detect a policy refusal now gets a `2`
+that only ever means that. Nothing else moved: `0`, `3`, `4`, `5` and `6` mean what they
+have meant since 0.5.0 and 0.24.0.
 
 **On Windows, a fresh install no longer edits your PATH.** The installer prints the
 line instead. An existing install keeps the PATH entry it already has.
+
+**And the printed line reaches less than the write did — say so rather than let it be
+found.** A user PATH write was visible to cmd.exe, Explorer and every GUI-launched
+program; `$env:Path += …` in a PowerShell profile is PowerShell's alone. The installer
+now prints that distinction and points at System > Environment Variables for the rest.
+`install.sh` has always had the same shell-specific limit, so the two are symmetric — but
+on Windows this is a reduction in reach and not only a removal of a write.
 
 ## [0.34.0] - 2026-08-31
 

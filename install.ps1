@@ -8,9 +8,9 @@
     Downloads the artifact for this machine and the SHA256SUMS beside it,
     VERIFIES THE ARTIFACT BEFORE EXPANDING IT, and installs into
     %LOCALAPPDATA%\io\bin — a directory the current user owns. No administrator
-    rights, nothing written outside that directory — not your PATH either, which
-    is printed for you to set rather than set for you — and nothing left behind
-    if anything fails.
+    rights, nothing written outside that directory and a temporary one it removes
+    on the way out — not your PATH either, which is printed for you to set rather
+    than set for you — and nothing left behind if anything fails.
 
     The checksum defends against a truncated download and a tampered asset. It
     does not defend against a compromised repository; piping a script from the
@@ -146,14 +146,22 @@ try {
     # they keep — but it is still a change to the machine that the operator did
     # not ask for, made by a script they piped into a shell, and it outlives the
     # install in a place they have no reason to look. The line below is one they
-    # can read before they run it. The user PATH is still READ, because which of
-    # the two messages is the true one depends on it; and because nothing is
-    # un-written either, an install that already put this directory on the user
-    # PATH keeps that entry — this script cannot tell its own old edit from one
-    # the operator made on purpose, so it takes neither away.
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    # can read before they run it. Nothing is un-written either, so an install
+    # from before this changed keeps whatever user PATH entry it added — this
+    # script cannot tell its own old edit from one the operator made on purpose,
+    # so it takes neither away.
+    #
+    # What is read is the PROCESS PATH, and that is not interchangeable with the
+    # user PATH in the registry now that nothing is written. $env:Path is what
+    # the advice below actually changes, and it is what the machine, user and
+    # session entries all resolve into — so an entry made any of those ways is
+    # seen here on the next run. Reading the registry value instead would be
+    # reading the one place the printed line never reaches: an operator who did
+    # exactly as they were told would be told to do it again on every update,
+    # forever, and the other branch would become unreachable for everybody who
+    # complied. install.sh reads $PATH for the same reason.
     $entries = @()
-    if ($userPath) { $entries = $userPath -split ';' | Where-Object { $_ } }
+    if ($env:Path) { $entries = $env:Path -split ';' | Where-Object { $_ } }
     if ($entries -notcontains $InstallDir) {
         Write-Host ''
         Write-Host "$InstallDir is not on your PATH. Add this to your PowerShell profile:"
@@ -161,8 +169,10 @@ try {
         Write-Host "    `$env:Path += ';$InstallDir'"
         Write-Host ''
         Write-Host 'then open a new terminal and run: io'
+        Write-Host 'That line reaches PowerShell. For cmd.exe, Explorer and GUI'
+        Write-Host 'programs, add it through System > Environment Variables.'
     } else {
-        Write-Host "$InstallDir is on your user PATH; run: io"
+        Write-Host "$InstallDir is on your PATH; run: io"
     }
 
     # The last line of the narration is the binary's own, not this script's: the

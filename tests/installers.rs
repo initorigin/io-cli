@@ -248,10 +248,11 @@ fn n8_neither_installer_asks_for_administrator_rights() {
     // the user's own profile. Neither is a system path.
     assert!(shell.contains("$HOME/.local/bin"), "{shell}");
     assert!(powershell.contains("LOCALAPPDATA"), "{powershell}");
-    assert!(
-        powershell.contains("'User'"),
-        "install.ps1 reads the USER PATH to decide which advice to print",
-    );
+    // `'User'` used to be asserted here, because the script wrote the user PATH
+    // and the property was that it wrote the USER one and never the machine one.
+    // It writes neither now, so the needle would only have pinned a spelling
+    // nothing depends on. What survives is the half that is still a permission
+    // claim.
     assert!(
         !powershell.contains("'Machine'"),
         "install.ps1 must not touch the machine PATH",
@@ -336,10 +337,15 @@ fn the_readme_promise_that_neither_installer_writes_the_environment_holds() {
         .replace("\r\n", "\n");
     let shell = std::fs::read_to_string(repo().join("install.sh")).expect("install.sh");
 
-    // Half one: the claim is still being made. Delete the sentence and this
-    // fails rather than passing on a promise nobody makes any more.
+    // Half one: the claim is still being made, in the words 0.34.1 gave it.
+    //
+    // The needle is the WHOLE clause including `or your `PATH``. A needle of
+    // `neither edits your shell profile` alone is a prefix of the sentence as it
+    // read *before* this release, so reverting the README half would have left
+    // this test green — the one fragment added to guard the promise being the one
+    // fragment the guard could not see.
     assert!(
-        readme.contains("neither edits your shell profile"),
+        readme.contains("neither edits your shell profile or your `PATH`"),
         "the README no longer promises what this test holds the scripts to",
     );
     assert!(
@@ -360,12 +366,18 @@ fn the_readme_promise_that_neither_installer_writes_the_environment_holds() {
         }
     }
 
-    // And the needle is a spelling this file really uses: install.ps1 still
-    // READS the user PATH through the same API to decide which advice to print,
-    // so a re-added write would be caught rather than missed by one character.
+    // Half three, and the one that keeps halves one and two from being satisfied
+    // by a script that does nothing at all. The README does not only promise an
+    // absence: it promises the line is PRINTED. Both scripts are held to actually
+    // printing it, in the spelling each one really uses, so deleting the advice
+    // along with the write would fail here rather than read as compliance.
     assert!(
-        powershell.contains("[Environment]::GetEnvironmentVariable('Path', 'User')"),
-        "install.ps1 no longer reads the user PATH the way this test's needle assumes",
+        powershell.contains(r#"Write-Host "    `$env:Path += ';$InstallDir'""#),
+        "install.ps1 no longer prints the PATH line the README says it prints",
+    );
+    assert!(
+        shell.contains(r#"say "    export PATH=\"$dest:\$PATH\"""#),
+        "install.sh no longer prints the PATH line the README says it prints",
     );
 }
 
@@ -582,7 +594,12 @@ fn f10_the_powershell_installer_prints_the_same_ordered_sequence() {
             r#"Write-Host "$InstallDir is not on your PATH. Add this to your PowerShell profile:""#
                 .to_string(),
             r#"Write-Host "    `$env:Path += ';$InstallDir'""#.to_string(),
-            r#"Write-Host "$InstallDir is on your user PATH; run: io""#.to_string(),
+            // What that line does and does not reach. A profile edit is
+            // PowerShell's, and the write it replaces was every process on the
+            // machine — saying so is the difference between a smaller promise and
+            // a silent regression in reach.
+            "For cmd.exe, Explorer and GUI".to_string(),
+            r#"Write-Host "$InstallDir is on your PATH; run: io""#.to_string(),
             "& $installed --version".to_string(),
         ],
     );

@@ -2466,4 +2466,19 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
              refusal claim is back to covering a case it does not cover",
         );
     }
+
+    // And the contract page says it too.
+    //
+    // The first draft of this release admitted the wrong exit code in the guide
+    // and left `docs/CONTRACT.md` publishing `2` for every refusal, so the two
+    // pages contradicted each other about the number a CI job branches on — with
+    // the contradiction on the page headed "the contract a CI job depends on".
+    // An operator who reads one page and not the other is the whole audience for
+    // this carve-out, so it is asserted on both.
+    let contract = unwrapped_prose(&read("docs/CONTRACT.md"));
+    assert!(
+        contract.contains("One boundary refusal does not reach `2` today"),
+        "`docs/CONTRACT.md` no longer carries the exit-`2` carve-out, so it now \
+         disagrees with the headless guide about the code a refused run exits",
+    );
 }

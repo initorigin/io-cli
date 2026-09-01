@@ -48,7 +48,7 @@ to the existing `3` would have moved exactly the runs `6` was invented for.
 | Code | Name | Means |
 | --- | --- | --- |
 | `0` | OK | The run finished |
-| `1` | FAILED | The run failed |
+| `1` | FAILED | The run failed, or the command line was not understood |
 | `2` | REFUSED | Denied, refused, or the plan was rejected |
 | `3` | CEILING | A step, time, cost or budget ceiling was reached, and nothing judged the work |
 | `4` | PAUSED | The run is waiting on a question, a plan, an approval or an interrupted call — resumable with `io resume`, except an approval |
@@ -59,7 +59,17 @@ Exit `4` names the `question_id`, `plan_id` or `attempt_id` that `io resume` nee
 the four pauses. **An approval is the fourth and it names no invocation**, because there is none:
 io-harness publishes no resume entry point that takes an approval, and one is answered by the
 person the run asked, at the terminal it asked from. That pause names its `request_id` and says
-that instead, rather than printing a command a script would find does not exist.
+that instead, rather than printing a command a script would find does not exist. **`io` does not
+produce that pause today at all** — it declines every approval rather than deferring one, in a
+session and headless alike — so the carve-out is what would be printed if it ever did, and is
+written down because the code that would print it exists and is reached by nothing.
+
+**One boundary refusal does not reach `2` today, and this is a known defect rather than the
+contract.** A headless run whose provider endpoint lands in the `ask` tier is refused by io-harness
+before the run's first step; that typed refusal is flattened to a message before an exit code is
+chosen, so it exits `1`. It is reachable only through an explicit `act = "net", effect = "ask"`
+rule matching the provider host — see [the headless guide](guide/headless.md), which describes it
+where an operator meets it. Every other refusal exits `2`.
 
 ## Configuration
 
