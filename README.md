@@ -98,8 +98,8 @@ irm https://raw.githubusercontent.com/initorigin/io-cli/main/install.ps1 | iex
 Both scripts pick the right build for your machine, **verify it against the
 published `SHA256SUMS` before unpacking it**, and install into a directory you
 own — `~/.local/bin`, or `%LOCALAPPDATA%\io\bin` on Windows. Neither needs
-administrator rights and neither edits your shell profile: if the directory is
-not on your `PATH`, the script prints the line to add.
+administrator rights and neither edits your shell profile or your `PATH`: if
+the directory is not on your `PATH`, the script prints the line to add.
 
 Re-running the script is how you update. There is no auto-update and no version
 check: a terminal tool that contacts a server you did not ask it to contact is

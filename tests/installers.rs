@@ -250,7 +250,7 @@ fn n8_neither_installer_asks_for_administrator_rights() {
     assert!(powershell.contains("LOCALAPPDATA"), "{powershell}");
     assert!(
         powershell.contains("'User'"),
-        "install.ps1 must set the USER PATH; the machine PATH needs administrator rights",
+        "install.ps1 reads the USER PATH to decide which advice to print",
     );
     assert!(
         !powershell.contains("'Machine'"),
@@ -315,6 +315,58 @@ fn the_artifact_names_match_what_the_release_workflow_builds() {
         assert!(shell.contains(target), "install.sh cannot resolve {target}");
     }
     assert!(powershell.contains("x86_64-pc-windows-msvc"));
+}
+
+/// The README's promise that neither installer writes your environment.
+///
+/// The paragraph and the two scripts are one fact kept in three files, and this
+/// is the direction that already went wrong: `install.ps1` set the user PATH
+/// while the README told people neither script edited anything, and nothing
+/// failed, because no test read the two together. The failure this exists to
+/// catch is a future edit that re-adds the write for the operator's convenience
+/// — it now has to change the README in the same commit, instead of leaving it
+/// quietly lying about what the script does to the machine.
+#[test]
+fn the_readme_promise_that_neither_installer_writes_the_environment_holds() {
+    let readme = std::fs::read_to_string(repo().join("README.md")).expect("README.md");
+    // git hands Windows a CRLF working copy, and the fragments below would then
+    // be found at the wrong offsets or not at all.
+    let powershell = std::fs::read_to_string(repo().join("install.ps1"))
+        .expect("install.ps1")
+        .replace("\r\n", "\n");
+    let shell = std::fs::read_to_string(repo().join("install.sh")).expect("install.sh");
+
+    // Half one: the claim is still being made. Delete the sentence and this
+    // fails rather than passing on a promise nobody makes any more.
+    assert!(
+        readme.contains("neither edits your shell profile"),
+        "the README no longer promises what this test holds the scripts to",
+    );
+    assert!(
+        readme.contains("the script prints the line to add"),
+        "the README no longer says the PATH line is printed rather than set",
+    );
+
+    // Half two: neither script writes it. Both are scanned, because the README
+    // says NEITHER — the shell script cannot call these, and that is the point:
+    // the promise is about the pair, not about the one that broke it.
+    for (name, text) in [("install.sh", &shell), ("install.ps1", &powershell)] {
+        for written in ["SetEnvironmentVariable", "setx "] {
+            assert!(
+                !text.contains(written),
+                "{name} contains {written:?}; the README says neither installer writes your \
+                 environment, so this is a lie in one file or the other",
+            );
+        }
+    }
+
+    // And the needle is a spelling this file really uses: install.ps1 still
+    // READS the user PATH through the same API to decide which advice to print,
+    // so a re-added write would be caught rather than missed by one character.
+    assert!(
+        powershell.contains("[Environment]::GetEnvironmentVariable('Path', 'User')"),
+        "install.ps1 no longer reads the user PATH the way this test's needle assumes",
+    );
 }
 
 /// F10 — `install.sh` prints the whole install, in order, with the values in it.
@@ -523,7 +575,14 @@ fn f10_the_powershell_installer_prints_the_same_ordered_sequence() {
             "Write-Host 'checksum ok'".to_string(),
             r#"Write-Host "unpacked $archive""#.to_string(),
             r#"Write-Host "installed $installed""#.to_string(),
-            "your user PATH".to_string(),
+            // The PATH advice, in the order the two branches are written: the
+            // one that prints the line to add comes first, and the line itself
+            // is matched by its text rather than by the branch around it —
+            // print a different line, or stop printing one, and this fails.
+            r#"Write-Host "$InstallDir is not on your PATH. Add this to your PowerShell profile:""#
+                .to_string(),
+            r#"Write-Host "    `$env:Path += ';$InstallDir'""#.to_string(),
+            r#"Write-Host "$InstallDir is on your user PATH; run: io""#.to_string(),
             "& $installed --version".to_string(),
         ],
     );

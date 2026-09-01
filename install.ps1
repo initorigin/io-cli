@@ -8,8 +8,9 @@
     Downloads the artifact for this machine and the SHA256SUMS beside it,
     VERIFIES THE ARTIFACT BEFORE EXPANDING IT, and installs into
     %LOCALAPPDATA%\io\bin — a directory the current user owns. No administrator
-    rights, nothing written outside the user's own profile, and nothing left
-    behind if anything fails.
+    rights, nothing written outside that directory — not your PATH either, which
+    is printed for you to set rather than set for you — and nothing left behind
+    if anything fails.
 
     The checksum defends against a truncated download and a tampered asset. It
     does not defend against a compromised repository; piping a script from the
@@ -140,19 +141,26 @@ try {
     Copy-Item -Path $binary -Destination $installed -Force
     Write-Host "installed $installed"
 
-    # The USER PATH, never the machine PATH: the machine one needs administrator
-    # rights and would change the environment for everybody on the box.
+    # The PATH line is printed rather than written. A user PATH write is not a
+    # shell profile — it goes to the user's own environment rather than a file
+    # they keep — but it is still a change to the machine that the operator did
+    # not ask for, made by a script they piped into a shell, and it outlives the
+    # install in a place they have no reason to look. The line below is one they
+    # can read before they run it. The user PATH is still READ, because which of
+    # the two messages is the true one depends on it; and because nothing is
+    # un-written either, an install that already put this directory on the user
+    # PATH keeps that entry — this script cannot tell its own old edit from one
+    # the operator made on purpose, so it takes neither away.
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $entries = @()
     if ($userPath) { $entries = $userPath -split ';' | Where-Object { $_ } }
     if ($entries -notcontains $InstallDir) {
-        [Environment]::SetEnvironmentVariable('Path', (($entries + $InstallDir) -join ';'), 'User')
         Write-Host ''
-        Write-Host "$InstallDir has been added to your user PATH."
-        Write-Host 'Open a NEW terminal and run: io'
+        Write-Host "$InstallDir is not on your PATH. Add this to your PowerShell profile:"
         Write-Host ''
-        Write-Host 'If you would rather set it yourself, this is the line:'
         Write-Host "    `$env:Path += ';$InstallDir'"
+        Write-Host ''
+        Write-Host 'then open a new terminal and run: io'
     } else {
         Write-Host "$InstallDir is on your user PATH; run: io"
     }
