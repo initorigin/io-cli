@@ -25,9 +25,21 @@ permits the agent to try.
 
 **`--policy ask-writes` is refused.** Nothing in a headless run can answer an
 approval, so honouring it would turn *ask before writes* into *deny writes*
-without saying so. Every approval in a headless run is declined, and the
+without saying so. Every approval a *tool call* raises is declined, and the
 refusal is fed back to the agent as an observation it can adapt to — which is
 what it already does with a policy refusal.
+
+**The provider's own endpoint is the exception, and it is not adaptable.** That
+host is authorized once, before the run's first step, so a policy that puts it in
+the `ask` tier refuses the run there — there is no turn yet to tell about it, and
+nothing to adapt. Only an explicit `act = "net", effect = "ask"` rule matching the
+provider host reaches this: the harness contributes an allow for that endpoint
+from a layer of its own, so an ordinary `net`-denying posture still gets to the
+model, and `io setup` writes no such rule. Worth knowing because nothing warns
+first — the notice above reads `write` and `exec` and never `net`. **A run refused
+this way exits `1` and not the `2` the table below gives for a boundary**: the
+typed refusal is flattened to a message before an exit code is chosen. That is a
+known defect rather than the contract.
 
 ### Exit status
 
@@ -67,10 +79,10 @@ alone now has a sixth answer to handle, which is the point — before this relea
 there was no status a gated run could return that said the work was not good
 enough, because there were no gates.
 
-**Exit `4` names the pause from 0.23.0, and the invocation that answers it.**
-The closing line used to name the run id and nothing else, which addressed
-none of the four pauses; it now names the question, plan or call the run stopped
-on and the `io resume` that decides it. That release renumbered nothing and added
+**Exit `4` names the pause from 0.23.0, and — for three of the four — the
+invocation that answers it.** The closing line used to name the run id and
+nothing else, which addressed none of the four pauses; it now names the question,
+plan or call the run stopped on and the `io resume` that decides it. That release renumbered nothing and added
 nothing: `4` had been given to a pause that could not yet be answered for exactly
 that release.
 

@@ -51,11 +51,15 @@ to the existing `3` would have moved exactly the runs `6` was invented for.
 | `1` | FAILED | The run failed |
 | `2` | REFUSED | Denied, refused, or the plan was rejected |
 | `3` | CEILING | A step, time, cost or budget ceiling was reached, and nothing judged the work |
-| `4` | PAUSED | The run is waiting on a question, a plan, an approval or an interrupted call — resumable with `io resume` |
+| `4` | PAUSED | The run is waiting on a question, a plan, an approval or an interrupted call — resumable with `io resume`, except an approval |
 | `5` | UNFINISHED | The run ended in a state this table does not name |
 | `6` | UNVERIFIED | The work was judged by a verification gate and did not hold up |
 
-Exit `4` names the `question_id`, `plan_id` or `attempt_id` that `io resume` needs.
+Exit `4` names the `question_id`, `plan_id` or `attempt_id` that `io resume` needs — for three of
+the four pauses. **An approval is the fourth and it names no invocation**, because there is none:
+io-harness publishes no resume entry point that takes an approval, and one is answered by the
+person the run asked, at the terminal it asked from. That pause names its `request_id` and says
+that instead, rather than printing a command a script would find does not exist.
 
 ## Configuration
 
