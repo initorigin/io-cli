@@ -2342,13 +2342,23 @@ fn f2_the_documented_exit_code_table_is_the_constants() {
         );
     }
 
-    for (index, (code, name)) in documented.iter().enumerate() {
-        for (other, other_name) in documented.iter().skip(index + 1) {
+    // And the property the release is actually about, asserted over the CONSTANTS
+    // rather than over the table.
+    //
+    // Over the table it would have no arm at all: the length check and the
+    // per-row check between them make a duplicate documented code unreachable —
+    // whichever row you move, one of those two fires first. Over the constants it
+    // has one, and it is the exact regression 0.34.1 removed: define two codes as
+    // the same number, document them both that way honestly, and every other
+    // assertion here passes while a script loses the ability to tell two endings
+    // apart. Found by running the sabotage arm and getting nothing.
+    for (index, (name, code)) in constants.iter().enumerate() {
+        for (other_name, other) in constants.iter().skip(index + 1) {
             assert_ne!(
                 code, other,
-                "`{name}` and `{other_name}` are both documented as {code}, which \
-                 is the collision 0.34.1 removed — a script branching on it cannot \
-                 tell the two endings apart",
+                "`exec::{name}` and `exec::{other_name}` are both {code}. A script \
+                 branching on that number cannot tell the two endings apart, which \
+                 is the collision this release exists to remove",
             );
         }
     }
