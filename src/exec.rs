@@ -392,7 +392,14 @@ pub fn asks_nobody_can_answer(policy: &Policy) -> Option<String> {
 }
 
 /// The extra line a paused run gets, naming the handle that addresses the pause
-/// and the invocation that acts on it.
+/// and — for three of the four — the invocation that acts on it.
+///
+/// The fourth is an approval, which no `io resume` entry point takes, so that arm
+/// names the request and says so rather than offering a command that does not
+/// exist. Written out here as well as in the arm because the unqualified version
+/// of this sentence is what `docs/CONTRACT.md` and the headless guide both
+/// carried until 0.34.1, and a summary that over-claims is how it got into two
+/// pages in the first place.
 ///
 /// **The run id is not that handle, and through 0.22.0 this line printed only the
 /// run id.** Every resume entry point in io-harness takes a second number — the

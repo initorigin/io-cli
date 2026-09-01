@@ -2311,3 +2311,174 @@ fn the_guide_says_a_skill_installs_under_its_own_name_and_a_bundle_removes_by_na
         );
     }
 }
+
+/// Prose with its line breaks taken out, so an assertion is about the sentence
+/// rather than about where the paragraph happened to wrap.
+///
+/// This also normalises the CRLF working copy git hands Windows, which is how
+/// 0.33.0 shipped a docs gate that read a whole document as one paragraph on one
+/// platform and nowhere else.
+fn unwrapped_prose(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// **0.34.1 F6 — the exit-`4` documentation names the pause `io resume` cannot take.**
+///
+/// The sentence said exit `4` names the id "that `io resume` needs", full stop.
+/// That is true of three of the four pauses. An approval names no invocation,
+/// because io-harness publishes no resume entry point that takes one — so a
+/// script written from the old sentence went looking for a command that does not
+/// exist, in the one case where a person is already waiting.
+///
+/// Bound to the code and not to itself: [`io_cli::exec::parked`] is asked what it
+/// really prints for each pause, so the page cannot be made true by editing the
+/// page. Sabotage: drop the carve-out clause from either surface, or teach
+/// `parked` to offer an `io resume` for an approval. Each fails this.
+#[test]
+fn f6_the_exit_four_documentation_names_the_approval_carve_out() {
+    let approval = io_cli::exec::parked(
+        &io_harness::RunOutcome::AwaitingApproval {
+            request_id: 7,
+            steps: 2,
+        },
+        41,
+    )
+    .expect("an approval is a pause, and `parked` names every pause");
+
+    // The premise the documentation rests on. If this stops holding, the
+    // carve-out below is stale prose and should fail here rather than quietly
+    // keep describing behaviour that changed.
+    //
+    // The needle is the *invocation*, not the words `io resume` — this line
+    // names `io resume` in order to say it is not the answer, which is the whole
+    // point of it and the trap a `!contains("io resume")` walks into.
+    assert!(
+        !approval.contains("io resume 41"),
+        "`parked` now offers an `io resume` invocation for an approval, so the \
+         carve-out written into the documentation is out of date: {approval}",
+    );
+    assert!(
+        approval.contains("not by `io resume`"),
+        "the approval pause stopped saying what does not answer it, so an \
+         operator is left to infer it from the absence of a command: {approval}",
+    );
+
+    for (pause, id) in [
+        (
+            io_harness::RunOutcome::AwaitingAnswer {
+                question_id: 7,
+                steps: 2,
+            },
+            "question",
+        ),
+        (
+            io_harness::RunOutcome::AwaitingPlan {
+                plan_id: 7,
+                steps: 2,
+            },
+            "plan",
+        ),
+        (
+            io_harness::RunOutcome::AwaitingRecovery {
+                attempt_id: 7,
+                steps: 2,
+            },
+            "call",
+        ),
+    ] {
+        let line = io_cli::exec::parked(&pause, 41).expect("a pause names itself");
+        assert!(
+            line.contains("io resume 41"),
+            "the {id} pause is one of the three that DO name an invocation, and it \
+             stopped naming one — the documentation now over-carves rather than \
+             over-claims: {line}",
+        );
+    }
+
+    let contract = unwrapped_prose(&read("docs/CONTRACT.md"));
+    for said in [
+        // The table's own cell, so a reader who only skims the table is not told
+        // that every pause resumes.
+        "resumable with `io resume`, except an approval",
+        "for three of the four pauses",
+        "An approval is the fourth and it names no invocation",
+    ] {
+        assert!(
+            contract.contains(said),
+            "`docs/CONTRACT.md` no longer says {said:?}, so the exit-`4` contract is \
+             back to promising an invocation for a pause that has none",
+        );
+    }
+
+    assert!(
+        unwrapped_prose(&guide("headless")).contains("for three of the four"),
+        "the headless guide's exit-`4` claim is unqualified again",
+    );
+}
+
+/// **0.34.1 F6, the second sentence — the headless guide carves out the `net` gate.**
+///
+/// "Every approval in a headless run is declined, and the refusal is fed back to
+/// the agent as an observation it can adapt to" was true of every approval a tool
+/// call raises and false of one: the provider's own endpoint is authorized once,
+/// before the run's first step, so an `ask` verdict there ends the run with no
+/// turn to tell about it and nothing to adapt.
+///
+/// The non-vacuity is the second half of the guide's claim — that nothing warns
+/// beforehand — asserted against [`io_cli::exec::asks_nobody_can_answer`], which
+/// reads `write` and `exec` and never `net`. A page can be edited; that function
+/// cannot be edited by editing the page.
+#[test]
+fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
+    // The notice an asking posture earns. `net` is deliberately not one of the
+    // tiers it inspects, which is exactly why the carve-out needs writing down.
+    //
+    // Every tier is set here rather than only `net`: io-harness's own default
+    // policy already asks about writes and commands, so a policy built by
+    // changing one field would earn the notice for the two tiers this test is
+    // not about and prove nothing.
+    let mut asking_net = io_harness::Policy::default();
+    asking_net.defaults.write = io_harness::Effect::Deny;
+    asking_net.defaults.exec = io_harness::Effect::Deny;
+    asking_net.defaults.net = io_harness::Effect::Ask;
+    assert!(
+        io_cli::exec::asks_nobody_can_answer(&asking_net).is_none(),
+        "`asks_nobody_can_answer` now warns about a `net` tier that asks, so the \
+         guide's \"nothing warns first\" is no longer true and the paragraph needs \
+         rewriting rather than re-asserting",
+    );
+
+    let guide = unwrapped_prose(&guide("headless"));
+    for said in [
+        // The scope of the general claim, narrowed to what is actually true.
+        "Every approval a *tool call* raises is declined",
+        "The provider's own endpoint is the exception, and it is not adaptable.",
+        // The one configuration that reaches it, so the carve-out is actionable
+        // rather than a warning about nothing.
+        r#"`act = "net", effect = "ask"`"#,
+        // And the exit code it produces today, which is not the one the table
+        // below it gives for a boundary.
+        "exits `1` and not the `2`",
+    ] {
+        assert!(
+            guide.contains(said),
+            "`docs/guide/headless.md` no longer says {said:?}, so the headless \
+             refusal claim is back to covering a case it does not cover",
+        );
+    }
+
+    // And the contract page says it too.
+    //
+    // The first draft of this release admitted the wrong exit code in the guide
+    // and left `docs/CONTRACT.md` publishing `2` for every refusal, so the two
+    // pages contradicted each other about the number a CI job branches on — with
+    // the contradiction on the page headed "the contract a CI job depends on".
+    // An operator who reads one page and not the other is the whole audience for
+    // this carve-out, so it is asserted on both.
+    let contract = unwrapped_prose(&read("docs/CONTRACT.md"));
+    assert!(
+        contract.contains("One boundary refusal does not reach `2` today"),
+        "`docs/CONTRACT.md` no longer carries the exit-`2` carve-out, so it now \
+         disagrees with the headless guide about the code a refused run exits",
+    );
+}
