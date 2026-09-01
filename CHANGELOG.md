@@ -6,6 +6,106 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-09-01
+
+A patch about honesty rather than capability. This product machine-enforces its own
+marketing — a test fails if a HTTP client, a TLS stack, a database or a sandbox appears
+in the crate, and another fails if a scripted session writes an alternate-screen or
+mouse-capture sequence — and four published claims got past all of it, because no test
+decided any of them. One of the four was a real defect that a script hits silently and
+never investigates.
+
+### Changed
+
+**A usage error exits `1`. It used to exit `2`, and `2` means something else.**
+`Cli::parse()` exits with clap's usage code, which is `2` — the number
+`docs/CONTRACT.md` publishes as `REFUSED`, "denied, refused, or the plan was
+rejected", since 0.5.0. So a mistyped flag and a run the policy stopped produced the
+same status at the one surface this product offers to be branched on, and a CI job
+asking "did the boundary stop this?" was told yes by every typo. io-cli's own
+argument refusals already exited `1`, so the collision was not even consistent with
+the rest of the binary. A parse failure is now `FAILED` (`1`), which is what the
+contract always said it was; `--help` and `--version` are not failures and still
+exit `0`. clap 4 publishes no builder knob for this, so the exit is taken from
+`Cli::try_parse` and split on clap's own `use_stderr`.
+
+**`install.ps1` no longer writes the user PATH.** It prints the line to add, which is
+what `install.sh` has always done and what the README has always said *both* scripts
+do. A user PATH write is not a shell profile — the README's original wording was
+literally true and its meaning was not — but it is still a change to the machine that
+outlives the install, made by a script piped into a shell, in a place nobody has a
+reason to look. Nothing is un-written: an install that already added
+`%LOCALAPPDATA%\io\bin` keeps that entry, because the script cannot tell its own old
+edit from one made on purpose.
+
+### Fixed
+
+**Exit `4` no longer promises an invocation for the pause that does not have one.**
+The contract said exit `4` names the `question_id`, `plan_id` or `attempt_id` that
+`io resume` needs. That is true of three of the four pauses. An approval is answered
+by the person the run asked, at the terminal it asked from, and io-harness publishes
+no resume entry point that takes one — the binary has always said so and only the
+documentation over-claimed, so a script written from the page went looking for a
+command that does not exist, in the one case where somebody is already waiting.
+
+**The headless refusal claim carves out the provider's own endpoint.** "Every
+approval in a headless run is declined, and the refusal is fed back to the agent as
+an observation it can adapt to" is true of every approval a tool call raises, and
+false of one. The provider's endpoint is authorized once, before the run's first
+step, so an `ask` verdict on that host ends the run with no turn to tell about it and
+nothing to adapt around. Reachable only through an explicit `act = "net", effect =
+"ask"` rule matching that host — the harness contributes an allow for it from a layer
+of its own, so an ordinary `net`-denying posture still reaches the model — and
+nothing warns first, because the notice an asking posture earns reads `write` and
+`exec` and never `net`.
+
+**Drift tests now decide all four claims.** The exit-code table in `docs/CONTRACT.md`
+is read as data and held against the constants row by row, with a pairwise
+distinctness check, so a later release cannot trade one collision for a neighbour
+without a test naming which row moved. The two corrected sentences are bound to the
+functions they describe rather than to themselves. The installer and the README are
+bound to each other, so a future edit that re-adds the PATH write fails rather than
+quietly making the README a lie. The exit codes are asserted by driving the built
+binary, because the decision lives in `src/main.rs` and nothing under `tests/` links
+it.
+
+### Known limitations
+
+**A boundary refusal on the provider endpoint exits `1`, not `2`.** The case
+documented above ends the run through io-harness's typed `Error::Refused`, and
+`src/exec.rs` flattens that to a message before an exit code is chosen — so a real
+policy refusal is reported as a failure, which is the same class of defect as the one
+this release fixes, in the other direction. Correcting it means re-typing the error
+seam and auditing which of the harness's other errors are refusals; that is more than
+a patch, it is named in the documentation rather than left to be discovered, and it
+is 0.35.0's.
+
+### Dependencies
+
+**Unchanged.** The io-harness pin stays at 0.73.0 where 0.34.0 put it, and the direct
+dependency set is the same ten names. A patch that moved a pin across a minor with declared
+breaks would not be a patch.
+
+### Upgrading
+
+**Read this if a script branches on any `io` command's exit status**, not only `io exec`.
+The change is at the top-level parser, so `io resume`, `io mcp`, `io plugin`, `io config`
+and `io skill` are affected the same way. `2` no longer means "refused or a usage error";
+it means refused. A usage error is `1`. A script that tested for `2` to detect a mistyped
+flag now sees `1`, and one that tested for `2` to detect a policy refusal now gets a `2`
+that only ever means that. Nothing else moved: `0`, `3`, `4`, `5` and `6` mean what they
+have meant since 0.5.0 and 0.24.0.
+
+**On Windows, a fresh install no longer edits your PATH.** The installer prints the
+line instead. An existing install keeps the PATH entry it already has.
+
+**And the printed line reaches less than the write did — say so rather than let it be
+found.** A user PATH write was visible to cmd.exe, Explorer and every GUI-launched
+program; `$env:Path += …` in a PowerShell profile is PowerShell's alone. The installer
+now prints that distinction and points at System > Environment Variables for the rest.
+`install.sh` has always had the same shell-specific limit, so the two are symmetric — but
+on Windows this is a reduction in reach and not only a removal of a write.
+
 ## [0.34.0] - 2026-08-31
 
 0.32.0 made io-harness's `__` a wire detail: a bundle's contribution is drawn with
@@ -3075,7 +3175,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.34.1...HEAD
+[0.34.1]: https://github.com/initorigin/io-cli/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/initorigin/io-cli/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/initorigin/io-cli/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/initorigin/io-cli/compare/v0.31.0...v0.32.0
