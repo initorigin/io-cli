@@ -9,11 +9,21 @@
 //!
 //! No clocks and no sleeps. Every assertion is about bytes on disk or a value
 //! parsed out of them.
+//!
+//! **One thing here does have to touch the environment.** `[[mcp]]` is a
+//! user-scope section since io-harness 0.74.0, and the user scope is
+//! `$IO_CONFIG` — so a test that lets `/import` write a server without pointing
+//! that variable at a file of its own would append `[[mcp]]` entries to the real
+//! `~/.io-cli/io.toml` of whoever is running the suite. [`UserConfig`] is that
+//! fixture, and it holds the one environment lock this binary has for exactly as
+//! long as the variable is set.
 
 use std::path::{Path, PathBuf};
 
 use io_cli::import::{apply, detect, files, plan, Destination, Kind, Source};
 use io_harness::config::Scope;
+
+mod support;
 
 /// The value that must never reach a file io-cli writes.
 const SECRET: &str = "sk-live-this-must-never-be-copied";
@@ -31,6 +41,79 @@ const UNSET: &str = "IO_CLI_IMPORT_TEST_TOKEN";
 /// which is correct behaviour reported as a broken test. A test about a quoted
 /// server header wants an env reference that resolves.
 const ALWAYS_SET: &str = "PATH";
+
+/// The user-scope configuration file an imported `[[mcp]]` entry lands in, with
+/// `IO_CONFIG` pointed at it.
+///
+/// **io-harness 0.74.0 is why every MCP test in this file holds one.** `[[mcp]]`
+/// may no longer be declared by any configuration file under the workspace root,
+/// so the destination `/import` writes to is the user scope — and the user scope
+/// is `$IO_CONFIG`, which is **process-global**. A fixture that set it and handed
+/// back would leak its file into every `Config::discover` running beside it, which
+/// is a failure that only appears on CI and only sometimes.
+///
+/// So the one environment lock this binary has is held for exactly as long as the
+/// variable is set, and released by the same drop that unsets it. Every bare
+/// `Config::discover` in this file has to take that same lock across the read —
+/// `instructions_land_somewhere_config_discover_reports` is the one that does.
+///
+/// Without `IO_CONFIG` this would be the operator's own `~/.io-cli/io.toml`: the
+/// test suite would append `[[mcp]]` entries to the machine it runs on.
+struct UserConfig {
+    /// The one environment lock this binary has, held for exactly as long as
+    /// `IO_CONFIG` is set. `Drop` below runs before either field is dropped, so
+    /// the variable is unset while the lock is still held.
+    _lock: std::sync::MutexGuard<'static, ()>,
+    home: tempfile::TempDir,
+}
+
+impl UserConfig {
+    fn new() -> Self {
+        let lock = support::env_lock();
+        let home = tempfile::tempdir().expect("a directory for the user-scope file");
+        std::env::set_var("IO_CONFIG", home.path().join("io.toml"));
+        Self { _lock: lock, home }
+    }
+
+    /// The file itself, which is what `configure::scope_path` resolves for
+    /// [`Scope::User`] while this lives.
+    fn path(&self) -> PathBuf {
+        self.home.path().join("io.toml")
+    }
+
+    /// The directory holding it, for the assertions that scan bytes rather than
+    /// values. The imported servers no longer land under the workspace, so a
+    /// credential assertion that swept only the workspace would now pass by
+    /// looking in the wrong place.
+    fn dir(&self) -> &Path {
+        self.home.path()
+    }
+}
+
+impl Drop for UserConfig {
+    fn drop(&mut self) {
+        std::env::remove_var("IO_CONFIG");
+    }
+}
+
+/// The `[[mcp]]` entries **io-harness itself** reads back for a session at `root`.
+///
+/// **The oracle is `Config::discover`, not a parse of the bytes io-cli wrote**,
+/// and since io-harness 0.74.0 those are two different questions. A `[[mcp]]`
+/// entry appended to `root/io.toml` produces a file that parses perfectly and a
+/// `Config::discover` that refuses the whole of it — which `configure::write` then
+/// rolls back, leaving nothing at all. A helper that read the file would have been
+/// asserting "io-cli wrote something" while the product wrote nothing that
+/// survived the round trip. This asks the only question that matters: does the
+/// harness accept what was written.
+///
+/// Requires a live [`UserConfig`], because that is where the entries are.
+fn read_back(root: &Path) -> Vec<io_harness::McpServer> {
+    io_harness::config::Config::discover(root)
+        .expect("io-harness reads back what the import wrote")
+        .mcp_servers()
+        .to_vec()
+}
 
 fn put(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
@@ -82,13 +165,16 @@ fn holds(dir: &Path, needle: &str) -> Option<PathBuf> {
     })
 }
 
-/// The `[[mcp]]` entries of a written configuration, as io-harness's own type.
+/// The `[[mcp]]` entries **on disk at `path`**, as io-harness's own type.
 ///
-/// **Deserialised, never string-matched.** The question this file has to answer
-/// is "will io-harness read back what io-cli wrote", and a substring assertion
-/// answers a different one — it would pass on a body that spelled every key right
-/// and left off `transport`, which is the one field `#[serde(flatten)]` makes
-/// mandatory and easy to forget.
+/// The byte-level companion to [`read_back`], and it answers the one question
+/// discovery cannot: what a rolled-back write left behind. A refused write is a
+/// `Config::discover` that fails, so the assertion "the rollback left no entry" has
+/// to look at the file rather than at a configuration that does not exist.
+///
+/// **Deserialised, never string-matched.** A substring assertion would pass on a
+/// body that spelled every key right and left off `transport`, which is the one
+/// field `#[serde(flatten)]` makes mandatory and easy to forget.
 fn written_servers(path: &Path) -> Vec<io_harness::McpServer> {
     let text = std::fs::read_to_string(path).expect("the configuration was written");
     let document: toml::Value = toml::from_str(&text).expect("it parses");
@@ -256,6 +342,7 @@ fn a_plan_that_is_declined_writes_nothing_and_leaves_the_home_byte_identical() {
 
 #[test]
 fn a_claude_mcp_entry_round_trips_into_an_mcp_server() {
+    let user = UserConfig::new();
     let home_root = tempfile::tempdir().expect("a fake home");
     let workspace = tempfile::tempdir().expect("a workspace");
     let home = tempfile::tempdir().expect("io's home");
@@ -286,12 +373,31 @@ fn a_claude_mcp_entry_round_trips_into_an_mcp_server() {
         .filter(|item| item.kind == Kind::Mcp)
         .collect();
     assert_eq!(items.len(), 1, "{items:?}");
+    // **The scope argument was `Project` and the item is `User` anyway.** That is
+    // the fix rather than a detail of it: io-harness 0.74.0 allows `[[mcp]]` in the
+    // user scope alone, so threading a caller's scope into these items produced a
+    // plan whose every entry `configure::write` refused and rolled back.
+    assert_eq!(
+        items[0].to,
+        Destination::Config(Scope::User),
+        "an `[[mcp]]` entry goes to the one scope io-harness accepts one in",
+    );
 
     let report = apply(&items, workspace.path());
     assert!(report.refused.is_empty(), "{report:?}");
     assert_eq!(report.written.len(), 1, "{report:?}");
+    assert_eq!(
+        report.written[0].0,
+        user.path(),
+        "the report names the file that was actually written: {report:?}",
+    );
+    assert!(
+        !workspace.path().join("io.toml").exists(),
+        "an `io.toml` in the workspace is the file io-harness refuses this section in",
+    );
 
-    let servers = written_servers(&workspace.path().join("io.toml"));
+    // Asked of io-harness, not of the bytes: see `read_back`.
+    let servers = read_back(workspace.path());
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0].id, "semlith");
     let (command, args, env) = stdio(&servers[0]);
@@ -306,6 +412,7 @@ fn a_claude_mcp_entry_round_trips_into_an_mcp_server() {
 
 #[test]
 fn a_codex_mcp_table_round_trips_into_an_mcp_server() {
+    let _user = UserConfig::new();
     let home_root = tempfile::tempdir().expect("a fake home");
     let workspace = tempfile::tempdir().expect("a workspace");
     let home = tempfile::tempdir().expect("io's home");
@@ -343,11 +450,12 @@ fn a_codex_mcp_table_round_trips_into_an_mcp_server() {
         .filter(|item| item.kind == Kind::Mcp)
         .collect();
     assert_eq!(items.len(), 1);
+    assert_eq!(items[0].to, Destination::Config(Scope::User));
 
     let report = apply(&items, workspace.path());
     assert!(report.refused.is_empty(), "{report:?}");
 
-    let servers = written_servers(&workspace.path().join("io.toml"));
+    let servers = read_back(workspace.path());
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0].id, "semlith");
     let (command, args, env) = stdio(&servers[0]);
@@ -374,6 +482,7 @@ fn a_codex_mcp_table_round_trips_into_an_mcp_server() {
 /// or drop `edit::spell` from the paths `codex_config` and `env_names` build.
 #[test]
 fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
+    let user = UserConfig::new();
     let home_root = tempfile::tempdir().expect("a fake home");
     let workspace = tempfile::tempdir().expect("a workspace");
     let home = tempfile::tempdir().expect("io's home");
@@ -404,7 +513,7 @@ fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
     let report = apply(&items, workspace.path());
     assert!(report.refused.is_empty(), "{report:?}");
 
-    let servers = written_servers(&workspace.path().join("io.toml"));
+    let servers = read_back(workspace.path());
     assert_eq!(servers.len(), 1);
     assert_eq!(
         servers[0].id, "docs.v2",
@@ -422,6 +531,14 @@ fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
         holds(workspace.path(), SECRET).is_none(),
         "the secret was copied",
     );
+    // **And swept where the entry actually landed.** The workspace sweep above no
+    // longer covers the written file at all: `[[mcp]]` goes to the user scope now,
+    // so a check that looked only at the workspace would pass by looking somewhere
+    // empty.
+    assert!(
+        holds(user.dir(), SECRET).is_none(),
+        "the secret was copied into the user-scope configuration",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +547,7 @@ fn a_codex_server_whose_name_must_be_quoted_still_arrives() {
 
 #[test]
 fn a_secret_in_a_servers_environment_reaches_no_file_io_cli_writes() {
+    let user = UserConfig::new();
     let home_root = tempfile::tempdir().expect("a fake home");
     let workspace = tempfile::tempdir().expect("a workspace");
     let home = tempfile::tempdir().expect("io's home");
@@ -489,6 +607,12 @@ fn a_secret_in_a_servers_environment_reaches_no_file_io_cli_writes() {
         None,
         "the secret reached io's home",
     );
+    assert_eq!(
+        holds(user.dir(), SECRET),
+        None,
+        "the secret reached the user-scope configuration, which is where an \
+         imported `[[mcp]]` entry now goes",
+    );
 
     // **And the unresolvable reference is refused at import time rather than at
     // the operator's next session.** io-harness treats an unset `${env:…}` as a
@@ -497,13 +621,28 @@ fn a_secret_in_a_servers_environment_reaches_no_file_io_cli_writes() {
     // secret has not been exported yet costs a sentence here instead of a dead
     // session later. Guarded on the variable genuinely being unset, because that
     // is the premise rather than the claim.
+    //
+    // **The count on its own asserted nothing, and this is what it cost.** While
+    // `/import` was writing `[[mcp]]` into `io.toml`, io-harness 0.74.0 refused
+    // both entries for the *section* — before substitution was ever evaluated — so
+    // `refused.len() == 2` was satisfied by a failure that had nothing to do with
+    // this test's subject. Two refusals is the right count and it is not evidence;
+    // the sentence is. Each one has to name the variable and say it is not set, or
+    // this test is passing on the wrong error again.
     if std::env::var_os(UNSET).is_none() {
         assert!(
             report.written.is_empty(),
             "an unresolvable `${{env:}}` must not be left in the file: {report:?}",
         );
         assert_eq!(report.refused.len(), 2, "{report:?}");
-        let at = workspace.path().join("io.toml");
+        for line in &report.refused {
+            assert!(
+                line.contains(UNSET) && line.contains("is not set"),
+                "the refusal has to be about the unresolvable reference, not about the file the \
+                 entry was written into: {line}",
+            );
+        }
+        let at = user.path();
         assert!(
             !at.exists() || written_servers(&at).is_empty(),
             "the rollback left a `[[mcp]]` entry behind",
@@ -584,8 +723,18 @@ fn instructions_land_somewhere_config_discover_reports() {
     // The oracle is io-harness's own discovery, not the file being on disk:
     // `AGENTS.md` is `DEFAULT_INSTRUCTIONS`, so a project with no configuration
     // at all reads it — and this asserts that it did.
-    let config = io_harness::config::Config::discover(workspace.path())
-        .expect("the workspace configuration is readable");
+    //
+    // **Under the environment lock, and it is not this test's own `IO_CONFIG` that
+    // makes it necessary.** `Config::discover` reads that variable, the MCP tests
+    // beside this one set it for as long as their fixture lives, and it is
+    // process-global — so a discovery here that ran during one of their windows
+    // would load *their* user-scope file. Holding the one lock this binary has
+    // across the read is what makes the two windows exclusive.
+    let config = {
+        let _guard = support::env_lock();
+        io_harness::config::Config::discover(workspace.path())
+    }
+    .expect("the workspace configuration is readable");
     let read = config.instructions().join("\n");
     assert!(
         read.contains("Always run the linter before committing."),
@@ -965,6 +1114,7 @@ fn sixty_three_present_and_three_incoming_is_reported_and_nothing_is_written() {
 
 #[test]
 fn an_allowlist_is_reported_and_no_policy_is_written() {
+    let user = UserConfig::new();
     let home_root = tempfile::tempdir().expect("a fake home");
     let workspace = tempfile::tempdir().expect("a workspace");
     let home = tempfile::tempdir().expect("io's home");
@@ -1018,7 +1168,11 @@ fn an_allowlist_is_reported_and_no_policy_is_written() {
 
     // Asserted on the PARSED result, not on a substring: a `[policy]` written as
     // a dotted key would be invisible to a `contains("[policy]")`.
-    let at = workspace.path().join("io.toml");
+    //
+    // The file is the user scope's, because that is where the `[[mcp]]` entry that
+    // creates it goes. A `[policy]` check pointed at `workspace/io.toml` would now
+    // be asserting the absence of a table in a file that does not exist.
+    let at = user.path();
     let text = std::fs::read_to_string(&at).expect("the MCP entry made a file");
     let document: toml::Value = toml::from_str(&text).expect("it parses");
     assert!(
@@ -1026,8 +1180,8 @@ fn an_allowlist_is_reported_and_no_policy_is_written() {
         "an allowlist was translated into a policy: {text}",
     );
     assert_eq!(
-        written_servers(&at).len(),
+        read_back(workspace.path()).len(),
         1,
-        "and the rest of the import still landed",
+        "and the rest of the import still landed, in a form io-harness reads back",
     );
 }
