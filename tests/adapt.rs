@@ -17,10 +17,12 @@
 //! spelled would assert that this crate can quote its own output, which is not the
 //! question: the question is whether io-harness loads it.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use io_cli::adapt::{self, Source};
-use io_harness::config::{Config, Scope, LOCAL_FILE};
+use io_harness::config::Scope;
 use io_harness::{Plugins, PLUGIN_FILE};
 
 /// A clone directory, empty.
@@ -463,33 +465,37 @@ fn four_kinds(root: &Path) -> PathBuf {
 
 /// The adapter at `into`, loaded the way a configuration loads it.
 ///
-/// `io.local.toml` rather than `io.toml`, because an adapter contributes an
-/// `[[mcp]]` and a plugin declared in the committed, cloned project file may not —
-/// io-harness refuses that manifest whole rather than shortening it. The path is
-/// spelled through `edit::spell` rather than by a format string: it is absolute,
-/// and an absolute Windows path is full of backslashes that a `"{path}"` would
-/// turn into escapes.
-fn loaded(root: &Path, into: &Path) -> Plugins {
+/// **The user-scope file, and an adapter directory outside the workspace — which
+/// is where a real adapter is and which file really names it.** io-harness 0.74.0
+/// decides what a manifest may contribute by where the manifest sits: a
+/// `plugin.toml` inside the discovery root may not carry an `[[mcp]]`, whatever
+/// declared it, because the run's own agent writes paths inside the root. An
+/// adapter is written under `home::adapters()` — `~/.io-cli/adapters` — which is
+/// outside every workspace, and `manage`'s `plugin add` resolves an unstated scope
+/// to the user's. So the fixture discovers against an empty workspace of its own
+/// and names the adapter from `$IO_CONFIG`, which is the only arrangement in which
+/// a generated manifest's `[[mcp]]` survives the load.
+///
+/// The path is spelled through `edit::spell` rather than by a format string: it is
+/// absolute, and an absolute Windows path is full of backslashes that a `"{path}"`
+/// would turn into escapes.
+fn loaded(into: &Path) -> Plugins {
     let declared = io_cli::edit::spell(&into.display().to_string());
-    std::fs::write(
-        root.join(LOCAL_FILE),
-        format!("[[plugin]]\npath = {declared}\n"),
-    )
-    .expect("the configuration");
-    Config::discover(root)
-        .expect("the configuration loads")
+    support::user_scope(&format!("[[plugin]]\npath = {declared}\n"))
+        .config
         .plugins()
 }
 
 /// **F7.** A bundle carrying skills, commands, an agent and an MCP server becomes
 /// a manifest io-harness loads, and what it reports is what the bundle carried.
 ///
-/// Sabotage: write the `skills` key as the relative `"skills"` the bundle's own
-/// directory is called. Nothing else changes — the manifest still parses, the
-/// bundle still loads, `dropped()` is still empty, and `contributions()` still
-/// says `skills` — and every skill in the bundle is silently absent, because
-/// `Plugin::skills_dir` is `self.root.join(d)` and the root is io's adapter
-/// directory rather than the clone. Only the equality below fails.
+/// Sabotage: write the two directory keys as the absolute paths into the clone
+/// that io wrote until 0.35.0. The generator still runs and the fixture still
+/// builds — and `dropped()` carries the whole bundle, because io-harness 0.74.0
+/// refuses an absolute `skills` or `templates` in every scope, `Scope::User`
+/// included (`io-harness-0.74.0/src/plugin.rs:1097`): a manifest contributes a
+/// directory it ships rather than one it points at somewhere else on the machine,
+/// since every `*.md` under it is read into the model's system prompt.
 #[test]
 fn f7_a_four_kind_bundle_becomes_a_manifest_io_harness_loads_with_nothing_dropped() {
     let (_dir, root) = clone();
@@ -516,7 +522,7 @@ fn f7_a_four_kind_bundle_becomes_a_manifest_io_harness_loads_with_nothing_droppe
         "and the clone is untouched",
     );
 
-    let plugins = loaded(&root, &into);
+    let plugins = loaded(&into);
     assert!(
         plugins.dropped().is_empty(),
         "io-harness refused the manifest io wrote: {:?}",
@@ -531,17 +537,25 @@ fn f7_a_four_kind_bundle_becomes_a_manifest_io_harness_loads_with_nothing_droppe
     // asserting that this crate can quote its own output.
     assert_eq!(
         plugin.skills_dir(),
-        Some(std::fs::canonicalize(bundle.join("skills")).expect("the skills directory")),
-        "the manifest is in io's home and the directory is in the clone, so an absolute \
-         path is the only spelling that reaches it: `skills_dir` is `root.join(d)`, and \
-         a join of an absolute path discards the root",
+        Some(into.join("skills")),
+        "the directory the adapter contributes is one it **ships**: io-harness 0.74.0 \
+         resolves `skills` by joining it onto the plugin root and refuses an absolute \
+         value in every scope, so the manifest names its own `skills/` and the bundle's \
+         was copied into it",
     );
     assert_eq!(
         plugin.templates_dir(),
-        Some(std::fs::canonicalize(bundle.join("commands")).expect("the commands directory")),
+        Some(into.join("templates")),
         "`commands/` and a templates directory are one file in two vocabularies — \
-         markdown, optional frontmatter, `$ARGUMENTS` — so the directory is named and \
-         nothing is copied",
+         markdown, optional frontmatter, `$ARGUMENTS` — so the files are copied verbatim \
+         under io-harness's own word for the directory",
+    );
+    assert_eq!(
+        std::fs::read_to_string(into.join("skills/review/SKILL.md")).expect("the copied skill"),
+        "# review\n\nHow we review.\n",
+        "and the copy is asserted on its bytes rather than on `exists`: an adapter \
+         holding an empty `skills/` satisfies an existence check forever, loads without \
+         a complaint, and contributes nothing",
     );
     assert_eq!(
         plugin.agents().len(),
@@ -565,6 +579,14 @@ fn f7_a_four_kind_bundle_becomes_a_manifest_io_harness_loads_with_nothing_droppe
         ["skills", "templates", "agents", "mcp"],
         "and what io reports is `Plugin::contributions()` on the file it wrote, in \
          io-harness's own order — never io-cli's account of what it spelled",
+    );
+    assert_eq!(
+        written.copied,
+        ["skills", "templates"],
+        "the two directories that moved are reported as data, so the surface installing \
+         this bundle can tell the operator their edits inside the clone will not be seen \
+         until the next update: {:?}",
+        written.copied,
     );
     assert_eq!(
         written.disclosed.len(),
@@ -606,7 +628,7 @@ fn f7_a_bundle_carrying_none_of_the_four_kinds_contributes_nothing() {
 
     adapt::generate(&bundle, "bare", &into).expect("a bundle carrying nothing still adapts");
 
-    let plugins = loaded(&root, &into);
+    let plugins = loaded(&into);
     let plugin = plugins
         .get("bare")
         .expect("loaded under the id io declared");
@@ -663,6 +685,69 @@ fn f8_the_generated_manifest_round_trips_and_an_invented_key_refuses_the_bundle(
     assert!(
         refused.to_string().contains("commands"),
         "and the refusal names the key, which is what makes it actionable: {refused}",
+    );
+}
+
+/// **A refused refresh leaves the working adapter exactly as it was.**
+///
+/// **This is a defect 0.35.0 created and caught before it shipped.** Until the
+/// adapter became a copy, `generate` ran only on a first install: it wiped `into`
+/// up front and removed it again on every refusal, and there was nothing there to
+/// lose. Now that the adapter ships what it contributes, **installing again is the
+/// update path** — so a refusal on an update was deleting a working adapter that
+/// an existing `[[plugin]]` entry still named, and an operator lost a bundle by
+/// trying to refresh it. The generator stages in a sibling and swaps in on
+/// success, so nothing below `into` is touched until everything has succeeded.
+///
+/// The refusal used here is the copy stage rather than an earlier one on purpose:
+/// a bundle whose `skills` climbs out of itself is refused by `inside` before any
+/// directory is made, which would pass this test without exercising the staging at
+/// all.
+///
+/// Sabotage: generate into `into` directly and remove it on failure, which is the
+/// pre-0.35.0 body. The adapter is gone and this fails on the skill it can no
+/// longer read.
+#[cfg(unix)]
+#[test]
+fn a_refused_refresh_leaves_the_installed_adapter_untouched() {
+    let (_dir, root) = clone();
+    let bundle = four_kinds(&root);
+    let into = root.join("adapters/rust-review");
+
+    adapt::generate(&bundle, "rust-review", &into).expect("the first install writes an adapter");
+    let skill = into.join("skills/review/SKILL.md");
+    let before = std::fs::read_to_string(&skill).expect("the adapter ships the bundle's skill");
+
+    // Make the *next* generate fail, at the copy, by putting a symbolic link where
+    // the adapter would have to follow it out of the bundle.
+    std::os::unix::fs::symlink(&root, bundle.join("skills/escape")).expect("a link is made");
+
+    let refused = adapt::generate(&bundle, "rust-review", &into)
+        .expect_err("a symbolic link in a contributed directory refuses the bundle");
+
+    assert!(
+        into.is_dir(),
+        "the refused refresh removed the installed adapter, which a `[[plugin]]` entry still \
+         names: {refused}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&skill).ok().as_deref(),
+        Some(before.as_str()),
+        "and it is the adapter that was working, byte for byte, rather than a rebuilt one",
+    );
+
+    // And the staging directory it built into is not left beside it, where the
+    // marketplace listing walks.
+    let strays: Vec<_> = std::fs::read_dir(into.parent().expect("a parent"))
+        .expect("the adapters directory is readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "rust-review")
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "a failed refresh left {strays:?} behind: a half-built adapter under a path the listing \
+         walks reads exactly like a working one",
     );
 }
 
@@ -767,5 +852,275 @@ fn f9_a_substitution_io_cannot_expand_refuses_and_names_the_server() {
         "and nothing is left behind. A manifest io-harness would refuse must never reach \
          a directory an operator could go on to declare — a broken adapter on disk reads \
          exactly like a working one until something loads it",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The adapter ships what it contributes
+// ---------------------------------------------------------------------------
+
+/// Neither directory key is a path at all — one plain component each, and nothing
+/// in the generated bytes climbs out of the adapter root.
+///
+/// `check_dirs` refuses an absolute value and a `..` and says nothing about a
+/// `skills/../../..`, which is neither: it is a relative path made of ordinary
+/// components that io-harness would resolve, and it would resolve to the operator's
+/// disk. So this asserts the shape io actually writes rather than the shape
+/// io-harness happens to refuse — the two are not the same rule, and the narrower
+/// one is io-cli's to keep.
+#[test]
+fn every_directory_the_generated_manifest_names_is_one_plain_component() {
+    let (_dir, root) = clone();
+    let bundle = four_kinds(&root);
+    let into = root.join("adapters/rust-review");
+    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+
+    let text = std::fs::read_to_string(into.join(PLUGIN_FILE)).expect("the manifest");
+    let named: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("skills = ") || line.starts_with("templates = "))
+        .collect();
+    assert_eq!(
+        named.len(),
+        2,
+        "two directory keys, counted — a `starts_with` over a manifest that grew a third \
+         would say nothing about it: {text}",
+    );
+    for line in named {
+        let said = line.split_once(" = ").expect("a key and a value").1;
+        assert!(
+            said == "\"skills\"" || said == "\"templates\"",
+            "a contributed directory is one plain name under the adapter root and never a \
+             path: `{line}` in\n{text}",
+        );
+    }
+
+    // And io-harness resolves each of them back inside the adapter, asked of
+    // io-harness rather than of the string above.
+    let plugin = Plugins::inspect(Scope::User, &into).expect("the manifest io wrote parses");
+    for dir in [plugin.skills_dir(), plugin.templates_dir()] {
+        let dir = dir.expect("both directories are contributed");
+        assert!(
+            dir.starts_with(&into),
+            "every path io-harness resolves out of this manifest is inside the adapter: {}",
+            dir.display(),
+        );
+    }
+}
+
+/// The adapter holds the bundle's markdown, byte for byte, rather than a path to
+/// where it used to be.
+///
+/// Sabotage: write the two keys and copy nothing. The manifest still parses,
+/// `dropped()` is still empty, `contributions()` still says `skills` and
+/// `templates`, and `Skills::discover` finds an empty directory — the bundle
+/// installs and contributes nothing, silently. Only the two equalities below fail.
+#[test]
+fn f7_the_adapter_ships_the_bundle_s_directories_rather_than_pointing_at_them() {
+    let (_dir, root) = clone();
+    let bundle = four_kinds(&root);
+    let into = root.join("adapters/rust-review");
+
+    let written = adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+
+    assert_eq!(written.copied, ["skills", "templates"]);
+    assert_eq!(
+        std::fs::read_to_string(into.join("skills/review/SKILL.md")).expect("the copied skill"),
+        "# review\n\nHow we review.\n",
+        "the file's own bytes, nested a directory deep — the copy is a walk and not one \
+         `read_dir`",
+    );
+    assert_eq!(
+        std::fs::read_to_string(into.join("templates/ship.md")).expect("the copied command"),
+        "Ship $ARGUMENTS.\n",
+        "`commands/` arrives under io-harness's own word for it, contents unchanged: a \
+         command and a template are one file in two vocabularies",
+    );
+    assert!(
+        !bundle.join(PLUGIN_FILE).exists() && bundle.join("skills/review/SKILL.md").is_file(),
+        "and the clone still holds its own copy and nothing of io's — a file io wrote in \
+         a stranger's checkout is a dirty tree at their next `git pull`",
+    );
+}
+
+/// A regenerated adapter is the bundle as it is **now**.
+///
+/// The one that matters for an update. A copy that merged would leave a skill the
+/// bundle's author deleted in io's home for good — still found by
+/// `Skills::discover`, still composed into the model's system prompt on every turn,
+/// and invisible to the operator, who would be reading the clone.
+#[test]
+fn a_regenerated_adapter_replaces_what_it_holds_rather_than_merging_into_it() {
+    let (_dir, root) = clone();
+    let bundle = four_kinds(&root);
+    let into = root.join("adapters/rust-review");
+    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+    assert!(into.join("skills/review/SKILL.md").is_file());
+
+    // The upstream edit: one skill withdrawn, another published.
+    std::fs::remove_dir_all(bundle.join("skills/review")).expect("the withdrawn skill");
+    file(
+        &bundle,
+        "skills/audit/SKILL.md",
+        "# audit\n\nHow we audit.\n",
+    );
+
+    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is regenerated");
+
+    assert!(
+        !into.join("skills/review").exists(),
+        "a skill the author withdrew is gone from the adapter too",
+    );
+    assert_eq!(
+        std::fs::read_to_string(into.join("skills/audit/SKILL.md")).expect("the new skill"),
+        "# audit\n\nHow we audit.\n",
+        "and the one they published is there",
+    );
+}
+
+/// **The 0.31.0 finding, in its own arm.** A `"skills"` naming a directory outside
+/// the bundle contributes nothing, and nothing outside the bundle is copied.
+///
+/// `adapt::directory` returned the operator's `$HOME` for this value in 0.31.0,
+/// because `Path::join` keeps `..` verbatim — and `Skills::discover` reads every
+/// `*.md` under what it is given into the model's system prompt. 0.35.0 moved the
+/// destination from a path in a manifest to the source of a **copy**, which is a
+/// second way to lose the same directory, so the filter is asserted in front of the
+/// copy rather than assumed to have survived the change.
+#[test]
+fn a_skills_key_that_climbs_out_of_the_bundle_copies_nothing_and_contributes_nothing() {
+    let (_dir, root) = clone();
+    // Beside the bundle, where `../../..` reaches and the bundle does not.
+    file(&root, "notes/private.md", "# the operator's own notes\n");
+    let bundle = root.join("bundle");
+    file(
+        &bundle,
+        ".claude-plugin/plugin.json",
+        r#"{ "name": "greedy", "skills": "../../.." }"#,
+    );
+    let into = root.join("adapters/greedy");
+
+    adapt::generate(&bundle, "greedy", &into).expect("the bundle still adapts");
+
+    let plugin = Plugins::inspect(Scope::User, &into).expect("the manifest io wrote parses");
+    assert_eq!(
+        plugin.skills_dir(),
+        None,
+        "a manifest that names `../../..` has not named a directory in this bundle at \
+         all, and quietly reading the one above it would be io choosing a directory the \
+         author did not",
+    );
+    let held: Vec<String> = std::fs::read_dir(&into)
+        .expect("the adapter directory")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        held,
+        [PLUGIN_FILE],
+        "and the adapter holds the manifest and nothing else — the value is refused \
+         before a single byte is read off the disk, which is the half a `skills_dir()` \
+         assertion alone would not see: {held:?}",
+    );
+}
+
+/// A symbolic link in a contributed directory refuses the bundle rather than being
+/// followed or reproduced.
+///
+/// io-harness 0.74.0 made this decision for `sandbox::copy_back`, and it is the
+/// same act: a link is the obvious way to defeat "the adapter ships what it
+/// contributes" — copy it and the adapter points somewhere else again, follow it
+/// and io has copied a directory nobody named into a tree whose every `*.md`
+/// reaches the model's prompt.
+#[cfg(unix)]
+#[test]
+fn a_symbolic_link_inside_a_contributed_directory_refuses_the_bundle() {
+    let (_dir, root) = clone();
+    file(&root, "elsewhere/private.md", "# not the bundle's\n");
+    let bundle = root.join("bundle");
+    file(&bundle, "skills/review/SKILL.md", "# review\n");
+    std::os::unix::fs::symlink(root.join("elsewhere"), bundle.join("skills/borrowed"))
+        .expect("the link the copy has to refuse");
+    let into = root.join("adapters/linked");
+
+    let refused = adapt::generate(&bundle, "linked", &into)
+        .expect_err("a link is refused rather than followed or reproduced");
+
+    assert!(
+        refused.contains("symbolic link"),
+        "the refusal says what it found: {refused}",
+    );
+    assert!(
+        refused.contains(&bundle.display().to_string()),
+        "and names the bundle it is about — an operator with several installed has to \
+         know which: {refused}",
+    );
+    assert!(
+        !into.join(PLUGIN_FILE).exists() && !into.join("skills").exists(),
+        "and nothing is left behind, manifest or copy",
+    );
+}
+
+/// The bound is a stated number and a bundle past it is refused by name.
+///
+/// A bundle is a stranger's directory and a copy of one is unbounded work over
+/// unbounded input. Asserted against `adapt::MOST_BYTES` rather than a literal, so
+/// a release that moves the ceiling moves this fixture with it and cannot pass by
+/// having quietly raised it.
+#[test]
+fn a_contributed_directory_past_the_bound_is_refused_and_the_refusal_names_the_bundle() {
+    let (_dir, root) = clone();
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("skills")).expect("the skills directory");
+    std::fs::write(
+        bundle.join("skills/big.md"),
+        vec![b'#'; usize::try_from(adapt::MOST_BYTES).expect("the bound fits a usize") + 1],
+    )
+    .expect("one file past the ceiling");
+    let into = root.join("adapters/big");
+
+    let refused =
+        adapt::generate(&bundle, "big", &into).expect_err("a directory past the bound is refused");
+
+    assert!(
+        refused.contains(&adapt::MOST_BYTES.to_string()),
+        "the ceiling is a number the sentence states, not one the reader has to find in \
+         the source: {refused}",
+    );
+    assert!(
+        refused.contains(&bundle.display().to_string()),
+        "and the sentence names the bundle: {refused}",
+    );
+    assert!(
+        !into.join(PLUGIN_FILE).exists(),
+        "and nothing an operator could go on to declare is left behind",
+    );
+}
+
+/// The entry count is the other half of the bound, and it is a different runaway:
+/// these files weigh nothing at all.
+#[test]
+fn a_contributed_directory_past_the_entry_bound_is_refused_too() {
+    let (_dir, root) = clone();
+    let bundle = root.join("bundle");
+    let skills = bundle.join("skills");
+    std::fs::create_dir_all(&skills).expect("the skills directory");
+    for at in 0..=adapt::MOST_ENTRIES {
+        std::fs::File::create(skills.join(format!("{at}.md"))).expect("one empty skill");
+    }
+    let into = root.join("adapters/many");
+
+    let refused = adapt::generate(&bundle, "many", &into)
+        .expect_err("a directory past the entry bound is refused");
+
+    assert!(
+        refused.contains(&adapt::MOST_ENTRIES.to_string()),
+        "a hundred thousand empty files pass a byte bound and still cost an install its \
+         afternoon, one `copy` at a time — so the count is bounded separately and says \
+         its own number: {refused}",
+    );
+    assert!(
+        !into.join(PLUGIN_FILE).exists(),
+        "and nothing is left behind",
     );
 }

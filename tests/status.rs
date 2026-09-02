@@ -1692,6 +1692,172 @@ fn reported() -> App {
     app
 }
 
+// --- 0.35.0: the boundary that was measured, not the one that was claimed ------
+
+/// A probe label in io-harness's own spelling.
+///
+/// `BoundaryProbe::trace_label` is
+/// `"{backend} write-outside={arm} dial-outside={arm}"` where an arm is `refused`,
+/// `landed` or `unmeasured`. Built here from the parts rather than pasted, so a
+/// test that means "an arm landed" says so.
+fn probe(write: &str, dial: &str) -> String {
+    format!("macos-sandbox-exec write-outside={write} dial-outside={dial}")
+}
+
+/// **F1 — the probe outcome reaches all three surfaces, or it reaches none.**
+///
+/// The status line, the footer and the `/status` page each draw the containment,
+/// and 0.12.0 shipped a field that reached two of the three — the comment on
+/// `Status::line` still names that as the failure mode. So this asserts over all
+/// three in one test rather than three tests, because three tests are three
+/// chances to write two of them.
+///
+/// Sabotage: have one surface read `Status::containment` directly instead of
+/// `Status::contained()`. That surface loses the word and this fails naming it.
+#[test]
+fn f1_a_measured_boundary_is_named_on_the_line_the_footer_and_the_status_page() {
+    // A bare `Status` for the two width-bound surfaces, in the shape
+    // `tests/narrow.rs` uses. `reported()` carries seventeen fields and the
+    // containment word sits late in the priority order, so it is dropped to fit
+    // long before a probe word could be — which would make this test fail for a
+    // reason that has nothing to do with what it asserts.
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.containment = Some("workspace-write/macos-sandbox-exec".into());
+    status.boundary = Some(probe("refused", "refused"));
+
+    let line = status.line(200, &DARK).to_string();
+    assert!(
+        line.contains("workspace-write/macos-sandbox-exec"),
+        "the status line names the backend that answered: {line}",
+    );
+    assert!(
+        line.contains("boundary verified"),
+        "and, beside it, what the backend's own probe proved: {line}",
+    );
+
+    let footer: String = status
+        .footer(200, &DARK)
+        .iter()
+        .flat_map(|row| row.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(
+        footer.contains("workspace-write/macos-sandbox-exec"),
+        "and so does the footer: {footer}",
+    );
+    assert!(
+        footer.contains("boundary verified"),
+        "and the footer names the probe too, where there is room for it: {footer}",
+    );
+
+    // The page has no width budget, so it gets the full session fixture.
+    let mut app = reported();
+    app.status.boundary = Some(probe("refused", "refused"));
+    let fixture = fixture();
+    let page = committed(&app, &fixture, Some(&fixture.caps), &DARK, ROOMY).join("\n");
+    assert!(
+        page.contains("workspace-write/macos-sandbox-exec verified"),
+        "and so does /status: {page}",
+    );
+    // And the page carries the measurement itself, which the one-word summary
+    // cannot: it is the only surface with room to separate an arm that landed
+    // from an arm that was never attempted.
+    assert!(
+        page.contains("write-outside=refused dial-outside=refused"),
+        "/status prints the label io-harness wrote, not only the verdict: {page}",
+    );
+}
+
+/// **F2 — a run nobody probed is not a run that failed a probe.**
+///
+/// io-harness writes the `sandbox_events` row only for a contained run, so a run
+/// with no containment leaves `Status::boundary` `None`. Drawing `unverified`
+/// there would be a claim about a measurement nobody took — the same mistake as
+/// rendering a refused host in a way that reads like a visit.
+#[test]
+fn f2_a_run_that_was_never_contained_draws_no_probe_word_at_all() {
+    let mut status = Status::new("anthropic/claude-sonnet-4.5");
+    status.containment = Some("workspace-write/macos-sandbox-exec".into());
+    status.boundary = None;
+
+    let line = status.line(200, &DARK).to_string();
+    assert!(
+        line.contains("workspace-write/macos-sandbox-exec"),
+        "the backend is still named: {line}",
+    );
+    for word in ["verified", "unverified"] {
+        assert!(
+            !line.contains(word),
+            "no probe was taken, so the line may not say `{word}`: {line}",
+        );
+    }
+}
+
+/// **F3 — `verified` means both arms were attempted and both were refused.**
+///
+/// Three arm states and only one combination earns the word. An arm that
+/// `landed` is a boundary that did not hold; an arm that is `unmeasured` was not
+/// attempted at all. Neither is a proof, and the line says so with the same word
+/// because the line cannot afford to distinguish them — `/status` does that.
+///
+/// **`contradicted` is deliberately absent, and this is where that is recorded.**
+/// `BoundaryProbe::contradicts_claim` is the harness's own notion of a backend
+/// that did not do what it claimed, and it needs `claimed_confinement` and
+/// `claimed_egress_denial` — neither of which `trace_label` carries. So io-cli
+/// cannot tell "this backend claimed confinement and a write landed anyway" from
+/// "this backend never claimed that arm", and drawing an alarm on the second
+/// would be a false one on the field this release exists to make trustworthy.
+///
+/// Sabotage: make `boundary_word` return `verified` unless an arm `landed`.
+/// The `unmeasured` rows below fail and nothing else does.
+#[test]
+fn f3_only_two_refusals_are_a_verified_boundary() {
+    use io_cli::status::boundary_word;
+
+    assert_eq!(boundary_word(&probe("refused", "refused")), "verified");
+
+    for (write, dial, why) in [
+        ("landed", "refused", "a write outside the roots landed"),
+        (
+            "refused",
+            "landed",
+            "a dial outside the allowed egress landed",
+        ),
+        ("landed", "landed", "neither arm was refused"),
+        ("unmeasured", "refused", "the write arm was never attempted"),
+        ("refused", "unmeasured", "the dial arm was never attempted"),
+        ("unmeasured", "unmeasured", "neither arm was attempted"),
+    ] {
+        assert_eq!(
+            boundary_word(&probe(write, dial)),
+            "unverified",
+            "{why}, so the boundary was not proven",
+        );
+    }
+}
+
+/// **F4 — the word is matched on the key, never on the sentence.**
+///
+/// `trace_label` is documented as one stable line and is `key=value`, which is
+/// what makes reading it defensible at all. This holds the parse to that: a
+/// label that merely contains the word `refused` somewhere — in a backend name,
+/// say — is not a refused arm.
+#[test]
+fn f4_the_probe_is_read_by_its_keys_and_not_by_a_word_appearing_anywhere() {
+    use io_cli::status::boundary_word;
+
+    assert_eq!(
+        boundary_word("refused-backend write-outside=landed dial-outside=landed"),
+        "unverified",
+        "the word `refused` in a backend name is not an arm that refused",
+    );
+    assert_eq!(
+        boundary_word("some-backend"),
+        "unverified",
+        "a label with no arms at all proves nothing",
+    );
+}
+
 /// **0.14.0 F10 — `/status` commits the whole state, and every field on it is a
 /// value io-harness supplied.**
 ///

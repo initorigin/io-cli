@@ -19,6 +19,17 @@
 //! Fixtures that must be exact about the *absence* of a hook use
 //! `Config::from_toml`, which reads only the text it is given.
 //! `Config::discover` also reads a user-scope file where the machine has one.
+//!
+//! **io-harness 0.74.0 moved the line this file is about.** `[[hook]]` was refused
+//! from `io.toml` and permitted in `io.local.toml`; it is now refused from both,
+//! because `io.local.toml` is a path in the workspace root and a run's own agent
+//! writes paths in the workspace root — one `write_file` of it declared an argv the
+//! next `Config::discover` would run, outside the `Policy` and outside the sandbox.
+//! The user scope is the one file no workspace can reach and is now the only place
+//! a `[[hook]]` may be written, so every fixture below that declares one goes
+//! through [`support::user_scope`] rather than writing into the root.
+
+mod support;
 
 use std::path::PathBuf;
 
@@ -39,8 +50,8 @@ fn written(file: &str, text: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
-/// A hook that watches an event and runs a program. Valid in every scope but the
-/// project one.
+/// A hook that watches an event and runs a program. Valid in the user scope, and
+/// since io-harness 0.74.0 in no other.
 const EVENT_HOOK: &str = "[[hook]]\non = [\"finished\"]\nrun = [\"true\"]\n";
 
 // ---------------------------------------------------------------------------
@@ -51,10 +62,16 @@ const EVENT_HOOK: &str = "[[hook]]\non = [\"finished\"]\nrun = [\"true\"]\n";
 /// refusal carries io-harness's own sentence and names the directory it came from.
 ///
 /// Both halves matter and neither substitutes for the other. The sentence is the
-/// only thing that tells an operator what to do — move the table to
-/// `io.local.toml` — and the directory is the only thing that tells them *which*
-/// checkout is refusing, which is the whole question when a session will not start
-/// in one of six clones on the same machine.
+/// only thing that tells an operator what to do — move the table to the user-scope
+/// file — and the directory is the only thing that tells them *which* checkout is
+/// refusing, which is the whole question when a session will not start in one of
+/// six clones on the same machine.
+///
+/// **The way out changed in io-harness 0.74.0 and the assertion changed with it.**
+/// Until then the sentence named `io.local.toml`; that file is now held to the same
+/// rule, so what the refusal names is `$IO_CONFIG` and its two fallbacks. The
+/// substring is `IO_CONFIG` because the sentence is spelled per platform —
+/// `%IO_CONFIG%` on Windows, `$IO_CONFIG` everywhere else — and both carry it.
 ///
 /// Sabotage: reword `configure::refusal` to "your io.toml is invalid", the sort of
 /// tidy-up that reads as an improvement in review. Under it only this test fails,
@@ -62,6 +79,16 @@ const EVENT_HOOK: &str = "[[hook]]\non = [\"finished\"]\nrun = [\"true\"]\n";
 /// key named, no rule explained and no file to open.
 #[test]
 fn f8_a_project_scoped_hook_is_refused_and_io_cli_names_the_rule_and_the_root() {
+    // **The one test in this file that reads a scope it did not write, so it is the
+    // one that has to hold the lock across the read.** `Config::discover` consults
+    // `$IO_CONFIG` before it reaches the workspace, and the fixtures beside this one
+    // point that variable at files that are *deliberately* unreadable — a malformed
+    // `[[hook]]`, a misspelled event name. A discovery that landed inside one of
+    // those windows would fail on the user scope and this test would assert the
+    // wrong refusal, on CI, intermittently. Held for the whole body, and the
+    // fixture form that does not take it again is the one called below.
+    let _guard = support::env_lock();
+
     let (_dir, root) = written(PROJECT_FILE, EVENT_HOOK);
 
     let error =
@@ -71,13 +98,14 @@ fn f8_a_project_scoped_hook_is_refused_and_io_cli_names_the_rule_and_the_root() 
     // io-harness's own words, not a paraphrase of them.
     assert!(
         said.contains(
-            "a project-scoped file may not declare hooks, because a hook runs or writes on \
-             this machine"
+            "a project-scoped file may not declare hooks — a hook runs an argv on this \
+             machine, or appends to a path the file itself chose, on an event the file \
+             itself picks"
         ),
         "io-cli reworded the refusal: {said}",
     );
     assert!(
-        said.contains(LOCAL_FILE),
+        said.contains("IO_CONFIG"),
         "the operator is not told where the table may live: {said}",
     );
     assert!(
@@ -86,11 +114,26 @@ fn f8_a_project_scoped_hook_is_refused_and_io_cli_names_the_rule_and_the_root() 
          which one refused: {said}",
     );
 
-    // The same table one file over is the operator's own machine talking, and it
-    // loads — so the test above is about the scope rather than about hooks.
+    // **`io.local.toml` is refused too, and the refusal says a different thing.**
+    // Both files are inside the workspace root and both are therefore untrusted;
+    // what separates them is why, and an operator reading the wrong one of the two
+    // sentences goes looking in the wrong place. Asserted here rather than left
+    // implicit, because "the project scope is the strict one" is what this test
+    // said for six releases and it is no longer true.
     let (_dir, local) = written(LOCAL_FILE, EVENT_HOOK);
-    let config = Config::discover(&local).expect("a local hook is the operator's own");
-    assert!(!config.hooks().is_empty());
+    let error = Config::discover(&local)
+        .expect_err("0.74.0 holds `io.local.toml` to the same rule: the agent can write it");
+    let said = error.to_string();
+    assert!(
+        said.contains("a workspace-root `io.local.toml` may not declare hooks"),
+        "the local-scope refusal is not io-harness's own: {said}",
+    );
+
+    // The same table in the one file no workspace can reach is the operator's own
+    // machine talking, and it loads — so the two refusals above are about the scope
+    // rather than about hooks.
+    let scope = support::user_scope_locked(EVENT_HOOK, false);
+    assert!(!scope.config.hooks().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -131,19 +174,22 @@ fn f9_a_configuration_with_no_hook_attaches_no_hooks_at_all() {
     );
 
     // And a configuration that says plenty, none of it a hook — so `None` is not
-    // `None` because there was no file to read.
-    let (_dir, busy) = written(
-        LOCAL_FILE,
+    // `None` because there was no file to read. User-scoped, because `[[mcp]]` is
+    // a refused section in every scope a workspace can supply since 0.74.0: an MCP
+    // server is a command, an argv and an environment this process spawns at run
+    // start.
+    let scope = support::user_scope(
         "[run]\nmax_steps = 40\n\n[[mcp]]\nid = \"docs\"\ntransport = \"stdio\"\n\
          command = \"mcp-docs\"\n",
     );
-    let config = Config::discover(&busy).expect("the configuration loads");
+    let busy = scope.root().to_path_buf();
+    let config = &scope.config;
     assert!(config.hooks().is_empty());
     assert!(
-        io_cli::contract::hooks(&config, &config.plugins(), &busy).is_none(),
+        io_cli::contract::hooks(config, &config.plugins(), &busy).is_none(),
         "a configuration with servers and a step cap and no hook was handed a Hooks",
     );
-    let contract = io_cli::contract::configured("go", busy.clone(), &config, &config.plugins());
+    let contract = io_cli::contract::configured("go", busy.clone(), config, &config.plugins());
     assert!(
         contract.tool_hooks.is_none(),
         "the same, on the contract the turn carries",
@@ -168,18 +214,18 @@ fn f9_a_configuration_with_no_hook_attaches_no_hooks_at_all() {
 /// refuse a tool call refuses nothing.
 #[test]
 fn f9_a_declared_hook_reaches_both_the_contract_and_the_fan_out() {
-    let (_dir, root) = written(
-        LOCAL_FILE,
+    let scope = support::user_scope(
         "[[hook]]\nat = \"before_tool\"\ntools = [\"write_file\"]\nrun = [\"true\"]\n\n\
          [[hook]]\non = [\"finished\"]\nappend = \"audit.jsonl\"\n",
     );
-    let config = Config::discover(&root).expect("the configuration loads");
+    let root = scope.root().to_path_buf();
+    let config = &scope.config;
 
-    let hooks = io_cli::contract::hooks(&config, &config.plugins(), &root)
+    let hooks = io_cli::contract::hooks(config, &config.plugins(), &root)
         .expect("the file declares two hooks");
     assert!(!hooks.is_empty());
 
-    let contract = io_cli::contract::configured("go", root.clone(), &config, &config.plugins());
+    let contract = io_cli::contract::configured("go", root.clone(), config, &config.plugins());
     assert!(
         contract.tool_hooks.is_some(),
         "the lifecycle half of the file is accepted and never consulted",
@@ -194,20 +240,31 @@ fn f9_a_declared_hook_reaches_both_the_contract_and_the_fan_out() {
 /// silently in the direction that matters least visibly: `/plugin` still draws the
 /// bundle's `hooks` row, the manifest still declares them, and not one of them ever
 /// runs — for a contribution kind whose entire purpose is to run programs.
+/// **The bundle sits outside the workspace and is declared from the user scope,
+/// which is what an installed bundle actually is.** io-harness 0.74.0 decides what
+/// a manifest may contribute by *where the manifest is* rather than by which file
+/// named it: a `plugin.toml` inside the workspace root may not carry a `[[hook]]`,
+/// an `[[mcp]]` or a `[[bin]]` whatever declared it, because the run's own agent
+/// can write that path. A bundle kept elsewhere and named from `$IO_CONFIG` is the
+/// one arrangement that still contributes a hook — and it is where `plugin add`
+/// puts one.
 #[test]
 fn f9_a_hook_a_bundle_contributes_is_a_declared_hook() {
-    let (_dir, root) = root();
-    let bundle = root.join("runner");
+    let (_bundles, bundles) = root();
+    let bundle = bundles.join("runner");
     std::fs::create_dir_all(&bundle).expect("the bundle directory");
     std::fs::write(
         bundle.join(PLUGIN_FILE),
         "name = \"runner\"\n\n[[hook]]\nat = \"before_tool\"\nrun = [\"true\"]\n",
     )
     .expect("the manifest");
-    std::fs::write(root.join(LOCAL_FILE), "[[plugin]]\npath = \"runner\"\n")
-        .expect("the configuration");
 
-    let config = Config::discover(&root).expect("the configuration loads");
+    // A TOML *literal* string, so a Windows path's backslashes are the path rather
+    // than a run of escapes. A directory name cannot contain a `'` on the platforms
+    // this ships to, and `tempfile` never puts one there.
+    let scope = support::user_scope(&format!("[[plugin]]\npath = '{}'\n", bundle.display()));
+    let root = scope.root().to_path_buf();
+    let config = &scope.config;
     assert!(
         config.hooks().is_empty(),
         "the file itself declares a hook, so this test would pass without the merge",
@@ -219,11 +276,11 @@ fn f9_a_hook_a_bundle_contributes_is_a_declared_hook() {
     );
 
     assert!(
-        io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
+        io_cli::contract::hooks(config, &config.plugins(), &root).is_some(),
         "the bundle's hook is declared and nothing in this session will run it",
     );
     assert!(
-        io_cli::contract::configured("go", root.clone(), &config, &config.plugins())
+        io_cli::contract::configured("go", root.clone(), config, &config.plugins())
             .tool_hooks
             .is_some(),
         "the same, on the contract the turn carries",
@@ -251,6 +308,14 @@ fn f9_a_hook_a_bundle_contributes_is_a_declared_hook() {
 /// disagree, and a hook the panel accepts is refused by the run that carries it.
 #[test]
 fn a_malformed_hook_is_refused_by_io_harness_and_io_cli_adds_no_check_of_its_own() {
+    // **User-scoped, or every arm below is refused for the wrong reason.**
+    // `refuse_widening` runs against the raw table *before* anything deserializes,
+    // so in any scope a workspace can supply the four malformed tables come back
+    // with "may not declare hooks" and this test would pass while asserting nothing
+    // about `Hook::check`. The lock is taken once and the fixture form that does
+    // not take it again is used, because `std::sync::Mutex` is not reentrant.
+    let _guard = support::env_lock();
+
     for (table, phrase) in [
         (
             "[[hook]]\non = [\"finished\"]\nat = \"before_tool\"\nrun = [\"true\"]\n",
@@ -269,8 +334,8 @@ fn a_malformed_hook_is_refused_by_io_harness_and_io_cli_adds_no_check_of_its_own
             "`tools` filters a lifecycle hook, and this one has no `at`",
         ),
     ] {
-        let (_dir, root) = written(LOCAL_FILE, table);
-        let error = Config::discover(&root)
+        let (_dir, root) = root();
+        let error = support::try_user_scope_locked(table, false)
             .err()
             .unwrap_or_else(|| panic!("io-harness accepted a malformed hook: {table}"));
 
@@ -283,10 +348,21 @@ fn a_malformed_hook_is_refused_by_io_harness_and_io_cli_adds_no_check_of_its_own
         // io-cli added — a rewording, a hint, a check of its own that fired first —
         // makes this fail, which is the point: the operator reads the words of
         // whoever enforced the rule.
+        //
+        // **"was not accepted" rather than "could not be read" since 0.35.0**, and
+        // this test caught the change, which is what it is for. io-harness 0.74.0
+        // refuses whole sections from any file inside a workspace, so the
+        // commonest reason `discover` fails is now a file that is intact and in
+        // the wrong place — and "could not be read" told that operator their file
+        // was broken, which is a different problem with a different fix. The
+        // wording covers a refusal and a genuine parse failure alike without
+        // io-cli having to classify which it is: `Error::Config` carries a
+        // sentence and no structure, so classifying would mean a list of the
+        // harness's clauses that goes stale the next time it tightens.
         assert_eq!(
             io_cli::configure::refusal(&root, &error),
             format!(
-                "the configuration in {} could not be read:\n{error}",
+                "the configuration in {} was not accepted:\n{error}",
                 root.display()
             ),
             "io-cli put something of its own between the operator and the refusal",
@@ -306,12 +382,14 @@ fn a_malformed_hook_is_refused_by_io_harness_and_io_cli_adds_no_check_of_its_own
 /// lists, that io-cli attaches to the fan-out, and that never runs once.
 #[test]
 fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed() {
-    let (_dir, root) = written(
-        LOCAL_FILE,
-        "[[hook]]\non = [\"finsihed\"]\nrun = [\"true\"]\n",
-    );
-    let error = Config::discover(&root)
-        .expect_err("a misspelled event name is a hook that would never fire");
+    // One guard across both halves, and the forms that do not take it again: the
+    // scope has to be the user's or the refusal is the section rule rather than the
+    // event-name rule, and taking the lock twice on one thread is a deadlock.
+    let _guard = support::env_lock();
+
+    let error =
+        support::try_user_scope_locked("[[hook]]\non = [\"finsihed\"]\nrun = [\"true\"]\n", false)
+            .expect_err("a misspelled event name is a hook that would never fire");
     assert!(
         error
             .to_string()
@@ -321,9 +399,10 @@ fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed()
 
     // The correctly spelled one loads, so the assertion above is about the
     // spelling rather than about the key.
-    let (_dir, spelled) = written(LOCAL_FILE, EVENT_HOOK);
-    let config = Config::discover(&spelled).expect("the configuration loads");
-    assert!(io_cli::contract::hooks(&config, &config.plugins(), &spelled).is_some());
+    let scope = support::user_scope_locked(EVENT_HOOK, false);
+    let spelled = scope.root().to_path_buf();
+    let config = &scope.config;
+    assert!(io_cli::contract::hooks(config, &config.plugins(), &spelled).is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -377,8 +456,12 @@ const APPENDING_HOOK: &str = "[[hook]]\non = [\"finished\"]\nappend = \"audit.js
 /// per launch, for a hook that never fired.
 #[test]
 fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
-    let (_dir, root) = written(LOCAL_FILE, APPENDING_HOOK);
-    let config = Config::discover(&root).expect("the configuration loads");
+    let scope = support::user_scope(APPENDING_HOOK);
+    // The workspace the configuration was discovered against, which is deliberately
+    // empty — so the `audit.jsonl` looked for below can only have been created by
+    // the `Hooks` this test is about.
+    let root = scope.root().to_path_buf();
+    let config = &scope.config;
 
     // The positive control: this is what building a `Hooks` costs.
     assert!(
@@ -386,7 +469,7 @@ fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
         "the fixture already had the file, so its appearance below proves nothing",
     );
     assert!(
-        io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
+        io_cli::contract::hooks(config, &config.plugins(), &root).is_some(),
         "a declared hook with a root is a Hooks",
     );
     assert!(
@@ -398,12 +481,12 @@ fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
     // And the same configuration with no root writes nothing, because it builds
     // nothing.
     assert!(
-        io_cli::contract::hooks(&config, &config.plugins(), std::path::Path::new("")).is_none(),
+        io_cli::contract::hooks(config, &config.plugins(), std::path::Path::new("")).is_none(),
         "a rootless caller was handed a Hooks, which created `audit.jsonl` in \
          whatever directory `io` was launched from",
     );
     assert!(
-        io_cli::contract::configured("", PathBuf::new(), &config, &config.plugins())
+        io_cli::contract::configured("", PathBuf::new(), config, &config.plugins())
             .tool_hooks
             .is_none(),
         "the road `server_notices` actually takes at startup: an empty root put a \
@@ -440,14 +523,13 @@ fn a_rootless_caller_builds_no_hooks_and_therefore_writes_no_append_file() {
 /// it fails by leaving the very file it is describing.
 #[test]
 fn server_notices_leaves_no_append_file_in_the_directory_io_was_launched_from() {
-    let (_dir, root) = written(
-        LOCAL_FILE,
-        &format!(
-            "{APPENDING_HOOK}\n[[mcp]]\nid = \"docs\"\ntransport = \"stdio\"\n\
-             command = \"mcp-docs\"\n"
-        ),
-    );
-    let config = Config::discover(&root).expect("the configuration loads");
+    // User-scoped on both counts: a `[[hook]]` and an `[[mcp]]` are each refused
+    // from every file a workspace can supply since io-harness 0.74.0.
+    let scope = support::user_scope(&format!(
+        "{APPENDING_HOOK}\n[[mcp]]\nid = \"docs\"\ntransport = \"stdio\"\n\
+         command = \"mcp-docs\"\n"
+    ));
+    let config = &scope.config;
     assert!(!config.hooks().is_empty(), "the fixture declares a hook");
 
     // Exactly what `Hooks::new` would `create` for this hook under an empty root.
@@ -455,7 +537,7 @@ fn server_notices_leaves_no_append_file_in_the_directory_io_was_launched_from() 
     let before = stray.exists();
 
     let _ = io_cli::contract::server_notices(
-        &config,
+        config,
         &config.plugins(),
         &io_cli::contract::Capabilities::default(),
     );

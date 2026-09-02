@@ -9,6 +9,17 @@
 //! under `tests/` can reach without moving `HOME` out from under a suite running in
 //! parallel, and this crate has shipped untestable driver logic in three releases.
 //!
+//! **The tests that install one do move `IO_CONFIG`, and they hold the one lock
+//! while they do.** io-harness 0.74.0 drops a `[[plugin]]` naming a directory
+//! outside the workspace from every scope but the operator's own, and a bundle in
+//! a marketplace clone is outside every workspace by construction — so a fixture
+//! for what `plugin add` writes is a user-scope fixture, and a user-scope fixture
+//! is one environment variable for the whole process. `support::env_lock` and
+//! `discovered` are how that is kept from reaching the test running beside it;
+//! every discovery in this file goes through one or the other. `HOME` is still
+//! never moved, which is a different variable and the one this file's fixtures are
+//! built to avoid.
+//!
 //! **Nothing here spawns `git` and nothing here reaches a network.** `tests/fetch.rs`
 //! owns the clone itself, both its endings and the staging directory; what is left
 //! for this file is everything that happens to a directory once it is on the disk,
@@ -20,6 +31,29 @@ use io_cli::fetch::Named;
 use io_cli::manage::{self, MarketVerb, PluginVerb, Request};
 use io_cli::marketplace::{self, Market, Went};
 use io_harness::config::Scope;
+
+mod support;
+
+/// `Config::discover`, taken under the one environment lock this binary has.
+///
+/// **Every discovery in this file goes through here, and io-harness 0.74.0 is
+/// why.** A `[[plugin]]` naming a directory outside the workspace is dropped from
+/// every scope but the user's, and a marketplace bundle is *always* outside the
+/// workspace — so the tests that install one build a `support::user_scope`
+/// fixture, which points `IO_CONFIG` at a file. That variable is process-global.
+/// A bare discovery running in that window reads the other test's fixture as well
+/// as its own, which is a failure that only ever shows up on a loaded machine —
+/// CI — and never here. `tests/plugins.rs` states the same rule for the same
+/// reason.
+///
+/// The lock is held across the read and no longer: a `Config` is a snapshot of the
+/// files it read. A test that takes the lock itself must **not** call this —
+/// `std::sync::Mutex` is not reentrant and doing both deadlocks; it holds the
+/// guard and calls `support::UserScope::reload` instead.
+fn discovered(root: &Path) -> io_harness::Result<io_harness::Config> {
+    let _guard = support::env_lock();
+    io_harness::Config::discover(root)
+}
 
 /// The token slice a shell hands `io`, spelled the way a test can read.
 fn argv(words: &[&str]) -> Vec<String> {
@@ -549,18 +583,32 @@ fn f2_the_rows_carry_the_manifest_name_and_the_count() {
 /// anyway, because it holds no configuration and builds no `Edit`.
 #[test]
 fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
-    let work = tempfile::tempdir().expect("a workspace");
+    // **The lock is held across the whole test rather than around each read**, and
+    // `discovered` is therefore not called from here: the fixture below points
+    // `IO_CONFIG` at a file for as long as this test runs, and every discovery in
+    // it has to be one that reads that file.
+    let _guard = support::env_lock();
     let store = tempfile::tempdir().expect("a marketplaces directory");
     // Resolved, because a temporary directory on macOS is reached through `/var`
     // and canonicalises to `/private/var`: a fixture that declared the unresolved
     // path would be comparing two spellings of one directory.
-    let root = std::fs::canonicalize(work.path()).expect("the workspace resolves");
     let store = std::fs::canonicalize(store.path()).expect("the store resolves");
+    // **The user scope, because that is the only one this arrangement exists in.**
+    // io-harness 0.74.0 drops a `[[plugin]]` whose path resolves outside the
+    // workspace from every scope but the operator's own, and a bundle inside a
+    // marketplace clone is outside every workspace by construction. It is also the
+    // scope both doors write: `manage::plan` resolves an unstated `plugin add` to
+    // `Scope::User` and the `/plugin` pickers name it outright, so a fixture in
+    // `io.local.toml` was testing an arrangement the product never produces.
+    let mut scope = support::user_scope_locked("", false);
+    let root = scope.root().to_path_buf();
 
     // Both bundles contribute something real, so that "it loaded" is a claim about
     // io-harness having accepted a bundle rather than about a manifest carrying a
-    // name. A skills directory is the cheapest contribution a local-scope bundle
-    // may make; it exists, because a bundle naming a directory that does not is a
+    // name. A skills directory is the cheapest contribution a bundle sitting
+    // *inside* the workspace may make — the copied one below is one of those, and
+    // 0.74.0 grades trust by where the manifest is rather than by which file named
+    // it. It exists on disk, because a bundle naming a directory that does not is a
     // different failure and would answer this test for the wrong reason.
     let clone = marketplace::at(&store, &named());
     let inside = clone.join("plugins").join("rust");
@@ -575,7 +623,7 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     );
     std::fs::create_dir_all(installed.join("skills")).expect("the skills directory");
 
-    let file = root.join("io.local.toml");
+    let file = scope.path();
     // `{:?}` on the rendered path, which is a TOML basic string with its
     // backslashes escaped — the same reason `pluginview::quoted` exists, and the
     // reason a Windows checkout does not write a file that no longer parses.
@@ -586,13 +634,13 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     );
     std::fs::write(&file, &text).expect("the configuration");
 
-    let config = io_harness::Config::discover(&root).expect("the configuration loads");
-    let view = io_cli::pluginview::view(&config.plugins());
-    // By id and never by count: `Config::discover` layers the operator's own user
-    // file over this one, so a developer whose `~/.io-cli` declares a bundle would
-    // fail a length assertion for a reason that has nothing to do with the
-    // criterion. `tests/plugins.rs` and `pluginview`'s own test read this the same
-    // way and for the same reason.
+    scope.reload().expect("the configuration loads");
+    let view = io_cli::pluginview::view(&scope.config.plugins());
+    // By id and never by count. The fixture stands in for the user scope while it
+    // runs, so these buckets hold this test's own bundles — but a length assertion
+    // read against a machine's real configuration fails for a reason that has
+    // nothing to do with the criterion, and `tests/plugins.rs` and `pluginview`'s
+    // own test read this the same way for that reason.
     for id in ["rust-review", "rust-review-copy"] {
         assert!(
             view.plugins.iter().any(|listed| listed.id == id),
@@ -633,7 +681,8 @@ fn f3_removing_a_marketplace_leaves_every_declaration_alone() {
     );
 
     let after = io_cli::pluginview::view(
-        &io_harness::Config::discover(&root)
+        &scope
+            .rediscover()
             .expect("the configuration still loads")
             .plugins(),
     );
@@ -1293,7 +1342,17 @@ fn holding(store: &Path) -> (Vec<Market>, PathBuf) {
 }
 
 /// The whole of what a door does for `plugin add <name>`, **in the order it does
-/// it**, with `work`'s local file standing in for the operator's configuration.
+/// it**, writing into `file` — the operator's own user-scope configuration.
+///
+/// **The scope is the user's, at every step, because that is the only scope this
+/// install exists in.** `manage::plan` resolves an unstated `plugin add` to
+/// `Scope::User`, the `/plugin` pickers name it outright, and io-harness 0.74.0
+/// drops a `[[plugin]]` resolving outside the workspace from every other one — so
+/// a helper that disclosed at `Scope::Local` and wrote `io.local.toml` was
+/// mirroring a door that does not exist. Both halves have to move together: the
+/// scope handed to the disclosure is the scope the entry is about to be written
+/// into, which is what makes a bundle carrying an `[[mcp]]` disclose and load
+/// rather than disclosing and then dropping.
 ///
 /// Resolve the word, ask io-harness what the directory is, and write only if it
 /// answered — `Err` short-circuits with the file exactly as it was found, which is
@@ -1307,19 +1366,19 @@ fn holding(store: &Path) -> (Vec<Market>, PathBuf) {
 /// `crate::home`, and moving `HOME` out from under a suite running in parallel is
 /// the thing this file's own header refuses to do. The structural gate at the
 /// bottom is what holds `plan` to this order.
-fn install(work: &Path, markets: &[Market], word: &str) -> Result<String, String> {
-    let file = work.join(io_harness::config::LOCAL_FILE);
+fn install(file: &Path, work: &Path, markets: &[Market], word: &str) -> Result<String, String> {
     let homes = Homes::under(work);
     let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word, homes.at())?;
     if chosen.discloses() {
         // The read that decides, before the file is opened for writing.
         marketplace::adapted_disclosure(
-            Scope::Local,
+            Scope::User,
             chosen.dir(),
             (chosen.from() != chosen.dir()).then(|| chosen.from()),
+            chosen.copied(),
         )?;
     }
-    let before = std::fs::read_to_string(&file).unwrap_or_default();
+    let before = std::fs::read_to_string(file).unwrap_or_default();
     let text = io_cli::edit::apply(
         &before,
         &[io_cli::pluginview::add(&io_cli::pluginview::declared(
@@ -1328,7 +1387,7 @@ fn install(work: &Path, markets: &[Market], word: &str) -> Result<String, String
         ))],
     )
     .expect("the entry applies");
-    std::fs::write(&file, &text).expect("the configuration");
+    std::fs::write(file, &text).expect("the configuration");
     Ok(text)
 }
 
@@ -1349,15 +1408,24 @@ fn install(work: &Path, markets: &[Market], word: &str) -> Result<String, String
 /// nothing and the call fails where it now answers.
 #[test]
 fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
+    // The lock is held for the whole test and `discovered` is therefore not called
+    // from here: the fixture points `IO_CONFIG` at the file this install writes.
+    let _guard = support::env_lock();
     let store = tempfile::tempdir().expect("a marketplaces directory");
-    let work = tempfile::tempdir().expect("a workspace");
+    // **The operator's own file, and the workspace it is discovered against.** A
+    // marketplace bundle sits outside every workspace, and io-harness 0.74.0 drops
+    // a `[[plugin]]` naming such a directory from every scope but this one — so the
+    // user scope is not a detail of the fixture, it is the arrangement `plugin add`
+    // produces and the only one in which what it wrote goes on to load.
+    let mut scope = support::user_scope_locked("", false);
+    let work = scope.root().to_path_buf();
     let (markets, dir) = holding(store.path());
 
     // The name reading, decided against the disk by the one function that decides
     // it. The word names no directory here, so it can only be a name.
-    let homes = Homes::under(work.path());
+    let homes = Homes::under(&work);
     let chosen = marketplace::chosen(
-        &work.path().join("rust-review"),
+        &work.join("rust-review"),
         || markets.clone(),
         "rust-review",
         homes.at(),
@@ -1369,9 +1437,11 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
             declare: dir.clone(),
             from: dir.clone(),
             made: None,
+            copied: Vec::new(),
         }),
         "a native bundle is declared at its own directory, io generates nothing \
-         for it, and a declined install therefore has nothing to take back",
+         for it and copies nothing out of the clone, and a declined install \
+         therefore has nothing to take back",
     );
     assert!(
         chosen.discloses(),
@@ -1387,11 +1457,13 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
 
     // Nothing is declared, anywhere, and the disclosure still answers.
     assert!(
-        !work.path().join(io_harness::config::LOCAL_FILE).exists(),
-        "the fixture starts with no configuration file at all",
+        std::fs::read_to_string(scope.path())
+            .expect("the fixture's own file")
+            .is_empty(),
+        "the fixture starts with a configuration file that declares nothing",
     );
     let disclosure =
-        marketplace::disclosure(Scope::Local, &dir).expect("io-harness read the directory");
+        marketplace::disclosure(Scope::User, &dir).expect("io-harness read the directory");
     assert_eq!(disclosure.id, "rust-review");
     let said = disclosure.said(&io_cli::glyphs::UNICODE).join("\n");
     // **The name the operator will meet again, which since 0.32.0 is the
@@ -1421,17 +1493,20 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
     );
 
     // And what consent then writes is one entry, switched on, in one edit.
-    let text = install(work.path(), &markets, "rust-review").expect("the install goes through");
+    let text =
+        install(&scope.path(), &work, &markets, "rust-review").expect("the install goes through");
     assert!(
         !text.contains("enabled"),
         "consent wrote an `enabled` key, so the entry is the two-step declaration \
          again: {text}",
     );
-    // Addressed by id and never by index or count: `Config::discover` layers the
-    // developer's own `~/.io-cli/io.toml` over this workspace, so a bundle they
-    // declared is in every one of these buckets beside ours.
-    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
-    let plugins = config.plugins();
+    // Addressed by id and never by index or count. The fixture takes the user
+    // scope's place while it runs, so what is in these buckets is this test's own
+    // — but the day one of them is read against a machine's real configuration a
+    // count fails for a reason that has nothing to do with the criterion, and this
+    // file has that rule everywhere else.
+    scope.reload().expect("the file loads");
+    let plugins = scope.config.plugins();
     assert!(
         plugins.dropped().iter().all(|d| d.id != "rust-review"),
         "the entry consent wrote was refused: {:?}",
@@ -1502,8 +1577,8 @@ fn f17_a_refused_bundle_leaves_the_configuration_file_byte_for_byte_unchanged() 
     let file = work.path().join(io_harness::config::LOCAL_FILE);
     std::fs::write(&file, before).expect("the configuration");
 
-    let refusal =
-        install(work.path(), &markets, "broken").expect_err("io-harness refused the manifest");
+    let refusal = install(&file, work.path(), &markets, "broken")
+        .expect_err("io-harness refused the manifest");
     assert!(
         refusal.contains(io_cli::pluginview::MANIFEST) && refusal.contains("not_a_key"),
         "the refusal is not io-harness's own sentence, naming the file and the key \
@@ -1515,8 +1590,9 @@ fn f17_a_refused_bundle_leaves_the_configuration_file_byte_for_byte_unchanged() 
         "a bundle io-harness refuses changed the operator's configuration file",
     );
 
-    // The trust rule, at the one scope that has one. `Scope::Local` is what
-    // `install` writes into, so this arm is asserted through `disclosure` directly.
+    // The trust rule, at the one scope that has one. `install` discloses at
+    // `Scope::User` — the scope both doors write, and the one io-harness answers
+    // as trusted — so this arm is asserted through `disclosure` directly.
     let spawner = markets[0]
         .bundles
         .iter()
@@ -1574,7 +1650,11 @@ fn f7_declining_writes_nothing() {
         "declining left something in the operator's configuration file",
     );
 
-    let config = io_harness::config::Config::discover(work.path()).expect("the file loads");
+    // **Under the lock, and F6 running beside this is the reason.** That test
+    // points `IO_CONFIG` at a file declaring `rust-review`; a bare discovery
+    // during its window reads that file as this machine's user scope and the
+    // assertion below fails over a bundle this test never declared.
+    let config = discovered(work.path()).expect("the file loads");
     let view = io_cli::pluginview::view(&config.plugins());
     assert!(
         view.plugins.iter().all(|listed| listed.id != "rust-review")
@@ -1787,7 +1867,7 @@ fn f20_a_manifest_substitution_is_refused_in_every_scope_and_named_by_its_key() 
     let file = work.path().join(io_harness::config::LOCAL_FILE);
     std::fs::write(&file, before).expect("the configuration");
 
-    let refusal = install(work.path(), &markets, "leaky")
+    let refusal = install(&file, work.path(), &markets, "leaky")
         .expect_err("a manifest asking for this machine's environment is refused");
     assert!(
         refusal.contains("description"),
@@ -2572,7 +2652,7 @@ fn f11_every_hook_a_foreign_bundle_declares_is_disclosed_with_its_reason() {
         ),
     );
 
-    let said = marketplace::adapted_disclosure(Scope::User, &bundle, Some(&bundle))
+    let said = marketplace::adapted_disclosure(Scope::User, &bundle, Some(&bundle), &[])
         .expect("io-harness loads the fixture");
 
     assert_eq!(
@@ -2634,6 +2714,158 @@ fn f11_a_native_bundle_withholds_nothing_and_says_nothing() {
         !said.rows.is_empty(),
         "the control — the disclosure itself still has something to say, so the \
          assertion above is not passing because the whole thing came back empty",
+    );
+}
+
+/// A foreign bundle in `clone`: a Claude manifest, one skill and one command.
+///
+/// Foreign and not native, because a native bundle is declared where it sits and
+/// nothing is ever copied for it — the whole of what is asserted below is about the
+/// directories an adapter ships.
+fn foreign(clone: &Path, name: &str) -> PathBuf {
+    let dir = clone.join("plugins").join("rust");
+    write(
+        &dir,
+        &format!(
+            "{}/{}",
+            io_cli::adapt::CLAUDE_DIR,
+            io_cli::adapt::MANIFEST_FILE
+        ),
+        &format!("{{ \"name\": \"{name}\" }}"),
+    );
+    write(&dir, "skills/one.md", "---\nname: one\n---\nthe first\n");
+    write(&dir, "commands/go.md", "go\n");
+    dir
+}
+
+/// **Installing a bundle again is the update path, and it re-copies rather than
+/// merges.**
+///
+/// Since 0.35.0 an adapter *ships* the `skills/` and `commands/` a foreign bundle
+/// contributes — io-harness 0.74.0 refuses a `skills` or `templates` pointing out
+/// of the bundle in every scope, because every `*.md` under one reaches the model's
+/// system prompt. So what io holds is a snapshot, and an operator who pulls the
+/// clone has changed nothing this session can see until the install runs again.
+///
+/// Three things have to hold and each fails alone: the second install rebuilds the
+/// adapter rather than adding to it, so a skill the author **withdrew** cannot
+/// survive in io's home; the second install claims nothing to take back, so
+/// declining it cannot delete an adapter a `[[plugin]]` entry already names; and
+/// the operator is told which directories moved, in the disclosure they are already
+/// reading, rather than discovering it a week later.
+///
+/// Sabotage: have `adapt::generate` write over the adapter instead of rebuilding
+/// it. `two.md` still arrives and every other assertion passes; the withdrawn
+/// `one.md` is the one that fails, which is the file that would have gone on being
+/// read into the prompt.
+///
+/// Second sabotage: keep `made: Some(into)` for an adapter that was already there.
+/// `unmake` then deletes a live install when the operator answers "leave it" to an
+/// update — the entry stays in their file and io-harness drops it on the next turn.
+#[test]
+fn a_second_install_re_copies_the_adapter_and_says_what_moved() {
+    let (_dir, root) = clone_dir();
+    let homes = Homes::under(&root);
+    let clone = homes.marketplaces.join("zeroonething").join("ultraship");
+    let bundle = foreign(&clone, "rust-review");
+
+    let markets = marketplace::markets(&homes.marketplaces);
+    let installed = |markets: &[Market]| {
+        marketplace::prepared(
+            markets,
+            "rust-review",
+            &homes.marketplaces,
+            &homes.staging,
+            &homes.adapters,
+        )
+    };
+
+    let first = installed(&markets).expect("the foreign bundle adapts");
+    assert_eq!(
+        first.copied,
+        ["skills", "templates"],
+        "the adapter reports what it shipped in the generator's own words",
+    );
+    assert_eq!(
+        first.made.as_deref(),
+        Some(first.declare.as_path()),
+        "the first install created the adapter directory, so a decline takes it back",
+    );
+    assert!(
+        first.declare.join("skills").join("one.md").is_file()
+            && first.declare.join("templates").join("go.md").is_file(),
+        "the adapter does not ship the directories it contributes",
+    );
+
+    // The author withdraws a skill and publishes another, and the operator pulls.
+    std::fs::remove_file(bundle.join("skills").join("one.md")).expect("the withdrawal");
+    write(
+        &bundle,
+        "skills/two.md",
+        "---\nname: two\n---\nthe second\n",
+    );
+
+    let again = installed(&markets).expect("the bundle adapts again");
+    assert_eq!(
+        again.declare, first.declare,
+        "the update wrote a second adapter beside the first, so the declared entry \
+         still names the old one",
+    );
+    assert!(
+        !first.declare.join("skills").join("one.md").exists(),
+        "a skill the author withdrew survived the update. An adapter is rebuilt and \
+         never merged for exactly this reason: every `*.md` under a contributed \
+         `skills/` is read into the model's system prompt on every turn",
+    );
+    assert!(
+        first.declare.join("skills").join("two.md").is_file(),
+        "the skill the operator pulled did not reach the session",
+    );
+    assert_eq!(
+        again.made, None,
+        "an update claims to have created the adapter, so declining one deletes a \
+         bundle the operator installed some other day — out of a configuration file \
+         this module never opened",
+    );
+
+    // And what the operator is told before they answer.
+    let said = marketplace::adapted_disclosure(
+        Scope::User,
+        &again.declare,
+        Some(&again.from),
+        &again.copied,
+    )
+    .expect("io-harness reads the generated manifest")
+    .said(&io_cli::glyphs::UNICODE)
+    .join("\n");
+    assert!(
+        said.contains("copied `skills` and `templates`"),
+        "the disclosure does not name the directories that moved: {said}",
+    );
+    assert!(
+        said.contains(&again.from.display().to_string())
+            && said.contains(&again.declare.display().to_string()),
+        "both ends are named or the sentence cannot be acted on — the clone an edit \
+         would go into, and the directory io is actually reading: {said}",
+    );
+    assert!(
+        said.contains("installed again"),
+        "the operator is told the copy is a snapshot but not what refreshes it, \
+         which is the whole question they will have: {said}",
+    );
+
+    // The control: a bundle that copied nothing says none of this. A row about a
+    // copy that did not happen is a warning about nothing.
+    let native = root.join("native");
+    manifest(&native, "name = \"native\"\n");
+    let quiet = marketplace::adapted_disclosure(Scope::User, &native, Some(&native), &[])
+        .expect("io-harness loads the fixture")
+        .said(&io_cli::glyphs::UNICODE)
+        .join("\n");
+    assert!(
+        !quiet.contains("copied `"),
+        "a native bundle is declared where it sits and nothing was copied for it: \
+         {quiet}",
     );
 }
 

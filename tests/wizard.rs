@@ -11,7 +11,7 @@
 
 mod support;
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{MutexGuard, OnceLock};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use io_cli::keys::Newline;
@@ -34,9 +34,25 @@ fn key(code: KeyCode) -> KeyEvent {
 /// them setting `IO_CONFIG` at once would make each other's `user_path` answer
 /// wrong — intermittently, on a loaded machine, which is the most expensive kind
 /// of failure to diagnose. Serialised rather than discovered later.
+///
+/// Delegated to [`support::env_lock`] rather than declared here: two different
+/// mutexes in one binary exclude nothing from each other, and the `support`
+/// fixtures below take that one.
 fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    support::env_lock()
+}
+
+/// Read a rendered file the way io-harness will actually read it.
+///
+/// **Never `Config::from_toml`.** That parses at `Scope::Project`, and since
+/// io-harness 0.74.0 a project-scoped file may not declare `[[provider]]` at all
+/// — which every file the wizard renders does. The wizard writes the user scope,
+/// so that is the scope its output has to be read at.
+///
+/// For a caller that already holds [`env_lock`]: `user_scope_locked` does not take
+/// the lock itself, and `std::sync::Mutex` is not reentrant.
+fn loaded_locked(text: &str) -> Config {
+    support::user_scope_locked(text, false).config.clone()
 }
 
 /// One config home for this whole file, set once. `settings::user_path` reads the
@@ -161,7 +177,7 @@ fn f2_n5_the_wizard_writes_what_it_showed_and_never_shows_the_key() {
     settings::write(&path, &contents).expect("the file is written");
 
     // --- F2: the file says what the wizard showed. ---
-    let config = Config::from_toml(&contents).expect("io-harness parses its own file");
+    let config = loaded_locked(&contents);
     let spec = config.provider_spec().expect("a provider was written");
     assert!(
         matches!(
@@ -556,11 +572,11 @@ fn f9_the_posture_step_resolves_the_row_the_query_left_visible() {
     let Progress::Write(_, contents) = progress else {
         panic!("the confirmation screen should produce a write, got {progress:?}");
     };
-    // Read the way io-harness reads it. A narrowing posture parses in any scope,
-    // and row 0 — `Sandboxed workspace`, which is what a filtered index would
-    // have resolved to — widens, so a wrong row fails here twice over: on this
-    // parse, and on the effect below.
-    let config = Config::from_toml(&contents).expect("a narrowing posture parses in any scope");
+    // Read the way io-harness reads it: the user scope, which is where the wizard
+    // writes. Row 0 — `Sandboxed workspace`, which is what a filtered index would
+    // have resolved to — widens, and the effect assertion below is what a wrong
+    // row fails on.
+    let config = loaded_locked(&contents);
     let policy = config.policy().expect("a policy was written");
     assert_eq!(
         policy.defaults.write,
@@ -772,8 +788,10 @@ fn the_rendered_file_is_the_harness_schema_and_nothing_of_our_own() {
     // The wizard writes the USER scope, where widening is the operator's own
     // decision and is allowed — so the default "sandboxed workspace" posture is a
     // correct file that `from_toml` is right to reject. Discovering it through the
-    // scope it is written to is the faithful check; the narrower postures below
-    // parse either way.
+    // scope it is written to is the faithful check. Since 0.74.0 the narrower
+    // postures no longer parse either way — the `[[provider]]` the wizard renders
+    // is itself refused at project scope — which is what the assertion below is
+    // now about.
     let dir = tempfile::tempdir().expect("a temporary directory");
     // The user file lives outside the workspace it is discovered from. Put it at
     // `<root>/io.toml` and it is ALSO the project-scope candidate, which is read
@@ -799,9 +817,20 @@ fn the_rendered_file_is_the_harness_schema_and_nothing_of_our_own() {
         "the user scope may widen, which is the whole reason the wizard writes there",
     );
 
-    // A posture that only narrows is legal in any scope, project included.
+    // A posture that only narrows used to be legal in any scope, project
+    // included. Since io-harness 0.74.0 the whole rendered file is refused at
+    // project scope whatever the posture — but for the `[[provider]]` it carries,
+    // never for the policy. Asserted on WHICH key the refusal names, because "it
+    // is refused" is now true of both postures and would prove nothing.
     let narrow = settings::render(&spec, Posture::ReadOnly, "dark").expect("render");
-    Config::from_toml(&narrow).expect("a narrowing file parses as a project file too");
+    let refusal = Config::from_toml(&narrow)
+        .expect_err("0.74.0 refuses `[[provider]]` from a project-scoped file")
+        .to_string();
+    assert!(
+        refusal.contains("key `provider`"),
+        "a file with no widening in it was refused at project scope for something other than the \
+         provider section, so the posture is what the scope objects to after all: {refusal}",
+    );
 
     // No key written means the provider's own environment variable, which is the
     // better outcome and not a fallback: a key that is never on disk cannot leak

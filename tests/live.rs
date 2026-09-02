@@ -2915,14 +2915,19 @@ async fn live_f2_a_parked_question_is_answered_and_the_run_carries_on() {
     );
 }
 
-/// The `[app.io-cli.gates]` section, built in memory rather than through a file.
+/// The `[app.io-cli.gates]` section, built through the user scope.
 ///
-/// `Config::from_toml` is public and takes the whole document, so the live arms
-/// need no `IO_CONFIG` and therefore no environment lock — which matters here
-/// because these tests run in one process and an environment variable is
-/// process-wide.
+/// **`Config::from_toml` stopped being usable here at io-harness 0.74.0**, and the
+/// live suite is where that was found — every offline binary had already been
+/// migrated, and this file was not among them because `cargo test` never runs it.
+/// `from_toml` hard-codes `Scope::Project`, where a `[[provider]]` is now refused
+/// outright, and a rubric judged by a second model has to name one.
+///
+/// So it goes through the user scope like every other fixture in this repository,
+/// which does mean an environment variable and therefore a lock — taken and
+/// released inside `support::user_scope`, which is why no caller here holds one.
 fn gated(section: &str) -> Config {
-    Config::from_toml(section).expect("the gates section parses")
+    support::user_scope(section).config.clone()
 }
 
 /// **0.24.0 F2 — a command criterion that passes makes the run `Success`.**
@@ -3637,6 +3642,31 @@ async fn live_f5_an_unreachable_primary_falls_through_to_the_provider_underneath
     let store = Store::open(root.join("runs.db")).expect("a store");
     let mut session = Session::open(&store, root).expect("a session");
     let policy = workspace_policy();
+
+    // **This test needed io-harness 0.74.0's lift to keep being about its own
+    // subject, and the live suite is what found that.** The floor refuses a
+    // loopback endpoint before any connection is attempted, whatever the policy
+    // says, so the primary failed with `Error::Refused` — which is **not**
+    // retryable, so the chain stopped instead of falling through. That is correct
+    // behaviour and worth stating: a boundary refusal that quietly tried the next
+    // vendor would be the fall-through working around the thing that said no.
+    //
+    // There is no way to route around it either. The floor also refuses a name it
+    // cannot resolve — "a name that will not resolve is not checkable" — so an
+    // `.invalid` host is a `Refused` too, not a transport failure. To reach a
+    // *transport* failure at all the address has to be one the floor permits, and
+    // the only fast, deterministic one is a loopback port with nothing behind it.
+    //
+    // So the variable is set here, which is exactly the choice the harness means an
+    // operator to make deliberately. Set and never unset: these arms share one
+    // process, and taking it away mid-run would be taking it from whichever
+    // sibling was mid-request. It changes nothing for them — every other arm talks
+    // to a public endpoint, which the floor never touched.
+    //
+    // `src/` still sets it nowhere, which `f11_io_cli_never_sets_the_local_address_variable`
+    // asserts: a test choosing it for itself is the operator's choice, and a
+    // product choosing it for the operator is not.
+    std::env::set_var("IO_HARNESS_ALLOW_LOCAL_ADDRESSES", "1");
 
     // A base URL on the loopback with nothing behind it. The failure is a refused
     // connection, which is `Transport` — retryable, and therefore worth another

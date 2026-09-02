@@ -78,7 +78,7 @@ io-harness's own `read_skill` tool, under this session's policy, like any other
 read. So a skill costs the prompt one line until it is relevant, and it is
 subject to the same boundary as everything else in the session.
 
-**A skill can also read the files beside it.** On io-harness 0.73.0 `read_skill`
+**A skill can also read the files beside it.** On io-harness 0.74.0 `read_skill`
 takes an optional `path`, so a skill whose bundle ships `shared/style.md` or a
 `references/` directory reaches them through the same tool and the same policy —
 where before the only route was a shell command, which is a program run for what

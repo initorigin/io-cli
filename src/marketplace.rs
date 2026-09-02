@@ -1462,9 +1462,29 @@ pub struct Prepared {
     /// The bundle's own directory — the author's files. What the disclosure reads
     /// hooks from, because the generated manifest carries none.
     pub from: PathBuf,
-    /// The directory io created for this install, if it created one. Removed when
-    /// the operator declines, so a refused install leaves nothing behind.
+    /// The directory io created **for this install**, if it created one. Removed
+    /// when the operator declines, so a refused install leaves nothing behind.
+    ///
+    /// **`None` for an adapter that was already there**, and that is the whole of
+    /// what makes a re-install safe. Installing a bundle a second time is the
+    /// update path (see [`prepared`]), so by the time the operator is asked to
+    /// consent there is an adapter directory that a `[[plugin]]` entry already
+    /// names — and answering "leave it" would otherwise delete the bundle they
+    /// installed last week, out of a file this module never opened and cannot see.
+    /// A decline then takes back what this install created, which for an update is
+    /// nothing.
     pub made: Option<PathBuf>,
+    /// The directories the adapter copied out of the clone, in
+    /// [`crate::adapt::Adapter::copied`]'s own words — `skills`, `templates`, or
+    /// both. Empty for a native bundle, which is declared where it sits.
+    ///
+    /// **Carried because an adapter is a snapshot and an operator has to be told
+    /// so.** io-harness 0.74.0 refuses a `skills` or `templates` pointing out of
+    /// the bundle in every scope, so an adapter ships copies rather than pointing
+    /// into the clone; a `git pull` there therefore changes nothing until the
+    /// bundle is installed again. [`adapted_disclosure`] is where that is said, in
+    /// the one place the operator is already reading before they consent.
+    pub copied: Vec<String>,
 }
 
 /// Resolve a word to a bundle and bring it to the point of being installable.
@@ -1479,6 +1499,18 @@ pub struct Prepared {
 /// Native bundles are untouched by every line of it: [`fetched`] returns their own
 /// directory unchanged and the generation is skipped, so `plugin add` on a
 /// `plugin.toml` marketplace does exactly what it did in 0.30.2.
+///
+/// **Installing a bundle again is how an adapter is updated, and it is the only
+/// way.** [`crate::adapt::generate`] rebuilds the adapter directory on every run —
+/// it does not merge, so a file the author withdrew upstream cannot survive in
+/// io's home and go on being read into the model's prompt — and since 0.35.0 that
+/// directory holds *copies* of the bundle's `skills/` and `commands/` rather than
+/// a manifest pointing at the clone. io-harness 0.74.0 is why: it refuses a
+/// `skills` or `templates` that leaves the bundle, in every scope, because every
+/// `*.md` under one reaches the model's system prompt. So a clone the operator
+/// pulled is a clone this session has not read, and running the install again is
+/// what moves it across. [`Prepared::copied`] is what moved, and
+/// [`adapted_disclosure`] says so before the operator answers.
 ///
 /// **The adapter is written before consent and removed if consent is refused**,
 /// and that is the honest order rather than a convenience. The disclosure is
@@ -1509,6 +1541,7 @@ pub fn prepared(
             declare: from.clone(),
             from,
             made: None,
+            copied: Vec::new(),
         });
     }
     // The **normalised id**, not the label. It is what the generated manifest
@@ -1523,11 +1556,19 @@ pub fn prepared(
         )
     })?;
     let into = crate::adapt::at(adapters, &market.named.owner, &market.named.repo, &name);
-    crate::adapt::generate(&from, &name, &into)?;
+    // **Asked before the generator answers, because the generator removes it.**
+    // `adapt::generate` rebuilds the adapter directory from scratch on every run —
+    // that is what makes an update an update — so after the call there is no way
+    // left to tell an install from a re-install. See [`Prepared::made`]: the
+    // difference decides whether a decline deletes a bundle the operator installed
+    // some other day.
+    let already = into.is_dir();
+    let written = crate::adapt::generate(&from, &name, &into)?;
     Ok(Prepared {
         declare: into.clone(),
         from,
-        made: Some(into),
+        made: (!already).then_some(into),
+        copied: written.copied,
     })
 }
 
@@ -1598,6 +1639,18 @@ impl Chosen {
         }
     }
 
+    /// The directories this install copied out of the clone. See
+    /// [`Prepared::copied`].
+    ///
+    /// Empty for a directory the operator typed, which nothing copied anywhere.
+    #[must_use]
+    pub fn copied(&self) -> &[String] {
+        match self {
+            Self::Path(_) => &[],
+            Self::Held(prepared) => &prepared.copied,
+        }
+    }
+
     /// Whether declaring it owes the operator a disclosure before it loads.
     ///
     /// One method rather than a `matches!` at the call site, so the rule has one
@@ -1618,9 +1671,14 @@ impl Chosen {
 pub struct Disclosure {
     /// The bundle's id, for the confirmation's title.
     pub id: String,
-    /// One row per fact, in io-harness's own contribution order — exactly what
-    /// `/plugin`'s own pane draws, so the two surfaces cannot say different things
-    /// about one bundle.
+    /// One row per fact, in io-harness's own contribution order — what `/plugin`'s
+    /// own pane draws, so the two surfaces cannot say different things about one
+    /// bundle.
+    ///
+    /// **One row is not the pane's**, and it is here rather than in a field of its
+    /// own so that no door has to learn about it: the last row of an adapted
+    /// bundle's disclosure names the directories io copied out of the clone. See
+    /// [`adapted_disclosure`] for why an operator is owed it.
     ///
     /// Rows rather than finished lines because the glyph set belongs to the door:
     /// the TUI writes into a terminal whose set the operator chose, and the argv
@@ -1716,7 +1774,7 @@ impl Disclosure {
 /// one that *does* show, the separator between a row's two fields, is applied by
 /// the door in [`Disclosure::said`].
 pub fn disclosure(scope: Scope, dir: &Path) -> Result<Disclosure, String> {
-    adapted_disclosure(scope, dir, None)
+    adapted_disclosure(scope, dir, None, &[])
 }
 
 /// The sentence every withheld hook carries, spelled once.
@@ -1743,18 +1801,44 @@ pub const NOT_CARRIED: &str = "io does not run this — a hook here is a shell l
 ///
 /// `None` for a native bundle, where the two are the same directory and nothing is
 /// withheld.
+///
+/// `copied` is [`Prepared::copied`] — the directories this install moved out of the
+/// clone, in the generator's own words rather than in a second reading of the
+/// adapter directory. It becomes one more row, and it is the answer to the question
+/// an operator asks a week later: they edited a skill inside the clone, or pulled
+/// the repository, and the session went on using what io copied. Empty for every
+/// bundle that copied nothing, where the row would be a warning about nothing.
 pub fn adapted_disclosure(
     scope: Scope,
     dir: &Path,
     from: Option<&Path>,
+    copied: &[String],
 ) -> Result<Disclosure, String> {
     let plugin = io_harness::Plugins::inspect(scope, dir).map_err(|error| error.to_string())?;
     // `true`, because nothing has been written: this is what the directory *is*,
     // not what some `[[plugin]]` entry said about it. See `pluginview::copy_out`.
     let listed = crate::pluginview::copy_out(&plugin, true);
+    let mut rows = crate::pluginview::detail(&listed, u16::MAX, &crate::glyphs::ASCII);
+    // A row rather than a field of its own, because a field is a line only a door
+    // that knows about it prints — and both doors already print every row of this,
+    // in the order they come. The paths are whole: this surface elides nothing (see
+    // above), and the adapter's path is the directory an operator goes looking for
+    // when they want to know what io is reading.
+    if let Some(source) = from.filter(|_| !copied.is_empty()) {
+        rows.push(Row::with_detail(
+            format!("copied `{}`", copied.join("` and `")),
+            format!(
+                "out of {} into {} — an adapter ships the directories it contributes rather than \
+                 pointing at somebody else's checkout, so an edit or a `git pull` in the clone \
+                 reaches this session when the bundle is installed again, and not before",
+                source.display(),
+                dir.display(),
+            ),
+        ));
+    }
     Ok(Disclosure {
         id: listed.id.clone(),
-        rows: crate::pluginview::detail(&listed, u16::MAX, &crate::glyphs::ASCII),
+        rows,
         withheld: from.map(withheld_hooks).unwrap_or_default(),
     })
 }

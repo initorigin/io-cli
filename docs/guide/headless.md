@@ -37,9 +37,10 @@ provider host reaches this: the harness contributes an allow for that endpoint
 from a layer of its own, so an ordinary `net`-denying posture still gets to the
 model, and `io setup` writes no such rule. Worth knowing because nothing warns
 first — the notice above reads `write` and `exec` and never `net`. **A run refused
-this way exits `1` and not the `2` the table below gives for a boundary**: the
-typed refusal is flattened to a message before an exit code is chosen. That is a
-known defect rather than the contract.
+this way exits `2`**, which is what the table below gives for a boundary. Through
+0.34.1 it exited `1`: the typed refusal was flattened to a message before an exit
+code was chosen, and that release documented the gap rather than closing it,
+because closing it changes a published status.
 
 ### Exit status
 
@@ -217,7 +218,12 @@ you](resume.md#when-a-run-stops-for-you) for why it cannot be carried on.
 
 The exit status is the table above: a resumed run that pauses again exits `4`
 naming the new pause, and `io resume --list` exits `0` whether or not it found
-anything.
+anything. **A boundary refusal exits `2` from this door too.** A resume
+re-authorizes the provider's own endpoint before it carries anything on, so the
+`ask`-tier refusal described above reaches this door exactly as it reaches
+`io exec`. The refusals in this section are `1`, and the difference is who spoke:
+an interrupted turn, a flag for the wrong pause and a bare run with no `--goal`
+are io-cli declining to drive anything, with no boundary asked.
 
 ### Managing the configuration without a session
 

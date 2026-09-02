@@ -247,8 +247,20 @@ GitHub is refused, because the only string io hands `git` is one io built.
 the generated manifest's directory on the row — that file is what you open when
 io-harness drops the bundle, and nothing else names it. io writes it under
 `~/.io-cli/adapters/<owner>/<repo>/<name>/plugin.toml`, never inside the clone.
-The paths in it are absolute and point into the clone, so io-harness loads it as
-an ordinary bundle. The author's checkout is not written to.
+The directories it contributes are **copied into it** and named relatively, so
+io-harness loads it as an ordinary bundle. The author's checkout is not written
+to.
+
+Until 0.35.0 those paths were absolute and pointed back into the clone. io-harness
+0.74.0 refuses that in every scope, and the reason is one this product would give
+itself: every `*.md` under a contributed directory is read into the model's system
+prompt on every turn, so a manifest must ship what it contributes rather than
+point at somebody else's checkout. The adapter now holds a copy.
+
+**So installing again is how you update.** A `git pull` of the marketplace clone
+changes the clone, not the copy. `io plugin add <name>` regenerates the adapter and
+tells you which directories moved; it writes no second entry when one already names
+the bundle, and a refused refresh leaves the installed adapter exactly as it was.
 
 **A plugin name that is not a usable id is refused rather than mangled.** An id is
 what you type at `plugin add` and what prefixes every name the bundle

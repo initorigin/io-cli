@@ -13,20 +13,22 @@
 //! a process environment. `install` is the one line that is not, and it is one
 //! line for that reason.
 
+mod support;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use io_cli::bundle_path;
-use io_harness::config::{Config, LOCAL_FILE};
 use io_harness::PLUGIN_FILE;
 
 /// The entries this fixture's own bundles contributed.
 ///
-/// **`Config::discover` layers the machine's real user-scope file**, which on a
-/// developer's machine declares bundles of its own — so an assertion of equality
-/// against the whole list is green on a clean runner and red here, or the other
-/// way round. Filtered to the temporary root, which is the only thing this test
-/// put anything in.
+/// **Filtered to the temporary root, which is the only thing this test put
+/// anything in.** `support::user_scope` points `IO_CONFIG` at a file of its own,
+/// so the operator's real one is out of the way for the duration — but the filter
+/// stays, because `Config::discover` still reads two more candidates and an
+/// assertion of equality against the whole list is the shape that goes green on a
+/// clean runner and red on a developer's machine.
 fn ours(plugins: &io_harness::Plugins, root: &Path) -> Vec<PathBuf> {
     bundle_path::entries(plugins)
         .into_iter()
@@ -93,24 +95,33 @@ fn bundle(root: &Path, at: &str, manifest: &str) -> PathBuf {
 
 /// The plugins a configuration declaring each of `bundles` loads.
 ///
-/// **Declared in the local-scope file, and that is not a detail.** io-harness
-/// refuses a `[[bin]]` from a project-scoped `io.toml` — the file arrives with a
-/// `git clone`, and an executable named in one is a program the machine would run
-/// on somebody else's say-so — and the refusal drops the whole bundle. A fixture
-/// written in project scope asserts over an empty vector while passing, which is
-/// what the drop check below exists to catch.
+/// **`root` is a directory outside every workspace, and the declaration is made
+/// from the user scope. Neither half is a detail.** Since io-harness 0.74.0 a
+/// `plugin.toml` sitting *inside* the discovery root may not contribute a
+/// `[[bin]]` at all — it names a program this machine would run, and a file in the
+/// workspace root arrives with a `git clone` or is written by the run's own agent —
+/// and the refusal drops the whole bundle. Trust follows where the manifest is
+/// rather than which file named it, so both halves are required: a user-scope
+/// `[[plugin]]` pointing back *into* the workspace is graded as the workspace file
+/// it is, and a workspace file pointing *out* has its entry dropped before the
+/// manifest is read. What is left is the arrangement an installed bundle actually
+/// has, which is the one this surface exists for.
+///
+/// A fixture that got either half wrong asserts over an empty vector while
+/// passing, which is what the drop check below exists to catch.
+///
+/// The path is spelled as a TOML *literal* string: it is absolute, and an absolute
+/// Windows path is a run of backslashes a basic string would read as escapes.
+/// `tempfile` never puts a `'` in a directory name.
 fn loaded(root: &Path, bundles: &[(&str, &str)]) -> io_harness::Plugins {
     let text: String = bundles
         .iter()
         .map(|(at, manifest)| {
-            bundle(root, at, manifest);
-            format!("[[plugin]]\npath = \"{at}\"\n\n")
+            let dir = bundle(root, at, manifest);
+            format!("[[plugin]]\npath = '{}'\n\n", dir.display())
         })
         .collect();
-    std::fs::write(root.join(LOCAL_FILE), text).expect("the configuration");
-    let plugins = Config::discover(root)
-        .expect("the configuration loads")
-        .plugins();
+    let plugins = support::user_scope(&text).config.plugins();
     // **A dropped bundle contributes nothing and looks exactly like a bundle that
     // declared nothing**, so a fixture that silently drops asserts nothing while
     // passing. io-harness drops a bundle *whole* for a manifest it refuses — an
@@ -161,15 +172,16 @@ fn f9_a_declared_program_puts_its_own_directory_on_the_path() {
 fn a_switched_off_bundle_puts_no_program_on_the_path() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let root = dir.path();
-    bundle(root, "ultraship", SHIPS_A_PROGRAM);
-    std::fs::write(
-        root.join(LOCAL_FILE),
-        "[[plugin]]\npath = \"ultraship\"\nenabled = false\n",
-    )
-    .expect("the configuration");
-    let plugins = Config::discover(root)
-        .expect("the configuration loads")
-        .plugins();
+    let installed = bundle(root, "ultraship", SHIPS_A_PROGRAM);
+    // Outside the workspace and declared from the user scope, for `loaded`'s
+    // reason: a `[[bin]]` in a manifest inside the discovery root is refused, and a
+    // bundle dropped for that is indistinguishable here from one switched off.
+    let plugins = support::user_scope(&format!(
+        "[[plugin]]\npath = '{}'\nenabled = false\n",
+        installed.display()
+    ))
+    .config
+    .plugins();
     assert!(
         !plugins.disabled().is_empty(),
         "the fixture must actually declare a switched-off bundle, or this test \

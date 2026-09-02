@@ -8,9 +8,30 @@ use io_cli::servers::{self, At, Observed, Reached, Server};
 use io_harness::config::{Config, Scope};
 use io_harness::{EventKind, McpServer, McpTransport};
 
+mod support;
+
+/// Read `text` as io-harness would read the operator's own file.
+///
+/// **Never `Config::from_toml`.** That parses at `Scope::Project`, and io-harness
+/// 0.74.0 refuses `[[mcp]]` from a workspace-resident file — an MCP server is a
+/// command, an argv and an environment this process spawns at run start, and
+/// `io.toml` arrives with a `git clone`. Every fixture and every written file in
+/// this file declares one, and `At::of` already addresses them at `Scope::User`,
+/// so reading them at project scope was the test disagreeing with itself.
+fn loaded(text: &str) -> Config {
+    support::user_scope(text).config.clone()
+}
+
+/// The same read, handing back the refusal instead of panicking on it.
+fn try_loaded(text: &str) -> io_harness::Result<Config> {
+    let _guard = support::env_lock();
+    let scope = support::try_user_scope_locked(text, false)?;
+    Ok(scope.config.clone())
+}
+
 /// A configuration naming two servers, neither of them reached yet.
 fn configured() -> Config {
-    Config::from_toml(
+    loaded(
         "\
 [[mcp]]
 id = \"docs\"
@@ -23,7 +44,6 @@ transport = \"stdio\"
 command = \"mcp-search\"
 ",
     )
-    .expect("the fixture parses")
 }
 
 /// The server reaching the run: an `Mcp` event with no `tool`. Since io-harness
@@ -360,7 +380,7 @@ files = [\"AGENTS.md\"]
         assert!(after.contains(line), "line lost: {line:?}");
     }
     // And the result is still the harness's schema.
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     assert_eq!(config.mcp_servers().len(), 2);
 }
 
@@ -391,7 +411,7 @@ command = \"mcp-search\"
         after.contains("command = \"mcp-docs\""),
         "the first entry was edited instead of the second"
     );
-    let config = Config::from_toml(&after).unwrap();
+    let config = loaded(&after);
     assert_eq!(config.mcp_servers().len(), 2);
 }
 
@@ -414,7 +434,7 @@ max_steps = 30
     let at = At::of(Scope::User, TWO, "docs").expect("the fixture names `docs`");
     let after = io_cli::edit::apply(TWO, &[servers::remove(&at)]).unwrap();
 
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     let left: Vec<&str> = config.mcp_servers().iter().map(|s| s.id.as_str()).collect();
     assert_eq!(left, vec!["search"]);
     assert!(
@@ -456,13 +476,13 @@ args = [\"--verbose\"]
 fn f6_a_server_id_with_a_quote_in_it_is_escaped_rather_than_breaking_the_file() {
     let after =
         io_cli::edit::apply("", &[servers::add(&McpServer::stdio("we\"ird", "cmd"))]).unwrap();
-    let config = Config::from_toml(&after).expect("the written file still parses");
+    let config = loaded(&after);
     assert_eq!(config.mcp_servers()[0].id, "we\"ird");
 }
 
 #[test]
 fn f6_the_transport_is_shown_as_the_thing_that_reaches_it() {
-    let config = Config::from_toml(
+    let config = loaded(
         "\
 [[mcp]]
 id = \"local\"
@@ -474,8 +494,7 @@ id = \"remote\"
 transport = \"http\"
 url = \"https://example.com/mcp\"
 ",
-    )
-    .unwrap();
+    );
     let list = servers::servers(&config, &Observed::default());
 
     let by = |id: &str| list.iter().find(|s| s.id == id).unwrap().transport.clone();
@@ -594,7 +613,7 @@ fn f6_add_edit_and_remove_change_one_entry_and_no_other_byte() {
     // And all three results are still the harness's schema, roster and
     // instructions intact.
     for text in [&added, &edited, &removed] {
-        Config::from_toml(text).expect("the written file loads");
+        loaded(text);
         assert!(text.contains("name = \"scout\""), "the roster was dropped");
         assert!(
             text.contains("files = [\"AGENTS.md\"]"),
@@ -642,7 +661,7 @@ fn f6_a_server_with_args_and_env_round_trips_as_the_harness_s_own_type() {
     assert_eq!(edits.len(), 1, "a whole server is one write");
     let after = io_cli::edit::apply("", &edits).unwrap();
 
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     assert_eq!(
         config.mcp_servers(),
         [server].as_slice(),
@@ -668,7 +687,7 @@ fn f6_an_http_server_round_trips_with_its_headers() {
     };
 
     let after = io_cli::edit::apply("", &[servers::add(&server)]).unwrap();
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     assert_eq!(config.mcp_servers(), [server].as_slice());
     // The transport tag, not a `command` borrowed from the other arm.
     assert!(
@@ -693,7 +712,7 @@ fn f6_an_entry_states_nothing_that_is_already_the_default() {
         );
     }
     // And the round trip is still exact, which is what makes the absence safe.
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     assert_eq!(config.mcp_servers(), [plain].as_slice());
 }
 
@@ -739,7 +758,7 @@ fn f6_a_key_no_mcp_entry_carries_is_refused_rather_than_written() {
     )
     .unwrap();
     assert!(
-        Config::from_toml(&smuggled).is_ok(),
+        try_loaded(&smuggled).is_ok(),
         "io-harness rejected a misspelled `[[mcp]]` key, so the exemption this \
          refusal exists for is gone and the const can go with it",
     );
@@ -794,10 +813,7 @@ command = "mcp-docs"
     let at = At::of(Scope::User, ONLY, "docs").expect("the fixture names `docs`");
     let after = io_cli::edit::apply(ONLY, &[servers::remove(&at)]).unwrap();
     assert_eq!(after, "", "the last server left bytes behind");
-    assert!(Config::from_toml(&after)
-        .expect("a file with nothing in it is a configuration")
-        .mcp_servers()
-        .is_empty(),);
+    assert!(loaded(&after).mcp_servers().is_empty());
 
     const THREE_AND_A_SECTION: &str = r#"[[mcp]]
 id = "a"
@@ -821,7 +837,7 @@ max_steps = 30
     assert_eq!(at.index(), 2);
     let after = io_cli::edit::apply(THREE_AND_A_SECTION, &[servers::remove(&at)]).unwrap();
 
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     let left: Vec<&str> = config.mcp_servers().iter().map(|s| s.id.as_str()).collect();
     assert_eq!(left, vec!["a", "b"]);
     assert!(

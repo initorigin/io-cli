@@ -57,16 +57,26 @@
 //! found in a marketplace has to acquire one before it can contribute anything.
 //! [`generate`] writes it.
 //!
-//! **The clone is never written to.** [`crate::marketplace`]'s docs state that the
-//! stranger's checkout is not touched, and an adapter would be the first thing to
-//! touch it — a file io wrote inside somebody's git working tree is a dirty tree
-//! at their next `git pull`. The manifest goes to [`crate::home::adapters`]
-//! instead, and every path inside it is **absolute** and points back into the
-//! clone. That is not a convenience:
-//! [`Plugin::skills_dir`](io_harness::Plugin::skills_dir) is `self.root.join(d)`
-//! (`io-harness-0.73.0/src/plugin.rs:311`), and `Path::join` of an absolute
-//! argument discards the base — so an absolute `skills` is the one spelling that
-//! reaches a directory outside the manifest's own root.
+//! **The clone is never written to, and the adapter ships what it contributes.**
+//! [`crate::marketplace`]'s docs state that the stranger's checkout is not
+//! touched, and an adapter would be the first thing to touch it — a file io wrote
+//! inside somebody's git working tree is a dirty tree at their next `git pull`. So
+//! the manifest goes to [`crate::home::adapters`] instead, and the two directories
+//! it names are **copied out of the clone into the adapter's own root** and
+//! written as paths relative to it.
+//!
+//! Until 0.35.0 those paths were absolute and pointed back into the clone, which
+//! worked because [`Plugin::skills_dir`](io_harness::Plugin::skills_dir) is
+//! `self.root.join(d)` and `Path::join` of an absolute argument discards the base.
+//! io-harness 0.74.0 refuses that spelling for `skills` and for `templates` in
+//! **every** scope, `Scope::User` included
+//! (`io-harness-0.74.0/src/plugin.rs:1097`), and the reason is the one this
+//! product would give: every `*.md` under such a directory is read into the
+//! model's system prompt on every turn, so a manifest contributes a directory it
+//! *ships* rather than one it points at somewhere else on the machine. Copying is
+//! how an adapter comes to ship one. It is redone on every install and every
+//! update, so a file the bundle's author deleted does not live on in the adapter,
+//! and [`Adapter::copied`] says which directories moved.
 //!
 //! **This module writes TOML and still parses none.** `src/edit.rs` is the crate's
 //! only permitted TOML parser by path (`tests/dependencies.rs`), and that rule is
@@ -367,10 +377,49 @@ pub const SKILLS_DIR: &str = "skills";
 /// io-harness calls the same thing a **template**, and the two formats are the
 /// same file: markdown, optional frontmatter, `$ARGUMENTS` for what the operator
 /// typed. `Templates::discover` takes every `*.md` in a directory
-/// (`io-harness-0.73.0/src/template.rs:279`), so what is translated is the
-/// directory and never the files in it — nothing is copied and nothing is
-/// rewritten.
+/// (`io-harness-0.74.0/src/template.rs:279`), so what is translated is the
+/// directory and never the files in it — the bytes are copied verbatim into
+/// [`TEMPLATES_DIR`] and nothing in them is rewritten.
 pub const COMMANDS_DIR: &str = "commands";
+
+/// What [`COMMANDS_DIR`] is called inside the adapter, and the value the
+/// generated manifest's `templates` key carries.
+///
+/// The key's own word rather than the bundle's, because the adapter is an
+/// io-harness bundle: a reader opening `<adapter>/templates` and a reader reading
+/// `templates = "templates"` are looking at one thing, and the foreign format's
+/// vocabulary stops at the clone.
+pub const TEMPLATES_DIR: &str = "templates";
+
+/// The most one contributed directory may weigh, in bytes, before io refuses to
+/// copy it into an adapter. 16 MiB.
+///
+/// A bundle is a stranger's directory, and copying one is unbounded work over
+/// unbounded input unless a number says otherwise. So the ceiling is stated rather
+/// than implied, and it is stated here once for both directories.
+///
+/// **Measured rather than guessed.** The 48 `skills/`, `commands/` and `agents/`
+/// directories published by the marketplaces cloned on the machine this was
+/// written on — `zeroonething/ultraship`, `zeroonething/caveman`,
+/// `zeroonething/ponytail` and `anthropics/claude-plugins-official` — carry
+/// markdown and nothing else. The largest of the 48 is
+/// `claude-plugins-official`'s `plugin-dev/skills` at 488,003 bytes over 77
+/// entries, and most are under 40 KiB. 16 MiB is thirty-four times the largest one
+/// on that disk, which leaves room for a bundle an order of magnitude bigger than
+/// anything published today and still refuses a directory carrying a disk image, a
+/// model file or a vendored `node_modules`.
+pub const MOST_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The most entries one contributed directory may hold — files and directories
+/// together, at every depth — before io refuses to copy it. 2,000.
+///
+/// [`MOST_BYTES`]'s companion, because the two runaways are not the same runaway:
+/// a hundred thousand empty files weigh nothing at all and still cost an install
+/// its afternoon, one `create_dir` and one `copy` at a time. 2,000 against a
+/// measured largest of 77, on the survey [`MOST_BYTES`] describes — twenty-six
+/// times the biggest directory any of those marketplaces publishes, and a number
+/// small enough that the gate asserting it can build a directory past it.
+pub const MOST_ENTRIES: usize = 2_000;
 
 /// The conventional directory a bundle keeps its agent definitions in.
 pub const AGENTS_DIR: &str = "agents";
@@ -405,6 +454,15 @@ pub struct Adapter {
     /// Reported rather than dropped, for the module docs' reason: a key that
     /// silently does nothing is a capability the bundle's author believes in.
     pub disclosed: Vec<String>,
+    /// The directories copied out of the clone into the adapter's own root, named
+    /// as the manifest names them — [`SKILLS_DIR`], [`TEMPLATES_DIR`], or both.
+    ///
+    /// **Data, and never a line this module prints.** An adapter is not only a
+    /// file any more: it holds a copy of somebody else's markdown, taken at
+    /// install time and replaced at the next one, and an operator wondering why
+    /// their edit inside the clone changed nothing is owed the sentence that says
+    /// so. Which surface says it, and in what words, is that surface's business.
+    pub copied: Vec<String>,
 }
 
 /// The adapter directory for one bundle, under an adapters root.
@@ -435,11 +493,21 @@ pub fn at(root: &Path, owner: &str, repo: &str, name: &str) -> PathBuf {
 ///
 /// `skills/` becomes `skills`, `commands/` becomes `templates`, each
 /// `agents/*.md` becomes an `[[agent]]`, and each server in `.mcp.json` becomes an
-/// `[[mcp]]`. Every path written is **absolute** and points into the clone:
-/// `Plugin::skills_dir` is `self.root.join(d)`
-/// (`io-harness-0.73.0/src/plugin.rs:311`) and `Path::join` of an absolute
-/// argument discards the base, so an absolute path is what lets a manifest in
-/// io's home name a directory in somebody else's checkout.
+/// `[[mcp]]`.
+///
+/// **The two directories are copied into `into` and named relative to it.**
+/// io-harness 0.74.0 refuses an absolute or a `..`-carrying `skills` or
+/// `templates` in every scope (`io-harness-0.74.0/src/plugin.rs:1097`), because
+/// every `*.md` under one is read into the model's system prompt — so a bundle
+/// contributes a directory it ships. An adapter comes to ship one by copying it,
+/// and [`Adapter::copied`] reports which moved. The copy refuses a symbolic link
+/// rather than following it, refuses anything that is not a plain file or
+/// directory, and is bounded by [`MOST_BYTES`] and [`MOST_ENTRIES`].
+///
+/// An `[[mcp]]` path is the exception and stays absolute, because it is not one of
+/// the two keys io-harness resolves against the plugin root: a `${CLAUDE_PLUGIN_ROOT}`
+/// in a server's argv names a program inside the clone, which is where that
+/// program is and where its own files are beside it.
 ///
 /// # Validated through io-harness, on the bytes that were written
 ///
@@ -460,7 +528,11 @@ pub fn at(root: &Path, owner: &str, repo: &str, name: &str) -> PathBuf {
 ///
 /// A string naming what stopped it, for every case: an unusable id, a bundle that
 /// cannot be read, a `${...}` that cannot honestly be expanded, an MCP transport
-/// io-harness does not speak, and a manifest io-harness itself refuses.
+/// io-harness does not speak, a manifest io-harness itself refuses, and a
+/// contributed directory io will not copy — a symbolic link, an entry that is
+/// neither a plain file nor a directory, or one past [`MOST_BYTES`] or
+/// [`MOST_ENTRIES`]. **`into` is removed on every one of them**, so a half-copied
+/// adapter is never left where an operator could go on to declare it.
 pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, String> {
     let id = normalised(name).ok_or_else(|| {
         format!(
@@ -473,11 +545,13 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
         )
     })?;
 
-    // Canonical, because the manifest is written elsewhere and every path in it
-    // has to still mean this directory when io-harness joins it. A relative
-    // `bundle`, or one reached through a symlinked temporary directory, would
-    // otherwise be resolved against whatever the process's working directory
-    // happened to be at load time rather than at generation time.
+    // Canonical, because `${CLAUDE_PLUGIN_ROOT}` is written into the manifest as an
+    // absolute path and has to still mean this directory when io-harness starts a
+    // server out of it. A relative `bundle`, or one reached through a symlinked
+    // temporary directory, would otherwise be resolved against whatever the
+    // process's working directory happened to be at load time rather than at
+    // generation time. It is also what makes every copy source below a plain path
+    // under a real root rather than under a link.
     let root = std::fs::canonicalize(bundle).map_err(|e| {
         format!(
             "{}: {e}. A bundle is a directory in a clone that is already on disk.",
@@ -515,16 +589,31 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
         }
     }
 
-    let skills = directory(
-        &root,
-        declared.as_ref().and_then(|r| r.skills.as_deref()),
-        SKILLS_DIR,
-    );
-    if let Some(dir) = &skills {
-        lines.push(format!("skills = {}", spelled(&shown(dir))));
-    }
-    if let Some(dir) = directory(&root, None, COMMANDS_DIR) {
-        lines.push(format!("templates = {}", spelled(&shown(&dir))));
+    // **The two directories the adapter ships, and the filter is in front of both
+    // of them.** `directory` resolves a value out of the stranger's manifest
+    // through `inside`, which refuses anything but plain components — that is the
+    // 0.31.0 finding, where a `"skills": "../../.."` had this function hand back
+    // the operator's own home for `Skills::discover` to read into the prompt. What
+    // changed in 0.35.0 is only the destination: the answer used to be written into
+    // the manifest as an absolute path, and is now the source of a copy.
+    let sources = [
+        (
+            SKILLS_DIR,
+            directory(
+                &root,
+                declared.as_ref().and_then(|read| read.skills.as_deref()),
+                SKILLS_DIR,
+            ),
+        ),
+        (TEMPLATES_DIR, directory(&root, None, COMMANDS_DIR)),
+    ];
+    for (key, from) in &sources {
+        if from.is_some() {
+            // The key's own name, which is the directory the copy below creates
+            // under `into` — relative, one plain component, and the only spelling
+            // io-harness 0.74.0 accepts in any scope.
+            lines.push(format!("{key} = {}", spelled(key)));
+        }
     }
 
     let (agents, said) = agents_in(&root.join(AGENTS_DIR), &root)?;
@@ -543,7 +632,7 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
     // `expanded`, which refuses a substitution by the field it was written in —
     // this catches the case that check has not been wired to yet. io-harness
     // refuses a `${` anywhere in a manifest, in every scope
-    // (`io-harness-0.73.0/src/plugin.rs:841`), and the refusal takes the whole
+    // (`io-harness-0.74.0/src/plugin.rs:977`), and the refusal takes the whole
     // bundle rather than the one key: a single missed value would cost the
     // operator every capability the bundle carries, reported against a file they
     // did not write. Nothing is written when this fires.
@@ -555,12 +644,41 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
         ));
     }
 
-    crate::home::create(into).map_err(|e| format!("{}: {e}", into.display()))?;
-    let manifest = into.join(PLUGIN_FILE);
-    std::fs::write(&manifest, text.as_bytes())
-        .map_err(|e| format!("{}: {e}", manifest.display()))?;
+    // **Wiped and rebuilt rather than written over.** An adapter is regenerated on
+    // every install and every update, and since 0.35.0 it holds copies of the
+    // bundle's markdown and not only a manifest — so a file the bundle's author
+    // deleted, or a whole directory the new manifest no longer names, would
+    // otherwise survive in io's home and go on being read into the model's prompt
+    // on every turn. `into` is a directory this module owns by the layout [`at`]
+    // states and nothing an operator wrote is in it.
+    // **Built in a sibling and swapped in, never written over the live one.**
+    // Until 0.35.0 this wiped `into` first and removed it again on every refusal,
+    // which was correct while an install was the only thing that ran it: there was
+    // nothing there to lose. Since the adapter became a copy, **installing again
+    // is the update path** — so a refusal on an update was deleting a working
+    // adapter that an existing `[[plugin]]` entry still named, and the operator's
+    // next session lost a bundle by trying to refresh it. Every failure below now
+    // leaves `into` exactly as it was.
+    //
+    // The same shape `fetch::clone_at` uses, and for the same reason: a
+    // remove-on-failure covers no failure the process does not survive, and a
+    // `kill -9` mid-copy is exactly how half an adapter lands under a path the
+    // listing walks. The pid is in the name so two `io` processes adapting the
+    // same bundle cannot stage into each other.
+    let parent = into.parent().unwrap_or(into);
+    let staging = parent.join(format!(
+        ".{}.staging.{}",
+        into.file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("adapter"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    crate::home::create(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    let staged = staging.join(PLUGIN_FILE);
+    std::fs::write(&staged, text.as_bytes()).map_err(|e| format!("{}: {e}", staged.display()))?;
 
-    let plugin = match Plugins::inspect(Scope::User, into) {
+    let plugin = match Plugins::inspect(Scope::User, &staging) {
         Ok(plugin) => plugin,
         Err(refused) => {
             // Removed rather than left for an operator to find: a manifest
@@ -568,10 +686,40 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
             // `Plugins::dropped` against a path they never chose, and a directory
             // holding a broken adapter reads exactly like one holding a working
             // adapter until something declares it.
-            let _ = std::fs::remove_file(&manifest);
+            let _ = std::fs::remove_dir_all(&staging);
             return Err(refused.to_string());
         }
     };
+
+    // **Copied last, after the filter and after io-harness has accepted the
+    // manifest**, which is the cheap ordering as well as the safe one: a bundle
+    // naming a directory outside itself was already refused by `inside` above and
+    // nothing of the operator's disk has been read at this point, and a manifest
+    // io-harness would refuse costs one `write` rather than a tree walk.
+    let mut copied = Vec::new();
+    for (key, from) in &sources {
+        let Some(from) = from else { continue };
+        if let Err(refused) = copied_into(from, &staging.join(key), key, bundle) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(refused);
+        }
+        copied.push((*key).to_string());
+    }
+
+    // **The swap, and it is the first thing here that touches `into`.** Everything
+    // above either succeeded or returned having left the live adapter alone.
+    //
+    // The window this leaves is one rename wide — a process that dies between the
+    // remove and the rename loses the adapter — where before it was the whole of
+    // this function including every refusal. It is not closed entirely because
+    // closing it means a third path to restore on failure, and `plugin add` is the
+    // one command that puts it all back.
+    let _ = std::fs::remove_dir_all(into);
+    std::fs::rename(&staging, into).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging);
+        format!("{}: {error}", into.display())
+    })?;
+    let manifest = into.join(PLUGIN_FILE);
 
     Ok(Adapter {
         manifest,
@@ -581,34 +729,148 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
             .map(str::to_string)
             .collect(),
         disclosed,
+        copied,
     })
+}
+
+/// Copy the directory `from` to `to`, so the adapter ships what it contributes.
+///
+/// `key` is the manifest key the directory is named under and `bundle` the
+/// directory being adapted; both appear in every refusal, because a person acting
+/// on one has to know which bundle and which of its directories it is about.
+///
+/// **A symbolic link is refused and never followed.** io-harness 0.74.0 made this
+/// exact decision for `sandbox::copy_back`, where a symlinked source would have
+/// copied the contents of whatever it pointed at under the name of a file the
+/// sandbox produced. It is the same act here and it defeats the same rule: the
+/// whole point of copying is that the adapter ships what it contributes, and a link
+/// out of the clone — or a link the copy *reproduced* — is a directory it points at
+/// somewhere else on the machine wearing the copy's clothes. The check is
+/// `symlink_metadata`, not `exists` or `is_dir`, both of which follow the link and
+/// answer about its target.
+///
+/// Anything that is neither a plain file nor a directory is refused for the
+/// narrower version of that reason: a fifo or a device node in a `skills/` is not
+/// markdown, and `std::fs::copy` on one either blocks forever or reads a device.
+///
+/// **Bounded by [`MOST_BYTES`] and [`MOST_ENTRIES`]**, per directory, both stated
+/// numbers with their own arguments. A bundle is untrusted input and an unbounded
+/// walk over one is an install that never finishes.
+///
+/// Iterative rather than recursive, and that is the one shape decision worth
+/// naming: a recursive walk would make [`MOST_ENTRIES`] a stack-depth bound as well
+/// as an entry bound, and a directory a stranger nested that deep would overflow
+/// the stack — an abort, not a refusal, and on a thread whose stack is smaller than
+/// the main one. A worklist has no depth.
+///
+/// # Errors
+///
+/// A sentence naming the bundle and the directory, for a link, for an entry of any
+/// other kind, for either bound, and for an io error underneath. The caller removes
+/// what was copied; nothing here does.
+fn copied_into(from: &Path, to: &Path, key: &str, bundle: &Path) -> Result<(), String> {
+    let refuse = |what: &str| {
+        format!(
+            "{}: the bundle's `{key}` directory {what}, so io wrote no adapter for it. An adapter \
+             ships the directories it contributes rather than pointing at somebody else's \
+             checkout, and every `*.md` under this one is read into the model's system prompt on \
+             every turn — so io copies what it can vouch for and refuses the rest.",
+            bundle.display(),
+        )
+    };
+    if std::fs::symlink_metadata(from)
+        .map_err(|e| format!("{}: {e}", from.display()))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(refuse("is a symbolic link"));
+    }
+
+    let mut bytes = 0u64;
+    let mut entries = 0usize;
+    let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
+    while let Some((src, dst)) = pending.pop() {
+        crate::home::create(&dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        // Sorted so a refusal names the same entry every time it is run: the one
+        // thing an operator does with this sentence is go and look at the file.
+        let mut items = std::fs::read_dir(&src)
+            .map_err(|e| format!("{}: {e}", src.display()))?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<PathBuf>, _>>()
+            .map_err(|e| format!("{}: {e}", src.display()))?;
+        items.sort();
+
+        for item in items {
+            let held =
+                std::fs::symlink_metadata(&item).map_err(|e| format!("{}: {e}", item.display()))?;
+            let kind = held.file_type();
+            let Some(name) = item.file_name() else {
+                continue;
+            };
+            let dest = dst.join(name);
+            entries += 1;
+            if entries > MOST_ENTRIES {
+                return Err(refuse(&format!("holds more than {MOST_ENTRIES} entries")));
+            }
+            if kind.is_symlink() {
+                return Err(refuse(&format!(
+                    "holds the symbolic link `{}`",
+                    item.display()
+                )));
+            }
+            if kind.is_dir() {
+                pending.push((item, dest));
+                continue;
+            }
+            if !kind.is_file() {
+                return Err(refuse(&format!(
+                    "holds `{}`, which is neither a plain file nor a directory",
+                    item.display()
+                )));
+            }
+            bytes += held.len();
+            if bytes > MOST_BYTES {
+                return Err(refuse(&format!("weighs more than {MOST_BYTES} bytes")));
+            }
+            std::fs::copy(&item, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The directory `named` points at inside `root`, or the conventional one, or
 /// `None` where neither is a directory.
 ///
-/// Canonical for [`generate`]'s reason, and it also tidies the spelling: a Codex
-/// manifest writes `"./skills/"`, and `root.join("./skills/")` is a path that
-/// works and reads as though io-cli did not know where it was pointing. The
-/// uncanonical path where that call fails, rather than `None`: `root` is already
-/// canonical and the directory was just seen, so a failure here is a race, and
-/// dropping the key would answer it by leaving a capability out of the manifest
-/// with nobody told.
+/// **Not canonicalized, and that is what 0.35.0 changed here.** The answer used to
+/// be written into the manifest as an absolute path, where it had to survive being
+/// joined onto a root somewhere else; it is now the *source of a copy*, and
+/// resolving it would quietly follow a `skills` that is a symbolic link out of the
+/// clone — which is one of the two moves [`generate`]'s copy exists to refuse, and
+/// a refusal cannot be made about a path that has already been resolved past.
+/// `root` is canonical and `inside` passes only plain components, so what comes
+/// back is a plain path under it whatever the foreign manifest spelled: a Codex
+/// manifest writes `"./skills/"` and the `.` is dropped rather than joined.
 fn directory(root: &Path, named: Option<&str>, conventional: &str) -> Option<PathBuf> {
     for candidate in named.into_iter().chain(std::iter::once(conventional)) {
         // **Every component that is not a plain name is dropped, and this is the
         // one value in the release that decides which directory io reads.** A
         // manifest's `skills` is a stranger's string; `Path::join` replaces the
         // base outright on an absolute argument and keeps `..` verbatim, so
-        // `"skills": "../../.."` would write the operator's own home into a
-        // generated manifest and `Skills::discover` would read every `*.md` in it
-        // into the prompt. The same filter `crate::marketplace` applies to a
-        // source path and to a hooks path, applied here for the same reason.
+        // `"skills": "../../.."` would name the operator's own home here — which
+        // 0.35.0 made worse rather than better, because the answer used to be
+        // written into a manifest and is now the source of a **copy** into io's
+        // home, where `Skills::discover` goes on reading every `*.md` of it into
+        // the prompt long after the clone is gone. The same filter
+        // `crate::marketplace` applies to a source path and to a hooks path,
+        // applied here for the same reason.
         let Some(at) = inside(root, candidate) else {
             continue;
         };
+        // `is_dir` follows a link, so a `skills` that is one is answered here and
+        // refused by name in the copy rather than skipped in silence — a bundle
+        // that ships a directory io will not take is told so.
         if at.is_dir() {
-            return Some(std::fs::canonicalize(&at).unwrap_or(at));
+            return Some(at);
         }
     }
     None
@@ -650,8 +912,9 @@ fn shown(path: &Path) -> String {
 /// string**, which is [`crate::edit::array`]'s argument at the one other place
 /// this crate spells a value: an absolute Windows path is full of backslashes and
 /// `\U` opens an escape in a TOML basic string, so `format!("\"{value}\"")` is
-/// either a parse error or a *different* path — and a `skills` key that parses to
-/// a directory nobody named is the quietest failure this crate can ship.
+/// either a parse error or a *different* path — and a `description` carrying an
+/// expanded `${CLAUDE_PLUGIN_ROOT}`, which is exactly such a path on Windows, is
+/// one of the values that comes through here.
 ///
 /// `format!("{value:?}")` is not adequate either, and it is the near miss worth
 /// naming because it looks as though it would be. `Debug` for `str` escapes for
@@ -705,7 +968,7 @@ fn substitution(text: &str) -> Option<String> {
 /// adapted, so expanding it reads nothing of the host — it writes down a path io
 /// already knew. `${env:…}`, `${file:…}`, `${cmd:…}` and every shell variable a
 /// bundle writes are the opposite: io-harness refuses each of them inside a
-/// manifest in every scope (`io-harness-0.73.0/src/plugin.rs:841`), because a
+/// manifest in every scope (`io-harness-0.74.0/src/plugin.rs:977`), because a
 /// bundle is a third party's directory even when the file naming it is the
 /// operator's own.
 ///
@@ -921,7 +1184,7 @@ fn unquoted(said: &str) -> &str {
 ///
 /// **A transport io-harness does not speak is a refusal naming the server**, not
 /// a server quietly left out. io-harness speaks stdio and streamable HTTP
-/// (`io-harness-0.73.0/src/mcp.rs:289`), so a bundle declaring `sse` is declaring
+/// (`io-harness-0.74.0/src/mcp.rs:301`), so a bundle declaring `sse` is declaring
 /// a capability no adapter can deliver — and a manifest carrying one fewer server
 /// than the bundle does is exactly the silent absence this module's docs exist to
 /// end. The whole generation stops, because a bundle is installed for what it

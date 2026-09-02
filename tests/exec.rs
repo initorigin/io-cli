@@ -15,6 +15,9 @@
 //! 0.34.1 F2 — `docs/CONTRACT.md`'s exit-code table is the constants, row by row.
 //! 0.34.1 F3 — io-cli's own argument refusals exit 1, on the same door.
 //!
+//! 0.35.0 F2 — a typed `Error::Refused` exits 2 on both headless doors, exactly
+//! one harness variant does, and a failure to start still exits 1.
+//!
 //! 0.23.0 F8 — `io resume`: the parked runs are listable, one is resumable by id,
 //! the parked line names the id that addresses the pause, and the two pauses that
 //! cannot be carried on are refused in words rather than by a failed drive.
@@ -750,22 +753,28 @@ fn f7_the_warning_names_only_what_actually_asks() {
     // A file can ask about writes and not commands, or the reverse. Naming both
     // when only one asks is the kind of true-sounding sentence that teaches the
     // wrong thing about the boundary in force.
-    // `exec = "deny"` rather than `"allow"`: `Config::from_toml` parses at
-    // PROJECT scope, where a value that widens the boundary is refused outright,
-    // because a repository you cloned must not be able to grant itself
-    // permission. Narrowing is always allowed.
-    let write_only = Config::from_toml(
+    // **User-scoped, because io-harness 0.74.0 refuses `read = "allow"` from any
+    // file a workspace can supply** — the key joined `write`, `exec` and `net` on
+    // `PROJECT_WIDENING` in that release, and `Config::from_toml` *is* the project
+    // scope, so the four defaults can no longer be stated together there. Written
+    // out in full rather than trimmed to the three still legal: the subject is
+    // which of the four `asks_nobody_can_answer` names, and a fixture that left one
+    // of them to the shipped default would be asserting about a policy it did not
+    // state.
+    let write_only = support::user_scope(
         "[policy.defaults]\nread = \"allow\"\nwrite = \"ask\"\nexec = \"deny\"\nnet = \"deny\"\n",
     )
-    .expect("the configuration parses");
+    .config
+    .clone();
     let line = exec::asks_nobody_can_answer(&exec::policy_for(&write_only, None))
         .expect("a write that asks still warns");
     assert!(line.contains("every write will be denied"), "{line}");
 
-    let exec_only = Config::from_toml(
+    let exec_only = support::user_scope(
         "[policy.defaults]\nread = \"allow\"\nwrite = \"deny\"\nexec = \"ask\"\nnet = \"deny\"\n",
     )
-    .expect("the configuration parses");
+    .config
+    .clone();
     let line = exec::asks_nobody_can_answer(&exec::policy_for(&exec_only, None))
         .expect("a command that asks still warns");
     assert!(line.contains("every command will be denied"), "{line}");
@@ -888,10 +897,17 @@ fn f8_the_provider_names_are_spelled_the_way_the_harness_spells_them() {
 
     // The same words io-harness's own `ProviderSpec` is tagged with, so one
     // vocabulary spans the configuration file and the command line.
+    //
+    // **Read back through the user scope, because 0.74.0 refuses `[[provider]]`
+    // from any file inside a workspace** — a provider names the endpoint the run's
+    // credential is sent to, and it is contacted before the run's first step. The
+    // lock is taken once around the loop and the fixture form that does not take it
+    // again is the one called, because `std::sync::Mutex` is not reentrant.
+    let _guard = support::env_lock();
     for name in &names {
         let toml = format!("[[provider]]\nkind = \"{name}\"\nmodel = \"m\"\n");
         assert!(
-            Config::from_toml(&toml).is_ok(),
+            support::try_user_scope_locked(&toml, false).is_ok(),
             "io-harness does not know a provider called `{name}`",
         );
     }
@@ -2362,4 +2378,516 @@ fn f2_the_documented_exit_code_table_is_the_constants() {
             );
         }
     }
+}
+
+/// The seam that chooses an exit code from a harness failure, once per door.
+///
+/// **A pair and not a single conversion, because two doors reach this decision.**
+/// `io exec` arrives through `exec::turn`, and `io resume` through the four
+/// `crate::resume` drivers, whose `Failure` wraps the harness's error. 0.30.0
+/// records exactly what happens to a gate that only one door satisfies: it goes
+/// vacuous and nobody notices. Every assertion below is therefore driven over
+/// this table and counted, rather than asserted once and assumed for the other.
+///
+/// The resume arm goes through `From<Error> for Failure` — the same conversion
+/// the drivers' own `?` performs — rather than constructing `Failure::Harness`
+/// by hand, so it is the production path and not a re-spelling of it.
+///
+/// **This is the seam and not the whole journey, and that is a limitation rather
+/// than a choice.** A policy can only refuse what a run does, and a run has to
+/// reach a provider before it does anything, so no offline test can drive a
+/// boundary refusal through the real argv door. The end-to-end arm is
+/// live-suite-only.
+/// One headless door: what to call it, and the seam it reaches.
+type Door = (&'static str, fn(io_harness::Error) -> exec::Ending);
+
+const DOORS: [Door; 2] = [("io exec", exec_door), ("io resume", resume_door)];
+
+/// What `io exec` does with a harness failure: `exec::turn` hands it straight to
+/// `Ending`.
+fn exec_door(error: io_harness::Error) -> exec::Ending {
+    exec::Ending::from(error)
+}
+
+/// What `io resume` does with one: the four drivers' `?` wraps it in
+/// `resume::Failure` on the way out, and the door unwraps it again.
+fn resume_door(error: io_harness::Error) -> exec::Ending {
+    exec::Ending::from(io_cli::resume::Failure::from(error))
+}
+
+/// A boundary refusal, shaped the way io-harness raises one when the provider's
+/// own endpoint lands in the `ask` tier: an act, a target, and the rule and layer
+/// that decided.
+fn a_boundary_refusal() -> io_harness::Error {
+    io_harness::Error::Refused {
+        act: "net".into(),
+        target: "openrouter.ai".into(),
+        rule: Some("*.openrouter.ai".into()),
+        layer: Some("project".into()),
+    }
+}
+
+/// **0.35.0 F2 — a typed refusal exits `2`, and it does so at both doors.**
+///
+/// The defect 0.34.1 found, documented as a known limitation, and left for a
+/// release allowed to change behaviour: both headless doors flattened
+/// `io_harness::Error` to a `String` before an exit code was chosen, and
+/// `main.rs` has one answer for a `String` — `FAILED`. So the one code that
+/// exists to mean "a boundary said no" was unreachable for the one refusal that
+/// happens before a run's first step.
+///
+/// Sabotage: return `FAILED` from either arm of `From<io_harness::Error>`, or
+/// delete the resume door's conversion — the count below names which door lost.
+#[test]
+fn f2_a_typed_boundary_refusal_exits_refused_at_both_headless_doors() {
+    assert_eq!(
+        DOORS.len(),
+        2,
+        "`io exec` and `io resume` both choose an exit code from a harness \
+         failure; a table with one door in it proves nothing about the other",
+    );
+
+    let mut refused = 0;
+    for (door, ending_for) in DOORS {
+        let ending = ending_for(a_boundary_refusal());
+        assert_eq!(
+            ending.code,
+            exec::REFUSED,
+            "`{door}` exits {} for a typed `Error::Refused`, and `{}` is what \
+             `docs/CONTRACT.md` publishes for a boundary saying no",
+            ending.code,
+            exec::REFUSED,
+        );
+        // Not decoration: an `Ending` that reported the right code under some
+        // other sentence would leave the operator reading about a failure while
+        // their CI branched on a refusal.
+        assert!(
+            ending.to_string().contains("refused by policy"),
+            "`{door}` no longer carries the harness's own words for the refusal: \
+             {ending}",
+        );
+        refused += 1;
+    }
+    assert_eq!(
+        refused,
+        DOORS.len(),
+        "one of the two headless doors did not answer REFUSED for a refusal",
+    );
+}
+
+/// **0.35.0 F2 — the arm is one variant wide, per neighbour and per door.**
+///
+/// The tempting fix is a `_ =>` that catches everything the harness calls a
+/// failure, and it would make a configuration fault report as a boundary
+/// refusal — the mirror of the defect being removed, and the third time this
+/// table would have been given away by a convenient catch-all.
+///
+/// These two are the neighbours io-harness itself types apart from a refusal.
+/// `Error::Sandbox` is "the sandbox failed to start", separate from `Error::Io`
+/// so a caller can tell "the sandbox never ran the code" from "the code ran and
+/// failed". `Error::Config` is "configuration was missing or invalid", and
+/// `Error::Refused`'s own documentation says it is "typed separately from
+/// `Error::Config` so a refusal is distinguishable from a malfunction".
+///
+/// The resume door's own refusals are here too. None of them is a boundary: they
+/// are io-cli declining to drive a resume at all, which is `FAILED` for the same
+/// reason `io exec --policy ask-writes` is — the boundary never got a chance to
+/// say anything.
+#[test]
+fn f2_a_failure_to_start_is_not_a_boundary_refusal_at_either_door() {
+    for (door, ending_for) in DOORS {
+        for (name, error) in [
+            (
+                "Sandbox",
+                io_harness::Error::Sandbox {
+                    reason: "no sandbox backend on this host".into(),
+                },
+            ),
+            (
+                "Config",
+                io_harness::Error::Config("no API key for the configured provider".into()),
+            ),
+        ] {
+            let ending = ending_for(error);
+            assert_eq!(
+                ending.code,
+                exec::FAILED,
+                "`{door}` reports `Error::{name}` as {}, so a run that never \
+                 started now tells a script a boundary refused it",
+                ending.code,
+            );
+        }
+    }
+
+    for (name, failure) in [
+        (
+            "Interrupted",
+            io_cli::resume::Failure::Interrupted { run_id: 7 },
+        ),
+        ("Ended", io_cli::resume::Failure::Ended { run_id: 7 }),
+        ("Unknown", io_cli::resume::Failure::Unknown { run_id: 7 }),
+        (
+            "HeadMoved",
+            io_cli::resume::Failure::HeadMoved {
+                session_id: 1,
+                turn_id: 2,
+            },
+        ),
+    ] {
+        assert_eq!(
+            exec::Ending::from(failure).code,
+            exec::FAILED,
+            "`io resume` reports its own `Failure::{name}` as a boundary refusal, \
+             and no boundary was asked",
+        );
+    }
+}
+
+/// **0.35.0 F2 — exactly one harness variant is a refusal, counted.**
+///
+/// The audit as an assertion rather than as prose. Every variant `Error` declares
+/// is put through the seam and the refusals are counted: one, and it is the one
+/// named `Refused`. A `contains`-shaped gate would pass under the wildcard this
+/// exists to forbid; a count does not.
+///
+/// `Error::State` is the only variant absent, and deliberately: it is deprecated
+/// since io-harness 0.63.0, nothing in the crate constructs it, and building one
+/// would mean taking a `rusqlite` dependency to name a variant that is scheduled
+/// for removal.
+///
+/// **What this cannot see is a *new* variant.** `Error` is `#[non_exhaustive]`,
+/// the list below is written by hand, and `tests/support` — which is where the
+/// locked-source readers live — is not this test's to extend. The wildcard makes
+/// the safe direction automatic: anything unrecognised is `FAILED`, so a variant
+/// a later harness adds cannot become a refusal by accident. The unsafe direction
+/// is a harness that adds a *second* refusal, and that is a question for the pin
+/// bump that brings it, not something this file can answer.
+#[test]
+fn f2_exactly_one_harness_error_variant_is_a_boundary_refusal() {
+    // Built per call rather than once, because `io_harness::Error` is not `Clone`
+    // and the seam takes it by value. A list built once and reused across the two
+    // doors would have to rebuild the values from something, and rebuilding them
+    // from a single kind is how this test went vacuous in its first draft: eleven
+    // names, one variant, every door passing.
+    fn every_variant() -> Vec<(&'static str, io_harness::Error)> {
+        vec![
+            ("Io", io_harness::Error::Io(std::io::Error::other("disk"))),
+            (
+                "Storage",
+                io_harness::Error::Storage {
+                    kind: io_harness::StorageErrorKind::Busy,
+                    message: "another connection holds the write lock".into(),
+                },
+            ),
+            (
+                "Provider",
+                io_harness::Error::provider_transport("connection refused"),
+            ),
+            ("Config", io_harness::Error::Config("no API key".into())),
+            (
+                "Sandbox",
+                io_harness::Error::Sandbox {
+                    reason: "no backend".into(),
+                },
+            ),
+            ("Refused", a_boundary_refusal()),
+            (
+                "Mcp",
+                io_harness::Error::Mcp {
+                    server: "docs".into(),
+                    reason: "the process exited".into(),
+                },
+            ),
+            (
+                "Lsp",
+                io_harness::Error::Lsp {
+                    server: "rust-analyzer".into(),
+                    reason: "the process exited".into(),
+                },
+            ),
+            (
+                "Browser",
+                io_harness::Error::Browser {
+                    reason: "no browser on this host".into(),
+                },
+            ),
+            (
+                "Resume",
+                io_harness::Error::Resume {
+                    reason: "the checkpoint is newer than this binary".into(),
+                },
+            ),
+            (
+                "Conflict",
+                io_harness::Error::Conflict {
+                    run_id: 7,
+                    owner: "another process".into(),
+                    expires_at: "2026-09-02T00:00:00Z".into(),
+                },
+            ),
+        ]
+    }
+
+    assert_eq!(
+        every_variant().len(),
+        11,
+        "io-harness 0.74.0 declares twelve `Error` variants and this table names \
+         eleven of them — every one but the deprecated `State`. A variant added \
+         or removed here is a pin bump nobody has audited",
+    );
+
+    for (door, ending_for) in DOORS {
+        let refusals: Vec<&str> = every_variant()
+            .into_iter()
+            .map(|(name, error)| (name, ending_for(error).code))
+            .filter(|(_, code)| *code == exec::REFUSED)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            refusals,
+            vec!["Refused"],
+            "`{door}` treats {refusals:?} as boundary refusals. Exactly one \
+             variant is one: a `_ =>` arm that swallowed `Sandbox` or `Config` \
+             would tell a CI job a policy spoke when nothing did",
+        );
+    }
+
+    // **And the table above is held against the dependency, because a hand-written
+    // list is exactly what this release came here to remove.**
+    //
+    // The wildcard arm covers the *safe* direction: a variant a later harness adds
+    // is reported `FAILED`, which is conservative. The direction it does not cover
+    // is a harness adding a **second refusal** variant — io-harness 0.74.0 added
+    // two new `Error::Refused` shapes in one release, so that is not hypothetical
+    // — and io-cli would report it as a failure, which is precisely the defect this
+    // task exists to fix, arriving again through the dependency instead of through
+    // this crate. A list of eleven cannot notice it; the locked source can.
+    let declared = support::harness_error_variants();
+    let named: Vec<String> = every_variant()
+        .into_iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let missing: Vec<&String> = declared
+        .iter()
+        // `State` is deprecated and deliberately not driven; every other variant
+        // the locked harness declares must be in the table.
+        .filter(|variant| variant.as_str() != "State" && !named.contains(variant))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the locked io-harness declares {missing:?}, which this table does not drive. A new \
+         variant is a pin bump nobody has audited: if it is a refusal it must map to REFUSED, and \
+         if it is a malfunction the wildcard already has it — but which of the two it is, is a \
+         decision and not a default",
+    );
+}
+
+// --- the local-address floor, surfaced with the one thing that lifts it ---------
+
+/// **The layer io-cli matches is the layer io-harness stamps.**
+///
+/// io-harness's `FLOOR_LAYER` is `pub(crate)`, so io-cli spells the string. That
+/// is one literal and not a table — the shapes the floor refuses are never
+/// re-derived here, because 0.30.0 shipped a copy of one of this dependency's
+/// address checks and it **failed open** on five of them. What this holds is the
+/// spelling, against the locked source, so a rename upstream fails here rather
+/// than silently dropping the remedy from every refusal.
+///
+/// Sabotage: change either spelling. This fails naming both.
+#[test]
+fn f11_the_local_address_floor_layer_is_spelled_as_io_harness_spells_it() {
+    let source = support::harness_source("net.rs");
+    let declared = source
+        .split_once("FLOOR_LAYER: &str = \"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(value, _)| value)
+        .expect("io-harness declares FLOOR_LAYER in src/net.rs");
+
+    assert_eq!(
+        declared,
+        exec::LOCAL_ADDRESS_FLOOR,
+        "io-harness stamps `{declared}` on a floor refusal and io-cli looks for \
+         `{}`, so the remedy reaches nobody",
+        exec::LOCAL_ADDRESS_FLOOR,
+    );
+}
+
+/// **A refusal from the floor carries the one thing that lifts it.**
+///
+/// Everyone pointed at a model on their own machine — Ollama, LM Studio,
+/// llama.cpp — is refused at run start on this pin, whatever their policy says,
+/// and io-harness gives the lift no configuration key on purpose. A bare refusal
+/// with no remedy is the single most user-visible break in this release.
+///
+/// Asserted at the seam for **both** doors, because a remedy on one of them is a
+/// remedy an `io resume` never shows.
+#[test]
+fn f11_a_floor_refusal_names_the_variable_that_lifts_it_at_both_doors() {
+    for (door, ending_for) in DOORS {
+        let ending = ending_for(io_harness::Error::Refused {
+            act: "net".into(),
+            target: "127.0.0.1:11434".into(),
+            rule: Some("loopback".into()),
+            layer: Some(exec::LOCAL_ADDRESS_FLOOR.to_string()),
+        });
+
+        assert_eq!(ending.code, exec::REFUSED, "{door}: the boundary said no");
+        assert!(
+            ending
+                .to_string()
+                .contains("IO_HARNESS_ALLOW_LOCAL_ADDRESSES"),
+            "{door}: a floor refusal with no remedy leaves a local-model operator with nothing \
+             to do about it: {ending}",
+        );
+        assert!(
+            ending.to_string().contains("127.0.0.1:11434"),
+            "{door}: and it still carries io-harness's own sentence, which names the endpoint: \
+             {ending}",
+        );
+    }
+
+    // A refusal from any other layer is left exactly as io-harness wrote it: the
+    // remedy is about one floor and would be noise, or a lie, anywhere else.
+    for (door, ending_for) in DOORS {
+        let ending = ending_for(io_harness::Error::Refused {
+            act: "write".into(),
+            target: "/etc/hosts".into(),
+            rule: Some("*".into()),
+            layer: Some("builtin-secrets".into()),
+        });
+        assert!(
+            !ending
+                .to_string()
+                .contains("IO_HARNESS_ALLOW_LOCAL_ADDRESSES"),
+            "{door}: a write refusal is not lifted by a network variable: {ending}",
+        );
+    }
+}
+
+/// **io-cli sets that variable nowhere, and an absence needs a source-text gate.**
+///
+/// The lift is the operator's own explicit choice — io-harness gave it no
+/// configuration key precisely so a file cannot grant it — and a product whose
+/// thesis is that the boundary is legible must not re-grant, from the inside, a
+/// permission the harness has just taken away. Even for an operator whose own
+/// `io.toml` names a loopback endpoint: that file is a statement about where the
+/// model is, not consent to leave the sandbox.
+///
+/// 0.30.0's `F15` had no site for exactly this reason — an absence cannot be
+/// asserted by driving anything — so this reads the source.
+#[test]
+fn f11_io_cli_never_sets_the_local_address_variable() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sets = Vec::new();
+
+    let mut stack = vec![src];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src is readable").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a source file is readable");
+            for (number, line) in text.lines().enumerate() {
+                let code = line.split_once("//").map_or(line, |(before, _)| before);
+                if code.contains("set_var") && code.contains("IO_HARNESS_ALLOW_LOCAL_ADDRESSES") {
+                    sets.push(format!("{}:{}", path.display(), number + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        sets.is_empty(),
+        "io-cli sets IO_HARNESS_ALLOW_LOCAL_ADDRESSES at {sets:?}. The harness gave that lift no \
+         configuration key on purpose; granting it from inside the product is re-opening a \
+         boundary the operator never asked to open",
+    );
+}
+
+// --- `[run] templates` reaches the headless door too ---------------------------
+
+/// **`run.templates` was applied on one door only, and the limits page named the
+/// wrong thing as the gap.**
+///
+/// `commands::templates` has read the key through its own accessor since the
+/// palette learned prompt templates — but only an interactive session called it,
+/// so `io exec` ignored a key `docs/config.example.toml` documents. A
+/// configuration key that works in the terminal and silently does nothing in CI is
+/// the asymmetry this product deleted in 0.14.0, arriving again through a door
+/// nobody had checked.
+///
+/// **User-scoped, and 0.74.0 is why.** `run.templates` naming an absolute
+/// directory is refused from any file inside a workspace: every `*.md` under it is
+/// composed into the model's system prompt, so a cloned `io.toml` could put this
+/// host's files into the model's context. The operator's own file is the only one
+/// that may name a directory outside the workspace.
+///
+/// Sabotage: pass `args.goal` through untouched, which is the pre-0.35.0 body.
+/// The first arm fails with the template's own name where its text should be.
+#[test]
+fn f10_a_headless_goal_may_name_a_template_and_a_plain_goal_is_untouched() {
+    let dir = tempfile::tempdir().expect("a directory of templates");
+    std::fs::write(
+        dir.path().join("review.md"),
+        "Read every changed line and say what is wrong with it.\n",
+    )
+    .expect("a template is written");
+
+    let declared = io_cli::edit::spell(&dir.path().display().to_string());
+    let scope = support::user_scope(&format!("[run]\ntemplates = {declared}\n"));
+
+    let (rendered, notice) =
+        exec::goal_for(&scope.config, "/review").expect("the template renders");
+    // Trailing newline trimmed: that is `Templates::render`'s doing, not this
+    // function's, and it is the same text the palette puts in the composer.
+    assert_eq!(
+        rendered, "Read every changed line and say what is wrong with it.",
+        "the headless goal is the template's text, not its name",
+    );
+    assert!(notice.is_none(), "a directory that reads says nothing");
+
+    // The overwhelmingly common case, which this must not change.
+    let (plain, _) =
+        exec::goal_for(&scope.config, "summarise the module").expect("a prompt is not a template");
+    assert_eq!(
+        plain, "summarise the module",
+        "a goal that does not begin with `/` is a prompt and is passed through",
+    );
+
+    // A name no template has is a goal that does not exist, and it is refused
+    // before a provider is built rather than spent on a call that says so.
+    let refused = exec::goal_for(&scope.config, "/not-a-template")
+        .expect_err("a template that is not there cannot be rendered");
+    assert!(
+        refused.contains("not-a-template"),
+        "the refusal names what was asked for: {refused}",
+    );
+}
+
+/// And a configuration naming no templates leaves every goal alone.
+///
+/// The arm that stops the expansion being reachable by accident: with no
+/// `[run] templates`, `commands::templates` answers `Templates::none()`, and a
+/// goal beginning with `/` is refused rather than silently becoming empty.
+#[test]
+fn f10_a_configuration_with_no_templates_passes_every_plain_goal_through() {
+    let scope = support::user_scope("[run]\nmax_steps = 10\n");
+
+    let (plain, notice) =
+        exec::goal_for(&scope.config, "summarise the module").expect("a prompt needs no templates");
+    assert_eq!(plain, "summarise the module");
+    assert!(
+        notice.is_none(),
+        "a configuration that names no directory has nothing to complain about",
+    );
+
+    assert!(
+        exec::goal_for(&scope.config, "/review").is_err(),
+        "a template named where none are configured is refused, not rendered empty",
+    );
 }

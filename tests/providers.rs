@@ -1,10 +1,12 @@
 //! F7, F8, F9 and F10 — the chain, the presets, the live verification, and
 //! changing a link that already exists.
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 
 use io_cli::providers::{self, At, Credential, Endpoint, Key};
 use io_harness::config::{Config, Scope};
+
+mod support;
 
 const THREE: &str = "\
 [[provider]]
@@ -26,38 +28,53 @@ model = \"llama3.2\"
 
 /// `Config::discover` reads `IO_CONFIG` at call time, and the fixtures below set
 /// it; serialised so two tests cannot see each other's file.
+///
+/// Delegated to [`support::env_lock`] rather than declared here: two different
+/// mutexes in one binary exclude nothing from each other, and the fixtures below
+/// now go through `support`.
 fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    support::env_lock()
 }
 
 /// A discovered configuration, from a real file.
 ///
-/// `Config::from_toml` is not enough here: the credential column is read from
-/// the file the origin names, because io-harness substitutes `${env:…}` while it
-/// parses — so a config with no path behind it cannot show an operator which
-/// variable they wrote.
-struct Fixture {
-    _dir: tempfile::TempDir,
-    config: Config,
-}
-
-fn config(toml: &str) -> Fixture {
+/// `Config::from_toml` is not enough here for two reasons. The credential column
+/// is read from the file the origin names, because io-harness substitutes
+/// `${env:…}` while it parses — so a config with no path behind it cannot show an
+/// operator which variable they wrote. And since io-harness 0.74.0 `from_toml`
+/// parses at `Scope::Project`, which may not declare `[[provider]]` at all: a
+/// provider names the endpoint this run's credential is sent to, and `io.toml`
+/// arrives with a `git clone`.
+///
+/// [`support::user_scope_locked`] is what closes the second: it keeps the file
+/// *outside* the discovery root, so it is a `Scope::User` candidate once rather
+/// than a `Scope::User` and `Scope::Project` candidate twice.
+fn config(toml: &str) -> support::UserScope {
     let _guard = env_lock();
     // The variable the fixture points at has to exist, or the load fails
     // outright — io-harness resolves an indirection at parse time and refuses an
     // unset one rather than carrying it through.
     std::env::set_var("IO_CLI_TEST_GROQ_KEY", "gsk-not-a-real-key");
 
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let path = dir.path().join("io.toml");
-    std::fs::write(&path, toml).expect("the fixture is written");
+    support::user_scope_locked(toml, false)
+}
 
-    std::env::set_var("IO_CONFIG", &path);
-    let config = Config::discover(dir.path()).expect("the fixture parses");
-    std::env::remove_var("IO_CONFIG");
+/// The configuration alone, for the round trips that only want to read it back.
+fn loaded(text: &str) -> Config {
+    config(text).config.clone()
+}
 
-    Fixture { _dir: dir, config }
+/// The same read, handing back the refusal instead of panicking on it.
+///
+/// The tests that assert io-harness *refuses* something need the refusal to be
+/// the one they are about — at project scope every one of these files is refused
+/// for declaring a provider, which would make the assertion pass while proving
+/// nothing.
+fn try_loaded(text: &str) -> io_harness::Result<Config> {
+    let _guard = env_lock();
+    std::env::set_var("IO_CLI_TEST_GROQ_KEY", "gsk-not-a-real-key");
+    let scope = support::try_user_scope_locked(text, false)?;
+    Ok(scope.config.clone())
 }
 
 #[test]
@@ -226,10 +243,7 @@ fn f7_removing_the_head_promotes_the_next_link_and_removing_the_only_one_leaves_
     );
     let after = io_cli::edit::apply(ONLY, &[providers::remove(&at)]).unwrap();
     assert_eq!(after, "", "the last entry left bytes behind");
-    assert!(Config::from_toml(&after)
-        .expect("a file with nothing in it is a configuration")
-        .provider_spec()
-        .is_none());
+    assert!(loaded(&after).provider_spec().is_none());
 }
 
 #[test]
@@ -248,7 +262,7 @@ fn f7_a_compatible_entry_naming_both_bases_or_neither_cannot_be_written() {
                 preset = \"groq\"\nbase_url = \"https://example.com/v1\"\n";
     for bad in [neither, both] {
         assert!(
-            Config::from_toml(bad).is_err(),
+            try_loaded(bad).is_err(),
             "io-harness accepted a `compatible` entry that names both bases or \
              neither, so `Endpoint`'s split is no longer load-bearing: {bad}",
         );
@@ -265,7 +279,7 @@ fn f7_a_compatible_entry_naming_both_bases_or_neither_cannot_be_written() {
         let written =
             io_cli::edit::apply("", &[providers::add(endpoint, "a-model", None)]).unwrap();
         assert!(
-            Config::from_toml(&written).is_ok(),
+            try_loaded(&written).is_ok(),
             "{endpoint:?} produced an entry io-harness refuses:\n{written}",
         );
     }
@@ -330,7 +344,7 @@ fn f7_a_pasted_credential_is_escaped_rather_than_breaking_the_file() {
     )
     .unwrap();
 
-    let config = Config::from_toml(&after).expect("the written file still parses");
+    let config = loaded(&after);
     let Some(io_harness::ProviderSpec::OpenAi { model, api_key }) = config.provider_spec() else {
         panic!("the file named an openai provider");
     };
@@ -720,8 +734,8 @@ fn f10_unsetting_a_credential_deletes_the_line_rather_than_emptying_it() {
 
     // And the entry is still a link, which is the half a deletion could break:
     // `unset` takes one line and leaves the `[[provider]]` around it standing.
-    let loaded = Config::from_toml(&after).expect("the entry still loads");
-    let Some(io_harness::ProviderSpec::OpenAi { model, api_key }) = loaded.provider_spec() else {
+    let still = loaded(&after);
+    let Some(io_harness::ProviderSpec::OpenAi { model, api_key }) = still.provider_spec() else {
         panic!("the entry stopped being an openai provider");
     };
     assert_eq!(model, "gpt-4o");
@@ -749,8 +763,8 @@ fn f10_unsetting_a_credential_deletes_the_line_rather_than_emptying_it() {
     )
     .unwrap();
     assert!(sabotage.contains("api_key = \"\""));
-    let sabotaged =
-        Config::from_toml(&sabotage).expect("an empty key still parses, which is the problem");
+    // An empty key still parses, which is the problem.
+    let sabotaged = loaded(&sabotage);
     let Some(io_harness::ProviderSpec::OpenAi { api_key, .. }) = sabotaged.provider_spec() else {
         panic!("an openai provider");
     };

@@ -806,10 +806,28 @@ pub fn plan(
                         *scope,
                         chosen.dir(),
                         (chosen.from() != chosen.dir()).then(|| chosen.from()),
+                        chosen.copied(),
                     )
                 })
                 .transpose()
                 .inspect_err(|_| crate::marketplace::unmake(chosen.made()))?;
+            // **And nothing is written at all when the entry is already there
+            // (0.35.0).** Since the adapter became a copy of what it contributes,
+            // **installing again is the update path** — and `pluginview::add`
+            // appends unconditionally while `Edit::append` always splices at end
+            // of file, so every refresh added a *second* `[[plugin]]` naming the
+            // same directory. io-harness drops it with "a plugin with id `x` is
+            // already declared and switched on", so the bundle kept working and
+            // the operator's file grew an ignored entry on each update, quietly,
+            // forever.
+            //
+            // There is no edit to make: the adapter was regenerated on disk by
+            // `chosen` above, before this point, and the declaration that names it
+            // is already correct. The disclosure still travels, because what the
+            // refresh moved is exactly what the operator needs to see.
+            let already = declared
+                .iter()
+                .any(|(_, path)| path.as_path() == chosen.dir());
             Plan {
                 made: chosen.made().map(Path::to_path_buf),
                 scope: *scope,
@@ -819,7 +837,11 @@ pub fn plan(
                 // have io-harness read it at all; `inspect` has replaced that
                 // round trip, so there is no longer an entry in the file that the
                 // operator has not agreed to. See `pluginview::add_off`.
-                edits: vec![crate::pluginview::add(&written)],
+                edits: if already {
+                    Vec::new()
+                } else {
+                    vec![crate::pluginview::add(&written)]
+                },
                 disclosure,
             }
         }
@@ -1372,7 +1394,7 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.73.0/src/mcp.rs:439-447`: the
+    // silent no-op on an HTTP server (`io-harness-0.74.0/src/mcp.rs:439-447`: the
     // body writes only into the `Stdio` arm) — a constructor chain here would drop
     // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`
@@ -1548,11 +1570,22 @@ fn config_set(args: &Args) -> Result<Request, String> {
     // is caught there by `configure::write`'s round trip in io-harness's own
     // words rather than here. Guessing at parse time would mean discovering the
     // workspace from a function whose whole job is reading a line of text.
-    if scope == Some(Scope::Project) && crate::configure::widens_project(&key, &value) {
+    // **Both untrusted scopes, and the advice names neither of them (0.35.0).**
+    // This guard read `Scope::Project` alone, so `--scope local` walked straight
+    // past io-cli's own check and was caught only by `configure::write`'s
+    // round-trip rollback — and the sentence it printed sent the operator to
+    // `--scope local`, which io-harness 0.74.0 now refuses for exactly the same
+    // reason. `io.local.toml` is not committed, but it sits in the workspace root
+    // a run's own agent can write to, so one `write_file` of an unremarkable name
+    // was an escalation. The user scope is the only destination left.
+    if matches!(scope, Some(Scope::Project | Scope::Local))
+        && crate::configure::widens_workspace(&key, &value)
+    {
         return Err(format!(
-            "io-harness refuses `{key} = {value}` in a project file, because `io.toml` is what a \
-             `git clone` hands to everyone and this widens what they may do without asking them; \
-             write it with `--scope local` for this checkout or `--scope user` for yourself"
+            "io-harness refuses `{key} = {value}` in a file inside the workspace, because \
+             `io.toml` is what a `git clone` hands to everyone and `io.local.toml` sits in a root \
+             this run's own agent can write to — and this widens what they may do without asking \
+             you; write it with `--scope user` for yourself"
         ));
     }
 

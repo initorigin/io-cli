@@ -13,6 +13,20 @@
 
 use io_cli::edit::{self, Edit};
 
+mod support;
+
+/// Load a written file the way io-harness would load the operator's own.
+///
+/// **Never `Config::from_toml` for a file with `[[provider]]` in it.** `from_toml`
+/// parses at `Scope::Project`, and io-harness 0.74.0 refuses a provider there — a
+/// provider names the endpoint this run's credential is sent to, and `io.toml`
+/// arrives with a `git clone`. The moves below are moves of provider entries, so
+/// the round trip that proves the move survived has to read at the scope that may
+/// declare one. Files with no refused section still go through `from_toml`.
+fn loaded(text: &str) -> io_harness::Config {
+    support::user_scope(text).config.clone()
+}
+
 /// A file with every shape an operator's real `io.toml` has and io-cli does not
 /// model: a header comment, an inline comment on the very key being changed, an
 /// array of tables, a section io-cli has no type for, and a blank-line rhythm.
@@ -373,7 +387,7 @@ max_steps = 30
     );
     assert!(up.contains("preset = \"groq\""), "key lost");
     assert!(up.contains("max_steps = 30"), "a later section moved");
-    let config = io_harness::Config::from_toml(&up).expect("the moved file loads");
+    let config = loaded(&up);
     assert_eq!(config.fallback_specs().len(), 1);
 
     // And moving it back is the identity, which is the property a one-way
@@ -965,7 +979,7 @@ model = \"b\"
 # groq answers last, and there is no newline after this line";
 
     let down = edit::apply(COMMENTED, &[Edit::move_entry("provider", 0, 1)]).unwrap();
-    let config = io_harness::Config::from_toml(&down).expect("the moved file loads");
+    let config = loaded(&down);
     assert_eq!(
         config.fallback_specs().len(),
         1,
@@ -993,7 +1007,7 @@ preset = \"groq\"
 model = \"b\"";
 
     let up = edit::apply(TAIL, &[Edit::move_entry("provider", 1, 0)]).unwrap();
-    let config = io_harness::Config::from_toml(&up).expect("the moved file loads");
+    let config = loaded(&up);
     assert_eq!(config.fallback_specs().len(), 1, "{up}");
     assert!(
         up.find("groq").unwrap() < up.find("openrouter").unwrap(),
