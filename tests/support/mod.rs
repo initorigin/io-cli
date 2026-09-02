@@ -764,6 +764,12 @@ pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 /// argument that makes it produce a user-scoped configuration. A fixture that
 /// needs one of these sections has to go through discovery, which is why the
 /// migration converted the `from_toml` call sites rather than adjusting them.
+///
+/// `Debug` because `try_user_scope_locked` returns this in a `Result`, and
+/// `Result::expect_err` requires the `Ok` side to be printable — a fixture whose
+/// failure case cannot be asserted on with the ordinary vocabulary is a fixture
+/// tests work around.
+#[derive(Debug)]
 pub struct UserScope {
     /// Holds the user-scope `io.toml`. Never the discovery root.
     home: tempfile::TempDir,
@@ -887,13 +893,17 @@ pub fn try_user_scope_locked(toml: &str, keep: bool) -> io_harness::Result<UserS
 /// The user file is trusted and the project file is not, which is the whole
 /// shape T13 asserts over: a repository that arrives with a `git clone` declaring
 /// something only the operator's own file may declare.
-pub fn user_scope_with_project(user: &str, project: &str) -> io_harness::Result<io_harness::Config> {
+pub fn user_scope_with_project(
+    user: &str,
+    project: &str,
+) -> io_harness::Result<io_harness::Config> {
     let _guard = env_lock();
     let home = tempfile::tempdir().expect("a directory for the user-scope file");
     let workspace = tempfile::tempdir().expect("a workspace root");
     let path = home.path().join("io.toml");
     std::fs::write(&path, user).expect("the user fixture is written");
-    std::fs::write(workspace.path().join("io.toml"), project).expect("the project fixture is written");
+    std::fs::write(workspace.path().join("io.toml"), project)
+        .expect("the project fixture is written");
 
     std::env::set_var("IO_CONFIG", &path);
     let discovered = io_harness::Config::discover(workspace.path());
