@@ -716,3 +716,187 @@ impl Provider for Watching {
         true
     }
 }
+
+/// The one environment lock for a test binary.
+///
+/// Every fixture below sets `IO_CONFIG`, which is process-global, so two tests
+/// building a configuration at once would each see the other's file. Fourteen
+/// test files used to declare a `Mutex` of their own for this; two different
+/// mutexes in one binary exclude nothing from each other, so they delegate here
+/// and a fixture taking this lock now excludes every environment-touching test
+/// beside it rather than only the ones that happened to pick the same mutex.
+///
+/// A poisoned lock is taken anyway. The environment is restored by
+/// [`UserScope`]'s own drop rather than by unwinding, so a panicking test leaves
+/// nothing for the next one to trip over, and refusing to hand out the guard
+/// would turn one real failure into every subsequent test failing for a reason
+/// that is not its own.
+pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A configuration fixture in the one scope io-harness still trusts.
+///
+/// **io-harness 0.74.0 is why this exists.** A workspace-resident configuration
+/// file may no longer declare `[[provider]]`, `[[mcp]]`, `[[lsp]]` or — in
+/// `io.local.toml` as well as `io.toml` — `[[hook]]`, may not widen the policy in
+/// any of ten ways, and may not name an absolute `run.skills` or `run.templates`.
+/// The reason is stated in `read_scope`: those files arrive with a `git clone`,
+/// or sit in a root the run's own agent can write to, so a single `write_file` of
+/// an unremarkable name would otherwise declare an endpoint or a command that the
+/// next `Config::discover` acts on, outside the `Policy` and outside the sandbox.
+///
+/// `Scope::User` is the sole exemption and the exemption is the whole reason the
+/// scope exists — `$IO_CONFIG` is outside every workspace, so a run that can
+/// write its own root cannot reach it.
+///
+/// **The trap this type exists to close.** The obvious fixture writes `io.toml`
+/// into the directory it then hands to `Config::discover`, and points `IO_CONFIG`
+/// at that same file. That file is a candidate *twice* — once as `Scope::User`
+/// through `IO_CONFIG` and once as `Scope::Project` because it is `root/io.toml`
+/// — and the project read refuses it. Pointing `IO_CONFIG` somewhere is not
+/// enough; the file has to be somewhere the discovery root does not reach. So
+/// this keeps two directories, and the workspace it hands back is empty.
+///
+/// **`Config::from_toml` cannot be used for any of this.** It hard-codes
+/// `Scope::Project` and calls `refuse_widening` unconditionally, so there is no
+/// argument that makes it produce a user-scoped configuration. A fixture that
+/// needs one of these sections has to go through discovery, which is why the
+/// migration converted the `from_toml` call sites rather than adjusting them.
+pub struct UserScope {
+    /// Holds the user-scope `io.toml`. Never the discovery root.
+    home: tempfile::TempDir,
+    /// The workspace `Config::discover` was pointed at. Deliberately empty.
+    workspace: tempfile::TempDir,
+    /// Whether `IO_CONFIG` is still set, so `Drop` knows what to undo.
+    kept: bool,
+    pub config: io_harness::Config,
+}
+
+impl UserScope {
+    /// The workspace root the configuration was discovered against.
+    pub fn root(&self) -> &std::path::Path {
+        self.workspace.path()
+    }
+
+    /// The user-scope configuration file itself.
+    pub fn path(&self) -> std::path::PathBuf {
+        self.home.path().join("io.toml")
+    }
+
+    /// Re-read the file from disk, for a test that has just written to it.
+    ///
+    /// The write-then-rediscover shape is what `configure::write` does, and a
+    /// test asserting over it has to see the same thing the product would.
+    pub fn reload(&mut self) -> io_harness::Result<()> {
+        std::env::set_var("IO_CONFIG", self.path());
+        let discovered = io_harness::Config::discover(self.workspace.path());
+        if !self.kept {
+            std::env::remove_var("IO_CONFIG");
+        }
+        self.config = discovered?;
+        Ok(())
+    }
+
+    /// Discover again and hand back whatever came out, refusal included.
+    ///
+    /// For the tests that assert a refusal's own sentence: they need the `Err`,
+    /// not a fixture that panics on it.
+    pub fn rediscover(&self) -> io_harness::Result<io_harness::Config> {
+        std::env::set_var("IO_CONFIG", self.path());
+        let discovered = io_harness::Config::discover(self.workspace.path());
+        if !self.kept {
+            std::env::remove_var("IO_CONFIG");
+        }
+        discovered
+    }
+}
+
+impl Drop for UserScope {
+    fn drop(&mut self) {
+        if self.kept {
+            std::env::remove_var("IO_CONFIG");
+        }
+    }
+}
+
+/// A user-scoped configuration built from `toml`, with `IO_CONFIG` unset again.
+///
+/// Takes [`env_lock`] and releases it before returning, so a caller must not be
+/// holding it — `std::sync::Mutex` is not reentrant and doing both deadlocks.
+/// Where a test needs the lock held across more than the fixture, take it and
+/// call [`user_scope_locked`].
+pub fn user_scope(toml: &str) -> UserScope {
+    let _guard = env_lock();
+    user_scope_locked(toml, false)
+}
+
+/// As [`user_scope`], but `IO_CONFIG` stays set for the fixture's lifetime.
+///
+/// For a test that goes on to exercise a product path which resolves the
+/// configuration for itself — `configure::write` re-discovers after writing, and
+/// would otherwise find the operator's real file.
+pub fn user_scope_kept(toml: &str) -> UserScope {
+    let _guard = env_lock();
+    user_scope_locked(toml, true)
+}
+
+/// The body of both, for a caller that already holds [`env_lock`].
+pub fn user_scope_locked(toml: &str, keep: bool) -> UserScope {
+    match try_user_scope_locked(toml, keep) {
+        Ok(scope) => scope,
+        Err(error) => panic!("the user-scope fixture parses: {error}"),
+    }
+}
+
+/// As [`user_scope_locked`], returning the refusal instead of panicking on it.
+///
+/// The tests that assert io-harness's own refusal sentence need this: they are
+/// asserting over an `Err`, and a fixture that unwraps has nothing to give them.
+pub fn try_user_scope_locked(toml: &str, keep: bool) -> io_harness::Result<UserScope> {
+    let home = tempfile::tempdir().expect("a directory for the user-scope file");
+    let workspace = tempfile::tempdir().expect("a workspace root");
+    let path = home.path().join("io.toml");
+    std::fs::write(&path, toml).expect("the fixture is written");
+
+    std::env::set_var("IO_CONFIG", &path);
+    let discovered = io_harness::Config::discover(workspace.path());
+    if !keep {
+        std::env::remove_var("IO_CONFIG");
+    }
+
+    match discovered {
+        Ok(config) => Ok(UserScope {
+            home,
+            workspace,
+            kept: keep,
+            config,
+        }),
+        Err(error) => {
+            if keep {
+                std::env::remove_var("IO_CONFIG");
+            }
+            Err(error)
+        }
+    }
+}
+
+/// A user-scope file beside a project-scope one, for the refusal tests.
+///
+/// The user file is trusted and the project file is not, which is the whole
+/// shape T13 asserts over: a repository that arrives with a `git clone` declaring
+/// something only the operator's own file may declare.
+pub fn user_scope_with_project(user: &str, project: &str) -> io_harness::Result<io_harness::Config> {
+    let _guard = env_lock();
+    let home = tempfile::tempdir().expect("a directory for the user-scope file");
+    let workspace = tempfile::tempdir().expect("a workspace root");
+    let path = home.path().join("io.toml");
+    std::fs::write(&path, user).expect("the user fixture is written");
+    std::fs::write(workspace.path().join("io.toml"), project).expect("the project fixture is written");
+
+    std::env::set_var("IO_CONFIG", &path);
+    let discovered = io_harness::Config::discover(workspace.path());
+    std::env::remove_var("IO_CONFIG");
+    discovered
+}
