@@ -1399,7 +1399,16 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
 #[test]
 fn f2_the_widening_rule_is_asked_of_io_harness_rather_than_copied_from_it() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/configure.rs");
-    let text = std::fs::read_to_string(path).expect("the module is readable");
+    // **Normalised at the read boundary, and CI is what taught this file that.**
+    // Git checks the source out with CRLF on Windows, so `"\n}\n"` below matches
+    // nothing there and the gate fails on the `expect` rather than on its subject
+    // — green on macOS and Linux, red on the one platform that sees it. 0.33.0
+    // shipped exactly this shape in `tests/docs.rs`'s paragraph splitter and the
+    // rule it left behind is to normalise where the bytes are read, not per
+    // helper. This is the first source-text gate written since, and it repeated it.
+    let text = std::fs::read_to_string(path)
+        .expect("the module is readable")
+        .replace("\r\n", "\n");
     let at = text
         .find("pub fn widens_workspace")
         .expect("`widens_workspace` is the predicate the surfaces consult");
