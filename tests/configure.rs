@@ -81,6 +81,117 @@ impl Scopes {
     }
 }
 
+/// The sections and values io-harness 0.74.0 refuses from a file in a workspace,
+/// each in the file that is refused for it.
+///
+/// **Not a list io-cli maintains** — every entry here is driven through
+/// `Config::discover` and the assertion is made against **io-harness's own
+/// sentence read back from the real refusal**, never against a needle typed here.
+/// 0.30.1 shipped a gate whose needle was `"io does not manage"` against a refusal
+/// reading `"is not a surface io manages"`; it passed forever and asserted
+/// nothing. What is spelled below is only the *input* — what io-harness says about
+/// it is read at run time.
+const REFUSED_IN_A_WORKSPACE: &[(&str, &str, &str)] = &[
+    (
+        "a project-scoped provider",
+        "project",
+        "[[provider]]\nkind = \"openrouter\"\nmodel = \"anthropic/claude-sonnet-4.5\"\n",
+    ),
+    (
+        "a project-scoped MCP server",
+        "project",
+        "[[mcp]]\nid = \"one\"\ntransport = \"stdio\"\ncommand = \"one\"\n",
+    ),
+    (
+        "a project-scoped LSP server",
+        "project",
+        "[[lsp]]\nid = \"rust\"\ncommand = \"rust-analyzer\"\nextensions = [\"rs\"]\n",
+    ),
+    (
+        "a hook in the workspace-root local file",
+        "local",
+        "[[hook]]\non = [\"finished\"]\nrun = [\"true\"]\n",
+    ),
+    (
+        "a widened policy default",
+        "project",
+        "[policy]\ndefaults = { write = \"allow\" }\n",
+    ),
+];
+
+/// **A refusal reads as a refusal, at every door that meets one.**
+///
+/// Three doors reach a refused configuration and until 0.35.0 they did not agree.
+/// Start-up framed it; the per-turn reload handed back io-harness's bare sentence
+/// with no root; the write door rolls back and quotes the harness. So the same
+/// `[[mcp]]` in the same file read as a refusal when `io` started and as an
+/// unattributed error at the turn boundary that noticed the edit — and the reload
+/// door is the one an operator meets *while working*, having just saved the file.
+///
+/// The framing had to change too. "could not be read" told an operator their file
+/// was broken when it was intact and in the wrong place, which is a different
+/// problem with a different fix.
+///
+/// **Every assertion is against the sentence io-harness actually produced**, taken
+/// from the same refusal the door is being asked about, so this cannot pass
+/// against a reworded harness or a needle nobody checked.
+///
+/// Sabotage: put `to_string()` back in `configure::reload`. The reload arm fails
+/// on the root, which is the fact io-harness cannot supply.
+#[test]
+fn f2_a_refused_configuration_reads_as_a_refusal_at_every_door() {
+    for (what, scope, body) in REFUSED_IN_A_WORKSPACE {
+        let s = match *scope {
+            "project" => scopes("[run]\nmax_steps = 10\n", body, ""),
+            _ => scopes("[run]\nmax_steps = 10\n", "", body),
+        };
+
+        // The harness's own words, for this exact fixture. Everything below is
+        // held against this rather than against anything written in this file.
+        let harness = s
+            .try_config()
+            .expect_err(&format!("io-harness refuses {what} in a workspace file"))
+            .to_string();
+        assert!(
+            harness.contains("IO_CONFIG"),
+            "{what}: the refusal names where the declaration belongs instead: {harness}",
+        );
+
+        // Door one: start-up.
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+        let error = Config::discover(s.root.path()).expect_err("the same refusal");
+        let started = configure::refusal(s.root.path(), &error);
+        std::env::remove_var("IO_CONFIG");
+        drop(_guard);
+
+        // Door two: the per-turn reload.
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+        let reloaded = configure::reload(s.root.path()).expect_err("the same refusal");
+        std::env::remove_var("IO_CONFIG");
+        drop(_guard);
+
+        for (door, said) in [("start-up", &started), ("reload", &reloaded)] {
+            assert!(
+                said.contains(&harness),
+                "{what}: the {door} door dropped io-harness's own sentence, which is the half \
+                 that says which key and where it belongs.\n  harness: {harness}\n  door: {said}",
+            );
+            assert!(
+                said.contains(&s.root.path().display().to_string()),
+                "{what}: the {door} door does not name the directory being read, which is the \
+                 one fact io-harness cannot supply: {said}",
+            );
+            assert!(
+                !said.contains("could not be read"),
+                "{what}: the {door} door calls a refusal a failure to read. The file parsed; \
+                 io-harness declined what it said, and that has a different fix: {said}",
+            );
+        }
+    }
+}
+
 #[test]
 fn f2_each_scope_names_its_own_file() {
     let s = scopes(

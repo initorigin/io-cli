@@ -348,10 +348,21 @@ fn a_malformed_hook_is_refused_by_io_harness_and_io_cli_adds_no_check_of_its_own
         // io-cli added — a rewording, a hint, a check of its own that fired first —
         // makes this fail, which is the point: the operator reads the words of
         // whoever enforced the rule.
+        //
+        // **"was not accepted" rather than "could not be read" since 0.35.0**, and
+        // this test caught the change, which is what it is for. io-harness 0.74.0
+        // refuses whole sections from any file inside a workspace, so the
+        // commonest reason `discover` fails is now a file that is intact and in
+        // the wrong place — and "could not be read" told that operator their file
+        // was broken, which is a different problem with a different fix. The
+        // wording covers a refusal and a genuine parse failure alike without
+        // io-cli having to classify which it is: `Error::Config` carries a
+        // sentence and no structure, so classifying would mean a list of the
+        // harness's clauses that goes stale the next time it tightens.
         assert_eq!(
             io_cli::configure::refusal(&root, &error),
             format!(
-                "the configuration in {} could not be read:\n{error}",
+                "the configuration in {} was not accepted:\n{error}",
                 root.display()
             ),
             "io-cli put something of its own between the operator and the refusal",

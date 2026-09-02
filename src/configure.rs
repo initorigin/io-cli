@@ -917,28 +917,45 @@ pub fn scope_path(root: &std::path::Path, scope: Scope) -> Option<PathBuf> {
     }
 }
 
-/// What to print when the configuration cannot be read at all.
+/// What to print when io-harness will not take the configuration.
 ///
 /// **The whole of io-harness's sentence, and one line of io-cli's own.** A
-/// `Config::discover` that fails is not always a broken file: since io-harness
-/// refuses a project-scoped `[[hook]]` outright — a hook runs a command, and
-/// `io.toml` is the file a `git clone` delivers — the commonest way for a
-/// perfectly well-formed repository to stop io from starting is a table somebody
-/// added in good faith to the wrong one of three files.
+/// `Config::discover` that fails is very often not a broken file at all: io-harness
+/// refuses whole sections outright from any file that lives in a workspace, so the
+/// commonest way for a perfectly well-formed repository to stop io from starting is
+/// a table somebody added in good faith to the wrong file.
 ///
-/// io-harness's own message names the key, says why, and names the two files that
-/// may carry it. Nothing io-cli could write would be better, so it is passed
-/// through whole. What io-cli adds is the one thing the harness cannot know: which
-/// directory was being read, because an operator who ran `io` in the wrong place
-/// is looking at a message about a file they have never opened.
+/// **0.74.0 made that far more likely and this sentence had to change with it.**
+/// The refused set grew from `[[hook]]` and `[browser]` to include `[[provider]]`,
+/// `[[mcp]]`, `[[lsp]]` and `[web]`; `[[hook]]` is now refused in `io.local.toml`
+/// as well as `io.toml`; ten policy and sandbox values may no longer be widened;
+/// and `run.skills`/`run.templates` may not be absolute or climb out with `..`. An
+/// operator who clones a repository can meet three of those at once.
+///
+/// **"was not accepted" rather than "could not be read", and the wording is the
+/// point.** A refusal is not a malfunction — the file parsed, and io-harness
+/// declined what it said. "Could not be read" told an operator their file was
+/// broken when it was intact and in the wrong place, which is a different problem
+/// with a different fix. The phrasing covers both cases honestly without io-cli
+/// having to classify which one it is: `Error::Config` carries no structure, only
+/// a sentence, so any classification here would be a list of the harness's clauses
+/// that goes stale the next time it tightens — which is exactly the mistake
+/// `widens_workspace` was rewritten to stop making.
+///
+/// io-harness's own message names the key, says why, and names the scope that may
+/// carry it. Nothing io-cli could write would be better, so it is passed through
+/// whole. What io-cli adds is the one thing the harness cannot know: which
+/// directory was being read, because an operator who ran `io` in the wrong place is
+/// looking at a message about a file they have never opened.
 ///
 /// **This lives here and not in `main.rs`.** Nothing under `tests/` links the
 /// binary, so a sentence composed in that file is one no test drives and no
 /// sabotage can make fail — the same reasoning that put plain-mode resolution in
-/// the library.
+/// the library. It is also why all three doors that meet a refusal route through
+/// this one function.
 pub fn refusal(root: &std::path::Path, error: &io_harness::Error) -> String {
     format!(
-        "the configuration in {} could not be read:\n{error}",
+        "the configuration in {} was not accepted:\n{error}",
         root.display()
     )
 }
@@ -1002,7 +1019,15 @@ pub fn write(
 pub fn reload(
     root: &std::path::Path,
 ) -> Result<(Config, Option<crate::settings::CliSettings>), String> {
-    let config = Config::discover(root).map_err(|e| e.to_string())?;
+    // **Through `refusal` and not `to_string`, so all three doors say one thing.**
+    // The startup door has framed a refused configuration since 0.16.0; this one
+    // handed back io-harness's bare sentence, so the same `[[mcp]]` in the same
+    // file read as a refusal at start-up and as an unattributed error at the turn
+    // boundary that noticed the edit — and the reload door is the one an operator
+    // meets *while working*, having just saved the file. It also gains the root,
+    // which is the fact io-harness cannot supply and the one that matters when the
+    // refused file is in a directory the operator has never opened.
+    let config = Config::discover(root).map_err(|error| refusal(root, &error))?;
     let (stored, _) = crate::settings::stored(&config);
     Ok((config, stored))
 }
