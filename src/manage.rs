@@ -1548,11 +1548,22 @@ fn config_set(args: &Args) -> Result<Request, String> {
     // is caught there by `configure::write`'s round trip in io-harness's own
     // words rather than here. Guessing at parse time would mean discovering the
     // workspace from a function whose whole job is reading a line of text.
-    if scope == Some(Scope::Project) && crate::configure::widens_project(&key, &value) {
+    // **Both untrusted scopes, and the advice names neither of them (0.35.0).**
+    // This guard read `Scope::Project` alone, so `--scope local` walked straight
+    // past io-cli's own check and was caught only by `configure::write`'s
+    // round-trip rollback — and the sentence it printed sent the operator to
+    // `--scope local`, which io-harness 0.74.0 now refuses for exactly the same
+    // reason. `io.local.toml` is not committed, but it sits in the workspace root
+    // a run's own agent can write to, so one `write_file` of an unremarkable name
+    // was an escalation. The user scope is the only destination left.
+    if matches!(scope, Some(Scope::Project | Scope::Local))
+        && crate::configure::widens_workspace(&key, &value)
+    {
         return Err(format!(
-            "io-harness refuses `{key} = {value}` in a project file, because `io.toml` is what a \
-             `git clone` hands to everyone and this widens what they may do without asking them; \
-             write it with `--scope local` for this checkout or `--scope user` for yourself"
+            "io-harness refuses `{key} = {value}` in a file inside the workspace, because \
+             `io.toml` is what a `git clone` hands to everyone and `io.local.toml` sits in a root \
+             this run's own agent can write to — and this widens what they may do without asking \
+             you; write it with `--scope user` for yourself"
         ));
     }
 

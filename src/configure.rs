@@ -600,36 +600,59 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
     }
 }
 
-/// Whether writing `value` to `key` would be refused in a **project-scoped** file.
+/// Whether writing `value` to `key` would be refused in a file that lives inside
+/// the workspace — `io.toml` or `io.local.toml`.
 ///
-/// io-harness refuses five (key, value) pairs in a committed `io.toml`
-/// (`PROJECT_WIDENING`, `io-harness-0.73.0/src/config.rs:1998-2008`): the two acts
-/// defaulted to `allow`, egress re-opened inside the sandbox, the portable floor
-/// switched off, and the widest exec mode. The narrowing value of each stays legal,
-/// which is what the scope is for.
+/// **Asked of io-harness rather than mirrored from it, and the mirror is why.**
+/// Until 0.35.0 this function held a hand-copied list of five (key, value) pairs.
+/// io-harness 0.74.0's `PROJECT_WIDENING` holds **thirteen pairs over twelve
+/// keys**: it added `policy.defaults.read` and `write` (the shipped defaults are
+/// `allow` and `ask`, and a project scope *overrides* the user scope, so a cloned
+/// file writing `write = "allow"` turned every unmatched write from a question
+/// into a silent grant), `sandbox.mode = "workspace-write"` beside `full-access`
+/// (the same override raised an operator's own `read-only` back to the default),
+/// and each of the five `sandbox.limits.*` written as `0`, which means *no cap*.
 ///
-/// **Mirrored here because a menu that offers a value the destination file will
-/// refuse is a menu that lies, and the cost is not one key.** `refuse_widening`
-/// runs before deserialization, so the refusal takes the *whole file*: an operator
-/// who picks `full-access` on a key their project `io.toml` decides does not get a
-/// rejected setting, they get a configuration that no longer parses. `write`
-/// already re-reads and refuses with io-harness's own sentence — this is what lets
-/// the row say so beforehand instead.
+/// So the copy was a strict subset of the rule it claimed to state, and `/config`
+/// and `io config set` were offering eight values the destination file would
+/// refuse. **No test failed**, because the gate iterated io-cli's own list and a
+/// list cannot notice what is missing from it. It was found by reading the
+/// dependency's diff.
 ///
-/// The pairs are io-harness's and are spelled here because it exposes no reader for
-/// them; `tests/configure.rs` round-trips each one through `Config::from_toml`, so a
-/// pair the dependency adds or drops is caught by the gate rather than by an
-/// operator.
+/// Rather than lengthen the copy and wait for the next divergence, this asks the
+/// dependency: it writes the one key into a one-line document, hands it to
+/// `Config::from_toml` — which parses at `Scope::Project` and runs
+/// `refuse_widening` before it deserializes anything — and reports whether the
+/// refusal was a *widening* refusal. There is nothing left to keep in step.
+///
+/// **Why the answer is worth asking for at all.** `refuse_widening` runs before
+/// deserialization, so the refusal takes the *whole file*: an operator who picks
+/// `full-access` on a key their project `io.toml` decides does not get a rejected
+/// setting, they get a configuration that no longer parses. `write` already
+/// re-reads and refuses in io-harness's own sentence — this is what lets the row
+/// say so beforehand instead of writing a file that has to be rolled back.
+///
+/// **Every value is written quoted, whatever the key's real type.**
+/// `refuse_widening` reads the raw table before deserialization and compares the
+/// *written* form of a string, a boolean or an integer alike, so `"false"` and
+/// `"0"` match the boolean and integer pairs. A value that does not widen goes on
+/// to deserialization and may fail there for a type error instead — which is why
+/// the answer is the refusal's own clause and not merely `is_err`.
 #[must_use]
-pub fn widens_project(key: &str, value: &str) -> bool {
-    matches!(
-        (key, value.trim().trim_matches('"')),
-        ("policy.defaults.exec", "allow")
-            | ("policy.defaults.net", "allow")
-            | ("sandbox.allow_network", "true")
-            | ("sandbox.force_floor", "false")
-            | ("sandbox.mode", "full-access")
-    )
+pub fn widens_workspace(key: &str, value: &str) -> bool {
+    /// The clause io-harness's widening refusal always carries
+    /// (`io-harness-0.74.0/src/config.rs:2509`). Matched rather than the whole
+    /// sentence, which interpolates the path, the key and the destination scope.
+    const WIDENS: &str = "widens the boundary";
+
+    let value = value.trim().trim_matches('"');
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    let document = match key.rsplit_once('.') {
+        Some((table, leaf)) => format!("[{table}]\n{leaf} = \"{escaped}\"\n"),
+        None => format!("{key} = \"{escaped}\"\n"),
+    };
+
+    Config::from_toml(&document).is_err_and(|refusal| refusal.to_string().contains(WIDENS))
 }
 
 /// The `/config` row that re-reads the price catalogue.

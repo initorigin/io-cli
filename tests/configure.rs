@@ -537,14 +537,16 @@ fn f3_a_scope_with_no_file_gets_one() {
 
 // --- F4: a project-scoped widening is refused in the harness's own words ------
 
-/// The key/value pairs io-cli's own `widens_project` knows about.
+/// Widening pairs, spelled the way an operator writes them in a file.
 ///
-/// **This list is io-cli's, and since io-harness 0.74.0 it is a strict subset of
-/// `PROJECT_WIDENING` rather than a copy of it** — the harness now carries ten
-/// pairs (`policy.defaults.read` and `write`, `sandbox.mode = "workspace-write"`
-/// and five `sandbox.limits.* = 0`) against these five. That gap is a production
-/// question about `src/configure.rs`, not a fixture question, and it is left
-/// exactly as it is here so it stays visible.
+/// **A sample, not the rule.** io-harness 0.74.0's `PROJECT_WIDENING` holds
+/// thirteen pairs over twelve keys and it publishes no reader for them, so nothing
+/// here is the definition of anything — `configure::widens_workspace` asks the
+/// dependency instead of holding a list, and
+/// `f2_the_widening_rule_is_asked_of_io_harness_rather_than_copied_from_it` is
+/// what keeps it that way. These five exist to drive `configure::write` and read
+/// back io-harness's own sentence, which needs a value written into a real file
+/// rather than a predicate's answer about one.
 const WIDENINGS: &[(&str, &str)] = &[
     ("policy.defaults.exec", "\"allow\""),
     ("policy.defaults.net", "\"allow\""),
@@ -1152,10 +1154,57 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
             "full-access",
             "[sandbox]\nmode = \"full-access\"\n",
         ),
+        // **The eight below are the ones io-cli did not know, and the reason this
+        // test was rewritten in 0.35.0.** Every one of them was already refused by
+        // io-harness 0.74.0 and already offered by `/config` and `io config set`,
+        // and no test failed — because the old version of this loop iterated
+        // io-cli's own five-pair list, and a list cannot notice what is missing
+        // from it. They are named individually rather than covered by a helper so
+        // that the count here is a claim about the dependency's table.
+        (
+            "policy.defaults.read",
+            "allow",
+            "[policy]\ndefaults = { read = \"allow\" }\n",
+        ),
+        (
+            "policy.defaults.write",
+            "allow",
+            "[policy]\ndefaults = { write = \"allow\" }\n",
+        ),
+        (
+            "sandbox.mode",
+            "workspace-write",
+            "[sandbox]\nmode = \"workspace-write\"\n",
+        ),
+        (
+            "sandbox.limits.max_cpu_secs",
+            "0",
+            "[sandbox.limits]\nmax_cpu_secs = 0\n",
+        ),
+        (
+            "sandbox.limits.max_wall_secs",
+            "0",
+            "[sandbox.limits]\nmax_wall_secs = 0\n",
+        ),
+        (
+            "sandbox.limits.max_memory_bytes",
+            "0",
+            "[sandbox.limits]\nmax_memory_bytes = 0\n",
+        ),
+        (
+            "sandbox.limits.max_processes",
+            "0",
+            "[sandbox.limits]\nmax_processes = 0\n",
+        ),
+        (
+            "sandbox.limits.max_open_files",
+            "0",
+            "[sandbox.limits]\nmax_open_files = 0\n",
+        ),
     ];
     for (key, value, project) in widening {
         assert!(
-            configure::widens_project(key, value),
+            configure::widens_workspace(key, value),
             "{key} = {value} widens and io-cli does not say so"
         );
         // The dependency's own answer, at the scope `from_toml` parses as.
@@ -1190,12 +1239,81 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
         ),
     ] {
         assert!(
-            !configure::widens_project(key, value),
+            !configure::widens_workspace(key, value),
             "{key} = {value} narrows and must not be marked"
         );
         assert!(
             Config::from_toml(project).is_ok(),
             "io-harness refuses a narrowing value in a committed file: {key}"
+        );
+    }
+
+    // **A value that fails to deserialize is not a widening, and the distinction
+    // is what stops this predicate from marking every typo.** `widens_workspace`
+    // asks the dependency by writing the key into a one-line document, and a
+    // value the key's type refuses comes back as an error too — so the answer is
+    // the refusal's own clause and not merely `is_err`.
+    for (key, value) in [
+        ("policy.defaults.exec", "not-an-effect"),
+        ("sandbox.mode", "sideways"),
+        ("run.max_steps", "not-a-number"),
+    ] {
+        assert!(
+            !configure::widens_workspace(key, value),
+            "{key} = {value} is a bad value, not a wider boundary — marking it would send an \
+             operator to the user scope to write something that is refused there too"
+        );
+    }
+}
+
+/// **F2, the shape of the answer.** The widening rule is asked of io-harness, not
+/// held as a list.
+///
+/// **This gate exists because the list is what failed.** Until 0.35.0
+/// `widens_workspace` was `widens_project`, a `matches!` over five hand-copied
+/// pairs. io-harness 0.74.0's `PROJECT_WIDENING` holds thirteen pairs over twelve
+/// keys, so io-cli's copy had become a strict subset of the rule it claimed to
+/// state — and `/config` and `io config set` were offering eight values the
+/// destination file refuses, each refusal taking the whole file rather than the
+/// key. **No test failed**, because the test iterated io-cli's own list.
+///
+/// The loop above now covers all thirteen, which catches *today's* gap. This
+/// catches the next one: a release that answers a new divergence by lengthening a
+/// list rather than by asking has reintroduced the failure mode, and the loop
+/// above cannot see that because a longer correct list still passes it.
+///
+/// Sabotage: reinstate the five-pair `matches!`. The loop above fails on eight
+/// pairs and this fails on the shape, which is the pair of failures that says the
+/// list is both wrong and the wrong idea.
+#[test]
+fn f2_the_widening_rule_is_asked_of_io_harness_rather_than_copied_from_it() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/configure.rs");
+    let text = std::fs::read_to_string(path).expect("the module is readable");
+    let at = text
+        .find("pub fn widens_workspace")
+        .expect("`widens_workspace` is the predicate the surfaces consult");
+    let body = &text[at..];
+    let end = body.find("\n}\n").expect("the function has an end");
+    let body = &body[..end];
+
+    assert!(
+        body.contains("Config::from_toml"),
+        "the predicate asks io-harness for its own answer; anything else is a copy that goes \
+         stale the next time the dependency tightens, which is exactly what happened at 0.74.0",
+    );
+    for spelled in [
+        "policy.defaults.exec",
+        "policy.defaults.net",
+        "sandbox.allow_network",
+        "sandbox.force_floor",
+        "full-access",
+        "workspace-write",
+    ] {
+        assert!(
+            !body.contains(spelled),
+            "`widens_workspace` names `{spelled}` in its body. The pairs belong to io-harness and \
+             it publishes no reader for them, so the answer is asked for rather than restated — a \
+             key spelled here is a key that has to be remembered when the dependency moves",
         );
     }
 }

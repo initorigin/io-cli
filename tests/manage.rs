@@ -616,41 +616,66 @@ max_retries = 2
     assert!(after.contains("max_retries = 2"), "a sibling went: {after}");
 }
 
+/// **F4.** A widening is reported at parse time, for **both** files that live in
+/// the workspace — and the advice names neither of them.
+///
+/// io-harness's `refuse_widening` runs before deserialization, so this is not a
+/// rejected setting: it is a configuration file that no longer parses at all.
+/// `configure::write` would roll it back and quote the harness; saying it here
+/// means the file is never written.
+///
+/// **Both halves of this test asserted the defect until 0.35.0, and it was green.**
+/// The guard read `Scope::Project` alone, so `--scope local` parsed cleanly and
+/// this test asserted that it should — while the refusal on the other arm sent the
+/// operator to `--scope local` as the remedy. io-harness 0.74.0 refuses
+/// `io.local.toml` for the same reason it refuses `io.toml`: it is not committed,
+/// but it sits in the workspace root a run's own agent can write to, so one
+/// `write_file` of an unremarkable name was an escalation. io-cli was shipping
+/// advice that fails, pinned by an assertion that it should.
 #[test]
-fn f4_a_widening_in_a_project_file_is_reported_rather_than_written() {
-    // io-harness's `refuse_widening` runs before deserialization, so this is not
-    // a rejected setting — it is a configuration file that no longer parses at
-    // all. `configure::write` would roll it back and quote the harness; saying it
-    // here means the file is never written.
-    let refusal = manage::parse(&argv(&[
-        "config",
-        "set",
-        "sandbox.mode",
-        "full-access",
-        "--scope",
-        "project",
-    ]))
-    .expect_err("a committed file may not widen what a clone may do");
-    assert!(refusal.contains("sandbox.mode"), "{refusal}");
-    assert!(refusal.contains("full-access"), "{refusal}");
-    assert!(refusal.contains("--scope local"), "{refusal}");
+fn f4_a_widening_in_either_workspace_file_is_reported_rather_than_written() {
+    for scope in ["project", "local"] {
+        let refusal = manage::parse(&argv(&[
+            "config",
+            "set",
+            "sandbox.mode",
+            "full-access",
+            "--scope",
+            scope,
+        ]))
+        .unwrap_err();
+        assert!(refusal.contains("sandbox.mode"), "{scope}: {refusal}");
+        assert!(refusal.contains("full-access"), "{scope}: {refusal}");
+        assert!(
+            refusal.contains("--scope user"),
+            "{scope}: the user scope is the only destination left, and a refusal that names a \
+             file the harness also refuses is worse than one that names none: {refusal}"
+        );
+        assert!(
+            !refusal.contains("--scope local"),
+            "{scope}: `io.local.toml` is refused too — this is the sentence the release exists to \
+             correct: {refusal}"
+        );
+    }
 
-    // The same value in a file that is not shared is the operator's own business.
+    // The user scope is the operator's own file and is not in a workspace, so the
+    // same value parses there. The positive control matters: without it this test
+    // passes against a guard that refuses every scope.
     let allowed = manage::parse(&argv(&[
         "config",
         "set",
         "sandbox.mode",
         "full-access",
         "--scope",
-        "local",
+        "user",
     ]))
-    .expect("a local file may say it");
+    .expect("the operator's own file may say it");
     assert_eq!(
         allowed,
         Request::Config(ConfigVerb::Set {
             key: "sandbox.mode".to_string(),
             value: "\"full-access\"".to_string(),
-            scope: Some(Scope::Local),
+            scope: Some(Scope::User),
         })
     );
 }
