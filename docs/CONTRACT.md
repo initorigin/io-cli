@@ -196,7 +196,7 @@ surfaces and fails on `io_harness::NAMESPACE` appearing in any of them. Invoking
 as a command is the one place the two forms are side by side on purpose: the scrollback echoes the
 line you typed, `/ultraship:brainstorm …`, and the prompt behind it carries `ultraship__brainstorm`.
 
-**A bundle's `[[bin]]` is resolvable inside a run and nowhere else.** io-harness 0.73.0 accepts the
+**A bundle's `[[bin]]` is resolvable inside a run and nowhere else.** io-harness 0.74.0 accepts the
 key, resolves the path against the bundle root and places nothing; io-cli **appends** the directory
 holding that file to its own process `PATH`, which every command a run spawns inherits. Appended
 and never prepended, so nothing a bundle ships can shadow a system command. No file is written and

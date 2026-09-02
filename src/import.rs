@@ -30,7 +30,7 @@
 //! decision="allow")` and Claude's `permissions.ask` says `Bash(cargo yank *)` —
 //! both of which match a *command line*. io-harness's `Act::Exec` matches a
 //! **binary name and nothing else**; it has no argument matching at all
-//! (`Act::Exec`, `io-harness-0.73.0/src/policy.rs:63`). So the nearest thing to a faithful
+//! (`Act::Exec`, `io-harness-0.74.0/src/policy.rs:63`). So the nearest thing to a faithful
 //! import of `bun install` is a blanket allow on `bun`, which is a wider
 //! permission than the operator ever granted, written by a tool they were
 //! trusting to be careful. A boundary half-imported is worse than one left alone,
