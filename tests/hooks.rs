@@ -376,12 +376,9 @@ fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed()
     // event-name rule, and taking the lock twice on one thread is a deadlock.
     let _guard = support::env_lock();
 
-    // `.err()` rather than `expect_err`, because `UserScope` is not `Debug` and the
-    // `Ok` side would have to be printable for that call to compile.
     let error =
         support::try_user_scope_locked("[[hook]]\non = [\"finsihed\"]\nrun = [\"true\"]\n", false)
-            .err()
-            .expect("a misspelled event name is a hook that would never fire");
+            .expect_err("a misspelled event name is a hook that would never fire");
     assert!(
         error
             .to_string()

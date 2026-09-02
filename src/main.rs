@@ -3493,15 +3493,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             } else if let Some(value) =
                                 index.checked_sub(1).and_then(|at| values.get(at))
                             {
-                                if *scope == io_harness::config::Scope::Project
-                                    && io_cli::configure::widens_project(key, value)
+                                if matches!(
+                                    *scope,
+                                    io_harness::config::Scope::Project
+                                        | io_harness::config::Scope::Local
+                                ) && io_cli::configure::widens_workspace(key, value)
                                 {
                                     app.record(
                                         Tone::Refused,
                                         format!(
-                                            "{key} is decided by the project file, and a committed \
-                                             file may not set it to {value} — io-harness refuses \
-                                             the whole file for it, not just the key"
+                                            "{key} is decided by a file inside the workspace, and \
+                                             such a file may not set it to {value} — io-harness \
+                                             refuses the whole file for it, not just the key"
                                         ),
                                     );
                                 } else {
