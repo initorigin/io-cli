@@ -803,6 +803,61 @@ fn f6_a_plugin_directory_with_no_manifest_is_refused_before_anything_is_written(
     assert!(after.contains("path = \"bundle\""), "{after}");
 }
 
+/// **Installing a bundle that is already declared writes nothing.**
+///
+/// **A defect 0.35.0 created, caught before it shipped.** Since the adapter became
+/// a copy of what it contributes rather than a pointer into the clone, a `git pull`
+/// of a marketplace is no longer visible on its own — **installing again is the
+/// update path**. And `pluginview::add` appends unconditionally while
+/// `Edit::append` always splices at end of file, so every refresh added a *second*
+/// `[[plugin]]` naming the same directory. io-harness drops it with "a plugin with
+/// id `x` is already declared and switched on", so nothing broke and nothing was
+/// said: the operator's `io.toml` simply grew an ignored entry on every update,
+/// quietly, for as long as they kept the bundle current.
+///
+/// The adapter itself is regenerated on disk by `marketplace::chosen`, before
+/// `plan` decides anything, so a refresh has no edit to make at all.
+///
+/// Sabotage: return the `add` edit unconditionally, which is the pre-0.35.0 body.
+/// The second plan carries an edit and this fails on the count.
+#[test]
+fn installing_a_bundle_that_is_already_declared_plans_no_second_entry() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let bundle = root.path().join("bundle");
+    std::fs::create_dir(&bundle).expect("a directory");
+    std::fs::write(
+        bundle.join(io_cli::pluginview::MANIFEST),
+        "name = \"demo\"\n",
+    )
+    .expect("a manifest");
+
+    let request = manage::parse(&argv(&["plugin", "add", "bundle"])).expect("it parses");
+
+    // The first install, against a configuration that declares nothing.
+    let first = manage::plan(root.path(), &request, &[])
+        .expect("it is a bundle")
+        .expect("a write");
+    assert_eq!(
+        first.edits.len(),
+        1,
+        "the first install declares it exactly once",
+    );
+
+    // And the second, against a configuration that already names this directory —
+    // which is what `plan` is handed on every real update.
+    let declared = [("demo".to_string(), bundle.clone())];
+    let second = manage::plan(root.path(), &request, &declared)
+        .expect("it is still a bundle")
+        .expect("a plan, because the operator still has to be told what a refresh moved");
+    assert!(
+        second.edits.is_empty(),
+        "a refresh planned {} edit(s). Appending a second `[[plugin]]` for a directory already \
+         declared grows the operator's file by an entry io-harness drops, on every update: {:?}",
+        second.edits.len(),
+        second.edits,
+    );
+}
+
 // --- `plugin remove <word>`: the path first, then the declared name -------------
 //
 // `io plugin add <name>` installs a bundle a marketplace holds and then tells the

@@ -688,6 +688,69 @@ fn f8_the_generated_manifest_round_trips_and_an_invented_key_refuses_the_bundle(
     );
 }
 
+/// **A refused refresh leaves the working adapter exactly as it was.**
+///
+/// **This is a defect 0.35.0 created and caught before it shipped.** Until the
+/// adapter became a copy, `generate` ran only on a first install: it wiped `into`
+/// up front and removed it again on every refusal, and there was nothing there to
+/// lose. Now that the adapter ships what it contributes, **installing again is the
+/// update path** — so a refusal on an update was deleting a working adapter that
+/// an existing `[[plugin]]` entry still named, and an operator lost a bundle by
+/// trying to refresh it. The generator stages in a sibling and swaps in on
+/// success, so nothing below `into` is touched until everything has succeeded.
+///
+/// The refusal used here is the copy stage rather than an earlier one on purpose:
+/// a bundle whose `skills` climbs out of itself is refused by `inside` before any
+/// directory is made, which would pass this test without exercising the staging at
+/// all.
+///
+/// Sabotage: generate into `into` directly and remove it on failure, which is the
+/// pre-0.35.0 body. The adapter is gone and this fails on the skill it can no
+/// longer read.
+#[cfg(unix)]
+#[test]
+fn a_refused_refresh_leaves_the_installed_adapter_untouched() {
+    let (_dir, root) = clone();
+    let bundle = four_kinds(&root);
+    let into = root.join("adapters/rust-review");
+
+    adapt::generate(&bundle, "rust-review", &into).expect("the first install writes an adapter");
+    let skill = into.join("skills/review/SKILL.md");
+    let before = std::fs::read_to_string(&skill).expect("the adapter ships the bundle's skill");
+
+    // Make the *next* generate fail, at the copy, by putting a symbolic link where
+    // the adapter would have to follow it out of the bundle.
+    std::os::unix::fs::symlink(&root, bundle.join("skills/escape")).expect("a link is made");
+
+    let refused = adapt::generate(&bundle, "rust-review", &into)
+        .expect_err("a symbolic link in a contributed directory refuses the bundle");
+
+    assert!(
+        into.is_dir(),
+        "the refused refresh removed the installed adapter, which a `[[plugin]]` entry still \
+         names: {refused}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&skill).ok().as_deref(),
+        Some(before.as_str()),
+        "and it is the adapter that was working, byte for byte, rather than a rebuilt one",
+    );
+
+    // And the staging directory it built into is not left beside it, where the
+    // marketplace listing walks.
+    let strays: Vec<_> = std::fs::read_dir(into.parent().expect("a parent"))
+        .expect("the adapters directory is readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "rust-review")
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "a failed refresh left {strays:?} behind: a half-built adapter under a path the listing \
+         walks reads exactly like a working one",
+    );
+}
+
 /// A server that is a script inside the bundle — named the only way a bundle can
 /// name one, because the bundle does not know where it will be cloned to.
 const PLUGIN_ROOT_SERVER: &str = r#"{

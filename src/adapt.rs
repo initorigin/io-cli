@@ -651,13 +651,34 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
     // otherwise survive in io's home and go on being read into the model's prompt
     // on every turn. `into` is a directory this module owns by the layout [`at`]
     // states and nothing an operator wrote is in it.
-    let _ = std::fs::remove_dir_all(into);
-    crate::home::create(into).map_err(|e| format!("{}: {e}", into.display()))?;
-    let manifest = into.join(PLUGIN_FILE);
-    std::fs::write(&manifest, text.as_bytes())
-        .map_err(|e| format!("{}: {e}", manifest.display()))?;
+    // **Built in a sibling and swapped in, never written over the live one.**
+    // Until 0.35.0 this wiped `into` first and removed it again on every refusal,
+    // which was correct while an install was the only thing that ran it: there was
+    // nothing there to lose. Since the adapter became a copy, **installing again
+    // is the update path** — so a refusal on an update was deleting a working
+    // adapter that an existing `[[plugin]]` entry still named, and the operator's
+    // next session lost a bundle by trying to refresh it. Every failure below now
+    // leaves `into` exactly as it was.
+    //
+    // The same shape `fetch::clone_at` uses, and for the same reason: a
+    // remove-on-failure covers no failure the process does not survive, and a
+    // `kill -9` mid-copy is exactly how half an adapter lands under a path the
+    // listing walks. The pid is in the name so two `io` processes adapting the
+    // same bundle cannot stage into each other.
+    let parent = into.parent().unwrap_or(into);
+    let staging = parent.join(format!(
+        ".{}.staging.{}",
+        into.file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("adapter"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    crate::home::create(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    let staged = staging.join(PLUGIN_FILE);
+    std::fs::write(&staged, text.as_bytes()).map_err(|e| format!("{}: {e}", staged.display()))?;
 
-    let plugin = match Plugins::inspect(Scope::User, into) {
+    let plugin = match Plugins::inspect(Scope::User, &staging) {
         Ok(plugin) => plugin,
         Err(refused) => {
             // Removed rather than left for an operator to find: a manifest
@@ -665,7 +686,7 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
             // `Plugins::dropped` against a path they never chose, and a directory
             // holding a broken adapter reads exactly like one holding a working
             // adapter until something declares it.
-            let _ = std::fs::remove_dir_all(into);
+            let _ = std::fs::remove_dir_all(&staging);
             return Err(refused.to_string());
         }
     };
@@ -678,12 +699,27 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
     let mut copied = Vec::new();
     for (key, from) in &sources {
         let Some(from) = from else { continue };
-        if let Err(refused) = copied_into(from, &into.join(key), key, bundle) {
-            let _ = std::fs::remove_dir_all(into);
+        if let Err(refused) = copied_into(from, &staging.join(key), key, bundle) {
+            let _ = std::fs::remove_dir_all(&staging);
             return Err(refused);
         }
         copied.push((*key).to_string());
     }
+
+    // **The swap, and it is the first thing here that touches `into`.** Everything
+    // above either succeeded or returned having left the live adapter alone.
+    //
+    // The window this leaves is one rename wide — a process that dies between the
+    // remove and the rename loses the adapter — where before it was the whole of
+    // this function including every refusal. It is not closed entirely because
+    // closing it means a third path to restore on failure, and `plugin add` is the
+    // one command that puts it all back.
+    let _ = std::fs::remove_dir_all(into);
+    std::fs::rename(&staging, into).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging);
+        format!("{}: {error}", into.display())
+    })?;
+    let manifest = into.join(PLUGIN_FILE);
 
     Ok(Adapter {
         manifest,

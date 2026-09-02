@@ -811,6 +811,23 @@ pub fn plan(
                 })
                 .transpose()
                 .inspect_err(|_| crate::marketplace::unmake(chosen.made()))?;
+            // **And nothing is written at all when the entry is already there
+            // (0.35.0).** Since the adapter became a copy of what it contributes,
+            // **installing again is the update path** — and `pluginview::add`
+            // appends unconditionally while `Edit::append` always splices at end
+            // of file, so every refresh added a *second* `[[plugin]]` naming the
+            // same directory. io-harness drops it with "a plugin with id `x` is
+            // already declared and switched on", so the bundle kept working and
+            // the operator's file grew an ignored entry on each update, quietly,
+            // forever.
+            //
+            // There is no edit to make: the adapter was regenerated on disk by
+            // `chosen` above, before this point, and the declaration that names it
+            // is already correct. The disclosure still travels, because what the
+            // refresh moved is exactly what the operator needs to see.
+            let already = declared
+                .iter()
+                .any(|(_, path)| path.as_path() == chosen.dir());
             Plan {
                 made: chosen.made().map(Path::to_path_buf),
                 scope: *scope,
@@ -820,7 +837,11 @@ pub fn plan(
                 // have io-harness read it at all; `inspect` has replaced that
                 // round trip, so there is no longer an entry in the file that the
                 // operator has not agreed to. See `pluginview::add_off`.
-                edits: vec![crate::pluginview::add(&written)],
+                edits: if already {
+                    Vec::new()
+                } else {
+                    vec![crate::pluginview::add(&written)]
+                },
                 disclosure,
             }
         }
