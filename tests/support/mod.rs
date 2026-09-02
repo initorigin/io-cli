@@ -342,6 +342,19 @@ pub fn harness_run_outcomes() -> Vec<String> {
     variants
 }
 
+/// One file of the io-harness source this crate is locked to, as text.
+///
+/// The readers below each parse one declaration out of that source; this is for a
+/// test that wants a different one. Newlines are normalised, because git checks
+/// the registry out with CRLF on Windows and every needle here is written with
+/// `\n` — a Windows-only failure in a gate about a constant would be the third
+/// instance of that class in this repository.
+pub fn harness_source(file: &str) -> String {
+    std::fs::read_to_string(harness_source_path(file))
+        .expect("io-harness's source is readable from the registry")
+        .replace("\r\n", "\n")
+}
+
 /// Every variant `io_harness::Error` declares, in the source this crate is locked
 /// to, in declaration order and spelled as Rust spells them.
 ///

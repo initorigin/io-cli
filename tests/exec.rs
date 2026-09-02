@@ -2681,3 +2681,213 @@ fn f2_exactly_one_harness_error_variant_is_a_boundary_refusal() {
          decision and not a default",
     );
 }
+
+// --- the local-address floor, surfaced with the one thing that lifts it ---------
+
+/// **The layer io-cli matches is the layer io-harness stamps.**
+///
+/// io-harness's `FLOOR_LAYER` is `pub(crate)`, so io-cli spells the string. That
+/// is one literal and not a table — the shapes the floor refuses are never
+/// re-derived here, because 0.30.0 shipped a copy of one of this dependency's
+/// address checks and it **failed open** on five of them. What this holds is the
+/// spelling, against the locked source, so a rename upstream fails here rather
+/// than silently dropping the remedy from every refusal.
+///
+/// Sabotage: change either spelling. This fails naming both.
+#[test]
+fn f11_the_local_address_floor_layer_is_spelled_as_io_harness_spells_it() {
+    let source = support::harness_source("net.rs");
+    let declared = source
+        .split_once("FLOOR_LAYER: &str = \"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(value, _)| value)
+        .expect("io-harness declares FLOOR_LAYER in src/net.rs");
+
+    assert_eq!(
+        declared,
+        exec::LOCAL_ADDRESS_FLOOR,
+        "io-harness stamps `{declared}` on a floor refusal and io-cli looks for \
+         `{}`, so the remedy reaches nobody",
+        exec::LOCAL_ADDRESS_FLOOR,
+    );
+}
+
+/// **A refusal from the floor carries the one thing that lifts it.**
+///
+/// Everyone pointed at a model on their own machine — Ollama, LM Studio,
+/// llama.cpp — is refused at run start on this pin, whatever their policy says,
+/// and io-harness gives the lift no configuration key on purpose. A bare refusal
+/// with no remedy is the single most user-visible break in this release.
+///
+/// Asserted at the seam for **both** doors, because a remedy on one of them is a
+/// remedy an `io resume` never shows.
+#[test]
+fn f11_a_floor_refusal_names_the_variable_that_lifts_it_at_both_doors() {
+    for (door, ending_for) in DOORS {
+        let ending = ending_for(io_harness::Error::Refused {
+            act: "net".into(),
+            target: "127.0.0.1:11434".into(),
+            rule: Some("loopback".into()),
+            layer: Some(exec::LOCAL_ADDRESS_FLOOR.to_string()),
+        });
+
+        assert_eq!(ending.code, exec::REFUSED, "{door}: the boundary said no");
+        assert!(
+            ending
+                .to_string()
+                .contains("IO_HARNESS_ALLOW_LOCAL_ADDRESSES"),
+            "{door}: a floor refusal with no remedy leaves a local-model operator with nothing \
+             to do about it: {ending}",
+        );
+        assert!(
+            ending.to_string().contains("127.0.0.1:11434"),
+            "{door}: and it still carries io-harness's own sentence, which names the endpoint: \
+             {ending}",
+        );
+    }
+
+    // A refusal from any other layer is left exactly as io-harness wrote it: the
+    // remedy is about one floor and would be noise, or a lie, anywhere else.
+    for (door, ending_for) in DOORS {
+        let ending = ending_for(io_harness::Error::Refused {
+            act: "write".into(),
+            target: "/etc/hosts".into(),
+            rule: Some("*".into()),
+            layer: Some("builtin-secrets".into()),
+        });
+        assert!(
+            !ending
+                .to_string()
+                .contains("IO_HARNESS_ALLOW_LOCAL_ADDRESSES"),
+            "{door}: a write refusal is not lifted by a network variable: {ending}",
+        );
+    }
+}
+
+/// **io-cli sets that variable nowhere, and an absence needs a source-text gate.**
+///
+/// The lift is the operator's own explicit choice — io-harness gave it no
+/// configuration key precisely so a file cannot grant it — and a product whose
+/// thesis is that the boundary is legible must not re-grant, from the inside, a
+/// permission the harness has just taken away. Even for an operator whose own
+/// `io.toml` names a loopback endpoint: that file is a statement about where the
+/// model is, not consent to leave the sandbox.
+///
+/// 0.30.0's `F15` had no site for exactly this reason — an absence cannot be
+/// asserted by driving anything — so this reads the source.
+#[test]
+fn f11_io_cli_never_sets_the_local_address_variable() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sets = Vec::new();
+
+    let mut stack = vec![src];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src is readable").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a source file is readable");
+            for (number, line) in text.lines().enumerate() {
+                let code = line.split_once("//").map_or(line, |(before, _)| before);
+                if code.contains("set_var") && code.contains("IO_HARNESS_ALLOW_LOCAL_ADDRESSES") {
+                    sets.push(format!("{}:{}", path.display(), number + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        sets.is_empty(),
+        "io-cli sets IO_HARNESS_ALLOW_LOCAL_ADDRESSES at {sets:?}. The harness gave that lift no \
+         configuration key on purpose; granting it from inside the product is re-opening a \
+         boundary the operator never asked to open",
+    );
+}
+
+// --- `[run] templates` reaches the headless door too ---------------------------
+
+/// **`run.templates` was applied on one door only, and the limits page named the
+/// wrong thing as the gap.**
+///
+/// `commands::templates` has read the key through its own accessor since the
+/// palette learned prompt templates — but only an interactive session called it,
+/// so `io exec` ignored a key `docs/config.example.toml` documents. A
+/// configuration key that works in the terminal and silently does nothing in CI is
+/// the asymmetry this product deleted in 0.14.0, arriving again through a door
+/// nobody had checked.
+///
+/// **User-scoped, and 0.74.0 is why.** `run.templates` naming an absolute
+/// directory is refused from any file inside a workspace: every `*.md` under it is
+/// composed into the model's system prompt, so a cloned `io.toml` could put this
+/// host's files into the model's context. The operator's own file is the only one
+/// that may name a directory outside the workspace.
+///
+/// Sabotage: pass `args.goal` through untouched, which is the pre-0.35.0 body.
+/// The first arm fails with the template's own name where its text should be.
+#[test]
+fn f10_a_headless_goal_may_name_a_template_and_a_plain_goal_is_untouched() {
+    let dir = tempfile::tempdir().expect("a directory of templates");
+    std::fs::write(
+        dir.path().join("review.md"),
+        "Read every changed line and say what is wrong with it.\n",
+    )
+    .expect("a template is written");
+
+    let declared = io_cli::edit::spell(&dir.path().display().to_string());
+    let scope = support::user_scope(&format!("[run]\ntemplates = {declared}\n"));
+
+    let (rendered, notice) =
+        exec::goal_for(&scope.config, "/review").expect("the template renders");
+    // Trailing newline trimmed: that is `Templates::render`'s doing, not this
+    // function's, and it is the same text the palette puts in the composer.
+    assert_eq!(
+        rendered, "Read every changed line and say what is wrong with it.",
+        "the headless goal is the template's text, not its name",
+    );
+    assert!(notice.is_none(), "a directory that reads says nothing");
+
+    // The overwhelmingly common case, which this must not change.
+    let (plain, _) =
+        exec::goal_for(&scope.config, "summarise the module").expect("a prompt is not a template");
+    assert_eq!(
+        plain, "summarise the module",
+        "a goal that does not begin with `/` is a prompt and is passed through",
+    );
+
+    // A name no template has is a goal that does not exist, and it is refused
+    // before a provider is built rather than spent on a call that says so.
+    let refused = exec::goal_for(&scope.config, "/not-a-template")
+        .expect_err("a template that is not there cannot be rendered");
+    assert!(
+        refused.contains("not-a-template"),
+        "the refusal names what was asked for: {refused}",
+    );
+}
+
+/// And a configuration naming no templates leaves every goal alone.
+///
+/// The arm that stops the expansion being reachable by accident: with no
+/// `[run] templates`, `commands::templates` answers `Templates::none()`, and a
+/// goal beginning with `/` is refused rather than silently becoming empty.
+#[test]
+fn f10_a_configuration_with_no_templates_passes_every_plain_goal_through() {
+    let scope = support::user_scope("[run]\nmax_steps = 10\n");
+
+    let (plain, notice) =
+        exec::goal_for(&scope.config, "summarise the module").expect("a prompt needs no templates");
+    assert_eq!(plain, "summarise the module");
+    assert!(
+        notice.is_none(),
+        "a configuration that names no directory has nothing to complain about",
+    );
+
+    assert!(
+        exec::goal_for(&scope.config, "/review").is_err(),
+        "a template named where none are configured is refused, not rendered empty",
+    );
+}

@@ -225,6 +225,38 @@ pub fn verified_code(outcome: &RunOutcome, standing: Option<&crate::gates::Stand
     }
 }
 
+/// The layer io-harness 0.74.0 stamps on a refusal from its local-address floor.
+///
+/// **Matched rather than re-derived, and that is the whole design of this
+/// notice.** The floor refuses a loopback, link-local, CGNAT, ULA or RFC 1918
+/// provider endpoint — and `localhost`, `*.localhost`, `*.local` — before the
+/// run's first step, *whatever the policy says*. io-cli could inspect the
+/// configured endpoint and decide for itself which of those it is; it does not,
+/// because 0.30.0 shipped a copy of one of this dependency's address checks and it
+/// **failed open** on five shapes, including a URL where a bracketed host
+/// swallowed the real one. A copy's test table is written from the copier's
+/// imagination rather than from the original's bug list. Reading the layer off the
+/// refusal the harness actually produced is right for every shape it refuses now
+/// and every shape it adds later.
+///
+/// The string is spelled here because io-harness's own `FLOOR_LAYER` is
+/// `pub(crate)`. `f11_the_local_address_floor_layer_is_spelled_as_io_harness_spells_it`
+/// holds this against the locked source, so a rename upstream fails a test that
+/// names it rather than silently losing the remedy.
+pub const LOCAL_ADDRESS_FLOOR: &str = "local-address floor";
+
+/// What to do about it, which the harness deliberately does not say.
+///
+/// io-harness gives this lift **no configuration key** on purpose: it is meant to
+/// be an operator's explicit, per-invocation choice rather than something a file
+/// can grant. io-cli respects that — it names the variable and sets nothing.
+/// `f11_io_cli_never_sets_the_local_address_variable` is the gate, and it is a
+/// source-text gate because an absence has no other site.
+const LOCAL_ADDRESS_REMEDY: &str = "io: this is the harness's local-address floor, and no \
+     configuration key lifts it. If you meant to reach a model on this machine — Ollama, LM \
+     Studio, llama.cpp — set IO_HARNESS_ALLOW_LOCAL_ADDRESSES=1 for the run that should be \
+     allowed out to it.";
+
 /// A failure that reached the harness, carrying the exit status it earns.
 ///
 /// **It exists because `to_string()` at the two headless doors threw away the one
@@ -281,7 +313,14 @@ impl From<io_harness::Error> for Ending {
                 io_harness::Error::Refused { .. } => REFUSED,
                 _ => FAILED,
             },
-            message: error.to_string(),
+            message: match &error {
+                io_harness::Error::Refused {
+                    layer: Some(layer), ..
+                } if layer == LOCAL_ADDRESS_FLOOR => {
+                    format!("{error}\n{LOCAL_ADDRESS_REMEDY}")
+                }
+                _ => error.to_string(),
+            },
         }
     }
 }
@@ -694,6 +733,35 @@ pub fn spec_for(
     }
 }
 
+/// A headless goal, with a prompt template expanded where one was named.
+///
+/// **`[run] templates` was never unapplied — it was applied on one door only, and
+/// the limits page named the wrong thing as the gap.** `commands::templates` has
+/// read the key through its own accessor since the palette learned templates, but
+/// only an interactive session ever called it, so `io exec` ignored a key
+/// `docs/config.example.toml` documents. A configuration key that works in the
+/// terminal and silently does nothing in CI is the asymmetry this product deleted
+/// in 0.14.0, arriving again through a different door.
+///
+/// **`/name` and nothing else, which is the session's own spelling.** A goal that
+/// does not begin with `/` is a prompt and is passed through untouched — the
+/// overwhelmingly common case, and one this must not change. A goal that does is
+/// rendered through [`crate::commands::expand`], the *same* function the palette
+/// calls, with the same empty argument list: two doors rendering one template two
+/// ways is exactly the divergence this exists to remove.
+///
+/// The notice is returned rather than printed, because this module prints on
+/// stderr from one place and a library function that writes to a stream is one no
+/// test can read back.
+pub fn goal_for(config: &Config, goal: &str) -> Result<(String, Option<String>), String> {
+    let Some(name) = goal.strip_prefix('/') else {
+        return Ok((goal.to_string(), None));
+    };
+    let (templates, notice) = crate::commands::templates(config);
+    let rendered = crate::commands::expand(&templates, name)?;
+    Ok((rendered, notice))
+}
+
 /// `io exec`, from the command line to an exit status.
 pub async fn main(
     args: crate::cli::Exec,
@@ -704,6 +772,14 @@ pub async fn main(
     // Before a store is opened, a session is created or a provider is built, so
     // a refused posture costs nothing and leaves no run behind.
     let posture = args.policy.map(posture_for).transpose()?;
+
+    // And before those too: a template that does not resolve is a goal that does
+    // not exist, and a run started on one would spend a provider call to say so.
+    let (goal, templates_notice) = goal_for(&config, &args.goal)?;
+    if let Some(notice) = templates_notice {
+        eprintln!("io: {notice}");
+    }
+    let args = crate::cli::Exec { goal, ..args };
 
     // **A bundle's own program, placed here as well as on the session's startup.**
     // This door returns from `main` before the interactive path resolves

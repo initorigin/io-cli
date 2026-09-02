@@ -19,9 +19,15 @@ own. See [Verification gates](verification.md#verification-gates). **`[run.commi
 other section, and until there was a commit to author it was a value nothing in
 this interface had cause to look at. See [Git](git.md#git).
 
-That leaves one key still unapplied, and it has a reason too: `run.templates` is
-the thirteenth `[run]` key, reachable only through its own accessor. It is not a
-silent omission — this is where it is named.
+**Every `[run]` key now reaches both doors.** `run.templates` was named here as
+unapplied until 0.35.0, and the sentence was wrong about which half was missing:
+the key was read, through its own accessor, but only by an interactive session —
+so `io exec` ignored a key the configuration page documents. A configuration key
+that works in the terminal and does nothing in CI is worse than one that works
+nowhere, because nothing tells you. A headless goal written as `/name` is now
+rendered from the template of that name; a goal that does not begin with `/` is a
+prompt and is passed through untouched. Both doors render through one function
+with one argument list, so a template cannot mean two things.
 
 **A price is never invented, and a missing one is never a zero.** io-cli compiles
 no rates in and estimates nothing, so an install that has connected no provider
