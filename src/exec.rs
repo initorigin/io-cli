@@ -225,6 +225,96 @@ pub fn verified_code(outcome: &RunOutcome, standing: Option<&crate::gates::Stand
     }
 }
 
+/// A failure that reached the harness, carrying the exit status it earns.
+///
+/// **It exists because `to_string()` at the two headless doors threw away the one
+/// thing the table above needs.** io-harness answers a boundary refusal with a
+/// typed `Error::Refused`, and both doors flattened every harness error to a
+/// `String` before an exit code was chosen — so `main.rs`, which has only
+/// `Err(_) -> FAILED` to work with, exited `1` for a run the policy refused. That
+/// is the same class of defect 0.34.1 removed from the other end of this table: a
+/// script is told the wrong thing by the one surface this product offers to be
+/// scripted against. Documented as a known defect by 0.34.1 rather than fixed,
+/// because it is a behaviour change and 0.34.1 was a patch.
+///
+/// `message` is the error's own `Display` and nothing else, so the sentence an
+/// operator reads is byte-identical to the one they read before — only the status
+/// beside it moves.
+#[derive(Debug)]
+pub struct Ending {
+    /// The exit status: [`REFUSED`] for a boundary refusal, [`FAILED`] for
+    /// everything else.
+    pub code: u8,
+    /// What the operator is told, taken from the error itself.
+    pub message: String,
+}
+
+impl std::fmt::Display for Ending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<io_harness::Error> for Ending {
+    /// **The arm is one variant wide, and that is the whole audit.**
+    ///
+    /// `Error::Refused` is the only variant io-harness types as a boundary
+    /// saying no — its own documentation says it is "typed separately from
+    /// `Error::Config` so a refusal is distinguishable from a malfunction". The
+    /// two neighbours a wildcard would swallow are the two that must not move:
+    /// `Error::Sandbox` is "the sandbox failed to start", typed apart from
+    /// `Error::Io` so a caller can tell "the sandbox never ran the code" from
+    /// "the code ran and failed"; and `Error::Config` is "configuration was
+    /// missing or invalid", which the crate's own example handles as "fix the
+    /// configuration". Reporting either as `REFUSED` would tell a CI job a
+    /// boundary had spoken when nothing had — the mirror of the defect this
+    /// removes, and the third time this table would have been given away by a
+    /// convenient catch-all.
+    ///
+    /// So everything else — including every variant a later harness adds, which
+    /// `#[non_exhaustive]` guarantees there will be — is [`FAILED`]: the run
+    /// reached the harness and did not run, and only a refusal has a code of its
+    /// own to claim.
+    fn from(error: io_harness::Error) -> Self {
+        Self {
+            code: match &error {
+                io_harness::Error::Refused { .. } => REFUSED,
+                _ => FAILED,
+            },
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<crate::resume::Failure> for Ending {
+    /// The resume door's own error type, which carries the harness's inside
+    /// [`crate::resume::Failure::Harness`] and answers for the rest itself.
+    ///
+    /// Every other variant is io-cli's own refusal to drive a resume — a run that
+    /// was interrupted, a question that belongs elsewhere, a head that moved —
+    /// and each is [`FAILED`] for the reason `io exec --policy ask-writes` is:
+    /// the boundary never got a chance to say anything.
+    ///
+    /// This door is not a copy of the other one's problem, it is the same problem
+    /// with more ways in. All four drivers funnel into
+    /// `io_harness::resume_with_observed`, which calls `authorize_provider` before
+    /// it carries anything on — so the provider-endpoint refusal that reaches
+    /// `io exec` reaches every resume too. io-harness 0.74.0 then adds two shapes
+    /// only a resume can raise, a persisted approval it cannot replay and one
+    /// rewritten since the checkpoint; `io` produces neither today, for the reason
+    /// it produces no approval pause at all, and both are typed the same way and
+    /// would land here already handled.
+    fn from(failure: crate::resume::Failure) -> Self {
+        match failure {
+            crate::resume::Failure::Harness(error) => Self::from(error),
+            other => Self {
+                code: FAILED,
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 /// One line for stderr, naming the outcome and the harness's own step count.
 ///
 /// The number is read off the returned value and never recounted from the store:
@@ -475,7 +565,7 @@ pub async fn turn<P: Provider>(
     goal: String,
     sandbox: Option<ExecMode>,
     observer: &dyn Observer,
-) -> Result<TurnResult, String> {
+) -> Result<TurnResult, Ending> {
     session
         .turn_bounded_observed(
             &contract(config, session, goal, sandbox),
@@ -500,7 +590,7 @@ pub async fn turn<P: Provider>(
             observer,
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(Ending::from)
 }
 
 /// The task contract, assembled from the harness's defaults, the configuration
@@ -710,7 +800,20 @@ impl WithProvider for Headless {
             self.args.sandbox.map(crate::cli::Sandbox::mode),
             watcher,
         )
-        .await?;
+        .await;
+        // **Printed here and returned as a status, rather than propagated as an
+        // `Err`.** `main.rs` has one answer for an `Err` and it is [`FAILED`], so a
+        // `?` on this line is what made a refused run exit `1`. The sentence is the
+        // same sentence `main.rs` would have printed, on the same stream, with the
+        // same prefix — only the number beside it is now the one the table
+        // publishes.
+        let result = match result {
+            Ok(result) => result,
+            Err(ending) => {
+                eprintln!("io: {ending}");
+                return Ok(ending.code);
+            }
+        };
 
         // stdout is the data and stderr is everything else, so that
         // `io exec --json … | jq` needs no filtering and a plain run can be
@@ -1379,7 +1482,16 @@ impl WithProvider for Resuming {
                 .await
             }
         }
-        .map_err(|failure| failure.to_string())?;
+        .map_err(Ending::from);
+        // The same seam `Headless::call` has, for the same reason: this door reaches
+        // a boundary refusal too, and 0.74.0 gave it two of its own.
+        let resumed = match resumed {
+            Ok(resumed) => resumed,
+            Err(ending) => {
+                eprintln!("io: {ending}");
+                return Ok(ending.code);
+            }
+        };
 
         // stdout is the data and stderr is everything else, the split `io exec`
         // already makes.

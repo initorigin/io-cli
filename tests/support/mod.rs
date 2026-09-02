@@ -342,6 +342,52 @@ pub fn harness_run_outcomes() -> Vec<String> {
     variants
 }
 
+/// Every variant `io_harness::Error` declares, in the source this crate is locked
+/// to, in declaration order and spelled as Rust spells them.
+///
+/// **The unsafe direction of the exit-code seam, and the only one a wildcard does
+/// not cover.** `src/exec.rs` maps a harness error to an exit code and exactly one
+/// variant — `Refused` — is a boundary refusal worth `REFUSED`; everything else is
+/// a malfunction worth `FAILED`, which is what the wildcard arm gives anything a
+/// later harness adds. That is the safe direction: a new variant reported as a
+/// failure is conservative.
+///
+/// The direction that is *not* safe is a harness adding a **second** refusal
+/// variant. io-harness 0.74.0 added two new `Error::Refused` *shapes* in one
+/// release, so this is not hypothetical — and a second refusal *variant* would be
+/// reported by io-cli as `FAILED`, which is precisely the defect 0.35.0 exists to
+/// remove, arriving again through the dependency rather than through this crate.
+/// A hand-written list of eleven cannot notice it. This can.
+pub fn harness_error_variants() -> Vec<String> {
+    let source = std::fs::read_to_string(harness_source_path("error.rs"))
+        .expect("io-harness's source is readable from the registry")
+        .replace("\r\n", "\n");
+    let body = source
+        .split_once("pub enum Error {")
+        .expect("io-harness declares Error in src/error.rs")
+        .1;
+    let body = body.split_once("\n}\n").expect("the enum is closed").0;
+
+    let mut variants = Vec::new();
+    for line in body.lines() {
+        let Some(rest) = line.strip_prefix("    ") else {
+            continue;
+        };
+        // Doc comments, attributes and the deprecation markers this enum carries
+        // all fail this, which is the whole filter — a variant is the only thing
+        // at this indentation that begins with a capital.
+        if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+            continue;
+        }
+        variants.push(
+            rest.chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect::<String>(),
+        );
+    }
+    variants
+}
+
 /// Every tool name io-harness declares, in the source this crate is locked to.
 ///
 /// The third reader of the dependency's own source, and it exists for the same

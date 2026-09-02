@@ -2428,6 +2428,16 @@ fn f6_the_exit_four_documentation_names_the_approval_carve_out() {
 /// beforehand — asserted against [`io_cli::exec::asks_nobody_can_answer`], which
 /// reads `write` and `exec` and never `net`. A page can be edited; that function
 /// cannot be edited by editing the page.
+///
+/// **0.35.0 deletes the exit-code half of this test rather than adjusting it.**
+/// It pinned two paragraphs — one here, one on `docs/CONTRACT.md` — saying such a
+/// run exits `1`, which is the known defect 0.34.1 documented instead of fixing.
+/// 0.35.0 fixes it, so both paragraphs are gone and the assertions that held them
+/// fail by design. What replaces them is a count over both headless doors in
+/// `tests/exec.rs`, which reads the code out of the seam that chooses it rather
+/// than out of a page. The carve-out itself is untouched and still asserted here:
+/// the provider endpoint is still authorized before the first step, and there is
+/// still nothing to adapt.
 #[test]
 fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
     // The notice an asking posture earns. `net` is deliberately not one of the
@@ -2456,9 +2466,6 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
         // The one configuration that reaches it, so the carve-out is actionable
         // rather than a warning about nothing.
         r#"`act = "net", effect = "ask"`"#,
-        // And the exit code it produces today, which is not the one the table
-        // below it gives for a boundary.
-        "exits `1` and not the `2`",
     ] {
         assert!(
             guide.contains(said),
@@ -2466,19 +2473,4 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
              refusal claim is back to covering a case it does not cover",
         );
     }
-
-    // And the contract page says it too.
-    //
-    // The first draft of this release admitted the wrong exit code in the guide
-    // and left `docs/CONTRACT.md` publishing `2` for every refusal, so the two
-    // pages contradicted each other about the number a CI job branches on — with
-    // the contradiction on the page headed "the contract a CI job depends on".
-    // An operator who reads one page and not the other is the whole audience for
-    // this carve-out, so it is asserted on both.
-    let contract = unwrapped_prose(&read("docs/CONTRACT.md"));
-    assert!(
-        contract.contains("One boundary refusal does not reach `2` today"),
-        "`docs/CONTRACT.md` no longer carries the exit-`2` carve-out, so it now \
-         disagrees with the headless guide about the code a refused run exits",
-    );
 }
