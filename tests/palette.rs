@@ -67,14 +67,25 @@ fn written() -> tempfile::TempDir {
     dir
 }
 
-/// What `[run] templates = <dir>` parses to. `from_toml` rather than `discover`,
-/// so nothing on this machine's disk outside the temporary directory is read.
+/// What `[run] templates = <dir>` parses to.
+///
+/// **User-scoped, and io-harness 0.74.0 is why.** `run.templates` naming an
+/// absolute directory is refused in every scope a workspace can supply — every
+/// `*.md` under it is composed into the model's system prompt on each turn, so a
+/// cloned `io.toml` could put this host's files into the model's context on the
+/// first turn — and `Config::from_toml` *is* the project scope. The directory
+/// these fixtures point at is a `tempfile` outside any workspace, which is only
+/// nameable at all from the one file no workspace can reach.
+///
+/// [`support::user_scope`] discovers against an empty workspace of its own, so
+/// nothing on this machine's disk outside the two temporary directories is read.
 fn configured(dir: &std::path::Path) -> Config {
-    Config::from_toml(&format!(
+    support::user_scope(&format!(
         "[run]\ntemplates = {:?}\n",
         dir.display().to_string()
     ))
-    .expect("io-harness parses its own file")
+    .config
+    .clone()
 }
 
 /// Type `text` at the picker, one character at a time, exactly as an operator

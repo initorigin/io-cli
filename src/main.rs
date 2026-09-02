@@ -48,13 +48,30 @@ fn main() -> ExitCode {
     // than patched at each early return, because the next early return would not
     // know to do it.
     let mut report = Vec::new();
-    match runtime.block_on(run(&mut report)) {
+    let outcome = runtime.block_on(run(&mut report));
+    // **Drained on the way out rather than inside an arm, because the hole was the
+    // arm that did not do it (0.35.0).** Until this release only `Err` delivered
+    // what was left, and the wizard's own decline is `Ok`: `io setup` answered with
+    // Esc returns `Ok(exec::OK)` from `run` with the report untouched. So an
+    // operator upgrading from a pre-0.15.0 install had `io.toml`, `runs.db` and the
+    // rest moved into `~/.io-cli`, pressed one key, and was told nothing at all —
+    // with their old directory now empty. That is the exact reading the comment
+    // above says this mechanism exists to prevent, and the same arm was swallowing
+    // the line that says a file could **not** be moved because another `io` holds
+    // it.
+    //
+    // Draining here rather than adding a second `for` to the `Ok` arm is the point:
+    // every arm that has somewhere better to speak has already taken the report by
+    // `std::mem::take`, so this sees only what nobody said — and the next early
+    // return that gets written cannot reopen the hole by not knowing about it.
+    //
+    // Printed after the terminal has been restored, never into raw mode.
+    for line in &report {
+        eprintln!("{line}");
+    }
+    match outcome {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            // Printed after the terminal has been restored, never into raw mode.
-            for line in report {
-                eprintln!("{line}");
-            }
             eprintln!("io: {error}");
             ExitCode::from(io_cli::exec::FAILED)
         }
@@ -3476,15 +3493,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             } else if let Some(value) =
                                 index.checked_sub(1).and_then(|at| values.get(at))
                             {
-                                if *scope == io_harness::config::Scope::Project
-                                    && io_cli::configure::widens_project(key, value)
+                                if matches!(
+                                    *scope,
+                                    io_harness::config::Scope::Project
+                                        | io_harness::config::Scope::Local
+                                ) && io_cli::configure::widens_workspace(key, value)
                                 {
                                     app.record(
                                         Tone::Refused,
                                         format!(
-                                            "{key} is decided by the project file, and a committed \
-                                             file may not set it to {value} — io-harness refuses \
-                                             the whole file for it, not just the key"
+                                            "{key} is decided by a file inside the workspace, and \
+                                             such a file may not set it to {value} — io-harness \
+                                             refuses the whole file for it, not just the key"
                                         ),
                                     );
                                 } else {
@@ -7503,6 +7523,7 @@ async fn turn<P: Provider>(
                 // step landing and the first completion call being seen.
                 note_context(app, store, &event, seen, &contract);
                 note_cost(app, store, config, &event);
+                note_boundary(app, store, &event);
                 note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
@@ -8048,6 +8069,7 @@ async fn turn<P: Provider>(
         // one whose event the select loop loses, and it is also the step that
         // makes the largest single difference to what the turn cost.
         note_cost(app, store, config, &event);
+        note_boundary(app, store, &event);
         note_fleet(app, store, &event, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
@@ -8391,6 +8413,29 @@ fn note_cost(
     }
     let table = io_cli::cost::table(config);
     app.status.note_cost_from(store, event.run_id, &table);
+}
+
+/// Take the backend's own boundary measurement, once, when it is announced.
+///
+/// **The event is the trigger and the store is the payload, because io-harness
+/// splits them.** `EventKind::Sandbox` carries `kind` and `backend` and nothing
+/// else — `record_sandbox_step` copies those two and drops the rest — so the
+/// stream says *that* a probe happened and only the `sandbox_events` row says
+/// what it found.
+///
+/// Gated on the announcing event rather than on `Step` like `note_cost` above:
+/// io-harness writes this row once per run, at step 0, so a per-step read would
+/// re-read a row that cannot change. A run with no containment is never probed
+/// and emits nothing here, which is what leaves the field absent rather than
+/// drawn as unmeasured.
+fn note_boundary(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
+    let io_harness::EventKind::Sandbox { kind, .. } = &event.kind else {
+        return;
+    };
+    if kind != "boundary_probe" {
+        return;
+    }
+    app.status.note_boundary_from(store, event.run_id);
 }
 
 /// Report a fold that was asked for — once, and only from the event that

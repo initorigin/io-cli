@@ -1,18 +1,22 @@
 //! F2 and N2 — what is in force, who decided it, and what is never shown.
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 
 use io_cli::configure::{self, Decided};
 use io_harness::config::{Config, Scope};
 use io_harness::pricing::{Price, PriceTier};
 
+mod support;
+
 /// `Config::discover` reads `IO_CONFIG` at call time, so two tests setting it at
 /// once would each see the other's file. Serialised here rather than diagnosed
 /// later as an intermittent failure on a loaded machine — the same guard
 /// `tests/wizard.rs` and `tests/contract.rs` already keep for the same reason.
+///
+/// Delegated to [`support::env_lock`] rather than declared here: two different
+/// mutexes in one binary exclude nothing from each other.
 fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    support::env_lock()
 }
 
 /// Three scopes that disagree on purpose, so every origin arm has a case.
@@ -47,9 +51,20 @@ fn scopes(user: &str, project: &str, local: &str) -> Scopes {
 
 impl Scopes {
     fn config(&self) -> Config {
+        self.try_config().unwrap()
+    }
+
+    /// The same read, handing back a refusal instead of unwrapping it.
+    ///
+    /// For the tests whose subject is whether io-harness *accepts* a fragment at
+    /// all. Since io-harness 0.74.0 `Config::from_toml` is no longer usable for
+    /// that question — it hard-codes `Scope::Project`, where `[[mcp]]`, `[web]`,
+    /// an absolute `run.templates` and `policy.defaults.read = "allow"` are each
+    /// refused for being in the wrong file rather than for being wrong.
+    fn try_config(&self) -> io_harness::Result<Config> {
         let _guard = env_lock();
         std::env::set_var("IO_CONFIG", &self.user);
-        let config = Config::discover(self.root.path()).unwrap();
+        let config = Config::discover(self.root.path());
         std::env::remove_var("IO_CONFIG");
         config
     }
@@ -63,6 +78,117 @@ impl Scopes {
     /// to draw a menu.
     fn priced_models(&self) -> Vec<String> {
         configure::priced_models(&self.config())
+    }
+}
+
+/// The sections and values io-harness 0.74.0 refuses from a file in a workspace,
+/// each in the file that is refused for it.
+///
+/// **Not a list io-cli maintains** — every entry here is driven through
+/// `Config::discover` and the assertion is made against **io-harness's own
+/// sentence read back from the real refusal**, never against a needle typed here.
+/// 0.30.1 shipped a gate whose needle was `"io does not manage"` against a refusal
+/// reading `"is not a surface io manages"`; it passed forever and asserted
+/// nothing. What is spelled below is only the *input* — what io-harness says about
+/// it is read at run time.
+const REFUSED_IN_A_WORKSPACE: &[(&str, &str, &str)] = &[
+    (
+        "a project-scoped provider",
+        "project",
+        "[[provider]]\nkind = \"openrouter\"\nmodel = \"anthropic/claude-sonnet-4.5\"\n",
+    ),
+    (
+        "a project-scoped MCP server",
+        "project",
+        "[[mcp]]\nid = \"one\"\ntransport = \"stdio\"\ncommand = \"one\"\n",
+    ),
+    (
+        "a project-scoped LSP server",
+        "project",
+        "[[lsp]]\nid = \"rust\"\ncommand = \"rust-analyzer\"\nextensions = [\"rs\"]\n",
+    ),
+    (
+        "a hook in the workspace-root local file",
+        "local",
+        "[[hook]]\non = [\"finished\"]\nrun = [\"true\"]\n",
+    ),
+    (
+        "a widened policy default",
+        "project",
+        "[policy]\ndefaults = { write = \"allow\" }\n",
+    ),
+];
+
+/// **A refusal reads as a refusal, at every door that meets one.**
+///
+/// Three doors reach a refused configuration and until 0.35.0 they did not agree.
+/// Start-up framed it; the per-turn reload handed back io-harness's bare sentence
+/// with no root; the write door rolls back and quotes the harness. So the same
+/// `[[mcp]]` in the same file read as a refusal when `io` started and as an
+/// unattributed error at the turn boundary that noticed the edit — and the reload
+/// door is the one an operator meets *while working*, having just saved the file.
+///
+/// The framing had to change too. "could not be read" told an operator their file
+/// was broken when it was intact and in the wrong place, which is a different
+/// problem with a different fix.
+///
+/// **Every assertion is against the sentence io-harness actually produced**, taken
+/// from the same refusal the door is being asked about, so this cannot pass
+/// against a reworded harness or a needle nobody checked.
+///
+/// Sabotage: put `to_string()` back in `configure::reload`. The reload arm fails
+/// on the root, which is the fact io-harness cannot supply.
+#[test]
+fn f2_a_refused_configuration_reads_as_a_refusal_at_every_door() {
+    for (what, scope, body) in REFUSED_IN_A_WORKSPACE {
+        let s = match *scope {
+            "project" => scopes("[run]\nmax_steps = 10\n", body, ""),
+            _ => scopes("[run]\nmax_steps = 10\n", "", body),
+        };
+
+        // The harness's own words, for this exact fixture. Everything below is
+        // held against this rather than against anything written in this file.
+        let harness = s
+            .try_config()
+            .expect_err(&format!("io-harness refuses {what} in a workspace file"))
+            .to_string();
+        assert!(
+            harness.contains("IO_CONFIG"),
+            "{what}: the refusal names where the declaration belongs instead: {harness}",
+        );
+
+        // Door one: start-up.
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+        let error = Config::discover(s.root.path()).expect_err("the same refusal");
+        let started = configure::refusal(s.root.path(), &error);
+        std::env::remove_var("IO_CONFIG");
+        drop(_guard);
+
+        // Door two: the per-turn reload.
+        let _guard = env_lock();
+        std::env::set_var("IO_CONFIG", &s.user);
+        let reloaded = configure::reload(s.root.path()).expect_err("the same refusal");
+        std::env::remove_var("IO_CONFIG");
+        drop(_guard);
+
+        for (door, said) in [("start-up", &started), ("reload", &reloaded)] {
+            assert!(
+                said.contains(&harness),
+                "{what}: the {door} door dropped io-harness's own sentence, which is the half \
+                 that says which key and where it belongs.\n  harness: {harness}\n  door: {said}",
+            );
+            assert!(
+                said.contains(&s.root.path().display().to_string()),
+                "{what}: the {door} door does not name the directory being read, which is the \
+                 one fact io-harness cannot supply: {said}",
+            );
+            assert!(
+                !said.contains("could not be read"),
+                "{what}: the {door} door calls a refusal a failure to read. The file parsed; \
+                 io-harness declined what it said, and that has a different fix: {said}",
+            );
+        }
     }
 }
 
@@ -144,9 +270,15 @@ fn f2_the_winning_scope_is_the_one_reported() {
 fn f2_a_key_the_catalogue_does_not_know_is_still_shown() {
     // The property that keeps the surface honest: io-cli's catalogue is its own
     // list, and a key an operator wrote that is not on it must not be invisible.
+    //
+    // `[web]` is in the USER file rather than the project one. io-harness 0.74.0
+    // refuses provider-executed web access from a workspace-resident file
+    // wholesale — a provider-executed search is dialled by the provider, so
+    // `Act::Net` never sees it — and the claim under test is about io-cli's
+    // catalogue, not about which file the key arrived in.
     let s = scopes(
-        "[run]\nmax_steps = 10\n",
-        "[web]\nallowed_domains = [\"example.com\"]\n",
+        "[run]\nmax_steps = 10\n\n[web]\nallowed_domains = [\"example.com\"]\n",
+        "",
         "",
     );
     let config = s.config();
@@ -286,7 +418,8 @@ fn names_key(example: &str, key: &str) -> bool {
 ///
 /// **The two sides of every assertion come from different places, on purpose.**
 /// The key names below are written out by hand, here. Whether io-harness accepts
-/// them is decided by `Config::from_toml`, which is io-harness's own reader.
+/// them is decided by `Config::discover` over a real user-scope file, which is
+/// io-harness's own reader on its own path.
 /// Whether the operator can find them is decided by reading the checked-in file.
 /// Nothing is derived from the thing it is checking, which is what the five
 /// vacuous assertions this repository has shipped all had in common.
@@ -294,8 +427,8 @@ fn names_key(example: &str, key: &str) -> bool {
 /// **What deleting a key makes fail.** Cut `max_wait_secs` (or `templates`,
 /// `headers`, `timeout_secs`, or any of the seven `[toolchain.cargo]` keys) out of
 /// `docs/config.example.toml` and the `names_key` assertion for it fails by name —
-/// the `from_toml` half still passes, because io-harness has not changed. Have
-/// io-harness drop a key instead and `from_toml` fails first: every section
+/// the parse half still passes, because io-harness has not changed. Have
+/// io-harness drop a key instead and the parse fails first: every section
 /// written below carries `deny_unknown_fields`, so one unknown key refuses the
 /// WHOLE fragment rather than being ignored, which is the same failure an operator
 /// would get on their own file.
@@ -306,9 +439,14 @@ fn f8_every_documented_harness_key_deserialises() {
 
     // (the keys this section names, a file that writes every one of them)
     //
-    // Narrowing values only: `from_toml` parses as the PROJECT scope and runs
-    // `refuse_widening`, so a fragment written with `exec = "allow"` here would
-    // fail for a reason that has nothing to do with what is being tested.
+    // **Read at the USER scope, which is the scope `docs/config.example.toml`
+    // documents.** Through io-harness 0.73 these fragments went through
+    // `Config::from_toml` and the rule was "narrowing values only". 0.74.0 made
+    // that unusable: `from_toml` parses as `Scope::Project`, where `[[mcp]]` is
+    // refused outright, an absolute `run.templates` is refused, and
+    // `policy.defaults.read = "allow"` joined `PROJECT_WIDENING`. Every one of
+    // those is a refusal about the file a fragment is in rather than about the
+    // key, and this test is about the key.
     let sections: &[(&[&str], &str)] = &[
         (
             &["read", "write", "exec", "net"],
@@ -377,7 +515,7 @@ fn f8_every_documented_harness_key_deserialises() {
     ];
 
     for (keys, toml) in sections {
-        if let Err(e) = Config::from_toml(toml) {
+        if let Err(e) = scopes(toml, "", "").try_config() {
             panic!(
                 "docs/config.example.toml documents {keys:?} and io-harness refuses the \
                  section they are in: {e}. The example is now telling operators to write \
@@ -510,8 +648,16 @@ fn f3_a_scope_with_no_file_gets_one() {
 
 // --- F4: a project-scoped widening is refused in the harness's own words ------
 
-/// Every case io-harness refuses in a project-scoped file: the two whole sections
-/// and each of `PROJECT_WIDENING`'s five key/value pairs.
+/// Widening pairs, spelled the way an operator writes them in a file.
+///
+/// **A sample, not the rule.** io-harness 0.74.0's `PROJECT_WIDENING` holds
+/// thirteen pairs over twelve keys and it publishes no reader for them, so nothing
+/// here is the definition of anything — `configure::widens_workspace` asks the
+/// dependency instead of holding a list, and
+/// `f2_the_widening_rule_is_asked_of_io_harness_rather_than_copied_from_it` is
+/// what keeps it that way. These five exist to drive `configure::write` and read
+/// back io-harness's own sentence, which needs a value written into a real file
+/// rather than a predicate's answer about one.
 const WIDENINGS: &[(&str, &str)] = &[
     ("policy.defaults.exec", "\"allow\""),
     ("policy.defaults.net", "\"allow\""),
@@ -557,21 +703,55 @@ fn f4_a_project_scoped_widening_is_refused_with_the_harness_s_sentence() {
     }
 }
 
+/// **io-harness 0.74.0 moved this line, and the sentence is where it moved to.**
+///
+/// Through 0.73 this test asserted the opposite: the rule was about `io.toml`
+/// alone and every one of these was legal in the file a repository does not
+/// deliver. 0.74.0 extended `refuse_widening` to `io.local.toml` as well, because
+/// it sits in the workspace root a run's own agent can write to — a run that can
+/// write its own root could otherwise widen its own boundary between one turn and
+/// the next.
+///
+/// So the local scope is no longer where these are legal, and the only scope left
+/// is the user one, which `f2_a_widening_value_is_legal_in_one_scope_and_refused_
+/// in_another` holds.
+///
+/// **Asserted on which FILE the refusal names, not merely that it refused.** The
+/// project sentence and the local sentence differ in exactly that clause
+/// (`config.rs:2429`, `untrusted`), so a needle of "narrow it and never widen it"
+/// alone would pass just as well against a write that had gone to `io.toml` — and
+/// then this test and `f4_a_project_scoped_widening_is_refused_with_the_harness_s_
+/// sentence` would be one test written twice.
 #[test]
-fn f4_the_same_value_is_accepted_in_the_local_scope() {
-    // The rule is about the scope, not the value. Every one of these is legal in
-    // the file a repository does not deliver.
+fn f4_the_same_value_is_refused_in_the_local_scope_too() {
     for (key, value) in WIDENINGS {
         let s = scopes("[run]\nmax_steps = 10\n", "", "");
         let _guard = env_lock();
         std::env::set_var("IO_CONFIG", &s.user);
 
-        configure::write(
+        let err = configure::write(
             s.root.path(),
             Scope::Local,
             &[io_cli::edit::Edit::set(*key, *value)],
         )
-        .unwrap_or_else(|e| panic!("{key} = {value} should be legal in io.local.toml: {e}"));
+        .expect_err(&format!(
+            "{key} = {value} is refused in io.local.toml since io-harness 0.74.0"
+        ));
+
+        assert!(
+            err.contains("a workspace-root `io.local.toml` may narrow it and never widen it"),
+            "the refusal for {key} is not the local-scope sentence — a write aimed at \
+             `io.local.toml` that came back with the `io.toml` wording went to the wrong \
+             file: {err}"
+        );
+        assert!(
+            err.contains(key),
+            "the refusal does not name the key: {err}"
+        );
+        assert!(
+            !s.root.path().join("io.local.toml").exists(),
+            "{key}: a refused write left a local file behind"
+        );
 
         std::env::remove_var("IO_CONFIG");
     }
@@ -960,7 +1140,7 @@ fn f1_only_the_expected_exit_status_is_signed() {
 /// config that stopped parsing.
 ///
 /// The third is the sabotage the criterion names — hand-write a fourth effect
-/// string and the round trip through `Config::from_toml` refuses it.
+/// string and the round trip through io-harness's own reader refuses it.
 #[test]
 fn f2_the_effects_are_the_dependency_s_own() {
     let effects = configure::effects();
@@ -973,10 +1153,17 @@ fn f2_the_effects_are_the_dependency_s_own() {
         "the menu must be the dependency's enumeration, not io-cli's copy of it"
     );
     assert_eq!(effects, vec!["allow", "ask", "deny"]);
+    // **In the user scope**, for the reason `f2_the_exec_modes_are_spelled_by_the_
+    // dependency` reads at one: io-harness 0.74.0 put `policy.defaults.read` on
+    // `PROJECT_WIDENING`, so `read = "allow"` in a workspace-resident file is
+    // refused for the file it is in. The claim here is that every spelling io-cli
+    // offers is one io-harness's deserializer accepts *somewhere*; which scope
+    // each is legal in is `f2_a_widening_value_is_legal_in_one_scope_and_refused_
+    // in_another`'s question.
     for word in &effects {
         let text = format!("[policy]\ndefaults = {{ read = \"{word}\" }}\n");
         assert!(
-            Config::from_toml(&text).is_ok(),
+            scopes(&text, "", "").try_config().is_ok(),
             "io-harness refuses the effect io-cli offers: {word}"
         );
     }
@@ -1078,10 +1265,57 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
             "full-access",
             "[sandbox]\nmode = \"full-access\"\n",
         ),
+        // **The eight below are the ones io-cli did not know, and the reason this
+        // test was rewritten in 0.35.0.** Every one of them was already refused by
+        // io-harness 0.74.0 and already offered by `/config` and `io config set`,
+        // and no test failed — because the old version of this loop iterated
+        // io-cli's own five-pair list, and a list cannot notice what is missing
+        // from it. They are named individually rather than covered by a helper so
+        // that the count here is a claim about the dependency's table.
+        (
+            "policy.defaults.read",
+            "allow",
+            "[policy]\ndefaults = { read = \"allow\" }\n",
+        ),
+        (
+            "policy.defaults.write",
+            "allow",
+            "[policy]\ndefaults = { write = \"allow\" }\n",
+        ),
+        (
+            "sandbox.mode",
+            "workspace-write",
+            "[sandbox]\nmode = \"workspace-write\"\n",
+        ),
+        (
+            "sandbox.limits.max_cpu_secs",
+            "0",
+            "[sandbox.limits]\nmax_cpu_secs = 0\n",
+        ),
+        (
+            "sandbox.limits.max_wall_secs",
+            "0",
+            "[sandbox.limits]\nmax_wall_secs = 0\n",
+        ),
+        (
+            "sandbox.limits.max_memory_bytes",
+            "0",
+            "[sandbox.limits]\nmax_memory_bytes = 0\n",
+        ),
+        (
+            "sandbox.limits.max_processes",
+            "0",
+            "[sandbox.limits]\nmax_processes = 0\n",
+        ),
+        (
+            "sandbox.limits.max_open_files",
+            "0",
+            "[sandbox.limits]\nmax_open_files = 0\n",
+        ),
     ];
     for (key, value, project) in widening {
         assert!(
-            configure::widens_project(key, value),
+            configure::widens_workspace(key, value),
             "{key} = {value} widens and io-cli does not say so"
         );
         // The dependency's own answer, at the scope `from_toml` parses as.
@@ -1116,12 +1350,90 @@ fn f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another() {
         ),
     ] {
         assert!(
-            !configure::widens_project(key, value),
+            !configure::widens_workspace(key, value),
             "{key} = {value} narrows and must not be marked"
         );
         assert!(
             Config::from_toml(project).is_ok(),
             "io-harness refuses a narrowing value in a committed file: {key}"
+        );
+    }
+
+    // **A value that fails to deserialize is not a widening, and the distinction
+    // is what stops this predicate from marking every typo.** `widens_workspace`
+    // asks the dependency by writing the key into a one-line document, and a
+    // value the key's type refuses comes back as an error too — so the answer is
+    // the refusal's own clause and not merely `is_err`.
+    for (key, value) in [
+        ("policy.defaults.exec", "not-an-effect"),
+        ("sandbox.mode", "sideways"),
+        ("run.max_steps", "not-a-number"),
+    ] {
+        assert!(
+            !configure::widens_workspace(key, value),
+            "{key} = {value} is a bad value, not a wider boundary — marking it would send an \
+             operator to the user scope to write something that is refused there too"
+        );
+    }
+}
+
+/// **F2, the shape of the answer.** The widening rule is asked of io-harness, not
+/// held as a list.
+///
+/// **This gate exists because the list is what failed.** Until 0.35.0
+/// `widens_workspace` was `widens_project`, a `matches!` over five hand-copied
+/// pairs. io-harness 0.74.0's `PROJECT_WIDENING` holds thirteen pairs over twelve
+/// keys, so io-cli's copy had become a strict subset of the rule it claimed to
+/// state — and `/config` and `io config set` were offering eight values the
+/// destination file refuses, each refusal taking the whole file rather than the
+/// key. **No test failed**, because the test iterated io-cli's own list.
+///
+/// The loop above now covers all thirteen, which catches *today's* gap. This
+/// catches the next one: a release that answers a new divergence by lengthening a
+/// list rather than by asking has reintroduced the failure mode, and the loop
+/// above cannot see that because a longer correct list still passes it.
+///
+/// Sabotage: reinstate the five-pair `matches!`. The loop above fails on eight
+/// pairs and this fails on the shape, which is the pair of failures that says the
+/// list is both wrong and the wrong idea.
+#[test]
+fn f2_the_widening_rule_is_asked_of_io_harness_rather_than_copied_from_it() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/configure.rs");
+    // **Normalised at the read boundary, and CI is what taught this file that.**
+    // Git checks the source out with CRLF on Windows, so `"\n}\n"` below matches
+    // nothing there and the gate fails on the `expect` rather than on its subject
+    // — green on macOS and Linux, red on the one platform that sees it. 0.33.0
+    // shipped exactly this shape in `tests/docs.rs`'s paragraph splitter and the
+    // rule it left behind is to normalise where the bytes are read, not per
+    // helper. This is the first source-text gate written since, and it repeated it.
+    let text = std::fs::read_to_string(path)
+        .expect("the module is readable")
+        .replace("\r\n", "\n");
+    let at = text
+        .find("pub fn widens_workspace")
+        .expect("`widens_workspace` is the predicate the surfaces consult");
+    let body = &text[at..];
+    let end = body.find("\n}\n").expect("the function has an end");
+    let body = &body[..end];
+
+    assert!(
+        body.contains("Config::from_toml"),
+        "the predicate asks io-harness for its own answer; anything else is a copy that goes \
+         stale the next time the dependency tightens, which is exactly what happened at 0.74.0",
+    );
+    for spelled in [
+        "policy.defaults.exec",
+        "policy.defaults.net",
+        "sandbox.allow_network",
+        "sandbox.force_floor",
+        "full-access",
+        "workspace-write",
+    ] {
+        assert!(
+            !body.contains(spelled),
+            "`widens_workspace` names `{spelled}` in its body. The pairs belong to io-harness and \
+             it publishes no reader for them, so the answer is asked for rather than restated — a \
+             key spelled here is a key that has to be remembered when the dependency moves",
         );
     }
 }

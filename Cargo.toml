@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.34.1"
+version = "0.35.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
@@ -63,7 +63,7 @@ path = "src/lib.rs"
 # still correct about what this *renderer* can be handed; it is simply no longer
 # load-bearing on the build. Turning `barcode` back off is what would restore
 # it, and `documents` would then have to be spelled out as its other four.
-io-harness = { version = "0.73", features = ["media", "browser", "documents"] }
+io-harness = { version = "0.74", features = ["media", "browser", "documents"] }
 # **`tui-textarea` is gone as of 0.18.0, and it is why this pair was frozen.**
 # The comment that stood here said ratatui stayed at 0.29 and crossterm at 0.28
 # because the composer was built out of that widget and the 0.30 line carried

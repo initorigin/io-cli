@@ -10,16 +10,18 @@
 //!
 //! So the end of this file is deliberately not a unit test. It takes the edits
 //! the module produces, runs them through `io_cli::edit::apply` over a
-//! hand-written `io.toml`, hands the result to `io_harness::Config::from_toml`,
-//! and asks the resulting `PriceTable` what a call on that model costs. That
-//! round trip is the property — every step before it is a step towards it, and a
-//! module that got the spelling wrong is a module whose prices exist in a file
-//! nothing can read.
+//! hand-written `io.toml`, hands the result to io-harness's own loader through
+//! [`configured`], and asks the resulting `PriceTable` what a call on that model
+//! costs. That round trip is the property — every step before it is a step
+//! towards it, and a module that got the spelling wrong is a module whose prices
+//! exist in a file nothing can read.
 
 use io_cli::edit;
 use io_cli::prices::{self, Catalogue, DEFAULT_REFERENCE_URL};
 use io_harness::pricing::{Price, PriceTable};
 use io_harness::{Config, ModelInfo, PriceSource, ProviderSpec};
+
+mod support;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -35,8 +37,14 @@ use io_harness::{Config, ModelInfo, PriceSource, ProviderSpec};
 /// the harness widens it — which is the wrong test failing for the wrong reason.
 /// A `[[provider]]` table is also exactly what an operator writes, so the fixture
 /// and the field agree by construction.
+///
+/// **Through [`support::user_scope`] and never `Config::from_toml`.** `from_toml`
+/// hard-codes `Scope::Project`, and io-harness 0.74.0 refuses `[[provider]]` from
+/// a workspace-resident file — a provider names the endpoint a credential is sent
+/// to, and `io.toml` arrives with a `git clone`. Every body below declares one, so
+/// every one of them has to be read at the one scope that may declare it.
 fn configured(body: &str) -> Config {
-    Config::from_toml(body).expect("the fixture is a configuration io-harness accepts")
+    support::user_scope(body).config.clone()
 }
 
 fn openrouter() -> Config {
@@ -425,8 +433,7 @@ fn a_catalogue_the_operator_named_is_taken_whole_and_attributed_to_its_url() {
     // reach a `/cost` page.
     let written = edit::apply(FRESH, &catalogue.edits(prices::has_models_section(FRESH)))
         .expect("the edits produce a file that parses");
-    let table = Config::from_toml(&written)
-        .expect("io-harness accepts it")
+    let table = configured(&written)
         .prices()
         .expect("the file carries a table");
     assert_eq!(
@@ -639,7 +646,7 @@ fn a_dotted_model_id_survives_the_write_and_prices_a_call() {
 
     // The property. io-harness reads the file it would really read, and the table
     // it builds answers to the id io-harness would really record on a call.
-    let reloaded = Config::from_toml(&written).expect("io-harness accepts the written file");
+    let reloaded = configured(&written);
     let table = reloaded.prices().expect("the file carries a price table");
     assert_eq!(table.as_of(), "2026-08-27", "the date did not move");
     assert_eq!(
@@ -736,7 +743,7 @@ fn a_first_fill_writes_every_model_into_a_file_that_has_no_prices_section() {
         "the fill wrote the table more than once:\n{written}",
     );
 
-    let reloaded = Config::from_toml(&written).expect("io-harness accepts the written file");
+    let reloaded = configured(&written);
     let table = reloaded.prices().expect("the file carries a price table");
     assert_eq!(table.as_of(), "2026-08-27");
     for (model, price) in &catalogue.rows {
@@ -768,8 +775,7 @@ fn a_first_fill_writes_every_model_into_a_file_that_has_no_prices_section() {
     let written = edit::apply(FRESH, &many.edits(false))
         .expect("four hundred models are one section, not four hundred");
     assert_eq!(written.matches("[prices.models]").count(), 1);
-    let table = Config::from_toml(&written)
-        .expect("io-harness accepts it")
+    let table = configured(&written)
         .prices()
         .expect("the file carries a table");
     assert!(
@@ -885,8 +891,7 @@ fn a_refresh_writes_one_row_per_model_and_leaves_the_rest_alone() {
         "2026-08-27",
     );
     let written = edit::apply(EXISTING, &free.edits(true)).expect("a free model is writable");
-    let table = Config::from_toml(&written)
-        .expect("io-harness accepts it")
+    let table = configured(&written)
         .prices()
         .expect("the file carries a table");
     assert_eq!(

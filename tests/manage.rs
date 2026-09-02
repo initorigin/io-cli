@@ -14,6 +14,8 @@ use io_cli::manage::{self, ConfigVerb, McpVerb, PluginVerb, Request};
 use io_harness::config::Scope;
 use io_harness::McpTransport;
 
+mod support;
+
 /// The token slice a shell hands `io`, spelled the way a test can read.
 fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
@@ -23,9 +25,26 @@ fn argv(words: &[&str]) -> Vec<String> {
 /// once would each see the other's file. The scope test sets it; the `plugin
 /// remove` tests below resolve a real configuration and would see it set, so they
 /// take the same lock. Every other test here parses rather than plans.
+///
+/// Delegated to [`support::env_lock`] rather than declared here: two different
+/// mutexes in one binary exclude nothing from each other, and the `support`
+/// fixtures take that one.
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    support::env_lock()
+}
+
+/// Read a written file the way io-harness would read the operator's own.
+///
+/// **Never `Config::from_toml` for an `[[mcp]]` file.** `from_toml` parses at
+/// `Scope::Project`, and io-harness 0.74.0 refuses MCP servers there — an MCP
+/// server is a command, an argv and an environment this process spawns at run
+/// start, and `io.toml` arrives with a `git clone`. `mcp add` writes the user
+/// scope by default (`decided_scope`'s `unwrap_or(Scope::User)`), so the user
+/// scope is where the round trip belongs.
+///
+/// Takes [`env_lock`] for itself, so a caller must not already hold it.
+fn loaded(text: &str) -> io_harness::Config {
+    support::user_scope(text).config.clone()
 }
 
 /// The server a request declares, for a test that is about the transport.
@@ -386,7 +405,7 @@ fn f6_both_accepted_orderings_write_byte_identical_configuration() {
     // was asked for — a byte comparison of two identically wrong entries would
     // pass without this.
     let text = written(root.path(), &ours);
-    let config = io_harness::config::Config::from_toml(&text).expect("the entry loads");
+    let config = loaded(&text);
     assert_eq!(config.mcp_servers().len(), 1);
     assert_eq!(config.mcp_servers()[0].id, "linear-server");
     assert!(matches!(
@@ -597,41 +616,66 @@ max_retries = 2
     assert!(after.contains("max_retries = 2"), "a sibling went: {after}");
 }
 
+/// **F4.** A widening is reported at parse time, for **both** files that live in
+/// the workspace — and the advice names neither of them.
+///
+/// io-harness's `refuse_widening` runs before deserialization, so this is not a
+/// rejected setting: it is a configuration file that no longer parses at all.
+/// `configure::write` would roll it back and quote the harness; saying it here
+/// means the file is never written.
+///
+/// **Both halves of this test asserted the defect until 0.35.0, and it was green.**
+/// The guard read `Scope::Project` alone, so `--scope local` parsed cleanly and
+/// this test asserted that it should — while the refusal on the other arm sent the
+/// operator to `--scope local` as the remedy. io-harness 0.74.0 refuses
+/// `io.local.toml` for the same reason it refuses `io.toml`: it is not committed,
+/// but it sits in the workspace root a run's own agent can write to, so one
+/// `write_file` of an unremarkable name was an escalation. io-cli was shipping
+/// advice that fails, pinned by an assertion that it should.
 #[test]
-fn f4_a_widening_in_a_project_file_is_reported_rather_than_written() {
-    // io-harness's `refuse_widening` runs before deserialization, so this is not
-    // a rejected setting — it is a configuration file that no longer parses at
-    // all. `configure::write` would roll it back and quote the harness; saying it
-    // here means the file is never written.
-    let refusal = manage::parse(&argv(&[
-        "config",
-        "set",
-        "sandbox.mode",
-        "full-access",
-        "--scope",
-        "project",
-    ]))
-    .expect_err("a committed file may not widen what a clone may do");
-    assert!(refusal.contains("sandbox.mode"), "{refusal}");
-    assert!(refusal.contains("full-access"), "{refusal}");
-    assert!(refusal.contains("--scope local"), "{refusal}");
+fn f4_a_widening_in_either_workspace_file_is_reported_rather_than_written() {
+    for scope in ["project", "local"] {
+        let refusal = manage::parse(&argv(&[
+            "config",
+            "set",
+            "sandbox.mode",
+            "full-access",
+            "--scope",
+            scope,
+        ]))
+        .unwrap_err();
+        assert!(refusal.contains("sandbox.mode"), "{scope}: {refusal}");
+        assert!(refusal.contains("full-access"), "{scope}: {refusal}");
+        assert!(
+            refusal.contains("--scope user"),
+            "{scope}: the user scope is the only destination left, and a refusal that names a \
+             file the harness also refuses is worse than one that names none: {refusal}"
+        );
+        assert!(
+            !refusal.contains("--scope local"),
+            "{scope}: `io.local.toml` is refused too — this is the sentence the release exists to \
+             correct: {refusal}"
+        );
+    }
 
-    // The same value in a file that is not shared is the operator's own business.
+    // The user scope is the operator's own file and is not in a workspace, so the
+    // same value parses there. The positive control matters: without it this test
+    // passes against a guard that refuses every scope.
     let allowed = manage::parse(&argv(&[
         "config",
         "set",
         "sandbox.mode",
         "full-access",
         "--scope",
-        "local",
+        "user",
     ]))
-    .expect("a local file may say it");
+    .expect("the operator's own file may say it");
     assert_eq!(
         allowed,
         Request::Config(ConfigVerb::Set {
             key: "sandbox.mode".to_string(),
             value: "\"full-access\"".to_string(),
-            scope: Some(Scope::Local),
+            scope: Some(Scope::User),
         })
     );
 }
@@ -685,7 +729,11 @@ command = \"mcp-search\"
         .expect("a write");
     assert_eq!(plan.scope, Scope::Project);
     let gone = io_cli::edit::apply(&text, &plan.edits).expect("the entry goes");
-    let config = io_harness::config::Config::from_toml(&gone).expect("the file still loads");
+    // Read at the user scope, which is not the scope this file lives at: the
+    // claim under test is that the removal took the right entry, and 0.74.0 would
+    // refuse this text as a project file for declaring `[[mcp]]` at all — which is
+    // a fact about the fixture's location, not about the edit.
+    let config = loaded(&gone);
     let left: Vec<&str> = config.mcp_servers().iter().map(|s| s.id.as_str()).collect();
     assert_eq!(left, vec!["docs"]);
 
@@ -753,6 +801,61 @@ fn f6_a_plugin_directory_with_no_manifest_is_refused_before_anything_is_written(
         .expect("a write");
     let after = io_cli::edit::apply("", &plan.edits).expect("the entry is written");
     assert!(after.contains("path = \"bundle\""), "{after}");
+}
+
+/// **Installing a bundle that is already declared writes nothing.**
+///
+/// **A defect 0.35.0 created, caught before it shipped.** Since the adapter became
+/// a copy of what it contributes rather than a pointer into the clone, a `git pull`
+/// of a marketplace is no longer visible on its own — **installing again is the
+/// update path**. And `pluginview::add` appends unconditionally while
+/// `Edit::append` always splices at end of file, so every refresh added a *second*
+/// `[[plugin]]` naming the same directory. io-harness drops it with "a plugin with
+/// id `x` is already declared and switched on", so nothing broke and nothing was
+/// said: the operator's `io.toml` simply grew an ignored entry on every update,
+/// quietly, for as long as they kept the bundle current.
+///
+/// The adapter itself is regenerated on disk by `marketplace::chosen`, before
+/// `plan` decides anything, so a refresh has no edit to make at all.
+///
+/// Sabotage: return the `add` edit unconditionally, which is the pre-0.35.0 body.
+/// The second plan carries an edit and this fails on the count.
+#[test]
+fn installing_a_bundle_that_is_already_declared_plans_no_second_entry() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let bundle = root.path().join("bundle");
+    std::fs::create_dir(&bundle).expect("a directory");
+    std::fs::write(
+        bundle.join(io_cli::pluginview::MANIFEST),
+        "name = \"demo\"\n",
+    )
+    .expect("a manifest");
+
+    let request = manage::parse(&argv(&["plugin", "add", "bundle"])).expect("it parses");
+
+    // The first install, against a configuration that declares nothing.
+    let first = manage::plan(root.path(), &request, &[])
+        .expect("it is a bundle")
+        .expect("a write");
+    assert_eq!(
+        first.edits.len(),
+        1,
+        "the first install declares it exactly once",
+    );
+
+    // And the second, against a configuration that already names this directory —
+    // which is what `plan` is handed on every real update.
+    let declared = [("demo".to_string(), bundle.clone())];
+    let second = manage::plan(root.path(), &request, &declared)
+        .expect("it is still a bundle")
+        .expect("a plan, because the operator still has to be told what a refresh moved");
+    assert!(
+        second.edits.is_empty(),
+        "a refresh planned {} edit(s). Appending a second `[[plugin]]` for a directory already \
+         declared grows the operator's file by an entry io-harness drops, on every update: {:?}",
+        second.edits.len(),
+        second.edits,
+    );
 }
 
 // --- `plugin remove <word>`: the path first, then the declared name -------------

@@ -30,7 +30,7 @@
 //! decision="allow")` and Claude's `permissions.ask` says `Bash(cargo yank *)` —
 //! both of which match a *command line*. io-harness's `Act::Exec` matches a
 //! **binary name and nothing else**; it has no argument matching at all
-//! (`Act::Exec`, `io-harness-0.73.0/src/policy.rs:63`). So the nearest thing to a faithful
+//! (`Act::Exec`, `io-harness-0.74.0/src/policy.rs:63`). So the nearest thing to a faithful
 //! import of `bun install` is a blanket allow on `bun`, which is a wider
 //! permission than the operator ever granted, written by a tool they were
 //! trusting to be careful. A boundary half-imported is worse than one left alone,
@@ -43,6 +43,35 @@
 //! compatible endpoint. So the plan records the id and [`Item::provider_edit`]
 //! hands the caller the [`crate::edit::Edit`] once a vendor has been chosen,
 //! built by [`crate::providers::add`] rather than by a second speller here.
+//!
+//! # An MCP server lands in the user scope, whatever scope was asked for
+//!
+//! io-harness 0.74.0 refuses `[[mcp]]` in **any** configuration file under the
+//! workspace root — `io.toml` and `io.local.toml` alike — because such a file
+//! arrives with a `git clone`, or sits in a root the run's own agent can write to,
+//! and an `[[mcp]]` entry is a command line this process spawns at run start. The
+//! user scope is the sole exemption, and it is the right destination here for the
+//! same reason it is the exemption: `$IO_CONFIG` is outside every workspace, so a
+//! run that can write its own root cannot reach it — and an import is the
+//! operator's own act on their own machine rather than something a repository
+//! handed them.
+//!
+//! So [`plan`]'s `scope` argument decides where **instructions** go, and nothing
+//! else. Threading it into the `[[mcp]]` items too is what made every server
+//! `/import` offered come back refused: [`crate::configure::write`] round-trips
+//! through `Config::discover`, the harness refused the section, and the file was
+//! rolled back with nothing in it. Choosing the scope here rather than letting a
+//! caller pass one is what makes that unrepeatable — there is exactly one scope an
+//! `[[mcp]]` entry can be written to, so it is not a caller's decision to get
+//! wrong.
+//!
+//! Nothing else this module writes has the problem. Instructions are markdown
+//! through [`crate::memory::remember`], and the `[instructions] files` list that
+//! makes them readable is written by `memory::install` at [`Scope::User`] already;
+//! a skill is a plain file under io's own home; a model and an allowlist write
+//! nothing at all, and the `[[provider]]` a caller may build from
+//! [`Item::provider_edit`] — the one other section 0.74.0 moved to the user scope
+//! — is written there by its caller for the same reason.
 //!
 //! # The ceiling is the feature
 //!
@@ -379,6 +408,11 @@ pub enum Destination {
     Instructions(Scope),
     /// A `[[mcp]]` entry in the configuration file for this scope, through
     /// [`crate::configure::write`].
+    ///
+    /// Everything [`plan`] builds carries [`Scope::User`] here, and the module
+    /// note says why: it is the only scope io-harness 0.74.0 lets an `[[mcp]]`
+    /// entry live in. The scope is still carried rather than assumed, so [`apply`]
+    /// writes to the file [`Destination::path`] already showed the operator.
     Config(Scope),
     /// A file written at exactly this path.
     File(PathBuf),
@@ -476,9 +510,11 @@ impl Item {
 /// expected can look at [`detect`]'s output to see what was there; an operator
 /// seeing a plan that half-applied could not.
 ///
-/// `scope` is where instructions and configuration go — [`Scope::Project`] is the
-/// answer for a repository the operator is standardising, [`Scope::User`] for a
-/// machine they are moving onto.
+/// `scope` is where **instructions** go — [`Scope::Project`] is the answer for a
+/// repository the operator is standardising, [`Scope::User`] for a machine they
+/// are moving onto. It does not reach the `[[mcp]]` items: io-harness 0.74.0
+/// allows that section in the user scope alone, so there is no choice to make and
+/// the module note gives the reasoning.
 #[must_use]
 pub fn plan(found: &[Found], home: &Path, scope: Scope) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
@@ -526,12 +562,12 @@ pub fn plan(found: &[Found], home: &Path, scope: Scope) -> Vec<Item> {
                 ) => items.extend(instructions(one.source, path, scope)),
                 (Source::Claude, "settings.json") => items.extend(claude_settings(path)),
                 (Source::Claude, ".claude.json") => {
-                    items.extend(foreign_mcp(one.source, path, scope));
+                    items.extend(foreign_mcp(one.source, path));
                 }
-                (Source::Codex, "config.toml") => items.extend(codex_config(path, scope)),
+                (Source::Codex, "config.toml") => items.extend(codex_config(path)),
                 (Source::Codex, "default.rules") => items.extend(codex_rules(path)),
                 (Source::Gemini, "mcp_config.json") => {
-                    items.extend(foreign_mcp(one.source, path, scope));
+                    items.extend(foreign_mcp(one.source, path));
                 }
                 // Every skill file has already been taken by the guard above, so
                 // what reaches here is a file [`files`] produces and no arm
@@ -638,7 +674,7 @@ struct ForeignProject {
 /// io-harness reads as two servers under one name, and every tool call after that
 /// is ambiguous — so the duplicate is dropped here rather than written and
 /// discovered later.
-fn foreign_mcp(source: Source, path: &Path, scope: Scope) -> Vec<Item> {
+fn foreign_mcp(source: Source, path: &Path) -> Vec<Item> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -665,15 +701,7 @@ fn foreign_mcp(source: Source, path: &Path, scope: Scope) -> Vec<Item> {
             continue;
         }
         let names: Vec<String> = server.env.into_keys().collect();
-        items.push(mcp_item(
-            source,
-            path,
-            scope,
-            &id,
-            &command,
-            server.args,
-            &names,
-        ));
+        items.push(mcp_item(source, path, &id, &command, server.args, &names));
     }
     items
 }
@@ -683,7 +711,7 @@ fn foreign_mcp(source: Source, path: &Path, scope: Scope) -> Vec<Item> {
 /// Read through [`crate::edit::value_at`] and [`crate::edit::sections`] rather
 /// than by parsing — see the module note on why this file may not hold a second
 /// TOML reader.
-fn codex_config(path: &Path, scope: Scope) -> Vec<Item> {
+fn codex_config(path: &Path) -> Vec<Item> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -718,15 +746,7 @@ fn codex_config(path: &Path, scope: Scope) -> Vec<Item> {
             .map(|value| strings(&value))
             .unwrap_or_default();
         let names = env_names(&text, &name);
-        items.push(mcp_item(
-            Source::Codex,
-            path,
-            scope,
-            &name,
-            &command,
-            args,
-            &names,
-        ));
+        items.push(mcp_item(Source::Codex, path, &name, &command, args, &names));
     }
 
     items
@@ -783,10 +803,15 @@ fn env_names(text: &str, server: &str) -> Vec<String> {
 /// Each key is rendered with `toml::Value`'s own inline form, which is why `env`
 /// comes out as an inline table: an appended `[[mcp]]` block cannot carry a
 /// `[mcp.env]` header after it without that header attaching to the wrong entry.
+///
+/// **The scope is decided here and is not an argument.** io-harness 0.74.0 refuses
+/// `[[mcp]]` in every file under the workspace root, so [`Scope::User`] is not the
+/// best of three destinations, it is the only one that exists — see the module
+/// note. A `scope` parameter here would be a way to build an item that cannot be
+/// written, which is precisely what it used to be.
 fn mcp_item(
     source: Source,
     from: &Path,
-    scope: Scope,
     id: &str,
     command: &str,
     args: Vec<String>,
@@ -823,7 +848,7 @@ fn mcp_item(
             source.word()
         ),
         to: if form.is_some() {
-            Destination::Config(scope)
+            Destination::Config(Scope::User)
         } else {
             Destination::Nowhere
         },
@@ -1206,7 +1231,7 @@ pub fn apply(plan: &[Item], root: &Path) -> Report {
                 // same server declared by two tools — `context7` and `playwright`
                 // are in both Claude's and Gemini's files on a real machine —
                 // arrived twice; and nothing at all compared the plan against what
-                // `io.toml` already declared, so a second `/import`, or the
+                // the configuration already declared, so a second `/import`, or the
                 // first-run offer followed by `/import` later, appended a second
                 // entry under an id that was already there. io-harness validates
                 // no such thing, so `configure::write`'s round trip accepts it and

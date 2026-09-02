@@ -255,7 +255,7 @@ pub enum Kind {
 ///
 /// **Both halves are the dependency's since io-harness 0.71.0, and neither is
 /// written here any more**: the list is `Effect::ALL`
-/// (`io-harness-0.73.0/src/policy.rs:127`) and each spelling is `Effect::as_str`
+/// (`io-harness-0.74.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
 /// (`:143`), which is the word io-harness's own deserializer reads.
 ///
 /// Until this release io-cli held a copy of both — an array naming three variants
@@ -282,7 +282,7 @@ pub fn effects() -> Vec<String> {
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **The list is `ExecMode::ALL` (`io-harness-0.73.0/src/sandbox.rs:424`) and the
+/// **The list is `ExecMode::ALL` (`io-harness-0.74.0/src/sandbox.rs:453`) and the
 /// spellings are `ExecMode::as_str` (`:431`).** io-cli wrote the variant list out
 /// by hand until this release for a reason that was the dependency's and not a
 /// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:378-381`), and
@@ -386,7 +386,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 /// preference — but half of the old reason is now false and the correction is
 /// worth writing down.** io-harness 0.71.0 names its own defaults:
 /// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
-/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.73.0/src/contract.rs:652,670,686`),
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.74.0/src/contract.rs:652,670,686`),
 /// re-exported at the crate root. "There is nothing to read" was true when this
 /// was written and is not true now. What is still true is that none of it anchors
 /// *this* ladder:
@@ -537,7 +537,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
 /// **Read from the dependency's own table since io-harness 0.71.0, not scraped
-/// out of the files.** `PriceTable::models` (`io-harness-0.73.0/src/pricing.rs:268`)
+/// out of the files.** `PriceTable::models` (`io-harness-0.74.0/src/pricing.rs:268`)
 /// lists every model the table can actually price, and [`Config::prices`] has
 /// always built that table out of the three scopes — so the merged question this
 /// used to hand-roll is precisely the one the accessor answers, and the gap filed
@@ -563,7 +563,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 ///
 /// **This takes the `Config` the caller already holds, and must never re-discover
 /// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
-/// it reads (`io-harness-0.73.0/src/config.rs:517`), so a second discovery re-runs
+/// it reads (`io-harness-0.74.0/src/config.rs:605`), so a second discovery re-runs
 /// an operator's credential commands — which for a `${cmd:}` fetching a key out of
 /// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
 /// the picker opens. Taking a `&Config` is not an optimisation; it is the
@@ -600,36 +600,59 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
     }
 }
 
-/// Whether writing `value` to `key` would be refused in a **project-scoped** file.
+/// Whether writing `value` to `key` would be refused in a file that lives inside
+/// the workspace — `io.toml` or `io.local.toml`.
 ///
-/// io-harness refuses five (key, value) pairs in a committed `io.toml`
-/// (`PROJECT_WIDENING`, `io-harness-0.73.0/src/config.rs:1998-2008`): the two acts
-/// defaulted to `allow`, egress re-opened inside the sandbox, the portable floor
-/// switched off, and the widest exec mode. The narrowing value of each stays legal,
-/// which is what the scope is for.
+/// **Asked of io-harness rather than mirrored from it, and the mirror is why.**
+/// Until 0.35.0 this function held a hand-copied list of five (key, value) pairs.
+/// io-harness 0.74.0's `PROJECT_WIDENING` holds **thirteen pairs over twelve
+/// keys**: it added `policy.defaults.read` and `write` (the shipped defaults are
+/// `allow` and `ask`, and a project scope *overrides* the user scope, so a cloned
+/// file writing `write = "allow"` turned every unmatched write from a question
+/// into a silent grant), `sandbox.mode = "workspace-write"` beside `full-access`
+/// (the same override raised an operator's own `read-only` back to the default),
+/// and each of the five `sandbox.limits.*` written as `0`, which means *no cap*.
 ///
-/// **Mirrored here because a menu that offers a value the destination file will
-/// refuse is a menu that lies, and the cost is not one key.** `refuse_widening`
-/// runs before deserialization, so the refusal takes the *whole file*: an operator
-/// who picks `full-access` on a key their project `io.toml` decides does not get a
-/// rejected setting, they get a configuration that no longer parses. `write`
-/// already re-reads and refuses with io-harness's own sentence — this is what lets
-/// the row say so beforehand instead.
+/// So the copy was a strict subset of the rule it claimed to state, and `/config`
+/// and `io config set` were offering eight values the destination file would
+/// refuse. **No test failed**, because the gate iterated io-cli's own list and a
+/// list cannot notice what is missing from it. It was found by reading the
+/// dependency's diff.
 ///
-/// The pairs are io-harness's and are spelled here because it exposes no reader for
-/// them; `tests/configure.rs` round-trips each one through `Config::from_toml`, so a
-/// pair the dependency adds or drops is caught by the gate rather than by an
-/// operator.
+/// Rather than lengthen the copy and wait for the next divergence, this asks the
+/// dependency: it writes the one key into a one-line document, hands it to
+/// `Config::from_toml` — which parses at `Scope::Project` and runs
+/// `refuse_widening` before it deserializes anything — and reports whether the
+/// refusal was a *widening* refusal. There is nothing left to keep in step.
+///
+/// **Why the answer is worth asking for at all.** `refuse_widening` runs before
+/// deserialization, so the refusal takes the *whole file*: an operator who picks
+/// `full-access` on a key their project `io.toml` decides does not get a rejected
+/// setting, they get a configuration that no longer parses. `write` already
+/// re-reads and refuses in io-harness's own sentence — this is what lets the row
+/// say so beforehand instead of writing a file that has to be rolled back.
+///
+/// **Every value is written quoted, whatever the key's real type.**
+/// `refuse_widening` reads the raw table before deserialization and compares the
+/// *written* form of a string, a boolean or an integer alike, so `"false"` and
+/// `"0"` match the boolean and integer pairs. A value that does not widen goes on
+/// to deserialization and may fail there for a type error instead — which is why
+/// the answer is the refusal's own clause and not merely `is_err`.
 #[must_use]
-pub fn widens_project(key: &str, value: &str) -> bool {
-    matches!(
-        (key, value.trim().trim_matches('"')),
-        ("policy.defaults.exec", "allow")
-            | ("policy.defaults.net", "allow")
-            | ("sandbox.allow_network", "true")
-            | ("sandbox.force_floor", "false")
-            | ("sandbox.mode", "full-access")
-    )
+pub fn widens_workspace(key: &str, value: &str) -> bool {
+    /// The clause io-harness's widening refusal always carries
+    /// (`io-harness-0.74.0/src/config.rs:2509`). Matched rather than the whole
+    /// sentence, which interpolates the path, the key and the destination scope.
+    const WIDENS: &str = "widens the boundary";
+
+    let value = value.trim().trim_matches('"');
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    let document = match key.rsplit_once('.') {
+        Some((table, leaf)) => format!("[{table}]\n{leaf} = \"{escaped}\"\n"),
+        None => format!("{key} = \"{escaped}\"\n"),
+    };
+
+    Config::from_toml(&document).is_err_and(|refusal| refusal.to_string().contains(WIDENS))
 }
 
 /// The `/config` row that re-reads the price catalogue.
@@ -753,7 +776,7 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`substitute`, `io-harness-0.73.0/src/config.rs:2150`, the `cmd` arm at
+/// (`substitute`, `io-harness-0.74.0/src/config.rs:2719`, the `cmd` arm at
 /// `:2241`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or
@@ -894,28 +917,45 @@ pub fn scope_path(root: &std::path::Path, scope: Scope) -> Option<PathBuf> {
     }
 }
 
-/// What to print when the configuration cannot be read at all.
+/// What to print when io-harness will not take the configuration.
 ///
 /// **The whole of io-harness's sentence, and one line of io-cli's own.** A
-/// `Config::discover` that fails is not always a broken file: since io-harness
-/// refuses a project-scoped `[[hook]]` outright — a hook runs a command, and
-/// `io.toml` is the file a `git clone` delivers — the commonest way for a
-/// perfectly well-formed repository to stop io from starting is a table somebody
-/// added in good faith to the wrong one of three files.
+/// `Config::discover` that fails is very often not a broken file at all: io-harness
+/// refuses whole sections outright from any file that lives in a workspace, so the
+/// commonest way for a perfectly well-formed repository to stop io from starting is
+/// a table somebody added in good faith to the wrong file.
 ///
-/// io-harness's own message names the key, says why, and names the two files that
-/// may carry it. Nothing io-cli could write would be better, so it is passed
-/// through whole. What io-cli adds is the one thing the harness cannot know: which
-/// directory was being read, because an operator who ran `io` in the wrong place
-/// is looking at a message about a file they have never opened.
+/// **0.74.0 made that far more likely and this sentence had to change with it.**
+/// The refused set grew from `[[hook]]` and `[browser]` to include `[[provider]]`,
+/// `[[mcp]]`, `[[lsp]]` and `[web]`; `[[hook]]` is now refused in `io.local.toml`
+/// as well as `io.toml`; ten policy and sandbox values may no longer be widened;
+/// and `run.skills`/`run.templates` may not be absolute or climb out with `..`. An
+/// operator who clones a repository can meet three of those at once.
+///
+/// **"was not accepted" rather than "could not be read", and the wording is the
+/// point.** A refusal is not a malfunction — the file parsed, and io-harness
+/// declined what it said. "Could not be read" told an operator their file was
+/// broken when it was intact and in the wrong place, which is a different problem
+/// with a different fix. The phrasing covers both cases honestly without io-cli
+/// having to classify which one it is: `Error::Config` carries no structure, only
+/// a sentence, so any classification here would be a list of the harness's clauses
+/// that goes stale the next time it tightens — which is exactly the mistake
+/// `widens_workspace` was rewritten to stop making.
+///
+/// io-harness's own message names the key, says why, and names the scope that may
+/// carry it. Nothing io-cli could write would be better, so it is passed through
+/// whole. What io-cli adds is the one thing the harness cannot know: which
+/// directory was being read, because an operator who ran `io` in the wrong place is
+/// looking at a message about a file they have never opened.
 ///
 /// **This lives here and not in `main.rs`.** Nothing under `tests/` links the
 /// binary, so a sentence composed in that file is one no test drives and no
 /// sabotage can make fail — the same reasoning that put plain-mode resolution in
-/// the library.
+/// the library. It is also why all three doors that meet a refusal route through
+/// this one function.
 pub fn refusal(root: &std::path::Path, error: &io_harness::Error) -> String {
     format!(
-        "the configuration in {} could not be read:\n{error}",
+        "the configuration in {} was not accepted:\n{error}",
         root.display()
     )
 }
@@ -979,7 +1019,15 @@ pub fn write(
 pub fn reload(
     root: &std::path::Path,
 ) -> Result<(Config, Option<crate::settings::CliSettings>), String> {
-    let config = Config::discover(root).map_err(|e| e.to_string())?;
+    // **Through `refusal` and not `to_string`, so all three doors say one thing.**
+    // The startup door has framed a refused configuration since 0.16.0; this one
+    // handed back io-harness's bare sentence, so the same `[[mcp]]` in the same
+    // file read as a refusal at start-up and as an unattributed error at the turn
+    // boundary that noticed the edit — and the reload door is the one an operator
+    // meets *while working*, having just saved the file. It also gains the root,
+    // which is the fact io-harness cannot supply and the one that matters when the
+    // refused file is in a directory the operator has never opened.
+    let config = Config::discover(root).map_err(|error| refusal(root, &error))?;
     let (stored, _) = crate::settings::stored(&config);
     Ok((config, stored))
 }

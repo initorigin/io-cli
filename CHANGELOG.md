@@ -6,6 +6,77 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-02
+
+The release that renders a boundary somebody measured. This interface has drawn the
+sandbox backend that *answered* rather than the mode that was asked for since 0.2.0,
+deliberately, because those are two different facts — and until io-harness 0.74.0 the
+answer could still be false. On macOS a crafted `workdir` re-granted write and network
+on `/` while the backend still reported `MacosSandboxExec`; on Windows `shell` and `git`
+spawned entirely unwrapped under a reported `WindowsAppContainer`. 0.74.0 makes each
+backend try to write outside its roots and dial outside its egress at run start and
+records what happened, so what an operator reads is now a measurement.
+
+That pin is a security release, so taking it *is* most of this release.
+
+### Changed
+
+**The io-harness pin moves to 0.74.0, and it refuses much more of what a file inside a
+workspace may say.** `[[provider]]`, `[[mcp]]` and `[[lsp]]` are refused from any
+project-scoped file; `[[hook]]` is now refused in `io.local.toml` as well as `io.toml`;
+a plugin whose manifest sits inside the workspace may not contribute `[[bin]]` or
+`[[hook]]`; twelve keys may no longer be widened where five could not before; and
+`run.skills`/`run.templates` may not be absolute or climb out with `..`. **A refusal
+takes the whole file, not the key.** If you keep any of those in a committed or
+workspace-root file, move them to your own — `$IO_CONFIG`, else `$IO_CONFIG_HOME/io.toml`,
+else `~/.config/io/io.toml`. io refuses at `io config set` and `/config` before writing,
+names the destination, and reports the harness's own sentence when a file is declined.
+
+**A local provider endpoint is refused at run start, and no configuration key lifts
+it.** io-harness 0.74.0 puts a floor under the network boundary: loopback, link-local,
+CGNAT, ULA and RFC 1918 addresses, and `localhost`, `*.localhost` and `*.local`, are
+refused before the first step *whatever the policy says*. **If you point io at Ollama, LM
+Studio or llama.cpp, this release stops working until you set
+`IO_HARNESS_ALLOW_LOCAL_ADDRESSES=1`** for that run. The variable is deliberate: the
+harness gave the lift no key so it stays an explicit, per-invocation choice. io names it
+in the refusal and sets it nowhere.
+
+**A boundary refusal on the provider endpoint exits `2`.** It exited `1`, which
+`docs/CONTRACT.md` publishes as FAILED, because the typed error was flattened to a
+string before an exit code was chosen. This is the mirror of the collision 0.34.1
+removed and it is a behaviour change: a script branching on `1` for this case will now
+see `2`, which is the documented meaning. Only `Error::Refused` moved — `Error::Sandbox`
+is "the sandbox never ran the code" and `Error::Config` is "fix the configuration", and
+both still exit `1`.
+
+**A foreign bundle's adapter ships what it contributes.** `io` generated an adapter
+manifest whose `skills` and `templates` were absolute paths into the marketplace clone.
+0.74.0 refuses that everywhere — every `*.md` under such a directory reaches the model's
+system prompt — so **every foreign-bundle install was broken on this pin**. The adapter
+now copies those directories into itself and names them relatively. **Installing again is
+therefore how you update**: a `git pull` of the clone changes the clone, not the copy.
+`plugin add` says which directories moved, writes no second entry when one already names
+the bundle, and leaves a working adapter untouched when a refresh is refused.
+
+**`/import` writes MCP servers where the harness accepts them.** Every server imported
+from Claude or Codex came back refused on this pin, because the import targeted a
+project-scoped file.
+
+### Added
+
+**The status line, the footer and `/status` name what the backend's probe found.**
+`boundary verified` when a write outside the sandbox's roots *and* a dial outside its
+egress were both attempted and both refused; `boundary unverified` otherwise. `/status`
+prints io-harness's own measurement, which is the only surface with room to separate an
+arm that landed from an arm that was never attempted. A run with no containment was
+never probed and says nothing, because "unverified" about a measurement nobody took
+would be worse than silence.
+
+**`io exec` applies `[run] templates`.** A headless goal written as `/name` is rendered
+from the template of that name, through the same function the palette uses. A goal that
+does not begin with `/` is a prompt and is unchanged. The key was never unapplied — it
+was applied on one door only, and the limits page named the wrong thing as the gap.
+
 ## [0.34.1] - 2026-09-01
 
 A patch about honesty rather than capability. This product machine-enforces its own
@@ -3175,7 +3246,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.34.1...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/initorigin/io-cli/compare/v0.34.1...v0.35.0
 [0.34.1]: https://github.com/initorigin/io-cli/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/initorigin/io-cli/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/initorigin/io-cli/compare/v0.32.0...v0.33.0

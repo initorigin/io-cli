@@ -338,6 +338,35 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// What the sandbox backend's own boundary probe measured, as io-harness
+    /// spelled it.
+    ///
+    /// **The field beside [`Status::containment`] is the whole point of the
+    /// release.** That one names the backend that *answered*, which this interface
+    /// has drawn since 0.2.0 in preference to the mode that was asked for. Until
+    /// io-harness 0.74.0 the answer could still be false: on macOS a crafted
+    /// `workdir` re-granted write and network on `/` while the backend still said
+    /// `MacosSandboxExec`, and on Windows `shell` and `git` spawned entirely
+    /// unwrapped under a reported `WindowsAppContainer`. 0.74.0 makes each backend
+    /// attempt a write outside its writable roots and a dial outside its allowed
+    /// egress at run start and records what happened, so the boundary an operator
+    /// reads is a thing that was measured rather than a thing that was claimed.
+    ///
+    /// **Held raw, as `BoundaryProbe::trace_label` wrote it**, and reduced to a
+    /// word only where a word is what fits — see [`boundary_word`]. `/status` has
+    /// room for the measurement itself and prints it.
+    ///
+    /// **Read from the store, because the event does not carry it.**
+    /// `EventKind::Sandbox` has `kind` and `backend` and nothing else;
+    /// `record_sandbox_step` copies those two and drops the rest. The write and
+    /// dial outcomes exist only in `Store::sandbox_events`'s `detail` column. That
+    /// puts this on exactly the footing of [`Status::cost`], which re-reads the
+    /// store for the same reason and says so.
+    ///
+    /// `None` where io-harness recorded no row, which is every run with no
+    /// containment — and drawing "unverified" there would be a claim about a
+    /// measurement nobody took.
+    pub boundary: Option<String>,
     /// The branch the working tree is on, or `None` where there is no answer.
     ///
     /// **A fact about the checkout, so neither [`Status::forget_run`] nor
@@ -607,6 +636,7 @@ impl Status {
             cost: None,
             context: None,
             containment: None,
+            boundary: None,
             branch: None,
             spend: None,
             plan: None,
@@ -686,6 +716,10 @@ impl Status {
         self.steps = None;
         self.context = None;
         self.containment = None;
+        // Beside the containment word it qualifies, and for the same reason: a
+        // measurement belongs to the run that took it, and carrying it onto the
+        // next one would report a boundary that was never probed.
+        self.boundary = None;
         self.spend = None;
         self.plan = None;
         // **A standing belongs to the turn that was gated, and this is the field
@@ -857,6 +891,68 @@ impl Status {
         // stating it as `$0` would be the invented number the whole of `/cost` is
         // built to avoid.
         self.cost = (total.micros > 0).then_some(total.micros);
+    }
+
+    /// What the probe proved, as its own field.
+    ///
+    /// **A field of its own rather than a word appended to the containment, and
+    /// the footer measured why.** The right-hand group — posture, containment,
+    /// planning — is fit **all or nothing**, so a longer containment word does not
+    /// truncate: at eighty columns it takes the posture and the containment off
+    /// the row **together**, and an operator loses both without being told. That is
+    /// verbatim the failure this module already paid for twice, once for `effort`
+    /// (0.26.0) and once for `branch` (0.25.0), and both were moved into `counts`
+    /// for it — where narrowing takes one field at a time.
+    ///
+    /// The same argument decides this one, and this module states it: the fact an
+    /// operator can afford to lose is the one still readable a keystroke away on
+    /// `/status`, and a posture that has silently vanished is not. So the word
+    /// yields before the posture does, and `/status` carries the measurement
+    /// itself.
+    ///
+    /// Named `boundary` rather than drawn bare, because `verified` alone on a row
+    /// of counters says nothing about what was verified.
+    #[must_use]
+    pub fn boundary_field(&self) -> Option<String> {
+        let detail = self.boundary.as_ref()?;
+        Some(format!("boundary {}", boundary_word(detail)))
+    }
+
+    /// The containment and its probe together, for a surface with room for both.
+    ///
+    /// `/status` only. The two width-bound surfaces draw them as separate fields
+    /// so that the probe word can yield on its own — see [`Status::boundary_field`].
+    #[must_use]
+    pub fn contained(&self) -> Option<String> {
+        let containment = self.containment.as_ref()?;
+        Some(match &self.boundary {
+            Some(detail) => format!("{containment} {}", boundary_word(detail)),
+            None => containment.clone(),
+        })
+    }
+
+    /// Set [`Status::boundary`] from what this run's backend probe measured.
+    ///
+    /// **Read from the store because io-harness puts it nowhere else.**
+    /// `EventKind::Sandbox` carries `kind` and `backend`; the arms live only in the
+    /// `sandbox_events` row's `detail`. Same place and cadence as
+    /// [`Status::note_cost_from`], which re-reads for the same kind of reason.
+    ///
+    /// The row is written once per run, at step 0, and **only for a run that was
+    /// contained** — a run with no containment records nothing, which is what
+    /// leaves this `None` rather than "unmeasured". A proxied tree records the row
+    /// with both arms unmeasured, which is a different fact and reads as one.
+    ///
+    /// Silent on every failure, like the cost read: a store that cannot be read is
+    /// a status line without this field, and a notice about a failed read of a
+    /// decorative field is worse than the field's absence.
+    pub fn note_boundary_from(&mut self, store: &io_harness::Store, run_id: i64) {
+        let Ok(events) = store.sandbox_events(run_id) else {
+            return;
+        };
+        if let Some(probe) = events.iter().find(|event| event.kind == BOUNDARY_PROBE) {
+            self.boundary.clone_from(&probe.detail);
+        }
     }
 
     /// Set [`Status::context`] from an observation section of `est_tokens`.
@@ -1384,6 +1480,13 @@ impl Status {
         if let Some(containment) = &self.containment {
             fields.push(Field::new(containment.clone(), Tone::Muted));
         }
+        // Immediately right of the backend it qualifies. `Status::fields` narrows
+        // one field at a time from the right, so this is the first of the pair to
+        // go — which is the order that keeps a backend on the row without a
+        // verdict rather than a verdict with no backend.
+        if let Some(text) = self.boundary_field() {
+            fields.push(Field::new(text, Tone::Muted));
+        }
         // **Immediately right of the containment word, which is its nearest kin on
         // this line, and left of the plan claim.** Both are standing facts about
         // the circumstances the agent is working in rather than counters of what a
@@ -1683,6 +1786,20 @@ impl Status {
         // that has silently vanished is not. Pushed last, so `counts.pop()` takes
         // it before it takes any number — a narrow row keeps what it measured and
         // gives up where it measured it.
+        // **And the probe word, for the reason the branch is here.** It qualifies
+        // the containment word in the group to the right, and putting it there
+        // would take that group past what eighty columns hold — costing the
+        // posture and the containment together, which is the failure this
+        // paragraph and the two above it all record. It is also exactly the class
+        // of fact that belongs here: still readable on `/status`, which carries
+        // the measurement rather than the verdict.
+        //
+        // Pushed before the branch so `counts.pop()` takes the branch first: of
+        // the two, the branch is the one an operator is least likely to be
+        // reading the row for while a boundary is in force.
+        if let Some(text) = self.boundary_field() {
+            counts.push(text);
+        }
         if let Some(text) = self.branch_field() {
             counts.push(text);
         }
@@ -1910,6 +2027,57 @@ pub fn format_containment(mode: &str, backend: &str) -> String {
     format!("{mode}/{backend}")
 }
 
+/// The `sandbox_events` kind io-harness writes its startup probe under.
+///
+/// Its own doc comment on `SandboxEvent::kind` does not list this one — it names
+/// `create`, `exec`, `cap_hit`, `destroy`, `dial`, `gate_phase_failed` and
+/// `gate_output`, all of which predate 0.74.0. Filed upstream; matched here
+/// against the value `record_sandbox_step` actually writes.
+const BOUNDARY_PROBE: &str = "boundary_probe";
+
+/// One word for what the probe measured, from the line io-harness wrote.
+///
+/// **A word and not the measurement, because the row it goes on is a row.**
+/// `BoundaryProbe::trace_label` is
+/// `"{backend} write-outside={refused|landed|unmeasured} dial-outside={…}"`, which
+/// is far too wide for a status line already carrying seventeen fields. `/status`
+/// prints the label itself; this is what the line and the footer can afford.
+///
+/// **Parsing a dependency's string is a thing this product is right to be wary
+/// of, so here is why it is the honest option.** io-harness exposes the two arms
+/// nowhere else: they are not on `EventKind::Sandbox`, and `BoundaryProbe`'s own
+/// fields never leave the harness. The label is documented as "one stable line"
+/// and is `key=value` rather than prose, so what is matched is the key, not a
+/// sentence anyone might reword. An accessor has been asked for upstream.
+///
+/// **Two words and not three, and the missing one is deliberate.**
+/// `BoundaryProbe::contradicts_claim` is the harness's own notion of a backend
+/// that did not do what it said — and it needs `claimed_confinement` and
+/// `claimed_egress_denial`, **which the label does not carry**. So io-cli cannot
+/// tell "this backend claimed confinement and a write landed anyway" from "this
+/// backend never claimed that arm". Drawing `contradicted` on the second would be
+/// a false alarm on the one field an operator is meant to trust, which is worse
+/// than drawing nothing — the same reasoning that made a refused host render
+/// `web <host> refused` rather than a word that reads like a visit.
+///
+/// So: `verified` only when both arms were attempted and both were refused;
+/// `unverified` for anything else, which covers an arm that landed and an arm
+/// that could not be attempted alike. `/status` carries the distinction, because
+/// `/status` has the room to state it without implying a verdict.
+#[must_use]
+pub fn boundary_word(detail: &str) -> &'static str {
+    let refused = |arm: &str| {
+        detail
+            .split_whitespace()
+            .any(|word| word == format!("{arm}=refused"))
+    };
+    if refused("write-outside") && refused("dial-outside") {
+        "verified"
+    } else {
+        "unverified"
+    }
+}
+
 /// The whole session state, as the lines `/status` commits into the scrollback.
 ///
 /// **Every field here is a value io-harness supplied, and the ones that are not
@@ -2084,11 +2252,19 @@ pub fn committed(
     // sandbox available reaches the portable floor — and it is the second word
     // that says what is enforcing anything. It is `EventKind::Contained`'s pair,
     // carried on this struct by `App::event`; nothing here names a backend.
+    //
+    // **And the measurement itself, here and nowhere else.** The line and the
+    // footer can afford one word — `verified` or `unverified` — and this page can
+    // afford the label io-harness wrote, which is what separates an arm that was
+    // attempted and landed from an arm that could not be attempted at all. Those
+    // are different facts and only one of them is a failure; a surface with the
+    // room to tell them apart should.
     facts.push((
         "sandbox".into(),
-        match &status.containment {
-            Some(word) => word.clone(),
-            None => format!(
+        match (status.contained(), &status.boundary) {
+            (Some(word), Some(detail)) => format!("{word} {dash} {detail}"),
+            (Some(word), None) => word,
+            (None, _) => format!(
                 "not known until a turn has run {dash} the mode and the backend are \
                  reported when one starts"
             ),

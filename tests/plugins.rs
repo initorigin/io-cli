@@ -11,11 +11,17 @@
 //! be asserting that io-cli copied fields correctly, which is not the question:
 //! the question is whether the turn the operator gets carries the bundle.
 //!
-//! **Nothing here touches the environment.** `Config::discover` reads a user-scope
-//! file where one exists, so every fixture that must be exact about the *absence*
-//! of something uses `Config::from_toml`, which has no scope but the text; the
-//! rest declare their bundles in a temporary root of their own and run in
-//! parallel.
+//! **One test here touches the environment and the rest do not.** `Config::discover`
+//! reads a user-scope file where one exists, so every fixture that must be exact
+//! about the *absence* of something uses `Config::from_toml`, which has no scope but
+//! the text; the rest declare their bundles in a temporary root of their own and run
+//! in parallel. The exception is `f3_the_same_manifest_named_from_the_user_scope_
+//! contributes_all_of_it`, which since io-harness 0.74.0 is the only arrangement in
+//! which a bundle may contribute a `[[hook]]`, an `[[mcp]]` or a `[[bin]]` at all —
+//! it goes through `support::user_scope`, which takes the one environment lock this
+//! binary has.
+
+mod support;
 
 use std::path::{Path, PathBuf};
 
@@ -50,6 +56,27 @@ fn root() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let root = dir.path().to_path_buf();
     (dir, root)
+}
+
+/// `Config::discover`, taken under the one environment lock this binary has.
+///
+/// **Every discovery in this file goes through here, and io-harness 0.74.0 is
+/// why.** `f3_the_same_manifest_named_from_the_user_scope_contributes_all_of_it` is
+/// the only arrangement left in which a bundle may contribute a `[[hook]]`, an
+/// `[[mcp]]` or a `[[bin]]`, and building it means pointing `IO_CONFIG` at a file —
+/// which is process-global and therefore shared with every test running beside it.
+/// A discovery that happened during that window would load *that* fixture's bundle
+/// as well as its own, and the counted assertions below would fail on a bundle they
+/// never declared, on CI, intermittently.
+///
+/// The lock is held across the read and no longer: a `Config` is a snapshot of the
+/// files it read, so nothing after the call can be reached by another test's
+/// environment. The `Result` is handed back rather than unwrapped so each call site
+/// keeps the sentence it fails with, which is the part that says what the discovery
+/// was for.
+fn discovered(root: &Path) -> io_harness::Result<Config> {
+    let _guard = support::env_lock();
+    Config::discover(root)
 }
 
 /// A bundle directory holding `manifest`, with the two directories a manifest can
@@ -123,7 +150,7 @@ fn f1_a_declared_bundle_reaches_the_turn_with_every_name_namespaced() {
     bundle(&root, "bundles/rust-review", MINIMAL);
     declaring(&root, PROJECT_FILE, &["bundles/rust-review"]);
 
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
 
     // io-harness's own verdict first: this bundle loaded and nothing was dropped.
     let plugins = config.plugins();
@@ -245,7 +272,7 @@ fn f2_five_ways_a_bundle_breaks_each_cost_exactly_that_bundle() {
 
     // The call returns. That is the first half of the criterion and it is asserted
     // by there being a line after it.
-    let config = Config::discover(&root).expect("a broken bundle is not a broken configuration");
+    let config = discovered(&root).expect("a broken bundle is not a broken configuration");
     let plugins = config.plugins();
 
     assert_eq!(
@@ -328,7 +355,7 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
         bundle(&root, "runner", &executing(kind));
         declaring(&root, PROJECT_FILE, &["runner"]);
 
-        let config = Config::discover(&root).expect("a refused bundle is not a refused file");
+        let config = discovered(&root).expect("a refused bundle is not a refused file");
         let plugins = config.plugins();
 
         assert!(
@@ -370,33 +397,49 @@ fn f3_a_bundle_that_names_a_program_is_dropped_whole_from_the_committed_file() {
     }
 }
 
-/// **F3, the other half.** The same manifest declared in `io.local.toml` loads,
-/// with all seven kinds.
+/// **F3, the other half.** The same manifest, kept outside the workspace and named
+/// from the user-scope file, contributes all seven kinds.
 ///
 /// Without this the rule above is indistinguishable from "a bundle may never
 /// contribute a hook, a server or an executable", which would make the feature
 /// useless rather than safe — and a fix that refused everywhere would pass every
 /// assertion in the test above.
 ///
-/// Sabotage: apply `refuse_executing_contributions` in every scope rather than
-/// under `if scope == Scope::Project`. Under it only this test fails, and the
-/// product ships a bundle format whose two most useful contributions can never be
-/// declared by anyone.
+/// **io-harness 0.74.0 moved which arrangement this is.** Until then the pair was
+/// `io.toml` against `io.local.toml`, and the local file was on the trusted side.
+/// It is not any more: `io.local.toml` is a path in the workspace root and a run's
+/// own agent writes paths in the workspace root, so one `write_file` of it declared
+/// a bundle whose `plugin.toml` — also written by the agent, also inside the root —
+/// carried an argv the next `Config::discover` would run. The rule now asks where
+/// the *manifest* is rather than which file named it, so the trusted arrangement
+/// takes both halves: a bundle outside the discovery root, declared from the one
+/// file no workspace can reach. That is also what an installed bundle is.
+///
+/// Sabotage: grade the manifest by the declaring file's scope again — a user-scope
+/// `[[plugin]]` naming a directory inside the workspace then loads a manifest the
+/// agent wrote. Under it this test still passes and `f3_a_bundle_that_names_a_
+/// program_is_dropped_whole_from_the_committed_file` still passes, because neither
+/// is that arrangement; what fails is nothing, which is why the arrangement is
+/// spelled out here rather than left to a scope name.
 #[test]
-fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
+fn f3_the_same_manifest_named_from_the_user_scope_contributes_all_of_it() {
     for kind in ["hook", "mcp", "bin"] {
-        let (_dir, root) = root();
-        bundle(&root, "runner", &executing(kind));
-        // The local file, which does not travel with a clone — and no `io.toml` at
-        // all, so nothing but the scope differs from the test above.
-        declaring(&root, LOCAL_FILE, &["runner"]);
-
-        let config = Config::discover(&root).expect("the configuration loads");
+        // Two roots: the bundle's, which is where the manifest lives, and the
+        // workspace the configuration is discovered against. They have to be
+        // different directories or the manifest is inside the workspace again and
+        // the refusal in the test above applies here too.
+        let (_bundles, bundles) = root();
+        let dir = bundle(&bundles, "runner", &executing(kind));
+        // A TOML literal string: the path is absolute, and an absolute Windows path
+        // is a run of backslashes a basic string would read as escapes.
+        let scope = support::user_scope(&format!("[[plugin]]\npath = '{}'\n", dir.display()));
+        let root = scope.root().to_path_buf();
+        let config = &scope.config;
         let plugins = config.plugins();
 
         assert!(
             plugins.dropped().is_empty(),
-            "{kind}: dropped from the local scope: {:?}",
+            "{kind}: dropped from the user scope: {:?}",
             plugins.dropped(),
         );
         assert_eq!(plugins.names(), vec!["runner"]);
@@ -407,7 +450,7 @@ fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
             plugin.contributions(),
         );
 
-        let contract = io_cli::contract::configured("go", root.clone(), &config, &config.plugins());
+        let contract = io_cli::contract::configured("go", root.clone(), config, &config.plugins());
         assert!(
             contract.agents.get("runner__reviewer").is_some(),
             "{kind}: the bundle loaded and its agent did not reach the turn: {:?}",
@@ -422,18 +465,19 @@ fn f3_the_same_manifest_declared_locally_contributes_all_of_it() {
             ),
             // **Not on the contract, and that is io-harness's decision.** A
             // `[[bin]]` is handed back resolved and placed nowhere: io-harness
-            // puts nothing on a `PATH`, so what the local scope has to prove
+            // puts nothing on a `PATH`, so what the trusted scope has to prove
             // here is that the entry survived the load with its own name and a
             // path inside the bundle, which is the pair a run needs to make it
-            // resolvable at all.
+            // resolvable at all. Resolved against the **bundle's** root and not
+            // the workspace, which is now a different directory.
             "bin" => assert_eq!(
                 plugin.bin(),
-                vec![("review", root.join("runner/bin/review.mjs"))],
+                vec![("review", dir.join("bin/review.mjs"))],
                 "the bundle's executable did not come back resolved against its \
                  own root",
             ),
             _ => assert!(
-                io_cli::contract::hooks(&config, &config.plugins(), &root).is_some(),
+                io_cli::contract::hooks(config, &config.plugins(), &root).is_some(),
                 "the bundle's hook is declared and nothing will run it",
             ),
         }
@@ -597,7 +641,7 @@ fn f11_a_bundle_is_switched_off_and_back_on_and_the_entry_survives() {
     );
     std::fs::write(&file, &off).expect("the configuration");
 
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
     let view = pluginview::view(&config.plugins());
     let listed = view
         .plugins
@@ -628,7 +672,7 @@ fn f11_a_bundle_is_switched_off_and_back_on_and_the_entry_survives() {
     assert!(on.contains("enabled = true"), "{on}");
     assert!(on.contains("path = \"good\""), "{on}");
     std::fs::write(&file, &on).expect("the configuration");
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
     assert!(
         pluginview::view(&config.plugins())
             .plugins
@@ -676,7 +720,7 @@ fn one_of_each() -> (tempfile::TempDir, PathBuf, Config) {
     bundle(&root, "good", MINIMAL);
     empty_bundle(&root, "broken");
     declaring(&root, LOCAL_FILE, &["good", "broken"]);
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
     (dir, root, config)
 }
 
@@ -1265,7 +1309,7 @@ fn f11_an_added_bundle_loads_through_the_harness() {
     let text = io_cli::edit::apply("", &[pluginview::add(&written)]).expect("the edit applies");
     std::fs::write(root.join(PROJECT_FILE), &text).expect("the project file");
 
-    let config = Config::discover(&root).expect("the written file loads");
+    let config = discovered(&root).expect("the written file loads");
     let view = pluginview::view(&config.plugins());
     // By id, for the reason `listed` below states: `Config::discover` layers the
     // user file of whoever is running the suite over this root, and a length or a
@@ -1379,7 +1423,7 @@ fn f7_a_configuration_declaring_only_a_switched_off_bundle_is_not_empty() {
     bundle(&root, "bundles/rust-review", MINIMAL);
     declaring_off(&root, "bundles/rust-review");
 
-    let config = Config::discover(&root).expect("a switched-off bundle is not a broken file");
+    let config = discovered(&root).expect("a switched-off bundle is not a broken file");
     let plugins = config.plugins();
 
     // io-harness's three buckets, asserted where they are — so a change of
@@ -1448,7 +1492,7 @@ fn f7_a_switched_off_bundle_draws_under_its_own_mark() {
     let (_dir, root) = root();
     bundle(&root, "bundles/rust-review", MINIMAL);
     declaring_off(&root, "bundles/rust-review");
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
     let view = pluginview::view(&config.plugins());
 
     for glyphs in [&io_cli::glyphs::UNICODE, &io_cli::glyphs::ASCII] {
@@ -1515,7 +1559,7 @@ fn f7_a_switched_off_bundle_reaches_no_turn_while_its_directories_still_read() {
     let (_dir, root) = root();
     bundle(&root, "bundles/rust-review", MINIMAL);
     declaring_off(&root, "bundles/rust-review");
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
 
     let contract =
         io_cli::contract::configured("review this", root.clone(), &config, &config.plugins());
@@ -1583,7 +1627,7 @@ fn one_adapted_one_native() -> (tempfile::TempDir, pluginview::View) {
     bundle(&root, "bundles/rust-review", MINIMAL);
     bundle(&root, ADAPTED_AT, GENERATED);
     declaring(&root, LOCAL_FILE, &["bundles/rust-review", ADAPTED_AT]);
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
     let mut view = pluginview::view(&config.plugins());
     view.adapters = Some(adapters_of(&view));
     (dir, view)
@@ -1715,7 +1759,7 @@ fn an_adapted_bundle_that_is_switched_off_still_says_so_in_its_detail() {
     let (_dir, root) = root();
     bundle(&root, ADAPTED_AT, GENERATED);
     declaring_off(&root, ADAPTED_AT);
-    let config = Config::discover(&root).expect("the configuration loads");
+    let config = discovered(&root).expect("the configuration loads");
     let mut view = pluginview::view(&config.plugins());
     view.adapters = Some(adapters_of(&view));
 
@@ -1755,7 +1799,7 @@ fn n2_nothing_on_disk_moved_means_nothing_is_resolved_again() {
     let (_guard, root) = root();
     bundle(&root, "bundles/rust", MINIMAL);
     declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
-    let config = io_harness::Config::discover(&root).expect("the configuration");
+    let config = discovered(&root).expect("the configuration");
 
     let resolved = io_cli::resolved::Resolved::load(&config);
     assert_eq!(
@@ -1782,7 +1826,7 @@ fn n3_an_edited_manifest_is_seen() {
     let (_guard, root) = root();
     let dir = bundle(&root, "bundles/rust", MINIMAL);
     declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
-    let config = io_harness::Config::discover(&root).expect("the configuration");
+    let config = discovered(&root).expect("the configuration");
 
     let resolved = io_cli::resolved::Resolved::load(&config);
     assert!(!resolved.stale(&config));
@@ -1811,7 +1855,7 @@ fn n3_a_bundle_added_or_removed_is_always_seen() {
     let (_guard, root) = root();
     bundle(&root, "bundles/rust", MINIMAL);
     declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
-    let config = io_harness::Config::discover(&root).expect("the configuration");
+    let config = discovered(&root).expect("the configuration");
     let resolved = io_cli::resolved::Resolved::load(&config);
     assert!(!resolved.stale(&config));
 
@@ -1825,7 +1869,7 @@ fn n3_a_bundle_added_or_removed_is_always_seen() {
         io_harness::config::LOCAL_FILE,
         &["bundles/rust", "bundles/docs"],
     );
-    let wider = io_harness::Config::discover(&root).expect("the configuration");
+    let wider = discovered(&root).expect("the configuration");
     assert!(
         resolved.stale(&wider),
         "a second bundle was declared and the resolution did not notice — the \
@@ -1849,7 +1893,7 @@ fn n3_two_writes_in_one_second_of_the_same_length_are_the_documented_limit() {
     let (_guard, root) = root();
     let dir = bundle(&root, "bundles/rust", MINIMAL);
     declaring(&root, io_harness::config::LOCAL_FILE, &["bundles/rust"]);
-    let config = io_harness::Config::discover(&root).expect("the configuration");
+    let config = discovered(&root).expect("the configuration");
 
     let manifest = dir.join(PLUGIN_FILE);
     let before = std::fs::metadata(&manifest)
@@ -1915,7 +1959,7 @@ fn ids_carries_every_declared_bundle_including_the_ones_that_did_not_load() {
     )
     .expect("the configuration");
 
-    let config = Config::discover(&root).expect("the configuration");
+    let config = discovered(&root).expect("the configuration");
     let pairs = pluginview::ids(&pluginview::view(&config.plugins()));
 
     for (id, at) in [
