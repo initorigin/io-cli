@@ -203,6 +203,73 @@ fn f6_the_migration_report_is_recorded_rather_than_said() {
     );
 }
 
+/// **F6, the last-resort arm.** What nobody said is delivered on the way out of
+/// `main`, on every arm rather than on one of them.
+///
+/// **This is a defect that shipped, and the shape of the gate is the whole
+/// lesson.** `main` holds the report precisely so no early return has to know to
+/// deliver it — the comment above `let mut report` says so — and then, until
+/// 0.35.0, drained it inside the `Err` arm alone. The wizard's own decline is not
+/// an error: answering `io setup` with Esc returns `Ok(exec::OK)`. So an operator
+/// upgrading from a pre-0.15.0 install had `io.toml`, `runs.db` and the rest moved
+/// into `~/.io-cli`, pressed one key, and was told nothing, with their old
+/// directory now empty. The same arm swallowed the line that says a file could
+/// **not** be moved because another `io` holds it.
+///
+/// **Position is the property, so `contains` cannot express it.** The old code
+/// contained this exact loop; it was in the wrong place. The assertion is
+/// therefore an ordering — the drain stands before the `match` that splits the two
+/// arms — plus a count, because a release that "fixes" this by adding a second
+/// loop to the `Ok` arm has reintroduced the thing the comment warns about: the
+/// next early return will not know to do it either.
+///
+/// Nothing under `tests/` links `src/main.rs`, so a source-text gate is the only
+/// assertion available here at all. That is a limitation and it is stated rather
+/// than dressed up: this proves where the code sits, not that it runs.
+///
+/// Sabotage: move the loop inside the `Err` arm, which is exactly the pre-0.35.0
+/// source. The ordering assertion fails and nothing else in the suite does.
+#[test]
+fn f6_what_nobody_said_is_delivered_on_every_arm_and_not_only_the_failing_one() {
+    let text = driver_without_comments();
+
+    // The needle carries no indentation, deliberately. An earlier draft matched
+    // `for line in &report {\n        eprintln!` — eight spaces — and the sabotage
+    // below then failed on the `find` rather than on the ordering, because moving
+    // the loop into an arm indents it to twelve. That is a gate coupled to
+    // whitespace: it would have gone red on a reformat that changed nothing, and
+    // it would have reported the wrong reason for a real regression.
+    let drain = text.find("for line in &report {").expect(
+        "`main` drains whatever the report still holds to stderr — every arm that had somewhere \
+         better to speak has already taken it by `std::mem::take`, so what is left is what nobody \
+         said",
+    );
+    assert!(
+        text[drain..].starts_with("for line in &report {\n")
+            && text[drain..].contains("eprintln!(\"{line}\");"),
+        "and it is the stderr drain, not some other loop over the same vector",
+    );
+
+    assert_eq!(
+        text.matches("for line in &report {").count(),
+        1,
+        "exactly one drain. A second loop added to an arm is how this defect returns: the report \
+         exists so that no early return has to know to deliver it, and a per-arm drain hands that \
+         obligation back to the next arm somebody writes",
+    );
+
+    let split = text
+        .find("match outcome {")
+        .expect("`main` matches on what `run` returned");
+
+    assert!(
+        drain < split,
+        "the drain is at byte {drain} and the match that splits the arms at {split}: a drain \
+         inside an arm is the pre-0.35.0 source, where `io setup` answered with Esc returned \
+         `Ok` and told an operator nothing about the install that had just moved underneath them",
+    );
+}
+
 /// **F14.** Neither arrow key writes a configuration file without a confirmation.
 ///
 /// **Counted, not `contains`ed.** `configure::write` is called from two doors and

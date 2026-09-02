@@ -48,13 +48,30 @@ fn main() -> ExitCode {
     // than patched at each early return, because the next early return would not
     // know to do it.
     let mut report = Vec::new();
-    match runtime.block_on(run(&mut report)) {
+    let outcome = runtime.block_on(run(&mut report));
+    // **Drained on the way out rather than inside an arm, because the hole was the
+    // arm that did not do it (0.35.0).** Until this release only `Err` delivered
+    // what was left, and the wizard's own decline is `Ok`: `io setup` answered with
+    // Esc returns `Ok(exec::OK)` from `run` with the report untouched. So an
+    // operator upgrading from a pre-0.15.0 install had `io.toml`, `runs.db` and the
+    // rest moved into `~/.io-cli`, pressed one key, and was told nothing at all —
+    // with their old directory now empty. That is the exact reading the comment
+    // above says this mechanism exists to prevent, and the same arm was swallowing
+    // the line that says a file could **not** be moved because another `io` holds
+    // it.
+    //
+    // Draining here rather than adding a second `for` to the `Ok` arm is the point:
+    // every arm that has somewhere better to speak has already taken the report by
+    // `std::mem::take`, so this sees only what nobody said — and the next early
+    // return that gets written cannot reopen the hole by not knowing about it.
+    //
+    // Printed after the terminal has been restored, never into raw mode.
+    for line in &report {
+        eprintln!("{line}");
+    }
+    match outcome {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            // Printed after the terminal has been restored, never into raw mode.
-            for line in report {
-                eprintln!("{line}");
-            }
             eprintln!("io: {error}");
             ExitCode::from(io_cli::exec::FAILED)
         }
