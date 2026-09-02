@@ -806,6 +806,7 @@ pub fn plan(
                         *scope,
                         chosen.dir(),
                         (chosen.from() != chosen.dir()).then(|| chosen.from()),
+                        chosen.copied(),
                     )
                 })
                 .transpose()
