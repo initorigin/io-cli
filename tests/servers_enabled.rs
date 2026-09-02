@@ -26,6 +26,20 @@ use io_cli::servers::{self, At, Observed, Reached};
 use io_harness::config::Scope;
 use io_harness::{Config, McpProbe, Policy};
 
+mod support;
+
+/// Read `text` as io-harness would read the operator's own file.
+///
+/// **Never `Config::from_toml`.** That parses at `Scope::Project`, and io-harness
+/// 0.74.0 refuses `[[mcp]]` from a workspace-resident file — an MCP server is a
+/// command, an argv and an environment this process spawns at run start, and
+/// `io.toml` arrives with a `git clone`. Every fixture in this file declares one,
+/// and `At::of` below already addresses it at `Scope::User`, so reading it at any
+/// other scope was the fixture disagreeing with itself.
+fn loaded(text: &str) -> Config {
+    support::user_scope(text).config.clone()
+}
+
 /// One server switched off, one left alone, in the order the file names them.
 ///
 /// The bytes as well as the parsed configuration, because half of this file is
@@ -51,7 +65,7 @@ command = \"mcp-search\"
 ";
 
 fn mixed() -> Config {
-    Config::from_toml(MIXED).expect("the fixture parses")
+    loaded(MIXED)
 }
 
 /// Where `MIXED` declares one of its two servers.
@@ -61,7 +75,7 @@ fn at(id: &str) -> At {
 
 /// **The state reaches `Server`, and an absent key still means on.**
 ///
-/// Addressed by id rather than by position: `Config::from_toml` reads this one
+/// Addressed by id rather than by position: the fixture reads this one
 /// string, but the rule this file follows is `tests/marketplace.rs`'s — a length
 /// or an index is an assertion about somebody else's machine as much as about the
 /// criterion.
@@ -198,7 +212,7 @@ fn f10_a_server_is_switched_off_without_being_taken_out_of_the_file() {
     // rewrite-the-whole-file implementation.
     assert!(after.contains("command = \"mcp-docs\""));
 
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     assert_eq!(
         config.mcp_servers().len(),
         2,
@@ -237,7 +251,7 @@ fn f10_a_server_is_switched_off_without_being_taken_out_of_the_file() {
 fn f10_a_server_switched_off_in_the_file_is_switched_back_on() {
     let after = io_cli::edit::apply(MIXED, &[servers::switch(&at("docs"), true)])
         .expect("the write parses back");
-    let config = Config::from_toml(&after).expect("the written file loads");
+    let config = loaded(&after);
     let docs = servers::servers(&config, &Observed::default())
         .into_iter()
         .find(|server| server.id == "docs")

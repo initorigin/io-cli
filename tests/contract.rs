@@ -1,7 +1,7 @@
 //! **F1 and F2** — what a session turn's contract carries, and what it must not.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use io_cli::contract::{server_notices, session, Capabilities, PROMPT};
@@ -33,9 +33,11 @@ fn nothing() -> Config {
 /// each other's discovery wrong — intermittently, on a loaded machine, which is
 /// the most expensive kind of failure to diagnose. The same shape
 /// `tests/wizard.rs` uses, and for the same reason.
+///
+/// Delegated to [`support::env_lock`] rather than declared here: two different
+/// mutexes in one binary exclude nothing from each other.
 fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    support::env_lock()
 }
 
 /// One empty user scope for this whole file, set once.
@@ -76,6 +78,49 @@ fn discovered(files: &[(&str, &str)]) -> (tempfile::TempDir, Config) {
     }
     let config = Config::discover(dir.path()).expect("the fixture configuration parses");
     (dir, config)
+}
+
+/// As [`discovered`], with the configuration itself in the **user** scope.
+///
+/// io-harness 0.74.0 refuses `[[provider]]`, `[[mcp]]`, `[[lsp]]`, `[[hook]]`,
+/// provider-executed `[web]` access, ten widening policy values and an absolute
+/// `run.skills` from any file that lives inside a workspace — those files arrive
+/// with a `git clone`, or sit in a root the run's own agent can write to.
+/// [`EVERY_SECTION`] names four of those things, so it cannot be the project file
+/// any more.
+///
+/// **Not `support::user_scope`**, and the difference is the `files` argument: a
+/// contract reads `[instructions]` off disk, relative to the *discovery root*
+/// (`config.rs:2673`), so the workspace still has to hold `GUIDE.md` while the
+/// configuration lives outside it. `support::user_scope` hands back an empty
+/// workspace by design.
+///
+/// The user file is deliberately in a second directory. A file that is both the
+/// `IO_CONFIG` target and `root/io.toml` is a candidate twice — once as
+/// `Scope::User` and once as `Scope::Project` — and the project read is the one
+/// that refuses it.
+///
+/// The caller holds [`env_lock`] for the call and holds **both** returned
+/// directories for as long as the configuration is used.
+fn discovered_in_user_scope(
+    config_toml: &str,
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, tempfile::TempDir, Config) {
+    no_user_scope();
+    let home = tempfile::tempdir().expect("a directory for the user-scope file");
+    let dir = tempfile::tempdir().expect("a workspace");
+    for (name, body) in files {
+        std::fs::write(dir.path().join(name), body).expect("the fixture file");
+    }
+    let path = home.path().join("io.toml");
+    std::fs::write(&path, config_toml).expect("the user-scope fixture file");
+
+    std::env::set_var("IO_CONFIG", &path);
+    let config = Config::discover(dir.path());
+    std::env::remove_var("IO_CONFIG");
+
+    let config = config.expect("the fixture configuration parses");
+    (home, dir, config)
 }
 
 /// The operator's own home directory, for the length of one test.
@@ -1243,7 +1288,7 @@ fn a_turn_is_not_capped_at_twelve_steps() {
 #[test]
 fn f1_both_arms_carry_the_same_configuration_field_by_field() {
     let _guard = env_lock();
-    let (dir, config) = discovered(&[("io.toml", EVERY_SECTION), ("GUIDE.md", GUIDE)]);
+    let (_home, dir, config) = discovered_in_user_scope(EVERY_SECTION, &[("GUIDE.md", GUIDE)]);
 
     // The harness's own session, because `exec::contract` reads its root off one
     // — and the interactive arm is handed that same root, so a difference here
@@ -1308,8 +1353,8 @@ fn f1_both_arms_carry_the_same_configuration_field_by_field() {
     assert_eq!(interactive.lsp, headless.lsp, "[[lsp]]");
     assert_eq!(
         interactive.browser, headless.browser,
-        "[browser] — absent in both, because io-harness refuses the table in a \
-         project-scoped file and this fixture is one",
+        "[browser] — absent in both, because the fixture declares no `[browser]` \
+         table at all",
     );
 
     // The three that are arm-specific by construction, asserted as differences
@@ -1349,7 +1394,7 @@ fn f1_both_arms_carry_the_same_configuration_field_by_field() {
 #[test]
 fn f3_every_applicable_section_of_the_file_reaches_a_session_turn() {
     let _guard = env_lock();
-    let (dir, config) = discovered(&[("io.toml", EVERY_SECTION), ("GUIDE.md", GUIDE)]);
+    let (_home, dir, config) = discovered_in_user_scope(EVERY_SECTION, &[("GUIDE.md", GUIDE)]);
 
     let (answerer, _questions) = io_cli::intent::channel();
     let contract = session(
@@ -1568,8 +1613,7 @@ fn f4_the_step_floor_sits_under_the_file_and_over_the_harness() {
 #[test]
 fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
     let _guard = env_lock();
-    let (dir, config) = discovered(&[(
-        "io.toml",
+    let (_home, dir, config) = discovered_in_user_scope(
         r#"
         [[mcp]]
         id = "shared"
@@ -1601,7 +1645,8 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
         command = "narrow-lsp"
         extensions = ["rs"]
         "#,
-    )]);
+        &[],
+    );
 
     let (stored, complaint) = io_cli::settings::stored(&config);
     assert!(complaint.is_none(), "{complaint:?}");
@@ -1660,10 +1705,15 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
     );
 
     // A file with servers in one scope only loses nothing and says nothing.
-    let (quiet, one_scope) = discovered(&[(
-        "io.toml",
+    //
+    // User-scoped like the fixture above, and for the same reason: `[[mcp]]` is
+    // one of the sections 0.74.0 refuses from a file that lives in a workspace, so
+    // "one scope" can only mean the operator's own file. There is no longer a
+    // project scope for a server to be alone in.
+    let (_quiet_home, quiet, one_scope) = discovered_in_user_scope(
         "[[mcp]]\nid = \"only\"\ntransport = \"stdio\"\ncommand = \"only\"\n",
-    )]);
+        &[],
+    );
     let _ = &quiet;
     assert!(
         server_notices(&one_scope, &one_scope.plugins(), &Capabilities::default()).is_empty(),

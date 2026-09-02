@@ -14,6 +14,8 @@ use io_cli::manage::{self, ConfigVerb, McpVerb, PluginVerb, Request};
 use io_harness::config::Scope;
 use io_harness::McpTransport;
 
+mod support;
+
 /// The token slice a shell hands `io`, spelled the way a test can read.
 fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
@@ -23,9 +25,26 @@ fn argv(words: &[&str]) -> Vec<String> {
 /// once would each see the other's file. The scope test sets it; the `plugin
 /// remove` tests below resolve a real configuration and would see it set, so they
 /// take the same lock. Every other test here parses rather than plans.
+///
+/// Delegated to [`support::env_lock`] rather than declared here: two different
+/// mutexes in one binary exclude nothing from each other, and the `support`
+/// fixtures take that one.
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    support::env_lock()
+}
+
+/// Read a written file the way io-harness would read the operator's own.
+///
+/// **Never `Config::from_toml` for an `[[mcp]]` file.** `from_toml` parses at
+/// `Scope::Project`, and io-harness 0.74.0 refuses MCP servers there — an MCP
+/// server is a command, an argv and an environment this process spawns at run
+/// start, and `io.toml` arrives with a `git clone`. `mcp add` writes the user
+/// scope by default (`decided_scope`'s `unwrap_or(Scope::User)`), so the user
+/// scope is where the round trip belongs.
+///
+/// Takes [`env_lock`] for itself, so a caller must not already hold it.
+fn loaded(text: &str) -> io_harness::Config {
+    support::user_scope(text).config.clone()
 }
 
 /// The server a request declares, for a test that is about the transport.
@@ -386,7 +405,7 @@ fn f6_both_accepted_orderings_write_byte_identical_configuration() {
     // was asked for — a byte comparison of two identically wrong entries would
     // pass without this.
     let text = written(root.path(), &ours);
-    let config = io_harness::config::Config::from_toml(&text).expect("the entry loads");
+    let config = loaded(&text);
     assert_eq!(config.mcp_servers().len(), 1);
     assert_eq!(config.mcp_servers()[0].id, "linear-server");
     assert!(matches!(
@@ -685,7 +704,11 @@ command = \"mcp-search\"
         .expect("a write");
     assert_eq!(plan.scope, Scope::Project);
     let gone = io_cli::edit::apply(&text, &plan.edits).expect("the entry goes");
-    let config = io_harness::config::Config::from_toml(&gone).expect("the file still loads");
+    // Read at the user scope, which is not the scope this file lives at: the
+    // claim under test is that the removal took the right entry, and 0.74.0 would
+    // refuse this text as a project file for declaring `[[mcp]]` at all — which is
+    // a fact about the fixture's location, not about the edit.
+    let config = loaded(&gone);
     let left: Vec<&str> = config.mcp_servers().iter().map(|s| s.id.as_str()).collect();
     assert_eq!(left, vec!["docs"]);
 
