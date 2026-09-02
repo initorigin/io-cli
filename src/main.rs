@@ -7523,6 +7523,7 @@ async fn turn<P: Provider>(
                 // step landing and the first completion call being seen.
                 note_context(app, store, &event, seen, &contract);
                 note_cost(app, store, config, &event);
+                note_boundary(app, store, &event);
                 note_fleet(app, store, &event, &contract);
                 commit_viewed(screen, app, &root, policy, &event)?;
                 commit_fold(app, store, &event, &mut folding);
@@ -8068,6 +8069,7 @@ async fn turn<P: Provider>(
         // one whose event the select loop loses, and it is also the step that
         // makes the largest single difference to what the turn cost.
         note_cost(app, store, config, &event);
+        note_boundary(app, store, &event);
         note_fleet(app, store, &event, &contract);
         // And the picture, for the same reason and the same race: a `view_image`
         // on the turn's last step is exactly the one the drain would otherwise
@@ -8411,6 +8413,29 @@ fn note_cost(
     }
     let table = io_cli::cost::table(config);
     app.status.note_cost_from(store, event.run_id, &table);
+}
+
+/// Take the backend's own boundary measurement, once, when it is announced.
+///
+/// **The event is the trigger and the store is the payload, because io-harness
+/// splits them.** `EventKind::Sandbox` carries `kind` and `backend` and nothing
+/// else — `record_sandbox_step` copies those two and drops the rest — so the
+/// stream says *that* a probe happened and only the `sandbox_events` row says
+/// what it found.
+///
+/// Gated on the announcing event rather than on `Step` like `note_cost` above:
+/// io-harness writes this row once per run, at step 0, so a per-step read would
+/// re-read a row that cannot change. A run with no containment is never probed
+/// and emits nothing here, which is what leaves the field absent rather than
+/// drawn as unmeasured.
+fn note_boundary(app: &mut App, store: &Store, event: &io_harness::RunEvent) {
+    let io_harness::EventKind::Sandbox { kind, .. } = &event.kind else {
+        return;
+    };
+    if kind != "boundary_probe" {
+        return;
+    }
+    app.status.note_boundary_from(store, event.run_id);
 }
 
 /// Report a fold that was asked for — once, and only from the event that

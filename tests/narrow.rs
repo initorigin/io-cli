@@ -1808,6 +1808,88 @@ fn n2_an_effort_level_yields_before_the_standing_facts_at_eighty_columns() {
     }
 }
 
+/// **0.35.0 — the probe word never costs a standing fact.**
+///
+/// The containment word grew by a word this release: `workspace-write/
+/// macos-sandbox-exec` is thirty-four columns and `… verified` is forty-three,
+/// and it lives in the footer's `allowed` group, which is fit **all or nothing**.
+/// So the failure mode is not truncation — it is the posture and the containment
+/// disappearing **together**, silently, at a width where they used to fit.
+///
+/// The invariant is `n2`'s and it has no number in it, for the reason recorded
+/// there: which width a field starts costing something depends on the posture
+/// string, the glyph set and every counter on the row, so a test that picks one
+/// number asserts arithmetic it will get wrong. **Rendering the probe word must
+/// never remove a standing fact that was on the row without it.**
+///
+/// Sabotage: put the probe word in the `allowed` group as its own span with its
+/// own separator, rather than inside the containment string. It costs three more
+/// columns and the group starts dropping at a width where it used to hold.
+#[test]
+fn the_probe_word_never_costs_a_standing_fact_at_any_width() {
+    use io_cli::status::Status;
+
+    let fixture = |boundary: Option<&str>| {
+        let mut status = Status::new("anthropic/claude-sonnet-4.5");
+        status.policy = Some("read-only".into());
+        status.containment = Some("workspace-write/macos-sandbox-exec".into());
+        status.planning = true;
+        status.boundary = boundary.map(str::to_string);
+        status
+    };
+
+    let measured = "macos-sandbox-exec write-outside=refused dial-outside=refused";
+    let standing = [
+        "read-only",
+        "workspace-write/macos-sandbox-exec",
+        "planning",
+    ];
+
+    for theme in themes() {
+        let set = theme.glyphs.name;
+        let mut ever_held = false;
+
+        for width in [80, 88, 96, 104, 120, 160] {
+            let bare = text_of(&fixture(None).footer(width, &theme)).join("\n");
+            let probed = text_of(&fixture(Some(measured)).footer(width, &theme)).join("\n");
+
+            for row in probed.lines() {
+                assert!(
+                    row.chars().count() <= width as usize,
+                    "{set}: a footer row overflowed {width} columns: {row:?}",
+                );
+            }
+
+            for fact in standing {
+                if bare.contains(fact) {
+                    ever_held = true;
+                    assert!(
+                        probed.contains(fact),
+                        "{set}: at {width} columns, naming what the probe measured took \
+                         `{fact}` off the row. The `allowed` group is fit all or nothing, so \
+                         the posture and the containment go together and an operator loses \
+                         both without being told.\n  without: {bare:?}\n  with:    {probed:?}",
+                    );
+                }
+            }
+        }
+
+        assert!(
+            ever_held,
+            "{set}: no width held a standing fact even without the probe word, so nothing \
+             above measured anything",
+        );
+
+        // And the word is drawn where there is room, so this gates a field that
+        // exists rather than one that was never added.
+        let wide = text_of(&fixture(Some(measured)).footer(200, &theme)).join("\n");
+        assert!(
+            wide.contains("boundary verified"),
+            "{set}: the probe word is on no footer at any width: {wide:?}",
+        );
+    }
+}
+
 /// **0.26.0 N2 — the effort level is drawn in both glyph sets and costs no glyph
 /// it does not have.**
 ///
