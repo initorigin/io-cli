@@ -17,10 +17,12 @@
 //! spelled would assert that this crate can quote its own output, which is not the
 //! question: the question is whether io-harness loads it.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use io_cli::adapt::{self, Source};
-use io_harness::config::{Config, Scope, LOCAL_FILE};
+use io_harness::config::Scope;
 use io_harness::{Plugins, PLUGIN_FILE};
 
 /// A clone directory, empty.
@@ -463,21 +465,24 @@ fn four_kinds(root: &Path) -> PathBuf {
 
 /// The adapter at `into`, loaded the way a configuration loads it.
 ///
-/// `io.local.toml` rather than `io.toml`, because an adapter contributes an
-/// `[[mcp]]` and a plugin declared in the committed, cloned project file may not —
-/// io-harness refuses that manifest whole rather than shortening it. The path is
-/// spelled through `edit::spell` rather than by a format string: it is absolute,
-/// and an absolute Windows path is full of backslashes that a `"{path}"` would
-/// turn into escapes.
-fn loaded(root: &Path, into: &Path) -> Plugins {
+/// **The user-scope file, and an adapter directory outside the workspace — which
+/// is where a real adapter is and which file really names it.** io-harness 0.74.0
+/// decides what a manifest may contribute by where the manifest sits: a
+/// `plugin.toml` inside the discovery root may not carry an `[[mcp]]`, whatever
+/// declared it, because the run's own agent writes paths inside the root. An
+/// adapter is written under `home::adapters()` — `~/.io-cli/adapters` — which is
+/// outside every workspace, and `manage`'s `plugin add` resolves an unstated scope
+/// to the user's. So the fixture discovers against an empty workspace of its own
+/// and names the adapter from `$IO_CONFIG`, which is the only arrangement in which
+/// a generated manifest's `[[mcp]]` survives the load.
+///
+/// The path is spelled through `edit::spell` rather than by a format string: it is
+/// absolute, and an absolute Windows path is full of backslashes that a `"{path}"`
+/// would turn into escapes.
+fn loaded(into: &Path) -> Plugins {
     let declared = io_cli::edit::spell(&into.display().to_string());
-    std::fs::write(
-        root.join(LOCAL_FILE),
-        format!("[[plugin]]\npath = {declared}\n"),
-    )
-    .expect("the configuration");
-    Config::discover(root)
-        .expect("the configuration loads")
+    support::user_scope(&format!("[[plugin]]\npath = {declared}\n"))
+        .config
         .plugins()
 }
 
@@ -516,7 +521,7 @@ fn f7_a_four_kind_bundle_becomes_a_manifest_io_harness_loads_with_nothing_droppe
         "and the clone is untouched",
     );
 
-    let plugins = loaded(&root, &into);
+    let plugins = loaded(&into);
     assert!(
         plugins.dropped().is_empty(),
         "io-harness refused the manifest io wrote: {:?}",
@@ -606,7 +611,7 @@ fn f7_a_bundle_carrying_none_of_the_four_kinds_contributes_nothing() {
 
     adapt::generate(&bundle, "bare", &into).expect("a bundle carrying nothing still adapts");
 
-    let plugins = loaded(&root, &into);
+    let plugins = loaded(&into);
     let plugin = plugins
         .get("bare")
         .expect("loaded under the id io declared");

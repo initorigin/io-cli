@@ -19,15 +19,21 @@
 //! directory empty, and `f1_the_contract_a_turn_is_built_from_names_all_five`
 //! would then be describing a state the product never reaches.
 
+mod support;
+
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 
 /// `HOME` and `USERPROFILE` are process-wide and every test here rewrites them.
+///
+/// **Delegated to [`support::env_lock`] rather than owning a `Mutex` of its own.**
+/// Two different mutexes in one binary exclude nothing from each other, so a file
+/// that kept a private lock would let an `IO_CONFIG` fixture and a `HOME` fixture
+/// run at the same time and each see the other's environment. The name and the
+/// signature stay, because every call site here reads correctly either way; only
+/// the lock behind them changes.
 fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    support::env_lock()
 }
 
 /// A home of this test's own, put back when it drops.

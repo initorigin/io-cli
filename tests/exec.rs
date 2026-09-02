@@ -750,22 +750,28 @@ fn f7_the_warning_names_only_what_actually_asks() {
     // A file can ask about writes and not commands, or the reverse. Naming both
     // when only one asks is the kind of true-sounding sentence that teaches the
     // wrong thing about the boundary in force.
-    // `exec = "deny"` rather than `"allow"`: `Config::from_toml` parses at
-    // PROJECT scope, where a value that widens the boundary is refused outright,
-    // because a repository you cloned must not be able to grant itself
-    // permission. Narrowing is always allowed.
-    let write_only = Config::from_toml(
+    // **User-scoped, because io-harness 0.74.0 refuses `read = "allow"` from any
+    // file a workspace can supply** — the key joined `write`, `exec` and `net` on
+    // `PROJECT_WIDENING` in that release, and `Config::from_toml` *is* the project
+    // scope, so the four defaults can no longer be stated together there. Written
+    // out in full rather than trimmed to the three still legal: the subject is
+    // which of the four `asks_nobody_can_answer` names, and a fixture that left one
+    // of them to the shipped default would be asserting about a policy it did not
+    // state.
+    let write_only = support::user_scope(
         "[policy.defaults]\nread = \"allow\"\nwrite = \"ask\"\nexec = \"deny\"\nnet = \"deny\"\n",
     )
-    .expect("the configuration parses");
+    .config
+    .clone();
     let line = exec::asks_nobody_can_answer(&exec::policy_for(&write_only, None))
         .expect("a write that asks still warns");
     assert!(line.contains("every write will be denied"), "{line}");
 
-    let exec_only = Config::from_toml(
+    let exec_only = support::user_scope(
         "[policy.defaults]\nread = \"allow\"\nwrite = \"deny\"\nexec = \"ask\"\nnet = \"deny\"\n",
     )
-    .expect("the configuration parses");
+    .config
+    .clone();
     let line = exec::asks_nobody_can_answer(&exec::policy_for(&exec_only, None))
         .expect("a command that asks still warns");
     assert!(line.contains("every command will be denied"), "{line}");
@@ -888,10 +894,17 @@ fn f8_the_provider_names_are_spelled_the_way_the_harness_spells_them() {
 
     // The same words io-harness's own `ProviderSpec` is tagged with, so one
     // vocabulary spans the configuration file and the command line.
+    //
+    // **Read back through the user scope, because 0.74.0 refuses `[[provider]]`
+    // from any file inside a workspace** — a provider names the endpoint the run's
+    // credential is sent to, and it is contacted before the run's first step. The
+    // lock is taken once around the loop and the fixture form that does not take it
+    // again is the one called, because `std::sync::Mutex` is not reentrant.
+    let _guard = support::env_lock();
     for name in &names {
         let toml = format!("[[provider]]\nkind = \"{name}\"\nmodel = \"m\"\n");
         assert!(
-            Config::from_toml(&toml).is_ok(),
+            support::try_user_scope_locked(&toml, false).is_ok(),
             "io-harness does not know a provider called `{name}`",
         );
     }
