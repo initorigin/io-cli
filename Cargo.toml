@@ -98,7 +98,28 @@ ratatui = { version = "0.30", default-features = false, features = [
 ] }
 crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# `io-util` and `io-std` are 0.36.0's, for the ACP adapter: it reads
+# newline-delimited JSON-RPC frames off stdin and writes them to stdout, and
+# `AsyncBufReadExt::read_line` over `tokio::io::stdin()` is what does it. They are
+# features of a name already here rather than a name of their own, which is the
+# whole reason `src/acp.rs` speaks the wire itself instead of taking the official
+# `agent-client-protocol` crate — that one is correct and well made, and its
+# dependency graph brings a second async executor family beside this one:
+# `async-io`, `async-process`, `async-task`, `blocking` and `polling`, with its
+# stdio transport putting `blocking::Unblock` over the real stdin and stdout.
+# (The crate count that walk produced is not repeated here: it came from
+# crates.io metadata rather than a resolve, and a number this file cannot check
+# is the kind of claim that goes stale unread. The five names are the argument.)
+# Two owners of stdin is not a hypothetical failure here; see `src/stdin.rs`,
+# which exists because of what it cost in 0.13.1.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "io-util",
+    "io-std",
+] }
 serde = { version = "1", features = ["derive"] }
 # The tenth name, and the first added since 0.3.0. `io exec --json` writes each
 # `io_harness::RunEvent` as one line of JSON, and the event type derives
