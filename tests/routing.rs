@@ -1,9 +1,13 @@
-//! F3 and F4 — what `[app.io-cli.routing]` puts on the contract, and what a
-//! contained session is told about it.
+//! F3, F4 and F11 — what `[app.io-cli.routing]` puts on the contract, what a
+//! contained session is told about it, and what an operator who also wrote
+//! io-harness's own `[routing]` is told.
 //!
 //! F3 is the section reaching an `io_harness::Routing`: the keys an operator
 //! types, the two rules they name, and the run's behaviour under them. F4 is the
-//! disclosure that those rules do not fire for a contained turn.
+//! disclosure that those rules do not fire for a contained turn. F11 is the
+//! disclosure the io-harness 0.76.0 pin owes: two routing tables can now be
+//! written in one file, io-cli's replaces the harness's without a word, and the
+//! four combinations are asserted here because only one of them is a loss.
 //!
 //! Two things here are asserted the way the implementation would be wrong rather
 //! than the way it is right.
@@ -19,6 +23,8 @@
 //! that is present and names no rule and a section that was never written must
 //! both leave the contract's routing unset; building a `Routing::default()` for
 //! the first is the mistake that looks harmless, so it gets its own test.
+
+mod support;
 
 use io_cli::routing::{self, Downshift, Escalation, Settings};
 
@@ -385,4 +391,139 @@ fn every_refusal_says_which_key_is_wrong_and_that_the_turn_is_not_routed() {
         None,
         "an obeyable section has nothing to explain",
     );
+}
+
+// ---------------------------------------------------------------------------
+// F11 — io-harness's own [routing] table beside io-cli's section
+// ---------------------------------------------------------------------------
+
+/// io-harness's own table, in the smallest form that loads.
+///
+/// `mechanical` rather than a rule, for two reasons. It is the one key with no
+/// partner — `Config::check_routing` refuses `escalate_after` without
+/// `escalate_to` — so the fixture needs nothing it is not asserting over. And it
+/// is the key io-cli offers no equivalent for at all, which makes it the clearest
+/// thing a collision silently takes away: an operator who loses it cannot get it
+/// back by rewriting the rule in io-cli's spelling, because there is no spelling.
+const NATIVE: &str = "[routing]\nmechanical = \"vendor/folding-model\"\n";
+
+/// A user-scope file that configures something which is not routing.
+///
+/// Not the empty string: an empty file exercises the "nothing was written
+/// anywhere" path as well as the "no routing was written" one, and a detector
+/// keyed on the configuration being non-empty would pass against it. A file with
+/// one unrelated key leaves only the question this asserts.
+const UNRELATED: &str = "[run]\nmax_steps = 7\n";
+
+/// **`Config::from_toml` cannot build any of these fixtures**, which is worth
+/// stating where the first one is written. That constructor hard-codes
+/// `Scope::Project` (`config.rs:1128`), `[routing]` is in io-harness's
+/// `REFUSED_SECTIONS` for every scope but the user's, and so a parsed-text fixture
+/// carrying `[routing]` does not load at all. `support::user_scope` writes the file
+/// outside the discovery root and points `IO_CONFIG` at it, which is the only place
+/// the collision this criterion is about can be written.
+///
+/// Sabotage: return a sentence before the `origins` scan, under which a
+/// configuration that names no routing at all is told about one.
+#[test]
+fn f11_neither_routing_section_configured_is_told_nothing() {
+    let scope = support::user_scope(UNRELATED);
+    assert_eq!(routing::native_notice(&scope.config, None), None);
+}
+
+/// Sabotage: key the notice on `[app.io-cli.routing]` instead of on `[routing]`,
+/// under which this test is told about a harness table that is not there.
+#[test]
+fn f11_an_io_cli_section_with_no_harness_table_beside_it_is_told_nothing() {
+    let scope = support::user_scope(UNRELATED);
+    assert_eq!(
+        routing::native_notice(&scope.config, Some(&both())),
+        None,
+        "io-cli's own section is what every other notice in this file already covers",
+    );
+}
+
+/// A `[routing]` alone loses nothing and is still invisible, so it says so.
+///
+/// io-harness merges the table onto the contract and io-cli leaves the contract's
+/// routing alone, so the operator's rules are intact. What they do not have is any
+/// surface that shows them: `/config` lists four keys and every one is
+/// `app.io-cli.routing.*`, and `describe`, `notice` and `inert_under_containment`
+/// all read that section alone.
+///
+/// Sabotage: return `None` unless io-cli's section also reaches the contract —
+/// the shape a "warn on collision" reading of the criterion produces — under which
+/// this operator is told nothing and the invisibility stands.
+#[test]
+fn f11_a_harness_table_alone_says_no_io_cli_surface_lists_it() {
+    let scope = support::user_scope(NATIVE);
+    let notice = routing::native_notice(&scope.config, None)
+        .expect("a table no surface here lists has to be named by one of them");
+    assert!(
+        notice.contains("[routing]"),
+        "the notice names the section the operator has to open: {notice}",
+    );
+    assert!(
+        notice.contains("/config"),
+        "the notice names the surface that will not show it: {notice}",
+    );
+    assert!(
+        !notice.contains("both"),
+        "nothing was overwritten here, so this must not be the collision sentence: {notice}",
+    );
+    assert!(
+        notice.is_ascii(),
+        "this renders under NO_COLOR and through the ASCII glyph set: {notice}",
+    );
+}
+
+/// Both tables written, and the notice says which one the contract carries.
+///
+/// The whole of F11. `Config::apply_to` merges `[routing]` onto the contract
+/// (`config.rs:2076`) and `contract::configured` then calls
+/// `TaskContract::with_routing`, whose body is `self.routing = Some(routing)`
+/// (`contract.rs:1292`) — so `mechanical`, which io-cli has no key for, is gone and
+/// nothing said so before this release.
+///
+/// **The second half is the branch a plausible wrong implementation gets wrong.** A
+/// section that does not survive `routing::routing` — present and empty, or refused
+/// for half a rule — leaves `contract::configured` on its `None` arm, so the merged
+/// `[routing]` is still exactly what the contract carries and the operator has lost
+/// nothing. Those must read as the other sentence.
+///
+/// Sabotage: ask `settings.is_some()` instead of asking `routing::routing`, under
+/// which the loop below reports a loss to two operators who suffered none.
+#[test]
+fn f11_both_sections_configured_names_the_one_that_reaches_the_contract() {
+    let scope = support::user_scope(NATIVE);
+    let notice = routing::native_notice(&scope.config, Some(&both()))
+        .expect("a section that takes [routing] off the contract has to say so");
+    assert!(
+        notice.contains("both"),
+        "the operator wrote two tables and hears that they did: {notice}",
+    );
+    assert!(
+        notice.contains("[routing]") && notice.contains("[app.io-cli.routing]"),
+        "the notice names both tables, or it cannot say which one won: {notice}",
+    );
+    assert!(
+        notice.contains("mechanical"),
+        "the key io-cli has no equivalent for is the one worth naming: {notice}",
+    );
+    assert!(
+        notice.is_ascii(),
+        "this renders under NO_COLOR and through the ASCII glyph set: {notice}",
+    );
+
+    let empty: Settings = toml::from_str("").expect("a present but empty section parses");
+    let half_a_rule: Settings = toml::from_str("[escalate_after]\nfailures = 3\n")
+        .expect("half a rule parses and is refused by name");
+    for standing in [empty, half_a_rule] {
+        let notice = routing::native_notice(&scope.config, Some(&standing))
+            .expect("the harness table is still there and still unlisted");
+        assert!(
+            !notice.contains("both"),
+            "a section that never reaches the contract overwrites nothing: {notice}",
+        );
+    }
 }
