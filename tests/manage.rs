@@ -1294,6 +1294,54 @@ fn every_managed_surface_has_a_subcommand_clap_will_route() {
     }
 }
 
+/// **F8 — `io acp` exists at the argv door and clap routes it.**
+///
+/// Asked of `clap::CommandFactory` for the reason the gate above it exists: the
+/// door is the `Subcommand` enum, nothing under `tests/` links `src/main.rs`, and
+/// 0.30.0 shipped a documented subcommand the door had no variant for while 1,609
+/// tests passed over the gap. A release that adds a subcommand and no gate for it
+/// is that release again.
+///
+/// `acp` takes no arguments of its own — the client speaks the protocol, not the
+/// command line — so this asserts routing and the absence of a positional, which
+/// is the shape a client's spawn depends on. The global flags stay available,
+/// because `-C` and `--profile` are how an editor points io at the workspace it
+/// has open.
+///
+/// Sabotage: delete `Acp` from `cli::Subcommand`. Only this fails.
+#[test]
+fn f8_the_acp_subcommand_exists_and_clap_routes_it() {
+    use clap::CommandFactory as _;
+
+    let command = io_cli::cli::Cli::command();
+    let acp = command
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "acp")
+        .expect(
+            "clap does not route `acp`, so `io acp` answers `unrecognized subcommand` \
+             for the door this release exists to open",
+        );
+
+    assert!(
+        acp.get_positionals().next().is_none(),
+        "`io acp` takes a positional argument. The client speaks the protocol on \
+         stdin; anything on the command line is a second way to say the same thing.",
+    );
+
+    // The global flags an editor needs are still reachable on this subcommand.
+    // `-C` is how a client points io at the workspace it has open, and a
+    // subcommand that dropped it would work only from the directory io was
+    // launched in.
+    let command = io_cli::cli::Cli::command();
+    for flag in ["dir", "model", "profile", "plain"] {
+        assert!(
+            command.get_arguments().any(|arg| arg.get_id() == flag),
+            "`--{flag}` is not a global argument any more, so `io acp` cannot be \
+             pointed at a workspace",
+        );
+    }
+}
+
 /// **F3 — a mistyped verb names the verbs that surface does take.**
 ///
 /// The bare-surface gate above covers `io skill` with nothing after it. This

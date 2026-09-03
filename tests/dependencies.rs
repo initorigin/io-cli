@@ -1415,6 +1415,76 @@ fn n3_one_future_is_driven_and_it_is_the_binarys_entry_point() {
     );
 }
 
+/// **N4 — the ACP adapter owns stdin and stdout alone.**
+///
+/// stdout is the protocol: a byte written there that is not part of a JSON-RPC
+/// frame is a frame boundary in the wrong place, and every message after it is
+/// parsed against the wrong offset. stdin is the frame stream: a second reader
+/// takes frames away from the protocol.
+///
+/// This product has already lost time to exactly one of those. [`crate::stdin`]
+/// — `src/stdin.rs` — exists because a keyboard reader and a cursor query fought
+/// over the terminal, and 0.13.1 is what that cost. An ACP session with a
+/// `Screen` in the same process is the same defect with a worse symptom, because
+/// a corrupted protocol stream does not look like a rendering fault.
+///
+/// A source-text gate over `src/acp.rs`, because the property is about what the
+/// module does *not* do and there is no runtime moment at which to observe an
+/// absence. Comments are stripped first, so the module's own documentation can
+/// name what it avoids.
+///
+/// Sabotage: build a `Screen` in `acp::main`. Fails here naming the spelling.
+#[test]
+fn n4_the_acp_adapter_takes_no_terminal_and_no_second_reader_of_stdin() {
+    let acp = code_of(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/acp.rs"))
+            .expect("src/acp.rs exists"),
+    );
+
+    // **`eprintln!` contains `println!`.** The first version of this gate banned
+    // the second literal and failed on the module's own diagnostics, which go to
+    // stderr and are exactly what this file is supposed to use. Removing the
+    // stderr spelling before the sweep is the fix; a needle that cannot tell the
+    // two apart is a gate that forbids the correct behaviour.
+    let acp = acp.replace("eprintln!", "").replace("eprint!", "");
+
+    for spelling in [
+        "Screen",
+        "enable_raw_mode",
+        "crossterm",
+        "ratatui",
+        "stdin::",
+        "println!",
+        "print!",
+    ] {
+        assert!(
+            !acp.contains(spelling),
+            "`src/acp.rs` names `{spelling}`. stdout is the protocol and stdin is \
+             the frame stream: a terminal, a raw-mode switch, a cursor query or a \
+             write to stdout corrupts the session, and the corruption does not \
+             look like a rendering fault. See `src/stdin.rs` for what a second \
+             reader cost in 0.13.1.",
+        );
+    }
+
+    // The driver's own arm must leave before anything takes the terminal. Read as
+    // text because nothing under `tests/` links `src/main.rs`, and said plainly
+    // rather than implied: this is a source-text gate and that is what it can be.
+    let driver = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+        .expect("src/main.rs exists");
+    let acp_at = driver
+        .find("Subcommand::Acp")
+        .expect("`src/main.rs` routes the acp subcommand");
+    let screen_at = driver
+        .find("Screen::")
+        .expect("`src/main.rs` builds a Screen somewhere");
+    assert!(
+        acp_at < screen_at,
+        "`src/main.rs` builds a `Screen` before it dispatches `io acp`, so the \
+         adapter would inherit a process that has already taken the terminal",
+    );
+}
+
 #[test]
 fn n1_the_binary_is_named_io_and_there_is_exactly_one() {
     let manifest = manifest();
@@ -2067,6 +2137,14 @@ fn f9_every_door_that_reaches_a_run_places_a_bundles_programs() {
     assert_eq!(
         sites,
         vec![
+            // 0.36.0's fourth door. `acp::main` returns from `src/main.rs` before
+            // the interactive path resolves anything — the same reason the two
+            // below need their own calls — so an editor session would otherwise
+            // be the third place a bundle's declared program is silently not on
+            // `PATH`. **This gate is what said so**: the arm was added, the count
+            // did not match, and the missing call was named rather than
+            // discovered in a live run the way 0.34.0's was.
+            (src.join("acp.rs"), 1),
             // `install_for` twice: `exec::main` and `exec::resume_main`. Both are
             // in the library, so unlike the driver's they can be reached from a
             // test at all.

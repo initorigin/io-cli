@@ -87,6 +87,18 @@ pub enum Command {
     Plugin(Manage),
     /// Read or write one configuration key, without opening a session.
     Config(Manage),
+    /// Serve the Agent Client Protocol on stdin and stdout, for an editor.
+    ///
+    /// **Not run by hand.** An ACP client — Zed, a JetBrains IDE — spawns this as
+    /// a child process and speaks newline-delimited JSON-RPC 2.0 at it. stdout is
+    /// the protocol, so nothing else may be written there; diagnostics go to
+    /// stderr.
+    ///
+    /// It is the first non-interactive door of this product that can *answer* an
+    /// approval rather than refuse one, because an ACP client is a person in an
+    /// editor. `io exec` is unchanged and still refuses every approval — an
+    /// unattended run has nobody to ask.
+    Acp,
     /// Install, list or remove a skill, without opening a session.
     ///
     /// **Missing until 0.30.1, and `io skill add` did not exist because of it.**
