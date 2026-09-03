@@ -79,7 +79,7 @@ fn workspace(io_toml: &str, agents: &str) -> (tempfile::TempDir, Configuration) 
 /// Whether any composed instruction carries `line`.
 ///
 /// io-harness words each instruction file as `Project instructions from
-/// `AGENTS.md`:\n<text>` (`io-harness-0.69.0/src/config.rs:1893-1896`), so the
+/// `AGENTS.md`:\n<text>` (`io-harness-0.76.0/src/config.rs:2822-2825`), so the
 /// assertion is a containment and not an equality — this file is not the place
 /// that pins the harness's wording.
 fn instructs(held: &Configuration, line: &str) -> bool {

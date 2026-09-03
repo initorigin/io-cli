@@ -255,8 +255,8 @@ pub enum Kind {
 ///
 /// **Both halves are the dependency's since io-harness 0.71.0, and neither is
 /// written here any more**: the list is `Effect::ALL`
-/// (`io-harness-0.74.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
-/// (`:143`), which is the word io-harness's own deserializer reads.
+/// (`io-harness-0.76.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
+/// (`:145`), which is the word io-harness's own deserializer reads.
 ///
 /// Until this release io-cli held a copy of both — an array naming three variants
 /// and a `match` mapping them to three string literals — and the copy was the
@@ -266,7 +266,7 @@ pub enum Kind {
 /// left it compiling and writing a word the schema rejects. Taking the string from
 /// the variant closes the one hole the census could not.
 ///
-/// `Effect` is not `#[non_exhaustive]` (`policy.rs:90-92`), so `ALL` is a census
+/// `Effect` is not `#[non_exhaustive]` (`policy.rs:92-94`), so `ALL` is a census
 /// io-harness itself keeps complete rather than a list that can quietly fall
 /// behind, and there is no wildcard on this side to swallow a fourth effect.
 /// `tests/configure.rs` still round-trips every string through io-harness's own
@@ -282,10 +282,10 @@ pub fn effects() -> Vec<String> {
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **The list is `ExecMode::ALL` (`io-harness-0.74.0/src/sandbox.rs:453`) and the
-/// spellings are `ExecMode::as_str` (`:431`).** io-cli wrote the variant list out
+/// **The list is `ExecMode::ALL` (`io-harness-0.76.0/src/sandbox.rs:453`) and the
+/// spellings are `ExecMode::as_str` (`:460`).** io-cli wrote the variant list out
 /// by hand until this release for a reason that was the dependency's and not a
-/// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:378-381`), and
+/// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:407`), and
 /// a caller outside the defining crate cannot enumerate such an enum without a
 /// wildcard arm that silently swallows the next variant. The issue this crate
 /// filed asking for the enumeration is io-harness#218, and 0.71.0 answers it —
@@ -386,7 +386,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 /// preference — but half of the old reason is now false and the correction is
 /// worth writing down.** io-harness 0.71.0 names its own defaults:
 /// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
-/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.74.0/src/contract.rs:652,670,686`),
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.76.0/src/contract.rs:673,691,707`),
 /// re-exported at the crate root. "There is nothing to read" was true when this
 /// was written and is not true now. What is still true is that none of it anchors
 /// *this* ladder:
@@ -537,7 +537,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
 /// **Read from the dependency's own table since io-harness 0.71.0, not scraped
-/// out of the files.** `PriceTable::models` (`io-harness-0.74.0/src/pricing.rs:268`)
+/// out of the files.** `PriceTable::models` (`io-harness-0.76.0/src/pricing.rs:268`)
 /// lists every model the table can actually price, and [`Config::prices`] has
 /// always built that table out of the three scopes — so the merged question this
 /// used to hand-roll is precisely the one the accessor answers, and the gap filed
@@ -563,7 +563,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 ///
 /// **This takes the `Config` the caller already holds, and must never re-discover
 /// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
-/// it reads (`io-harness-0.74.0/src/config.rs:605`), so a second discovery re-runs
+/// it reads (`io-harness-0.76.0/src/config.rs:613`), so a second discovery re-runs
 /// an operator's credential commands — which for a `${cmd:}` fetching a key out of
 /// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
 /// the picker opens. Taking a `&Config` is not an optimisation; it is the
@@ -641,7 +641,7 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
 #[must_use]
 pub fn widens_workspace(key: &str, value: &str) -> bool {
     /// The clause io-harness's widening refusal always carries
-    /// (`io-harness-0.74.0/src/config.rs:2509`). Matched rather than the whole
+    /// (`io-harness-0.76.0/src/config.rs:2628`). Matched rather than the whole
     /// sentence, which interpolates the path, the key and the destination scope.
     const WIDENS: &str = "widens the boundary";
 
@@ -776,8 +776,8 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`substitute`, `io-harness-0.74.0/src/config.rs:2719`, the `cmd` arm at
-/// `:2241`); this comment claimed two until
+/// (`substitute`, `io-harness-0.76.0/src/config.rs:2838`, the `cmd` arm at
+/// `:2958`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or
 /// `${file:}` reference is a *name*, and the name is the whole of what an

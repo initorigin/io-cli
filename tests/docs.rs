@@ -1170,14 +1170,32 @@ fn f19_no_source_cites_an_io_harness_this_crate_does_not_pin() {
     // carrying two citations was checked once and the second could name any version
     // at all; and a flat `read_dir` covers `src/` only for as long as `src/` stays
     // flat, which is not a property anybody is maintaining.
+    //
+    // **0.36.0 — `tests/` is swept too, and it was not before.** The pin to
+    // 0.76.0 left a stale `io-harness-0.74.0/src/plugin.rs:1097` in
+    // `tests/adapt.rs` and this gate passed over it, because the walk started at
+    // `src/` alone. A test file's citation is read by exactly the same person for
+    // exactly the same reason as a source file's, and the argument above — that a
+    // citation into an unpinned version cannot even be checked — does not care
+    // which directory the comment is in.
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    let mut dirs = vec![repo().join("src")];
+    let mut dirs = vec![repo().join("src"), repo().join("tests")];
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(&dir).expect("a source directory") {
             let path = entry.expect("a directory entry").path();
             if path.is_dir() {
                 dirs.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                // **This file is exempt from its own sweep, and the exemption is
+                // the point rather than a convenience.** A gate that reads prose
+                // forbids a file from explaining itself — a rule this repository
+                // has now paid for four times, most visibly when the stale-claim
+                // sweep hit a CHANGELOG entry written to say a placeholder had
+                // been removed. This test cannot state which citation form it
+                // looks for, quote the nine that motivated it, or build its own
+                // needle with `format!`, without matching itself.
+                && path.file_name().and_then(|n| n.to_str()) != Some("docs.rs")
+            {
                 files.push(path);
             }
         }
@@ -1191,6 +1209,17 @@ fn f19_no_source_cites_an_io_harness_this_crate_does_not_pin() {
             // vendored source tree. A bare "io-harness 0.70.0" is history — a
             // sentence about when something changed — and is not a citation.
             for (at, _) in line.match_indices("io-harness-") {
+                // A version literal begins with a digit. Without this the sweep
+                // also flags the machinery that *builds* such a path —
+                // `format!("io-harness-{version}")` in `tests/support/mod.rs`
+                // resolves at runtime to whatever is pinned and is the opposite
+                // of a stale citation. Checking the shape is better than
+                // exempting the file: the exemption would also hide a real
+                // citation that file later grew.
+                let rest = &line[at + "io-harness-".len()..];
+                if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+                    continue;
+                }
                 if !line[at..].starts_with(&wanted) {
                     stale.push(format!(
                         "{}:{}: {}",
