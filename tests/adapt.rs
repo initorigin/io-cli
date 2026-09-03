@@ -493,7 +493,7 @@ fn loaded(into: &Path) -> Plugins {
 /// that io wrote until 0.35.0. The generator still runs and the fixture still
 /// builds — and `dropped()` carries the whole bundle, because io-harness 0.74.0
 /// refuses an absolute `skills` or `templates` in every scope, `Scope::User`
-/// included (`io-harness-0.74.0/src/plugin.rs:1097`): a manifest contributes a
+/// included (`io-harness-0.76.0/src/plugin.rs:1097`): a manifest contributes a
 /// directory it ships rather than one it points at somewhere else on the machine,
 /// since every `*.md` under it is read into the model's system prompt.
 #[test]

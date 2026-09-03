@@ -73,10 +73,25 @@ fn split() -> Usage {
         completion_tokens: 2_000,
         total_tokens: 12_000,
         cache_read_tokens: 4_000,
-        cache_write_tokens: 1_000,
+        cache_write_tokens: Some(1_000),
         reasoning_tokens: 500,
         server_tool_requests: 3,
     }
+}
+
+/// The split fixture's cache-write count, unwrapped.
+///
+/// io-harness 0.76.0 made `cache_write_tokens` an `Option<u64>`, and `split()` is
+/// deliberately a provider that *did* report one — so every arithmetic assertion
+/// below is about a known number and reads the way it did before the pin.
+///
+/// **The unknown case does not share this helper and must not.** A test that
+/// unwrapped its way past `None` would assert nothing about the state this
+/// release added; the three-state arms below construct their own usage.
+fn written(usage: &Usage) -> u64 {
+    usage
+        .cache_write_tokens
+        .expect("the split fixture reports a cache-write count")
 }
 
 fn call(model: Option<&str>, usage: Option<Usage>) -> ProviderCall {
@@ -200,7 +215,7 @@ fn provenance() -> Provenance {
 #[test]
 fn the_total_is_the_rates_times_the_split_and_not_a_figure_typed_here() {
     let usage = split();
-    let fresh = usage.prompt_tokens - usage.cache_read_tokens - usage.cache_write_tokens;
+    let fresh = usage.prompt_tokens - usage.cache_read_tokens - written(&usage);
     assert_eq!(fresh, 5_000, "the fixture's fresh prompt tokens");
 
     // Per-million everywhere except the server tool requests, which vendors bill
@@ -208,7 +223,7 @@ fn the_total_is_the_rates_times_the_split_and_not_a_figure_typed_here() {
     let mtok = fresh as u128 * INPUT as u128
         + usage.completion_tokens as u128 * OUTPUT as u128
         + usage.cache_read_tokens as u128 * CACHE_READ as u128
-        + usage.cache_write_tokens as u128 * CACHE_WRITE as u128;
+        + written(&usage) as u128 * CACHE_WRITE as u128;
     assert_eq!(
         mtok % 1_000_000,
         0,
@@ -429,9 +444,9 @@ fn a_model_the_table_does_not_price_is_a_floor_and_says_so() {
 #[test]
 fn the_cache_figures_are_inside_the_prompt_and_never_added_to_it() {
     let usage = split();
-    let fresh = usage.prompt_tokens - usage.cache_read_tokens - usage.cache_write_tokens;
+    let fresh = usage.prompt_tokens - usage.cache_read_tokens - written(&usage);
     assert_eq!(
-        usage.cache_read_tokens + usage.cache_write_tokens + fresh,
+        usage.cache_read_tokens + written(&usage) + fresh,
         usage.prompt_tokens,
         "the fixture's own parts do not sum to its prompt",
     );
@@ -452,7 +467,7 @@ fn the_cache_figures_are_inside_the_prompt_and_never_added_to_it() {
     );
     assert_eq!(
         field(&rows, "of which cache written"),
-        spelled(usage.cache_write_tokens),
+        spelled(written(&usage)),
     );
     assert_eq!(
         field(&rows, "of which fresh"),
@@ -483,6 +498,224 @@ fn the_cache_figures_are_inside_the_prompt_and_never_added_to_it() {
     assert!(
         !drawn.contains("of which reasoning"),
         "a turn that reasoned about nothing drew a reasoning row:\n{drawn}",
+    );
+}
+
+/// **F10 — a cache-write count nobody reported is a third state, and it is drawn
+/// as one.**
+///
+/// io-harness 0.76.0 made `Usage::cache_write_tokens` an `Option<u64>`, which is
+/// the shape this module's first honesty rule has always wanted: a count the
+/// provider reported no usage for is unknown, never zero. It is not a
+/// hypothetical distinction — **every OpenRouter call reports `None`**, and
+/// OpenRouter is the provider this product's own evidence is taken on, so the
+/// obvious `unwrap_or(0)` would put a fabricated `0` on the page an operator
+/// reads to find out what a turn cost.
+///
+/// Three states, three assertions, and the pairwise distinctness asserted
+/// explicitly — the shape `tests/status.rs`'s
+/// `f14_a_probe_and_a_state_nobody_reached_are_different_words` uses for exactly
+/// the same reason.
+///
+/// Sabotage: `unwrap_or(0)` in `cost::page`. Under it the unknown arm draws the
+/// same string as the reported-zero arm, the distinctness assertion fails by
+/// name, and no other test in this file moves.
+#[test]
+fn f10_an_unreported_cache_write_is_unknown_and_a_reported_zero_is_zero() {
+    let spelled = io_cli::status::format_tokens;
+
+    let usage_with = |cache_write| Usage {
+        prompt_tokens: 10_000,
+        completion_tokens: 2_000,
+        total_tokens: 12_000,
+        cache_read_tokens: 4_000,
+        cache_write_tokens: cache_write,
+        ..Default::default()
+    };
+    let written_row = |cache_write| {
+        let fixture = seeded(&[call(Some(PRICED), Some(usage_with(cache_write)))]);
+        field(
+            &page(&fixture, &table(), &provenance()),
+            "of which cache written",
+        )
+        .to_string()
+    };
+
+    let unknown = written_row(None);
+    let zero = written_row(Some(0));
+    let some = written_row(Some(1_000));
+
+    assert_eq!(
+        some,
+        spelled(1_000),
+        "a provider that reported a cache-write count must have it drawn",
+    );
+    assert_eq!(
+        zero,
+        spelled(0),
+        "a provider that reported zero cache writes reported a number, and it is drawn as one",
+    );
+    assert_eq!(
+        unknown, "unknown",
+        "a provider that reported no cache-write count at all must not be drawn a number",
+    );
+
+    // The distinctness is the property, and it is asserted rather than left to
+    // follow from the three equalities above: a later change that made both
+    // render `0` would break two of those and this one, and this is the one whose
+    // failure names the actual defect.
+    assert_ne!(
+        unknown, zero,
+        "unknown and reported-zero drew the same string, so the page cannot tell an operator \
+         which one happened",
+    );
+
+    // And the remainder inherits the silence. Fresh is the prompt less both
+    // cached parts, so substituting zero for the unknown write would draw a fresh
+    // figure too large by exactly the amount nobody measured — and it would look
+    // like a fact.
+    let fixture = seeded(&[call(Some(PRICED), Some(usage_with(None)))]);
+    let rows = page(&fixture, &table(), &provenance());
+    assert_eq!(
+        field(&rows, "of which fresh"),
+        "unknown",
+        "the fresh figure was computed from a cache-write count that does not exist",
+    );
+    assert_eq!(
+        field(&rows, "of which cache read"),
+        spelled(4_000),
+        "the read count was reported and stays a number",
+    );
+}
+
+/// **F10's other half — summing an unknown with a known does not erase the
+/// known.**
+///
+/// `cost::add` folds many calls into one `Usage`. Two silences stay a silence;
+/// one silence beside a number keeps the number, because a turn that reported
+/// 1,000 cache writes and a turn that reported nothing together wrote *at least*
+/// 1,000, and answering `unknown` there would hide a figure the provider did give
+/// us.
+///
+/// Sabotage: make the mixed case `None`. The page then reads `unknown` for a run
+/// where one call reported a real count, and this fails while the single-call
+/// arms above all still pass.
+#[test]
+fn f10_folding_an_unreported_count_with_a_reported_one_keeps_the_number() {
+    // A non-zero read count is load-bearing on the fixture rather than
+    // decoration: with no reads and no reported writes the page draws no cache
+    // block at all — correctly, since there is nothing to say — and the row this
+    // test reads would not exist. The reads are what put the block on the page so
+    // the *write* row's three states can be compared.
+    let with = |cache_write| Usage {
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        total_tokens: 1_100,
+        cache_read_tokens: 100,
+        cache_write_tokens: cache_write,
+        ..Default::default()
+    };
+    let spelled = io_cli::status::format_tokens;
+    let row = |calls: &[_], name: &str| {
+        field(&page(&seeded(calls), &table(), &provenance()), name).to_string()
+    };
+    let drawn = |calls: &[_]| row(calls, "of which cache written");
+
+    let none_reported = [
+        call(Some(PRICED), Some(with(None))),
+        call(Some(PRICED), Some(with(None))),
+    ];
+    let mixed = [
+        call(Some(PRICED), Some(with(None))),
+        call(Some(PRICED), Some(with(Some(1_000)))),
+    ];
+    let all_reported = [
+        call(Some(PRICED), Some(with(Some(250)))),
+        call(Some(PRICED), Some(with(Some(750)))),
+    ];
+
+    assert_eq!(
+        drawn(&none_reported),
+        "unknown",
+        "no call reported a cache-write count, so the fold has nothing to report",
+    );
+    assert_eq!(
+        drawn(&all_reported),
+        spelled(1_000),
+        "two reported counts must sum, and neither is in doubt",
+    );
+
+    // **The mixed fold is a FLOOR and is drawn as one.** The number is kept —
+    // one call really did report 1,000 writes and answering `unknown` would hide
+    // a figure the provider gave us — but it is not a count, because how many
+    // more the silent call made is unknown. This assertion is the fix for a High
+    // the adversarial review found: the first version drew a bare `1.0k` here.
+    assert_eq!(
+        drawn(&mixed),
+        format!("{} or more", spelled(1_000)),
+        "a fold of one reporting call and one silent one is a floor, and drawing \
+         it as a plain number claims a count nobody can support",
+    );
+}
+
+/// **F10's third half — "of which fresh" carries every doubt the write count
+/// carries.**
+///
+/// Fresh is the prompt less both cached parts, so subtracting a **floor** yields
+/// a **ceiling** — and a ceiling drawn as a plain number is a fact that is too
+/// large by exactly the amount nobody measured. `src/cost.rs`'s own comment says
+/// that must not happen, and the first version of this release's change let it:
+/// the guard distinguished only "no call reported" from "some call reported", so
+/// a mixed fold took the confident arm and drew an exact-looking number.
+///
+/// **Found by the adversarial review, not by the suite** — the mixed-fold test
+/// above existed and read only the written row, never this one.
+///
+/// Reachable in practice rather than in theory: `openai_wire` reports no
+/// cache-write count at all and Anthropic reports one only where a cache was
+/// created, so any session that changes model across those two vendors folds both
+/// shapes into one total.
+///
+/// Sabotage: key the fresh row on `cache_write_tokens` alone, as it was. This
+/// fails and the written-row assertion above still passes.
+#[test]
+fn f10_a_fresh_figure_computed_from_a_floor_is_not_drawn_as_a_number() {
+    let with = |cache_write| Usage {
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        total_tokens: 1_100,
+        cache_read_tokens: 100,
+        cache_write_tokens: cache_write,
+        ..Default::default()
+    };
+    let fresh = |calls: &[_]| {
+        field(
+            &page(&seeded(calls), &table(), &provenance()),
+            "of which fresh",
+        )
+        .to_string()
+    };
+
+    assert_eq!(
+        fresh(&[
+            call(Some(PRICED), Some(with(None))),
+            call(Some(PRICED), Some(with(Some(1_000)))),
+        ]),
+        "unknown",
+        "the fresh figure was computed by subtracting a floor, which makes it a \
+         ceiling — and it was drawn as though it were a measurement",
+    );
+
+    // The control: with every call reporting, fresh is a real number again.
+    // Without this, a function that always answered `unknown` would pass.
+    let spelled = io_cli::status::format_tokens;
+    assert_eq!(
+        fresh(&[
+            call(Some(PRICED), Some(with(Some(250)))),
+            call(Some(PRICED), Some(with(Some(750)))),
+        ]),
+        spelled(2_000 - 200 - 1_000),
+        "every call reported, so nothing is in doubt and fresh is exact",
     );
 }
 

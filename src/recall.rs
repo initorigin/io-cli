@@ -579,8 +579,8 @@ pub fn pin(
 /// - **The entry's own `run_id`** — the run that wrote it, which
 ///   [`Remembered::run_id`] already carries — is the tempting one and is the
 ///   trap. `memory_snapshots` is unique on `(run_id, workspace, key)`
-///   (`src/state/schema.rs:763-764`) and the insert is `INSERT OR IGNORE`
-///   (`src/state/memory.rs:839`), so the restore point that run took when it
+///   (`src/state/schema.rs:848-849`) and the insert is `INSERT OR IGNORE`
+///   (`src/state/memory.rs:871`), so the restore point that run took when it
 ///   *wrote* the entry already owns that slot and this one is silently dropped.
 ///   The row that stays says the entry was **absent** before that run, so a
 ///   rewind would delete it rather than put it back — the exact opposite of what

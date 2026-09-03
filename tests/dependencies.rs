@@ -1128,15 +1128,32 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
 
 /// The modules permitted to turn somebody else's JSON into a value.
 ///
-/// **Two, and they are files rather than modules.** `src/import.rs` has read the
-/// operator's own `~/.claude.json` and Codex settings since 0.21.0;
+/// **Three, and they are files rather than modules.** `src/import.rs` has read
+/// the operator's own `~/.claude.json` and Codex settings since 0.21.0;
 /// `src/adapt.rs` reads the three foreign plugin manifest formats. Sorted here
 /// for the reason `spawning_modules` is sorted: `read_dir` answers in whatever
 /// order the filesystem holds, and a test that passes on one machine and fails on
 /// another is worse than no test.
+///
+/// **`src/acp.rs` is 0.36.0's, and it is admitted on a different ground rather
+/// than on a relaxed one.** The rule this list enforces is stated in the sweep
+/// below: a module deciding what somebody else's *file* means is a second opinion
+/// about a question that already has one, which is why the operator's Claude
+/// configuration and a stranger's plugin manifest each get exactly one reader. An
+/// ACP frame is not somebody else's file. It is a request addressed to this
+/// process, arriving on this process's own stdin, with no on-disk format whose
+/// meaning is being re-decided and no other reader in the crate to disagree with
+/// — and declining to parse it would mean not speaking the protocol at all. That
+/// is a different question from the one the rule answers, so the exemption is
+/// granted for a reason and the reason is written here rather than left as a
+/// third entry somebody later reads as precedent for a fourth.
 fn json_reading_modules() -> Vec<PathBuf> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut permitted = vec![src.join("adapt.rs"), src.join("import.rs")];
+    let mut permitted = vec![
+        src.join("acp.rs"),
+        src.join("adapt.rs"),
+        src.join("import.rs"),
+    ];
     permitted.sort();
     permitted
 }
@@ -1259,6 +1276,14 @@ fn n1_the_permitted_json_set_is_exact_paths_and_never_a_substring() {
         // is asserted for both rather than for the new one only.
         src.join("importer.rs"),
         src.join("import").join("mod.rs"),
+        // 0.36.0's permitted path gets the same three shapes, and the first of
+        // them is a file that really exists: `src/acp_map.rs` is the event
+        // translation, it sits beside the transport, and it deserializes nothing.
+        // A stem-prefix match would admit it silently — which is the whole reason
+        // this arm is a live near-miss here rather than an invented name.
+        src.join("acp_map.rs"),
+        src.join("acp").join("mod.rs"),
+        src.join("acpx.rs"),
     ] {
         let mut widened = permitted.clone();
         widened.push(near.clone());
@@ -1272,6 +1297,202 @@ fn n1_the_permitted_json_set_is_exact_paths_and_never_a_substring() {
             near.display(),
         );
     }
+}
+
+/// **N3 — the ACP adapter runs on tokio, and no second async executor entered
+/// the tree behind it.**
+///
+/// This is the criterion the hand-written transport in `src/acp.rs` exists to
+/// keep. The official `agent-client-protocol` crate is correct and well made and
+/// was declined for one reason: it arrives with `async-io`, `async-process`,
+/// `async-task`, `blocking` and `polling`, and its stdio transport puts
+/// `blocking::Unblock` over the real stdin and stdout. This binary already has a
+/// reader of stdin and an owner for it — `src/stdin.rs`, which exists, with its
+/// own history, because of what a second one cost in 0.13.1.
+///
+/// **Asserted on the lockfile rather than the manifest, and that is the whole
+/// point.** The hazard arrives transitively: nothing would appear in
+/// `Cargo.toml`, `ALLOWED` would still hold at ten names, and the second reactor
+/// would be in the binary anyway. The lesson is already written down in this
+/// repository from the ratatui 0.30 cursor query — read the lockfile, not the
+/// facade's manifest.
+///
+/// Sabotage: add `agent-client-protocol` to `[dependencies]`. `ALLOWED` fails
+/// too, which is correct and is not this arm's job; this one fails naming the
+/// executor crates, which is the fact a reader needs.
+#[test]
+fn n3_no_second_async_executor_is_in_the_tree() {
+    let lock = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"))
+        .expect("Cargo.lock exists; this crate is a binary and commits its lockfile");
+
+    let locked: Vec<&str> = lock
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("name = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+        })
+        .collect();
+
+    // The control. Without it a lockfile this parser failed to read at all would
+    // satisfy every assertion below by containing nothing.
+    assert!(
+        locked.contains(&"tokio"),
+        "the lockfile parser found no `tokio`, so it is not reading the lockfile and \
+         the absences below mean nothing",
+    );
+
+    // `futures-lite` and `async-lock` are deliberately not in this list: they are
+    // plumbing that a tokio-only tree can legitimately acquire through some other
+    // path. These five are the reactor and its process and thread plumbing —
+    // arriving together, they are a second executor and not a coincidence.
+    for reactor in [
+        "async-io",
+        "async-task",
+        "async-process",
+        "blocking",
+        "polling",
+    ] {
+        assert!(
+            !locked.contains(&reactor),
+            "`{reactor}` is in Cargo.lock. io-cli runs one async runtime, and \
+             `src/acp.rs` speaks the ACP wire itself rather than taking a crate \
+             that brings a second one over the real stdin. If this is deliberate, \
+             the argument belongs in the release record and in `Cargo.toml` \
+             beside the name that pulled it in.",
+        );
+    }
+}
+
+/// **N3's other half — there is exactly one place a future is driven, and it is
+/// the entry point.**
+///
+/// A source-text gate, because the defect it guards has no runtime symptom until
+/// a client is attached: a `block_on` reached from inside an async task is how a
+/// task ends up waiting on a reactor that is not running it, and with a protocol
+/// reader on stdin the symptom is a session that hangs rather than one that
+/// fails.
+///
+/// **A count, not a `contains`, and not a per-file ban.** `src/main.rs:51` is
+/// `runtime.block_on(run(&mut report))` — the one legitimate site, where the
+/// binary crosses from sync `fn main` into the async program, and a blanket ban
+/// would be a gate written from imagination that fails on correct code. Counting
+/// is the stronger property anyway: it stays exactly as meaningful when a second
+/// site is added for a bad reason, which exempting the file by path would not.
+///
+/// Sabotage: add a `block_on` anywhere — in `src/acp.rs` to await a permission
+/// answer, which is the plausible wrong fix for the round trip. The count goes to
+/// two and this fails naming the file.
+#[test]
+fn n3_one_future_is_driven_and_it_is_the_binarys_entry_point() {
+    let mut sites: Vec<(String, usize)> = Vec::new();
+
+    for (path, text) in sources() {
+        // Comments are stripped first, for the reason every sweep in this file
+        // strips them: a gate that reads prose forbids a file from explaining
+        // itself, and this test's own subject has to be nameable in a doc comment.
+        let code = code_of(&text);
+
+        let count = code.matches("block_on").count();
+        if count > 0 {
+            sites.push((path.display().to_string(), count));
+        }
+
+        // These two bring a foreign reactor rather than driving this one, and
+        // neither has a legitimate site in this crate at any count.
+        for spelling in ["futures::executor", "async_io::", "async_std::"] {
+            assert!(
+                !code.contains(spelling),
+                "{} names `{spelling}`, which is a second async runtime. io-cli runs \
+                 one, and `src/acp.rs` speaks the ACP wire itself rather than taking \
+                 a crate that brings another over the real stdin.",
+                path.display(),
+            );
+        }
+    }
+
+    let total: usize = sites.iter().map(|(_, count)| count).sum();
+    assert_eq!(
+        total, 1,
+        "a future is driven at {total} sites: {sites:?}. Exactly one is correct — \
+         `src/main.rs`, where sync `fn main` enters the async program. Every other \
+         path is `async fn` all the way down, and a `block_on` reached from inside \
+         a task waits on a reactor that is not running it.",
+    );
+    assert!(
+        sites[0].0.ends_with("main.rs"),
+        "the one site that drives a future is {}, not the binary's entry point",
+        sites[0].0,
+    );
+}
+
+/// **N4 — the ACP adapter owns stdin and stdout alone.**
+///
+/// stdout is the protocol: a byte written there that is not part of a JSON-RPC
+/// frame is a frame boundary in the wrong place, and every message after it is
+/// parsed against the wrong offset. stdin is the frame stream: a second reader
+/// takes frames away from the protocol.
+///
+/// This product has already lost time to exactly one of those. [`crate::stdin`]
+/// — `src/stdin.rs` — exists because a keyboard reader and a cursor query fought
+/// over the terminal, and 0.13.1 is what that cost. An ACP session with a
+/// `Screen` in the same process is the same defect with a worse symptom, because
+/// a corrupted protocol stream does not look like a rendering fault.
+///
+/// A source-text gate over `src/acp.rs`, because the property is about what the
+/// module does *not* do and there is no runtime moment at which to observe an
+/// absence. Comments are stripped first, so the module's own documentation can
+/// name what it avoids.
+///
+/// Sabotage: build a `Screen` in `acp::main`. Fails here naming the spelling.
+#[test]
+fn n4_the_acp_adapter_takes_no_terminal_and_no_second_reader_of_stdin() {
+    let acp = code_of(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/acp.rs"))
+            .expect("src/acp.rs exists"),
+    );
+
+    // **`eprintln!` contains `println!`.** The first version of this gate banned
+    // the second literal and failed on the module's own diagnostics, which go to
+    // stderr and are exactly what this file is supposed to use. Removing the
+    // stderr spelling before the sweep is the fix; a needle that cannot tell the
+    // two apart is a gate that forbids the correct behaviour.
+    let acp = acp.replace("eprintln!", "").replace("eprint!", "");
+
+    for spelling in [
+        "Screen",
+        "enable_raw_mode",
+        "crossterm",
+        "ratatui",
+        "stdin::",
+        "println!",
+        "print!",
+    ] {
+        assert!(
+            !acp.contains(spelling),
+            "`src/acp.rs` names `{spelling}`. stdout is the protocol and stdin is \
+             the frame stream: a terminal, a raw-mode switch, a cursor query or a \
+             write to stdout corrupts the session, and the corruption does not \
+             look like a rendering fault. See `src/stdin.rs` for what a second \
+             reader cost in 0.13.1.",
+        );
+    }
+
+    // The driver's own arm must leave before anything takes the terminal. Read as
+    // text because nothing under `tests/` links `src/main.rs`, and said plainly
+    // rather than implied: this is a source-text gate and that is what it can be.
+    let driver = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+        .expect("src/main.rs exists");
+    let acp_at = driver
+        .find("Subcommand::Acp")
+        .expect("`src/main.rs` routes the acp subcommand");
+    let screen_at = driver
+        .find("Screen::")
+        .expect("`src/main.rs` builds a Screen somewhere");
+    assert!(
+        acp_at < screen_at,
+        "`src/main.rs` builds a `Screen` before it dispatches `io acp`, so the \
+         adapter would inherit a process that has already taken the terminal",
+    );
 }
 
 #[test]
@@ -1926,6 +2147,14 @@ fn f9_every_door_that_reaches_a_run_places_a_bundles_programs() {
     assert_eq!(
         sites,
         vec![
+            // 0.36.0's fourth door. `acp::main` returns from `src/main.rs` before
+            // the interactive path resolves anything — the same reason the two
+            // below need their own calls — so an editor session would otherwise
+            // be the third place a bundle's declared program is silently not on
+            // `PATH`. **This gate is what said so**: the arm was added, the count
+            // did not match, and the missing call was named rather than
+            // discovered in a live run the way 0.34.0's was.
+            (src.join("acp.rs"), 1),
             // `install_for` twice: `exec::main` and `exec::resume_main`. Both are
             // in the library, so unlike the driver's they can be reached from a
             // test at all.

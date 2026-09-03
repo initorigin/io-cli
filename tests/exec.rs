@@ -2891,3 +2891,49 @@ fn f10_a_configuration_with_no_templates_passes_every_plain_goal_through() {
         "a template named where none are configured is refused, not rendered empty",
     );
 }
+
+/// **F7 — `io exec` still refuses every approval, and 0.36.0 is the release that
+/// could have changed that by accident.**
+///
+/// This release gives io-cli its first non-interactive door that *can* answer an
+/// approval: an ACP client is a person in an editor, so `src/acp.rs` raises
+/// `session/request_permission` and routes the answer to `io_harness::Approver`.
+/// `io exec` is not that. It is an unattended run with nobody to ask, and the
+/// argument at `src/exec.rs:614-621` — that an ask becomes a refusal the agent is
+/// told about and adapts to, because an approver that blocked would hang forever
+/// — is unchanged and correct.
+///
+/// The failure mode this guards is the new wiring reaching the old door while
+/// every ACP test stays green. So it is a **count over the call sites**, never a
+/// `contains`: `src/exec.rs` drives five turns — the ordinary one and four resume
+/// entry points — and a `contains` is satisfied forever by any one of them. That
+/// is the discipline `AGENTS.md` states, and 0.30.0 records what happens when a
+/// gate is satisfied by one door out of two.
+///
+/// Sabotage: replace any single `&DenyAll` with the ACP approver. The count drops
+/// to four and this fails; nothing in `tests/acp.rs` moves.
+#[test]
+fn f7_every_headless_turn_still_refuses_every_approval() {
+    let text = source("exec.rs");
+
+    let sites = text.matches("&DenyAll").count();
+    assert_eq!(
+        sites, 5,
+        "`src/exec.rs` passes `&DenyAll` at {sites} sites and five are expected — \
+         the ordinary turn and the four resume entry points. If a turn was added, \
+         it needs one too: an unattended run has nobody to ask, and an approver \
+         that blocks there hangs forever. If one was removed, say which door can \
+         now answer an approval and how.",
+    );
+
+    // And the adapter's own approval path is not reachable from this file. The
+    // two doors are deliberately different and naming the ACP seam here would be
+    // the first step of merging them.
+    for spelling in ["acp::", "permission_answer", "request_permission"] {
+        assert!(
+            !text.contains(spelling),
+            "`src/exec.rs` names `{spelling}`. The headless door refuses approvals \
+             and the ACP door answers them; they do not share a decision.",
+        );
+    }
+}

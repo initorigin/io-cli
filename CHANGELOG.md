@@ -6,6 +6,82 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-03
+
+The release that makes io reachable from an editor. The Agent Client Protocol is the field's
+integration surface — Zed's, JetBrains's, and a registry of agents that answer it — and having
+none of it kept this product out of every editor that has adopted one. `io acp` is a protocol
+adapter over a door that already existed: ACP is newline-delimited JSON-RPC 2.0 over stdio, which
+is byte for byte the output discipline `io exec --json` has kept since 0.5.0.
+
+The wire is served with the dependencies already in the tree. The official
+`agent-client-protocol` crate was read and declined: it brings twenty-six further lockfile crates
+including `async-io`, `blocking` and `polling`, a second async executor family reading real stdin
+beside this one — and a second owner of stdin is not a hypothetical hazard here. The direct
+dependency set is still exactly ten names.
+
+### Added
+
+**`io acp` serves the Agent Client Protocol on stdin and stdout.** An editor spawns it and speaks
+JSON-RPC at it: `initialize`, `session/new`, `session/prompt`, `session/cancel`. The agent's
+answer streams back as `session/update` notifications — message chunks, reasoning on its own
+channel so a client can fold it, tool calls with ACP's own kinds, and plan changes. A turn answers
+with ACP's `stopReason`. See the new [From an editor](docs/guide/editors.md) guide.
+
+**An approval in an editor session is refused, and the client is told which action and why.** A
+`session/update` marks the tool call failed and says the approval could not be routed; the model
+is told the same, rather than that the operator denied it, because the operator was never asked.
+io does **not** send `session/request_permission` in 0.36.0 — raising that request means awaiting
+the answer, and routing it back into the running turn is not wired, so a prompt whose outcome is
+ignored would be worse than no prompt. `docs/CONTRACT.md`'s standing sentence — io "declines every
+approval rather than deferring one" — therefore still holds on every door this release ships.
+
+### Changed
+
+**The io-harness pin moves to 0.76.0**, two minor versions.
+
+**A cache-write count the provider never reported now reads `unknown`, where it previously read a
+number that was wrong.** io-harness 0.76.0 makes `Usage::cache_write_tokens` an `Option`, which is
+the shape `/cost`'s own first honesty rule has wanted since 0.13.0: a count a provider reported no
+usage for is unknown, never zero. **Every OpenRouter call reports none**, so this is most turns
+rather than an edge case. The "of which fresh" figure inherits the silence, because it is computed
+from the count that does not exist.
+
+**`io exec --json` writes a second object per committed step.** io-harness 0.75.0 added
+`EventKind::StepAttributed` — a per-step timing breakdown — and the `--json` stream forwards every
+event without a filter. A consumer that counted objects, or assumed one object per step, sees
+different output. The variant draws no line in the transcript: it arrives beside every step and a
+line would restate the span the step line already draws.
+
+**A harness-native `[routing]` section is now reported rather than silently discarded.** 0.76.0
+lets a user-scope `io.toml` carry `[routing]`, and io-cli then applies `[app.io-cli.routing]`
+through a builder that **replaces** rather than merges — so an operator with both lost the
+harness's without being told, and an operator with only the harness's saw it in no io-cli surface.
+io now says which is in force. The precedence is unchanged: deciding it here would be this crate
+taking a second opinion about somebody else's section.
+
+**Four more tool calls can now run concurrently and arrive out of order** in the transcript:
+0.75.0 made `list_dir`, `git_log`, `git_status` and `git_diff` speculable. Nothing in io-cli
+changed; the ordering did.
+
+### Known limitations
+
+- **An editor session refuses every grey-tier action and does not ask.** `session/request_permission`
+  is not sent; the tool call is marked failed with the reason. Nothing is granted that was not
+  granted, but the posture has to be configured rather than approved in the moment.
+- **`session/cancel` takes effect between turns, not during one.** A turn in flight runs to its own
+  end, so `stopReason: "cancelled"` is reachable only where the cancel arrived before the turn
+  began.
+- **The client's filesystem and terminal are not used.** io-harness owns the disk and process
+  execution inside its own sandbox and publishes no seam to route either through the client, so io
+  cannot see unsaved editor buffers. This is an upstream absence rather than a deferral.
+- One ACP session per process; a second `session/new` is refused with a sentence.
+- `session/load` and `session/set_mode` are not served, and `loadSession` is declared unsupported.
+- A `plan` update carries no entries — a client is told the plan moved, which is true, rather than
+  a fabricated list.
+- A turn that errors answers `end_turn` with the reason on stderr, because ACP has no stop reason
+  for a transport failure.
+
 ## [0.35.0] - 2026-09-02
 
 The release that renders a boundary somebody measured. This interface has drawn the
@@ -3246,7 +3322,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/initorigin/io-cli/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/initorigin/io-cli/compare/v0.34.1...v0.35.0
 [0.34.1]: https://github.com/initorigin/io-cli/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/initorigin/io-cli/compare/v0.33.0...v0.34.0

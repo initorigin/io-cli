@@ -78,6 +78,23 @@ pub struct Total {
     pub unknown: u64,
     /// Calls whose model the table does not price.
     pub unpriced: u64,
+    /// Calls that reported usage but no cache-write count.
+    ///
+    /// **The field the mixed fold needs, and the release that added `Option` to
+    /// that count shipped without it first.** `add_reported` folds one reporting
+    /// call and one silent one to `Some(n)`, and `n` is a **floor** — at least
+    /// that many writes happened. Drawn as a plain number, and used to compute
+    /// "of which fresh" as the prompt less both cached parts, the second figure
+    /// becomes a *ceiling* presented as a fact, too large by exactly the amount
+    /// nobody measured. That is verbatim the failure the comment in `section`
+    /// says must not happen; the guard there distinguished only "no call
+    /// reported" from "some call reported", so a mixed fold took the confident
+    /// arm.
+    ///
+    /// Not hypothetical: `openai_wire` reports no cache-write count at all and
+    /// Anthropic reports one only where a cache was created, so any session that
+    /// changes model across those two vendors folds both shapes into one total.
+    pub unreported_writes: u64,
     /// The token split, summed. Cache and reasoning are breakdowns of the prompt
     /// and completion figures beside them, never additions to them.
     pub usage: Usage,
@@ -102,6 +119,9 @@ impl Total {
                 total.unknown += 1;
                 continue;
             };
+            if usage.cache_write_tokens.is_none() {
+                total.unreported_writes += 1;
+            }
             add(&mut total.usage, &usage);
             let priced = call
                 .model
@@ -132,9 +152,31 @@ fn add(into: &mut Usage, from: &Usage) {
     into.completion_tokens += from.completion_tokens;
     into.total_tokens += from.total_tokens;
     into.cache_read_tokens += from.cache_read_tokens;
-    into.cache_write_tokens += from.cache_write_tokens;
+    into.cache_write_tokens = add_reported(into.cache_write_tokens, from.cache_write_tokens);
     into.reasoning_tokens += from.reasoning_tokens;
     into.server_tool_requests += from.server_tool_requests;
+}
+
+/// Sum two counts either of which the provider may not have reported.
+///
+/// io-harness 0.76.0 made `cache_write_tokens` an `Option<u64>`, which is the
+/// shape this module's own first honesty rule has always wanted: a count the
+/// provider reported no usage for is unknown, never zero. Every OpenRouter call
+/// reports `None`, and OpenRouter is where this product's evidence is taken, so
+/// the difference is not theoretical.
+///
+/// **Unknown is absorbing in one direction only.** Two silences stay a silence.
+/// One silence beside a number does not erase the number — a turn that reported
+/// 400 cache writes and a turn that reported nothing sum to *at least* 400, and
+/// answering `unknown` there would hide a figure the provider did give us. The
+/// residual dishonesty is that the sum is a floor rather than a total, which is
+/// the same shape as an unpriced model's money on this page, and is said out
+/// loud in the same way rather than papered over.
+fn add_reported(into: Option<u64>, from: Option<u64>) -> Option<u64> {
+    match (into, from) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+    }
 }
 
 /// Where the prices came from, for the line at the foot of the page.
@@ -289,23 +331,48 @@ fn section(total: &Total) -> Vec<Row> {
     // being named as parts of it rather than by being drawn further right — this
     // page has no columns to indent into, and a reader in `--plain` has only the
     // words.
-    if usage.cache_read_tokens > 0 || usage.cache_write_tokens > 0 {
+    // A provider that did not report cache writes at all is a third state beside
+    // "wrote none" and "wrote some", and the block is drawn for it: an operator
+    // seeing cache reads and no written line would read the absence as zero,
+    // which is the reading this module exists to prevent.
+    if usage.cache_read_tokens > 0 || usage.cache_write_tokens.is_some_and(|n| n > 0) {
         rows.push(Row::fact(
             "of which cache read",
             tokens(usage.cache_read_tokens),
         ));
         rows.push(Row::fact(
             "of which cache written",
-            tokens(usage.cache_write_tokens),
+            // A mixed fold is a floor, not a count, so it is drawn as one. The
+            // arm that mattered is the middle case: `Some(n)` with at least one
+            // call silent means "at least n", and a bare number there is a claim
+            // nobody can support.
+            match (usage.cache_write_tokens, total.unreported_writes) {
+                (Some(count), 0) => tokens(count),
+                (Some(count), _) => format!("{} or more", tokens(count)),
+                (None, _) => UNREPORTED.to_string(),
+            },
         ));
+        // Fresh is the prompt less both cached parts, so a cache-write count
+        // nobody reported makes the remainder unknown too. Substituting zero
+        // here would draw a fresh figure that is too large by exactly the amount
+        // that was never measured, and it would look like a fact.
         rows.push(Row::fact(
             "of which fresh",
-            tokens(
-                usage
-                    .prompt_tokens
-                    .saturating_sub(usage.cache_read_tokens)
-                    .saturating_sub(usage.cache_write_tokens),
-            ),
+            // **`unreported_writes` is the condition, not just `None`.** Fresh is
+            // the prompt less both cached parts, so it inherits every doubt the
+            // write count carries. With one call silent the subtraction is from a
+            // floor, which makes this a ceiling — and a ceiling drawn as a plain
+            // number is the exact shape of the defect the row above avoids. There
+            // is no honest number here, so there is no number.
+            match (usage.cache_write_tokens, total.unreported_writes) {
+                (Some(written), 0) => tokens(
+                    usage
+                        .prompt_tokens
+                        .saturating_sub(usage.cache_read_tokens)
+                        .saturating_sub(written),
+                ),
+                _ => UNREPORTED.to_string(),
+            },
         ));
     }
     rows.push(Row::fact("completion", tokens(usage.completion_tokens)));
@@ -459,6 +526,15 @@ pub fn money(micros: u64) -> String {
 }
 
 /// A token count, in the spelling the status line already uses.
+/// What a count the provider never reported is drawn as.
+///
+/// A word rather than a dash or an empty cell, because this page is read in
+/// `--plain` where a dash is indistinguishable from a rendering artefact, and
+/// because the value has to be legible when the page is quoted into a bug report.
+/// It is deliberately not `0`: see `add_reported` and this module's first
+/// honesty rule.
+const UNREPORTED: &str = "unknown";
+
 fn tokens(count: u64) -> String {
     crate::status::format_tokens(count)
 }
