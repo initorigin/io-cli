@@ -1149,7 +1149,11 @@ fn f7_the_configuration_is_read_through_the_harness_and_never_parsed_here() {
 /// third entry somebody later reads as precedent for a fourth.
 fn json_reading_modules() -> Vec<PathBuf> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut permitted = vec![src.join("acp.rs"), src.join("adapt.rs"), src.join("import.rs")];
+    let mut permitted = vec![
+        src.join("acp.rs"),
+        src.join("adapt.rs"),
+        src.join("import.rs"),
+    ];
     permitted.sort();
     permitted
 }
@@ -1341,7 +1345,13 @@ fn n3_no_second_async_executor_is_in_the_tree() {
     // plumbing that a tokio-only tree can legitimately acquire through some other
     // path. These five are the reactor and its process and thread plumbing —
     // arriving together, they are a second executor and not a coincidence.
-    for reactor in ["async-io", "async-task", "async-process", "blocking", "polling"] {
+    for reactor in [
+        "async-io",
+        "async-task",
+        "async-process",
+        "blocking",
+        "polling",
+    ] {
         assert!(
             !locked.contains(&reactor),
             "`{reactor}` is in Cargo.lock. io-cli runs one async runtime, and \

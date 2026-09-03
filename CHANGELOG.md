@@ -28,13 +28,13 @@ answer streams back as `session/update` notifications — message chunks, reason
 channel so a client can fold it, tool calls with ACP's own kinds, and plan changes. A turn answers
 with ACP's `stopReason`. See the new [From an editor](docs/guide/editors.md) guide.
 
-**An approval reaches a person for the first time on a non-terminal door.** `docs/CONTRACT.md` has
-said since 0.5.0 that io "declines every approval rather than deferring one, in a session and
-headless alike". An ACP client is a person in an editor, so an approval now becomes a
-`session/request_permission` frame with three options: allow once, allow for this session, deny.
-Three and not ACP's four — `io_harness::Decision::Deny` carries a reason and no rules, so a
-remembered refusal cannot be recorded and `reject_always` would be a promise this agent cannot
-keep.
+**An approval in an editor session is refused, and the client is told which action and why.** A
+`session/update` marks the tool call failed and says the approval could not be routed; the model
+is told the same, rather than that the operator denied it, because the operator was never asked.
+io does **not** send `session/request_permission` in 0.36.0 — raising that request means awaiting
+the answer, and routing it back into the running turn is not wired, so a prompt whose outcome is
+ignored would be worse than no prompt. `docs/CONTRACT.md`'s standing sentence — io "declines every
+approval rather than deferring one" — therefore still holds on every door this release ships.
 
 ### Changed
 
@@ -66,10 +66,12 @@ changed; the ordering did.
 
 ### Known limitations
 
-- **The client's permission answer does not reach the run.** The request is sent and the run
-  denies, and the tool call's update says the action needed an approval this agent could not
-  route. Nothing is granted that was not granted, but an editor session behaves as though every
-  grey-tier action were denied.
+- **An editor session refuses every grey-tier action and does not ask.** `session/request_permission`
+  is not sent; the tool call is marked failed with the reason. Nothing is granted that was not
+  granted, but the posture has to be configured rather than approved in the moment.
+- **`session/cancel` takes effect between turns, not during one.** A turn in flight runs to its own
+  end, so `stopReason: "cancelled"` is reachable only where the cancel arrived before the turn
+  began.
 - **The client's filesystem and terminal are not used.** io-harness owns the disk and process
   execution inside its own sandbox and publishes no seam to route either through the client, so io
   cannot see unsaved editor buffers. This is an upstream absence rather than a deferral.

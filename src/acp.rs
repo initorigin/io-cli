@@ -159,9 +159,12 @@ pub enum Incoming {
     },
     /// An answer to something **this** adapter asked the client.
     ///
-    /// A frame with an id and no method. `session/request_permission` is the only
-    /// request this adapter makes in 0.36.0, and its answer arrives here; the
-    /// correlator matches it back to the waiting run by id.
+    /// A frame with an id and no method. **0.36.0 makes no request, so nothing
+    /// arrives here in practice** — the shape is decoded rather than refused
+    /// because a transport that answered a well-formed response with an error
+    /// would have to be changed before a request could ever be sent, and because
+    /// a conforming client may answer a request a later release adds while an
+    /// older `io` is still on the path.
     ///
     /// `outcome` carries the client's `error` object as an `Err`, so a client that
     /// refuses the request is distinguishable from one that answered it — the run
@@ -196,9 +199,19 @@ impl Incoming {
 /// A frame being sent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outgoing {
-    Result { id: Value, result: Value },
-    Error { id: Value, code: ErrorCode, message: String },
-    Notification { method: String, params: Value },
+    Result {
+        id: Value,
+        result: Value,
+    },
+    Error {
+        id: Value,
+        code: ErrorCode,
+        message: String,
+    },
+    Notification {
+        method: String,
+        params: Value,
+    },
 }
 
 impl Outgoing {
@@ -267,8 +280,9 @@ pub fn decode(line: &str) -> Result<Incoming, Outgoing> {
 
     let Some(method) = envelope.method else {
         // A frame with an id and no method is a *response* to something this
-        // adapter asked — `session/request_permission` is the only such request
-        // in 0.36.0. The correlator matches it back to the run that is waiting.
+        // adapter asked. 0.36.0 asks nothing, so this arm is reached only by a
+        // client answering a request an older or newer `io` made; it is decoded
+        // rather than refused, and the handler ignores it.
         let Some(id) = envelope.id else {
             return Err(Outgoing::unattributed(
                 ErrorCode::InvalidRequest,
@@ -445,7 +459,7 @@ pub trait Handler {
 pub async fn serve<R, W, H>(reader: R, writer: W, handler: &mut H) -> std::io::Result<()>
 where
     R: tokio::io::AsyncBufRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     H: Handler,
 {
     let (_unused, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -456,7 +470,7 @@ where
 ///
 /// Two things travel that way and neither is an answer to an incoming frame: the
 /// `session/update` notifications a run streams while it is working, and the
-/// `session/request_permission` **request** an approval raises. Both originate
+/// refusal an approval raises through [`Consulting`]. Both originate
 /// inside a turn, on another task, while this loop is blocked reading — so they
 /// cannot be returns from [`Handler::handle`] and there has to be a second way in.
 ///
@@ -472,55 +486,89 @@ pub async fn serve_with<R, W, H>(
 ) -> std::io::Result<()>
 where
     R: tokio::io::AsyncBufRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
+    // `Send + 'static` because the writer moves onto its own task. That bound is
+    // the visible cost of the fix below and it is worth paying: a borrowed writer
+    // is what forced the single-loop shape that could not stream.
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     H: Handler,
 {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+    // **The writer runs on its own task, and that is the whole of why anything
+    // streams.** The obvious shape — one loop that `select!`s over the reader and
+    // the outbound channel — does not work here, and the first version of this
+    // function shipped that bug: `handler.handle(...).await` for a
+    // `session/prompt` *is the entire turn*, minutes long, and it runs inside the
+    // select arm's body. `select!` resolves once and then the body runs to
+    // completion, so the outbound channel is not polled again until the turn
+    // returns. Every `session/update` the run produced queued behind the result,
+    // and the client received the whole conversation after being told the turn had
+    // ended. `biased` cannot help: the loop is not at the select point to be
+    // biased about.
+    //
+    // A task that owns the writer is polled by the runtime independently of what
+    // this loop is doing, so a notification sent from inside a running turn is
+    // written while the turn is still running. It owns the writer outright rather
+    // than sharing it behind a `Mutex`, because a lock held across an `await` on a
+    // pipe a slow client is not draining is a deadlock with no error message.
+    let (frames, mut queue) = tokio::sync::mpsc::unbounded_channel::<Outgoing>();
+    let pump = tokio::spawn(async move {
+        while let Some(frame) = queue.recv().await {
+            if writer.write_all(encode(&frame).as_bytes()).await.is_err()
+                || writer.write_all(b"\n").await.is_err()
+                || writer.flush().await.is_err()
+            {
+                // The client closed the pipe. Not an error worth propagating: the
+                // read side sees end-of-input and ends the session.
+                return;
+            }
+        }
+    });
+
+    // Everything the run sends goes to the same writer, so the two sources cannot
+    // interleave inside a frame.
+    let relay = frames.clone();
+    let forward = tokio::spawn(async move {
+        while let Some(frame) = outbound.recv().await {
+            if relay.send(frame).is_err() {
+                return;
+            }
+        }
+    });
+
     let mut reader = reader;
     let mut line = String::new();
+    let outcome = loop {
+        line.clear();
+        // Zero bytes is end of input: the client closed the pipe, which is how an
+        // ACP session ends normally. Not an error, and not answered.
+        match reader.read_line(&mut line).await {
+            Ok(0) => break Ok(()),
+            Ok(_) => {}
+            Err(error) => break Err(error),
+        }
 
-    loop {
-        let answers = tokio::select! {
-            // Biased so a frame already queued by a running turn is written before
-            // the next read is started. Without it a busy client can starve the
-            // run's own output for as long as it keeps sending, and the visible
-            // symptom is an editor that shows nothing while the agent works.
-            biased;
-
-            frame = outbound.recv() => match frame {
-                Some(frame) => vec![frame],
-                // The sender is gone, which means the run is over. That is not a
-                // reason to stop serving: the client may still send another
-                // prompt. Disable this arm by waiting forever on a channel that
-                // will never speak again.
-                None => std::future::pending().await,
-            },
-
-            read = reader.read_line(&mut line) => {
-                // Zero bytes is end of input: the client closed the pipe, which is
-                // how an ACP session ends normally. Not an error, and not answered.
-                if read? == 0 {
-                    return Ok(());
-                }
-                let answers = match decode(&line) {
-                    Ok(incoming) => handler.handle(incoming).await,
-                    Err(refusal) => vec![refusal],
-                };
-                line.clear();
-                answers
-            }
+        let answers = match decode(&line) {
+            Ok(incoming) => handler.handle(incoming).await,
+            Err(refusal) => vec![refusal],
         };
 
-        for answer in &answers {
-            writer.write_all(encode(answer).as_bytes()).await?;
-            writer.write_all(b"\n").await?;
+        for answer in answers {
+            // A closed writer means the client is gone; stop reading rather than
+            // serving a conversation nobody receives.
+            if frames.send(answer).is_err() {
+                break;
+            }
         }
-        // Flushed once per batch rather than once per frame: the batch is what a
-        // client is waiting on. A buffered answer is a hang, because the client is
-        // blocked reading the line it asked for.
-        writer.flush().await?;
-    }
+    };
+
+    // Dropping both senders ends the pump, which flushes what it already holds
+    // before it returns — so a frame queued by the last turn is not lost when the
+    // client closes the pipe a moment later.
+    drop(frames);
+    forward.abort();
+    let _ = pump.await;
+    outcome
 }
 
 /// The options an ACP client is offered for one approval, as
@@ -650,10 +698,7 @@ impl io_harness::Observer for Reporter {
         // takes effect on the first event after it is set rather than after one
         // more notification has been written. A client that cancelled and then
         // read another chunk would reasonably think the cancel was ignored.
-        if self
-            .cancelled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if self.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return io_harness::Flow::Cancel;
         }
 
@@ -789,7 +834,11 @@ impl<P: io_harness::Provider> Handler for Editing<'_, P> {
 }
 
 impl<P: io_harness::Provider> Editing<'_, P> {
-    async fn request(&mut self, method: &str, params: &Value) -> Result<Value, (ErrorCode, String)> {
+    async fn request(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, (ErrorCode, String)> {
         match method {
             "initialize" => Ok(initialize_result(env!("CARGO_PKG_VERSION"))),
             "session/new" => {
@@ -853,6 +902,8 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                 &Consulting {
                     session_id: session_id.to_string(),
                     outbound: self.outbound.clone(),
+                    run_id: self.session.id(),
+                    step: std::sync::atomic::AtomicU32::new(0),
                 },
                 &reporter,
             )
@@ -893,19 +944,33 @@ pub fn prompt_text(params: &Value) -> Option<String> {
 
 /// The approver for an ACP turn.
 ///
-/// **This is where 0.36.0 stops short, and the record says so rather than the
-/// code implying otherwise.** The frame goes out, the options are the three
-/// io-harness can carry out, and `permission_answer` is built and tested — but
-/// routing the client's reply back into this future is not wired, so the decision
-/// taken here is a denial.
+/// **0.36.0 stops short here, and this comment says exactly where — an earlier
+/// draft of it did not, and the adversarial review caught five documents
+/// describing behaviour the code did not have.** What is sent is a
+/// `session/update` **notification** telling the client the action was refused.
+/// It is *not* a `session/request_permission` request: raising one would mean
+/// waiting for the answer, and routing that answer back into this future is the
+/// piece that is not wired. Sending a request nobody reads the reply to would be
+/// worse than not sending one — the client would render a prompt whose outcome
+/// is ignored, which is a lie told in an interface rather than in prose.
+///
+/// [`permission_params`], [`PERMISSION_OPTIONS`] and [`permission_answer`] are
+/// built and tested and have no production caller yet. They are kept rather than
+/// deleted because the shape of the request is settled — three options, because
+/// `io_harness::Decision::Deny` carries no rules — and the piece missing is the
+/// correlation, not the design. **`tests/acp.rs` asserts they agree with each
+/// other and cannot assert a caller exists**, which is the same gap that let
+/// 0.30.0 ship `io skill`; the release record carries it as a known limitation.
 ///
 /// Denying is the safe direction and it is what `io exec` already does: no
-/// permission is granted that the operator did not grant. The client is told, in
-/// the tool call's own update, that the action needed an approval this agent
-/// could not route — a refusal an operator can see beats one they cannot.
+/// permission is granted that the operator did not grant, and a refusal an
+/// operator can see beats one they cannot.
 struct Consulting {
     session_id: String,
     outbound: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    /// The run this is approving for, so the refusal lands on the right cell.
+    run_id: i64,
+    step: std::sync::atomic::AtomicU32,
 }
 
 impl io_harness::Approver for Consulting {
@@ -917,6 +982,17 @@ impl io_harness::Approver for Consulting {
         let target = request.target.clone();
         let session_id = self.session_id.clone();
         let outbound = self.outbound.clone();
+        // **The id has to be the one the client already has.** An earlier draft
+        // put the target *path* here, so the update named a cell that had never
+        // been announced and a conforming client had nothing to apply it to —
+        // which made the "a refusal an operator can see" claim above false. The
+        // id is built the same way `acp_map::call_id` builds it, from the run and
+        // the step, because that is what every `tool_call` frame carried.
+        let id = format!(
+            "{}-{}",
+            self.run_id,
+            self.step.load(std::sync::atomic::Ordering::Relaxed)
+        );
         Box::pin(async move {
             let _ = outbound.send(Outgoing::Notification {
                 method: "session/update".into(),
@@ -924,7 +1000,7 @@ impl io_harness::Approver for Consulting {
                     "sessionId": session_id,
                     "update": {
                         "sessionUpdate": "tool_call_update",
-                        "toolCallId": target.clone(),
+                        "toolCallId": id,
                         "status": "failed",
                         "title": format!(
                             "{act} {target} needs an approval this agent cannot yet route"
@@ -932,10 +1008,18 @@ impl io_harness::Approver for Consulting {
                     }
                 }),
             });
-            io_harness::Decision::deny(crate::approval::REFUSED_BY_OPERATOR)
+            io_harness::Decision::deny(NOT_ROUTED)
         })
     }
 }
+
+/// What the model is told when an ACP approval could not be routed.
+///
+/// Deliberately **not** `approval::REFUSED_BY_OPERATOR`. That sentence says the
+/// operator denied it, and in 0.36.0 the operator was never asked — telling the
+/// model otherwise puts a false statement about a human into the transcript the
+/// agent then reasons from.
+pub const NOT_ROUTED: &str = "this interface could not route the approval, so it was refused";
 
 /// The `initialize` result.
 ///

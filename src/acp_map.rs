@@ -39,7 +39,13 @@
 //! and the durable trace instead.
 
 use io_harness::{EventKind, RunEvent};
-use serde_json::{json, Value};
+// One name per line rather than a brace list. `tests/dependencies.rs` forbids
+// `use serde_json::{` everywhere — the permitted modules included — because
+// spelling the name around is the same act as writing it, and a parse hidden
+// behind an alias appears in no sweep. This module deserializes nothing at all;
+// it takes the macro and the type and keeps the import shape the gate requires.
+use serde_json::json;
+use serde_json::Value;
 
 /// What a kind becomes on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,13 +112,17 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
     (
         "approval_requested",
         Update::None,
-        "this becomes a `session/request_permission` **request** rather than a \
-         notification, which is a different frame and is sent by the handler",
+        "the approver answers this, and in 0.36.0 it refuses — the client learns \
+         of it through the `approval_decided` update that follows, not through a \
+         second frame here. When the request round trip is wired this becomes a \
+         `session/request_permission`, which is a request rather than a \
+         notification and so is not a row in this table at all",
     ),
     (
         "approval_decided",
         Update::ToolCallUpdate,
-        "the answer resolves the call the approval was about",
+        "the answer ends the call the approval was about, and the decision decides \
+         the status — an approval that was refused must not leave a cell spinning",
     ),
     (
         "spend_draw",
@@ -227,7 +237,11 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
     ),
     ("handle_killed", Update::ToolCallUpdate, "the handle ended"),
     ("handle_exited", Update::ToolCallUpdate, "the handle ended"),
-    ("handle_orphaned", Update::ToolCallUpdate, "the handle ended"),
+    (
+        "handle_orphaned",
+        Update::ToolCallUpdate,
+        "the handle ended",
+    ),
     (
         "reviewed",
         Update::None,
@@ -499,10 +513,23 @@ pub fn translate(event: &RunEvent) -> Option<Value> {
             "status": "failed",
             "title": format!("{act} {target} refused"),
         }),
-        EventKind::ApprovalDecided { .. } => json!({
+        // **The decision decides the status, and reporting `in_progress` for all
+        // three was a defect the adversarial review found.** io-harness carries
+        // `"approve"`, `"deny"` or `"defer"` on this variant. Because 0.36.0's
+        // approver always denies, an unconditional `in_progress` meant *every*
+        // grey-tier action in an editor session drew a cell that spins for ever
+        // on a call that will never complete — the opposite of the refusal the
+        // operator needs to see.
+        EventKind::ApprovalDecided { decision, .. } => json!({
             "sessionUpdate": "tool_call_update",
             "toolCallId": call_id(event),
-            "status": "in_progress",
+            "status": match decision.as_str() {
+                "approve" => "in_progress",
+                // A defer is not a completion and not a failure; the run stops
+                // and the call never happened, which for a client's purposes is
+                // the same visible end as a refusal.
+                _ => "failed",
+            },
         }),
         EventKind::RecoveryPaused { .. } => json!({
             "sessionUpdate": "tool_call_update",

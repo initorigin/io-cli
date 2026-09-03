@@ -78,6 +78,23 @@ pub struct Total {
     pub unknown: u64,
     /// Calls whose model the table does not price.
     pub unpriced: u64,
+    /// Calls that reported usage but no cache-write count.
+    ///
+    /// **The field the mixed fold needs, and the release that added `Option` to
+    /// that count shipped without it first.** `add_reported` folds one reporting
+    /// call and one silent one to `Some(n)`, and `n` is a **floor** — at least
+    /// that many writes happened. Drawn as a plain number, and used to compute
+    /// "of which fresh" as the prompt less both cached parts, the second figure
+    /// becomes a *ceiling* presented as a fact, too large by exactly the amount
+    /// nobody measured. That is verbatim the failure the comment in `section`
+    /// says must not happen; the guard there distinguished only "no call
+    /// reported" from "some call reported", so a mixed fold took the confident
+    /// arm.
+    ///
+    /// Not hypothetical: `openai_wire` reports no cache-write count at all and
+    /// Anthropic reports one only where a cache was created, so any session that
+    /// changes model across those two vendors folds both shapes into one total.
+    pub unreported_writes: u64,
     /// The token split, summed. Cache and reasoning are breakdowns of the prompt
     /// and completion figures beside them, never additions to them.
     pub usage: Usage,
@@ -102,6 +119,9 @@ impl Total {
                 total.unknown += 1;
                 continue;
             };
+            if usage.cache_write_tokens.is_none() {
+                total.unreported_writes += 1;
+            }
             add(&mut total.usage, &usage);
             let priced = call
                 .model
@@ -322,9 +342,14 @@ fn section(total: &Total) -> Vec<Row> {
         ));
         rows.push(Row::fact(
             "of which cache written",
-            match usage.cache_write_tokens {
-                Some(count) => tokens(count),
-                None => UNREPORTED.to_string(),
+            // A mixed fold is a floor, not a count, so it is drawn as one. The
+            // arm that mattered is the middle case: `Some(n)` with at least one
+            // call silent means "at least n", and a bare number there is a claim
+            // nobody can support.
+            match (usage.cache_write_tokens, total.unreported_writes) {
+                (Some(count), 0) => tokens(count),
+                (Some(count), _) => format!("{} or more", tokens(count)),
+                (None, _) => UNREPORTED.to_string(),
             },
         ));
         // Fresh is the prompt less both cached parts, so a cache-write count
@@ -333,14 +358,20 @@ fn section(total: &Total) -> Vec<Row> {
         // that was never measured, and it would look like a fact.
         rows.push(Row::fact(
             "of which fresh",
-            match usage.cache_write_tokens {
-                Some(written) => tokens(
+            // **`unreported_writes` is the condition, not just `None`.** Fresh is
+            // the prompt less both cached parts, so it inherits every doubt the
+            // write count carries. With one call silent the subtraction is from a
+            // floor, which makes this a ceiling — and a ceiling drawn as a plain
+            // number is the exact shape of the defect the row above avoids. There
+            // is no honest number here, so there is no number.
+            match (usage.cache_write_tokens, total.unreported_writes) {
+                (Some(written), 0) => tokens(
                     usage
                         .prompt_tokens
                         .saturating_sub(usage.cache_read_tokens)
                         .saturating_sub(written),
                 ),
-                None => UNREPORTED.to_string(),
+                _ => UNREPORTED.to_string(),
             },
         ));
     }

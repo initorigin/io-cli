@@ -616,37 +616,106 @@ fn f10_folding_an_unreported_count_with_a_reported_one_keeps_the_number() {
         ..Default::default()
     };
     let spelled = io_cli::status::format_tokens;
-    let drawn = |calls: &[_]| {
+    let row = |calls: &[_], name: &str| {
+        field(&page(&seeded(calls), &table(), &provenance()), name).to_string()
+    };
+    let drawn = |calls: &[_]| row(calls, "of which cache written");
+
+    let none_reported = [
+        call(Some(PRICED), Some(with(None))),
+        call(Some(PRICED), Some(with(None))),
+    ];
+    let mixed = [
+        call(Some(PRICED), Some(with(None))),
+        call(Some(PRICED), Some(with(Some(1_000)))),
+    ];
+    let all_reported = [
+        call(Some(PRICED), Some(with(Some(250)))),
+        call(Some(PRICED), Some(with(Some(750)))),
+    ];
+
+    assert_eq!(
+        drawn(&none_reported),
+        "unknown",
+        "no call reported a cache-write count, so the fold has nothing to report",
+    );
+    assert_eq!(
+        drawn(&all_reported),
+        spelled(1_000),
+        "two reported counts must sum, and neither is in doubt",
+    );
+
+    // **The mixed fold is a FLOOR and is drawn as one.** The number is kept —
+    // one call really did report 1,000 writes and answering `unknown` would hide
+    // a figure the provider gave us — but it is not a count, because how many
+    // more the silent call made is unknown. This assertion is the fix for a High
+    // the adversarial review found: the first version drew a bare `1.0k` here.
+    assert_eq!(
+        drawn(&mixed),
+        format!("{} or more", spelled(1_000)),
+        "a fold of one reporting call and one silent one is a floor, and drawing \
+         it as a plain number claims a count nobody can support",
+    );
+}
+
+/// **F10's third half — "of which fresh" carries every doubt the write count
+/// carries.**
+///
+/// Fresh is the prompt less both cached parts, so subtracting a **floor** yields
+/// a **ceiling** — and a ceiling drawn as a plain number is a fact that is too
+/// large by exactly the amount nobody measured. `src/cost.rs`'s own comment says
+/// that must not happen, and the first version of this release's change let it:
+/// the guard distinguished only "no call reported" from "some call reported", so
+/// a mixed fold took the confident arm and drew an exact-looking number.
+///
+/// **Found by the adversarial review, not by the suite** — the mixed-fold test
+/// above existed and read only the written row, never this one.
+///
+/// Reachable in practice rather than in theory: `openai_wire` reports no
+/// cache-write count at all and Anthropic reports one only where a cache was
+/// created, so any session that changes model across those two vendors folds both
+/// shapes into one total.
+///
+/// Sabotage: key the fresh row on `cache_write_tokens` alone, as it was. This
+/// fails and the written-row assertion above still passes.
+#[test]
+fn f10_a_fresh_figure_computed_from_a_floor_is_not_drawn_as_a_number() {
+    let with = |cache_write| Usage {
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        total_tokens: 1_100,
+        cache_read_tokens: 100,
+        cache_write_tokens: cache_write,
+        ..Default::default()
+    };
+    let fresh = |calls: &[_]| {
         field(
             &page(&seeded(calls), &table(), &provenance()),
-            "of which cache written",
+            "of which fresh",
         )
         .to_string()
     };
 
     assert_eq!(
-        drawn(&[
-            call(Some(PRICED), Some(with(None))),
-            call(Some(PRICED), Some(with(None))),
-        ]),
-        "unknown",
-        "no call reported a cache-write count, so the fold has nothing to report",
-    );
-    assert_eq!(
-        drawn(&[
+        fresh(&[
             call(Some(PRICED), Some(with(None))),
             call(Some(PRICED), Some(with(Some(1_000)))),
         ]),
-        spelled(1_000),
-        "one call reported 1,000 cache writes and the fold dropped it",
+        "unknown",
+        "the fresh figure was computed by subtracting a floor, which makes it a \
+         ceiling — and it was drawn as though it were a measurement",
     );
+
+    // The control: with every call reporting, fresh is a real number again.
+    // Without this, a function that always answered `unknown` would pass.
+    let spelled = io_cli::status::format_tokens;
     assert_eq!(
-        drawn(&[
+        fresh(&[
             call(Some(PRICED), Some(with(Some(250)))),
             call(Some(PRICED), Some(with(Some(750)))),
         ]),
-        spelled(1_000),
-        "two reported counts must sum",
+        spelled(2_000 - 200 - 1_000),
+        "every call reported, so nothing is in doubt and fresh is exact",
     );
 }
 

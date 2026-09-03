@@ -72,18 +72,20 @@ produce that pause today at all** — it declines every approval rather than def
 session and headless alike — so the carve-out is what would be printed if it ever did, and is
 written down because the code that would print it exists and is reached by nothing.
 
-**0.36.0 narrows that sentence rather than retiring it.** `io acp` is the first door with a
-person behind it that is not a terminal, so it is the first that could raise an approval and be
-answered. It raises one: an approval becomes a `session/request_permission` frame naming the act
-and its target, with three options — allow once, allow for this session, deny. Three and not
-ACP's four, because `io_harness::Decision::Deny` carries a reason and no rules, so a remembered
-refusal cannot be recorded and offering `reject_always` would be a promise this agent cannot
-keep.
+**That sentence is still true of every door 0.36.0 ships, `io acp` included.** An ACP session is
+the first surface with a person behind it that is not a terminal, so it is the first that *could*
+raise an approval and be answered — but 0.36.0 does not raise one. An approval in an ACP session
+is refused, and the client is told so by a `session/update` naming the tool call, its act and its
+target, with `status: "failed"`.
 
-**What 0.36.0 does not yet do is route the client's answer back into the waiting run**, so the
-decision taken is a denial and the client is told so in the tool call's own update. No permission
-is granted that was not granted. `io exec` is unchanged and still declines every approval: an
-unattended run has nobody to ask, and an approver that blocked there would hang forever.
+It is a notification and **not** a `session/request_permission` request. Raising a request means
+waiting for the answer, and routing that answer back into the run is not wired; a request whose
+reply is ignored would render a prompt in the editor whose outcome does nothing, which is worse
+than not asking. The model is told the interface could not route the approval — not that the
+operator denied it, because the operator was never asked.
+
+`io exec` is unchanged and declines every approval for its own reason: an unattended run has
+nobody to ask, and an approver that blocked there would hang forever.
 
 **Every boundary refusal reaches `2`, from either headless door.** A run whose provider endpoint
 lands in the `ask` tier is refused by io-harness before the run's first step, and `io resume`

@@ -258,8 +258,9 @@ fn an_id_is_what_separates_a_request_from_a_notification() {
         other => panic!("a frame with an id is a request, got {other:?}"),
     }
 
-    let note = acp::decode(r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s"}}"#)
-        .expect("a well-formed notification");
+    let note =
+        acp::decode(r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s"}}"#)
+            .expect("a well-formed notification");
     match note {
         Incoming::Notification { method, .. } => assert_eq!(method, "session/cancel"),
         other => panic!("a frame with no id is a notification, got {other:?}"),
@@ -480,7 +481,10 @@ fn f3_every_outcome_maps_to_one_of_the_five_acp_stop_reasons() {
             question_id: 1,
             steps: 1,
         },
-        io_harness::RunOutcome::AwaitingPlan { plan_id: 1, steps: 1 },
+        io_harness::RunOutcome::AwaitingPlan {
+            plan_id: 1,
+            steps: 1,
+        },
         io_harness::RunOutcome::PlanRejected { steps: 1 },
         io_harness::RunOutcome::Stalled { steps: 1 },
         io_harness::RunOutcome::Escalated {
@@ -658,9 +662,10 @@ fn a_response_is_correlated_not_refused() {
         other => panic!("expected a response, got {other:?}"),
     }
 
-    let refused =
-        acp::decode(r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"no such method"}}"#)
-            .expect("an error response is still a well-formed frame");
+    let refused = acp::decode(
+        r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"no such method"}}"#,
+    )
+    .expect("an error response is still a well-formed frame");
     match refused {
         Incoming::Response { outcome, .. } => assert_eq!(
             outcome.expect_err("an error object is not a result"),
@@ -803,7 +808,10 @@ fn f5_a_cancel_reaches_the_observer_and_silences_it_at_once() {
     match first {
         Outgoing::Notification { method, params } => {
             assert_eq!(method, "session/update");
-            assert_eq!(params["sessionId"], "s-7", "the session is named on every update");
+            assert_eq!(
+                params["sessionId"], "s-7",
+                "the session is named on every update"
+            );
             assert_eq!(params["update"]["sessionUpdate"], "agent_message_chunk");
         }
         other => panic!("expected a notification, got {other:?}"),
@@ -853,6 +861,109 @@ fn a_no_op_kind_produces_no_frame_at_all() {
     assert!(
         drain.try_recv().is_err(),
         "a kind the mapping calls a no-op still put a frame on the wire",
+    );
+}
+
+/// Run the loop against a real pipe and hand back every line it wrote.
+///
+/// The writer moves onto its own task inside `serve_with`, so it must be `Send +
+/// 'static` — a `&mut Vec<u8>` is neither. A `duplex` gives an owned half that is
+/// both, and it is closer to what a client actually is than a buffer: it can fill,
+/// and a writer that never flushed would hang here rather than silently passing.
+async fn drive(
+    input: &str,
+    handler: &mut impl acp::Handler,
+    outbound: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+) -> Vec<Value> {
+    use tokio::io::AsyncReadExt as _;
+
+    let (theirs, ours) = tokio::io::duplex(64 * 1024);
+    acp::serve_with(input.as_bytes(), ours, handler, outbound)
+        .await
+        .expect("the loop ends on end-of-input, not on an error");
+
+    let mut written = String::new();
+    let mut theirs = theirs;
+    theirs
+        .read_to_string(&mut written)
+        .await
+        .expect("the written frames are UTF-8");
+
+    written
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every written line is one JSON document"))
+        .collect()
+}
+
+/// **A `session/update` sent from inside a running turn is written while the turn
+/// is still running.**
+///
+/// **This is the release's headline property and the first version of the loop
+/// did not have it.** `handler.handle(...).await` for a `session/prompt` *is* the
+/// whole turn, and it ran inside a `tokio::select!` arm's body — so the outbound
+/// channel was not polled again until the turn returned, every notification
+/// queued behind the result, and the client was sent the entire conversation
+/// *after* being told the turn had ended. `docs/guide/editors.md` promises "the
+/// answer, streamed as the provider returns it".
+///
+/// The suite could not see it: no test drove `serve_with` with a live channel,
+/// and the loop test's updates came from the handler's **return value**, which is
+/// a path the real handler never uses. Found by the adversarial review.
+///
+/// So this asserts the wire ORDER, from the channel, across a handler that sends
+/// while it is working. Sabotage: move the writer back into the read loop. The
+/// result then precedes its own updates and the ordering assertion fails.
+#[tokio::test]
+async fn a_notification_sent_during_a_turn_is_written_before_that_turns_result() {
+    struct Working {
+        updates: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    }
+
+    impl acp::Handler for Working {
+        async fn handle(&mut self, incoming: Incoming) -> Vec<Outgoing> {
+            let Incoming::Request { id, .. } = incoming else {
+                return Vec::new();
+            };
+            // Exactly what a turn does: it reports progress on the channel while
+            // it works, and answers only at the end.
+            for chunk in ["one", "two", "three"] {
+                let _ = self.updates.send(Outgoing::Notification {
+                    method: "session/update".into(),
+                    params: json!({ "chunk": chunk }),
+                });
+                // Yield so the writer task is genuinely given the chance to run.
+                // Without this the test could pass on buffering rather than on
+                // the property.
+                tokio::task::yield_now().await;
+            }
+            vec![Outgoing::Result {
+                id,
+                result: json!({ "stopReason": "end_turn" }),
+            }]
+        }
+    }
+
+    let (updates, outbound) = tokio::sync::mpsc::unbounded_channel();
+    let mut handler = Working {
+        updates: updates.clone(),
+    };
+    let input = request(json!(1), "session/prompt", json!({})) + "\n";
+    drop(updates);
+
+    let frames = drive(&input, &mut handler, outbound).await;
+
+    assert_eq!(frames.len(), 4, "three updates and one result: {frames:?}");
+    for (at, chunk) in ["one", "two", "three"].iter().enumerate() {
+        assert_eq!(
+            frames[at]["params"]["chunk"], *chunk,
+            "the updates a turn sent while working did not reach the client in \
+             order, before its result: {frames:?}",
+        );
+    }
+    assert_eq!(
+        frames[3]["result"]["stopReason"], "end_turn",
+        "the turn's result must come last; a client that has been told the turn \
+         ended does not expect more of it: {frames:?}",
     );
 }
 
@@ -918,10 +1029,8 @@ async fn the_serve_loop_answers_a_bad_frame_and_keeps_reading() {
         ],
     };
 
-    let mut out: Vec<u8> = Vec::new();
-    acp::serve(input.as_bytes(), &mut out, &mut handler)
-        .await
-        .expect("the loop ends on end-of-input, not on an error");
+    let (_updates, outbound) = tokio::sync::mpsc::unbounded_channel();
+    let parsed = drive(&input, &mut handler, outbound).await;
 
     // The handler saw the three decodable frames, in order. The malformed one
     // never reached it — it was answered by the transport.
@@ -931,19 +1040,12 @@ async fn the_serve_loop_answers_a_bad_frame_and_keeps_reading() {
         "the loop stopped reading at the malformed frame, or passed it to the handler",
     );
 
-    let written = String::from_utf8(out).expect("frames are UTF-8");
-    let lines: Vec<&str> = written.lines().collect();
     assert_eq!(
-        lines.len(),
+        parsed.len(),
         4,
         "expected the initialize result, the parse error, and the prompt's \
-         notification and result; got:\n{written}",
+         notification and result; got: {parsed:?}",
     );
-
-    let parsed: Vec<Value> = lines
-        .iter()
-        .map(|line| serde_json::from_str(line).expect("every written line is one JSON document"))
-        .collect();
 
     assert_eq!(parsed[0]["id"], json!(1));
     assert_eq!(parsed[0]["result"]["ok"], json!(true));
@@ -957,7 +1059,7 @@ async fn the_serve_loop_answers_a_bad_frame_and_keeps_reading() {
     assert!(
         parsed[2].get("id").is_none(),
         "a notification carries no id: {}",
-        lines[2],
+        parsed[2],
     );
     assert_eq!(parsed[3]["id"], json!(2));
     assert_eq!(parsed[3]["result"]["stopReason"], json!("end_turn"));
@@ -980,17 +1082,16 @@ async fn a_final_frame_with_no_trailing_newline_is_still_read() {
         }]],
     };
 
-    let mut out: Vec<u8> = Vec::new();
-    acp::serve(input.as_bytes(), &mut out, &mut handler)
-        .await
-        .expect("end-of-input is not an error");
+    let (_updates, outbound) = tokio::sync::mpsc::unbounded_channel();
+    let frames = drive(&input, &mut handler, outbound).await;
 
     assert_eq!(handler.seen, vec!["initialize"]);
-    let written = String::from_utf8(out).expect("frames are UTF-8");
-    assert!(
-        written.ends_with('\n'),
-        "every emitted frame is terminated, whatever the client sent: {written:?}",
+    assert_eq!(
+        frames.len(),
+        1,
+        "the last frame was dropped because the client sent no trailing newline",
     );
+    assert_eq!(frames[0]["id"], json!(1));
 }
 
 /// **The served list is the dispatch table, and it is not empty.**
@@ -1007,7 +1108,10 @@ fn the_served_methods_are_the_ones_this_release_implements() {
         !acp::serves("session/load"),
         "`session/load` is excluded from 0.36.0 and must not answer",
     );
-    assert!(!acp::serves("fs/read_text_file"), "a client method, not ours");
+    assert!(
+        !acp::serves("fs/read_text_file"),
+        "a client method, not ours"
+    );
     assert!(!acp::serves("nonsense/method"));
 
     assert_eq!(

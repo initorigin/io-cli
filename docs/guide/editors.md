@@ -49,21 +49,35 @@ is `cancelled`, one the policy refused is `refusal`, and a budget or step ceilin
 refused nothing — it stopped with work outstanding. `io resume` carries it on from the terminal;
 see [When a run stops for you](resume.md).
 
+`cancelled` is reachable only where a cancel arrived before the turn began — see
+[Cancelling](#cancelling).
+
 ## Permissions
 
-When the policy puts an action in the grey tier, io raises `session/request_permission` naming the
-act and its target, with three options: allow once, allow for this session, deny.
+**In 0.36.0 an editor session refuses every action the policy puts in the grey tier, and does not
+ask you about it.** The tool call's update says the action needed an approval this agent could not
+route, and the agent is told the same — not that you denied it, because you were never asked.
 
-Three rather than ACP's four. There is no *reject always*, because io-harness records a remembered
-**approval** and has nowhere to record a remembered refusal — a later matching action would ask
+io does not send `session/request_permission`. Raising that request means waiting for your answer,
+and routing the answer back into the running turn is the piece 0.36.0 does not have; a prompt in
+your editor whose outcome is ignored would be worse than no prompt.
+
+So configure the posture you want rather than relying on being asked — see
+[Configuration](configuration.md). A `workspace` posture lets the agent write inside the workspace
+without an approval; `read-only` refuses writes outright. Nothing is granted that you did not
+grant, and nothing happens silently.
+
+When the request does land, it will carry three options — allow once, allow for this session, deny
+— and not ACP's four. There is no *reject always*, because io-harness records a remembered
+**approval** and has nowhere to record a remembered refusal: a later matching action would ask
 again, and an option that quietly means something narrower than its name is worse than one that is
 absent.
 
-**In 0.36.0 the answer you choose does not yet reach the run.** The request is sent and the run
-denies, and the tool call's update says the action needed an approval this agent could not route.
-Nothing is granted that you did not grant, and nothing happens silently — but an editor session
-behaves, for now, as though every grey-tier action were denied. Configure the posture you want
-instead: see [Configuration](configuration.md).
+## Cancelling
+
+`session/cancel` is served, and in 0.36.0 it takes effect **between** turns rather than during
+one: a turn in flight runs to its own end. Stopping a turn mid-flight is what the terminal's
+`Ctrl+C` does; see [While it works](the-session.md).
 
 ## What is not carried
 
