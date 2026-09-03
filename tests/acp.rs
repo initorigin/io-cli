@@ -5,7 +5,11 @@
 //! somebody else will read, so an assertion here that inspects a configuration
 //! or a constant instead of an emitted frame is asserting the wrong thing.
 
+mod support;
+
 use io_cli::acp::{self, AgentCapabilities, ErrorCode, Incoming, Outgoing, GATED, SERVED};
+use io_cli::acp_map::{self, Update};
+use io_harness::{EventKind, RunEvent};
 use serde_json::{json, Value};
 
 /// The frame a well-formed request arrives as.
@@ -277,6 +281,351 @@ fn a_request_carrying_no_params_is_well_formed() {
         .expect("params is an optional member");
     assert_eq!(decoded.params(), &json!({}));
     assert_eq!(decoded.method(), "initialize");
+}
+
+/// **F4 — every kind the locked harness declares reaches a mapping or a listed
+/// no-op, and the table names nothing the harness has stopped emitting.**
+///
+/// This is the assertion the release stands on. `EventKind` is
+/// `#[non_exhaustive]`, so `acp_map::translate`'s wildcard arm is mandatory and
+/// the compiler will never complain about a variant that falls through it. The
+/// failure that produces is the worst one this release can ship: an editor that
+/// silently never shows that the agent edited a file, behind a fully green suite.
+/// io-harness 0.73.0 did a smaller version of it to `read_skill` one release ago
+/// and the existing test stayed green over garbage output.
+///
+/// So the set is read from the **locked harness's own source**, the same way
+/// `tests/triage.rs` reads it, and compared by name in both directions. A count
+/// alone would be satisfied by a table that dropped one kind and invented
+/// another.
+///
+/// Sabotage: delete any row from `MAPPING`. This fails naming that kind, rather
+/// than a number going down.
+#[test]
+fn f4_the_mapping_is_total_over_the_locked_harnesss_event_kinds() {
+    let declared = support::harness_event_kinds();
+    let mapped: Vec<&str> = acp_map::MAPPING.iter().map(|(name, ..)| *name).collect();
+
+    // The control. A source reader that returned nothing would satisfy the
+    // untranslated check below while asserting nothing at all.
+    assert!(
+        declared.len() > 40,
+        "the locked harness reader found {} kinds, which is not a plausible enum; \
+         every assertion below is vacuous until this is fixed",
+        declared.len(),
+    );
+
+    let untranslated: Vec<&String> = declared
+        .iter()
+        .filter(|name| !mapped.contains(&name.as_str()))
+        .collect();
+    assert!(
+        untranslated.is_empty(),
+        "io-harness emits kinds this adapter has no answer for: {untranslated:?}. \
+         Decide for each whether it becomes a `session/update` or is a no-op, and \
+         add it to `acp_map::MAPPING` with the reason. A kind left out reaches an \
+         ACP client as nothing at all, and no client can report what it was never \
+         sent.",
+    );
+
+    let gone: Vec<&&str> = mapped
+        .iter()
+        .filter(|name| !declared.contains(&(**name).to_string()))
+        .collect();
+    assert!(
+        gone.is_empty(),
+        "these names are no longer io-harness event kinds: {gone:?}",
+    );
+
+    // Every no-op carries its reason. A row with an empty one is a silence
+    // nobody chose, which is the state this table exists to make impossible.
+    for (name, update, why) in acp_map::MAPPING {
+        assert!(
+            !why.trim().is_empty(),
+            "{name} maps to {update:?} and says nothing about why",
+        );
+    }
+}
+
+/// **F4's second half — the table and the translator agree.**
+///
+/// A row can say `MessageChunk` while `translate` sends nothing for it, and the
+/// table would still be total. That is the same defect the table exists to
+/// prevent, one level down: documentation density is not coverage, which 0.32.0's
+/// sabotage pass established here by finding two criteria whose only evidence was
+/// prose.
+///
+/// So each row is driven through the real translator with a constructed event,
+/// and the answer's presence and its `sessionUpdate` string are checked against
+/// what the row claims.
+///
+/// Sabotage: change one row's `Update` without changing `translate`. This fails
+/// naming the kind and both spellings.
+#[test]
+fn f4_every_row_claims_what_the_translator_actually_sends() {
+    let cases: &[(EventKind, &str, &str)] = &[
+        (
+            EventKind::Token {
+                text: "hello".into(),
+            },
+            "token",
+            "agent_message_chunk",
+        ),
+        (
+            EventKind::Reasoning {
+                text: "thinking".into(),
+                tokens: 3,
+            },
+            "reasoning",
+            "agent_thought_chunk",
+        ),
+        (
+            EventKind::ToolCall {
+                name: "read_file".into(),
+                target: "src/main.rs".into(),
+            },
+            "tool_call",
+            "tool_call",
+        ),
+        (
+            EventKind::Refused {
+                act: "write".into(),
+                target: "/etc/hosts".into(),
+                rule: None,
+                layer: None,
+            },
+            "refused",
+            "tool_call_update",
+        ),
+    ];
+
+    for (kind, name, expected) in cases {
+        let claimed = acp_map::update_for(name).unwrap_or_else(|| panic!("{name} is in MAPPING"));
+        assert_ne!(
+            claimed,
+            Update::None,
+            "{name} is listed as a no-op but this case expects it on the wire",
+        );
+
+        let sent = acp_map::translate(&RunEvent::new(1, 2, kind.clone()))
+            .unwrap_or_else(|| panic!("{name} claims {claimed:?} and the translator sent nothing"));
+        assert_eq!(
+            sent["sessionUpdate"], *expected,
+            "{name} was sent as {} where the table claims {claimed:?}",
+            sent["sessionUpdate"],
+        );
+    }
+
+    // And the other direction, on a row that claims nothing: a kind the table
+    // calls a no-op must actually send nothing. `finished` is the one worth
+    // asserting — sending it *and* the prompt result would end the turn twice.
+    assert_eq!(acp_map::update_for("finished"), Some(Update::None));
+    let finished = RunEvent::new(
+        1,
+        9,
+        EventKind::Finished {
+            outcome: "success".into(),
+            steps: 3,
+            tokens: 100,
+        },
+    );
+    assert!(
+        acp_map::translate(&finished).is_none(),
+        "`finished` reached the client as a notification as well as the prompt's \
+         own result, which ends the turn twice",
+    );
+}
+
+/// **F3 — every `RunOutcome` the locked harness declares maps to one of ACP's
+/// five stop reasons.**
+///
+/// Read out of the locked source rather than listed here, so a harness that gains
+/// an outcome fails this instead of quietly taking the wildcard. That is the
+/// discipline `tests/exec.rs` already uses for the exit-code table.
+///
+/// The five are fixed by the specification, so an answer outside them is a frame
+/// a client will reject.
+///
+/// Sabotage: return `"done"` for any arm. Fails here naming the outcome.
+#[test]
+fn f3_every_outcome_maps_to_one_of_the_five_acp_stop_reasons() {
+    const REASONS: &[&str] = &[
+        "end_turn",
+        "max_tokens",
+        "max_turn_requests",
+        "refusal",
+        "cancelled",
+    ];
+
+    let outcomes = [
+        io_harness::RunOutcome::Success { steps: 1 },
+        io_harness::RunOutcome::StepCapReached { steps: 1 },
+        io_harness::RunOutcome::VerificationFailed { steps: 1 },
+        io_harness::RunOutcome::AwaitingRecovery {
+            attempt_id: 1,
+            steps: 1,
+        },
+        io_harness::RunOutcome::TimeBudgetExceeded { steps: 1 },
+        io_harness::RunOutcome::CostBudgetExceeded { steps: 1 },
+        io_harness::RunOutcome::Denied { steps: 1 },
+        io_harness::RunOutcome::AwaitingApproval {
+            request_id: 1,
+            steps: 1,
+        },
+        io_harness::RunOutcome::AwaitingAnswer {
+            question_id: 1,
+            steps: 1,
+        },
+        io_harness::RunOutcome::AwaitingPlan { plan_id: 1, steps: 1 },
+        io_harness::RunOutcome::PlanRejected { steps: 1 },
+        io_harness::RunOutcome::Stalled { steps: 1 },
+        io_harness::RunOutcome::Escalated {
+            steps: 1,
+            retryable: true,
+        },
+        io_harness::RunOutcome::BudgetCeilingReached { steps: 1 },
+        io_harness::RunOutcome::Refused { steps: 1 },
+        io_harness::RunOutcome::Cancelled { steps: 1 },
+        io_harness::RunOutcome::Finished { steps: 1 },
+    ];
+
+    // The list above is hand-built because `RunOutcome` is an enum with no
+    // iterator, so it can go stale. This is what stops it: the locked source's own
+    // variant count must match, and a harness that adds one fails here by number
+    // with the file to read named in the message.
+    assert_eq!(
+        outcomes.len(),
+        support::harness_run_outcomes().len(),
+        "the locked io-harness declares {} run outcomes and this test constructs \
+         {}. Read `RunOutcome` in the pinned source and map the new one — the \
+         wildcard in `acp_map::stop_reason` will otherwise answer `end_turn` for \
+         an outcome that is not one.",
+        support::harness_run_outcomes().len(),
+        outcomes.len(),
+    );
+
+    for outcome in &outcomes {
+        let reason = acp_map::stop_reason(outcome);
+        assert!(
+            REASONS.contains(&reason),
+            "{outcome:?} maps to {reason:?}, which is not one of ACP's five stop \
+             reasons; a client rejects the frame",
+        );
+    }
+
+    // The distinctions that change what a client does are asserted by name rather
+    // than left to the loop above, which any single constant would satisfy.
+    assert_eq!(
+        acp_map::stop_reason(&io_harness::RunOutcome::Cancelled { steps: 1 }),
+        "cancelled",
+    );
+    assert_eq!(
+        acp_map::stop_reason(&io_harness::RunOutcome::Denied { steps: 1 }),
+        "refusal",
+    );
+    assert_eq!(
+        acp_map::stop_reason(&io_harness::RunOutcome::Success { steps: 1 }),
+        "end_turn",
+    );
+    // A pause is not a refusal. The run stopped with work outstanding and has
+    // refused nothing; telling a client otherwise is a claim about the agent's
+    // willingness that is not true.
+    assert_eq!(
+        acp_map::stop_reason(&io_harness::RunOutcome::AwaitingAnswer {
+            question_id: 1,
+            steps: 1,
+        }),
+        "end_turn",
+        "a parked run was reported to the client as a refusal",
+    );
+}
+
+/// **A tool name becomes an ACP `ToolKind`, and an unknown one becomes `other`
+/// rather than a guess.**
+///
+/// The nine kinds are the specification's. `other` is a legal answer: a bundle's
+/// own tool and an MCP server's tool are names this crate has never seen, and
+/// inferring `edit` from a substring would tell a client a read was a write.
+#[test]
+fn a_tool_name_maps_to_one_of_the_nine_acp_tool_kinds() {
+    const KINDS: &[&str] = &[
+        "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other",
+    ];
+
+    for name in [
+        "read_file",
+        "write_file",
+        "grep",
+        "exec",
+        "browser_navigate",
+        "some_bundle__tool",
+        "",
+    ] {
+        assert!(
+            KINDS.contains(&acp_map::tool_kind(name)),
+            "`{name}` mapped to `{}`, which is not an ACP ToolKind",
+            acp_map::tool_kind(name),
+        );
+    }
+
+    // **The real gate: every tool io-harness declares is classified
+    // deliberately.** Asserted on `classified` and never on `tool_kind != other`,
+    // because `other` is the correct answer for several of them — asking the
+    // operator a question is not a read, an edit or an execution in ACP's
+    // vocabulary. The two states that must stay distinguishable are "listed as
+    // other" and "nobody looked at it", and only a table can tell them apart.
+    // Read from the locked source, so a pin that adds a tool fails here rather
+    // than waiting for a reviewer to notice a call drawn unclassified.
+    let harness_tools = support::harness_tool_names();
+    assert!(
+        harness_tools.len() > 20,
+        "the locked harness reader found {} tool names, which is not plausible; \
+         the assertion below is vacuous until this is fixed",
+        harness_tools.len(),
+    );
+    let unclassified: Vec<&String> = harness_tools
+        .iter()
+        .filter(|name| !acp_map::classified(name))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "io-harness declares tools this adapter has never looked at: \
+         {unclassified:?}. Each needs a row in `acp_map::TOOL_KINDS` — writing \
+         `other` there is a decision and is fine; leaving the name out is a gap, \
+         and the symptom is an editor drawing a write as an unclassified call.",
+    );
+
+    // And the table names nothing the harness has stopped declaring, so a tool
+    // removed upstream does not sit here forever as a row nobody can reach.
+    let stale: Vec<&str> = acp_map::TOOL_KINDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !harness_tools.iter().any(|tool| tool == name))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these are no longer io-harness tools: {stale:?}",
+    );
+
+    assert_eq!(acp_map::tool_kind("read_file"), "read");
+    assert_eq!(acp_map::tool_kind("edit_file"), "edit");
+    assert_eq!(acp_map::tool_kind("grep"), "search");
+    assert_eq!(acp_map::tool_kind("shell"), "execute");
+    assert_eq!(
+        acp_map::tool_kind("github__create_issue"),
+        "other",
+        "a server's tool is a name this crate has never seen and must not be guessed at",
+    );
+    assert_eq!(
+        acp_map::tool_kind("git_status"),
+        "read",
+        "a git reader is a read; 0.75.0 made it speculable for exactly that reason",
+    );
+    assert_eq!(
+        acp_map::tool_kind("git_commit"),
+        "execute",
+        "a commit writes to the repository and is not a read",
+    );
 }
 
 /// A handler that records what it was asked and answers from a script.

@@ -58,6 +58,7 @@
 //! [io-harness]: https://docs.rs/io-harness
 
 pub mod acp;
+pub mod acp_map;
 pub mod adapt;
 pub mod app;
 pub mod approval;
