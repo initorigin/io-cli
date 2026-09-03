@@ -92,6 +92,35 @@
 //! disclosure, and [`inert_under_containment`] is it. It is deliberately narrow:
 //! see that function for why warning every operator with a routing section would
 //! be worse than warning none.
+//!
+//! # io-harness grew a `[routing]` table of its own in 0.76.0
+//!
+//! `Config::apply_to` now merges a **user-scope** `[routing]` onto the contract
+//! key by key (`config.rs:2076`): `escalate_after`/`escalate_to`,
+//! `downshift_under`/`downshift_to`, `require_primary`, and `mechanical` — which
+//! names the model that reads the whole transcript when a fold summarises it, and
+//! for which io-cli offers no key at all. io-cli builds its own section *after*
+//! that merge (`contract.rs:356`) through `TaskContract::with_routing`, whose body
+//! is `self.routing = Some(routing)` (`contract.rs:1292`). It replaces. So a
+//! `[app.io-cli.routing]` that names a rule takes the whole of `[routing]` back
+//! off the contract, `mechanical` included, and until this release it did so in
+//! silence.
+//!
+//! **io-cli does not merge the two, and that is the decision rather than the
+//! omission.** Merging would make this crate choose precedence between its own
+//! section and the dependency's — which key of which table wins when both name an
+//! escalation — and that is a second opinion about what a `Routing` means, which
+//! is the shape `tests/dependencies.rs` exists to keep out of this crate. The
+//! behaviour is therefore unchanged: io-cli's section wins. What changes is that
+//! [`native_notice`] says so.
+//!
+//! The collision can only be written in the user scope, which is why the test for
+//! it needs a user-scoped fixture rather than `Config::from_toml`. `routing` is in
+//! io-harness's `REFUSED_SECTIONS` (`config.rs:2394`), so `io.toml`,
+//! `io.local.toml` and a `[profile]` body may not declare it; the match is
+//! `contains_key("routing")` against the **top-level** table (`config.rs:2600`),
+//! so `[app.io-cli.routing]` — nested under `app` — is untouched by that rule in
+//! every scope.
 
 use serde::{Deserialize, Serialize};
 
@@ -427,6 +456,75 @@ pub fn inert_under_containment(settings: &Settings, contained: bool) -> Option<S
          io-harness applies routing in its flat workspace loop only, and a contained turn takes \
          each agent's model from that agent's own definition. A turn run with /contain off routes \
          normally."
+            .to_string(),
+    )
+}
+
+/// What a harness-native `[routing]` table means for this operator, or `None`.
+///
+/// The disclosure the 0.76.0 pin owes: io-harness merges `[routing]` onto the
+/// contract and io-cli then replaces it, and neither half announces itself. See
+/// the module documentation for the mechanism and for why the answer is a sentence
+/// rather than a merge.
+///
+/// **Two sentences rather than one, because the two situations need different
+/// things said.** A `[routing]` with nothing beside it loses nothing: io-harness
+/// merged it and io-cli left the contract alone, so what the operator is missing is
+/// not their rules but the fact that no surface here will ever show them —
+/// `/config` lists four keys and every one of them is `app.io-cli.routing.*`, and
+/// [`describe`], [`notice`] and [`inert_under_containment`] all read that section
+/// alone. A `[routing]` with a section beside it that reaches the contract is the
+/// silent loss, and that sentence names both tables and says which one won.
+///
+/// **`settings` is asked through [`routing`] rather than for its own presence**,
+/// and that is the correctness of the split rather than a shortcut. A section that
+/// is present and empty, and a section refused for a half rule or a threshold that
+/// could only misfire, both leave `contract.rs:356` on its `None` arm — the
+/// contract keeps the merged `[routing]` and nothing was overwritten. Keying on
+/// `settings.is_some()` would tell those operators their table had been dropped
+/// when it is the one in effect, which is worse than saying nothing.
+///
+/// The table is found through [`io_harness::Config::origins`], the dependency's own
+/// record of every key a file set, rather than by reading the file again: this
+/// crate parses TOML in `src/edit.rs` alone, and a second reading of a table
+/// io-harness has already read and validated is a second opinion about it. It also
+/// catches the spellings a header scan would miss — `routing.mechanical = "…"`
+/// written flat at the top level is the same table with no `[routing]` line in the
+/// file at all.
+///
+/// ASCII throughout, as [`inert_under_containment`]'s sentence is: this renders on
+/// the plain renderer, under `NO_COLOR` and through the ASCII glyph set.
+#[must_use]
+pub fn native_notice(config: &io_harness::Config, settings: Option<&Settings>) -> Option<String> {
+    // The harness's table is top-level, so `app.io-cli.routing.*` — recorded by
+    // `origins` under `app` — matches neither arm. The bare key is tested as well
+    // as the dotted prefix because `origins` records leaves: a `routing` that is
+    // not a table is one key rather than a prefix, and a rule spelled to catch only
+    // the prefix would be a rule with a hole exactly where a malformed file is.
+    if !config
+        .origins()
+        .any(|(key, _)| key == "routing" || key.starts_with("routing."))
+    {
+        return None;
+    }
+    if settings
+        .and_then(|settings| routing(settings).ok().flatten())
+        .is_some()
+    {
+        return Some(
+            "[routing] and [app.io-cli.routing] are both configured, and only \
+             [app.io-cli.routing] reaches the contract: io-harness merges [routing] onto it \
+             key by key, io-cli then sets its own section through with_routing, and that \
+             builder replaces rather than merges, so every key of [routing] is dropped, \
+             mechanical included. Write the rules in one section or the other."
+                .to_string(),
+        );
+    }
+    Some(
+        "[routing] is configured, and no io-cli surface lists it: /config edits \
+         [app.io-cli.routing] only, and every routing notice this product prints describes \
+         that section alone. io-harness merges [routing] onto the contract itself, so it \
+         reaches the run through the dependency rather than through anything here."
             .to_string(),
     )
 }

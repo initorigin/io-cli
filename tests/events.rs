@@ -615,8 +615,8 @@ fn f8_this_release_has_seen_every_kind_io_harness_emits() {
     let declared = support::harness_event_kinds();
     assert_eq!(
         declared.len(),
-        52,
-        "the locked io-harness declares fifty-two event kinds; found {}",
+        53,
+        "the locked io-harness declares fifty-three event kinds; found {}",
         declared.len(),
     );
 }

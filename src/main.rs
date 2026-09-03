@@ -214,6 +214,20 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         return io_cli::exec::main(args, config, root, cli.model).await;
     }
 
+    // **`io acp` leaves here too, and it is the strictest of the headless doors.**
+    // stdout is the protocol from this point on: a line of prose there is not
+    // noise a client tolerates, it is a frame boundary in the wrong place, and
+    // every message after it is parsed against the wrong offset. So the migration
+    // report goes to stderr like the others, and nothing else in this process may
+    // write to stdout or read from stdin — no `Screen`, no raw mode, no cursor
+    // query. See `src/stdin.rs` for what a second reader of stdin cost in 0.13.1.
+    if let Some(Subcommand::Acp) = cli.command {
+        for line in report.drain(..) {
+            eprintln!("{line}");
+        }
+        return io_cli::acp::main(config, root, cli.model).await;
+    }
+
     // `io resume` leaves by the same door, for the same two reasons: it is
     // headless, and `io resume --list` in CI has no terminal to be refused for.
     // It answers a missing provider with a sentence of its own, so it must pass
@@ -6941,10 +6955,22 @@ fn forms(app: &App) -> (bool, io_cli::term::Graphics) {
 /// hands the turn its caps as `contained.then_some(…)` — so the mid-turn door
 /// passes `containment.is_some()` and says exactly what the idle one says.
 fn routing_notices(app: &mut App, config: &Config, contained: bool) {
-    let Some(routing) = io_cli::settings::stored(config)
-        .0
-        .and_then(|stored| stored.routing)
-    else {
+    let stored = io_cli::settings::stored(config).0;
+
+    // **Above the `let-else`, and that placement is the whole of whether this
+    // works.** io-harness 0.76.0 grew a `[routing]` table of its own, and the
+    // case that most needs saying is the one where the operator has *only* that
+    // one — no `[app.io-cli.routing]` at all. Below the early return, that case
+    // is unreachable: the `else` fires first and the function is over. Found by
+    // reading the control flow rather than by the notice failing to appear,
+    // which it would have done silently.
+    if let Some(said) =
+        io_cli::routing::native_notice(config, stored.as_ref().and_then(|s| s.routing.as_ref()))
+    {
+        app.record(Tone::Warning, said);
+    }
+
+    let Some(routing) = stored.and_then(|stored| stored.routing) else {
         return;
     };
     if let Some(said) = io_cli::routing::describe(&routing) {

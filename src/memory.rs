@@ -27,12 +27,12 @@
 //!
 //! Worth knowing before a surface promises otherwise. `read_instructions` joins
 //! each name in `[instructions] files` to the **discovery root**
-//! (`io-harness-0.74.0/src/config.rs:2680`), and the default list is exactly
-//! `["AGENTS.md"]` (`DEFAULT_INSTRUCTIONS`, `config.rs:159`). So `AGENTS.md` is read by every project
-//! with no configuration at all; `AGENTS.local.md` is read only where a file
-//! names it; and `IO.md` is not reachable by a bare name at all, because a
-//! relative name is resolved against the workspace and the home is not the
-//! workspace. **This module writes the file. Making the harness read it is
+//! (`io-harness-0.76.0/src/config.rs:2799`), and the default list is exactly
+//! `["AGENTS.md"]` (`DEFAULT_INSTRUCTIONS`, `config.rs:190`). So `AGENTS.md` is read
+//! by every project with no configuration at all; `AGENTS.local.md` is read only
+//! where a file names it; and `IO.md` is not reachable by a bare name at all,
+//! because a relative name is resolved against the workspace and the home is not
+//! the workspace. **This module writes the file. Making the harness read it is
 //! `[instructions]`' business and the caller's.** [`install`] is where that
 //! business is settled, and [`view`] is how a surface reports the outcome
 //! honestly rather than optimistically.
@@ -464,7 +464,7 @@ fn bullet(line: &str) -> Option<usize> {
 
 /// The order the three files are named in, and it is the order they reach the
 /// model in: `read_instructions` pushes one constraint per name in list order
-/// (`read_instructions`, `io-harness-0.74.0/src/config.rs:2680`).
+/// (`read_instructions`, `io-harness-0.76.0/src/config.rs:2799`).
 ///
 /// Project, then local, then user — widest audience first, so the operator's own
 /// standing note is the last thing said. It also matches the order the three

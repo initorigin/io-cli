@@ -35,6 +35,7 @@ the limits that capability actually has.
 | [Pictures and documents](guide/media.md) | Attaching an image, drawing the real thing only where the terminal can, and the twelve document tools of which six write |
 | [Reading it without seeing it](guide/accessibility.md) | `--plain`: nothing turns, nothing moves, and every state change is committed as text |
 | [Headless](guide/headless.md) | `io exec` and `io resume`, the seven exit codes, `--json`, and managing MCP servers, bundles, skills and configuration from a shell |
+| [From an editor](guide/editors.md) | `io acp` serving the Agent Client Protocol on stdio, the session updates an editor is sent, the three permission options, and the client-side filesystem io deliberately does not use |
 | [Configuration](guide/configuration.md) | One `io.toml` over io-harness's scopes, every section that bounds a turn, changing it without leaving the session, and where io keeps your things |
 | [What the store is holding](guide/store.md) | Reading the run store, undo at three grains, and exporting a conversation or a canonical trace |
 | [What this release is not](guide/limits.md) | The limits, stated plainly — including the ones that are decisions rather than gaps |

@@ -41,7 +41,7 @@ pub enum Disposition {
     Silent,
 }
 
-/// Every kind io-harness 0.72 declares, in its own declaration order.
+/// Every kind io-harness 0.76 declares, in its own declaration order.
 ///
 /// The order is the enum's rather than alphabetical so that this table can be
 /// read down the side of `observe.rs` when the pin moves.
@@ -56,6 +56,33 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         "step",
         Disposition::Line,
         "the step line and its tool cells",
+    ),
+    // **0.36.0 — a breakdown emitted beside every step, and the one place a line
+    // would cost more than it says.** io-harness 0.75.0 emits this from the same
+    // place as `step` above, for every committed step, carrying the span the step
+    // line already draws plus the phases that span divides into. Drawn as a line
+    // it would put a second row under every step row, restating a number the row
+    // above it carries — a transcript twice as long to say the same thing once
+    // more.
+    //
+    // **The route is the machine surfaces, and it says so rather than naming an
+    // operator surface that does not draw these numbers.** `/store` and
+    // `/context` are both registered commands, so a route naming either would
+    // have satisfied `f9_every_silent_route_names_a_surface_that_exists` — which
+    // checks that a named command exists, not that it renders the fact — and been
+    // a claim this build does not honour. io-harness's own declaration points an
+    // observer at `Store::step_attributions`, which is the reader that has the
+    // phases and the time to first token this event deliberately leaves off.
+    (
+        "step_attributed",
+        Disposition::Silent,
+        "`io exec --json`, which forwards it verbatim, and the durable trace; the harness's own \
+         declaration points an observer at `Store::step_attributions` for the same figures. \
+         **Silent is a close call and it is recorded as one.** Where a slow step spent its wall \
+         clock is exactly the kind of fact this interface argues should be visible — but it \
+         arrives beside every committed step, so a line is a second row under every step row \
+         restating that step's span, and no surface in this release renders the phase breakdown \
+         that would earn the room",
     ),
     (
         "tool_call",

@@ -75,8 +75,8 @@ fn the_table_names_every_kind_the_locked_harness_declares() {
     // reading the enum and handed back a shorter list that happens to be a subset.
     assert_eq!(
         declared.len(),
-        52,
-        "the locked io-harness declares fifty-two event kinds; found {}",
+        53,
+        "the locked io-harness declares fifty-three event kinds; found {}",
         declared.len(),
     );
 }
@@ -106,6 +106,36 @@ fn a_batched_ask_is_a_line_because_no_overlay_carries_the_batch() {
     );
 }
 
+/// **0.36.0 — the per-step timing breakdown is silent because the step line above
+/// it already draws the span.**
+///
+/// io-harness 0.75.0 emits `StepAttributed` from the same place as `Step`, for
+/// every committed step. A `Line` row would put a second row under every step
+/// row restating that step's span, which doubles the transcript to say once more
+/// what the row above it said. The route is the machine surfaces — `io exec
+/// --json` forwards it verbatim — and the harness's own declaration points an
+/// observer at `Store::step_attributions`, which is where the phases are read.
+///
+/// Sabotage: make the row `Line`. That is the plausible wrong answer, because
+/// where a slow step went is the most actionable figure a run produces, and it
+/// fails here by name rather than as a doubled transcript nobody reads twice.
+/// Sabotage the route instead — swap the machine surfaces for a `/command` that
+/// draws none of these numbers — and `f9_every_silent_route_names_a_surface_that_exists`
+/// stays green, which is why the reader is asserted here as well.
+#[test]
+fn a_step_attribution_is_silent_because_the_step_line_already_draws_its_span() {
+    assert_eq!(
+        triage::disposition("step_attributed"),
+        Some(Disposition::Silent),
+        "a breakdown emitted beside every step draws a second row under every step row",
+    );
+    let route = triage::route("step_attributed").expect("the step_attributed row");
+    assert!(
+        route.contains("step_attributions"),
+        "the route does not name the reader that has the same figures: {route}",
+    );
+}
+
 #[test]
 fn the_table_has_no_duplicate_and_every_row_records_a_route() {
     let mut seen: Vec<&str> = Vec::new();
@@ -120,7 +150,7 @@ fn the_table_has_no_duplicate_and_every_row_records_a_route() {
             "{name} has no route recorded, so nobody can check whether its fact reaches anyone",
         );
     }
-    assert_eq!(seen.len(), 52);
+    assert_eq!(seen.len(), 53);
 }
 
 /// A `Line` kind with no arm behind it is the old defect wearing the new table's
@@ -277,6 +307,13 @@ fn the_route_column_no_longer_says_a_session_has_no_verification_gate() {
 #[test]
 fn a_status_or_silent_kind_commits_nothing() {
     let quiet = vec![
+        EventKind::StepAttributed {
+            span_ms: 1_400,
+            provider_ms: Some(900),
+            tool_ms: Some(400),
+            gate_ms: Some(50),
+            store_ms: None,
+        },
         EventKind::ToolCall {
             name: "read_file".into(),
             target: "notes.txt".into(),
@@ -432,7 +469,7 @@ fn the_dispositions_are_the_three_the_contract_names() {
         .count();
     assert_eq!(
         lines + status + silent,
-        52,
+        53,
         "every kind is exactly one of the three: {lines} lines, {status} status, {silent} silent",
     );
     // The release's own claim, and the reason it exists: most kinds are not

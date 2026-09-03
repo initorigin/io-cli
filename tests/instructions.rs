@@ -5,7 +5,7 @@
 //! other half and `tests/memory.rs` covers it. This file covers the half that
 //! decides whether any of it reaches a model: `[instructions] files`, which is
 //! the only mechanism io-harness has for finding two of the three
-//! (`io-harness-0.69.0/src/config.rs:158` — the automatic set is exactly
+//! (`io-harness-0.76.0/src/config.rs:190` — the automatic set is exactly
 //! `["AGENTS.md"]`).
 //!
 //! Every test sets `IO_CONFIG_HOME`, because that is the only way to move the

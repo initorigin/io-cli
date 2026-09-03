@@ -410,7 +410,7 @@ fn a_hook_naming_an_event_that_does_not_exist_is_refused_rather_than_installed()
 // ---------------------------------------------------------------------------
 //
 // `io_harness::Hooks::new` creates every `append` path it is given, empty, as the
-// value is constructed (`io-harness-0.69.0/src/hooks.rs`) — deliberately, so that
+// value is constructed (`io-harness-0.76.0/src/hooks.rs`) — deliberately, so that
 // "the filter matched nothing" stays distinguishable from "the hook was never
 // installed". That makes *constructing* a `Hooks` a write to the filesystem, and
 // it resolves a relative `append` against the directory it was handed. Handed
