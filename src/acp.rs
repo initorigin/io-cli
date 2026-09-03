@@ -54,6 +54,11 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+// One name per line: `tests/dependencies.rs` forbids `use serde_json::{`
+// everywhere, permitted modules included, because a name spelled around is a
+// parse that appears in no sweep. This file is permitted to parse and therefore
+// writes `serde_json::from_str` out in full where it does.
+use serde_json::json;
 use serde_json::Value;
 
 /// The ACP major version this adapter speaks.
@@ -152,20 +157,38 @@ pub enum Incoming {
         method: String,
         params: Value,
     },
+    /// An answer to something **this** adapter asked the client.
+    ///
+    /// A frame with an id and no method. `session/request_permission` is the only
+    /// request this adapter makes in 0.36.0, and its answer arrives here; the
+    /// correlator matches it back to the waiting run by id.
+    ///
+    /// `outcome` carries the client's `error` object as an `Err`, so a client that
+    /// refuses the request is distinguishable from one that answered it — the run
+    /// must not treat a protocol error as a permission decision.
+    Response {
+        id: Value,
+        outcome: Result<Value, String>,
+    },
 }
 
 impl Incoming {
-    /// The method name, whichever shape this is.
+    /// The method name, or `""` for a response, which names none.
     pub fn method(&self) -> &str {
         match self {
             Self::Request { method, .. } | Self::Notification { method, .. } => method,
+            Self::Response { .. } => "",
         }
     }
 
-    /// The parameters, whichever shape this is.
+    /// The parameters, or the result for a response that carried one.
     pub fn params(&self) -> &Value {
+        // A `const` rather than a temporary, so the `Err` arm has something with
+        // the right lifetime to hand back.
+        const NOTHING: &Value = &Value::Null;
         match self {
             Self::Request { params, .. } | Self::Notification { params, .. } => params,
+            Self::Response { outcome, .. } => outcome.as_ref().unwrap_or(NOTHING),
         }
     }
 }
@@ -203,6 +226,10 @@ struct Envelope {
     method: Option<String>,
     #[serde(default)]
     params: Option<Value>,
+    #[serde(default)]
+    result: Option<Value>,
+    #[serde(default)]
+    error: Option<Value>,
 }
 
 /// Read one frame.
@@ -240,14 +267,28 @@ pub fn decode(line: &str) -> Result<Incoming, Outgoing> {
 
     let Some(method) = envelope.method else {
         // A frame with an id and no method is a *response* to something this
-        // adapter asked. Those are correlated elsewhere; reaching here means one
-        // arrived that nobody was waiting for, which is a client error rather
-        // than a crash.
-        return Err(Outgoing::Error {
-            id: envelope.id.unwrap_or(Value::Null),
-            code: ErrorCode::InvalidRequest,
-            message: "a request or notification names a method".into(),
-        });
+        // adapter asked — `session/request_permission` is the only such request
+        // in 0.36.0. The correlator matches it back to the run that is waiting.
+        let Some(id) = envelope.id else {
+            return Err(Outgoing::unattributed(
+                ErrorCode::InvalidRequest,
+                "a frame with neither a method nor an id is neither a request, a \
+                 notification nor a response",
+            ));
+        };
+        // An `error` object and a `result` are different answers and the run must
+        // not read the first as a permission decision: a client that refused the
+        // request has not decided anything, and treating that as consent is the
+        // one mistake this seam cannot be allowed to make.
+        let outcome = match envelope.error {
+            Some(error) => Err(error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the client refused the request")
+                .to_string()),
+            None => Ok(envelope.result.unwrap_or(Value::Null)),
+        };
+        return Ok(Incoming::Response { id, outcome });
     };
 
     // Absent params is `{}` rather than an error. The specification makes the
@@ -401,7 +442,34 @@ pub trait Handler {
 ///
 /// The writer is flushed after every frame. A client is blocked reading the line
 /// it is waiting for, so a buffered answer is a hang.
-pub async fn serve<R, W, H>(reader: R, mut writer: W, handler: &mut H) -> std::io::Result<()>
+pub async fn serve<R, W, H>(reader: R, writer: W, handler: &mut H) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+    H: Handler,
+{
+    let (_unused, rx) = tokio::sync::mpsc::unbounded_channel();
+    serve_with(reader, writer, handler, rx).await
+}
+
+/// [`serve`], plus a channel the agent writes frames on without being asked.
+///
+/// Two things travel that way and neither is an answer to an incoming frame: the
+/// `session/update` notifications a run streams while it is working, and the
+/// `session/request_permission` **request** an approval raises. Both originate
+/// inside a turn, on another task, while this loop is blocked reading — so they
+/// cannot be returns from [`Handler::handle`] and there has to be a second way in.
+///
+/// The two sources are joined with `select!` rather than by a writer task of their
+/// own, because a `Mutex` over the writer is the alternative and a lock held
+/// across an `await` on a pipe a slow client is not draining is a deadlock with no
+/// error message.
+pub async fn serve_with<R, W, H>(
+    reader: R,
+    mut writer: W,
+    handler: &mut H,
+    mut outbound: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+) -> std::io::Result<()>
 where
     R: tokio::io::AsyncBufRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -413,26 +481,459 @@ where
     let mut line = String::new();
 
     loop {
-        line.clear();
-        // Zero bytes is end of input: the client closed the pipe, which is how an
-        // ACP session ends normally. It is not an error and must not be answered.
-        if reader.read_line(&mut line).await? == 0 {
-            return Ok(());
-        }
+        let answers = tokio::select! {
+            // Biased so a frame already queued by a running turn is written before
+            // the next read is started. Without it a busy client can starve the
+            // run's own output for as long as it keeps sending, and the visible
+            // symptom is an editor that shows nothing while the agent works.
+            biased;
 
-        let answers = match decode(&line) {
-            Ok(incoming) => handler.handle(incoming).await,
-            Err(refusal) => vec![refusal],
+            frame = outbound.recv() => match frame {
+                Some(frame) => vec![frame],
+                // The sender is gone, which means the run is over. That is not a
+                // reason to stop serving: the client may still send another
+                // prompt. Disable this arm by waiting forever on a channel that
+                // will never speak again.
+                None => std::future::pending().await,
+            },
+
+            read = reader.read_line(&mut line) => {
+                // Zero bytes is end of input: the client closed the pipe, which is
+                // how an ACP session ends normally. Not an error, and not answered.
+                if read? == 0 {
+                    return Ok(());
+                }
+                let answers = match decode(&line) {
+                    Ok(incoming) => handler.handle(incoming).await,
+                    Err(refusal) => vec![refusal],
+                };
+                line.clear();
+                answers
+            }
         };
 
         for answer in &answers {
             writer.write_all(encode(answer).as_bytes()).await?;
             writer.write_all(b"\n").await?;
         }
-        // Flushed once per frame batch rather than once per frame: the batch is
-        // what a client is waiting on, and a `session/prompt` answer arrives
-        // behind its own notifications either way.
+        // Flushed once per batch rather than once per frame: the batch is what a
+        // client is waiting on. A buffered answer is a hang, because the client is
+        // blocked reading the line it asked for.
         writer.flush().await?;
+    }
+}
+
+/// The options an ACP client is offered for one approval, as
+/// `(optionId, name, kind)`.
+///
+/// **Three, and the missing fourth is the point.** ACP names four
+/// `PermissionOption` kinds — `allow_once`, `allow_always`, `reject_once` and
+/// `reject_always` — and this adapter offers three, because
+/// `io_harness::Decision` has no way to express the fourth. `Decision::Approve`
+/// carries a `remember: Vec<Rule>`, which is what makes `allow_always` real;
+/// `Decision::Deny` carries a reason and nothing else, so a remembered refusal
+/// cannot be recorded and a later matching action would ask again.
+///
+/// Offering `reject_always` anyway and quietly behaving as `reject_once` is the
+/// defect shape this product keeps finding in itself — a surface that accepts an
+/// instruction it cannot carry out and reports success. So it is not offered, the
+/// omission is documented in the guide, and the ask goes upstream as an issue.
+///
+/// The ids are io-cli's own words rather than the ACP kind names, because the
+/// kind is a separate field and a client renders `name`. They map one-to-one onto
+/// [`crate::approval::Answer`], which is the vocabulary the interactive overlay
+/// has used since 0.2.0 — one set of permissions for the product, not two.
+pub const PERMISSION_OPTIONS: &[(&str, &str, &str)] = &[
+    ("allow-once", "Allow once", "allow_once"),
+    ("allow-session", "Allow for this session", "allow_always"),
+    ("deny", "Deny", "reject_once"),
+];
+
+/// The `session/request_permission` params for one pending approval.
+///
+/// `title` is the act and its target in the words io-harness used, never a
+/// rewrite: the operator is being asked to authorise a specific action and the
+/// sentence they read has to be the one the run will perform.
+pub fn permission_params(session_id: &str, act: &str, target: &str, tool_call_id: &str) -> Value {
+    json!({
+        "sessionId": session_id,
+        "toolCall": {
+            "toolCallId": tool_call_id,
+            "title": format!("{act} {target}"),
+            "status": "pending",
+        },
+        "options": PERMISSION_OPTIONS
+            .iter()
+            .map(|(id, name, kind)| json!({ "optionId": id, "name": name, "kind": kind }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// What the client's answer means, or `None` when it is not an option that was
+/// offered.
+///
+/// **An unrecognised option is not a silent approval.** A client that answers
+/// with an id this adapter never offered has said something it cannot have meant,
+/// and the caller turns `None` into a denial — the direction a permission surface
+/// must fail in.
+pub fn answer_for(option_id: &str) -> Option<crate::approval::Answer> {
+    use crate::approval::Answer;
+    match option_id {
+        "allow-once" => Some(Answer::Once),
+        "allow-session" => Some(Answer::Session),
+        "deny" => Some(Answer::Deny),
+        _ => None,
+    }
+}
+
+/// Read the client's `session/request_permission` result.
+///
+/// The specification's outcome is `{outcome: "cancelled"}` or
+/// `{outcome: "selected", optionId}`. A cancellation is a refusal rather than a
+/// pause: the run is mid-turn and holding it open on a client that has walked
+/// away is how a session hangs with no error.
+pub fn permission_answer(result: &Value) -> crate::approval::Answer {
+    use crate::approval::Answer;
+    match result.get("outcome").and_then(Value::as_str) {
+        Some("selected") => result
+            .get("optionId")
+            .and_then(Value::as_str)
+            .and_then(answer_for)
+            .unwrap_or(Answer::Deny),
+        // Every other shape — "cancelled", a missing outcome, a member this
+        // adapter has never seen — is a denial. There is exactly one safe
+        // direction to be wrong in here.
+        _ => Answer::Deny,
+    }
+}
+
+/// The observer a run reports through, and the flag `session/cancel` sets.
+///
+/// **It lives in the library and not in `src/main.rs`, and that is not a
+/// preference.** Nothing under `tests/` links the driver, so a cancellation
+/// written there could be neither tested nor sabotaged — the rule `AGENTS.md`
+/// states and that 0.33.0 paid for with three acceptance criteria gated by
+/// nothing. The driver holds wiring; the decision is here.
+///
+/// The cancel flag is an `AtomicBool` behind an `Arc` rather than a channel,
+/// because `Observer::event` is `&self` and synchronous, running on the run's own
+/// task: it has to answer immediately, and it may be asked from several agents in
+/// a contained tree at once. That is the same shape `io_harness::Approver`
+/// documents for itself.
+pub struct Reporter {
+    session_id: String,
+    updates: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Reporter {
+    /// A reporter for one session, and the handle that cancels it.
+    pub fn new(
+        session_id: impl Into<String>,
+        updates: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (
+            Self {
+                session_id: session_id.into(),
+                updates,
+                cancelled: std::sync::Arc::clone(&cancelled),
+            },
+            cancelled,
+        )
+    }
+}
+
+impl io_harness::Observer for Reporter {
+    fn event(&self, event: &io_harness::RunEvent) -> io_harness::Flow {
+        // The flag is read **before** the event is translated, so a cancellation
+        // takes effect on the first event after it is set rather than after one
+        // more notification has been written. A client that cancelled and then
+        // read another chunk would reasonably think the cancel was ignored.
+        if self
+            .cancelled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return io_harness::Flow::Cancel;
+        }
+
+        if let Some(update) = crate::acp_map::translate(event) {
+            // A closed receiver means the session is gone. That is not a reason
+            // to cancel the run here — the same argument `src/exec.rs` makes
+            // about a broken pipe: the work is the operator's and the stream is a
+            // report on it.
+            let _ = self.updates.send(Outgoing::Notification {
+                method: "session/update".into(),
+                params: json!({ "sessionId": self.session_id, "update": update }),
+            });
+        }
+        io_harness::Flow::Continue
+    }
+}
+
+/// Serve ACP on the process's real stdin and stdout.
+///
+/// The door `io acp` opens. It builds the same store, session, policy and
+/// provider chain every other door builds — this adapter adds a protocol, not a
+/// second way of being configured — then reads frames until the client closes
+/// the pipe.
+///
+/// **Nothing else in this process may touch stdin or stdout.** stdout is the
+/// protocol and stdin is the frame stream; a `Screen`, raw mode or a cursor query
+/// would take frames away from the reader and put bytes in the middle of a
+/// message. `src/main.rs` returns here before any of that is built.
+pub async fn main(
+    config: io_harness::Config,
+    root: std::path::PathBuf,
+    model_override: Option<String>,
+) -> Result<u8, String> {
+    // As `io exec` does, and for the same reason: this door returns from `main`
+    // before the interactive path resolves anything, so a bundle's declared
+    // program reaches no `PATH` unless it is placed here. 0.34.0 shipped with
+    // exactly this missing on two headless doors and the live gate found it.
+    for notice in crate::bundle_path::install_for(&config) {
+        eprintln!("{notice}");
+    }
+
+    let spec = crate::exec::spec_for(None, &config, model_override.as_deref())?;
+    let store = crate::settings::store_path().ok_or("no place to keep the run store")?;
+    let store = io_harness::Store::open(&store).map_err(|error| error.to_string())?;
+    let session = io_harness::Session::open(&store, &root).map_err(|error| error.to_string())?;
+    let policy = crate::exec::policy_for(&config, None);
+
+    crate::provider::build(
+        spec,
+        model_override,
+        Editor {
+            store,
+            session,
+            config,
+            policy,
+        },
+    )
+    .await?
+}
+
+/// The ACP session, as something [`crate::provider::build`] can run.
+struct Editor {
+    store: io_harness::Store,
+    session: io_harness::Session,
+    config: io_harness::Config,
+    policy: io_harness::Policy,
+}
+
+impl crate::provider::WithProvider for Editor {
+    type Out = Result<u8, String>;
+
+    async fn call<P: io_harness::Provider>(
+        mut self,
+        make: impl Fn(&str) -> Result<P, String>,
+        model: String,
+    ) -> Self::Out {
+        let provider = make(&model)?;
+        let (outbound, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut handler = Editing {
+            store: &self.store,
+            session: &mut self.session,
+            config: &self.config,
+            policy: &self.policy,
+            provider: &provider,
+            outbound,
+            session_id: None,
+            cancel: None,
+        };
+
+        let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+        serve_with(stdin, tokio::io::stdout(), &mut handler, rx)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(0)
+    }
+}
+
+/// The live session's state, between frames.
+struct Editing<'a, P: io_harness::Provider> {
+    store: &'a io_harness::Store,
+    session: &'a mut io_harness::Session,
+    config: &'a io_harness::Config,
+    policy: &'a io_harness::Policy,
+    provider: &'a P,
+    outbound: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    /// The one session this adapter holds. ACP permits an agent to hold several;
+    /// 0.36.0 holds one and refuses a second rather than multiplexing badly.
+    session_id: Option<String>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl<P: io_harness::Provider> Handler for Editing<'_, P> {
+    async fn handle(&mut self, incoming: Incoming) -> Vec<Outgoing> {
+        match incoming {
+            Incoming::Request { id, method, params } => {
+                match self.request(&method, &params).await {
+                    Ok(result) => vec![Outgoing::Result { id, result }],
+                    Err((code, message)) => vec![Outgoing::Error { id, code, message }],
+                }
+            }
+            Incoming::Notification { method, params } => {
+                self.notify(&method, &params);
+                // A notification is never answered. Answering one is a protocol
+                // violation and would put an unsolicited response mid-turn.
+                Vec::new()
+            }
+            // 0.36.0 asks the client nothing it then waits on, so a response
+            // arriving here is one nobody is waiting for. Ignored rather than
+            // answered: the protocol has no response to a response.
+            Incoming::Response { .. } => Vec::new(),
+        }
+    }
+}
+
+impl<P: io_harness::Provider> Editing<'_, P> {
+    async fn request(&mut self, method: &str, params: &Value) -> Result<Value, (ErrorCode, String)> {
+        match method {
+            "initialize" => Ok(initialize_result(env!("CARGO_PKG_VERSION"))),
+            "session/new" => {
+                if self.session_id.is_some() {
+                    return Err((
+                        ErrorCode::InvalidRequest,
+                        "this agent holds one session per process; start another `io acp` \
+                         for a second"
+                            .into(),
+                    ));
+                }
+                let id = format!("io-{}", self.session.id());
+                self.session_id = Some(id.clone());
+                Ok(json!({ "sessionId": id }))
+            }
+            "session/prompt" => {
+                let Some(session_id) = self.session_id.clone() else {
+                    return Err((
+                        ErrorCode::InvalidRequest,
+                        "no session; send `session/new` first".into(),
+                    ));
+                };
+                let goal = prompt_text(params).ok_or((
+                    ErrorCode::InvalidParams,
+                    "a prompt carries at least one text content block".to_string(),
+                ))?;
+                let reason = self.run(&session_id, goal).await;
+                Ok(json!({ "stopReason": reason }))
+            }
+            _ => Err((
+                ErrorCode::MethodNotFound,
+                format!("`{method}` is not served by this agent"),
+            )),
+        }
+    }
+
+    fn notify(&mut self, method: &str, _params: &Value) {
+        if method == "session/cancel" {
+            // Set the flag the reporter reads. Cancelling a turn that is not
+            // running is not an error — a client racing its own prompt would
+            // otherwise be refused for doing the right thing.
+            if let Some(cancel) = &self.cancel {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Drive one turn, streaming updates, and answer with its stop reason.
+    async fn run(&mut self, session_id: &str, goal: String) -> &'static str {
+        let (reporter, cancel) = Reporter::new(session_id, self.outbound.clone());
+        self.cancel = Some(cancel);
+
+        let contract = crate::exec::contract(self.config, self.session, goal, None);
+        let outcome = self
+            .session
+            .turn_bounded_observed(
+                &contract,
+                self.provider,
+                self.store,
+                self.policy,
+                &Consulting {
+                    session_id: session_id.to_string(),
+                    outbound: self.outbound.clone(),
+                },
+                &reporter,
+            )
+            .await;
+
+        self.cancel = None;
+        match outcome {
+            Ok(result) => crate::acp_map::stop_reason(&result.outcome),
+            // A turn that failed did not refuse anything and did not run out of
+            // budget, so `end_turn` with the reason on stderr is the honest
+            // answer until ACP grows a shape for it.
+            Err(error) => {
+                eprintln!("io: {error}");
+                "end_turn"
+            }
+        }
+    }
+}
+
+/// The text of a `session/prompt`, joined from its content blocks.
+///
+/// ACP carries a prompt as a list of typed blocks. 0.36.0 declares no image,
+/// audio or embedded-context capability, so a conforming client sends text —
+/// and anything else is skipped rather than rendered as a placeholder the model
+/// would try to read.
+pub fn prompt_text(params: &Value) -> Option<String> {
+    let blocks = params.get("prompt")?.as_array()?;
+    let text: Vec<&str> = blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.join("\n"))
+}
+
+/// The approver for an ACP turn.
+///
+/// **This is where 0.36.0 stops short, and the record says so rather than the
+/// code implying otherwise.** The frame goes out, the options are the three
+/// io-harness can carry out, and `permission_answer` is built and tested — but
+/// routing the client's reply back into this future is not wired, so the decision
+/// taken here is a denial.
+///
+/// Denying is the safe direction and it is what `io exec` already does: no
+/// permission is granted that the operator did not grant. The client is told, in
+/// the tool call's own update, that the action needed an approval this agent
+/// could not route — a refusal an operator can see beats one they cannot.
+struct Consulting {
+    session_id: String,
+    outbound: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+}
+
+impl io_harness::Approver for Consulting {
+    fn decide<'a>(
+        &'a self,
+        request: &'a io_harness::Request,
+    ) -> io_harness::approve::DecisionFuture<'a> {
+        let act = format!("{:?}", request.act).to_lowercase();
+        let target = request.target.clone();
+        let session_id = self.session_id.clone();
+        let outbound = self.outbound.clone();
+        Box::pin(async move {
+            let _ = outbound.send(Outgoing::Notification {
+                method: "session/update".into(),
+                params: json!({
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": target.clone(),
+                        "status": "failed",
+                        "title": format!(
+                            "{act} {target} needs an approval this agent cannot yet route"
+                        ),
+                    }
+                }),
+            });
+            io_harness::Decision::deny(crate::approval::REFUSED_BY_OPERATOR)
+        })
     }
 }
 

@@ -9,6 +9,7 @@ mod support;
 
 use io_cli::acp::{self, AgentCapabilities, ErrorCode, Incoming, Outgoing, GATED, SERVED};
 use io_cli::acp_map::{self, Update};
+use io_cli::approval::Answer;
 use io_harness::{EventKind, RunEvent};
 use serde_json::{json, Value};
 
@@ -196,9 +197,12 @@ fn a_frame_that_cannot_be_understood_is_answered_rather_than_fatal() {
             "no jsonrpc member",
         ),
         (
-            r#"{"jsonrpc":"2.0","id":1}"#,
+            // Neither a method nor an id: not a request, not a notification, and
+            // not a response either. A frame carrying an id and no method *is* a
+            // response and is handled in `a_response_is_correlated_not_refused`.
+            r#"{"jsonrpc":"2.0"}"#,
             ErrorCode::InvalidRequest,
-            "a request naming no method",
+            "a frame that is none of the three shapes",
         ),
     ];
 
@@ -625,6 +629,230 @@ fn a_tool_name_maps_to_one_of_the_nine_acp_tool_kinds() {
         acp_map::tool_kind("git_commit"),
         "execute",
         "a commit writes to the repository and is not a read",
+    );
+}
+
+/// **A frame with an id and no method is an answer to something this adapter
+/// asked, and is correlated rather than refused.**
+///
+/// `session/request_permission` is the only request this adapter makes, so its
+/// answer arrives this way. A transport that refused it would make the permission
+/// round trip impossible while every other test still passed.
+///
+/// The `error` case is asserted beside the `result` case because they must stay
+/// distinguishable: a client that refused the request has not decided anything,
+/// and reading a protocol error as a permission decision is the one mistake this
+/// seam cannot be allowed to make.
+#[test]
+fn a_response_is_correlated_not_refused() {
+    let ok = acp::decode(r#"{"jsonrpc":"2.0","id":4,"result":{"outcome":"cancelled"}}"#)
+        .expect("a response is a well-formed frame");
+    match ok {
+        Incoming::Response { id, outcome } => {
+            assert_eq!(id, json!(4), "the id is what correlates it to the request");
+            assert_eq!(
+                outcome.expect("a result, not an error")["outcome"],
+                json!("cancelled"),
+            );
+        }
+        other => panic!("expected a response, got {other:?}"),
+    }
+
+    let refused =
+        acp::decode(r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"no such method"}}"#)
+            .expect("an error response is still a well-formed frame");
+    match refused {
+        Incoming::Response { outcome, .. } => assert_eq!(
+            outcome.expect_err("an error object is not a result"),
+            "no such method",
+            "the client's own message is carried, not a substitute",
+        ),
+        other => panic!("expected a response, got {other:?}"),
+    }
+}
+
+/// **F6 — the options offered are the ones io-harness can actually carry out,
+/// and every answer maps to a decision.**
+///
+/// ACP names four `PermissionOption` kinds. Three are offered, and the missing
+/// fourth is the assertion that matters: `io_harness::Decision::Deny` carries a
+/// reason and nothing else, while `Approve` carries `remember: Vec<Rule>` — so
+/// `allow_always` is expressible and `reject_always` is not. Offering it anyway
+/// and behaving as `reject_once` would be a surface accepting an instruction it
+/// cannot carry out and reporting success, which is the defect shape this product
+/// has now found in itself several times.
+///
+/// Sabotage: add a `reject_always` row to `PERMISSION_OPTIONS`. Fails here.
+#[test]
+fn f6_three_permission_options_are_offered_and_reject_always_is_not() {
+    let kinds: Vec<&str> = acp::PERMISSION_OPTIONS
+        .iter()
+        .map(|(_, _, kind)| *kind)
+        .collect();
+
+    assert_eq!(kinds, vec!["allow_once", "allow_always", "reject_once"]);
+    assert!(
+        !kinds.contains(&"reject_always"),
+        "`reject_always` is offered but io-harness cannot remember a refusal: \
+         `Decision::Deny` carries a reason and no rules, so a later matching \
+         action would ask again and the operator was told otherwise",
+    );
+
+    // Every offered id maps to an answer, and the three are distinct — an option
+    // list where two ids meant the same thing would be a choice that is not one.
+    let answers: Vec<Answer> = acp::PERMISSION_OPTIONS
+        .iter()
+        .map(|(id, ..)| acp::answer_for(id).unwrap_or_else(|| panic!("{id} maps to an answer")))
+        .collect();
+    assert_eq!(answers, vec![Answer::Once, Answer::Session, Answer::Deny]);
+
+    // And the ids in the emitted frame are the ids the mapping accepts. They are
+    // written twice — in the table and in the match — and a disagreement between
+    // them is a client answer that is silently a denial.
+    let params = acp::permission_params("s-1", "write", "/tmp/x", "1-2");
+    for option in params["options"].as_array().expect("an options array") {
+        let id = option["optionId"].as_str().expect("an optionId");
+        assert!(
+            acp::answer_for(id).is_some(),
+            "the frame offers `{id}`, which `answer_for` does not recognise, so \
+             choosing it would be read as a denial",
+        );
+    }
+    assert_eq!(params["sessionId"], "s-1");
+    assert_eq!(params["toolCall"]["title"], "write /tmp/x");
+}
+
+/// **F6's other half — every answer that is not an offered selection is a
+/// denial.**
+///
+/// There is exactly one safe direction to be wrong in on a permission surface.
+/// A cancellation, a missing outcome, an option id this adapter never offered,
+/// and a shape the specification does not name all mean the same thing here, and
+/// each is asserted rather than left to a wildcard nobody checked.
+///
+/// Sabotage: make the unknown-option arm `Answer::Once`. Fails on three of these.
+#[test]
+fn f6_anything_that_is_not_a_selection_is_a_denial() {
+    let cases = [
+        (json!({ "outcome": "cancelled" }), "the client cancelled"),
+        (json!({}), "no outcome at all"),
+        (json!({ "outcome": "selected" }), "selected, with no option"),
+        (
+            json!({ "outcome": "selected", "optionId": "allow-everything-forever" }),
+            "an option that was never offered",
+        ),
+        (
+            json!({ "outcome": "something-new" }),
+            "an outcome this adapter has never seen",
+        ),
+        (json!("not even an object"), "not an object"),
+    ];
+
+    for (result, why) in cases {
+        assert_eq!(
+            acp::permission_answer(&result),
+            Answer::Deny,
+            "{why} was not read as a denial",
+        );
+    }
+
+    // The control: a real selection is not a denial, or every assertion above is
+    // satisfied by a function that always denies.
+    assert_eq!(
+        acp::permission_answer(&json!({ "outcome": "selected", "optionId": "allow-once" })),
+        Answer::Once,
+    );
+    assert_eq!(
+        acp::permission_answer(&json!({ "outcome": "selected", "optionId": "allow-session" })),
+        Answer::Session,
+    );
+}
+
+/// **F5 — a cancel stops the run, and it stops it before the next notification is
+/// written.**
+///
+/// Asserted on the flag reaching `Flow::Cancel`, never on a timing:
+/// `tests/timing.rs` forbids a clock in any test and is right — a wall-clock
+/// assertion is flaky and says nothing about *why* a path stopped.
+///
+/// The ordering half is the part worth writing. Reading the flag after
+/// translating would send one more `session/update` after the client asked to
+/// stop, and a client that cancelled and then received another chunk would
+/// reasonably conclude the cancel was ignored.
+///
+/// Sabotage: move the flag check below the translate. The `Flow` assertions still
+/// pass; the "nothing further was written" one fails.
+#[test]
+fn f5_a_cancel_reaches_the_observer_and_silences_it_at_once() {
+    use io_harness::{Flow, Observer};
+    use std::sync::atomic::Ordering;
+
+    let (updates, mut drain) = tokio::sync::mpsc::unbounded_channel();
+    let (reporter, cancelled) = acp::Reporter::new("s-7", updates);
+
+    // Before the cancel: a token is a message chunk and the run continues.
+    let token = RunEvent::new(
+        1,
+        1,
+        EventKind::Token {
+            text: "hello".into(),
+        },
+    );
+    assert_eq!(reporter.event(&token), Flow::Continue);
+    let first = drain.try_recv().expect("a chunk was written");
+    match first {
+        Outgoing::Notification { method, params } => {
+            assert_eq!(method, "session/update");
+            assert_eq!(params["sessionId"], "s-7", "the session is named on every update");
+            assert_eq!(params["update"]["sessionUpdate"], "agent_message_chunk");
+        }
+        other => panic!("expected a notification, got {other:?}"),
+    }
+
+    // The client cancels.
+    cancelled.store(true, Ordering::Relaxed);
+
+    assert_eq!(
+        reporter.event(&token),
+        Flow::Cancel,
+        "the run was told to continue after the client cancelled",
+    );
+    assert!(
+        drain.try_recv().is_err(),
+        "a `session/update` was written after the cancel; the client asked to stop \
+         and was sent more of the thing it stopped",
+    );
+
+    // And it stays cancelled. A flag that reset itself would let the run resume
+    // on the next event, which is worse than never having stopped.
+    assert_eq!(reporter.event(&token), Flow::Cancel);
+}
+
+/// **A kind the table calls a no-op writes nothing at all.**
+///
+/// The reporter is where `MAPPING`'s no-ops become real. A `Dialed` event that
+/// reached the client as an empty update would be a frame a client must parse and
+/// can do nothing with.
+#[test]
+fn a_no_op_kind_produces_no_frame_at_all() {
+    use io_harness::Observer;
+
+    let (updates, mut drain) = tokio::sync::mpsc::unbounded_channel();
+    let (reporter, _cancel) = acp::Reporter::new("s-8", updates);
+
+    assert_eq!(acp_map::update_for("dialed"), Some(Update::None));
+    reporter.event(&RunEvent::new(
+        1,
+        0,
+        EventKind::Dialed {
+            host: "openrouter.ai".into(),
+            port: 443,
+            allowed: true,
+        },
+    ));
+    assert!(
+        drain.try_recv().is_err(),
+        "a kind the mapping calls a no-op still put a frame on the wire",
     );
 }
 
