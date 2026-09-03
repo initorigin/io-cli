@@ -155,6 +155,7 @@ the limits that capability actually has.
 | [Pictures and documents](docs/guide/media.md) | Attaching an image, drawing it where the terminal can, and the twelve document tools |
 | [Reading it without seeing it](docs/guide/accessibility.md) | `--plain`, and what a screen reader, a braille display or a log gets |
 | [Headless](docs/guide/headless.md) | `io exec`, the exit codes, the JSON, resuming without a terminal, and managing the configuration from a shell |
+| [From an editor](docs/guide/editors.md) | `io acp`, pointing Zed or a JetBrains IDE at it, what the editor is sent, and the two things it is not |
 | [Configuration](docs/guide/configuration.md) | Every section of `io.toml`, changing it without leaving the session, and where io keeps your things |
 | [What the store is holding](docs/guide/store.md) | Reading the store, putting work back, and taking the work out |
 | [What this release is not](docs/guide/limits.md) | The limits, stated plainly, and the ones that are decisions rather than gaps |

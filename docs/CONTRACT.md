@@ -31,6 +31,7 @@ With no subcommand, `io` opens an interactive session.
 | `io plugin …` | Manage capability bundles and marketplaces |
 | `io config …` | Read and write configuration keys |
 | `io skill …` | Add, list and remove skills |
+| `io acp` | Serves the Agent Client Protocol on stdin and stdout, for an editor |
 
 `--plain` reaches an interactive session and stops there. `io exec` builds no theme, draws
 nothing and animates nothing already, so there is no second thing for the flag to switch off.
@@ -38,6 +39,13 @@ nothing and animates nothing already, so there is no second thing for the flag t
 `io exec` additionally takes `--json`, `--sandbox <read-only|workspace-write|full-access>`,
 `--policy <workspace|read-only>` and `--provider <openrouter|anthropic|openai>`.
 **`--policy ask-writes` is refused**, because nothing headless can answer an approval.
+
+`io acp` takes no arguments of its own — the client speaks the protocol, not the command line —
+and the global flags reach it, which is how an editor points io at the workspace it has open.
+It is not run by hand: an ACP client spawns it and speaks newline-delimited JSON-RPC 2.0 at its
+stdin. **stdout is the protocol**, so nothing else is written there and diagnostics go to stderr.
+It always exits `0` when the client closes the pipe, because the protocol reports a run's outcome
+in its own `stopReason` and a process exit code would be a second, disagreeing answer.
 
 ## Exit codes
 
@@ -63,6 +71,19 @@ that instead, rather than printing a command a script would find does not exist.
 produce that pause today at all** — it declines every approval rather than deferring one, in a
 session and headless alike — so the carve-out is what would be printed if it ever did, and is
 written down because the code that would print it exists and is reached by nothing.
+
+**0.36.0 narrows that sentence rather than retiring it.** `io acp` is the first door with a
+person behind it that is not a terminal, so it is the first that could raise an approval and be
+answered. It raises one: an approval becomes a `session/request_permission` frame naming the act
+and its target, with three options — allow once, allow for this session, deny. Three and not
+ACP's four, because `io_harness::Decision::Deny` carries a reason and no rules, so a remembered
+refusal cannot be recorded and offering `reject_always` would be a promise this agent cannot
+keep.
+
+**What 0.36.0 does not yet do is route the client's answer back into the waiting run**, so the
+decision taken is a denial and the client is told so in the tool call's own update. No permission
+is granted that was not granted. `io exec` is unchanged and still declines every approval: an
+unattended run has nobody to ask, and an approver that blocked there would hang forever.
 
 **Every boundary refusal reaches `2`, from either headless door.** A run whose provider endpoint
 lands in the `ask` tier is refused by io-harness before the run's first step, and `io resume`
