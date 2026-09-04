@@ -188,11 +188,17 @@ bare-host rule opens it.
 
 **Eleven commands run while a turn is in flight, and the rest are refused.** `/status`,
 `/context`, `/cost`, `/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet`, `/image` and
-`/config` report while the agent works; `/` and `@` open the palette and path completion;
+`/config` are admitted while the agent works; `/` and `@` open the palette and path completion;
 `/compact` and `/steer` reach the turn through their own arms as they always have. Every other
 command keeps its refusal, in the same sentence, and the rule is what a command *does* rather than
 how harmless it looks: anything that reassigns the session or the provider, writes the store or a
 configuration file, or submits a turn of its own is refused.
+
+Ten of the eleven only report. **`/context withhold <tool>` is the exception and it changes
+something** — the session's tool mask — which is admitted because the moment you want a tool
+withheld is the moment you watch the agent reach for it. It passes the rule above rather than
+bending it: no file is written, nothing is reassigned, and the mask reaches the **next** turn
+because this one's contract was built before the keystroke.
 
 **`/config` is admitted bare and refused the moment it carries a word.** Through 0.32.0 it was
 refused in every form, because the bare list carried a row that re-read the provider's catalogue,

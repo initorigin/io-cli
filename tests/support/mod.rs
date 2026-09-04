@@ -355,6 +355,19 @@ pub fn harness_source(file: &str) -> String {
         .replace("\r\n", "\n")
 }
 
+/// The same, for a file under a subdirectory of `src/` (0.37.0).
+///
+/// [`harness_source`] takes one component, and a `"run/prompts.rs"` handed to it
+/// becomes a single file name on Windows — where CI runs — failing with "io-harness
+/// is not unpacked" rather than anything naming the real mistake. That is the
+/// reasoning `harness_source_file` already carries; this is the public door to it,
+/// added the first time a gate needed a nested file.
+pub fn harness_source_at(components: &[&str]) -> String {
+    std::fs::read_to_string(harness_source_file(components))
+        .expect("io-harness's source is readable from the registry")
+        .replace("\r\n", "\n")
+}
+
 /// Every variant `io_harness::Error` declares, in the source this crate is locked
 /// to, in declaration order and spelled as Rust spells them.
 ///

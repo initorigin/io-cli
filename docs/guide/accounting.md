@@ -86,6 +86,49 @@ quotes USD and every provider it can connect to bills in it. Four decimals below
 unit and two above, in integer arithmetic — a turn costs a fraction of a cent and
 a month costs dollars, and one precision cannot show both.
 
+### What your extensions cost, per request
+
+`/cost` is what a run spent. `/context` is what it is *carrying* — and since
+0.37.0 it says where that came from rather than giving you one number for the
+lot. The tool catalogue is split by what put each tool on the wire: a row per MCP
+server, named with the bundle that contributed it where a bundle did, plus a
+`skill catalogue` row for the block io-harness writes into the system prompt. That
+last one is new; before 0.37.0 a session's skills were counted inside the system
+block, so they appeared to cost nothing.
+
+`/plugin` and `/mcp` put the same figure on the row where you switch the thing on,
+drawn from the same snapshot, so the two surfaces cannot tell you different
+things about one server.
+
+**Not everything a bundle contributes costs anything, and the difference is
+large.** Of the seven kinds of thing a bundle can contribute, three reach the
+wire and four do not:
+
+| Contribution | Cost per request |
+| --- | --- |
+| MCP servers | every tool's name, description and JSON schema, every request |
+| Skills | one line each — name and description. A body is read on demand by `read_skill` and only when the model asks |
+| Agents | a roster in the system block |
+| Hooks | nothing |
+| Templates | nothing — io-cli expands them into your prompt |
+| A declared binary | nothing |
+| Policy layers | nothing |
+
+So a bundle that ships only hooks is free forever, and one that ships an MCP
+server with forty tools is not. That is the decision `/plugin`'s cost column
+exists to inform.
+
+Two honest gaps in the number. An **agent roster** is not counted against the
+bundle that contributed it: io-harness composes it into the system block with no
+marker io-cli can locate, and a number invented for it would be worse than none.
+And a server that has not been on a wire yet is drawn as unmeasured rather than as
+zero — the two mean different things, and only one of them is something you could
+act on.
+
+**Withholding a tool does not reduce any of this.** See
+[What this release is not](limits.md) — the catalogue sent is the same either way,
+by design. The lever these numbers inform is turning a bundle or a server off.
+
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)

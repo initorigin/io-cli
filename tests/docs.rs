@@ -2073,8 +2073,15 @@ fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
         admitted.len(),
     );
 
+    // **`run`, not `report`, since 0.37.0.** The needle said "report" and that was
+    // true of all eleven until `/context withhold` was admitted: it changes the
+    // session's mask rather than describing anything. The word was the claim, so
+    // the claim moved rather than the count — which did not move at all, because
+    // `/context` was already in the mid-turn set and gained verbs rather than a
+    // row. Weakening this to a substring that spans both words would be the
+    // repair that costs the gate its meaning.
     let opens = format!(
-        "**{} commands report while the agent works**",
+        "**{} commands run while the agent works**",
         capitalised(count)
     );
     assert!(
@@ -2502,4 +2509,76 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
              refusal claim is back to covering a case it does not cover",
         );
     }
+}
+
+/// **N3 — no shipped page says withholding a tool saves anything.**
+///
+/// **This is the release's top risk written as a gate, and it is written because
+/// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
+/// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
+/// cache breakpoint, so dropping a definition would save its tokens once and pay a
+/// cache *write* on every later turn (`io-harness-0.76.0/src/tools/mod.rs:33-42`).
+/// Withholding in fact makes the request marginally **larger**, by one sentence
+/// naming what is withheld (`src/run/prompts.rs:976`).
+///
+/// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
+/// its headline. That framing is what a writer reaches for, because "withhold" means
+/// "remove" everywhere else in computing — so the wrong sentence is the *natural*
+/// one to write and nothing else in the suite can see it. A page claiming a saving
+/// compiles, passes every other gate, and misleads the operator into using the
+/// wrong lever for the problem they have.
+///
+/// Scoped to sentences that put a saving verb near the masking vocabulary rather
+/// than to the verbs alone: `docs/guide/accounting.md` legitimately discusses cost
+/// and cheapness throughout, and a blanket ban on the word "cheaper" would forbid
+/// the page that exists to talk about money from doing so.
+///
+/// Sabotage: write "withholding a tool makes the turn cheaper" into any guide page.
+/// Every other test in the repository stays green.
+#[test]
+fn n3_no_shipped_page_claims_a_mask_reduces_what_a_turn_costs() {
+    // The words that make a sentence about masking into a claim about cost.
+    const SAVING: [&str; 8] = [
+        "saves",
+        "saving",
+        "cheaper",
+        "reduces",
+        "reduce",
+        "shrink",
+        "smaller",
+        "less context",
+    ];
+    // The vocabulary that makes a sentence be about masking at all.
+    const MASKING: [&str; 4] = ["withhold", "withheld", "tool mask", "/context allow"];
+
+    let mut bad = Vec::new();
+    for (name, text) in shipped_prose() {
+        for sentence in flat(&text).split(['.', '!', '?']) {
+            let lower = sentence.to_lowercase();
+            if !MASKING.iter().any(|m| lower.contains(m)) {
+                continue;
+            }
+            // A sentence may say a mask does NOT save — that is the correction
+            // this release exists to make, and forbidding it would forbid the fix.
+            let denied = lower.contains("not")
+                || lower.contains("never")
+                || lower.contains("nothing")
+                || lower.contains("no cache")
+                || lower.contains("does not");
+            if denied {
+                continue;
+            }
+            if let Some(word) = SAVING.iter().find(|w| lower.contains(**w)) {
+                bad.push(format!("{name}: {word:?} in {:?}", sentence.trim()));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "a shipped page claims withholding a tool reduces what a turn costs. It does \
+         not: the catalogue sent is byte-identical and the mask ADDS a sentence. \
+         This is the one claim 0.37.0 exists to get right, and it is the one the \
+         roadmap entry got wrong.\n{}",
+        bad.join("\n"),
+    );
 }

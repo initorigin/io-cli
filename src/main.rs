@@ -1104,6 +1104,19 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // and it deliberately does not live on `Capabilities`, which is rebuilt from
     // the file on every turn and would wipe the level each time.
     let mut effort: Option<io_harness::Effort> = None;
+    // **What the next turn may not call — a posture, exactly like `effort` above.**
+    // Read by each turn and cleared by nothing but `/context allow`, session state
+    // rather than configuration: there is no `[app.io-cli]` key for it, because a
+    // mask an operator sets while watching a turn is an answer to what is
+    // happening now and not a standing preference.
+    //
+    // **It withholds permission, never a definition.** io-harness offers a masked
+    // turn a byte-identical catalogue on purpose — the tool array sits ahead of the
+    // provider's cache breakpoint, so removing one would save its tokens once and
+    // pay a cache write on every later turn — and it appends one sentence naming
+    // what is withheld. So this makes a request marginally larger and never
+    // smaller, and no line this driver prints may suggest otherwise.
+    let mut mask = io_harness::ToolMask::none();
     // **The file, held so it can be read again — which through 0.17.0 it never
     // was.** io-harness composes the instruction files inside `Config::discover`
     // and stores the result privately; there is no `Config::reload`, so a
@@ -1532,6 +1545,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                                     &capabilities,
                                                     &seen,
                                                     effort,
+                                                    &mask,
                                                     run_id,
                                                     pending,
                                                 )
@@ -4996,7 +5010,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     }
                 }
                 Action::Mcp => {
-                    let list = io_cli::servers::servers(&config, &app.servers);
+                    let mut list = io_cli::servers::servers(&config, &app.servers);
+                    // **What each server's tools weighed on the last request.**
+                    // Read off `opening` for the reason `/compact` reads
+                    // `opening.compaction` rather than building a contract of its
+                    // own: `tests/contract.rs` counts `contract::session` callers
+                    // and fails at five, and nothing in the file can move a
+                    // server between two turns of one session anyway.
+                    //
+                    // A server with no entry keeps `None` and draws "not yet on a
+                    // request", which is not the same claim as zero.
+                    io_cli::servers::costed(
+                        &mut list,
+                        &io_cli::context::server_cost(
+                            &seen.latest().unwrap_or_default(),
+                            &opening,
+                        ),
+                    );
                     if list.is_empty() {
                         // The "not configured" shape this product uses
                         // everywhere: an empty section is not an error.
@@ -5243,7 +5273,29 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // the operator has just edited on disk is reflected without a
                     // reload — and a bundle they have just broken shows up as a
                     // refusal in the same breath.
+                    // **`with_costs`, and it is the whole reason the column is not
+                    // decoration.** `view()` has ten call sites that draw no cost,
+                    // so the figure is attached here rather than taken as a
+                    // parameter — which means this one line is the only thing
+                    // between a working column and 0.31.0's shape, where every row
+                    // the release added was listable and the pipeline behind it had
+                    // no caller at all behind a fully green suite.
+                    // **Costs attached only when a request has actually gone out.**
+                    // `bundle_cost` lists every loaded bundle, so a `Request::default()`
+                    // stand-in returns a map of real zeroes — and a zero on this
+                    // column says "this bundle is free", which is the one claim that
+                    // stops an operator looking. `/mcp` gets this right for free
+                    // because an unmeasured server is simply absent from its map;
+                    // `/plugin`'s rows are keyed the other way and need the decision
+                    // made here. Without it the two surfaces disagree on the first
+                    // draw of a session, which is exactly what they exist not to do.
                     let view = io_cli::pluginview::view(holdings.loaded());
+                    let view = match seen.latest() {
+                        Some(request) => {
+                            view.with_costs(io_cli::context::bundle_cost(&request, &opening))
+                        }
+                        None => view,
+                    };
                     // **The same call `/skills` makes, deliberately.** A bundle
                     // whose declared skills directory is absent ends every turn of
                     // the session, and both surfaces have to say so — but saying
@@ -6409,7 +6461,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     fold_next = said == io_cli::compact::Said::Armed;
                     app.say(Tone::Muted, said.line(dash));
                 }
-                Action::Context => {
+                // **One variant carrying the verb, rather than a second `Action`.**
+                // The mid-turn match below ends in a `_ => debug_assert!(false, …)`,
+                // so a new variant would compile, pass every debug test and be
+                // silently inert mid-turn in a release build — which is the door
+                // an operator most wants this on. Changing this variant's shape
+                // made both sites compile errors instead, which is how they were
+                // found.
+                Action::Context(None) => {
                     // `reading` for the same reason the arm above binds it that
                     // way — `tests/plan.rs` reads the plan-gate argument off a
                     // binding called `contract`, and this is not a turn's.
@@ -6427,10 +6486,24 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         seen.latest().as_ref(),
                         &reading,
                         reading.max_tokens,
+                        &mask,
                         &app.theme,
                         screen.width(),
                     );
                     screen.commit(&lines).map_err(|error| error.to_string())?;
+                }
+                Action::Context(Some(said)) => {
+                    // The transition and the sentence are both `context::withhold`'s
+                    // — nothing under `tests/` links this binary, so a rule written
+                    // here could be neither asserted nor sabotaged.
+                    // The catalogue the last request carried, so a misspelling is
+                    // caught here — io-harness keeps an unknown name deliberately,
+                    // to keep a mask portable across feature sets, so nothing
+                    // downstream can warn.
+                    let offered = io_cli::context::offered(seen.latest().as_ref());
+                    let (next, line) = io_cli::context::withhold(&mask, &said, &offered);
+                    mask = next;
+                    app.say(Tone::Muted, line);
                 }
                 Action::Copy(what) => {
                     let last = last_run(&session, &store);
@@ -6695,6 +6768,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `mem::take` here would make every level last exactly one
                         // turn — the defect F1's sabotage names.
                         effort,
+                        // Borrowed rather than read, unlike `effort` above: this
+                        // turn's own `/context withhold` writes through it, and
+                        // what it writes governs the turn after this one.
+                        &mut mask,
                         text,
                         // **This turn's own clock, not the session's.** What a
                         // reader wants of the row above the prompt is how long the
@@ -7246,6 +7323,14 @@ async fn turn<P: Provider>(
     // than a fourth level, so a session that never types `/effort` sends the
     // request body this crate sent before 0.26.0.
     effort: Option<io_harness::Effort>,
+    // **What this turn may not call — borrowed rather than copied, because
+    // `/context withhold` runs mid-turn and this is the session's posture.**
+    // Beside `effort` because it is the same kind of thing, and unlike it in the
+    // one way that matters: a level cannot change while a turn runs and a mask
+    // can, since watching the agent reach for a tool is exactly when an operator
+    // knows they want it withheld. A change here reaches the *next* turn — this
+    // one's contract was built before the keystroke.
+    mask: &mut io_harness::ToolMask,
     text: String,
     started: Instant,
 ) -> Result<Turned, String> {
@@ -7391,6 +7476,12 @@ async fn turn<P: Provider>(
     // is `contract::buying`'s, not this file's — nothing under `tests/` links this
     // binary, so a conditional written here could not be asserted or sabotaged.
     let contract = io_cli::contract::buying(contract, effort);
+    // **What `/context withhold` last said, applied for `buying`'s own reason.**
+    // A mask withholds permission and never a definition: the catalogue this
+    // contract carries to the wire is byte for byte the one an unmasked turn
+    // carries, and io-harness appends one sentence naming what is withheld. So
+    // this line makes the request marginally larger and can never make it smaller.
+    let contract = io_cli::contract::masking(contract, mask);
     // Set while a fold has been asked for and no `Compacted` event has arrived.
     // A one-shot: io-harness spends the request whether or not it folds, so what
     // this guards is the report and never a retry.
@@ -7922,15 +8013,32 @@ async fn turn<P: Provider>(
                                         );
                                         screen.commit(&lines).map_err(|e| e.to_string())?;
                                     }
-                                    Action::Context => {
+                                    Action::Context(None) => {
                                         let lines = io_cli::context::committed(
                                             seen.latest().as_ref(),
                                             &contract,
                                             contract.max_tokens,
+                                            mask,
                                             &app.theme,
                                             screen.width(),
                                         );
                                         screen.commit(&lines).map_err(|e| e.to_string())?;
+                                    }
+                                    // **The one place this surface is worth having
+                                    // mid-turn**, and the reason it is admissible:
+                                    // watching the agent reach for a tool is when
+                                    // an operator knows they want it withheld. It
+                                    // takes effect on the *next* turn — this one's
+                                    // contract was built before the keystroke — and
+                                    // the sentence says so rather than implying the
+                                    // running turn was changed.
+                                    Action::Context(Some(said)) => {
+                                        let offered =
+                                            io_cli::context::offered(seen.latest().as_ref());
+                                        let (next, line) =
+                                            io_cli::context::withhold(mask, &said, &offered);
+                                        *mask = next;
+                                        app.say(Tone::Muted, line);
                                     }
                                     Action::Copy(what) => {
                                         let (payload, said) = to_copy(facts.last.as_ref(), store, what);
@@ -10617,6 +10725,14 @@ async fn resume_pending<P: Provider>(
     // same reasoning — see `contract::buying` at the bottom of this function for why
     // this parameter exists at all.
     effort: Option<io_harness::Effort>,
+    // **The mask reaches this door too, and by value because nothing here can
+    // change it.** A resumed run is a turn like any other and the posture applies
+    // to it — the alternative is a session where `/context withhold docx_write`
+    // holds everywhere except the one path that answers a parked question, which
+    // is the shape `/effort` shipped broken in 0.26.0 and this comment's neighbour
+    // below records. There is no mid-turn surface on this path, so unlike `turn`
+    // it needs no borrow.
+    mask: &io_harness::ToolMask,
     run_id: i64,
     pending: io_cli::resume::Pending,
 ) -> Result<(), String> {
@@ -10721,6 +10837,10 @@ async fn resume_pending<P: Provider>(
     // the half of the work an operator came back to `/resume` and finish, while
     // the status line went on saying `effort high`.
     let continuing = io_cli::contract::buying(continuing, effort);
+    // And the mask, for the same reason and on the same door — see the parameter's
+    // own note. A posture that held on every turn except a resumed one would be
+    // the 0.26.0 defect above in a second shape.
+    let continuing = io_cli::contract::masking(continuing, mask);
     let (observer, mut events) = bridge::channel();
     let canceller = observer.canceller();
     let (approver, mut asks) = approval::channel();

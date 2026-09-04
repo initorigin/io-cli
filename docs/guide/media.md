@@ -40,6 +40,14 @@ twelve more of them: **io-cli cannot take a tool out of io-harness's workspace
 tool set**, so a feature this crate turns on is a tool the agent has, and the
 only honest thing to do with that is say so. See [Documents](#documents).
 
+That is still true in 0.37.0, and it is worth being exact about what changed
+beside it. `/context withhold <tool>` does not remove a tool from the set — the
+catalogue the model is offered is byte for byte the same one — it withholds
+*permission to call it* for the turn, and a call is refused before anything is
+started. So the tool is still there, still costs its definition's tokens, and the
+agent is told in the same request that asking for it will do nothing. See
+[What this release is not](limits.md).
+
 A picture is drawn from half blocks — `▀` splits a cell into two halves that are
 each about square — fitted to your terminal's width and bounded in height. On
 kitty, ghostty, WezTerm and Konsole a PNG is drawn as the **real image** instead,

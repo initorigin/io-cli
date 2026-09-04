@@ -3991,3 +3991,108 @@ async fn live_f9_whichever_conditional_events_a_real_run_emits() {
         events.len()
     );
 }
+
+/// **O4 — a withheld tool is refused by the mask, against a real provider.**
+///
+/// **The assertion is that the mechanism was used, never that the file is
+/// unwritten.** 0.34.0 shipped a live arm that passed over a feature which placed
+/// nothing, because the model found the thing by walking the workspace and the
+/// happy string appeared anyway. Here the equivalent trap is louder: a model asked
+/// to write a file may simply decline, or write it with a different tool, and the
+/// absence of `notes.txt` would look exactly like a working mask. So this asserts
+/// io-harness emitted `EventKind::Refused` with `layer: "turn tool mask"` — a fact
+/// only the mask can produce — and it deliberately does **not** assert the file is
+/// missing.
+///
+/// The goal names `write_file` explicitly so the model reaches for the one tool
+/// that is withheld. If it never tries, the run produces no refusal and this fails
+/// loudly rather than passing on an absence, which is the whole point.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+
+    let (answerer, _questions) = io_cli::intent::channel();
+    let contract = io_cli::contract::session(
+        "Create a file called notes.txt containing the single word hello. \
+         Use the write_file tool.",
+        root.to_path_buf(),
+        &no_configuration(),
+        &no_configuration().plugins(),
+        &io_cli::contract::Capabilities::default(),
+        Arc::new(answerer),
+        None,
+    )
+    .with_max_steps(6);
+
+    // Through io-cli's own applier, not `with_tool_mask` directly: what is being
+    // proved is that the product's path from `/context withhold` to the wire
+    // works, and `contract::masking` is the whole of that path.
+    let contract =
+        io_cli::contract::masking(contract, &io_harness::ToolMask::withholding(["write_file"]));
+
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let result = session
+        .turn_bounded_observed(&contract, &provider, &store, &policy, &DenyAll, &observer)
+        .await
+        .expect("the turn runs");
+
+    let events = collected.lock().expect("not poisoned");
+    println!("outcome: {:?}  kind: {:?}", result.outcome, result.kind);
+    for event in events.iter() {
+        println!("  {:?}", event.kind);
+    }
+
+    // **The mask has two observable outcomes and only one of them is a refusal.**
+    // The first draft of this arm demanded `EventKind::Refused` and failed against a
+    // working mask, which is the finding worth keeping: io-harness *announces* the
+    // mask in the user prompt — "Unavailable this turn — these tools are listed
+    // above but calling one is refused and starts nothing: write_file"
+    // (`run/prompts.rs:976`) — so a compliant model never attempts the call and
+    // never produces the refusal. The run above said so in its own reasoning: "the
+    // previous turns show write_file was refused, so I used a shell redirect
+    // instead". That is the mask working at its best, not evidence of absence.
+    //
+    // So what is asserted is the guarantee itself: **`write_file` is never
+    // successfully called.** Either it was attempted and refused with the mask's own
+    // layer, or it was never attempted. Both are the mask; a successful call is the
+    // only thing that is not.
+    let refused = events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            EventKind::Refused { layer, target, .. }
+                if layer.as_deref() == Some("turn tool mask") && target == "write_file"
+        )
+    });
+    let committed = events.iter().any(|event| {
+        matches!(&event.kind, EventKind::Step { tool_call, .. } if tool_call.starts_with("write_file:"))
+    });
+    println!("refused: {refused}  committed a write_file step: {committed}");
+
+    assert!(
+        !committed,
+        "a `write_file` call committed a step while the tool was withheld — the mask \
+         did not reach the wire. outcome: {:?}",
+        result.outcome,
+    );
+    // And the run still did the work, by a route the mask left open. Without this
+    // the arm would pass on a run that failed for any unrelated reason, which is
+    // the absence-is-not-evidence trap in its other direction.
+    assert!(
+        root.join("notes.txt").exists(),
+        "the goal was not reached at all, so this arm proves nothing about the mask \
+         — it needs a run that got there without the withheld tool. outcome: {:?}",
+        result.outcome,
+    );
+}

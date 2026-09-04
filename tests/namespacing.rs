@@ -557,10 +557,13 @@ fn f7_the_plugin_pane_translates_every_contribution_it_names() {
 
         // The pane's list of bundles names no contribution, and the root it draws
         // is a path like any other.
+        // No costs: this sweep is about the separator, and a bundle with a cost
+        // figure draws a number rather than a name — nothing this file asserts.
         let view = pluginview::View {
             plugins: vec![listed.clone()],
             refused: Vec::new(),
             adapters: None,
+            costs: std::collections::BTreeMap::new(),
         };
         // `u16::MAX` again: at eighty columns the root is the field that gives
         // way, and a path dropped for width would fail the assertion below for a

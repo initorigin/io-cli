@@ -961,6 +961,9 @@ fn plugin_marks() -> Vec<&'static str> {
             error: "no plugin.toml".to_string(),
         }],
         adapters: Some(adapters),
+        // This sweep collects the row *marks*, and a cost figure carries none —
+        // an empty map keeps the fixture about the glyph set it is named for.
+        costs: std::collections::BTreeMap::new(),
     };
     io_cli::pluginview::rows(&view, 200, &ASCII)
         .iter()

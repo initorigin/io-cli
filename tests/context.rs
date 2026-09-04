@@ -14,15 +14,19 @@
 //! reconstructs instead of reading fails on all three, and it fails on the exact
 //! numbers rather than on a missing row.
 
+use io_cli::commands::Masked;
 use io_cli::context::{self, Request, Seen};
 use io_cli::glyphs::ASCII;
 use io_cli::provider::{watching, Watched};
 use io_cli::theme::{Theme, DARK};
 use io_harness::context::estimate_tokens;
 use io_harness::{
-    CompletionRequest, CompletionResponse, McpServer, Message, Provider, TaskContract, ToolSpec,
+    CompletionRequest, CompletionResponse, McpServer, Message, Provider, TaskContract, ToolMask,
+    ToolSpec,
 };
 use ratatui::text::Line;
+
+mod support;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -371,6 +375,7 @@ fn f7_the_catalogue_names_a_tool_only_the_request_knew_about() {
         Some(&Request::of(&request())),
         &contract(),
         None,
+        &ToolMask::none(),
         &ascii(),
         80,
     ));
@@ -427,6 +432,7 @@ fn f7_the_system_block_is_tokens_of_its_own_text_and_not_a_byte_count() {
         Some(&seen),
         &contract,
         None,
+        &ToolMask::none(),
         &ascii(),
         80,
     ));
@@ -456,7 +462,14 @@ fn f7_the_system_block_is_tokens_of_its_own_text_and_not_a_byte_count() {
 
 #[test]
 fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
-    let empty = drawn(&context::committed(None, &contract(), None, &ascii(), 80));
+    let empty = drawn(&context::committed(
+        None,
+        &contract(),
+        None,
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
     assert!(
         empty
             .iter()
@@ -469,6 +482,7 @@ fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
         Some(&Request::of(&request())),
         &contract(),
         None,
+        &ToolMask::none(),
         &ascii(),
         80,
     ));
@@ -587,5 +601,441 @@ fn every_site_that_forgets_a_run_forgets_the_window_with_it() {
         clear.contains("seen.forget()"),
         "`/clear` is the site `Seen::forget`'s own doc names first, and was the \
          one that did not call it",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.37.0 — the catalogue is attributed to what put it on the wire
+// ---------------------------------------------------------------------------
+
+/// The skill catalogue io-harness appends, exactly as `with_skill_catalog` writes
+/// it: one paragraph of framing, a newline, then one `- name: description` line
+/// per skill. The second entry is namespaced, because a bundle's skills are.
+const SKILL_BLOCK: &str = "Skills available to you — instructions written for this repository. \
+     Only each skill's name and description is shown; call `read_skill` with a name to read that \
+     skill's full text when its description matches what you are doing.\n\
+     - alpha: the operator's own skill, unqualified\n\
+     - docs__writing: a skill the docs bundle ships";
+
+/// The system block of a turn whose session had skills configured.
+fn system_with_skills() -> String {
+    format!("{}\n\n{SKILL_BLOCK}", system())
+}
+
+/// **F2.** The head this module scans for is a sentence io-harness actually
+/// writes, read out of the pinned source rather than trusted.
+///
+/// The two memory heads above it are matched against a dependency's prose with no
+/// such gate, and their failure mode is the one this exists to close: io-harness
+/// copy-edits the sentence, the section silently reports zero, and a zero is
+/// indistinguishable from a session that configured no skills. A wrong number is
+/// worse here than a missing row, because the page's whole claim is that its parts
+/// sum to the request.
+///
+/// Sabotage: change one word of `SKILLS_HEAD` in `src/context.rs`. Nothing else in
+/// the suite notices — every other arm builds its own fixture from the same
+/// constant, so they all agree with each other and all disagree with the wire.
+#[test]
+fn f2_the_skill_catalogue_head_is_a_sentence_io_harness_writes() {
+    let source = support::harness_source_at(&["run", "prompts.rs"]);
+    assert!(
+        source.contains(context::SKILLS_HEAD),
+        "`SKILLS_HEAD` is `{}`, which is not in io-harness's own run/prompts.rs. \
+         The pin moved the sentence and the skill catalogue section now reports zero \
+         for every session — which reads exactly like a session with no skills.",
+        context::SKILLS_HEAD,
+    );
+    assert!(
+        source.contains("fn with_skill_catalog"),
+        "the function that writes the catalogue is gone from run/prompts.rs, so the \
+         needle above is being matched against something else"
+    );
+}
+
+/// **F2.** A catalogue is located and counted; a perturbed one is reported absent
+/// rather than as zero.
+///
+/// Both directions, because one direction is what let 0.30.0 document a door with
+/// no caller. The failing direction is the one that matters: a needle that has
+/// drifted produces `None`, the page says "no skill was named to this request",
+/// and an operator with twelve skills reads that as the truth.
+///
+/// Sabotage: make `skills_in` return `Some` unconditionally, or drop the
+/// `starts_with("- ")` line test so the block runs to the end of the system
+/// prompt. The first fails the absent arm; the second fails the token equality,
+/// because the block would then swallow the framing after it.
+#[test]
+fn f2_a_skill_catalogue_is_located_and_a_perturbed_one_is_absent() {
+    let mut seen = Request::of(&CompletionRequest {
+        system: system_with_skills(),
+        ..request()
+    });
+    let sections = context::sections(&seen, &contract());
+    let row = section(&sections, context::SKILL_CATALOGUE);
+    assert_eq!(
+        row.tokens,
+        estimate_tokens(SKILL_BLOCK),
+        "the section must be the block io-harness wrote, whole and nothing else"
+    );
+    assert!(
+        row.detail.contains("2 skill(s)"),
+        "two catalogue lines, counted off the wire: {}",
+        row.detail
+    );
+
+    // The same request with the head sentence perturbed — which is what a pin
+    // that copy-edits it produces.
+    seen.system = seen.system.replace("Skills available", "Skills offered");
+    let sections = context::sections(&seen, &contract());
+    let row = section(&sections, context::SKILL_CATALOGUE);
+    assert_eq!(row.tokens, 0);
+    assert!(
+        row.detail.contains("no skill"),
+        "an unlocated catalogue must say so, never draw a bare zero: {}",
+        row.detail
+    );
+}
+
+/// **F1.** The sections still partition the request once the catalogue is one of
+/// them.
+///
+/// The skill block is inside `request.system`, so a section that reported it
+/// beside the system block rather than out of it would count those bytes twice and
+/// the total would exceed the request. This is the arithmetic the page's whole
+/// design rests on and it is asserted against the request rather than against the
+/// sum of the rows — a sum of the rows compared to itself is a tautology.
+///
+/// Sabotage: drop the second `saturating_sub` in `sections`. Every row still draws
+/// and only this equality fails.
+#[test]
+fn f1_the_sections_still_sum_to_the_request_with_a_catalogue_present() {
+    let seen = Request::of(&CompletionRequest {
+        system: system_with_skills(),
+        ..request()
+    });
+    let sections = context::sections(&seen, &contract());
+
+    let request_tokens = estimate_tokens(&seen.system)
+        + seen
+            .tools
+            .iter()
+            .map(|t| estimate_tokens(&format!("{}\n{}\n{}", t.name, t.description, t.parameters)))
+            .sum::<u64>()
+        + estimate_tokens(&seen.conversation);
+
+    assert_eq!(
+        context::total(&sections),
+        request_tokens,
+        "the sections are a partition of the request, so they sum to it exactly"
+    );
+}
+
+/// **F3.** `server_cost` is the same measurement the page draws, keyed for a
+/// surface to look up.
+///
+/// `/mcp` and `/plugin` draw their numbers from these maps and `/context` draws
+/// its rows from `sections`; if the two could disagree, two surfaces would state
+/// different costs for one server and the operator would have no way to tell which
+/// was real. Asserted from **one** snapshot, which is the same discipline that
+/// keeps `ctx N%` and the page total in agreement.
+///
+/// Sabotage: count `tool.name` alone in either function. The other keeps counting
+/// the schema, and this equality is the only thing that fails.
+#[test]
+fn f3_server_cost_is_the_number_the_page_draws_for_the_same_server() {
+    let seen = Request::of(&request());
+    let contract = contract();
+    let costs = context::server_cost(&seen, &contract);
+    let sections = context::sections(&seen, &contract);
+
+    assert_eq!(costs.len(), 1, "one server offered a tool: {costs:?}");
+    let (id, tokens) = costs.iter().next().expect("the one server");
+    assert_eq!(
+        *tokens,
+        section(&sections, &format!("mcp {id}")).tokens,
+        "the map and the page must be one measurement, not two"
+    );
+}
+
+/// **F3.** A server that has not been on a wire is absent from the map rather than
+/// present at zero.
+///
+/// The two mean different things and only one of them is true. A configured server
+/// that has offered nothing yet is unmeasured; zero would tell an operator it is
+/// free, which is the opposite of unknown and is the claim they would act on.
+///
+/// Sabotage: seed the map from `contract.mcp` before the loop. Every other arm
+/// passes.
+#[test]
+fn f3_a_server_that_has_not_been_on_a_wire_is_absent_not_zero() {
+    let seen = Request::of(&CompletionRequest {
+        tools: vec![tool("read_file", "Read a file from the workspace.")],
+        ..request()
+    });
+    let costs = context::server_cost(&seen, &contract());
+    assert!(
+        costs.is_empty(),
+        "the contract configures `docs`, but no tool of its reached this request, \
+         so it is unmeasured rather than free: {costs:?}"
+    );
+}
+
+/// **F9.** The sentence a withhold prints says the cost went **up**, not down.
+///
+/// This is the one line in the release that can be got backwards, and getting it
+/// backwards is invisible: a reader told a tool was withheld assumes the request
+/// shrank, because that is what the word means everywhere else and it is what this
+/// release's own roadmap entry assumed. io-harness sends a byte-identical
+/// catalogue and appends a sentence naming the withheld tools, so a mask costs a
+/// little more and saves nothing.
+///
+/// Sabotage: delete the "still costs its definition" clause from
+/// `context::withhold`, or write "saving" anywhere in it. The mask still works,
+/// every other arm passes, and the product lies to its operator.
+#[test]
+fn f9_a_withhold_says_the_tool_is_still_offered_and_still_costs() {
+    let catalogue = vec!["docx_write".to_string()];
+    let (mask, line) = context::withhold(
+        &ToolMask::none(),
+        &Masked::Withhold("docx_write".into()),
+        &catalogue,
+    );
+    assert!(mask.withholds("docx_write"));
+    assert!(
+        line.contains("still costs its definition"),
+        "the cost direction must be stated: {line}"
+    );
+    assert!(
+        line.contains("refused"),
+        "and what actually happens must be stated: {line}"
+    );
+    for wrong in ["saves", "saving", "cheaper", "smaller", "reduces"] {
+        assert!(
+            !line.to_lowercase().contains(wrong),
+            "`{wrong}` in a withhold's own sentence is the release's top risk: {line}"
+        );
+    }
+}
+
+/// **F9.** The page's withheld row says the same thing, and is absent when
+/// nothing is withheld.
+///
+/// Absent rather than "nothing is withheld": a row that appears on every draw and
+/// says nothing trains a reader to skip the place the answer appears, which is the
+/// one place it must not be skipped.
+///
+/// Sabotage: return `Some` unconditionally from `withheld_line`, or drop its
+/// closing clause. The first fails the empty arm, the second the wording arm.
+#[test]
+fn f9_the_withheld_row_is_absent_until_there_is_one_and_then_states_its_cost() {
+    assert_eq!(context::withheld_line(&ToolMask::none(), "-"), None);
+
+    let mask = ToolMask::withholding(["docx_write", "xlsx_write"]);
+    let line = context::withheld_line(&mask, "-").expect("a mask draws a row");
+    assert!(line.contains("docx_write") && line.contains("xlsx_write"));
+    assert!(
+        line.contains("saves nothing"),
+        "the row must not let a reader infer a saving: {line}"
+    );
+
+    // And it reaches the drawn page, which is the surface an operator reads —
+    // the function above being right is not evidence that anything calls it.
+    let page = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract(),
+        None,
+        &mask,
+        &ascii(),
+        80,
+    ));
+    assert!(
+        page.iter().any(|row| row.contains("withheld:")),
+        "the mask must reach the page: {page:#?}"
+    );
+}
+
+/// **F9.** `allow` never silently does nothing, and bare `allow` names what came
+/// back.
+///
+/// An operator who mistypes a name and gets no answer believes the tool was
+/// allowed again. And a bare `allow` changes several things at once, so it owes
+/// the list — which is the whole reason it is safe to leave unguarded.
+///
+/// Sabotage: return the same line whether or not `retain` removed anything, or
+/// drop the name list from the `Clear` arm.
+#[test]
+fn f9_allow_reports_a_no_op_and_a_clear_names_what_returned() {
+    let mask = ToolMask::withholding(["docx_write", "pdf_write"]);
+
+    let (_, line) = context::withhold(&mask, &Masked::Allow("never_withheld".into()), &[]);
+    assert!(
+        line.contains("was not withheld"),
+        "a mistyped name must not read as success: {line}"
+    );
+
+    let (cleared, line) = context::withhold(&mask, &Masked::Clear, &[]);
+    assert!(cleared.is_empty());
+    assert!(
+        line.contains("docx_write") && line.contains("pdf_write"),
+        "clearing must name every tool it re-offered: {line}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Defects the adversarial review found behind a fully green suite
+// ---------------------------------------------------------------------------
+
+/// **F9 — withholding a name the catalogue does not carry says so.**
+///
+/// **The defect this replaces was the safety lever being silently inert.**
+/// io-harness keeps an unknown mask name rather than rejecting it, deliberately,
+/// so a mask stays portable across builds with different cargo features
+/// (`io-harness-0.76.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
+/// the exact string and a misspelling withholds nothing — while the operator was
+/// told "calling it will be refused before anything starts" and `/context` drew it
+/// on the withheld row. `/context withhold Docx_Write` and the file gets written.
+///
+/// The asymmetry was the tell: `Masked::Allow` already refused to be a silent
+/// no-op and was tested for it. The guard existed only on the harmless direction.
+///
+/// The name is still added — refusing it would break the portability io-harness
+/// designed for — and only the sentence changes.
+///
+/// Sabotage: drop the `unknown` branch, or pass `&[]` at either call site in
+/// `src/main.rs`. The second is the 0.35.0 shape exactly, where a correct guard
+/// was handed an empty slice by the only door that reached it.
+#[test]
+fn f9_withholding_a_name_the_catalogue_does_not_carry_says_so() {
+    let catalogue: Vec<String> = vec!["docx_write".into(), "write_file".into()];
+
+    // The case the operator actually hits: right tool, wrong case.
+    let (mask, line) = context::withhold(
+        &ToolMask::none(),
+        &Masked::Withhold("Docx_Write".into()),
+        &catalogue,
+    );
+    assert!(
+        line.contains("no tool of that name"),
+        "a name matching nothing on the wire must not be confirmed as refused: {line}"
+    );
+    assert!(
+        mask.withholds("Docx_Write"),
+        "it is still added — io-harness keeps unknown names so a mask stays \
+         portable, and refusing here would break that"
+    );
+
+    // A real name is confirmed, without the warning.
+    let (_, line) = context::withhold(
+        &ToolMask::none(),
+        &Masked::Withhold("docx_write".into()),
+        &catalogue,
+    );
+    assert!(!line.contains("no tool of that name"), "{line}");
+
+    // And before any turn there is no catalogue to check against, so nothing is
+    // warned about — a warning on every name at a fresh prompt is noise that
+    // trains the reader to ignore the one that matters.
+    let (_, line) = context::withhold(&ToolMask::none(), &Masked::Withhold("anything".into()), &[]);
+    assert!(!line.contains("no tool of that name"), "{line}");
+}
+
+/// **F2 — the planning directive is not counted as part of the skill catalogue.**
+///
+/// **io-harness glues the directive onto the last catalogue line with no newline
+/// between them**, so a line scan cannot see the boundary: `compose` calls
+/// `with_skill_catalog` and then `out.push_str(&directive)`
+/// (`run/prompts.rs:73-76`), `Skills::catalog()` ends with no trailing newline
+/// (`skills.rs:470-476`), and `planning_directive` begins with a space
+/// (`run/gate.rs:282-286`). The final line therefore still starts with `- ` and a
+/// naive scan swallows roughly 117 tokens of directive.
+///
+/// It is reachable on **every contained turn**, because registering a plan gate
+/// turns io-harness's planning phase on. And the damage is not only the row: this
+/// block is what `bundle_cost` splits per line, so the directive's tokens are
+/// charged to whichever bundle owns the alphabetically last skill, and that
+/// bundle's `/plugin` figure moves when the operator toggles `/plan`.
+///
+/// Sabotage: delete the `PLAN_DIRECTIVE_HEADS` cut from `skills_in`. The partition
+/// still sums correctly — the bytes are inside `request.system` either way — which
+/// is exactly why the sum test cannot see this and this arm has to exist.
+#[test]
+fn f2_the_planning_directive_is_not_part_of_the_skill_catalogue() {
+    // The wire shape: catalogue, then the directive glued to the last line.
+    let directive = " Before you do anything else you must call `propose_plan` with the ordered \
+                      steps you intend to take, and wait. Until that plan is approved you may \
+                      read, search and think.";
+    let system = format!("{}\n\n{SKILL_BLOCK}{directive}", system());
+
+    let seen = Request::of(&CompletionRequest {
+        system,
+        ..request()
+    });
+    let sections = context::sections(&seen, &contract());
+    let row = section(&sections, context::SKILL_CATALOGUE);
+
+    assert_eq!(
+        row.tokens,
+        estimate_tokens(SKILL_BLOCK),
+        "the catalogue row must be the catalogue, not the catalogue plus whatever \
+         io-harness appended to it without a newline"
+    );
+    assert!(
+        row.detail.contains("2 skill(s)"),
+        "and the line count is unchanged by the directive: {}",
+        row.detail
+    );
+}
+
+/// **F2 — both directive openers are sentences io-harness actually writes.**
+///
+/// The same gate `SKILLS_HEAD` gets, for the same reason: a constant matched
+/// against a dependency's prose fails silently when the dependency rewords it, and
+/// the failure here is a row that over-reports with nothing going red.
+///
+/// Sabotage: reword either constant. Nothing else in the suite notices, because
+/// every other fixture builds its directive from these same constants.
+#[test]
+fn f2_the_planning_directive_openers_are_io_harness_s_own() {
+    let source = support::harness_source_at(&["run", "gate.rs"]);
+    for head in context::PLAN_DIRECTIVE_HEADS {
+        assert!(
+            source.contains(head),
+            "`{head}` is not in io-harness's run/gate.rs, so the skill catalogue \
+             row silently swallows the planning directive on every contained turn",
+        );
+    }
+}
+
+/// **F1 — one server does not absorb another's cost when an id is a prefix.**
+///
+/// `contract.mcp` lists the operator's own `[[mcp]]` entries before the plugin
+/// servers `Plugins::apply_to` appends, and a bare id is validated by nobody — so
+/// `github` and `github__enterprise` can both be configured. Taking the first
+/// match charged every enterprise tool to `github` and left `github__enterprise`
+/// reading "not yet on a request" for the life of the session.
+///
+/// Sabotage: change `max_by_key` back to a first-match return in `server_of`.
+#[test]
+fn f1_the_longest_configured_server_id_wins_not_the_first() {
+    let contract = TaskContract::workspace("goal", "/repo").with_mcp([
+        McpServer::stdio("github", "gh"),
+        McpServer::stdio("github__enterprise", "ghe"),
+    ]);
+    let seen = Request::of(&CompletionRequest {
+        tools: vec![tool(
+            "mcp__github__enterprise__list_repos",
+            "List the repositories.",
+        )],
+        ..request()
+    });
+
+    let costs = context::server_cost(&seen, &contract);
+    assert!(
+        costs.contains_key("github__enterprise"),
+        "the enterprise server's own tool was charged elsewhere: {costs:?}"
+    );
+    assert!(
+        !costs.contains_key("github"),
+        "`github` was charged for a tool that is not its own: {costs:?}"
     );
 }

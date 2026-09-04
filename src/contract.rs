@@ -389,6 +389,52 @@ pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> Tas
     }
 }
 
+/// Apply what `/context withhold` said to the contract of a turn that is about to
+/// run.
+///
+/// **A sibling of [`buying`] rather than a field set inside [`session`], and the
+/// argument is [`buying`]'s own, unchanged.** Three of that builder's callers make
+/// a contract nothing runs — the startup reading and the two reporting pages — and
+/// a mask is a statement about *one turn*, not about the session that owns them.
+/// io-harness draws the same line: `ToolMask` is documented as a request about one
+/// turn, beside `TaskContract::fold_now`, not as a setting that governs a run. So
+/// this is applied where a turn is, which is one call in the driver, and never at
+/// the point a page is built.
+///
+/// **A function and not a line in the driver**, for [`buying`]'s reason and no
+/// other: nothing under `tests/` links `src/main.rs`, so a conditional written
+/// there could not be asserted or sabotaged. The decision is here; the driver
+/// holds one call.
+///
+/// **An empty mask returns the contract untouched, and the early return is the
+/// point.** `TaskContract::tool_mask` is a plain `ToolMask` whose default is empty
+/// — not an `Option` — so calling `with_tool_mask(ToolMask::none())` would in fact
+/// produce an identical contract today. Returning early makes that a property of
+/// this function rather than a coincidence of io-harness's default, which is what
+/// keeps `tests/contract.rs`'s
+/// `f2_nothing_configured_is_the_contract_the_session_built_before` — a Debug
+/// equality over the whole contract — **structurally untouched by this release**
+/// rather than merely still green: a session that never says `/context withhold`
+/// has no call to this that can change anything, and the gate does not depend on
+/// what io-harness chose for an unset field.
+///
+/// **Masking is a scoping and safety lever, never a cost lever, and nothing in
+/// this crate may imply otherwise.** io-harness sends a byte-identical tool
+/// catalogue whether or not a mask is set — deliberately, because the tool array
+/// sits ahead of a cache breakpoint and removing a definition would save its
+/// tokens once and pay a cache *write* on every later turn (`src/tools/mod.rs:40`).
+/// A mask in fact **adds** a sentence to the user prompt naming the withheld tools
+/// (`src/run/prompts.rs:976`, `withheld_sentence`), placed after the observations
+/// precisely so it costs no cache entry. A turn that withholds three tools is
+/// marginally more expensive than the same turn without the mask, not less.
+#[must_use]
+pub fn masking(contract: TaskContract, mask: &io_harness::ToolMask) -> TaskContract {
+    if mask.is_empty() {
+        return contract;
+    }
+    contract.with_tool_mask(mask.clone())
+}
+
 /// The criterion this configuration resolves to, with its reviewer already built.
 ///
 /// `None` covers every case in which the run must not be gated: no section, a

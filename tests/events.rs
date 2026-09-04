@@ -3122,3 +3122,85 @@ fn f5_the_echoed_line_reads_as_a_command_and_not_as_a_prompt() {
         "the row must read as the command that was typed: {echoed:?}",
     );
 }
+
+/// **F7.** A withheld call renders as one refused cell naming the mask, and
+/// nothing on screen says the tool ran.
+///
+/// **The sequence is the one io-harness actually emits, and it is the point of
+/// this test.** `announce()` runs at `run/dispatch.rs:182` and `mask_gate` at
+/// `:185`, so a withheld call opens a `ToolCall` *before* it is refused — the call
+/// is announced, then refused, then the step commits. A test built from the
+/// `Refused` event alone would pass over a transcript showing an open call that
+/// never resolves, which is what an operator would actually see.
+///
+/// io-harness feeds its own sentence back as the step's decision
+/// (`"{tool} refused: withheld from this turn"`, `run/read.rs:1230`), so the cell
+/// pairs to that rather than to a word io-cli invented. What this asserts is the
+/// pairing survives: one call, one decision, so `paired` holds and the cell
+/// carries the harness's sentence instead of falling through to the step verdict.
+///
+/// Sabotage: drop `layer` from the `Refused` arm's rendered text, or make the
+/// refusal close the open call so the cell never commits. The first loses the
+/// only words that say *why*; the second loses the cell.
+#[test]
+fn f7_a_withheld_call_is_one_refused_cell_that_names_the_mask() {
+    let mut events = Events::new(DARK);
+
+    // 1. The call is announced — before the mask is consulted, upstream.
+    let opened = events.event(
+        &event(EventKind::ToolCall {
+            name: "docx_write".into(),
+            target: "report.docx".into(),
+        }),
+        Duration::ZERO,
+    );
+    assert!(
+        opened.is_empty(),
+        "a call still commits nothing when it is announced: {opened:?}"
+    );
+
+    // 2. The mask refuses it. io-harness's own act, rule and layer.
+    let refusal = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "tool".into(),
+            target: "docx_write".into(),
+            rule: Some("docx_write".into()),
+            layer: Some("turn tool mask".into()),
+        },
+    );
+    assert!(
+        refusal.contains("docx_write"),
+        "the refusal names the tool: {refusal:?}"
+    );
+    assert!(
+        refusal.contains("turn tool mask"),
+        "and names what refused it, which is the fact no other agent prints: {refusal:?}"
+    );
+
+    // 3. The step commits anyway — a refusal is an observation, not an ending.
+    let cell = rendered(
+        &mut events,
+        EventKind::Step {
+            decision: "docx_write refused: withheld from this turn".into(),
+            tool_call: "docx_write".into(),
+            tokens: 12,
+            changed: false,
+        },
+    );
+    assert!(
+        cell.contains("withheld from this turn"),
+        "the cell carries io-harness's own sentence rather than a bare verdict: {cell:?}"
+    );
+
+    // Nothing anywhere in the three may read as the tool having run. `no change`
+    // is the step verdict the cell falls back to when the decision cannot be
+    // paired, and it is exactly the wrong thing to say about a call that was
+    // never started.
+    let whole = format!("{refusal}\n{cell}");
+    assert!(
+        !whole.contains("no change"),
+        "a withheld call must not fall through to the step's verdict, which \
+         describes a call that ran and changed nothing: {whole:?}"
+    );
+}
