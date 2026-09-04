@@ -37,7 +37,7 @@
 //! only [`At::of`] builds — by counting entries in the file's own bytes.
 //!
 //! `[[provider]]` is deliberately **not** one of io-harness's appending keys
-//! (`config.rs:2052`): the winning scope replaces the chain whole, "because a
+//! (`config.rs:3130`): the winning scope replaces the chain whole, "because a
 //! half-appended fallback chain is not a chain". So exactly one file decides the
 //! whole array, and [`declared_at`] finds that file through [`decided`] — the
 //! same origin [`chain`] already reads the credentials out of, so the position
@@ -46,7 +46,7 @@
 //! # Exactly one of `preset` and `base_url`
 //!
 //! io-harness refuses a `compatible` entry that names both or neither, by index,
-//! at load (`config.rs:456`). [`crate::configure::write`] would catch it on the
+//! at load (`config.rs:571`). [`crate::configure::write`] would catch it on the
 //! round trip and roll back, which is a good failure — but [`add`] takes an
 //! [`Endpoint`] whose two `compatible` shapes are separate variants, so the entry
 //! that fails cannot be constructed at all.
@@ -633,7 +633,7 @@ impl Key<'_> {
 /// checked against, and a list nothing can disagree with is decoration that goes
 /// stale in silence — the same argument [`PRESETS`] answers by being provable.
 /// The derivation matches what io-harness's own documentation writes
-/// (`config.rs:430` spells `${env:GROQ_API_KEY}`), and it is an *offer*: a
+/// (`config.rs:546` spells `${env:GROQ_API_KEY}`), and it is an *offer*: a
 /// vendor whose variable is spelled differently is one [`Key::Indirect`] away,
 /// and [`variable_is_set`] means a name nobody's shell carries is never the
 /// default that gets taken.
@@ -683,7 +683,7 @@ pub fn variable_is_set(variable: &str) -> bool {
 ///   a different vendor is a different link, and [`remove`] plus [`add`] says so
 ///   in words. Allowing them here would also make the one entry io-harness
 ///   refuses expressible again: a `preset` written onto a `base_url` entry names
-///   both bases, which fails at load by index (`config.rs:456`) — a loud failure,
+///   both bases, which fails at load by index (`config.rs:571`) — a loud failure,
 ///   but a loud failure produced by a control that looked like renaming a field.
 /// - `auth`, `name`, `reference_prices` — nothing asks for them, and the last
 ///   turns on an outbound request to a host the file did not name. A control

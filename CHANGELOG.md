@@ -6,6 +6,69 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-04
+
+The release that lets you install io the way you install everything else. Distribution was a
+script piped from a URL and nothing else — a checksum-verified, no-sudo, no-lifecycle-script
+path, and also the path a security-conscious developer's employer has told them not to take. A
+Homebrew formula and a scoop manifest now point at the same four artifacts the installers
+already fetch, so nothing about what is distributed changes; what changes is how many ways there
+are to reach it. Both live in this repository rather than in two of their own, which costs one
+longer `brew tap` line and saves two public repositories and a cross-repository push credential.
+
+`io upgrade` prints the command that updates the binary you are running — `brew upgrade io`,
+`scoop update io`, or the installer line — decided from the running binary's own path. It prints
+and does not run, and it asks nothing about what the newest version is. There is still no
+version check: this crate has no HTTP client and `tests/dependencies.rs` fails the build if it
+grows one.
+
+And three things this product published as limitations stop being true. `io acp` asks the editor
+for permission instead of denying every approval. `/cost`'s grouped rows say when a cache-write
+count is a floor rather than a fact. And declining a bundle re-install leaves the installed
+adapter alone, which the guide has claimed in writing since 0.35.0 while the code did the
+opposite.
+
+### Added
+
+- A Homebrew formula (`Formula/io.rb`) and a scoop manifest (`bucket/io.json`), served from this
+  repository as its own tap and bucket. `scripts/update-tap.sh` regenerates both from a published
+  Release's own `SHA256SUMS`, so no digest is ever hand-copied.
+- `io upgrade`, the ninth argv variant. It classifies the running binary's path as a Homebrew,
+  scoop or script install and names the matching command; a path none of the three would have
+  produced is told so rather than given advice that might replace a binary something else placed.
+- `session/request_permission` in `io acp`, with the three options `io_harness::Decision` can
+  express. The answer decides the call, and `allow-session` remembers exactly that act on exactly
+  that target — the same rule the terminal's overlay writes, from one shared function.
+- A cache-write floor on `/cost`'s per-model and per-day rows, in the words the totals above them
+  have used since 0.36.0.
+
+### Changed
+
+- **`RunOutcome::SchemaUnsatisfied` has an exit code, a description and an ACP stop reason.** The
+  variant arrived in io-harness 0.77.0 and that crate's changelog never declares it; the enum is
+  `#[non_exhaustive]`, so a run that failed its output schema exited `5` where its sibling
+  `VerificationFailed` exits `6`, and reported `end_turn` to an editor. It now exits `6`.
+- The bundle adapter is swapped **after** consent rather than before it, so a declined re-install
+  leaves the installed adapter byte-identical.
+- `io acp`'s reader runs on its own task. It awaited the turn inline, which meant the answer to a
+  question that turn asked could not be read until the turn returned — a deadlock, and the reason
+  the permission round trip was never wired.
+
+### Fixed
+
+- Forty-one io-harness source citations across `src/` and `tests/` re-anchored to the pinned
+  tree. They were **three generations deep** — some naming io-harness 0.69-era line numbers, some
+  0.74-era — and had been asserting false `file:line` facts for seven or more releases.
+  `tests/docs.rs`'s `f19` never saw them: it checks that a citation naming a version names the
+  *pinned* version, and it does not check the line at all, so an unversioned citation is invisible
+  to it.
+
+### Dependencies
+
+- io-harness **0.76.0 → 0.78.0**. `EventKind::ToolCall` gained `origin`, which this release takes
+  and deliberately does not consume; `EventKind` is 53 variants in both, so no mapping table grew
+  a row.
+
 ## [0.37.0] - 2026-09-04
 
 The release that says where your context went. `/context` has read the real outgoing request
@@ -3397,7 +3460,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/initorigin/io-cli/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/initorigin/io-cli/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/initorigin/io-cli/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/initorigin/io-cli/compare/v0.34.1...v0.35.0

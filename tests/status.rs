@@ -133,6 +133,7 @@ fn f4_the_branch_is_drawn_by_both_renderers_and_survives_the_conversation() {
     status.note_branch(&event(EventKind::ToolCall {
         name: "git_branch".into(),
         target: "agent/fix-the-flake".into(),
+        origin: None,
     }));
     assert_eq!(status.branch.as_deref(), Some("agent/fix-the-flake"));
 
@@ -193,11 +194,13 @@ fn f4_a_workspace_with_no_branch_draws_no_branch_field_anywhere() {
     status.note_branch(&event(EventKind::ToolCall {
         name: "git_branch".into(),
         target: String::new(),
+        origin: None,
     }));
     // And so does every other tool call, whatever it points at.
     status.note_branch(&event(EventKind::ToolCall {
         name: "apply_patch".into(),
         target: "src/lib.rs".into(),
+        origin: None,
     }));
     assert_eq!(
         status.branch, None,

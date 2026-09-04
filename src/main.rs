@@ -104,6 +104,31 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
             io_cli::exec::OK
         }));
     });
+    // `io upgrade` leaves before anything else happens at all — before the home
+    // is adopted, before a configuration is discovered, before a working
+    // directory is even resolved. It reads this process's own path and prints,
+    // so taking a home or a store on the way would be side effects a command
+    // that answers one question has no business having.
+    //
+    // The whole decision is `upgrade::advice`, in the library, because nothing
+    // under `tests/` links this file. What is written here is the read of
+    // `current_exe` and the printing, and neither is a decision.
+    if let Some(Subcommand::Upgrade) = cli.command {
+        // A process that cannot say where its own executable is has no path to
+        // classify, so it hands on an empty one and takes the unrecognised arm
+        // rather than guessing at a location. `cfg!` and not a runtime probe:
+        // the installer that could have placed this binary is the one built for
+        // the platform it was built for.
+        let exe = std::env::current_exe().unwrap_or_default();
+        for line in io_cli::upgrade::advice(&exe, cfg!(windows)) {
+            println!("{line}");
+        }
+        // `OK` rather than a bare zero: this is the exit table
+        // `docs/CONTRACT.md` publishes, and a literal here would be a second
+        // opinion about what success is.
+        return Ok(io_cli::exec::OK);
+    }
+
     let root = match cli.dir {
         Some(dir) => dir,
         None => std::env::current_dir().map_err(|error| error.to_string())?,
@@ -1139,7 +1164,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // **The one thing a routing section cannot say about itself**, said before the
     // configuration is handed on so it reads from the settings actually in force
     // rather than from a copy of them. io-harness consults the rules only in its
-    // flat loop (`run/step.rs:1097`), so a contained turn parses them, carries them
+    // flat loop (`run/step.rs:1289`), so a contained turn parses them, carries them
     // and never fires them.
     //
     // Conditional on the session actually being contained, and that is F4's whole
@@ -2192,16 +2217,26 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                             id,
                             scope,
                             edits,
-                            made,
+                            staged,
                         } => {
                             if io_cli::store::acts(index) {
-                                // **The write happens here and nowhere earlier.**
-                                // `edits` is `manage::plan`'s own single
-                                // `pluginview::add`, so the entry lands switched
-                                // on, in one append, and every unrelated section
-                                // comes through byte for byte — see `src/edit.rs`,
-                                // which splices a span and copies the rest.
-                                match io_cli::configure::write(session.root(), *scope, edits) {
+                                // **The write happens here and nowhere earlier, and
+                                // so does the swap.** `edits` is `manage::plan`'s
+                                // own single `pluginview::add`, so the entry lands
+                                // switched on, in one append, and every unrelated
+                                // section comes through byte for byte — see
+                                // `src/edit.rs`, which splices a span and copies
+                                // the rest.
+                                //
+                                // `marketplace::make` first, because a refresh
+                                // whose entry is already in the file has no edits
+                                // at all and the swap is then the whole of what
+                                // consent performs — and because a commit that
+                                // fails must not leave an entry naming a directory
+                                // the adapter never reached.
+                                match io_cli::marketplace::make(staged.as_ref()).and_then(|()| {
+                                    io_cli::configure::write(session.root(), *scope, edits)
+                                }) {
                                     Ok(()) => {
                                         // **Re-read, or `/plugin` will not list what
                                         // was just installed.** `Action::Plugin`
@@ -2245,16 +2280,21 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 // nothing on disk naming it, so there is now nothing
                                 // to leave behind and nothing to undo.
                                 // **And the adapter goes with the decline.** For a
-                                // Claude Code or Codex bundle io had to write a
+                                // Claude Code or Codex bundle io had to build a
                                 // manifest before io-harness could read the bundle
                                 // at all, so there *is* something to take back
                                 // here even though the operator's configuration
-                                // was never opened. `marketplace::unmake` is the
-                                // one place that decision lives, and `Esc` on this
-                                // same picker calls it too — the standard way out
-                                // of a modal must not be the one that leaves
-                                // something behind.
-                                io_cli::marketplace::unmake(made.as_deref());
+                                // was never opened. It was built beside its
+                                // destination and never in it, so this takes back
+                                // the staging directory alone and an adapter the
+                                // operator already had is exactly as it was —
+                                // which is what `docs/guide/plugins.md` has said
+                                // since 0.35.0 and what 0.38.0 makes true.
+                                // `marketplace::unmake` is the one place that
+                                // decision lives, and `Esc` on this same picker
+                                // calls it too — the standard way out of a modal
+                                // must not be the one that leaves something behind.
+                                io_cli::marketplace::unmake(staged.as_ref());
                                 app.record(
                                     Tone::Muted,
                                     format!(
@@ -4291,15 +4331,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 Outcome::Cancelled => {
                     // **`Esc` is a decline, and one picker has something to take
                     // back.** An install disclosure is drawn over an adapter io
-                    // already wrote — io-harness has no loader that takes a
+                    // already built — io-harness has no loader that takes a
                     // foreign manifest, so there is nothing to disclose until the
-                    // generated one exists. The "leave it" row removes it; leaving
-                    // `Esc` out would make the standard way out of every other
-                    // modal in this product the one that leaves a directory nobody
-                    // agreed to under the operator's home, listed by no surface
-                    // and removed by no verb.
-                    if let Some((_, Pick::PluginInstall { made, .. })) = &picker {
-                        io_cli::marketplace::unmake(made.as_deref());
+                    // generated one exists. The "leave it" row discards it;
+                    // leaving `Esc` out would make the standard way out of every
+                    // other modal in this product the one that leaves a directory
+                    // nobody agreed to under the operator's home, listed by no
+                    // surface and removed by no verb.
+                    if let Some((_, Pick::PluginInstall { staged, .. })) = &picker {
+                        io_cli::marketplace::unmake(staged.as_ref());
                     }
                     picker = None;
                 }
@@ -4910,11 +4950,20 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     id: disclosure.id.clone(),
                                     scope: plan.scope,
                                     edits: plan.edits.clone(),
-                                    made: plan.made.clone(),
+                                    staged: plan.staged.clone(),
                                 },
                             ));
                         }
                         Ok((request, Some(plan))) => {
+                            // **No `marketplace::make` here, and the guard above is
+                            // why.** `manage::plan` fills `staged` only where it
+                            // fills `disclosure` — both come off the one `Chosen`
+                            // for `plugin add <name>` out of a marketplace — so a
+                            // plan carrying a staged adapter is answered on the
+                            // confirmation arm and never reaches this one. Calling
+                            // it here as well would put a second opinion about what
+                            // consent performs in the driver, which is the one
+                            // place nothing under `tests/` can gate.
                             match io_cli::configure::write(&root, plan.scope, &plan.edits) {
                                 Err(refusal) => app.record(Tone::Refused, refusal),
                                 Ok(()) => {
@@ -6844,7 +6893,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // **One row per TURN, and taking them all is how the
                         // retry died in review.** io-harness evaluates the
                         // criterion after *every* step the agent takes, not once
-                        // when it stops — `run/step.rs:1654` sits inside the step
+                        // when it stops — `run/step.rs:1985` sits inside the step
                         // loop — so one nine-step turn writes nine rows. Extending
                         // by all of them makes `standing.attempt` the step count,
                         // so `may_retry` compares nine against a budget of one and
@@ -9676,15 +9725,21 @@ enum Pick {
         id: String,
         scope: io_harness::config::Scope,
         edits: Vec<io_cli::edit::Edit>,
-        /// The adapter directory io generated so that io-harness could read this
-        /// bundle at all, removed when the operator declines.
+        /// The adapter io built so that io-harness could read this bundle at all,
+        /// put in place when the operator accepts and thrown away when they
+        /// decline.
         ///
         /// `None` for a native bundle, which needed nothing generated. A Claude
         /// Code or Codex bundle has no manifest io-harness reads, so there is
-        /// literally nothing to disclose until io has written one — the file is
+        /// literally nothing to disclose until io has built one — the file is
         /// io's own, in io's own home, and the operator's configuration is
         /// untouched either way.
-        made: Option<std::path::PathBuf>,
+        ///
+        /// **It stands beside its destination rather than in it**, so this
+        /// picker's two answers are the two answers the disk gets: an operator who
+        /// declines a refresh keeps exactly the adapter they already had. See
+        /// `io_cli::adapt::Staged`.
+        staged: Option<io_cli::adapt::Staged>,
     },
     /// The second half of removing a bundle: which entry, and are you sure.
     ///
@@ -10048,6 +10103,16 @@ async fn manage_main(
             disclosure.id,
         );
     }
+    // **The consent this door has already been given, performed.** An adapter is
+    // built beside its destination and swapped in by whoever holds the answer
+    // (`io_cli::adapt::Staged`); on this door the typed command is the answer, as
+    // the sentence above says, so it commits. There is no decline path here to
+    // discard on — naming a bundle *is* the yes — and a plan carrying nothing
+    // staged, which is every other request this door routes, passes through.
+    //
+    // Before the write, so a commit that fails leaves no entry naming a directory
+    // the adapter never reached; `?` takes the refusal to the exit code.
+    io_cli::marketplace::make(plan.staged.as_ref())?;
     io_cli::configure::write(root, plan.scope, &plan.edits)?;
     // **The policy preflight, after the write and on stderr.** After, because the
     // report is a disclosure and not a veto: refusing to write an entry because

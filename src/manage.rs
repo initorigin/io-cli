@@ -257,17 +257,19 @@ pub enum ConfigVerb {
 /// one, and that is a property worth keeping rather than a shape worth widening.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    /// A directory io created while building this plan, which a **declined**
-    /// install must take back.
+    /// An adapter io built while building this plan, which an **accepted** install
+    /// puts in place and a **declined** one throws away.
     ///
     /// `Some` for exactly one request: `plugin add <name>` resolving to a Claude
     /// Code or Codex bundle, where the generated manifest has to exist before
     /// io-harness can read the bundle and there is therefore something to disclose
-    /// at all. The operator's configuration is never opened either way — this is
-    /// io's own file, in io's own home — and [`declined`] is the one place it is
-    /// removed, so two doors cannot disagree about whether saying no leaves
-    /// something behind.
-    pub made: Option<PathBuf>,
+    /// at all. It is built beside its destination and not in it, so the answer
+    /// decides whether the adapter the operator already has is replaced — see
+    /// [`crate::adapt::Staged`]. The operator's configuration is never opened
+    /// either way, and [`crate::marketplace::make`] and
+    /// [`crate::marketplace::unmake`] are the one place each answer is performed,
+    /// so two doors cannot disagree about what saying yes or no does.
+    pub staged: Option<crate::adapt::Staged>,
     /// The scope whose file is written.
     pub scope: Scope,
     /// What to write, applied together or not at all.
@@ -712,7 +714,7 @@ pub fn plan(
             scope: *scope,
             edits: vec![crate::servers::add(server)],
             disclosure: None,
-            made: None,
+            staged: None,
         },
         Request::Mcp(McpVerb::Edit { id, key, value }) => {
             let at = declared_server(root, id)?;
@@ -731,7 +733,7 @@ pub fn plan(
                 scope: at.scope,
                 edits: vec![edit],
                 disclosure: None,
-                made: None,
+                staged: None,
             }
         }
         Request::Mcp(McpVerb::Remove { id }) => {
@@ -740,7 +742,7 @@ pub fn plan(
                 scope: at.scope,
                 edits: vec![crate::servers::remove(&at)],
                 disclosure: None,
-                made: None,
+                staged: None,
             }
         }
         // **The entry is found and then edited, never removed and re-added.**
@@ -799,18 +801,28 @@ pub fn plan(
             // they do not cross. The author's own directory is where the hooks it
             // declares are, and naming them is the whole of what io owes an
             // operator who would otherwise reasonably assume they run.
+            //
+            // **`chosen.read()` and not `chosen.dir()` for the directory handed to
+            // io-harness (0.38.0).** An adapted bundle's adapter is staged beside
+            // its destination until the operator answers, so `dir()` is either a
+            // directory that does not exist yet or one still holding the *previous*
+            // install — and a disclosure read from it would describe last week's
+            // bundle while the operator answers about this week's. `dir()` stays
+            // the argument the operator is shown and the `[[plugin]]` entry names,
+            // because that is where the adapter is a moment after they say yes.
             let disclosure = chosen
                 .discloses()
                 .then(|| {
                     crate::marketplace::adapted_disclosure(
                         *scope,
                         chosen.dir(),
+                        chosen.read(),
                         (chosen.from() != chosen.dir()).then(|| chosen.from()),
                         chosen.copied(),
                     )
                 })
                 .transpose()
-                .inspect_err(|_| crate::marketplace::unmake(chosen.made()))?;
+                .inspect_err(|_| crate::marketplace::unmake(chosen.staged()))?;
             // **And nothing is written at all when the entry is already there
             // (0.35.0).** Since the adapter became a copy of what it contributes,
             // **installing again is the update path** — and `pluginview::add`
@@ -821,15 +833,17 @@ pub fn plan(
             // the operator's file grew an ignored entry on each update, quietly,
             // forever.
             //
-            // There is no edit to make: the adapter was regenerated on disk by
-            // `chosen` above, before this point, and the declaration that names it
-            // is already correct. The disclosure still travels, because what the
-            // refresh moved is exactly what the operator needs to see.
+            // There is no edit to make: the declaration that names the adapter is
+            // already correct, and the refreshed adapter itself lands when the
+            // operator accepts. The disclosure still travels, because what the
+            // refresh moves is exactly what they need to see before they answer —
+            // and on this path it is the *only* thing that travels, so a plan with
+            // no edits still carries an act.
             let already = declared
                 .iter()
                 .any(|(_, path)| path.as_path() == chosen.dir());
             Plan {
-                made: chosen.made().map(Path::to_path_buf),
+                staged: chosen.staged().cloned(),
                 scope: *scope,
                 // One entry, switched on, written once. Through 0.29.0 a
                 // marketplace bundle was written `enabled = false` first and
@@ -851,14 +865,14 @@ pub fn plan(
                 scope,
                 edits: vec![crate::pluginview::remove(index)],
                 disclosure: None,
-                made: None,
+                staged: None,
             }
         }
         Request::Config(ConfigVerb::Set { key, value, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
             edits: vec![Edit::set(key.clone(), value.clone())],
             disclosure: None,
-            made: None,
+            staged: None,
         },
         Request::Config(ConfigVerb::Unset { key, scope }) => Plan {
             scope: decided_scope(root, key, *scope),
@@ -870,7 +884,7 @@ pub fn plan(
             // operator's entire block. See `Edit::unset`.
             edits: vec![Edit::unset(key.clone())],
             disclosure: None,
-            made: None,
+            staged: None,
         },
         // **A marketplace verb plans no write, and it is here beside the reads
         // rather than given a shape of its own.** `add` and `remove` are not
@@ -916,7 +930,7 @@ fn switched(root: &Path, id: &str, on: bool) -> Result<Plan, String> {
         scope: at.scope,
         edits: vec![crate::servers::switch(&at, on)],
         disclosure: None,
-        made: None,
+        staged: None,
     })
 }
 
@@ -1394,7 +1408,7 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.76.0/src/mcp.rs:439-447`: the
+    // silent no-op on an HTTP server (`io-harness-0.78.0/src/mcp.rs:439-447`: the
     // body writes only into the `Stdio` arm) — a constructor chain here would drop
     // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`

@@ -2626,7 +2626,7 @@ fn gate_said(
 /// `session.rs:1125-1127` turns classification on whenever the contract carries
 /// `Verification::None`, which `TaskContract::workspace` does — so a greeting has
 /// always come back after one completion with **no steps row, no gate attempt, no
-/// checkpoint, no snapshot and no tool loop** (`run/step.rs:312-320`). What reached
+/// checkpoint, no snapshot and no tool loop** (`run/step.rs:362-370`). What reached
 /// the operator was silence, because every line this product draws about a turn is
 /// drawn from events a conversational turn does not emit.
 ///
@@ -2931,6 +2931,7 @@ mod tests {
                 EventKind::ToolCall {
                     name: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
                     target: "feat/0.25.0".to_string(),
+                    origin: None,
                 },
             ),
             Duration::ZERO,
@@ -2950,6 +2951,7 @@ mod tests {
                 EventKind::ToolCall {
                     name: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
                     target: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
+                    origin: None,
                 },
             ),
             Duration::ZERO,

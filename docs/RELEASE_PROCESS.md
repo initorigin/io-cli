@@ -1,9 +1,13 @@
 # Release process — IO CLI
 
 There is no registry. `publish = false` in `Cargo.toml`, and the GitHub Release — four
-cross-compiled binaries plus `SHA256SUMS` — is the entire distribution channel. `install.sh` and
-`install.ps1` read it. So "released" here means the Release exists and its assets verify, not
+cross-compiled binaries plus `SHA256SUMS` — is the entire distribution channel. `install.sh`,
+`install.ps1`, the Homebrew formula at `Formula/io.rb` and the scoop manifest at `bucket/io.json`
+all read that one Release. So "released" here means the Release exists and its assets verify, not
 that anything was uploaded to a package index.
+
+The formula and the manifest are generated from a Release rather than written by hand, and
+therefore updated **after** it is cut — step 10 below.
 
 ## Versioning
 
@@ -44,6 +48,20 @@ irreversible in front of something reviewable.
    `SHA256SUMS`, run it, and exercise the release's own headline surface — not just `--version`.
    0.30.1 exists because 0.30.0's smoke checked the version string and nothing else, over a
    subcommand that did not exist.
+10. **Point the tap and the bucket at the new Release.** `scripts/update-tap.sh <version>` reads
+    that Release's own `SHA256SUMS` and rewrites `Formula/io.rb` and `bucket/io.json`; open a pull
+    request with the result and merge it. Until it lands, `brew install io` and `scoop install io`
+    serve the previous version — the two files are a function of a **published** Release, so they
+    cannot be updated in the release commit itself: the artifacts they name do not exist yet.
+
+    **The workflow does not do this**, and cannot. `main` and `develop` both carry a
+    `pull_request` ruleset whose only bypass actor is `OrganizationAdmin`, and GitHub Actions may
+    not create pull requests here, so an automated tap update would need a granted ruleset bypass
+    or a stored admin credential on a public repository. Neither is worth one merge click per
+    release.
+
+    `brew` reads a tap's **default branch**, which is `develop`, so the tap is live when that pull
+    request merges and needs no `main` merge of its own.
 
 ## What the workflow builds
 

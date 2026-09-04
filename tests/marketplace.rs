@@ -1370,14 +1370,21 @@ fn install(file: &Path, work: &Path, markets: &[Market], word: &str) -> Result<S
     let homes = Homes::under(work);
     let chosen = marketplace::chosen(&work.join(word), || markets.to_vec(), word, homes.at())?;
     if chosen.discloses() {
-        // The read that decides, before the file is opened for writing.
+        // The read that decides, before the file is opened for writing. The
+        // adapter is read where it is staged and named where it will be — see
+        // `Chosen::read`.
         marketplace::adapted_disclosure(
             Scope::User,
             chosen.dir(),
+            chosen.read(),
             (chosen.from() != chosen.dir()).then(|| chosen.from()),
             chosen.copied(),
         )?;
     }
+    // The consent, performed. This helper models a door that installs, and since
+    // 0.38.0 the swap is the caller's: an entry naming a directory the adapter was
+    // never moved into is an entry io-harness drops on the next turn.
+    marketplace::make(chosen.staged())?;
     let before = std::fs::read_to_string(file).unwrap_or_default();
     let text = io_cli::edit::apply(
         &before,
@@ -1436,7 +1443,7 @@ fn f6_the_install_discloses_the_harness_s_own_parse_before_it_writes() {
         marketplace::Chosen::Held(marketplace::Prepared {
             declare: dir.clone(),
             from: dir.clone(),
-            made: None,
+            staged: None,
             copied: Vec::new(),
         }),
         "a native bundle is declared at its own directory, io generates nothing \
@@ -2652,7 +2659,7 @@ fn f11_every_hook_a_foreign_bundle_declares_is_disclosed_with_its_reason() {
         ),
     );
 
-    let said = marketplace::adapted_disclosure(Scope::User, &bundle, Some(&bundle), &[])
+    let said = marketplace::adapted_disclosure(Scope::User, &bundle, &bundle, Some(&bundle), &[])
         .expect("io-harness loads the fixture");
 
     assert_eq!(
@@ -2738,59 +2745,205 @@ fn foreign(clone: &Path, name: &str) -> PathBuf {
     dir
 }
 
-/// **Installing a bundle again is the update path, and it re-copies rather than
-/// merges.**
+/// Every file under `dir`, its path relative to `dir` and its bytes, sorted.
 ///
-/// Since 0.35.0 an adapter *ships* the `skills/` and `commands/` a foreign bundle
+/// **A tree as a value, and the bytes are the point.** F13 says an installed
+/// adapter is *unchanged* after a refused refresh, and a check that only counted
+/// names would pass a refresh that replaced every file with a different one of the
+/// same name — which is precisely what a rebuilt adapter is.
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                let rel = path
+                    .strip_prefix(dir)
+                    .expect("under the root it was walked from");
+                // Separators normalised: a Windows checkout walks the same tree
+                // with `\` in it, and a sorted comparison of two runs on one
+                // machine must not be the only thing this can assert.
+                found.push((rel.display().to_string().replace('\\', "/"), bytes));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// One install of `rust-review` out of the marketplaces under `homes`, up to the
+/// point where the operator is asked.
+///
+/// Nothing is in place when this returns: since 0.38.0 the adapter is staged and
+/// `marketplace::make` or `marketplace::unmake` is what the answer performs.
+fn built(homes: &Homes, markets: &[Market]) -> marketplace::Prepared {
+    marketplace::prepared(
+        markets,
+        "rust-review",
+        &homes.marketplaces,
+        &homes.staging,
+        &homes.adapters,
+    )
+    .expect("the foreign bundle adapts")
+}
+
+/// Whatever is left beside the adapter directory, which must be nothing.
+///
+/// The staging directory is a sibling of the adapter and it is hidden, so nothing
+/// lists it and no verb removes it: one that outlives an answer outlives every
+/// answer, and `plugin marketplace` walks the tree it sits in.
+fn strays(adapter: &Path) -> Vec<String> {
+    let named = adapter.file_name().and_then(std::ffi::OsStr::to_str);
+    let mut found: Vec<String> = std::fs::read_dir(adapter.parent().expect("a parent"))
+        .expect("the adapters directory is readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| Some(name.as_str()) != named)
+        .collect();
+    found.sort();
+    found
+}
+
+/// **F13 — declining a bundle re-install leaves the installed adapter
+/// byte-identical.**
+///
+/// Installing again is the update path (see F14), and until 0.38.0
+/// `adapt::generate` ended by swapping the rebuilt adapter into place — so by the
+/// time the operator was shown the disclosure they were being asked about a
+/// directory that had already been replaced, and "leave it" left them with the new
+/// bundle and no way back to the old one. `docs/guide/plugins.md` has said in
+/// writing since 0.35.0 that a refused refresh leaves the installed adapter
+/// exactly as it was; this is that sentence, asserted.
+///
+/// The withdrawn skill is what makes the assertion sharp: it is present in the
+/// installed adapter and absent from the rebuilt one, so it exists in exactly one
+/// of the two states and a decline that lands in the wrong one cannot look right.
+///
+/// **F13 and F14 are a pair and neither is a gate alone.** An implementation that
+/// makes declining safe by making accepting a no-op passes this test and fails
+/// F14; one that keeps the old swap passes F14 and fails this. Read them together
+/// or neither says anything.
+///
+/// Sabotage: put the `remove_dir_all` and `rename` back at the end of
+/// `adapt::generate`. `one.md` is gone and `two.md` has arrived under an adapter
+/// nobody consented to.
+///
+/// Second sabotage: make `marketplace::unmake` remove `Staged::into` rather than
+/// `Staged::staging`. The tree comparison then fails against an adapter that is
+/// not there at all, which is the older defect this replaced.
+#[test]
+fn f13_declining_a_re_install_leaves_the_installed_adapter_byte_identical() {
+    let (_dir, root) = clone_dir();
+    let homes = Homes::under(&root);
+    let clone = homes.marketplaces.join("zeroonething").join("ultraship");
+    let bundle = foreign(&clone, "rust-review");
+    let markets = marketplace::markets(&homes.marketplaces);
+
+    // The install the operator said yes to, last week.
+    let first = built(&homes, &markets);
+    marketplace::make(first.staged.as_ref()).expect("the accepted install is put in place");
+    let installed = tree(&first.declare);
+    assert!(
+        installed
+            .iter()
+            .any(|(rel, _)| rel.as_str() == "skills/one.md"),
+        "the fixture carries no skill for the author to withdraw, so every assertion \
+         below passes over an update that changes nothing",
+    );
+
+    // The author withdraws that skill and publishes another, and the operator
+    // pulls the clone and runs the install again to pick it up.
+    std::fs::remove_file(bundle.join("skills").join("one.md")).expect("the withdrawal");
+    write(
+        &bundle,
+        "skills/two.md",
+        "---\nname: two\n---\nthe second\n",
+    );
+
+    let again = built(&homes, &markets);
+    assert_eq!(
+        again.declare, first.declare,
+        "the refresh is offered against a second directory, so the entry in the \
+         operator's file names neither what they have nor what they are being shown",
+    );
+    assert_eq!(
+        tree(&first.declare),
+        installed,
+        "the adapter changed before the operator was asked anything. Everything below \
+         this line is about their answer, and by here there is nothing left to answer",
+    );
+
+    // And the answer is no.
+    marketplace::unmake(again.staged.as_ref());
+
+    assert_eq!(
+        tree(&first.declare),
+        installed,
+        "declining a refresh changed the installed adapter. The `[[plugin]]` entry \
+         naming it was never opened, so what the operator declined is now what they \
+         are running",
+    );
+    assert!(
+        first.declare.join("skills").join("one.md").is_file()
+            && !first.declare.join("skills").join("two.md").exists(),
+        "the withdrawn skill is gone and the pulled one has arrived, which is the \
+         accepted install (F14) and not the declined one",
+    );
+    assert!(
+        strays(&first.declare).is_empty(),
+        "a declined refresh left {:?} beside the adapter: a staging directory that \
+         outlives an answer is listed by no surface and removed by no verb",
+        strays(&first.declare),
+    );
+}
+
+/// **F14 — accepting a re-install still applies the refresh, and says what moved.**
+///
+/// Installing a bundle again is the update path and it is the only one. Since
+/// 0.35.0 an adapter *ships* the `skills/` and `commands/` a foreign bundle
 /// contributes — io-harness 0.74.0 refuses a `skills` or `templates` pointing out
 /// of the bundle in every scope, because every `*.md` under one reaches the model's
 /// system prompt. So what io holds is a snapshot, and an operator who pulls the
 /// clone has changed nothing this session can see until the install runs again.
 ///
-/// Three things have to hold and each fails alone: the second install rebuilds the
-/// adapter rather than adding to it, so a skill the author **withdrew** cannot
-/// survive in io's home; the second install claims nothing to take back, so
-/// declining it cannot delete an adapter a `[[plugin]]` entry already names; and
-/// the operator is told which directories moved, in the disclosure they are already
-/// reading, rather than discovering it a week later.
+/// Three things have to hold and each fails alone: the accepted install rebuilds
+/// the adapter rather than adding to it, so a skill the author **withdrew** cannot
+/// survive in io's home; it lands at the directory the `[[plugin]]` entry names,
+/// rather than staying in the staging directory it was built in; and the operator
+/// is told which directories moved, in the disclosure they are already reading,
+/// rather than discovering it a week later.
 ///
-/// Sabotage: have `adapt::generate` write over the adapter instead of rebuilding
-/// it. `two.md` still arrives and every other assertion passes; the withdrawn
-/// `one.md` is the one that fails, which is the file that would have gone on being
-/// read into the prompt.
+/// **The pair of F13, and the note there applies here.** A fix that makes
+/// declining safe by making accepting do nothing passes F13 alone.
 ///
-/// Second sabotage: keep `made: Some(into)` for an adapter that was already there.
-/// `unmake` then deletes a live install when the operator answers "leave it" to an
-/// update — the entry stays in their file and io-harness drops it on the next turn.
+/// Sabotage: have `adapt::generate` write over the staged adapter instead of
+/// rebuilding it. `two.md` still arrives and every other assertion passes; the
+/// withdrawn `one.md` is the one that fails, which is the file that would have gone
+/// on being read into the prompt.
+///
+/// Second sabotage: make `marketplace::make` a no-op. The refresh never leaves the
+/// staging directory, F13 goes on passing, and this fails on both files at once.
 #[test]
-fn a_second_install_re_copies_the_adapter_and_says_what_moved() {
+fn f14_accepting_a_re_install_applies_the_refresh_and_says_what_moved() {
     let (_dir, root) = clone_dir();
     let homes = Homes::under(&root);
     let clone = homes.marketplaces.join("zeroonething").join("ultraship");
     let bundle = foreign(&clone, "rust-review");
-
     let markets = marketplace::markets(&homes.marketplaces);
-    let installed = |markets: &[Market]| {
-        marketplace::prepared(
-            markets,
-            "rust-review",
-            &homes.marketplaces,
-            &homes.staging,
-            &homes.adapters,
-        )
-    };
 
-    let first = installed(&markets).expect("the foreign bundle adapts");
+    let first = built(&homes, &markets);
     assert_eq!(
         first.copied,
         ["skills", "templates"],
         "the adapter reports what it shipped in the generator's own words",
     );
-    assert_eq!(
-        first.made.as_deref(),
-        Some(first.declare.as_path()),
-        "the first install created the adapter directory, so a decline takes it back",
-    );
+    marketplace::make(first.staged.as_ref()).expect("the accepted install is put in place");
     assert!(
         first.declare.join("skills").join("one.md").is_file()
             && first.declare.join("templates").join("go.md").is_file(),
@@ -2805,35 +2958,24 @@ fn a_second_install_re_copies_the_adapter_and_says_what_moved() {
         "---\nname: two\n---\nthe second\n",
     );
 
-    let again = installed(&markets).expect("the bundle adapts again");
+    let again = built(&homes, &markets);
     assert_eq!(
         again.declare, first.declare,
-        "the update wrote a second adapter beside the first, so the declared entry \
+        "the update built a second adapter beside the first, so the declared entry \
          still names the old one",
     );
-    assert!(
-        !first.declare.join("skills").join("one.md").exists(),
-        "a skill the author withdrew survived the update. An adapter is rebuilt and \
-         never merged for exactly this reason: every `*.md` under a contributed \
-         `skills/` is read into the model's system prompt on every turn",
-    );
-    assert!(
-        first.declare.join("skills").join("two.md").is_file(),
-        "the skill the operator pulled did not reach the session",
-    );
-    assert_eq!(
-        again.made, None,
-        "an update claims to have created the adapter, so declining one deletes a \
-         bundle the operator installed some other day — out of a configuration file \
-         this module never opened",
-    );
 
-    // And what the operator is told before they answer.
+    // What the operator is told, read where the adapter actually is. `Chosen::read`
+    // is the one place that answer is worked out, and the disclosure is drawn from
+    // the refresh rather than from the install it replaces — on this path
+    // `again.declare` still holds last week's bundle.
+    let held = marketplace::Chosen::Held(again.clone());
     let said = marketplace::adapted_disclosure(
         Scope::User,
-        &again.declare,
-        Some(&again.from),
-        &again.copied,
+        held.dir(),
+        held.read(),
+        Some(held.from()),
+        held.copied(),
     )
     .expect("io-harness reads the generated manifest")
     .said(&io_cli::glyphs::UNICODE)
@@ -2849,16 +2991,41 @@ fn a_second_install_re_copies_the_adapter_and_says_what_moved() {
          would go into, and the directory io is actually reading: {said}",
     );
     assert!(
+        !said.contains(".staging."),
+        "the operator is sent to the staging directory, which is gone a moment after \
+         they answer: {said}",
+    );
+    assert!(
         said.contains("installed again"),
         "the operator is told the copy is a snapshot but not what refreshes it, \
          which is the whole question they will have: {said}",
+    );
+
+    // And the answer is yes.
+    marketplace::make(again.staged.as_ref()).expect("the accepted refresh is put in place");
+
+    assert!(
+        !first.declare.join("skills").join("one.md").exists(),
+        "a skill the author withdrew survived the update. An adapter is rebuilt and \
+         never merged for exactly this reason: every `*.md` under a contributed \
+         `skills/` is read into the model's system prompt on every turn",
+    );
+    assert!(
+        first.declare.join("skills").join("two.md").is_file(),
+        "the skill the operator pulled did not reach the session — an accepted \
+         refresh that changes nothing is what makes F13 free to pass",
+    );
+    assert!(
+        strays(&first.declare).is_empty(),
+        "an accepted refresh left {:?} beside the adapter",
+        strays(&first.declare),
     );
 
     // The control: a bundle that copied nothing says none of this. A row about a
     // copy that did not happen is a warning about nothing.
     let native = root.join("native");
     manifest(&native, "name = \"native\"\n");
-    let quiet = marketplace::adapted_disclosure(Scope::User, &native, Some(&native), &[])
+    let quiet = marketplace::adapted_disclosure(Scope::User, &native, &native, Some(&native), &[])
         .expect("io-harness loads the fixture")
         .said(&io_cli::glyphs::UNICODE)
         .join("\n");
@@ -2866,6 +3033,41 @@ fn a_second_install_re_copies_the_adapter_and_says_what_moved() {
         !quiet.contains("copied `"),
         "a native bundle is declared where it sits and nothing was copied for it: \
          {quiet}",
+    );
+}
+
+/// **The answer has a caller on both doors, and the caller is the driver.**
+///
+/// `marketplace::make` and `marketplace::unmake` are the two things an operator's
+/// answer performs, and nothing under `tests/` can reach either at the point it is
+/// given: `src/main.rs` is the only file that holds an answer and no test links it.
+/// F3 in `tests/dependencies.rs` names the shape this prevents — three releases
+/// running shipped a unit that was correct behind a door that never opened it, and
+/// a staged adapter nobody commits is a `plugin add` that installs nothing.
+///
+/// **Counted, never `contains`.** Both doors install and only one of them can
+/// decline: on the argv door naming a bundle *is* the consent, so it commits and
+/// has no second answer; in the session the picker commits on "install it",
+/// discards on "leave it", and discards again on `Esc` — the standard way out of a
+/// modal must not be the one that leaves a staging directory behind. One site
+/// satisfies a `contains` forever, and the site that would go missing is whichever
+/// one was written second.
+#[test]
+fn both_install_doors_perform_the_answer_they_were_given() {
+    let driver = code_of("src/main.rs");
+    assert_eq!(
+        driver.matches("marketplace::make(").count(),
+        2,
+        "the swap an accepted install performs has a call site for each door — the \
+         session's confirmation and `io plugin add` — and a door missing it writes a \
+         `[[plugin]]` entry naming a directory the adapter was never moved into",
+    );
+    assert_eq!(
+        driver.matches("marketplace::unmake(").count(),
+        2,
+        "a declined install discards what it built at both ways out of the picker, \
+         the confirmation row and `Esc`, or the staging directory outlives the \
+         answer under a home nothing lists and no verb cleans",
     );
 }
 

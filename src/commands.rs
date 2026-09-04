@@ -1489,7 +1489,7 @@ pub const READ_MARK: &str = "+";
 /// The case this page exists for. A file that is there and is not read looks,
 /// from everywhere else in this product, exactly like one that is read: nothing
 /// warns, and a missing or skipped instruction file is passed over in silence
-/// (`read_instructions`, `io-harness-0.76.0/src/config.rs:2799`).
+/// (`read_instructions`, `io-harness-0.78.0/src/config.rs:2911`).
 pub const UNREAD_MARK: &str = "-";
 
 /// What one row of the memory page stands for.
@@ -1705,7 +1705,7 @@ pub fn memory_notes(view: &crate::recall::View, glyphs: &crate::glyphs::Glyphs) 
 /// writing: a file that exists and is not read. It names what would make it
 /// read rather than only reporting the fact, because `[instructions] files`
 /// **replaces** the default list rather than adding to it
-/// (`DEFAULT_INSTRUCTIONS`, `io-harness-0.76.0/src/config.rs:190`, read at
+/// (`DEFAULT_INSTRUCTIONS`, `io-harness-0.78.0/src/config.rs:190`, read at
 /// `:2808`) and there is nothing on any
 /// other surface to pull on.
 pub fn instruction_said(

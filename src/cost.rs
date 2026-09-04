@@ -434,6 +434,39 @@ fn grouped(spend: Vec<Spend>) -> Vec<Row> {
             // have made the numbers look like they disagreed.
             value.push_str(&format!(" · {} not priced", group.unpriced_calls));
         }
+        if group.unreported_cache_writes > 0 {
+            // **The money is not the only figure on this row that is a floor.**
+            // io-harness counts the calls whose wire carried no cache-write
+            // counter, and a group with one of those wrote *at least* what it
+            // reported — the same shape `unpriced_calls` gives the money directly
+            // above, and said out loud for the same reason. A row that stated one
+            // floor and stayed silent about the other would report an unknown as a
+            // fact, which is the failure the whole module is built around.
+            //
+            // **The words are `section`'s words, deliberately: "or more" for a
+            // mixed group and `UNREPORTED` for a wholly silent one.** The two
+            // halves of this page describe the same calls, and one of them
+            // inventing a second vocabulary for one fact would read as two
+            // different claims about a single number. The counters agree over
+            // every call that reported usage — io-harness's
+            // `Spend::unreported_cache_writes` and this module's
+            // `Total::unreported_writes` both count a call that reported usage and
+            // no write counter, and neither counts a call that reported no usage
+            // at all. That last call is the one the two sides file differently:
+            // io-harness puts it in `unpriced_calls` and `Total` puts it in
+            // `unknown`, which is exactly the divergence the "not priced" wording
+            // above exists for, and it leaves this qualifier alone.
+            //
+            // The count of silent calls is not drawn beside the figure. A second
+            // bare number on a row that already carries money, calls and tokens
+            // reads as another measurement, and the operator-facing fact is the
+            // direction — that the figure is a floor — rather than how many calls
+            // put it there.
+            value.push_str(&match group.usage.cache_write_tokens {
+                Some(count) => format!(" · cache written {} or more", tokens(count)),
+                None => format!(" · cache written {UNREPORTED}"),
+            });
+        }
         rows.push(Row::fact(group.key, value));
     }
     rows

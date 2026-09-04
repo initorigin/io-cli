@@ -196,7 +196,7 @@ pub struct CliSettings {
     /// io-cli's own type rather than `io_harness::Routing`, which is the one place
     /// this section differs from `[app.io-cli.containment]`: `Containment`
     /// deserializes straight into the harness's type, and `Routing` derives no
-    /// serde at all and is `#[non_exhaustive]` besides (`contract.rs:1745`). So the
+    /// serde at all and is `#[non_exhaustive]` besides (`contract.rs:1954-1956`). So the
     /// shape an operator writes is [`crate::routing::Settings`] and the conversion
     /// goes through the harness's three builders.
     #[serde(default, skip_serializing_if = "Option::is_none")]

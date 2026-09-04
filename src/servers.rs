@@ -477,7 +477,7 @@ pub fn rows(servers: &[Server]) -> Vec<crate::picker::Row> {
 ///
 /// **The type exists so that a row number cannot be spelled as a position.** The
 /// two are the same integer often enough to look interchangeable — `[[mcp]]` is
-/// *not* one of io-harness's appending keys (`config.rs:2052`), so the winning
+/// *not* one of io-harness's appending keys (`config.rs:3130`), so the winning
 /// scope replaces the array whole and [`servers`] does list it in file order —
 /// and that is exactly the shape of a bug that survives every test written on a
 /// one-scope fixture. `pluginview` learned it the expensive way in 0.20.0. Here

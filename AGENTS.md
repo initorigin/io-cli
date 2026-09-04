@@ -70,7 +70,7 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
 - **No agent loop.** The sweep strips comments first, so a doc comment containing "while" is not
   a finding; `src/provider.rs` is exempted by path and held to four properties of its own.
 
-**Module map (`src/`, 79 files).**
+**Module map (`src/`, 82 files).**
 
 - Session surface — `app.rs` (state), `term.rs` (an inline viewport, never the alternate
   screen), `events.rs` + `triage.rs` (what each io-harness event does; a kind with no
@@ -82,7 +82,8 @@ the only dev-dependency. Adding one is a deliberate, argued act — read the com
   field for field, asserted by Debug equality.
 - Configuration — `edit.rs` (a format-preserving writer that replaces one value's bytes),
   `settings.rs`, `configure.rs` (`/config`), `servers.rs` (`/mcp`), `providers.rs`,
-  `home.rs` (`~/.io-cli`), `reload.rs`, `memory.rs`, `recall.rs`.
+  `home.rs` (`~/.io-cli`), `reload.rs`, `memory.rs`, `recall.rs`, `upgrade.rs` (which of the
+  three installers placed the running binary, read from its own path and never from a network).
 - Work — `exec.rs` (headless, and the exit-code mapping), `resume.rs`, `lock.rs`, `queue.rs`,
   `compact.rs`, `context.rs`, `fleet.rs`, `plan.rs`, `intent.rs`, `gates.rs`, `routing.rs`,
   `provider.rs`.

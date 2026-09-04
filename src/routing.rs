@@ -10,7 +10,7 @@
 //! [`Settings`] is the `[app.io-cli.routing]` section as written, [`routing`]
 //! turns it into the dependency's own value, and the other two functions are what
 //! a surface says about it. **No rule is evaluated here.** io-harness owns
-//! `Routing::model_for` (`contract.rs:1811`), it is the only code that knows the
+//! `Routing::model_for` (`contract.rs:2055`), it is the only code that knows the
 //! consecutive-failure count and the byte total, and a second implementation in
 //! this crate would be a second answer that drifts from the one the run uses.
 //!
@@ -20,7 +20,7 @@
 //! [`crate::settings::CliSettings`] because that type is `Serialize` and
 //! `Deserialize` for exactly that purpose. [`io_harness::Routing`] is not: it
 //! derives `Debug, Clone, Default, PartialEq, Eq` and nothing else
-//! (`contract.rs:1745`), and it is `#[non_exhaustive]`, so this crate can neither
+//! (`contract.rs:1954-1956`), and it is `#[non_exhaustive]`, so this crate can neither
 //! deserialize into it nor write a struct literal for it. Both halves of that
 //! matter — a `serde` derive added upstream later would still leave the literal
 //! refused, because `#[non_exhaustive]` is a promise about fields yet to exist.
@@ -68,8 +68,8 @@
 //! [`io_harness::Routing`] has a third field: `require_primary`, which refuses to
 //! start when the primary provider says it is unreachable. It is not exposed
 //! here. It gates on `Provider::reachable`, a **defaulted** trait method whose
-//! body is `async { Ok(true) }` (`provider/mod.rs:1745`), and **no provider in
-//! io-harness 0.69 overrides it** — the only other mention of the name in that
+//! body is `async { Ok(true) }` (`provider/mod.rs:2021`), and **no provider in
+//! io-harness 0.78 overrides it** — the only other mention of the name in that
 //! crate is the doc example demonstrating how one *could*. A key for it would
 //! therefore be advertised on a surface, accepted from a file, and permanently
 //! inert: an operator would set it, believe an unattended overnight job now
@@ -79,10 +79,10 @@
 //!
 //! # Routing does not reach a contained turn
 //!
-//! `apply_routing` has exactly one call site in io-harness: `run/step.rs:1097`,
+//! `apply_routing` has exactly one call site in io-harness: `run/step.rs:1289`,
 //! inside the flat workspace loop. The contained loop takes each agent's model
-//! from that agent's own `AgentDef` (`run/tree.rs:638`), and the root is entered
-//! with its identity passed as `None` (`run.rs:3959`), which every provider reads
+//! from that agent's own `AgentDef` (`run/tree.rs:742`), and the root is entered
+//! with its identity passed as `None` (`run.rs:4281`), which every provider reads
 //! as "the model you were built with". So for an operator who has configured
 //! `[app.io-cli.containment]`, a routing section parses, reaches the contract,
 //! and never fires.
@@ -96,12 +96,12 @@
 //! # io-harness grew a `[routing]` table of its own in 0.76.0
 //!
 //! `Config::apply_to` now merges a **user-scope** `[routing]` onto the contract
-//! key by key (`config.rs:2076`): `escalate_after`/`escalate_to`,
+//! key by key (`config.rs:2168`): `escalate_after`/`escalate_to`,
 //! `downshift_under`/`downshift_to`, `require_primary`, and `mechanical` — which
 //! names the model that reads the whole transcript when a fold summarises it, and
 //! for which io-cli offers no key at all. io-cli builds its own section *after*
 //! that merge (`contract.rs:356`) through `TaskContract::with_routing`, whose body
-//! is `self.routing = Some(routing)` (`contract.rs:1292`). It replaces. So a
+//! is `self.routing = Some(routing)` (`contract.rs:1314`). It replaces. So a
 //! `[app.io-cli.routing]` that names a rule takes the whole of `[routing]` back
 //! off the contract, `mechanical` included, and until this release it did so in
 //! silence.
@@ -116,9 +116,9 @@
 //!
 //! The collision can only be written in the user scope, which is why the test for
 //! it needs a user-scoped fixture rather than `Config::from_toml`. `routing` is in
-//! io-harness's `REFUSED_SECTIONS` (`config.rs:2394`), so `io.toml`,
+//! io-harness's `REFUSED_SECTIONS` (`config.rs:2489`), so `io.toml`,
 //! `io.local.toml` and a `[profile]` body may not declare it; the match is
-//! `contains_key("routing")` against the **top-level** table (`config.rs:2600`),
+//! `contains_key("routing")` against the **top-level** table (`config.rs:2714`),
 //! so `[app.io-cli.routing]` — nested under `app` — is untouched by that rule in
 //! every scope.
 
@@ -158,7 +158,7 @@ pub struct Escalation {
     /// How many *consecutive* failed gate attempts trigger the change.
     ///
     /// Consecutive rather than cumulative, and that is io-harness's counting
-    /// rather than a choice made here (`contract.rs:1748`): a run that fails,
+    /// rather than a choice made here (`contract.rs:1960`): a run that fails,
     /// recovers, and fails again much later is a run doing hard work, not a run
     /// that needs a bigger model.
     ///
@@ -186,7 +186,7 @@ pub struct Downshift {
     /// The byte total below which the cheaper model is asked.
     ///
     /// Measured on what the run has already written to disk, not on what it
-    /// planned to write — again io-harness's definition (`contract.rs:1759`).
+    /// planned to write — again io-harness's definition (`contract.rs:1968`).
     ///
     /// Optional for the reason [`Escalation::failures`] gives at length.
     #[serde(default)]
@@ -214,7 +214,7 @@ pub enum Refusal {
     /// `failures = 0`, which escalates before anything has failed.
     ///
     /// io-harness compares `consecutive_gate_failures >= failures`
-    /// (`contract.rs:1813`), so zero is true at the first request of every run —
+    /// (`contract.rs:2057`), so zero is true at the first request of every run —
     /// the stronger model is used unconditionally, from the start, and
     /// `downshift_under` is never reached because escalation is checked first. An
     /// operator writing it means "escalate readily" and gets "never use the model
@@ -354,9 +354,9 @@ pub fn notice(settings: &Settings) -> Option<String> {
 /// Escalation is stated first because it is the rule that overrides the other,
 /// and the two sentences an operator needs after that are both io-harness's
 /// documented behaviour rather than io-cli's: escalation wins over downshifting
-/// when both conditions hold (`contract.rs:1808`, and the ordering of the two
-/// checks in `model_for` at `contract.rs:1812`), and it happens once and does not
-/// come back down (`contract.rs:1753`) — because a run oscillating between two
+/// when both conditions hold (`contract.rs:2052`, and the ordering of the two
+/// checks in `model_for` at `contract.rs:2056`), and it happens once and does not
+/// come back down (`contract.rs:1962`) — because a run oscillating between two
 /// models mid-flight is a behaviour nobody asked for. Both clauses are stated
 /// only when they can bite: a section with no escalation rule cannot escalate,
 /// and one with only an escalation rule has nothing for it to win over.

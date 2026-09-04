@@ -670,7 +670,7 @@ pub fn value_at(text: &str, path: &str) -> Option<String> {
 /// Windows path is full of backslashes and `\U` opens an escape in a basic
 /// string, so `format!("[\"{}\"]", path)` is either a parse error or a
 /// different path — and a path that parses to something else is skipped in
-/// silence by `config.rs:1886`, which is the quietest failure this crate can
+/// silence by `config.rs:2925`, which is the quietest failure this crate can
 /// ship. `toml`'s own serializer knows the rules; a format string does not.
 ///
 /// This module is the crate's only TOML speller by rule

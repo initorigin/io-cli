@@ -847,7 +847,7 @@ impl Events {
                 lines.push(Line::from(spans));
                 lines
             }
-            EventKind::ToolCall { name, target } => {
+            EventKind::ToolCall { name, target, .. } => {
                 // Nothing is committed here, and that is the point: this event is
                 // emitted before the call runs, so a line written now could only
                 // say what the agent was about to do. The call is held open, shown
@@ -1880,7 +1880,7 @@ impl Events {
             // brag about concurrency.
             //
             // **Only when something was discarded.** io-harness emits this
-            // whenever `started > 0` (`run/step.rs:1401`), so a step that
+            // whenever `started > 0` (`run/step.rs:1476`), so a step that
             // speculated perfectly would otherwise put a line in every transcript
             // saying nothing happened. A run where speculation always pays is a
             // run with nothing to report, which is the same rule the sandbox arm

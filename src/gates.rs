@@ -492,7 +492,7 @@ pub fn proposed_command(root: &Path, config: &Config) -> Option<Vec<String>> {
 /// **A run with no criterion has no standing, and saying otherwise is how this
 /// release nearly shipped a catastrophe.** io-harness evaluates the contract's
 /// criterion after *every* step on which the agent called a tool
-/// (`run/step.rs:1654`), and for `Verification::None` the evaluation is
+/// (`run/step.rs:1985`), and for `Verification::None` the evaluation is
 /// `Ok(false)` (`verify.rs:1361`) — so it records `phase = "none",
 /// GateOutcome::Failed`, once per tool-calling step, on **every ungated run this
 /// product has ever driven**. Read back naively that says the gate failed: the

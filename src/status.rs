@@ -818,7 +818,7 @@ impl Status {
         if event.depth > 0 {
             return;
         }
-        let io_harness::EventKind::ToolCall { name, target } = &event.kind else {
+        let io_harness::EventKind::ToolCall { name, target, .. } = &event.kind else {
             return;
         };
         // **`target == name` is a call that named nothing, not a branch called

@@ -27,7 +27,7 @@
 //!
 //! Worth knowing before a surface promises otherwise. `read_instructions` joins
 //! each name in `[instructions] files` to the **discovery root**
-//! (`io-harness-0.76.0/src/config.rs:2799`), and the default list is exactly
+//! (`io-harness-0.78.0/src/config.rs:2911`), and the default list is exactly
 //! `["AGENTS.md"]` (`DEFAULT_INSTRUCTIONS`, `config.rs:190`). So `AGENTS.md` is read
 //! by every project with no configuration at all; `AGENTS.local.md` is read only
 //! where a file names it; and `IO.md` is not reachable by a bare name at all,
@@ -464,7 +464,7 @@ fn bullet(line: &str) -> Option<usize> {
 
 /// The order the three files are named in, and it is the order they reach the
 /// model in: `read_instructions` pushes one constraint per name in list order
-/// (`read_instructions`, `io-harness-0.76.0/src/config.rs:2799`).
+/// (`read_instructions`, `io-harness-0.78.0/src/config.rs:2911`).
 ///
 /// Project, then local, then user — widest audience first, so the operator's own
 /// standing note is the last thing said. It also matches the order the three
@@ -475,7 +475,7 @@ const ORDER: [Scope; 3] = [Scope::Project, Scope::Local, Scope::User];
 ///
 /// **Not the same thing as [`path`], and the difference is the whole reason
 /// `IO.md` needs its own case.** io-harness resolves every name it is given with
-/// `root.join(&name)` against the discovery root (`config.rs:1885`), so a bare
+/// `root.join(&name)` against the discovery root (`config.rs:2924`), so a bare
 /// name means "in the workspace". That is exactly right for the two project
 /// files and unreachable for `IO.md`, which lives in io-cli's home — a directory
 /// that is not the workspace and has no relative spelling from it. So the user
@@ -483,7 +483,7 @@ const ORDER: [Scope; 3] = [Scope::Project, Scope::Local, Scope::User];
 ///
 /// Absolute and not `${env:HOME}/.io-cli/IO.md`, which would read as the tidier
 /// answer and is a trap: the harness does substitute `${env:…}`, and an unset
-/// variable is a **hard error** that fails the whole parse (`config.rs:1983-1989`).
+/// variable is a **hard error** that fails the whole parse (`config.rs:3022-3028`).
 /// On Windows `HOME` is routinely unset. A configuration file that refuses to
 /// parse is a session that does not start, and it would fail on the machine of
 /// whoever copied the file rather than on the machine that wrote it. `~` is not
@@ -500,13 +500,13 @@ fn entry(root: &Path, scope: Scope) -> Option<PathBuf> {
 /// **`AGENTS.md` is always in it, and that is a correctness requirement rather
 /// than a courtesy.** `files` REPLACES the default list, it does not add to it:
 /// `read_instructions` falls back to `DEFAULT_INSTRUCTIONS` — exactly
-/// `["AGENTS.md"]` (`config.rs:158`) — only when the table is absent or names
+/// `["AGENTS.md"]` (`config.rs:190`) — only when the table is absent or names
 /// nothing, and otherwise takes `Some(files) => files.clone()` verbatim
-/// (`config.rs:1879-1882`). So a list written to reach `AGENTS.local.md` and
+/// (`config.rs:2918-2921`). So a list written to reach `AGENTS.local.md` and
 /// `IO.md` and no more would **silently stop the repository's own `AGENTS.md`
 /// being read** — no error, no warning, just a model that no longer knows the
 /// project's rules. Nothing on the surface would show it, because a missing
-/// instruction file is skipped without a word (`config.rs:1886`).
+/// instruction file is skipped without a word (`config.rs:2925`).
 ///
 /// Two entries rather than three where there is no home to put `IO.md` in, which
 /// is the same answer [`path`] gives for the same reason. The project pair never
@@ -548,17 +548,17 @@ fn declared(path: &Path) -> Option<String> {
 /// `io.toml` is committed, so writing it there would put one person's
 /// `/Users/somebody/.io-cli/IO.md` into everybody else's checkout: harmless to
 /// them only because the file does not exist and is skipped in silence
-/// (`config.rs:1886`), and a leak of the operator's account name to every reader
+/// (`config.rs:2925`), and a leak of the operator's account name to every reader
 /// of the repository regardless. `~/.io-cli/io.toml` is the one file in this
 /// product that is never committed, so it is the only honest place for a path
 /// that is true on exactly one machine.
 ///
 /// The cost is stated rather than hidden: `["instructions","files"]` is not in
-/// io-harness's `APPENDING` set (`config.rs:2052`), so a project or local file
+/// io-harness's `APPENDING` set (`config.rs:3130`), so a project or local file
 /// that names `files` itself replaces this list wholesale rather than adding to
 /// it — the scopes are merged in the order they are listed at
-/// `config.rs:688-693`, and a later one's value simply overwrites
-/// (`config.rs:2142-2144`), so Local > Project > User. That is the
+/// `config.rs:1078-1083`, and a later one's value simply overwrites
+/// (`config.rs:3222-3224`), so Local > Project > User. That is the
 /// harness's rule and this module does not fight it — [`view`] reports the
 /// result instead, so an operator whose project overrode the list sees that it
 /// did rather than being told all three are read.
@@ -609,14 +609,14 @@ pub fn install(root: &Path) -> Result<bool, String> {
 ///
 /// Recovered from [`Config::instructions`] rather than by re-deriving the
 /// precedence rules, and that choice is the point: every entry is wrapped
-/// `"Project instructions from `{name}`:\n{text}"` (`config.rs:1895-1898`), so
+/// `"Project instructions from `{name}`:\n{text}"` (`config.rs:2934-2937`), so
 /// the list of names is right there in the strings the harness built. Reading it
 /// back says what **was read**; re-implementing the merge would say what io-cli
 /// believes it asked for, and the two differ in exactly the case a surface
 /// exists to show — a project file that replaced the list.
 ///
 /// `name` is the name as it was written in `files`, not the resolved location,
-/// so it is joined to the discovery root here the same way `config.rs:1885`
+/// so it is joined to the discovery root here the same way `config.rs:2924`
 /// joins it. `Path::join` returns an absolute argument unchanged, so the one
 /// expression covers both the two relative names and `IO.md`'s absolute one.
 fn reading(root: &Path, config: &Config) -> Vec<PathBuf> {
@@ -661,9 +661,9 @@ pub struct Instruction {
 /// The two right-hand columns are deliberately independent. A file that exists
 /// and is not being read is the whole reason this exists, and it happens for
 /// three ordinary causes: a project `[instructions] files` replaced the user
-/// list (`config.rs:2052` — this key does not append), [`install`] was never
+/// list (`config.rs:3130` — this key does not append), [`install`] was never
 /// run, or the file holds nothing but whitespace and was skipped
-/// (`config.rs:1892`). A view that inferred `read` from `exists` would report
+/// (`config.rs:2931`). A view that inferred `read` from `exists` would report
 /// all three green in every one of those cases, which is worse than no view: it
 /// would be the surface an operator trusts while their `AGENTS.md` goes unread.
 #[must_use]
@@ -678,7 +678,7 @@ pub fn view(root: &Path, config: &Config) -> Vec<Instruction> {
             Some(Instruction {
                 scope,
                 // `is_file`, the same question io-harness asks at
-                // `config.rs:1886`, and not "did the read succeed": a file this
+                // `config.rs:2925`, and not "did the read succeed": a file this
                 // process cannot read is still there, and reporting it absent
                 // would send the operator to create one that already exists.
                 exists: at.is_file(),
