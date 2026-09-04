@@ -159,12 +159,16 @@ pub enum Incoming {
     },
     /// An answer to something **this** adapter asked the client.
     ///
-    /// A frame with an id and no method. **0.36.0 makes no request, so nothing
-    /// arrives here in practice** — the shape is decoded rather than refused
-    /// because a transport that answered a well-formed response with an error
-    /// would have to be changed before a request could ever be sent, and because
-    /// a conforming client may answer a request a later release adds while an
-    /// older `io` is still on the path.
+    /// A frame with an id and no method. **Since 0.38.0 this is the ordinary way
+    /// an approval is answered**, and it is handled by the read task inside
+    /// [`serve_with`] rather than by a [`Handler`]: settling a waiter needs no
+    /// dispatch and no `&mut` anything, and doing it on the reader is what lets an
+    /// answer be read while the turn that asked for it is still waiting.
+    ///
+    /// Through 0.37.0 nothing arrived here, because nothing was ever asked. The
+    /// shape was decoded rather than refused even then — a transport that answered
+    /// a well-formed response with an error would have had to change before a
+    /// request could ever be sent.
     ///
     /// `outcome` carries the client's `error` object as an `Err`, so a client that
     /// refuses the request is distinguishable from one that answered it — the run
@@ -668,7 +672,8 @@ where
     // notifications queue for the loop below to take one at a time. Queueing them
     // is right rather than a limitation: ACP runs one turn per session, and a
     // second prompt arriving mid-turn must not start a second one.
-    let (dispatch, mut arrivals) = tokio::sync::mpsc::unbounded_channel::<Result<Incoming, Outgoing>>();
+    let (dispatch, mut arrivals) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Incoming, Outgoing>>();
     let settling = std::sync::Arc::clone(&correlator);
     let read = tokio::spawn(async move {
         let mut reader = reader;
@@ -846,22 +851,45 @@ pub struct Reporter {
     session_id: String,
     updates: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The step the last observed event belonged to.
+    ///
+    /// **The approver needs this and has no other way to learn it.** A cell's id
+    /// on this wire is `{run_id}-{step}` ([`crate::acp_map`]), and an approval
+    /// request has to name the cell the client already has — but an
+    /// [`io_harness::Approver`] is handed a [`io_harness::Request`], which
+    /// carries the act and the target and no step at all. The observer is the
+    /// only thing in this module that sees one.
+    step: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// What a turn's observer and its approver share.
+///
+/// Two flags rather than a struct with methods, because each has exactly one
+/// writer and one reader and the whole of the coupling is that they are the same
+/// allocation.
+pub struct Shared {
+    /// Set by `session/cancel`, read before each event is translated.
+    pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Written by the observer on every event, read when an approval is raised.
+    pub step: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Reporter {
-    /// A reporter for one session, and the handle that cancels it.
+    /// A reporter for one session, and the handles that steer and read it.
     pub fn new(
         session_id: impl Into<String>,
         updates: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    ) -> (Self, Shared) {
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let step = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         (
             Self {
                 session_id: session_id.into(),
                 updates,
                 cancelled: std::sync::Arc::clone(&cancelled),
+                step: std::sync::Arc::clone(&step),
             },
-            cancelled,
+            Shared { cancelled, step },
         )
     }
 }
@@ -875,6 +903,13 @@ impl io_harness::Observer for Reporter {
         if self.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return io_harness::Flow::Cancel;
         }
+
+        // Recorded before the translation and unconditionally, because an event
+        // this module draws nothing for still moved the run on — and the next
+        // approval must name the step the agent is actually on, not the last one
+        // that happened to render.
+        self.step
+            .store(event.step, std::sync::atomic::Ordering::Relaxed);
 
         if let Some(update) = crate::acp_map::translate(event) {
             // A closed receiver means the session is gone. That is not a reason
@@ -1071,8 +1106,8 @@ impl<P: io_harness::Provider> Editing<'_, P> {
 
     /// Drive one turn, streaming updates, and answer with its stop reason.
     async fn run(&mut self, session_id: &str, goal: String) -> &'static str {
-        let (reporter, cancel) = Reporter::new(session_id, self.outbound.clone());
-        self.cancel = Some(cancel);
+        let (reporter, shared) = Reporter::new(session_id, self.outbound.clone());
+        self.cancel = Some(std::sync::Arc::clone(&shared.cancelled));
 
         let contract = crate::exec::contract(self.config, self.session, goal, None);
         let outcome = self
@@ -1086,7 +1121,7 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                     session_id: session_id.to_string(),
                     outbound: self.outbound.clone(),
                     run_id: self.session.id(),
-                    step: std::sync::atomic::AtomicU32::new(0),
+                    step: std::sync::Arc::clone(&shared.step),
                     correlator: std::sync::Arc::clone(&self.correlator),
                 },
                 &reporter,
@@ -1154,7 +1189,15 @@ struct Consulting {
     outbound: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     /// The run this is approving for, so the request lands on the right cell.
     run_id: i64,
-    step: std::sync::atomic::AtomicU32,
+    /// The step the run is on, written by [`Reporter`] as it observes.
+    ///
+    /// **Shared with the observer rather than owned here, and that is a fix.**
+    /// It was an `AtomicU32` this struct constructed at zero and only ever read —
+    /// never stored — so every request named cell `{run_id}-0` whatever step
+    /// raised it. Through 0.37.0 that mis-addressed a failure notice; from
+    /// 0.38.0 it would mis-address the dialog an operator acts on, attaching the
+    /// question to a call that already finished.
+    step: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Where the answer will come back. Shared with the read task, which is the
     /// only thing that can settle it.
     correlator: std::sync::Arc<Correlator>,

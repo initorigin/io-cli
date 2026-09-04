@@ -795,7 +795,8 @@ fn f5_a_cancel_reaches_the_observer_and_silences_it_at_once() {
     use std::sync::atomic::Ordering;
 
     let (updates, mut drain) = tokio::sync::mpsc::unbounded_channel();
-    let (reporter, cancelled) = acp::Reporter::new("s-7", updates);
+    let (reporter, shared) = acp::Reporter::new("s-7", updates);
+    let cancelled = shared.cancelled;
 
     // Before the cancel: a token is a message chunk and the run continues.
     let token = RunEvent::new(
@@ -848,7 +849,7 @@ fn a_no_op_kind_produces_no_frame_at_all() {
     use io_harness::Observer;
 
     let (updates, mut drain) = tokio::sync::mpsc::unbounded_channel();
-    let (reporter, _cancel) = acp::Reporter::new("s-8", updates);
+    let (reporter, _shared) = acp::Reporter::new("s-8", updates);
 
     assert_eq!(acp_map::update_for("dialed"), Some(Update::None));
     reporter.event(&RunEvent::new(
@@ -1166,7 +1167,8 @@ async fn scripted_client(
     let mut lines = tokio::io::BufReader::new(&mut agent_writes).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
-        let frame: Value = serde_json::from_str(&line).expect("a written line is one JSON document");
+        let frame: Value =
+            serde_json::from_str(&line).expect("a written line is one JSON document");
         let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
         let is_request = frame.get("id").is_some() && !method.is_empty();
         seen.push(frame.clone());
@@ -1284,7 +1286,9 @@ async fn f9_an_allow_once_answer_approves_the_call() {
     // notification is what 0.36.0 sent, and a client cannot answer one.
     let request = seen
         .iter()
-        .find(|frame| frame.get("method").and_then(Value::as_str) == Some("session/request_permission"))
+        .find(|frame| {
+            frame.get("method").and_then(Value::as_str) == Some("session/request_permission")
+        })
         .expect("the client was asked");
     assert!(
         request.get("id").is_some(),
@@ -1385,7 +1389,8 @@ async fn f10_an_answer_arriving_during_the_wait_is_read() {
 /// indistinguishable from a hang if it were long enough not to be.
 #[tokio::test]
 async fn f11_a_client_that_never_answers_denies_rather_than_hangs() {
-    let answered = tokio::time::timeout(std::time::Duration::from_secs(10), one_approval(None)).await;
+    let answered =
+        tokio::time::timeout(std::time::Duration::from_secs(10), one_approval(None)).await;
 
     let (decision, _) = answered.expect("an unanswered approval must not hang the turn");
     let io_harness::Decision::Deny { reason } = decision else {
@@ -1425,6 +1430,64 @@ async fn f11_a_cancelled_outcome_is_a_denial() {
     );
 }
 
+/// **F9 — the permission request names the cell the run is actually on.**
+///
+/// **This is the release's own adversarial-review finding.** `Consulting` held an
+/// `AtomicU32` it constructed at zero and only ever read — nothing stored it — so
+/// every request named cell `{run_id}-0` whatever step raised it. Through 0.37.0
+/// that mis-addressed a `tool_call_update` on a failed call; from 0.38.0 it would
+/// mis-address the dialog an operator acts on, attaching the question to a call
+/// that had already finished.
+///
+/// The step now comes from the observer, which is the only thing in the module
+/// that sees one — an `Approver` is handed a `Request` carrying an act and a
+/// target and no step at all.
+///
+/// Asserted against `acp_map`'s own `toolCallId` for the same event rather than
+/// against a literal, so the two cannot drift into two spellings of one id.
+#[test]
+fn f9_the_permission_cell_id_is_the_one_the_run_is_on() {
+    let updates = tokio::sync::mpsc::unbounded_channel().0;
+    let (reporter, shared) = acp::Reporter::new("sess-1", updates);
+
+    // Nothing has been observed yet, so the run is on its first step.
+    assert_eq!(shared.step.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    // Drive an event on a later step through the observer, exactly as a run does.
+    let event = RunEvent::new(
+        7,
+        4,
+        EventKind::ToolCall {
+            name: "write_file".into(),
+            target: "src/lib.rs".into(),
+            origin: None,
+        },
+    );
+    let _ = io_harness::Observer::event(&reporter, &event);
+
+    assert_eq!(
+        shared.step.load(std::sync::atomic::Ordering::Relaxed),
+        4,
+        "the observer did not record the step, so an approval raised now would \
+         name the wrong cell",
+    );
+
+    // And the id built from it is the one the client already has for that call.
+    let drawn = acp_map::translate(&event).expect("a tool call draws an update");
+    let announced = drawn["toolCallId"]
+        .as_str()
+        .expect("an announced cell has an id");
+    assert_eq!(
+        format!(
+            "{}-{}",
+            event.run_id,
+            shared.step.load(std::sync::atomic::Ordering::Relaxed)
+        ),
+        announced,
+        "the approval would name a cell the client never saw announced",
+    );
+}
+
 /// **F11 — a response nobody is waiting for changes nothing.**
 ///
 /// The correlator drops it. That is the correct answer rather than a gap: the
@@ -1434,12 +1497,21 @@ async fn f11_a_cancelled_outcome_is_a_denial() {
 #[tokio::test]
 async fn f11_a_response_naming_an_unknown_id_is_dropped() {
     let correlator = acp::Correlator::new();
-    correlator.settle(&serde_json::json!(9_999), Ok(serde_json::json!({ "outcome": "selected" })));
+    correlator.settle(
+        &serde_json::json!(9_999),
+        Ok(serde_json::json!({ "outcome": "selected" })),
+    );
 
     // The real proof is that the next issued request still resolves normally —
     // an implementation that panicked or poisoned its map on an unknown id would
     // take the session down with it.
     let (id, answer) = correlator.issue();
-    correlator.settle(&serde_json::json!(id), Ok(serde_json::json!({ "outcome": "cancelled" })));
-    assert!(answer.await.is_ok(), "the correlator still settles its own ids");
+    correlator.settle(
+        &serde_json::json!(id),
+        Ok(serde_json::json!({ "outcome": "cancelled" })),
+    );
+    assert!(
+        answer.await.is_ok(),
+        "the correlator still settles its own ids"
+    );
 }
