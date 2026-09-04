@@ -168,6 +168,22 @@ pub fn code(outcome: &RunOutcome) -> u8 {
         // here at all.
         RunOutcome::VerificationFailed { .. } => UNVERIFIED,
 
+        // io-harness 0.77.0, and **its own CHANGELOG never declares it** — not
+        // under Breaking, not under Added. `RunOutcome` is `#[non_exhaustive]`,
+        // so the wildcard below took it silently and answered `UNFINISHED` for a
+        // run that was judged. It belongs beside `VerificationFailed` by that
+        // variant's own argument: the work produced an answer, something checked
+        // it, and it did not hold up. The harness makes the same distinction one
+        // layer down — `run.rs:324-338` says reporting a schema failure as a step
+        // cap "would send an operator to raise `max_steps`, which buys more
+        // attempts at the same failure".
+        //
+        // Reachable here, not theoretical. io-cli sets no schema itself, but
+        // `[run] output_schema` is a configuration key (`config.rs:901`) that
+        // `Config::apply_to` applies (`config.rs:2226`), and both arms call it —
+        // so an operator who writes one gets this outcome on an ordinary turn.
+        RunOutcome::SchemaUnsatisfied { .. } => UNVERIFIED,
+
         // `AwaitingApproval` stays unreachable from here while approvals are
         // denied rather than deferred; the other two are reachable, because a
         // question about intent and a proposed plan pass through no approver at
@@ -365,6 +381,10 @@ pub fn describe(outcome: &RunOutcome) -> String {
         RunOutcome::StepCapReached { steps } => ("stopped at the step cap", steps),
         RunOutcome::VerificationFailed { steps } => (
             "stopped at the step cap, and its verification failed",
+            steps,
+        ),
+        RunOutcome::SchemaUnsatisfied { steps } => (
+            "never produced the shape its output schema asked for",
             steps,
         ),
         RunOutcome::TimeBudgetExceeded { steps } => ("stopped at the time budget", steps),
@@ -1483,8 +1503,8 @@ impl WithProvider for Resuming {
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.76.0/src/run.rs:1790`, `:2109`, `:3145`). Recovery has
-        // `resume_with_recovery_observed` (`:2571`) and nothing tree-aware, so it
+        // (`io-harness-0.78.0/src/run.rs:1806`, `:2140`, `:3184`). Recovery has
+        // `resume_with_recovery_observed` (`:2602`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree
         // entry points, and resuming through the flat one would drop it.

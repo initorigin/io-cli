@@ -438,9 +438,14 @@ pub fn tool_kind(name: &str) -> &'static str {
 /// The `stopReason` for a run that ended this way.
 ///
 /// ACP names five: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal` and
-/// `cancelled`. io-harness names seventeen outcomes, so this is a narrowing and
+/// `cancelled`. io-harness names eighteen outcomes, so this is a narrowing and
 /// several outcomes share an answer — which is correct, because a client acts on
 /// the reason and only these five distinctions change what it does.
+///
+/// `SchemaUnsatisfied` joins the attempts bucket rather than `refusal`: a run
+/// that could not produce the requested shape has exhausted the attempts it was
+/// allowed, and telling a client it was refused would misreport the agent's
+/// willingness the same way a pause would.
 ///
 /// **A pause is `end_turn` and not `refusal`**, and that is the one mapping worth
 /// arguing. A run waiting on a question or a plan has not refused anything; it
@@ -456,6 +461,7 @@ pub fn stop_reason(outcome: &io_harness::RunOutcome) -> &'static str {
         O::Denied { .. } | O::Refused { .. } | O::PlanRejected { .. } => "refusal",
         O::StepCapReached { .. }
         | O::VerificationFailed { .. }
+        | O::SchemaUnsatisfied { .. }
         | O::Stalled { .. }
         | O::Escalated { .. } => "max_turn_requests",
         O::TimeBudgetExceeded { .. }

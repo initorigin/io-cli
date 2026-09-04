@@ -496,6 +496,7 @@ fn f3_every_outcome_maps_to_one_of_the_five_acp_stop_reasons() {
         io_harness::RunOutcome::Refused { steps: 1 },
         io_harness::RunOutcome::Cancelled { steps: 1 },
         io_harness::RunOutcome::Finished { steps: 1 },
+        io_harness::RunOutcome::SchemaUnsatisfied { steps: 1 },
     ];
 
     // The list above is hand-built because `RunOutcome` is an enum with no
