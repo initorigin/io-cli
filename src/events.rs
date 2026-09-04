@@ -847,7 +847,7 @@ impl Events {
                 lines.push(Line::from(spans));
                 lines
             }
-            EventKind::ToolCall { name, target } => {
+            EventKind::ToolCall { name, target, .. } => {
                 // Nothing is committed here, and that is the point: this event is
                 // emitted before the call runs, so a line written now could only
                 // say what the agent was about to do. The call is held open, shown

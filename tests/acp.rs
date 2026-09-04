@@ -388,6 +388,7 @@ fn f4_every_row_claims_what_the_translator_actually_sends() {
             EventKind::ToolCall {
                 name: "read_file".into(),
                 target: "src/main.rs".into(),
+                origin: None,
             },
             "tool_call",
             "tool_call",

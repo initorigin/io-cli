@@ -489,7 +489,7 @@ pub fn translate(event: &RunEvent) -> Option<Value> {
             "sessionUpdate": "agent_thought_chunk",
             "content": { "type": "text", "text": text },
         }),
-        EventKind::ToolCall { name, target } => json!({
+        EventKind::ToolCall { name, target, .. } => json!({
             "sessionUpdate": "tool_call",
             // The id is the step it happened on. A client needs a handle to
             // correlate a later `tool_call_update` with, and io-harness gives a

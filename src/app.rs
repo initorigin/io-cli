@@ -2931,6 +2931,7 @@ mod tests {
                 EventKind::ToolCall {
                     name: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
                     target: "feat/0.25.0".to_string(),
+                    origin: None,
                 },
             ),
             Duration::ZERO,
@@ -2950,6 +2951,7 @@ mod tests {
                 EventKind::ToolCall {
                     name: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
                     target: io_harness::tools::GIT_BRANCH_TOOL.to_string(),
+                    origin: None,
                 },
             ),
             Duration::ZERO,

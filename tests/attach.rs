@@ -235,6 +235,7 @@ mod viewed {
             EventKind::ToolCall {
                 name: name.to_string(),
                 target: target.to_string(),
+                origin: None,
             },
         )
     }

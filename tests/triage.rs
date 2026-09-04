@@ -317,6 +317,7 @@ fn a_status_or_silent_kind_commits_nothing() {
         EventKind::ToolCall {
             name: "read_file".into(),
             target: "notes.txt".into(),
+            origin: None,
         },
         EventKind::SpendDraw {
             tokens: 12,

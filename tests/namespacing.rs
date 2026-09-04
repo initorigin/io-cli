@@ -185,6 +185,7 @@ fn call(name: &str, target: &str) -> RunEvent {
         EventKind::ToolCall {
             name: name.into(),
             target: target.into(),
+            origin: None,
         },
     )
 }

@@ -307,6 +307,7 @@ fn only_a_committed_step_makes_the_line_read_the_trace() {
         EventKind::ToolCall {
             name: "read".into(),
             target: "src/lib.rs".into(),
+            origin: None,
         },
         EventKind::Stalled,
     ] {
