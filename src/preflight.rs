@@ -68,16 +68,16 @@
 //! exactly those three, and it is the same value the next turn runs under.
 //!
 //! On the ordinary path that is the *whole* policy `McpSession::connect` is handed:
-//! `run.rs:3935` passes the caller's policy through untouched. Two layers exist that
+//! `run.rs:4245` passes the caller's policy through untouched. Two layers exist that
 //! an embedder cannot read, and neither one is silently in force here:
 //!
 //! * `net::provider_layer` (`net.rs:334`, `pub(crate)`) allows exactly the provider's
 //!   own `host:port`, and is merged into the policy that reaches `connect` only on
-//!   the path that resumes a run after a network approval (`run.rs:2780`, `:3122`).
+//!   the path that resumes a run after a network approval (`run.rs:3000`, `:3370`).
 //!   It widens, and it widens for one host that is not an MCP server's.
-//! * `plan_lock` (`run/gate.rs:194`, `pub(super)`) denies `write` and `exec` outright
+//! * `plan_lock` (`run/gate.rs:237`, `pub(super)`) denies `write` and `exec` outright
 //!   while a plan is unreviewed — but it is merged inside the step loop
-//!   (`run/step.rs:637`, `run/tree.rs:312`), *after* the servers have connected, so it
+//!   (`run/step.rs:750`, `run/tree.rs:331`), *after* the servers have connected, so it
 //!   gates the tools an MCP server offers and never the server's own spawn.
 //!
 //! So this module can be wrong in one direction — it can say a server starts where a

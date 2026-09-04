@@ -3155,7 +3155,7 @@ fn f5_the_echoed_line_reads_as_a_command_and_not_as_a_prompt() {
 /// never resolves, which is what an operator would actually see.
 ///
 /// io-harness feeds its own sentence back as the step's decision
-/// (`"{tool} refused: withheld from this turn"`, `run/read.rs:1230`), so the cell
+/// (`"{tool} refused: withheld from this turn"`, `run/read.rs:1318`), so the cell
 /// pairs to that rather than to a word io-cli invented. What this asserts is the
 /// pairing survives: one call, one decision, so `paired` holds and the cell
 /// carries the harness's sentence instead of falling through to the step verdict.

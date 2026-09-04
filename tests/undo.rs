@@ -2,8 +2,8 @@
 //!
 //! **The assertion that matters most here is that an event *arrives*.**
 //! `EventKind::Rewound` is emitted only inside `rewind_run_observed`
-//! (`run.rs:804`) and `EventKind::Reverted` only inside `rewind_step_observed`
-//! (`run.rs:1011`). `src/rewind.rs` called the plain `rewind_run` from 0.4.0
+//! (`run.rs:878`) and `EventKind::Reverted` only inside `rewind_step_observed`
+//! (`run.rs:1085`). `src/rewind.rs` called the plain `rewind_run` from 0.4.0
 //! until this release, so neither has ever fired in this product's history — and
 //! `src/events.rs` has had an arm for one of them the whole time, unreachable.
 //!

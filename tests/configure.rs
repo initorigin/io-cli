@@ -718,7 +718,7 @@ fn f4_a_project_scoped_widening_is_refused_with_the_harness_s_sentence() {
 ///
 /// **Asserted on which FILE the refusal names, not merely that it refused.** The
 /// project sentence and the local sentence differ in exactly that clause
-/// (`config.rs:2429`, `untrusted`), so a needle of "narrow it and never widen it"
+/// (`config.rs:2605`, `untrusted`), so a needle of "narrow it and never widen it"
 /// alone would pass just as well against a write that had gone to `io.toml` — and
 /// then this test and `f4_a_project_scoped_widening_is_refused_with_the_harness_s_
 /// sentence` would be one test written twice.
@@ -1195,7 +1195,7 @@ fn f2_the_exec_modes_are_spelled_by_the_dependency() {
     assert_eq!(modes, vec!["read-only", "workspace-write", "full-access"]);
     // **In the user scope, because `Config::from_toml` parses as the PROJECT
     // scope and `full-access` is refused there.** io-harness's `PROJECT_WIDENING`
-    // (`config.rs:1759-1769`) refuses five (key, value) pairs in a committed file,
+    // (`config.rs:2425-2458`) refuses twelve (key, value) pairs in a committed file,
     // `sandbox.mode = "full-access"` among them, because `io.toml` arrives with a
     // `git clone`. Every mode io-cli offers is a mode io-harness accepts *somewhere*,
     // and that is what this asserts; where each one is legal is

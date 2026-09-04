@@ -390,7 +390,7 @@ async fn f5_the_head_is_asked_first_and_a_link_below_it_is_not_asked_at_all() {
 async fn f5_a_head_that_answered_reports_no_fallover() {
     // **The whole reason this crate does not build on `io_harness::Fallback`.**
     // io-harness emits `EventKind::FellBackTo` for any `Some` from `last_served`
-    // (`run/step.rs:503`), and `Fallback::last_served` answers `Some` for its own
+    // (`run/step.rs:577`), and `Fallback::last_served` answers `Some` for its own
     // primary — so a chain built from that type would tell the operator "the
     // provider fell over" on every step of every run.
     let (first, _) = link("first", None);

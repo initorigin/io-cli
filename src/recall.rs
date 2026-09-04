@@ -17,7 +17,7 @@
 //! **The operator's two levers** — [`pin`], [`forget`], [`unforget`] — are the
 //! only writes here, and every one of them is an *act*, reached from a keystroke
 //! and never from a draw. io-harness says so itself: `memory_pin` is documented
-//! as a caller's act and never a run's (`src/state.rs:1764-1767`), because the
+//! as a caller's act and never a run's (`src/state.rs:2016-2019`), because the
 //! whole point of a pin is that it survives what the agent does next. Pinning is
 //! also what makes the caps survivable — an entry an operator pinned is exempt
 //! from being overwritten by a run (`src/state/memory.rs:430`) and from being
@@ -36,7 +36,7 @@
 //! **1. The bucket is a canonicalised path, and io-cli has to canonicalise it
 //! itself.** io-harness computes the key in `memory_key()` at
 //! `src/run/memory.rs:14-19` — `std::fs::canonicalize(root)`, falling back to the
-//! path as given when that fails — and the function is `pub(super)`, so it cannot
+//! path as given when that fails — and the function is `pub(crate)`, so it cannot
 //! be called from here. [`workspace_key`] reproduces it exactly, fallback
 //! included. This matters more than it looks: a checkout reached through a
 //! symlink (`/var` on macOS resolves to `/private/var`, a home-directory link to
@@ -47,7 +47,7 @@
 //! green.
 //!
 //! **2. There are two buckets.** The workspace's own, and the literal
-//! [`GLOBAL_MEMORY_WORKSPACE`] — `"<global>"`, `src/state.rs:2833` — which holds
+//! [`GLOBAL_MEMORY_WORKSPACE`] — `"<global>"`, `src/state.rs:3112` — which holds
 //! what the agent believes everywhere. Both are listed, and every row carries the
 //! [`Scope`] it came from, because "is this true here, or true everywhere" is the
 //! only question the two scopes exist to answer and a merged list destroys it.
@@ -61,7 +61,7 @@
 //!
 //! **4. Eviction, pin-refusal and recall emit no `EventKind` at all.** io-harness
 //! records all three as [`io_harness::ContextEvent`] rows deliberately —
-//! `src/state.rs:2996-3002` spells out why: the question they answer
+//! `src/state.rs:3275-3281` spells out why: the question they answer
 //! (*did my pin hold?*) is asked
 //! afterwards by somebody reading the store, not during the run by an observer.
 //! A *write* does emit `EventKind::MemoryWrote`, which is exactly what makes the
@@ -74,18 +74,18 @@
 //! # The one thing that makes a naive *write* wrong
 //!
 //! **There are two removals in io-harness and only one of them can be undone.**
-//! [`Store::memory_delete`] (`src/state/memory.rs:863`) is a bare
+//! [`Store::memory_delete`] (`src/state/memory.rs:896`) is a bare
 //! `DELETE FROM memory` — the embedder's blunt removal, with no restore point
 //! and no tidying of the evidence the entry accrued. [`Store::memory_forget`]
-//! (`src/state/memory.rs:821`) writes a `memory_snapshots` row *before* it
+//! (`src/state/memory.rs:853`) writes a `memory_snapshots` row *before* it
 //! removes anything and then clears the key's `memory_recalls`
-//! (`src/state/memory.rs:838-855`).
+//! (`src/state/memory.rs:887-890`).
 //!
 //! [`forget`] uses the second, and the difference is not stylistic. io-cli
 //! already reports `memory_restored` / `memory_removed` on its undo path
 //! (`src/rewind.rs:89-92`, `:219-220`, `:294-301`), and that path is
 //! `io_harness::rewind_run`, which puts entries back **only** from
-//! `memory_snapshots` (`src/run.rs:749`, `:761-777`). An entry removed through
+//! `memory_snapshots` (`src/run.rs:823`, `:835-851`). An entry removed through
 //! `memory_delete` has no row there, so nothing can put it back — and the
 //! operator who forgot the wrong key finds that out at the one moment they
 //! wanted it. The two implementations are indistinguishable from the store's
@@ -109,7 +109,7 @@ use io_harness::{
 ///
 /// The same ceiling, for the same reason, as [`crate::sessions::MAX_RUNS_SCANNED`]:
 /// io-harness exposes no public per-workspace draw count — `Store::memory_draws`
-/// exists (`src/state/memory.rs:682`) and is `pub(crate)` — so the only public
+/// exists (`src/state/memory.rs:713`) and is `pub(crate)` — so the only public
 /// path is [`Store::memory_recalls`], which is keyed by run. Counting how many
 /// distinct runs drew on an entry therefore costs one indexed query per run, and
 /// this bounds that cost.
@@ -142,7 +142,7 @@ impl Scope {
 /// The key a workspace's durable memory is stored under.
 ///
 /// **A reproduction of io-harness's own `memory_key`** (`src/run/memory.rs:14-19`),
-/// which is `pub(super)` and so unreachable from here. Both halves are
+/// which is `pub(crate)` and so unreachable from here. Both halves are
 /// load-bearing and both are copied on purpose:
 ///
 /// - `canonicalize`, so the same directory reached by two different paths is one
@@ -164,9 +164,9 @@ pub fn workspace_key(root: &Path) -> String {
 
 /// The stored spelling of a memory kind.
 ///
-/// `MemoryKind::as_str` is **private** in io-harness (`src/state.rs:1812`), so the
+/// `MemoryKind::as_str` is **private** in io-harness (`src/state.rs:2066`), so the
 /// two words are spelled here. The enum is `#[non_exhaustive]`
-/// (`src/state.rs:1800`) — the crate documents a third kind it intends to add —
+/// (`src/state.rs:2054`) — the crate documents a third kind it intends to add —
 /// so the wildcard arm is required rather than defensive, and it says *unknown*
 /// rather than guessing `"fact"`: a kind this build cannot name is not a fact, it
 /// is a row written by a newer harness than the one this binary was compiled
@@ -202,7 +202,7 @@ pub struct Remembered {
     /// How many **distinct runs** have drawn on it.
     ///
     /// Distinct runs and not recall rows, matching the evidence io-harness itself
-    /// evicts by (`src/state/memory.rs:639-644`): a recall row is written once per
+    /// evicts by (`src/state/memory.rs:686-687`): a recall row is written once per
     /// carried key per *step*, so counting rows would let one two-hundred-step run
     /// outvote fifty runs that each leaned on the note once, and would make the
     /// number monotone in age rather than in usefulness.
@@ -263,7 +263,7 @@ impl Happened {
         }
     }
 
-    /// The kind string io-harness stores, `src/state.rs:2982-3009`.
+    /// The kind string io-harness stores, `src/state.rs:3261-3290`.
     fn of(kind: &str) -> Option<Self> {
         match kind {
             "memory_evict" => Some(Happened::Evicted),
@@ -297,7 +297,7 @@ pub struct View {
     pub workspace: String,
     /// Every note in both buckets: the workspace's, then the global one, each in
     /// the order io-harness returns it (`created_at ASC, key ASC`,
-    /// `src/state/memory.rs:764`).
+    /// `src/state/memory.rs:796`).
     pub entries: Vec<Remembered>,
     /// The caps, one row per scope. See the module note, trap 3.
     pub caps: Vec<Caps>,
@@ -431,7 +431,7 @@ pub fn trace(store: &Store, run_id: i64) -> Result<Vec<Noted>, Error> {
 /// Which runs have drawn on each `(bucket, key)`, and whether the scan was cut.
 ///
 /// io-harness's own per-workspace answer, `Store::memory_draws`
-/// (`src/state/memory.rs:682`), is `pub(crate)`. The public surface is
+/// (`src/state/memory.rs:713`), is `pub(crate)`. The public surface is
 /// [`Store::memory_recalls`], which is keyed by run — so the count has to be
 /// assembled from the other side, one indexed query per run, bounded by
 /// [`MAX_RUNS_SCANNED`].
@@ -480,7 +480,7 @@ const FORGET_GOAL: &str = "an operator withdrew one memory entry";
 ///
 /// Deliberately **not** [`io_harness::SUCCESS_OUTCOME`]: `Store::finish_run`
 /// (`src/state/runs.rs:145`) hands the string to `write_summary`, which stores
-/// `success = (outcome == "success")` (`src/state/memory.rs:151-180`) — so a
+/// `success = (outcome == "success")` (`src/state/memory.rs:160-189`) — so a
 /// bookkeeping row named `"success"` would quietly inflate every success rate
 /// computed off this store. Any other string still marks the run `completed`,
 /// which is the half that matters: a run left `running` is a *resumable* run,
@@ -498,9 +498,9 @@ const FORGET_STEP: u32 = 0;
 /// What pinning or unpinning one entry did.
 ///
 /// Two variants and not a `bool`, because `Store::memory_pin` returns
-/// `n > 0` from an `UPDATE` (`src/state/memory.rs:562-569`) and `false` there
+/// `n > 0` from an `UPDATE` (`src/state/memory.rs:593-598`) and `false` there
 /// means *there was no such entry* — not "the pin failed". io-harness is explicit
-/// that it will not invent one to pin (`src/state/memory.rs:556-558`). A `bool`
+/// that it will not invent one to pin (`src/state/memory.rs:569-570`). A `bool`
 /// at a call site reads as "did it work", and the surface that believes it worked
 /// shows a pin the store does not hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -513,7 +513,7 @@ pub enum Pinned {
 
 /// What withdrawing one entry did.
 ///
-/// The three outcomes of [`Store::memory_forget`] (`src/state.rs:1972-1982`),
+/// The three outcomes of [`Store::memory_forget`] (`src/state.rs:2226-2235`),
 /// kept apart because **only one of them is success**. Collapsing them into a
 /// `bool` — or worse, reporting the refusal as a removal — tells an operator
 /// their note is gone while it sits in the store being carried into every later
@@ -610,7 +610,7 @@ pub fn forget(store: &Store, root: &Path, scope: Scope, key: &str) -> Result<For
     let outcome = store.memory_forget(&bucket, key, restore, FORGET_STEP)?;
     store.finish_run(restore, FORGET_OUTCOME)?;
     // Exhaustive on purpose. `MemoryForget` is not `#[non_exhaustive]`
-    // (`src/state.rs:1971`), so a fourth outcome in a later io-harness stops this
+    // (`src/state.rs:2225`), so a fourth outcome in a later io-harness stops this
     // build rather than being folded into one of the three by a wildcard — and
     // the one direction that must never be guessed is "unknown, so probably
     // removed".

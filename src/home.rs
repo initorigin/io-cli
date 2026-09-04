@@ -9,7 +9,7 @@
 //! This module names one. It is deliberately **not** a second configuration
 //! system: io-harness resolves `$IO_CONFIG`, then `$IO_CONFIG_HOME`, then the
 //! platform's own place, reading the environment at call time
-//! (`io-harness-0.76.0/src/config.rs:2146`, the Windows branch at `:2164`), and
+//! (`io-harness-0.78.0/src/config.rs:2241`, the Windows branch at `:2259`), and
 //! there is no caller-supplied home
 //! anywhere in `Config`'s public surface — no `discover_in`, no builder. So the
 //! one lever is `$IO_CONFIG_HOME`, set once, before the first
@@ -347,7 +347,7 @@ pub fn in_force() -> Option<(PathBuf, Origin)> {
 /// Expand a leading `~` against the operator's home directory.
 ///
 /// io-harness substitutes `${env:…}` and `${file:…}` and nothing else
-/// (`config.rs:1965`), so a `~` an operator writes in a path reaches the code that
+/// (`config.rs:3004`), so a `~` an operator writes in a path reaches the code that
 /// uses it verbatim — and `Skills::discover` would then look in a directory
 /// literally named `~`. Expanding it here rather than asking the harness to keeps
 /// the substitution rules the harness's own.

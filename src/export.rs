@@ -23,7 +23,7 @@
 //! **It is not JSON, and this release's plan said it was.** The format is
 //! pipe-delimited lines built by hand — `step {n} | tokens {n} | decision … `
 //! per step, then `context {step} | {kind} | {detail}` per context event
-//! (`state/trace.rs:1019-1036`). io-harness offers no JSON alternative;
+//! (`state/trace.rs:1234-1251`). io-harness offers no JSON alternative;
 //! `StepRecord` does not even derive `Serialize`. io-cli *could* build one —
 //! `serde_json` is among its ten dependencies — and must not, because a document
 //! this crate assembled would be a second format that compares against nothing,

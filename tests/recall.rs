@@ -7,7 +7,7 @@
 //!
 //! 1. **The bucket is a canonicalised path.** io-harness keys a workspace's
 //!    memory on `std::fs::canonicalize(root)` — `src/run/memory.rs:14-19`, and
-//!    the function is `pub(super)`, so io-cli cannot call it and has to
+//!    the function is `pub(crate)`, so io-cli cannot call it and has to
 //!    reproduce it. Key on the root as given and the panel is empty beside an
 //!    agent writing a note every turn, **and only when the checkout is reached
 //!    through a symlink**, which is the defect that ships green. `/var` on macOS
@@ -21,7 +21,7 @@
 //!    its own, so a run drawing on both may carry up to twice `max_entries`. One
 //!    number reported as *the* cap is half the real ceiling.
 //! 4. **Eviction, refusal and recall emit no `EventKind` at all.** io-harness
-//!    records them as `ContextEvent` rows on purpose (`src/state.rs:2996-3002`).
+//!    records them as `ContextEvent` rows on purpose (`src/state.rs:3275-3281`).
 //!    An implementation reaching for the observer stream reports that none has
 //!    ever happened, which is indistinguishable from a healthy store. The real
 //!    run below watches the stream and asserts the *absence*, so that sabotage
@@ -180,7 +180,7 @@ fn f6_lists_both_buckets_and_keeps_them_apart() {
     assert_eq!(
         view.entries[1].kind, "decision",
         "the two kinds are spelled here because `MemoryKind::as_str` is private \
-         in io-harness (src/state.rs:1812)",
+         in io-harness (src/state.rs:2066)",
     );
 }
 
@@ -500,7 +500,7 @@ async fn f8_eviction_refusal_and_recall_are_read_from_the_trace() {
         assert!(
             !seen.iter().any(|k| k.contains(forbidden)),
             "SABOTAGE: io-harness emits no EventKind for {forbidden} \
-             (src/state.rs:2996-3002), so an implementation reading evictions off \
+             (src/state.rs:3275-3281), so an implementation reading evictions off \
              the observer stream reports that none has ever happened and looks \
              perfectly healthy. These must come from Store::context_events.",
         );
@@ -815,7 +815,7 @@ fn f7_pinning_and_unpinning_act_on_the_bucket_the_scope_names() {
     );
 
     // "Nothing to pin" is an outcome of its own. io-harness will not invent an
-    // entry to carry the pin (`src/state/memory.rs:556-558`), so a `bool` read as
+    // entry to carry the pin (`src/state/memory.rs:569-570`), so a `bool` read as
     // "did it work" would leave a surface showing a pin the store does not hold.
     assert_eq!(
         recall::pin(
@@ -940,7 +940,7 @@ fn f7_a_pinned_entry_survives_eviction_at_the_cap_and_an_unpinned_one_does_not()
 
     // `plain` first, so it is also the first eviction candidate: nothing has
     // recalled either, and the candidate order falls through to `created_at ASC,
-    // id ASC` (`src/state/memory.rs:653-660`). The pin is therefore the only
+    // id ASC` (`src/state/memory.rs:691`). The pin is therefore the only
     // thing that can decide which of the two goes.
     remember(&store, &bucket, "plain", "an older note", MemoryKind::Fact);
     remember(
@@ -1019,7 +1019,7 @@ async fn f7_forgetting_removes_the_entry_and_leaves_a_way_back() {
 
     // Written before the turn so the turn carries it into its prompt and the key
     // accrues real recall rows. `Store::record_memory_recall` is `pub(crate)`
-    // (`src/state/memory.rs:786`), so a real turn is the only way to make one —
+    // (`src/state/memory.rs:607`), so a real turn is the only way to make one —
     // which is why this reuses the `Remembering` harness above rather than
     // hand-writing a row io-harness would never have written.
     remember(
@@ -1079,9 +1079,9 @@ async fn f7_forgetting_removes_the_entry_and_leaves_a_way_back() {
         doomed_recalls(turn.run_id),
         0,
         "SABOTAGE: `Store::memory_delete` is a bare `DELETE FROM memory` \
-         (io-harness `src/state/memory.rs:863-869`) and leaves every recall row \
+         (io-harness `src/state/memory.rs:896-903`) and leaves every recall row \
          standing. The evidence a withdrawn note accrued would keep voting in \
-         the eviction order (`src/state/memory.rs:653-660`) on behalf of a note \
+         the eviction order (`src/state/memory.rs:684-691`) on behalf of a note \
          that no longer exists, and a draw count read back for a later note of \
          the same key would carry the dead one's history.",
     );
@@ -1092,8 +1092,8 @@ async fn f7_forgetting_removes_the_entry_and_leaves_a_way_back() {
         recall::unforget(&store, workspace.path(), restore).expect("the rewind runs"),
         ["doomed"],
         "SABOTAGE: `memory_delete` writes no `memory_snapshots` row (io-harness \
-         `src/state/memory.rs:838-848`), so `rewind_run` finds nothing to put \
-         back (`src/run.rs:749`) and this is empty. The operator who withdrew \
+         `src/state/memory.rs:896-903`), so `rewind_run` finds nothing to put \
+         back (`src/run.rs:823`) and this is empty. The operator who withdrew \
          the wrong note would have no way back at all — and would find that out \
          at the one moment they wanted it.",
     );
@@ -1102,7 +1102,7 @@ async fn f7_forgetting_removes_the_entry_and_leaves_a_way_back() {
     assert_eq!(
         back.value, "the flaky test is in parser rs",
         "byte for byte, from the restore point taken BEFORE the removal \
-         (io-harness `src/state/memory.rs:838-848`)",
+         (io-harness `src/state/memory.rs:866-873`)",
     );
     assert!(
         !back.pinned,
@@ -1122,7 +1122,7 @@ async fn f7_forgetting_removes_the_entry_and_leaves_a_way_back() {
     assert_eq!(
         record.undid_step, None,
         "a whole-run rewind rather than a step revert (io-harness \
-         `src/state.rs:3436-3440`)",
+         `src/state.rs:3726-3731`)",
     );
 }
 
@@ -1150,7 +1150,7 @@ fn f7_a_pinned_entry_is_refused_and_an_unknown_key_is_absent() {
             .expect("the call succeeds; the withdrawal does not"),
         Forgotten::Refused,
         "SABOTAGE: `MemoryForget::Pinned` means the harness REFUSED \
-         (io-harness `src/state/memory.rs:829-831`), and it is the one outcome \
+         (io-harness `src/state/memory.rs:863-864`), and it is the one outcome \
          that looks like the other two if it is folded into a `bool`. Reported \
          as success it tells an operator their note is gone while it stays in \
          the store and is carried into every later prompt — the same failure the \

@@ -13,9 +13,9 @@
 //! # The whole-run case changed too, and that is what makes two events reachable
 //!
 //! `src/rewind.rs` called the plain `rewind_run`, and **`EventKind::Rewound` is
-//! emitted only inside `rewind_run_observed`** (`run.rs:804`). So in this
+//! emitted only inside `rewind_run_observed`** (`run.rs:878`). So in this
 //! product's entire history that event has never fired once. The same is true of
-//! `EventKind::Reverted`, which only `rewind_step_observed` emits (`run.rs:1011`).
+//! `EventKind::Reverted`, which only `rewind_step_observed` emits (`run.rs:1085`).
 //!
 //! **What that buys is not a line on screen, and an earlier draft of this file
 //! claimed it was.** Both kinds are `Disposition::Silent` in `crate::triage` and

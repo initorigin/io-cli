@@ -1880,7 +1880,7 @@ impl Events {
             // brag about concurrency.
             //
             // **Only when something was discarded.** io-harness emits this
-            // whenever `started > 0` (`run/step.rs:1401`), so a step that
+            // whenever `started > 0` (`run/step.rs:1476`), so a step that
             // speculated perfectly would otherwise put a line in every transcript
             // saying nothing happened. A run where speculation always pays is a
             // run with nothing to report, which is the same rule the sandbox arm

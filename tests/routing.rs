@@ -292,7 +292,7 @@ fn a_rule_missing_half_of_itself_parses_and_is_refused_by_name() {
 
 /// **The three values that are writable and disastrous.**
 ///
-/// io-harness obeys the thresholds literally (`contract.rs:1811-1822`), and none
+/// io-harness obeys the thresholds literally (`contract.rs:2055-2067`), and none
 /// of these is a shape TOML can refuse:
 ///
 /// * `failures = 0` satisfies `consecutive_gate_failures >= 0` at the first request
@@ -417,7 +417,7 @@ const UNRELATED: &str = "[run]\nmax_steps = 7\n";
 
 /// **`Config::from_toml` cannot build any of these fixtures**, which is worth
 /// stating where the first one is written. That constructor hard-codes
-/// `Scope::Project` (`config.rs:1128`), `[routing]` is in io-harness's
+/// `Scope::Project` (`config.rs:1166`), `[routing]` is in io-harness's
 /// `REFUSED_SECTIONS` for every scope but the user's, and so a parsed-text fixture
 /// carrying `[routing]` does not load at all. `support::user_scope` writes the file
 /// outside the discovery root and points `IO_CONFIG` at it, which is the only place
@@ -480,9 +480,9 @@ fn f11_a_harness_table_alone_says_no_io_cli_surface_lists_it() {
 /// Both tables written, and the notice says which one the contract carries.
 ///
 /// The whole of F11. `Config::apply_to` merges `[routing]` onto the contract
-/// (`config.rs:2076`) and `contract::configured` then calls
+/// (`config.rs:2168`) and `contract::configured` then calls
 /// `TaskContract::with_routing`, whose body is `self.routing = Some(routing)`
-/// (`contract.rs:1292`) — so `mechanical`, which io-cli has no key for, is gone and
+/// (`contract.rs:1314`) — so `mechanical`, which io-cli has no key for, is gone and
 /// nothing said so before this release.
 ///
 /// **The second half is the branch a plausible wrong implementation gets wrong.** A
