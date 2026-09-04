@@ -40,6 +40,23 @@ fn file(root: &Path, rel: &str, text: &str) -> PathBuf {
     path
 }
 
+/// Build an adapter and put it in place, which is what an **accepted** install is.
+///
+/// **Two calls rather than one, because since 0.38.0 they are two acts.**
+/// `adapt::generate` builds the adapter in a staging directory and touches `into`
+/// on no path at all; `Staged::commit` is the swap, and the caller holding the
+/// operator's answer is the one that runs it. Every test below that reads the
+/// adapter is a test about an install somebody said yes to, and says so by calling
+/// this; the ones that assert on a refusal call `generate` directly, because a
+/// refusal never reaches the swap. The answer itself — declining leaves the
+/// installed adapter byte-identical, accepting still applies the refresh — is
+/// gated in `tests/marketplace.rs`, where the consent lives.
+fn installed(bundle: &Path, name: &str, into: &Path) -> Result<adapt::Adapter, String> {
+    let written = adapt::generate(bundle, name, into)?;
+    written.staged.commit()?;
+    Ok(written)
+}
+
 /// The index shape `zeroonething/ultraship` publishes — one plugin at the root.
 const ONE_AT_THE_ROOT: &str = r#"{
   "name": "ultraship",
@@ -493,7 +510,7 @@ fn loaded(into: &Path) -> Plugins {
 /// that io wrote until 0.35.0. The generator still runs and the fixture still
 /// builds — and `dropped()` carries the whole bundle, because io-harness 0.74.0
 /// refuses an absolute `skills` or `templates` in every scope, `Scope::User`
-/// included (`io-harness-0.76.0/src/plugin.rs:1097`): a manifest contributes a
+/// included (`io-harness-0.78.0/src/plugin.rs:1097`): a manifest contributes a
 /// directory it ships rather than one it points at somewhere else on the machine,
 /// since every `*.md` under it is read into the model's system prompt.
 #[test]
@@ -507,7 +524,7 @@ fn f7_a_four_kind_bundle_becomes_a_manifest_io_harness_loads_with_nothing_droppe
         "rust-review",
     );
 
-    let written = adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+    let written = installed(&bundle, "rust-review", &into).expect("the adapter is written");
 
     assert_eq!(
         written.manifest,
@@ -626,7 +643,7 @@ fn f7_a_bundle_carrying_none_of_the_four_kinds_contributes_nothing() {
     );
     let into = root.join("adapters/bare");
 
-    adapt::generate(&bundle, "bare", &into).expect("a bundle carrying nothing still adapts");
+    installed(&bundle, "bare", &into).expect("a bundle carrying nothing still adapts");
 
     let plugins = loaded(&into);
     let plugin = plugins
@@ -656,7 +673,7 @@ fn f8_the_generated_manifest_round_trips_and_an_invented_key_refuses_the_bundle(
     let (_dir, root) = clone();
     let bundle = four_kinds(&root);
     let into = root.join("adapters/rust-review");
-    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+    installed(&bundle, "rust-review", &into).expect("the adapter is written");
     let manifest = into.join(PLUGIN_FILE);
     let written = std::fs::read_to_string(&manifest).expect("the manifest io wrote");
 
@@ -714,7 +731,7 @@ fn a_refused_refresh_leaves_the_installed_adapter_untouched() {
     let bundle = four_kinds(&root);
     let into = root.join("adapters/rust-review");
 
-    adapt::generate(&bundle, "rust-review", &into).expect("the first install writes an adapter");
+    installed(&bundle, "rust-review", &into).expect("the first install writes an adapter");
     let skill = into.join("skills/review/SKILL.md");
     let before = std::fs::read_to_string(&skill).expect("the adapter ships the bundle's skill");
 
@@ -751,6 +768,56 @@ fn a_refused_refresh_leaves_the_installed_adapter_untouched() {
     );
 }
 
+/// **A built adapter stands beside its destination and never in it, until it is
+/// committed.**
+///
+/// The property the whole consent ordering rests on, asserted one layer below the
+/// consent. Until 0.38.0 `generate` ended by replacing `into`, so by the time a
+/// disclosure was drawn there was nothing left for the operator to decide: a
+/// declined refresh had already replaced the adapter a `[[plugin]]` entry named,
+/// while `docs/guide/plugins.md` said in writing that it would not.
+///
+/// Sabotage: put the `remove_dir_all` and `rename` back at the end of `generate`.
+/// The first assertion here fails, and so does F13 in `tests/marketplace.rs` —
+/// this is the site that says which line the answer depends on.
+#[test]
+fn a_generated_adapter_stands_beside_its_destination_until_it_is_committed() {
+    let (_dir, root) = clone();
+    let bundle = four_kinds(&root);
+    let into = root.join("adapters/rust-review");
+
+    let written = adapt::generate(&bundle, "rust-review", &into).expect("the adapter is built");
+
+    assert!(
+        !into.exists(),
+        "`generate` wrote the destination. Nobody has consented to anything yet, and on \
+         an update the adapter the operator already had would be gone by now",
+    );
+    assert!(
+        written.staged.staging.join(PLUGIN_FILE).is_file(),
+        "the adapter is nowhere at all: not at its destination and not staged either",
+    );
+    assert_eq!(
+        written.staged.into, into,
+        "and it carries where it goes, or the caller holding the answer cannot perform it",
+    );
+
+    written
+        .staged
+        .commit()
+        .expect("the adapter is put in place");
+
+    assert!(
+        into.join(PLUGIN_FILE).is_file() && into.join("skills/review/SKILL.md").is_file(),
+        "the commit moves the whole adapter and not only the manifest",
+    );
+    assert!(
+        !written.staged.staging.exists(),
+        "and the staging directory is gone: a half-built adapter under a path the \
+         marketplace listing walks reads exactly like a working one",
+    );
+}
+
 /// A server that is a script inside the bundle — named the only way a bundle can
 /// name one, because the bundle does not know where it will be cloned to.
 const PLUGIN_ROOT_SERVER: &str = r#"{
@@ -777,7 +844,7 @@ fn f9_the_one_expandable_substitution_is_written_out_and_no_dollar_brace_survive
     file(&bundle, ".mcp.json", PLUGIN_ROOT_SERVER);
     let into = root.join("adapters/local");
 
-    adapt::generate(&bundle, "local", &into).expect("the adapter is written");
+    installed(&bundle, "local", &into).expect("the adapter is written");
 
     // Scanned in the bytes, because the bytes are what io-harness refuses. What
     // the generator meant to expand is not the question.
@@ -873,7 +940,7 @@ fn every_directory_the_generated_manifest_names_is_one_plain_component() {
     let (_dir, root) = clone();
     let bundle = four_kinds(&root);
     let into = root.join("adapters/rust-review");
-    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+    installed(&bundle, "rust-review", &into).expect("the adapter is written");
 
     let text = std::fs::read_to_string(into.join(PLUGIN_FILE)).expect("the manifest");
     let named: Vec<&str> = text
@@ -921,7 +988,7 @@ fn f7_the_adapter_ships_the_bundle_s_directories_rather_than_pointing_at_them() 
     let bundle = four_kinds(&root);
     let into = root.join("adapters/rust-review");
 
-    let written = adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+    let written = installed(&bundle, "rust-review", &into).expect("the adapter is written");
 
     assert_eq!(written.copied, ["skills", "templates"]);
     assert_eq!(
@@ -954,7 +1021,7 @@ fn a_regenerated_adapter_replaces_what_it_holds_rather_than_merging_into_it() {
     let (_dir, root) = clone();
     let bundle = four_kinds(&root);
     let into = root.join("adapters/rust-review");
-    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is written");
+    installed(&bundle, "rust-review", &into).expect("the adapter is written");
     assert!(into.join("skills/review/SKILL.md").is_file());
 
     // The upstream edit: one skill withdrawn, another published.
@@ -965,7 +1032,7 @@ fn a_regenerated_adapter_replaces_what_it_holds_rather_than_merging_into_it() {
         "# audit\n\nHow we audit.\n",
     );
 
-    adapt::generate(&bundle, "rust-review", &into).expect("the adapter is regenerated");
+    installed(&bundle, "rust-review", &into).expect("the adapter is regenerated");
 
     assert!(
         !into.join("skills/review").exists(),
@@ -1000,7 +1067,7 @@ fn a_skills_key_that_climbs_out_of_the_bundle_copies_nothing_and_contributes_not
     );
     let into = root.join("adapters/greedy");
 
-    adapt::generate(&bundle, "greedy", &into).expect("the bundle still adapts");
+    installed(&bundle, "greedy", &into).expect("the bundle still adapts");
 
     let plugin = Plugins::inspect(Scope::User, &into).expect("the manifest io wrote parses");
     assert_eq!(

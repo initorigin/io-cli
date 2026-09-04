@@ -1462,18 +1462,21 @@ pub struct Prepared {
     /// The bundle's own directory — the author's files. What the disclosure reads
     /// hooks from, because the generated manifest carries none.
     pub from: PathBuf,
-    /// The directory io created **for this install**, if it created one. Removed
-    /// when the operator declines, so a refused install leaves nothing behind.
+    /// The adapter io built **for this install**, standing beside
+    /// [`Prepared::declare`] and not yet in it. `None` for a native bundle, which
+    /// needed nothing generated.
     ///
-    /// **`None` for an adapter that was already there**, and that is the whole of
-    /// what makes a re-install safe. Installing a bundle a second time is the
-    /// update path (see [`prepared`]), so by the time the operator is asked to
-    /// consent there is an adapter directory that a `[[plugin]]` entry already
-    /// names — and answering "leave it" would otherwise delete the bundle they
-    /// installed last week, out of a file this module never opened and cannot see.
-    /// A decline then takes back what this install created, which for an update is
-    /// nothing.
-    pub made: Option<PathBuf>,
+    /// **This replaced `made`, which was the directory a decline deleted**, and
+    /// the reason it could be replaced is the reason the field existed. `made` was
+    /// `None` for an adapter that was already there, because the generator had
+    /// swapped the new adapter in before anyone was asked and deleting the
+    /// directory on a decline would have taken away the bundle the operator
+    /// installed last week. That distinction has no work left to do: the swap is
+    /// [`crate::adapt::Staged::commit`] and it runs *after* the answer, so on a
+    /// first install and on an update alike a decline discards a staging directory
+    /// and `declare` is untouched either way. One field, one answer, and no case
+    /// where declining reaches a directory a `[[plugin]]` entry names.
+    pub staged: Option<crate::adapt::Staged>,
     /// The directories the adapter copied out of the clone, in
     /// [`crate::adapt::Adapter::copied`]'s own words — `skills`, `templates`, or
     /// both. Empty for a native bundle, which is declared where it sits.
@@ -1512,13 +1515,15 @@ pub struct Prepared {
 /// what moves it across. [`Prepared::copied`] is what moved, and
 /// [`adapted_disclosure`] says so before the operator answers.
 ///
-/// **The adapter is written before consent and removed if consent is refused**,
-/// and that is the honest order rather than a convenience. The disclosure is
-/// io-harness reading the bundle, and io-harness has no loader that takes a
-/// foreign manifest — there is nothing to read until the manifest io generates
-/// exists. What the operator's *configuration* never sees is any of it:
-/// `Prepared::made` is what a declined install removes, and the scope file is not
-/// opened either way.
+/// **The adapter is built before consent and put in place after it.** The
+/// disclosure is io-harness reading the bundle, and io-harness has no loader that
+/// takes a foreign manifest — so there is nothing to read until the manifest io
+/// generates exists, and building it is not a thing consent can come before. What
+/// consent decides is the *swap*: until 0.38.0 [`crate::adapt::generate`] ended by
+/// replacing the destination, so declining a refresh left the new adapter over the
+/// one the operator already had. [`Prepared::staged`] is what a declined install
+/// discards, [`Prepared::declare`] is untouched until an accepted one commits, and
+/// the operator's configuration file is not opened either way.
 pub fn prepared(
     markets: &[Market],
     query: &str,
@@ -1540,7 +1545,7 @@ pub fn prepared(
         return Ok(Prepared {
             declare: from.clone(),
             from,
-            made: None,
+            staged: None,
             copied: Vec::new(),
         });
     }
@@ -1556,31 +1561,47 @@ pub fn prepared(
         )
     })?;
     let into = crate::adapt::at(adapters, &market.named.owner, &market.named.repo, &name);
-    // **Asked before the generator answers, because the generator removes it.**
-    // `adapt::generate` rebuilds the adapter directory from scratch on every run —
-    // that is what makes an update an update — so after the call there is no way
-    // left to tell an install from a re-install. See [`Prepared::made`]: the
-    // difference decides whether a decline deletes a bundle the operator installed
-    // some other day.
-    let already = into.is_dir();
+    // **An install and a re-install are no longer told apart here, and nothing
+    // downstream asks.** Until 0.38.0 `into.is_dir()` was read *before* the
+    // generator, because the generator swapped the new adapter in on the way past
+    // and there was no way to tell the two cases apart afterwards — and the answer
+    // decided whether declining was allowed to delete the directory. `generate`
+    // now leaves the adapter staged, so declining reaches `into` in neither case
+    // and the question has no consequence left to have.
     let written = crate::adapt::generate(&from, &name, &into)?;
     Ok(Prepared {
-        declare: into.clone(),
+        declare: into,
         from,
-        made: (!already).then_some(into),
+        staged: Some(written.staged),
         copied: written.copied,
     })
 }
 
-/// Take back what an install created, because the operator said no.
+/// Put what an install built in place, because the operator said yes.
 ///
-/// A no-op for a native bundle, which created nothing. Best effort by design: the
-/// operator has already declined and the entry was never written, so a directory
-/// that cannot be removed is a stale cache rather than anything they consented to,
-/// and a refusal reported *after* a refusal is noise about io's own housekeeping.
-pub fn unmake(made: Option<&Path>) {
-    if let Some(dir) = made {
-        let _ = std::fs::remove_dir_all(dir);
+/// A no-op for a native bundle, which built nothing: it is declared where it sits.
+/// The pair of [`unmake`], and one of the two runs on every path out of a
+/// disclosure — see [`crate::adapt::Staged`].
+///
+/// # Errors
+///
+/// [`crate::adapt::Staged::commit`]'s, naming the destination and what the rename
+/// said. A caller that gets one must not go on to write the `[[plugin]]` entry:
+/// there is no adapter at the path it would name.
+pub fn make(staged: Option<&crate::adapt::Staged>) -> Result<(), String> {
+    staged.map_or(Ok(()), crate::adapt::Staged::commit)
+}
+
+/// Throw away what an install built, because the operator said no.
+///
+/// A no-op for a native bundle, which built nothing. Best effort by design: the
+/// operator has already declined, the entry was never written and the adapter they
+/// already had was never touched, so a directory that cannot be removed is a stale
+/// cache rather than anything they consented to, and a refusal reported *after* a
+/// refusal is noise about io's own housekeeping.
+pub fn unmake(staged: Option<&crate::adapt::Staged>) {
+    if let Some(staged) = staged {
+        staged.discard();
     }
 }
 
@@ -1630,12 +1651,36 @@ impl Chosen {
         }
     }
 
-    /// What a declined install must take back, if anything was created.
+    /// The directory io-harness is asked to load **now**, which for an adapted
+    /// bundle is not [`Chosen::dir`].
+    ///
+    /// A staged adapter is not at its destination yet: on a first install that
+    /// destination does not exist, and on an update it still holds the *previous*
+    /// adapter — so a disclosure read from [`Chosen::dir`] would describe either
+    /// nothing or last week's bundle, and the operator would be answering about a
+    /// directory that is not the one they are being offered. [`Chosen::dir`] stays
+    /// what the `[[plugin]]` entry names and what the operator is shown, because
+    /// that is where the adapter is a moment after they say yes.
     #[must_use]
-    pub fn made(&self) -> Option<&Path> {
+    pub fn read(&self) -> &Path {
+        match self {
+            Self::Path(dir) => dir,
+            Self::Held(prepared) => prepared
+                .staged
+                .as_ref()
+                .map_or(prepared.declare.as_path(), |staged| {
+                    staged.staging.as_path()
+                }),
+        }
+    }
+
+    /// What an accepted install commits and a declined one discards, if this
+    /// install built anything.
+    #[must_use]
+    pub fn staged(&self) -> Option<&crate::adapt::Staged> {
         match self {
             Self::Path(_) => None,
-            Self::Held(prepared) => prepared.made.as_deref(),
+            Self::Held(prepared) => prepared.staged.as_ref(),
         }
     }
 
@@ -1774,7 +1819,7 @@ impl Disclosure {
 /// one that *does* show, the separator between a row's two fields, is applied by
 /// the door in [`Disclosure::said`].
 pub fn disclosure(scope: Scope, dir: &Path) -> Result<Disclosure, String> {
-    adapted_disclosure(scope, dir, None, &[])
+    adapted_disclosure(scope, dir, dir, None, &[])
 }
 
 /// The sentence every withheld hook carries, spelled once.
@@ -1793,8 +1838,8 @@ pub const NOT_CARRIED: &str = "io does not run this — a hook here is a shell l
 /// [`disclosure`], plus the hooks a foreign bundle declares and io will not carry.
 ///
 /// `from` is the bundle's **own** directory — the stranger's checkout — where
-/// `dir` is what io-harness is asked to load, which for an adapted bundle is the
-/// generated manifest's directory. The two differ precisely because the adapter
+/// `dir` is the adapter, which for an adapted bundle is the generated manifest's
+/// directory rather than the author's. The two differ precisely because the adapter
 /// carries no hooks: asking io-harness what the bundle contributes therefore
 /// cannot answer what it *declared*, and reading the author's own file is the only
 /// way to name what is being left behind.
@@ -1808,16 +1853,45 @@ pub const NOT_CARRIED: &str = "io does not run this — a hook here is a shell l
 /// an operator asks a week later: they edited a skill inside the clone, or pulled
 /// the repository, and the session went on using what io copied. Empty for every
 /// bundle that copied nothing, where the row would be a warning about nothing.
+///
+/// **`read` is the directory io-harness is handed and `dir` is the one the
+/// operator is told about, and they differ for exactly one reason.** A staged
+/// adapter ([`crate::adapt::Staged`]) is not at `dir` yet — the swap is what
+/// consent buys — so reading `dir` on an update would disclose the bundle the
+/// operator already has rather than the one they are being offered, and on a first
+/// install would refuse a directory that is not there. [`Chosen::read`] is the one
+/// place that answer is worked out. Pass `dir` twice where nothing is staged.
+///
+/// Every path io-harness answers with is then re-rooted from `read` onto `dir`, so
+/// what the operator is shown is where the adapter will be rather than where it
+/// was read from — the two rows would otherwise name two different directories for
+/// one bundle.
 pub fn adapted_disclosure(
     scope: Scope,
     dir: &Path,
+    read: &Path,
     from: Option<&Path>,
     copied: &[String],
 ) -> Result<Disclosure, String> {
-    let plugin = io_harness::Plugins::inspect(scope, dir).map_err(|error| error.to_string())?;
+    let plugin = io_harness::Plugins::inspect(scope, read).map_err(|error| error.to_string())?;
     // `true`, because nothing has been written: this is what the directory *is*,
     // not what some `[[plugin]]` entry said about it. See `pluginview::copy_out`.
-    let listed = crate::pluginview::copy_out(&plugin, true);
+    let mut listed = crate::pluginview::copy_out(&plugin, true);
+    // **Re-rooted onto the destination, because io-harness answered about the
+    // directory it was handed.** `detail` draws the contributed directories as
+    // whole paths, and for a staged adapter every one of them is under a hidden
+    // sibling that exists only until the operator answers — so the rows would send
+    // them somewhere that is gone a moment later, and would disagree with the
+    // `copied` row below, which names where the adapter lands. The prefix stripped
+    // is `Plugin::root` rather than `read`, so the swap holds whether or not
+    // io-harness canonicalised what it was given. Nothing else in `listed` is a
+    // path under the adapter: an `[[mcp]]` argv points into the clone, and the
+    // generated manifest declares no `[[bin]]` and no `[[hook]]` at all.
+    if read != dir {
+        let under = std::mem::replace(&mut listed.root, dir.to_path_buf());
+        listed.skills = listed.skills.take().map(|at| rerooted(&at, &under, dir));
+        listed.templates = listed.templates.take().map(|at| rerooted(&at, &under, dir));
+    }
     let mut rows = crate::pluginview::detail(&listed, u16::MAX, &crate::glyphs::ASCII);
     // A row rather than a field of its own, because a field is a line only a door
     // that knows about it prints — and both doors already print every row of this,
@@ -1841,6 +1915,16 @@ pub fn adapted_disclosure(
         rows,
         withheld: from.map(withheld_hooks).unwrap_or_default(),
     })
+}
+
+/// `path` with its `from` prefix replaced by `to`, or unchanged where it has none.
+///
+/// Unchanged rather than refused, because this answers a consent surface: a path
+/// that is one directory out of date is worth less than the disclosure it would
+/// otherwise take down.
+fn rerooted(path: &Path, from: &Path, to: &Path) -> PathBuf {
+    path.strip_prefix(from)
+        .map_or_else(|_| path.to_path_buf(), |rest| to.join(rest))
 }
 
 /// One line per hook the bundle at `from` declares, with its command unshortened.

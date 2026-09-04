@@ -70,7 +70,7 @@
 //! `self.root.join(d)` and `Path::join` of an absolute argument discards the base.
 //! io-harness 0.74.0 refuses that spelling for `skills` and for `templates` in
 //! **every** scope, `Scope::User` included
-//! (`io-harness-0.76.0/src/plugin.rs:1097`), and the reason is the one this
+//! (`io-harness-0.78.0/src/plugin.rs:1097`), and the reason is the one this
 //! product would give: every `*.md` under such a directory is read into the
 //! model's system prompt on every turn, so a manifest contributes a directory it
 //! *ships* rather than one it points at somewhere else on the machine. Copying is
@@ -377,7 +377,7 @@ pub const SKILLS_DIR: &str = "skills";
 /// io-harness calls the same thing a **template**, and the two formats are the
 /// same file: markdown, optional frontmatter, `$ARGUMENTS` for what the operator
 /// typed. `Templates::discover` takes every `*.md` in a directory
-/// (`io-harness-0.76.0/src/template.rs:279`), so what is translated is the
+/// (`io-harness-0.78.0/src/template.rs:279`), so what is translated is the
 /// directory and never the files in it — the bytes are copied verbatim into
 /// [`TEMPLATES_DIR`] and nothing in them is rewritten.
 pub const COMMANDS_DIR: &str = "commands";
@@ -434,11 +434,16 @@ pub const MCP_FILE: &str = ".mcp.json";
 /// other `${...}` is refused by name; see [`expanded`].
 pub const PLUGIN_ROOT: &str = "${CLAUDE_PLUGIN_ROOT}";
 
-/// One generated manifest: where it is, what io-harness reads out of it, and what
-/// the bundle carried that it does not.
+/// One generated manifest: where it goes, what io-harness reads out of it, and
+/// what the bundle carried that it does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adapter {
-    /// The `plugin.toml` that was written.
+    /// The `plugin.toml` this adapter becomes, at the destination
+    /// [`Staged::commit`] puts it at.
+    ///
+    /// **Not a file that exists yet.** [`generate`] leaves the adapter staged, so
+    /// until the caller commits, the bytes are under [`Staged::staging`] and this
+    /// path either holds the adapter of the *previous* install or holds nothing.
     pub manifest: PathBuf,
     /// What the bundle contributes, in io-harness's own words and its own fixed
     /// order.
@@ -463,6 +468,77 @@ pub struct Adapter {
     /// their edit inside the clone changed nothing is owed the sentence that says
     /// so. Which surface says it, and in what words, is that surface's business.
     pub copied: Vec<String>,
+    /// The built adapter, beside its destination and not yet in it.
+    pub staged: Staged,
+}
+
+/// An adapter built in a staging directory, waiting to be put in place or thrown
+/// away.
+///
+/// **The swap is the caller's, because the consent is the caller's.** Through
+/// 0.37.0 [`generate`] ended by replacing the destination itself, which was
+/// invisible while an install was the only thing that ran it. Since 0.35.0
+/// installing again *is* the update path, so that swap happened before the
+/// operator had answered: declining a refresh left the new adapter in place over
+/// the one a `[[plugin]]` entry already named, and `docs/guide/plugins.md`
+/// promised the opposite in writing. The bytes now stay in the staging directory
+/// until somebody who holds the answer calls [`Staged::commit`], and the other
+/// answer is [`Staged::discard`].
+///
+/// Exactly one of the two runs on every path — the type carries no flag saying
+/// which, because a flag would be a third state nothing checks. What is left
+/// behind if neither runs is one directory named for this process, which is the
+/// same window `fetch::clone_at` leaves and for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    /// Where the built adapter is now: a sibling of [`Staged::into`], hidden and
+    /// named for it and for this process, so two `io` processes adapting one
+    /// bundle cannot stage into each other.
+    pub staging: PathBuf,
+    /// Where it goes when the operator consents. Untouched until then, on a first
+    /// install and on an update alike.
+    pub into: PathBuf,
+}
+
+impl Staged {
+    /// Put the built adapter in place, replacing whatever is there.
+    ///
+    /// **Wiped and renamed rather than written over.** An adapter is rebuilt on
+    /// every install and since 0.35.0 it holds copies of the bundle's markdown and
+    /// not only a manifest — so a file the bundle's author deleted, or a whole
+    /// directory the new manifest no longer names, would otherwise survive in io's
+    /// home and go on being read into the model's prompt on every turn.
+    /// [`Staged::into`] is a directory this module owns by the layout [`at`]
+    /// states and nothing an operator wrote is in it.
+    ///
+    /// The window this leaves is one rename wide — a process that dies between the
+    /// remove and the rename loses the adapter — where before 0.35.0 it was the
+    /// whole of `generate` including every refusal. It is not closed entirely
+    /// because closing it means a third path to restore on failure, and
+    /// `plugin add` is the one command that puts it all back.
+    ///
+    /// # Errors
+    ///
+    /// A string naming the destination and what the rename said. The staging
+    /// directory is removed on that path too, so a failed commit leaves nothing
+    /// beside the adapter for the marketplace listing to walk.
+    pub fn commit(&self) -> Result<(), String> {
+        let _ = std::fs::remove_dir_all(&self.into);
+        std::fs::rename(&self.staging, &self.into).map_err(|error| {
+            let _ = std::fs::remove_dir_all(&self.staging);
+            format!("{}: {error}", self.into.display())
+        })
+    }
+
+    /// Take the built adapter back off the disk, because it is not wanted.
+    ///
+    /// Best effort by design: nothing was declared and [`Staged::into`] was never
+    /// touched, so a staging directory that cannot be removed is a stale cache
+    /// rather than anything the operator consented to, and a refusal reported
+    /// *after* a refusal is noise about io's own housekeeping.
+    pub fn discard(&self) {
+        let _ = std::fs::remove_dir_all(&self.staging);
+    }
 }
 
 /// The adapter directory for one bundle, under an adapters root.
@@ -481,13 +557,18 @@ pub fn at(root: &Path, owner: &str, repo: &str, name: &str) -> PathBuf {
     root.join(owner).join(repo).join(name)
 }
 
-/// Write the `plugin.toml` that makes `bundle` loadable, and report what it says.
+/// Build the `plugin.toml` that makes `bundle` loadable, and report what it says.
 ///
 /// `bundle` is a directory inside a clone and is **only read**; `into` is where
 /// the manifest goes, and it is regenerated rather than edited, so an adapter that
-/// is already there is replaced. `name` is the id the manifest declares and the
-/// word every name the bundle contributes is namespaced by — it goes through
+/// is already there is replaced whole. `name` is the id the manifest declares and
+/// the word every name the bundle contributes is namespaced by — it goes through
 /// [`normalised`], which refuses far more than it maps and says why.
+///
+/// **`into` is not written here.** What comes back is [`Adapter::staged`], the
+/// built adapter sitting beside its destination; the caller holding the operator's
+/// answer calls [`Staged::commit`] or [`Staged::discard`]. See [`Staged`] for what
+/// that ordering costs and what it buys.
 ///
 /// # The four kinds, and the one rule that decides the paths
 ///
@@ -497,7 +578,7 @@ pub fn at(root: &Path, owner: &str, repo: &str, name: &str) -> PathBuf {
 ///
 /// **The two directories are copied into `into` and named relative to it.**
 /// io-harness 0.74.0 refuses an absolute or a `..`-carrying `skills` or
-/// `templates` in every scope (`io-harness-0.76.0/src/plugin.rs:1097`), because
+/// `templates` in every scope (`io-harness-0.78.0/src/plugin.rs:1097`), because
 /// every `*.md` under one is read into the model's system prompt — so a bundle
 /// contributes a directory it ships. An adapter comes to ship one by copying it,
 /// and [`Adapter::copied`] reports which moved. The copy refuses a symbolic link
@@ -531,8 +612,9 @@ pub fn at(root: &Path, owner: &str, repo: &str, name: &str) -> PathBuf {
 /// io-harness does not speak, a manifest io-harness itself refuses, and a
 /// contributed directory io will not copy — a symbolic link, an entry that is
 /// neither a plain file nor a directory, or one past [`MOST_BYTES`] or
-/// [`MOST_ENTRIES`]. **`into` is removed on every one of them**, so a half-copied
-/// adapter is never left where an operator could go on to declare it.
+/// [`MOST_ENTRIES`]. **The staging directory is removed on every one of them**, so
+/// a half-copied adapter is never left where an operator could go on to declare
+/// it, and `into` is exactly as it was found on every one of them too.
 pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, String> {
     let id = normalised(name).ok_or_else(|| {
         format!(
@@ -632,7 +714,7 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
     // `expanded`, which refuses a substitution by the field it was written in —
     // this catches the case that check has not been wired to yet. io-harness
     // refuses a `${` anywhere in a manifest, in every scope
-    // (`io-harness-0.76.0/src/plugin.rs:977`), and the refusal takes the whole
+    // (`io-harness-0.78.0/src/plugin.rs:977`), and the refusal takes the whole
     // bundle rather than the one key: a single missed value would cost the
     // operator every capability the bundle carries, reported against a file they
     // did not write. Nothing is written when this fires.
@@ -644,21 +726,15 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
         ));
     }
 
-    // **Wiped and rebuilt rather than written over.** An adapter is regenerated on
-    // every install and every update, and since 0.35.0 it holds copies of the
-    // bundle's markdown and not only a manifest — so a file the bundle's author
-    // deleted, or a whole directory the new manifest no longer names, would
-    // otherwise survive in io's home and go on being read into the model's prompt
-    // on every turn. `into` is a directory this module owns by the layout [`at`]
-    // states and nothing an operator wrote is in it.
-    // **Built in a sibling and swapped in, never written over the live one.**
-    // Until 0.35.0 this wiped `into` first and removed it again on every refusal,
-    // which was correct while an install was the only thing that ran it: there was
-    // nothing there to lose. Since the adapter became a copy, **installing again
-    // is the update path** — so a refusal on an update was deleting a working
-    // adapter that an existing `[[plugin]]` entry still named, and the operator's
-    // next session lost a bundle by trying to refresh it. Every failure below now
-    // leaves `into` exactly as it was.
+    // **Built in a sibling and never written over the live one.** Until 0.35.0
+    // this wiped `into` first and removed it again on every refusal, which was
+    // correct while an install was the only thing that ran it: there was nothing
+    // there to lose. Since the adapter became a copy, **installing again is the
+    // update path** — so a refusal on an update was deleting a working adapter
+    // that an existing `[[plugin]]` entry still named, and the operator's next
+    // session lost a bundle by trying to refresh it. Every failure below leaves
+    // `into` exactly as it was, and so does every success: the swap is
+    // `Staged::commit`, run by whoever holds the operator's answer.
     //
     // The same shape `fetch::clone_at` uses, and for the same reason: a
     // remove-on-failure covers no failure the process does not survive, and a
@@ -706,23 +782,11 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
         copied.push((*key).to_string());
     }
 
-    // **The swap, and it is the first thing here that touches `into`.** Everything
-    // above either succeeded or returned having left the live adapter alone.
-    //
-    // The window this leaves is one rename wide — a process that dies between the
-    // remove and the rename loses the adapter — where before it was the whole of
-    // this function including every refusal. It is not closed entirely because
-    // closing it means a third path to restore on failure, and `plugin add` is the
-    // one command that puts it all back.
-    let _ = std::fs::remove_dir_all(into);
-    std::fs::rename(&staging, into).map_err(|error| {
-        let _ = std::fs::remove_dir_all(&staging);
-        format!("{}: {error}", into.display())
-    })?;
-    let manifest = into.join(PLUGIN_FILE);
-
+    // **Nothing here has touched `into`, and nothing here will.** The built
+    // adapter is handed back where it stands. `manifest` is where it lands rather
+    // than a file that is on disk now — see `Adapter::manifest`.
     Ok(Adapter {
-        manifest,
+        manifest: into.join(PLUGIN_FILE),
         contributes: plugin
             .contributions()
             .into_iter()
@@ -730,6 +794,10 @@ pub fn generate(bundle: &Path, name: &str, into: &Path) -> Result<Adapter, Strin
             .collect(),
         disclosed,
         copied,
+        staged: Staged {
+            staging,
+            into: into.to_path_buf(),
+        },
     })
 }
 
@@ -968,7 +1036,7 @@ fn substitution(text: &str) -> Option<String> {
 /// adapted, so expanding it reads nothing of the host — it writes down a path io
 /// already knew. `${env:…}`, `${file:…}`, `${cmd:…}` and every shell variable a
 /// bundle writes are the opposite: io-harness refuses each of them inside a
-/// manifest in every scope (`io-harness-0.76.0/src/plugin.rs:977`), because a
+/// manifest in every scope (`io-harness-0.78.0/src/plugin.rs:977`), because a
 /// bundle is a third party's directory even when the file naming it is the
 /// operator's own.
 ///
@@ -1184,7 +1252,7 @@ fn unquoted(said: &str) -> &str {
 ///
 /// **A transport io-harness does not speak is a refusal naming the server**, not
 /// a server quietly left out. io-harness speaks stdio and streamable HTTP
-/// (`io-harness-0.76.0/src/mcp.rs:301`), so a bundle declaring `sse` is declaring
+/// (`io-harness-0.78.0/src/mcp.rs:301`), so a bundle declaring `sse` is declaring
 /// a capability no adapter can deliver — and a manifest carrying one fewer server
 /// than the bundle does is exactly the silent absence this module's docs exist to
 /// end. The whole generation stops, because a bundle is installed for what it
