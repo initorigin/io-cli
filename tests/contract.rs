@@ -676,6 +676,110 @@ fn f1_the_level_asked_for_is_the_level_the_turn_buys() {
     }
 }
 
+/// **N4 — a session that never withholds anything sends the contract it always
+/// sent.**
+///
+/// The same instrument as [`f1_no_effort_asked_for_leaves_the_contract_byte_for_byte`]
+/// and for the same reason: a field set by accident is invisible to a test that
+/// only looks at the field it meant to set.
+///
+/// **What this can and cannot see.** `TaskContract::tool_mask` is a plain
+/// `ToolMask` with an empty default rather than an `Option`, so
+/// `with_tool_mask(ToolMask::none())` would *also* be Debug-identical — the early
+/// return in `contract::masking` is therefore not observable here, and this test
+/// does not claim it is. What it guards is the value: that nothing is withheld
+/// from an operator who withheld nothing.
+///
+/// Sabotage: give `masking` a default of
+/// `ToolMask::withholding(["write_file"])` for the empty case — the shape
+/// `buying`'s `Effort::Medium` sabotage takes — under which only this test fails,
+/// and it fails by taking a tool away from every operator who never asked.
+#[test]
+fn n4_no_mask_asked_for_leaves_the_contract_byte_for_byte() {
+    let contract = TaskContract::workspace("a turn", root());
+    let before = format!("{contract:?}");
+
+    let after = io_cli::contract::masking(contract, &io_harness::ToolMask::none());
+
+    assert_eq!(format!("{after:?}"), before);
+    assert!(
+        after.tool_mask.is_empty(),
+        "an empty mask is the absence of a mask, not a mask of nothing that some \
+         later reader might render a sentence for",
+    );
+}
+
+/// **F6, the half `contract::masking` owns — the names asked for are the names the
+/// turn withholds.**
+///
+/// That the mask reaches *every door* is a count over the driver's call sites, the
+/// shape [`f1_every_turn_that_runs_applies_the_effort_level`] takes; this is the
+/// other half, and it is the one a count cannot see: a door could apply a function
+/// that quietly withheld the wrong set.
+///
+/// Two names rather than one, and a third asserted *absent*, because a mask that
+/// carried only its first name would satisfy every `is_empty()` check and still
+/// hand the model the second tool — the same defect the `/effort` mapping test
+/// guards by walking all three levels instead of asserting `is_some()`.
+///
+/// Sabotage: build the mask in `masking` from `mask.names().take(1)` — under which
+/// only this test fails, and it fails by silently offering a tool the operator
+/// withheld.
+#[test]
+fn f6_the_tools_withheld_are_the_tools_the_turn_may_not_call() {
+    let mask = io_harness::ToolMask::withholding(["docx_write", "write_file"]);
+
+    let contract = io_cli::contract::masking(TaskContract::workspace("a turn", root()), &mask);
+
+    assert_eq!(contract.tool_mask.len(), 2);
+    assert!(contract.tool_mask.withholds("docx_write"));
+    assert!(contract.tool_mask.withholds("write_file"));
+    assert!(
+        !contract.tool_mask.withholds("grep"),
+        "a deny set withholds what it names and nothing else",
+    );
+}
+
+/// **N4 — the mask is applied beside `contract::session` and never inside it.**
+///
+/// This is the arm that makes
+/// [`f2_nothing_configured_is_the_contract_the_session_built_before`]
+/// *structurally* untouched by this release rather than merely still green. That
+/// gate is a Debug equality over everything `session` builds; if the mask were a
+/// field set in there — behind an `if` on a posture, say — the gate would go on
+/// passing for the session that set no mask and stop saying anything at all about
+/// the one that did. `contract::masking` is a sibling of `contract::buying` for
+/// exactly that reason, and this counts the sites.
+///
+/// Comment lines are stripped before counting: the prose in `contract::masking`
+/// names the io-harness method it declines to call, and a gate that a doc comment
+/// can break is a gate that gets deleted the first time it is wrong.
+///
+/// Sabotage: set the mask inside `contract::session` — under which the count is
+/// two and only this test fails, on the one property `f2` can no longer see for
+/// itself.
+#[test]
+fn n4_the_mask_is_set_in_one_place_and_it_is_not_the_session_builder() {
+    let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/contract.rs");
+    let text = std::fs::read_to_string(module)
+        .expect("the contract module")
+        .replace("\r\n", "\n");
+    let code = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    assert_eq!(
+        code.matches("with_tool_mask(").count(),
+        1,
+        "one call, and it is `contract::masking`'s. A mask set inside \
+         `contract::session` would ride the startup reading and both reporting \
+         pages, which build contracts nothing runs, and would put a per-turn \
+         posture on the one contract this suite compares field for field.",
+    );
+}
+
 /// **F1 — the prompt is on the contract itself, so both arms carry it.**
 ///
 /// The difference the test above allows, asserted as the one it is: a contract

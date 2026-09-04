@@ -6,6 +6,80 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-04
+
+The release that says where your context went. `/context` has read the real outgoing request
+since 0.21.0, but it drew the tool catalogue as one number — so an operator who wanted to know
+which of their bundles was expensive had no way to ask. It is now attributed: a row per MCP
+server, named with the bundle that contributed it where a bundle did, and a `skill catalogue`
+row for the block io-harness writes into the system prompt. That last row is the one that was
+missing entirely; before this release a session's skills were counted inside `system block`, so
+they appeared to cost nothing at all. `/plugin` and `/mcp` draw the same figure on the row where
+you switch the thing on, from the same snapshot, so the two surfaces cannot disagree.
+
+The tiers are now stated rather than implied. Of the seven kinds of thing a bundle contributes,
+three reach the wire — MCP servers, skills and agents — and four are free: hooks, templates, a
+declared binary, and policy layers. A bundle that ships only hooks costs nothing on any request,
+forever, and nothing told you that before.
+
+And `/context withhold <tool>` takes a tool away from the next turn. `/context allow` puts it
+back. This answers a limitation this product already published in its own words: a model that
+reaches for `docx_write` in a session where you never meant a document to be written was stopped
+by the write gate rather than by the absence of the tool. Now it can be stopped by name, before
+anything starts.
+
+**A mask does not make a turn cheaper, and this release says so everywhere it could be
+misread.** The roadmap entry this version was planned from assumed the opposite — that masking
+would be the lever for cutting what a turn costs. io-harness 0.76.0's `ToolMask` is
+*availability, never membership*: a masked run is offered a byte-identical catalogue, on purpose,
+because the tool array sits ahead of the provider's cache breakpoint and dropping a definition
+would save its tokens once and pay a cache *write* on every later turn. Withholding in fact makes
+a request marginally larger, by one sentence naming the withheld tools, placed after the
+observations where it costs no cache entry. So the two halves of this release do not compose:
+attribution is the cost feature, masking is a scoping and safety feature, and no surface here
+draws the second as the first.
+
+### Added
+
+- `/context withhold <tool>`, `/context allow <tool>` and `/context allow` to clear the mask.
+  Verbs under an existing command rather than a thirty-seventh: `COMMANDS.len()` is still **36**
+  and the group occupancy is still `[7, 9, 10, 10]`, so the product's last free slot is still
+  free. Same shape as 0.29.0's marketplace verbs inside `/plugin`.
+- A `skill catalogue` section on `/context`, located by the sentence io-harness writes above it.
+  The constant is gated against the pinned `run/prompts.rs` itself, so a pin that copy-edits that
+  sentence fails the build rather than silently reporting zero — which is what the two memory
+  heads beside it still risk, and which reads exactly like a session with no skills.
+- A per-request token figure on `/plugin` and `/mcp` rows, and a statement of which contribution
+  kinds are free.
+
+### Changed
+
+- `/context`'s sections are seven rather than six, and MCP rows name the bundle that contributed
+  the server. A bundle's server is drawn in the spelling you read (`docs:search`) rather than the
+  wire spelling — the translation is applied only to a bundle's server, because a plugin id
+  cannot carry the separator while a bare `[[mcp]]` id from `io.toml` is validated by nobody and
+  may carry one legitimately.
+
+### Known limitations
+
+- **An agent roster is not attributed to the bundle that contributed it.** io-harness composes it
+  into the system block with no marker io-cli can locate. It is counted, inside `system block`;
+  it is not counted *against the bundle*. A number invented for it would be worse than none.
+- **A mask does not reach a spawned child.** io-harness builds a child's contract fresh and
+  carries no mask into it, deliberately — the mask is a request about the operator's own turn.
+  So with `[app.io-cli.containment]` configured, a withheld tool can still be called inside the
+  fleet. This is upstream's boundary, not a gap here.
+- **A server that has not been on a wire is drawn as unmeasured, not as zero.** The two mean
+  different things and a zero would report an unmeasured server as free.
+- `/mcp` now carries two counts of different things — what the server announced at connect time
+  and what actually reached the wire on the last request. They can legitimately differ, and the
+  row says which is which rather than putting two bare numbers side by side.
+
+### Dependencies
+
+- io-harness stays at **0.76.0**, the newest published. The first release in eighteen where the
+  pin does not move.
+
 ## [0.36.0] - 2026-09-03
 
 The release that makes io reachable from an editor. The Agent Client Protocol is the field's
@@ -3322,7 +3396,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/initorigin/io-cli/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/initorigin/io-cli/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/initorigin/io-cli/compare/v0.34.1...v0.35.0
 [0.34.1]: https://github.com/initorigin/io-cli/compare/v0.34.0...v0.34.1

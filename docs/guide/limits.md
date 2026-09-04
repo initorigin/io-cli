@@ -76,13 +76,38 @@ and the agent may decide to use it on a model that cannot see — and io-cli can
 take a tool out of io-harness's own workspace tool set. Checking the model rather
 than the provider would mean reading the live catalogue on every attach, and it
 would still not close the door the agent opens. **If you work with images, choose
-a model that accepts them.**
+a model that accepts them.** From 0.37.0 you can also close that particular door
+for a turn with `/context withhold view_image`, which refuses the call rather
+than removing the tool — see below.
 
 **The twelve document tools cannot be taken out of that tool set either**, and
 six of them write. A model that reaches for `docx_write` in a session where you
 never meant a document to be written is stopped by the write gate rather than by
 the absence of the tool — which is what the gate is for, and why the writers are
 named one by one in [Documents](media.md#documents) rather than counted.
+
+**Since 0.37.0 you can stop it earlier, by name.** `/context withhold docx_write`
+refuses that tool for the turn before anything is started, and `/context allow`
+puts it back. Both sentences above stay true: the tool is not taken out of the
+set, the catalogue the model is offered is byte for byte the one it would have
+been offered anyway, and the definition still costs its tokens on every request.
+What a mask changes is what may be *called*.
+
+**A mask does not make a turn cheaper, and it is worth saying so plainly because
+it is the obvious thing to assume.** io-harness sends the identical catalogue
+either way on purpose — the tool array sits ahead of the provider's cache
+breakpoint, so dropping a definition would save its tokens once and pay a cache
+*write* on every later turn of the run. Withholding in fact makes a request
+marginally larger: one sentence naming the withheld tools, placed where it costs
+no cache entry. Use it to bound what the agent may do, and use `/context` and
+`/plugin` to see what your extensions cost — those are two different questions
+and only the second one is about money.
+
+**A mask does not reach a spawned child.** With `[app.io-cli.containment]`
+configured, a contained turn's children get contracts io-harness builds fresh,
+and it carries no mask into them deliberately — the mask is a request about your
+turn, and a child's work is not your turn. So a tool you withheld can still be
+called inside the fleet. See [The fleet](fleet.md).
 
 **An image the agent was *given* rather than asked for is not shown.** A picture
 returned by an MCP tool, and a browser screenshot, both become images inside

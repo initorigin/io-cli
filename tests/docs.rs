@@ -2073,8 +2073,15 @@ fn the_prose_splits_the_commands_the_way_runs_mid_turn_splits_them() {
         admitted.len(),
     );
 
+    // **`run`, not `report`, since 0.37.0.** The needle said "report" and that was
+    // true of all eleven until `/context withhold` was admitted: it changes the
+    // session's mask rather than describing anything. The word was the claim, so
+    // the claim moved rather than the count — which did not move at all, because
+    // `/context` was already in the mid-turn set and gained verbs rather than a
+    // row. Weakening this to a substring that spans both words would be the
+    // repair that costs the gate its meaning.
     let opens = format!(
-        "**{} commands report while the agent works**",
+        "**{} commands run while the agent works**",
         capitalised(count)
     );
     assert!(

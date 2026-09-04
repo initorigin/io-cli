@@ -1119,7 +1119,14 @@ pub enum Action {
     /// the catalogue on this page includes tools io-cli never registered —
     /// because it is the catalogue the model was given rather than the one this
     /// crate believes it asked for.
-    Context,
+    ///
+    /// **`None` is the page and a `Some` is a verb on the mask**, which is the
+    /// shape [`Action::Store`] already has and for the same reason: the bare form
+    /// is the only one that changes nothing, and a verb that could not be read must
+    /// report rather than quietly drawing the page. The mask the verbs edit is what
+    /// [`crate::contract::masking`] puts on the next turn's contract — a scoping
+    /// lever, not a cost one; see [`Masked`].
+    Context(Option<Masked>),
     /// Put something on the system clipboard over OSC 52.
     Copy(Copied),
     /// Ask the agent to describe the work this turn did, and to commit it.
@@ -1392,6 +1399,56 @@ pub enum Copied {
     Answer,
     /// Every change the run made, as one patch.
     Diff,
+}
+
+/// What a `/context` line asked for beyond the page.
+///
+/// **Verbs under an existing command rather than a command of their own**, which
+/// is 0.29.0's answer repeated: `marketplace` became words inside `/plugin`
+/// because a thirty-seventh row buys a reader nothing that a second word on a row
+/// they already know does not. `COMMANDS` stays at thirty-six and the four groups
+/// stay at seven, nine, ten and ten — the last two are at the bound, and a command
+/// added here is a command with nowhere to go.
+///
+/// **The mask is a scoping and safety lever, never a cost lever.** io-harness
+/// sends a byte-identical tool catalogue whether or not a mask is set — the tool
+/// array sits ahead of a cache breakpoint, so dropping a definition would pay a
+/// cache write on every later turn — and a mask *adds* a sentence to the user
+/// prompt naming what was withheld. Withholding three tools costs marginally more
+/// than not withholding them. [`crate::contract::masking`] carries the long form
+/// of that, and no sentence this surface prints may suggest otherwise.
+///
+/// The refusal variants are variants rather than an `Err`, for [`Keep`]'s reason:
+/// they are answers this surface gives in its own words, and a verb that failed to
+/// parse must never fall through to the page — somebody who typed a withhold and
+/// got a report would believe the tool was withheld.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Masked {
+    /// `/context withhold <tool>` — one more name the next turn may not call.
+    Withhold(String),
+    /// `/context allow <tool>` — that name back out of the mask.
+    Allow(String),
+    /// `/context allow` with nothing after it — the whole mask dropped.
+    ///
+    /// **Bare `allow` clears, and it is not guarded.** The considered alternative
+    /// was [`Keep::NoDate`]'s: refuse a verb that names nothing, so an Enter
+    /// pressed one word early cannot undo a posture. It is refused *there* because
+    /// `/store sweep` deletes sessions and nothing brings them back. Here the whole
+    /// state is a set of names in this process: no file is written, the page one
+    /// keystroke away lists what is withheld, the driver's own line names every
+    /// tool re-offered, and putting the mask back is the command that built it.
+    /// A refusal would cost a word on every deliberate use to save a keystroke on
+    /// an accident that announces itself and is reversible in one command.
+    ///
+    /// `withhold` with no name is [`Masked::NoTool`] and not the mirror of this:
+    /// "withhold everything" is not what an interrupted line means, and guessing it
+    /// would be this surface taking away tools nobody named.
+    Clear,
+    /// `withhold` or `allow` with no tool named — `allow`'s bare form is
+    /// [`Masked::Clear`], so this is `withhold`'s alone.
+    NoTool,
+    /// A second word that is neither verb, carried so the refusal can name it.
+    Unknown(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -2066,6 +2123,32 @@ fn profile_verb(input: &str) -> ProfileVerb {
     }
 }
 
+/// The verb on a `/context` line, or `None` for the bare page.
+///
+/// `hide` is admitted beside `withhold` and `unhide` beside `allow`, under the
+/// rule `/plugins` and `/gates` already follow: both words are in the field's
+/// vocabulary and refusing the other spelling teaches nobody anything. Neither
+/// spelling is a second surface — both edit the one mask.
+fn mask_verb(input: &str) -> Option<Masked> {
+    let mut words = input.split_whitespace();
+    // The command itself.
+    let _ = words.next();
+    let verb = words.next()?;
+    let name = words.next();
+    match (verb.to_ascii_lowercase().as_str(), name) {
+        ("withhold" | "hide", Some(tool)) => Some(Masked::Withhold(tool.to_string())),
+        ("withhold" | "hide", None) => Some(Masked::NoTool),
+        ("allow" | "unhide", Some(tool)) => Some(Masked::Allow(tool.to_string())),
+        // Bare `allow` drops the whole mask; `Masked::Clear` says why that is not
+        // guarded and why `withhold`'s bare form is not its mirror.
+        ("allow" | "unhide", None) => Some(Masked::Clear),
+        // **`verb` and not the lowercased match subject**, the trap `profile_verb`
+        // records: the refusal quotes this back, and quoting `Withhold` at somebody
+        // who typed `WITHHOLD` sends them looking for a word they did not write.
+        _ => Some(Masked::Unknown(verb.to_string())),
+    }
+}
+
 pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
     match input.split_whitespace().next().unwrap_or("help") {
         "help" | "?" => Action::Print(help(keys, theme, Newline::here())),
@@ -2416,7 +2499,26 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // name for a surface nobody has typed yet is a name to keep working
         // forever in exchange for nothing.
         "status" => Action::Status,
-        "context" => Action::Context,
+        // **Verbs on the page, not a command of their own.** `COMMANDS` carries one
+        // `/context` row and thirty-six rows in total; the mask is reached by a
+        // second word on the row an operator already knows, which is what 0.29.0
+        // did with `/plugin marketplace` and for the same reason — the two biggest
+        // groups are at the ten-per-group bound, so a new command has nowhere to be
+        // filed.
+        //
+        // **The tool name is the third word and nothing after it is read.** A tool
+        // name is one token — `write_file`, `browser_click` — unlike a profile
+        // name, which `profile_verb` joins because a profile may be called `slow
+        // ci`. Joining here would let a stray word become part of a name that no
+        // tool answers to, and io-harness keeps such a name rather than rejecting
+        // it, so the mistake would be silent.
+        //
+        // Lowercased before matching, for the reason `/effort` and `/profile`
+        // record: matching literally made one spelling of a word work and another
+        // fall through. The name itself is NOT lowercased — a tool name is what the
+        // catalogue calls it, and folding its case would build a mask that withholds
+        // nothing.
+        "context" => Action::Context(mask_verb(input)),
         // `/clear` and `/new` mean the same thing, for the reason `/resume` and
         // `/continue` do: both words are in the field's vocabulary and a reader
         // arrives having been taught one of them by another agent.
@@ -2597,6 +2699,16 @@ fn table<S: AsRef<str>>(rows: &[(S, S)], width: usize, theme: &Theme) -> Vec<Lin
 ///
 /// `/copy diff` is `/copy`'s second word rather than a command of its own here, so
 /// the first word decides and both forms are admitted; both only read.
+///
+/// **0.37.0 — `/context`'s mask verbs are admitted, and `/context` is not in
+/// [`BARE_ONLY_MID_TURN`].** They fail every clause of the refusal above: the mask
+/// is state this process owns, no file is written, no session or provider is
+/// reassigned and no turn is submitted. What a verb edits is applied by
+/// [`crate::contract::masking`] to the *next* turn's contract — a contract is built
+/// per turn — so a withhold typed mid-turn cannot reach the turn already running,
+/// which is why it is not the write `/config` is guarded for. The whole of the
+/// change here is this paragraph: the list already carries `/context`, and
+/// [`runs_mid_turn`] reads past the first word only for the bare-only half.
 pub const MID_TURN: &[&str] = &[
     "/status",
     "/context",

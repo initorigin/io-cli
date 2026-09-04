@@ -31,17 +31,37 @@
 //! carries). Reporting each whole would count some bytes three times and produce
 //! a total larger than the request.
 //!
-//! So each of the six sections is a **disjoint region of the request**, located
+//! So each of the seven sections is a **disjoint region of the request**, located
 //! by the text io-harness actually wrote:
 //!
 //! * the repository's instructions are `contract.instructions` joined the way
 //!   `instructions_section` joins them, found as a substring of `request.system`;
+//! * the skill catalogue is the block `with_skill_catalog` appends, also inside
+//!   `request.system` (0.37.0 — before that it was silently part of the row
+//!   below, which is why a session's skills appeared to cost nothing);
 //! * the system block is the rest of `request.system`;
 //! * the MCP tools are the prefixed entries of `request.tools`, grouped by the
-//!   server id the contract configured;
+//!   server id the contract configured and named with the bundle that
+//!   contributed them;
 //! * the tool catalogue is the rest of `request.tools`;
 //! * the recalled memory is the `[memory]` block located in the conversation;
 //! * the conversation is the rest of it.
+//!
+//! # What a mask does to this page, and what it does not
+//!
+//! Withholding a tool changes **nothing** on the rows above. io-harness sends a
+//! byte-identical catalogue to a masked and an unmasked turn — the tool array
+//! sits ahead of the provider's cache breakpoint, so dropping a definition would
+//! save its tokens once and pay a cache *write* on every later turn of the run,
+//! and the harness argues that trade at length in `ToolMask`'s own
+//! documentation. A mask in fact makes the request marginally **larger**: one
+//! sentence naming the withheld tools, appended after the observations where it
+//! costs no cache entry.
+//!
+//! This page must therefore never draw a mask as a saving, and the surface that
+//! sets one says so in the other direction. A mask is a scoping and safety lever
+//! — it decides what the agent may *do* — and the cost of a turn is not what it
+//! is for.
 //!
 //! Summing them is then a statement about the request rather than an arithmetic
 //! coincidence, which is exactly what makes a wrong section detectable: a number
@@ -62,10 +82,13 @@
 //! and reading the file a second time here would be a second answer to a settled
 //! question.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use io_harness::context::estimate_tokens;
-use io_harness::{CompletionRequest, Message, TaskContract, ToolSpec, MCP_TOOL_PREFIX};
+use io_harness::{
+    CompletionRequest, Message, TaskContract, ToolMask, ToolSpec, MCP_TOOL_PREFIX, NAMESPACE,
+};
 use ratatui::text::{Line, Span};
 
 use crate::theme::{Theme, Tone};
@@ -81,6 +104,23 @@ use crate::theme::{Theme, Tone};
 const MEMORY_HEAD: &str = "[memory] Notes you recorded on earlier runs";
 /// The head of the every-workspace half of the same block (io-harness 0.56.0).
 const MEMORY_GLOBAL_HEAD: &str = "[memory: every workspace] Notes kept for every workspace";
+
+/// The head of the skill catalogue, as `run::prompts::with_skill_catalog` writes
+/// it (0.37.0).
+///
+/// **Gated against io-harness's own source, unlike the two heads above.** A
+/// constant matched against a dependency's prose has one failure mode — the
+/// dependency copy-edits the sentence and this section silently reports zero,
+/// which is indistinguishable from a session that configured no skills. The two
+/// memory heads still carry that ceiling. This one does not:
+/// `tests/context.rs` reads `run/prompts.rs` out of the pinned registry tree
+/// through `support::harness_source` and fails if this string is not in it, so a
+/// pin that moves the sentence breaks the build rather than the page.
+///
+/// Matched on the opening clause rather than on the whole paragraph, for the same
+/// reason the memory heads are: the clause identifies the block, and the sentence
+/// that follows it names a tool whose constant io-harness may re-spell.
+pub const SKILLS_HEAD: &str = "Skills available to you";
 
 /// One request, as it went out.
 ///
@@ -200,6 +240,164 @@ pub struct Section {
     pub tokens: u64,
 }
 
+/// The label of the skill-catalogue section.
+///
+/// A constant because three surfaces now name it — this page, `/plugin`'s cost
+/// column and the tests that assert they agree — and a spelling that lives in
+/// three string literals is a spelling that drifts in two of them.
+pub const SKILL_CATALOGUE: &str = "skill catalogue";
+
+/// What each MCP server cost this request, by the id the surfaces hold.
+///
+/// Keyed on the **wire** id, not the drawn one, because `/mcp` addresses a server
+/// by `Server::id` and a lookup that needed translating first would put the
+/// translation in two places. Drawing is the caller's business.
+///
+/// A server the contract configured but which offered no tool to this request is
+/// absent rather than zero: it means "this server has not been on a wire yet",
+/// which a zero would misreport as "this server is free".
+pub fn server_cost(seen: &Request, contract: &TaskContract) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for tool in &seen.tools {
+        if !tool.name.starts_with(MCP_TOOL_PREFIX) {
+            continue;
+        }
+        *out.entry(server_of(&tool.name, contract)).or_insert(0) +=
+            estimate_tokens(&tool_text(tool));
+    }
+    out
+}
+
+/// What each bundle cost this request, by plugin id.
+///
+/// **Two of the three costing kinds, and the third is named rather than guessed
+/// at.** Of the seven things a bundle contributes, only skills, agents and MCP
+/// servers reach the wire — hooks, templates, a declared binary and a policy layer
+/// cost nothing at all, which is the fact an operator least expects and most needs.
+/// This sums a bundle's MCP tools and its catalogue lines. An agent definition is
+/// **not** included: io-harness composes a roster into the system block with no
+/// marker this module can locate, so a number for it would be invented. That is
+/// stated as a limitation rather than approximated.
+///
+/// A bundle's skills are namespaced `<plugin>__<skill>` before they reach the
+/// catalogue, so a catalogue line attributes itself and no second lookup is needed.
+pub fn bundle_cost(seen: &Request, contract: &TaskContract) -> BTreeMap<String, u64> {
+    let per_server = server_cost(seen, contract);
+    let mut out = BTreeMap::new();
+    for plugin in contract.plugins.iter() {
+        let tools: u64 = plugin
+            .mcp_servers()
+            .iter()
+            .filter_map(|s| per_server.get(&s.id))
+            .sum();
+        let skills: u64 = skills_in(&seen.system)
+            .into_iter()
+            .flat_map(str::lines)
+            .filter(|line| {
+                line.strip_prefix("- ")
+                    .and_then(|rest| rest.strip_prefix(plugin.id()))
+                    .is_some_and(|rest| rest.starts_with(NAMESPACE))
+            })
+            .map(estimate_tokens)
+            .sum();
+        // Present at zero, unlike a server: a bundle contributing only hooks is
+        // genuinely free, and that is the row worth drawing rather than hiding.
+        out.insert(plugin.id().to_string(), tools + skills);
+    }
+    out
+}
+
+/// What `/context withhold` and `/context allow` do to the mask, and what is said
+/// about it (0.37.0).
+///
+/// **A function of the mask rather than a method on the driver**, for the reason
+/// [`crate::contract::buying`] gives about itself: nothing under `tests/` links
+/// `src/main.rs`, so a transition written there could be neither asserted nor
+/// sabotaged. The driver takes the new mask and prints the line.
+///
+/// The returned sentence is where this release is most able to lie, so it is
+/// written once, here, and said in the direction that is true: withholding costs a
+/// little more rather than saving anything. A reader who is told a tool was
+/// withheld will assume the request got smaller unless told otherwise, and the
+/// assumption is the one the roadmap this release was planned from also made.
+pub fn withhold(mask: &io_harness::ToolMask, said: &crate::commands::Masked) -> (ToolMask, String) {
+    use crate::commands::Masked;
+
+    let mut names: Vec<String> = mask.names().map(str::to_string).collect();
+    match said {
+        Masked::Withhold(tool) => {
+            if names.iter().any(|n| n == tool) {
+                let line = format!("{tool} is already withheld from the next turn");
+                return (ToolMask::withholding(names), line);
+            }
+            names.push(tool.clone());
+            // Said in full every time rather than only on the first withhold: the
+            // cost direction is the thing an operator is most likely to have
+            // wrong, and a note that appears once is a note most people never see.
+            let line = format!(
+                "{tool} is withheld from the next turn — the model is still offered it and it \
+                 still costs its definition, and calling it will be refused before anything \
+                 starts. {} withheld now.",
+                names.len()
+            );
+            (ToolMask::withholding(names), line)
+        }
+        Masked::Allow(tool) => {
+            let before = names.len();
+            names.retain(|n| n != tool);
+            let line = if names.len() == before {
+                // Never silently a no-op: an operator who mistyped a name and got
+                // nothing back would believe the tool was allowed again.
+                format!("{tool} was not withheld, so nothing changed")
+            } else {
+                format!("{tool} may be called again")
+            };
+            (ToolMask::withholding(names), line)
+        }
+        // Every tool named, because this is the one transition that changes
+        // several things at once and an operator who typed it one word early is
+        // owed the list of what came back.
+        Masked::Clear => {
+            let line = if names.is_empty() {
+                "nothing was withheld".to_string()
+            } else {
+                format!("no tool is withheld now — {} may be called again", {
+                    names.sort();
+                    names.join(", ")
+                })
+            };
+            (ToolMask::none(), line)
+        }
+        Masked::NoTool => (
+            ToolMask::withholding(names),
+            "withhold needs a tool to withhold — /context withhold docx_write. \
+             /context lists what the model was offered."
+                .to_string(),
+        ),
+        Masked::Unknown(word) => (
+            ToolMask::withholding(names),
+            format!("{word} is not a verb here — /context takes withhold or allow"),
+        ),
+    }
+}
+
+/// What the mask is, drawn for the page.
+///
+/// Absent entirely when nothing is withheld, because a row saying "nothing is
+/// withheld" on every `/context` is a row that trains a reader to skip the place
+/// the answer appears.
+pub fn withheld_line(mask: &io_harness::ToolMask, dash: &str) -> Option<String> {
+    if mask.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = mask.names().collect();
+    Some(format!(
+        "withheld: {} {dash} refused for the next turn. The catalogue above is unchanged: \
+         withholding costs one extra sentence and saves nothing.",
+        names.join(", ")
+    ))
+}
+
 /// The text one tool occupies on the wire.
 ///
 /// Name, description and schema, because all three are sent. A catalogue counted
@@ -283,7 +481,65 @@ fn memory_in(haystack: &str) -> Option<&str> {
     Some(&haystack[at..end])
 }
 
-/// The six sections of one request, in the order the page draws them.
+/// The region of `haystack` occupied by the skill catalogue (0.37.0).
+///
+/// `with_skill_catalog` appends one paragraph naming what a skill is and how to
+/// read one, then a newline, then `Skills::catalog()` — which is one `- name:
+/// description` line per skill and nothing else. So the block is the head
+/// paragraph plus the `- ` lines that follow it, and it ends at the first line
+/// that is neither. That is the shape [`memory_in`] already scans for, and it is
+/// deliberately the same shape rather than a second technique.
+///
+/// `None` means this request carried no catalogue — a session with no skills
+/// configured — and the page says so rather than drawing a zero, because a zero
+/// here is exactly what a drifted needle produces and the two must stay
+/// distinguishable.
+///
+/// **Why this is not `Skills::catalog()` used as the needle.** That was the plan
+/// this release was specified with. It needs a `Skills` value, and
+/// `TaskContract::skills` is an `Option<PathBuf>` — a directory — so io-cli would
+/// have to run `Skills::discover` a second time to build one. That is a second
+/// walk of the operator's disk on every draw, and worse, a second opinion about a
+/// set the run already resolved: the two could disagree, and the page would report
+/// the one that is not on the wire. Locating io-harness's own output is the read
+/// this module is built on everywhere else.
+fn skills_in(haystack: &str) -> Option<&str> {
+    let at = haystack.find(SKILLS_HEAD)?;
+    let mut end = at;
+    for (n, line) in haystack[at..].split_inclusive('\n').enumerate() {
+        let trimmed = line.trim_end_matches('\n');
+        // The head paragraph is one line; every line after it is a catalogue
+        // entry. A catalogue with no entries cannot occur — `with_skill_catalog`
+        // returns `base` untouched when the set is empty.
+        if n > 0 && !trimmed.starts_with("- ") {
+            break;
+        }
+        end += line.len();
+    }
+    Some(&haystack[at..end])
+}
+
+/// The bundle that contributed `server`, or `None` for one the operator declared.
+///
+/// `Plugins::apply_to` extends `contract.mcp` with every loaded plugin's servers
+/// and stores itself on `contract.plugins`, so the contract already knows this and
+/// nothing needs resolving. Matched on the id rather than on the separator: a
+/// plugin id cannot contain `__` (io-harness validates it to
+/// `[a-z0-9][a-z0-9-]{0,31}`) but a bare `[[mcp]]` id from `io.toml` is validated
+/// by nobody and may.
+///
+/// This reads the `plugins` **field**, never `Config::plugins()`, which is a full
+/// parse of every declared manifest and is confined to `crate::resolved` by an
+/// exact-path gate in `tests/dependencies.rs`.
+fn bundle_of<'a>(server: &str, contract: &'a TaskContract) -> Option<&'a str> {
+    contract
+        .plugins
+        .iter()
+        .find(|plugin| plugin.mcp_servers().iter().any(|s| s.id == server))
+        .map(|plugin| plugin.id())
+}
+
+/// The seven sections of one request, in the order the page draws them.
 ///
 /// Every one is a region of `seen` and no two overlap, so
 /// [`total`] is a statement about the request rather than a sum of unrelated
@@ -294,13 +550,20 @@ fn memory_in(haystack: &str) -> Option<&str> {
 pub fn sections(seen: &Request, contract: &TaskContract) -> Vec<Section> {
     let mut out = Vec::new();
 
-    // 1 and 2 — the system block, split at the guidance io-cli put in it.
+    // 1, 2 and 3 — the system block, split at the guidance io-cli put in it and
+    // at the skill catalogue io-harness appended to it. Both are subtracted from
+    // the block rather than reported beside it, or the same bytes would be
+    // counted twice and the total would exceed the request.
     let guidance = instructions_in(&seen.system, &contract.instructions);
     let guidance_tokens = guidance.map(estimate_tokens).unwrap_or(0);
+    let skills = skills_in(&seen.system);
+    let skill_tokens = skills.map(estimate_tokens).unwrap_or(0);
     out.push(Section {
         label: "system block".into(),
         detail: "what io-harness composed for this turn".into(),
-        tokens: estimate_tokens(&seen.system).saturating_sub(guidance_tokens),
+        tokens: estimate_tokens(&seen.system)
+            .saturating_sub(guidance_tokens)
+            .saturating_sub(skill_tokens),
     });
     out.push(Section {
         label: "repository instructions".into(),
@@ -312,6 +575,24 @@ pub fn sections(seen: &Request, contract: &TaskContract) -> Vec<Section> {
             None => "none in this request".into(),
         },
         tokens: guidance_tokens,
+    });
+    out.push(Section {
+        label: SKILL_CATALOGUE.into(),
+        detail: match skills {
+            // Counted off the block on the wire, not off the skills io-cli can
+            // see on disk: a skill added since the last turn is not in this
+            // request, and the page is about this request.
+            //
+            // One line per skill, name and description, never a body — a body is
+            // loaded on demand by `read_skill`, which is why a session with
+            // twenty skills pays for twenty *lines* here and not twenty files.
+            Some(block) => format!(
+                "{} skill(s) named, bodies read on demand",
+                block.lines().filter(|l| l.starts_with("- ")).count()
+            ),
+            None => "no skill was named to this request".into(),
+        },
+        tokens: skill_tokens,
     });
 
     // 3 and 4 — the catalogue, split at the MCP prefix.
@@ -346,9 +627,27 @@ pub fn sections(seen: &Request, contract: &TaskContract) -> Vec<Section> {
         });
     }
     for (id, tools) in &servers {
+        // A bundle's server is drawn in the spelling an operator reads and named
+        // with the bundle that brought it, because "where did this come from" is
+        // the question a cost row exists to answer. `naming::display` is applied
+        // only to a server a bundle contributed: a plugin id cannot carry the
+        // separator, so the translation is unambiguous there, while a bare
+        // `[[mcp]]` id is validated by nobody and may carry one legitimately.
+        let bundle = bundle_of(id, contract);
+        let shown = match bundle {
+            Some(_) => crate::naming::display(id),
+            None => id.clone(),
+        };
         out.push(Section {
-            label: format!("mcp {id}"),
-            detail: format!("{} tool(s) offered", tools.len()),
+            label: format!("mcp {shown}"),
+            detail: match bundle {
+                Some(plugin) => format!(
+                    "{} tool(s) offered, from the {} bundle",
+                    tools.len(),
+                    crate::naming::display(plugin)
+                ),
+                None => format!("{} tool(s) offered", tools.len()),
+            },
             tokens: tools
                 .iter()
                 .map(|tool| estimate_tokens(&tool_text(tool)))
@@ -412,6 +711,11 @@ pub fn committed(
     seen: Option<&Request>,
     contract: &TaskContract,
     remaining: Option<u64>,
+    // What the next turn may not call. Drawn on this page because this is where
+    // the tools are named, and an operator who withheld one an hour ago should
+    // not have to remember it — but drawn only when there is one, so the row is
+    // information rather than furniture.
+    mask: &io_harness::ToolMask,
     theme: &Theme,
     width: u16,
 ) -> Vec<Line<'static>> {
@@ -472,6 +776,14 @@ pub fn committed(
                 push(format!("offered: {}", names.join(", ")), Tone::Muted);
             }
         }
+    }
+
+    // Below the catalogue and not above it, because it is a statement *about* the
+    // list of tools directly above — and drawn whether or not a turn has run, so
+    // that a mask set at the prompt before the first message is visible rather
+    // than silently in force.
+    if let Some(line) = withheld_line(mask, dash) {
+        push(line, Tone::Refused);
     }
 
     lines.push(Line::from(Span::styled(

@@ -1784,3 +1784,142 @@ fn f10_an_unparseable_verb_never_falls_through_to_something_destructive() {
         "a file literally called `trace` is reachable as `./trace`",
     );
 }
+
+/// **F5 — the masking verbs are words on a row that already exists.**
+///
+/// The count and the group occupancy are asserted by
+/// [`o2_the_palette_did_not_grow_and_no_group_was_refiled`], which this release
+/// leaves alone — that is the whole of the claim there, and the strongest form of
+/// it is a literal nobody edited. What is left to state is the half a count cannot
+/// see: that no row was added for a verb. `COMMANDS` carries `/copy diff` as a row
+/// of its own, so "a verb never gets a row" is not a rule this table follows on its
+/// own and a reader could reasonably have added `/context withhold` beside it.
+///
+/// Sabotage: add `("/context withhold", "…")` to `COMMANDS` — under which this
+/// fails by name, and the count and occupancy gates fail beside it, which is the
+/// point: three gates for one slot because the two big groups are at the bound.
+#[test]
+fn f5_the_mask_verbs_take_no_row_of_their_own() {
+    let context_rows: Vec<&str> = COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| name.split_whitespace().next() == Some("/context"))
+        .collect();
+
+    assert_eq!(
+        context_rows,
+        vec!["/context"],
+        "0.29.0 made `marketplace` words inside `/plugin` rather than a command, \
+         and the mask verbs are the same decision: `Group::Turn` and \
+         `Group::Inspect` are at the ten-per-group bound, so a row here is a row \
+         with nowhere to be filed.",
+    );
+}
+
+/// **F5 — every `/context` form parses to what it says, and the bare word is still
+/// the page.**
+///
+/// The bare form is asserted first and by equality, because it is the one that
+/// must not have moved: `/context` was a page before this release and an operator
+/// who types it is asking for the page, not for a verb they have never heard of.
+///
+/// The refusals are the `/store` family's, for the reason that file records —
+/// somebody who typed a withhold and got a report would believe the tool was
+/// withheld. `withhold` with no name is refused rather than read as "withhold
+/// everything"; `allow` with no name clears, which is the asymmetry
+/// [`io_cli::commands::Masked::Clear`] argues for at length.
+///
+/// Sabotage: fold the two bare forms together — return `Masked::Clear` for a bare
+/// `withhold` as well — under which only this fails, and it fails by taking every
+/// tool away from a line that named none.
+#[test]
+fn f5_the_context_verbs_parse_and_a_bare_context_is_still_the_page() {
+    use io_cli::commands::Masked;
+
+    let parse =
+        |text: &str| commands::parse(text.strip_prefix('/').unwrap_or(text), &defaults(), &DARK);
+
+    assert_eq!(parse("/context"), Action::Context(None));
+
+    assert_eq!(
+        parse("/context withhold docx_write"),
+        Action::Context(Some(Masked::Withhold("docx_write".into()))),
+    );
+    assert_eq!(
+        parse("/context allow docx_write"),
+        Action::Context(Some(Masked::Allow("docx_write".into()))),
+    );
+    // Bare `allow` drops the whole mask. Deliberate, and the argument is in
+    // `Masked::Clear`: no file is written, the page one keystroke away lists what
+    // is withheld, and the command that built the mask puts it back.
+    assert_eq!(
+        parse("/context allow"),
+        Action::Context(Some(Masked::Clear))
+    );
+    // `withhold` with nothing named is NOT the mirror of that.
+    assert_eq!(
+        parse("/context withhold"),
+        Action::Context(Some(Masked::NoTool)),
+    );
+
+    // The name keeps its case; the verb does not need to.
+    assert_eq!(
+        parse("/context WITHHOLD Docx_Write"),
+        Action::Context(Some(Masked::Withhold("Docx_Write".into()))),
+        "a verb typed in another case is the same verb, and a tool name folded to \
+         lower case is a name no catalogue answers to — io-harness keeps an \
+         unknown name rather than rejecting it, so the mistake would be silent",
+    );
+
+    // A near-miss verb must not reach the page.
+    for typo in ["/context withold docx_write", "/context deny docx_write"] {
+        assert!(
+            matches!(parse(typo), Action::Context(Some(Masked::Unknown(_)))),
+            "`{typo}` must be named as unknown rather than showing the page: {:?}",
+            parse(typo),
+        );
+    }
+}
+
+/// **F8 — the masking verbs run while a turn is in flight.**
+///
+/// `/context` has been in `MID_TURN` since the page existed and the verbs inherit
+/// it, which is the answer rather than an oversight: the mask is state this process
+/// owns, it writes no file, and `contract::masking` applies it to the *next* turn's
+/// contract — so a withhold typed mid-turn cannot reach the turn already running.
+/// That is what makes it unlike `/config`, which is in `BARE_ONLY_MID_TURN`
+/// because its argued forms write a scope file.
+///
+/// `/config prices.as_of` is asserted here beside them, unchanged, so a release
+/// that reached for `BARE_ONLY_MID_TURN` to guard the mask cannot quietly take the
+/// guard off the thing it was built for.
+///
+/// Sabotage: add `"/context"` to `BARE_ONLY_MID_TURN` — under which only this test
+/// fails, and it fails by refusing mid-turn exactly the lever an operator reaches
+/// for *because* a turn is running and calling something they would rather it did
+/// not.
+#[test]
+fn f8_the_mask_verbs_are_admissible_mid_turn() {
+    use io_cli::commands::runs_mid_turn;
+
+    for line in [
+        "context",
+        "context withhold docx_write",
+        "context allow docx_write",
+        "context allow",
+        "context withhold",
+    ] {
+        assert!(
+            runs_mid_turn(line),
+            "`/{line}` reads the session's own state and writes no file; refusing \
+             it mid-turn refuses it when it is most wanted",
+        );
+    }
+
+    assert!(runs_mid_turn("config"), "the bare list only reports");
+    assert!(
+        !runs_mid_turn("config prices.as_of"),
+        "the bare-only mechanism exists for the command that descends toward a \
+         write, and this release does not borrow it",
+    );
+}
