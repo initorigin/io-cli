@@ -94,10 +94,11 @@ pub enum Command {
     /// the protocol, so nothing else may be written there; diagnostics go to
     /// stderr.
     ///
-    /// An approval in an ACP session is refused and the client is told which
-    /// action and why: 0.36.0 does not raise `session/request_permission`, so
-    /// configure the posture rather than expecting to be asked. `io exec` refuses
-    /// approvals too, for its own reason — an unattended run has nobody to ask.
+    /// An approval in an ACP session is put to the client as
+    /// `session/request_permission`, and its answer decides the call. A client
+    /// that does not answer — one that disconnects mid-question — denies rather
+    /// than hangs. `io exec` refuses every approval instead, for its own reason:
+    /// an unattended run has nobody to ask.
     Acp,
     /// Install, list or remove a skill, without opening a session.
     ///

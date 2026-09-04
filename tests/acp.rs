@@ -872,17 +872,38 @@ fn a_no_op_kind_produces_no_frame_at_all() {
 /// 'static` — a `&mut Vec<u8>` is neither. A `duplex` gives an owned half that is
 /// both, and it is closer to what a client actually is than a buffer: it can fill,
 /// and a writer that never flushed would hang here rather than silently passing.
+///
+/// **Since 0.38.0 the reader moves onto a task too**, so the input is a duplex as
+/// well rather than the `&[u8]` this helper used to borrow from its argument. A
+/// borrowed slice is not `'static` either, and the bound is the visible cost of
+/// the fix that lets a permission be answered at all: a reader parked inside the
+/// turn cannot read the answer that turn is waiting for.
 async fn drive(
     input: &str,
     handler: &mut impl acp::Handler,
     outbound: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
 ) -> Vec<Value> {
-    use tokio::io::AsyncReadExt as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let (theirs, ours) = tokio::io::duplex(64 * 1024);
-    acp::serve_with(input.as_bytes(), ours, handler, outbound)
+    let (mut client, agent) = tokio::io::duplex(64 * 1024);
+    client
+        .write_all(input.as_bytes())
         .await
-        .expect("the loop ends on end-of-input, not on an error");
+        .expect("the fixture fits the pipe");
+    // Dropping the client's half is end-of-input, which is how an ACP session
+    // ends. Without it the loop would wait for a line that is never coming.
+    drop(client);
+
+    acp::serve_with(
+        tokio::io::BufReader::new(agent),
+        ours,
+        handler,
+        outbound,
+        std::sync::Arc::new(acp::Correlator::new()),
+    )
+    .await
+    .expect("the loop ends on end-of-input, not on an error");
 
     let mut written = String::new();
     let mut theirs = theirs;
@@ -1121,4 +1142,304 @@ fn the_served_methods_are_the_ones_this_release_implements() {
         4,
         "the dispatch table changed without this test being updated",
     );
+}
+
+// ---------------------------------------------------------------------------
+// 0.38.0 F9, F10, F11 — the permission round trip
+// ---------------------------------------------------------------------------
+
+/// A scripted client on the other end of a real pipe.
+///
+/// It reads whatever the adapter writes, answers the first
+/// `session/request_permission` with `answer`, and hands back every frame it
+/// saw. `answer` is the whole `result` object, so a test can send a selection,
+/// a cancellation, or a shape the specification does not contain.
+async fn scripted_client(
+    agent_reads: tokio::io::DuplexStream,
+    mut agent_writes: tokio::io::DuplexStream,
+    answer: Option<Value>,
+) -> Vec<Value> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    let mut agent_reads = agent_reads;
+    let mut seen = Vec::new();
+    let mut lines = tokio::io::BufReader::new(&mut agent_writes).lines();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let frame: Value = serde_json::from_str(&line).expect("a written line is one JSON document");
+        let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
+        let is_request = frame.get("id").is_some() && !method.is_empty();
+        seen.push(frame.clone());
+
+        if is_request && method == "session/request_permission" {
+            let Some(result) = answer.clone() else {
+                // Answering nothing and closing is a client that walked away
+                // mid-question, which must deny rather than hang.
+                break;
+            };
+            let reply = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": frame.get("id").cloned().unwrap_or(Value::Null),
+                "result": result,
+            });
+            let mut line = serde_json::to_string(&reply).expect("the reply serialises");
+            line.push('\n');
+            let _ = agent_reads.write_all(line.as_bytes()).await;
+            let _ = agent_reads.flush().await;
+            // **Stop here rather than draining to end-of-input.** This half is
+            // the agent's *input*, so the agent only reaches end-of-input when it
+            // is dropped — and it is held by this function, which would be
+            // waiting for the agent to close its output first. Each side waiting
+            // for the other is a deadlock, and it is the fixture's, not the
+            // adapter's: the answer is already on the wire, which is everything
+            // this client exists to deliver.
+            break;
+        }
+    }
+    seen
+}
+
+/// Drive one approval end to end and return what the run was told, beside every
+/// frame the client saw.
+///
+/// The approval is raised through `acp::ask_permission`, which is what
+/// `Consulting::decide` calls — so this exercises the production path rather
+/// than a re-implementation of it, while staying reachable without a store, a
+/// provider or a session.
+async fn one_approval(answer: Option<Value>) -> (io_harness::Decision, Vec<Value>) {
+    let (client_side, agent_side) = tokio::io::duplex(64 * 1024);
+    let (agent_out, client_in) = tokio::io::duplex(64 * 1024);
+    let (outbound, rx) = tokio::sync::mpsc::unbounded_channel();
+    let correlator = std::sync::Arc::new(acp::Correlator::new());
+
+    // The loop, with a handler that is never reached: no frame in this test is
+    // addressed to it, and the point is that the *reader* settles the response
+    // without the loop having to.
+    let serving = {
+        let correlator = std::sync::Arc::clone(&correlator);
+        tokio::spawn(async move {
+            let mut handler = Silent;
+            let _ = acp::serve_with(
+                tokio::io::BufReader::new(agent_side),
+                agent_out,
+                &mut handler,
+                rx,
+                correlator,
+            )
+            .await;
+        })
+    };
+
+    let client = tokio::spawn(scripted_client(client_side, client_in, answer));
+
+    let decision = acp::ask_permission(
+        &correlator,
+        &outbound,
+        "sess-1",
+        io_harness::Act::Write,
+        "write",
+        "src/lib.rs",
+        "7-1",
+    )
+    .await;
+
+    drop(outbound);
+    let seen = client.await.expect("the scripted client finishes");
+    serving.abort();
+    (decision, seen)
+}
+
+/// A handler that answers nothing. The permission tests drive the reader, not
+/// the dispatch table.
+struct Silent;
+
+impl acp::Handler for Silent {
+    async fn handle(&mut self, _incoming: acp::Incoming) -> Vec<Outgoing> {
+        Vec::new()
+    }
+}
+
+/// **F9 — the client is asked, and its answer decides the call.**
+///
+/// **The assertion is the `Decision` the run receives, never that a frame was
+/// sent.** 0.36.0 shipped `permission_params`, `PERMISSION_OPTIONS` and
+/// `permission_answer` with no production caller and gates that asserted the
+/// three against each other; a test that watched the request go out would repeat
+/// that mistake one level up. What the run is handed is the only thing that
+/// changes what happens.
+#[tokio::test]
+async fn f9_an_allow_once_answer_approves_the_call() {
+    let (decision, seen) = one_approval(Some(serde_json::json!({
+        "outcome": "selected",
+        "optionId": "allow-once",
+    })))
+    .await;
+
+    assert!(
+        matches!(decision, io_harness::Decision::Approve { ref remember, .. } if remember.is_empty()),
+        "allow-once approves this call and remembers no rule: {decision:?}"
+    );
+
+    // And it really went out as a request rather than a notification — a
+    // notification is what 0.36.0 sent, and a client cannot answer one.
+    let request = seen
+        .iter()
+        .find(|frame| frame.get("method").and_then(Value::as_str) == Some("session/request_permission"))
+        .expect("the client was asked");
+    assert!(
+        request.get("id").is_some(),
+        "a permission request without an id cannot be answered: {request}"
+    );
+    assert_eq!(
+        request["params"]["toolCall"]["toolCallId"], "7-1",
+        "the request must name the cell the client already has"
+    );
+}
+
+/// **F9's negative control — the same run answered `deny` is denied.**
+///
+/// Without this arm, an `ask_permission` that ignored the answer and approved
+/// unconditionally would pass the test above. The pair is what makes the answer
+/// load-bearing.
+#[tokio::test]
+async fn f9_a_deny_answer_denies_the_call() {
+    let (decision, _) = one_approval(Some(serde_json::json!({
+        "outcome": "selected",
+        "optionId": "deny",
+    })))
+    .await;
+
+    let io_harness::Decision::Deny { reason } = decision else {
+        panic!("deny must deny: {decision:?}");
+    };
+    assert_eq!(
+        reason,
+        io_cli::approval::REFUSED_BY_OPERATOR,
+        "an operator who was asked and said no refused it; `NOT_ROUTED` would \
+         say nobody was asked, which is a false statement about a person"
+    );
+}
+
+/// **F9 — `allow-session` remembers exactly this act on exactly this target.**
+///
+/// The rule is built by `approval::decision`, which the session's own overlay
+/// uses, so the two surfaces cannot mean different things by the same answer. A
+/// second derivation here that remembered the act alone would allow every write
+/// for the rest of the run — a permission the operator did not grant.
+#[tokio::test]
+async fn f9_an_allow_session_answer_remembers_this_act_on_this_target() {
+    let (decision, _) = one_approval(Some(serde_json::json!({
+        "outcome": "selected",
+        "optionId": "allow-session",
+    })))
+    .await;
+
+    let io_harness::Decision::Approve { remember, .. } = decision else {
+        panic!("allow-session approves: {decision:?}");
+    };
+    assert_eq!(remember.len(), 1, "one rule, not a widening: {remember:?}");
+    assert_eq!(remember[0].act, io_harness::Act::Write);
+    assert_eq!(remember[0].effect, io_harness::Effect::Allow);
+    assert_eq!(
+        remember[0].pattern, "src/lib.rs",
+        "the rule is this target and not the act alone"
+    );
+}
+
+/// **F10 — an answer that arrives while the turn is waiting is read.**
+///
+/// **This is the release's structural property and the test would hang before
+/// the fix rather than fail.** Through 0.37.0 `serve_with` awaited
+/// `handler.handle(...)` inline in its read loop, and for a `session/prompt`
+/// that call *is* the whole turn — so the client's answer to a question raised
+/// by that turn sat unread in the pipe until the turn returned, and the turn was
+/// waiting for the answer. A deadlock, not a slow path.
+///
+/// The timeout is the assertion. `ask_permission` completing at all is only
+/// possible if something read the response while it was outstanding, which is
+/// the reader task; without it this future never resolves.
+#[tokio::test]
+async fn f10_an_answer_arriving_during_the_wait_is_read() {
+    let answered = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        one_approval(Some(serde_json::json!({
+            "outcome": "selected",
+            "optionId": "allow-once",
+        }))),
+    )
+    .await;
+
+    let (decision, _) = answered.expect(
+        "the answer was never read: the reader is parked behind the turn that is \
+         waiting for it, which is the defect this release exists to fix",
+    );
+    assert!(matches!(decision, io_harness::Decision::Approve { .. }));
+}
+
+/// **F11 — a client that walks away mid-question denies rather than hangs.**
+///
+/// The mechanism is `Correlator::abandon`: when the reader stops, every
+/// outstanding request loses its sender, each waiter's `recv` fails, and the
+/// failure is a denial. That is why this adapter needs no approval timeout — a
+/// number invented here would have been too short for someone reading a diff and
+/// indistinguishable from a hang if it were long enough not to be.
+#[tokio::test]
+async fn f11_a_client_that_never_answers_denies_rather_than_hangs() {
+    let answered = tokio::time::timeout(std::time::Duration::from_secs(10), one_approval(None)).await;
+
+    let (decision, _) = answered.expect("an unanswered approval must not hang the turn");
+    let io_harness::Decision::Deny { reason } = decision else {
+        panic!("an unanswered approval denies: {decision:?}");
+    };
+    assert_eq!(
+        reason,
+        acp::NOT_ROUTED,
+        "nobody answered, so the model must not be told a human refused"
+    );
+}
+
+/// **F11 — an option id this adapter never offered is a denial.**
+///
+/// A client that answers with something it was not offered has said something it
+/// cannot have meant, and there is exactly one safe direction to be wrong in.
+#[tokio::test]
+async fn f11_an_unoffered_option_id_is_a_denial() {
+    let (decision, _) = one_approval(Some(serde_json::json!({
+        "outcome": "selected",
+        "optionId": "allow-always-everywhere",
+    })))
+    .await;
+    assert!(
+        matches!(decision, io_harness::Decision::Deny { .. }),
+        "an unoffered option must not approve: {decision:?}"
+    );
+}
+
+/// **F11 — a cancellation is a denial, not a pause.**
+#[tokio::test]
+async fn f11_a_cancelled_outcome_is_a_denial() {
+    let (decision, _) = one_approval(Some(serde_json::json!({ "outcome": "cancelled" }))).await;
+    assert!(
+        matches!(decision, io_harness::Decision::Deny { .. }),
+        "a cancelled approval must not approve: {decision:?}"
+    );
+}
+
+/// **F11 — a response nobody is waiting for changes nothing.**
+///
+/// The correlator drops it. That is the correct answer rather than a gap: the
+/// protocol has no response to a response, so there is nothing to send back, and
+/// a client that answers twice or invents an id must not be able to make this
+/// adapter say anything.
+#[tokio::test]
+async fn f11_a_response_naming_an_unknown_id_is_dropped() {
+    let correlator = acp::Correlator::new();
+    correlator.settle(&serde_json::json!(9_999), Ok(serde_json::json!({ "outcome": "selected" })));
+
+    // The real proof is that the next issued request still resolves normally —
+    // an implementation that panicked or poisoned its map on an unknown id would
+    // take the session down with it.
+    let (id, answer) = correlator.issue();
+    correlator.settle(&serde_json::json!(id), Ok(serde_json::json!({ "outcome": "cancelled" })));
+    assert!(answer.await.is_ok(), "the correlator still settles its own ids");
 }

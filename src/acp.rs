@@ -196,6 +196,93 @@ impl Incoming {
     }
 }
 
+/// The requests this adapter has asked the client and is still waiting on.
+///
+/// **This is the piece 0.36.0 was missing.** The frame builders were written,
+/// tested and shipped with no production caller, and the module's own doc said
+/// the missing piece was the correlation rather than the design. It is: a
+/// request needs an id nobody else will use, somewhere to park the waiting side
+/// of it, and a reader that can settle it *while the turn that raised it is
+/// still running*.
+///
+/// The last of those is why [`serve_with`] reads on its own task. Awaiting the
+/// handler inline in the read loop — which is what 0.36.0 did — means the answer
+/// to a question that turn asked sits unread in the pipe until the turn that is
+/// waiting for it returns. That is not a slow path, it is a deadlock, and it is
+/// the same shape as the writer starvation 0.36.0 shipped one layer up in this
+/// same function.
+///
+/// A `std::sync::Mutex` and not tokio's: the lock is taken to insert or remove
+/// one map entry and is never held across an `await`, which is the only thing
+/// the async mutex would buy.
+#[derive(Debug, Default)]
+pub struct Correlator {
+    next: std::sync::atomic::AtomicI64,
+    waiting: std::sync::Mutex<
+        std::collections::HashMap<i64, tokio::sync::oneshot::Sender<Result<Value, String>>>,
+    >,
+}
+
+impl Correlator {
+    /// A correlator with nothing outstanding.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Claim an id and the receiving half of its answer.
+    ///
+    /// Ids ascend from 1 and are never reused within a process. A client that
+    /// answers the same id twice settles the first and is dropped by the second,
+    /// because the sender is taken out of the map when it is used.
+    #[must_use]
+    pub fn issue(&self) -> (i64, tokio::sync::oneshot::Receiver<Result<Value, String>>) {
+        let id = self
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut waiting) = self.waiting.lock() {
+            waiting.insert(id, tx);
+        }
+        (id, rx)
+    }
+
+    /// Hand a client's answer to whoever is waiting for it.
+    ///
+    /// A response naming an id nobody is waiting for is dropped. That is the
+    /// correct answer and not a gap: the protocol has no response to a response,
+    /// so there is nothing to send back, and a client that answers twice or
+    /// invents an id must not be able to make this adapter say anything.
+    pub fn settle(&self, id: &Value, outcome: Result<Value, String>) {
+        let Some(id) = id.as_i64() else {
+            return;
+        };
+        let waiting = self.waiting.lock().ok().and_then(|mut map| map.remove(&id));
+        if let Some(sender) = waiting {
+            let _ = sender.send(outcome);
+        }
+    }
+
+    /// Give up on every outstanding request.
+    ///
+    /// Called when the reader stops, which is the only way a request that was
+    /// sent can come to have no answer coming. Dropping each sender makes every
+    /// waiter's `recv` fail, and the caller turns that into a denial — **so a
+    /// client that disconnects mid-approval denies rather than hangs, and this
+    /// adapter needs no timeout to guarantee it.**
+    ///
+    /// A timeout was the obvious alternative and it would have been a number
+    /// invented here. An approval is answered by a person: a minute is too short
+    /// for someone reading a diff and an hour is indistinguishable from a hang.
+    /// The connection ending is the real event, and it is observable.
+    pub fn abandon(&self) {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            waiting.clear();
+        }
+    }
+}
+
 /// A frame being sent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outgoing {
@@ -209,6 +296,18 @@ pub enum Outgoing {
         message: String,
     },
     Notification {
+        method: String,
+        params: Value,
+    },
+    /// Something **this** adapter is asking the client, which it will wait for an
+    /// answer to.
+    ///
+    /// The id is allocated by [`Correlator`] and is a number, deliberately: the
+    /// client's ids are its own and may be anything JSON-RPC permits, so an
+    /// adapter that reused their shape could collide with one. Two id spaces
+    /// travel in opposite directions on one pipe and only one of them is ours.
+    Request {
+        id: Value,
         method: String,
         params: Value,
     },
@@ -339,6 +438,12 @@ pub fn encode(frame: &Outgoing) -> String {
             "method": method,
             "params": params,
         }),
+        Outgoing::Request { id, method, params } => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }),
     };
 
     // A serialization failure on a value this module built is not reachable —
@@ -458,12 +563,22 @@ pub trait Handler {
 /// it is waiting for, so a buffered answer is a hang.
 pub async fn serve<R, W, H>(reader: R, writer: W, handler: &mut H) -> std::io::Result<()>
 where
-    R: tokio::io::AsyncBufRead + Unpin,
+    R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     H: Handler,
 {
     let (_unused, rx) = tokio::sync::mpsc::unbounded_channel();
-    serve_with(reader, writer, handler, rx).await
+    // A correlator of its own, because this door asks the client nothing: a
+    // handler that raises no request never issues an id, so the map stays empty
+    // and abandoning it at end-of-input is a no-op.
+    serve_with(
+        reader,
+        writer,
+        handler,
+        rx,
+        std::sync::Arc::new(Correlator::new()),
+    )
+    .await
 }
 
 /// [`serve`], plus a channel the agent writes frames on without being asked.
@@ -483,9 +598,13 @@ pub async fn serve_with<R, W, H>(
     mut writer: W,
     handler: &mut H,
     mut outbound: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
+    correlator: std::sync::Arc<Correlator>,
 ) -> std::io::Result<()>
 where
-    R: tokio::io::AsyncBufRead + Unpin,
+    // `Send + 'static` for the same reason the writer needs it: the reader moves
+    // onto its own task too, so that a response can be read while the turn that
+    // is waiting for it runs. See the note on the read task below.
+    R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
     // `Send + 'static` because the writer moves onto its own task. That bound is
     // the visible cost of the fix below and it is worth paying: a borrowed writer
     // is what forced the single-loop shape that could not stream.
@@ -536,19 +655,64 @@ where
         }
     });
 
-    let mut reader = reader;
-    let mut line = String::new();
-    let outcome = loop {
-        line.clear();
-        // Zero bytes is end of input: the client closed the pipe, which is how an
-        // ACP session ends normally. Not an error, and not answered.
-        match reader.read_line(&mut line).await {
-            Ok(0) => break Ok(()),
-            Ok(_) => {}
-            Err(error) => break Err(error),
-        }
+    // **The reader runs on its own task, and that is why an approval can be
+    // answered at all.** The 0.36.0 shape awaited `handler.handle(...)` inline
+    // here, and for a `session/prompt` that call *is* the whole turn — so a
+    // `session/request_permission` raised by that turn could never be answered:
+    // the client's reply sat unread in the pipe until the turn returned, and the
+    // turn was waiting for the reply. Not a slow path, a deadlock, and exactly
+    // the shape of the writer starvation this same function shipped one layer up.
+    //
+    // Splitting it puts the settling of a response — which needs no handler and
+    // no `&mut` anything — on a task that keeps reading, while requests and
+    // notifications queue for the loop below to take one at a time. Queueing them
+    // is right rather than a limitation: ACP runs one turn per session, and a
+    // second prompt arriving mid-turn must not start a second one.
+    let (dispatch, mut arrivals) = tokio::sync::mpsc::unbounded_channel::<Result<Incoming, Outgoing>>();
+    let settling = std::sync::Arc::clone(&correlator);
+    let read = tokio::spawn(async move {
+        let mut reader = reader;
+        let mut line = String::new();
+        let outcome = loop {
+            line.clear();
+            // Zero bytes is end of input: the client closed the pipe, which is
+            // how an ACP session ends normally. Not an error, and not answered.
+            match reader.read_line(&mut line).await {
+                Ok(0) => break Ok(()),
+                Ok(_) => {}
+                Err(error) => break Err(error),
+            }
 
-        let answers = match decode(&line) {
+            match decode(&line) {
+                // Settled here rather than forwarded, because this is the whole
+                // point of the split: a waiter parked inside a running turn is
+                // released without the loop below having to reach this line.
+                Ok(Incoming::Response { id, outcome }) => settling.settle(&id, outcome),
+                Ok(incoming) => {
+                    if dispatch.send(Ok(incoming)).is_err() {
+                        break Ok(());
+                    }
+                }
+                Err(refusal) => {
+                    if dispatch.send(Err(refusal)).is_err() {
+                        break Ok(());
+                    }
+                }
+            }
+        };
+        // Every outstanding request now has no answer coming. Abandoning them
+        // turns each waiter into a denial instead of a hang — the reason this
+        // adapter needs no approval timeout.
+        settling.abandon();
+        outcome
+    });
+
+    let outcome = loop {
+        let Some(arrival) = arrivals.recv().await else {
+            break Ok(());
+        };
+
+        let answers = match arrival {
             Ok(incoming) => handler.handle(incoming).await,
             Err(refusal) => vec![refusal],
         };
@@ -568,7 +732,17 @@ where
     drop(frames);
     forward.abort();
     let _ = pump.await;
-    outcome
+
+    // **The read task owns the real outcome.** The loop above ends when its
+    // channel closes, which happens because the reader stopped — so its own
+    // `Ok(())` says only "there is nothing more to serve" and would swallow the
+    // io error that caused it. A join failure is reported as `Ok(())` for the
+    // same reason end-of-input is: the session is over either way and there is no
+    // second thing to say about it.
+    match read.await {
+        Ok(from_reader) => from_reader,
+        Err(_) => outcome,
+    }
 }
 
 /// The options an ACP client is offered for one approval, as
@@ -777,6 +951,10 @@ impl crate::provider::WithProvider for Editor {
     ) -> Self::Out {
         let provider = make(&model)?;
         let (outbound, rx) = tokio::sync::mpsc::unbounded_channel();
+        // One correlator for the session, shared three ways: the read task
+        // settles into it, `Consulting` waits on it, and it is created here
+        // because both of those are built from this frame.
+        let correlator = std::sync::Arc::new(Correlator::new());
         let mut handler = Editing {
             store: &self.store,
             session: &mut self.session,
@@ -786,10 +964,11 @@ impl crate::provider::WithProvider for Editor {
             outbound,
             session_id: None,
             cancel: None,
+            correlator: std::sync::Arc::clone(&correlator),
         };
 
         let stdin = tokio::io::BufReader::new(tokio::io::stdin());
-        serve_with(stdin, tokio::io::stdout(), &mut handler, rx)
+        serve_with(stdin, tokio::io::stdout(), &mut handler, rx, correlator)
             .await
             .map_err(|error| error.to_string())?;
         Ok(0)
@@ -808,6 +987,10 @@ struct Editing<'a, P: io_harness::Provider> {
     /// 0.36.0 holds one and refuses a second rather than multiplexing badly.
     session_id: Option<String>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Where an approval this session raises will be answered. Handed to each
+    /// turn's [`Consulting`], and shared with the read task inside
+    /// [`serve_with`], which is the only thing that settles it.
+    correlator: std::sync::Arc<Correlator>,
 }
 
 impl<P: io_harness::Provider> Handler for Editing<'_, P> {
@@ -904,6 +1087,7 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                     outbound: self.outbound.clone(),
                     run_id: self.session.id(),
                     step: std::sync::atomic::AtomicU32::new(0),
+                    correlator: std::sync::Arc::clone(&self.correlator),
                 },
                 &reporter,
             )
@@ -968,9 +1152,12 @@ pub fn prompt_text(params: &Value) -> Option<String> {
 struct Consulting {
     session_id: String,
     outbound: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    /// The run this is approving for, so the refusal lands on the right cell.
+    /// The run this is approving for, so the request lands on the right cell.
     run_id: i64,
     step: std::sync::atomic::AtomicU32,
+    /// Where the answer will come back. Shared with the read task, which is the
+    /// only thing that can settle it.
+    correlator: std::sync::Arc<Correlator>,
 }
 
 impl io_harness::Approver for Consulting {
@@ -978,10 +1165,12 @@ impl io_harness::Approver for Consulting {
         &'a self,
         request: &'a io_harness::Request,
     ) -> io_harness::approve::DecisionFuture<'a> {
-        let act = format!("{:?}", request.act).to_lowercase();
+        let act_name = format!("{:?}", request.act).to_lowercase();
+        let act = request.act;
         let target = request.target.clone();
         let session_id = self.session_id.clone();
         let outbound = self.outbound.clone();
+        let correlator = std::sync::Arc::clone(&self.correlator);
         // **The id has to be the one the client already has.** An earlier draft
         // put the target *path* here, so the update named a cell that had never
         // been announced and a conforming client had nothing to apply it to —
@@ -994,31 +1183,78 @@ impl io_harness::Approver for Consulting {
             self.step.load(std::sync::atomic::Ordering::Relaxed)
         );
         Box::pin(async move {
-            let _ = outbound.send(Outgoing::Notification {
-                method: "session/update".into(),
-                params: json!({
-                    "sessionId": session_id,
-                    "update": {
-                        "sessionUpdate": "tool_call_update",
-                        "toolCallId": id,
-                        "status": "failed",
-                        "title": format!(
-                            "{act} {target} needs an approval this agent cannot yet route"
-                        ),
-                    }
-                }),
-            });
-            io_harness::Decision::deny(NOT_ROUTED)
+            ask_permission(
+                &correlator,
+                &outbound,
+                &session_id,
+                act,
+                &act_name,
+                &target,
+                &id,
+            )
+            .await
         })
+    }
+}
+
+/// Ask the client for one permission, and wait for the answer.
+///
+/// **A free function and not a method, so a test can assert what it returns.**
+/// The criterion this satisfies is about the `Decision` the run receives, and
+/// the run receives it from an `Approver` that needs a whole session to build.
+/// 0.36.0 shipped the frame builders with no production caller and gates that
+/// asserted the parts against each other; a test that watched a frame go out
+/// would repeat that mistake one level up. This is the thing the decision comes
+/// out of, and it is callable with a correlator and a channel.
+///
+/// **Every failure is a denial, and there is exactly one safe direction to be
+/// wrong in here.** A closed writer means the question was never asked. A
+/// dropped sender means the reader stopped with this request outstanding — a
+/// disconnected client, which [`Correlator::abandon`] turns into a denial rather
+/// than a hang, and which is why this adapter needs no approval timeout. A
+/// client that answers with a JSON-RPC error has reported a protocol failure,
+/// which must not be read as a decision about a permission.
+pub async fn ask_permission(
+    correlator: &Correlator,
+    outbound: &tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    session_id: &str,
+    act: io_harness::Act,
+    act_name: &str,
+    target: &str,
+    tool_call_id: &str,
+) -> io_harness::Decision {
+    let (request_id, answer) = correlator.issue();
+    if outbound
+        .send(Outgoing::Request {
+            id: json!(request_id),
+            method: "session/request_permission".into(),
+            params: permission_params(session_id, act_name, target, tool_call_id),
+        })
+        .is_err()
+    {
+        return io_harness::Decision::deny(NOT_ROUTED);
+    }
+
+    match answer.await {
+        Ok(Ok(result)) => crate::approval::decision(permission_answer(&result), act, target),
+        Ok(Err(_)) | Err(_) => io_harness::Decision::deny(NOT_ROUTED),
     }
 }
 
 /// What the model is told when an ACP approval could not be routed.
 ///
 /// Deliberately **not** `approval::REFUSED_BY_OPERATOR`. That sentence says the
-/// operator denied it, and in 0.36.0 the operator was never asked — telling the
-/// model otherwise puts a false statement about a human into the transcript the
-/// agent then reasons from.
+/// operator denied it, and every branch that reaches this one is a branch where
+/// nobody answered: the writer was gone before the question was sent, the reader
+/// stopped with the question outstanding, or the client replied with a protocol
+/// error rather than a decision. Telling the model a human refused would put a
+/// false statement about a person into the transcript the agent then reasons
+/// from.
+///
+/// **An operator who was asked and said no gets `REFUSED_BY_OPERATOR`**, from
+/// `approval::decision`, because that is what happened. Since 0.38.0 that is the
+/// ordinary path and this constant is the exception; through 0.37.0 it was the
+/// only path there was.
 pub const NOT_ROUTED: &str = "this interface could not route the approval, so it was refused";
 
 /// The `initialize` result.
