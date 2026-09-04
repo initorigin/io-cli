@@ -3630,7 +3630,7 @@ async fn live_f1_a_reasoning_level_reaches_the_wire_and_the_turn_still_finishes(
 ///
 /// The tail is the real provider, so a pass means an answer that actually came
 /// from the second link, and `last_served` names it. That name is also what
-/// io-harness turns into `EventKind::FellBackTo` (`run/step.rs:503`), which is the
+/// io-harness turns into `EventKind::FellBackTo` (`run/step.rs:577`), which is the
 /// scrollback arm this release makes reachable for the first time.
 #[tokio::test]
 #[ignore = "live: needs OPENROUTER_API_KEY"]
@@ -4059,7 +4059,7 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
     // working mask, which is the finding worth keeping: io-harness *announces* the
     // mask in the user prompt — "Unavailable this turn — these tools are listed
     // above but calling one is refused and starts nothing: write_file"
-    // (`run/prompts.rs:976`) — so a compliant model never attempts the call and
+    // (`run/prompts.rs:1133`) — so a compliant model never attempts the call and
     // never produces the refusal. The run above said so in its own reasoning: "the
     // previous turns show write_file was refused, so I used a shell redirect
     // instead". That is the mask working at its best, not evidence of absence.
@@ -4094,5 +4094,185 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
         "the goal was not reached at all, so this arm proves nothing about the mask \
          — it needs a run that got there without the withheld tool. outcome: {:?}",
         result.outcome,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0.38.0 O4 — the ACP permission round trip, through the built binary
+// ---------------------------------------------------------------------------
+
+/// Speak ACP to a real `io acp` child and answer its permission request.
+///
+/// Returns `(the file the agent was asked to write exists, every frame read)`.
+///
+/// **Through the binary, because nothing under `tests/` links `src/main.rs`.**
+/// `io acp`'s door is opened in the driver, so an adapter that worked perfectly
+/// in the library and was never reached by the subcommand would pass every
+/// offline arm — which is the shape 0.30.0 shipped and 0.34.0 shipped again.
+fn acp_permission_run(answer: &str) -> (bool, Vec<serde_json::Value>) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let config = tempfile::tempdir().expect("a config directory");
+    let workspace = tempfile::tempdir().expect("a workspace");
+    // **`write = "ask"` is the whole fixture.** A posture that allows writes
+    // raises no approval, so the arm would pass without the feature existing.
+    std::fs::write(
+        config.path().join("io.toml"),
+        format!(
+            "[[provider]]\nkind = \"openrouter\"\nmodel = {:?}\n\n\
+             [policy.defaults]\nread = \"allow\"\nwrite = \"ask\"\n\
+             exec = \"deny\"\nnet = \"deny\"\n",
+            model()
+        ),
+    )
+    .expect("the configuration is written");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_io"))
+        .arg("-C")
+        .arg(workspace.path())
+        .arg("acp")
+        .env("IO_CONFIG", config.path().join("io.toml"))
+        .env("OPENROUTER_API_KEY", key())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the built binary serves acp");
+
+    let mut stdin = child.stdin.take().expect("the child takes frames");
+    let stdout = BufReader::new(child.stdout.take().expect("the child writes frames"));
+
+    let send = |stdin: &mut std::process::ChildStdin, value: serde_json::Value| {
+        let mut line = value.to_string();
+        line.push('\n');
+        stdin.write_all(line.as_bytes()).expect("a frame is sent");
+        stdin.flush().expect("the frame is flushed");
+    };
+
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": 1, "clientCapabilities": {} },
+        }),
+    );
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "session/new",
+            "params": { "cwd": workspace.path(), "mcpServers": [] },
+        }),
+    );
+
+    let mut seen: Vec<serde_json::Value> = Vec::new();
+    let mut prompted = false;
+
+    for line in stdout.lines() {
+        let Ok(line) = line else { break };
+        let Ok(frame) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        seen.push(frame.clone());
+
+        // `session/new`'s result carries the id the prompt has to name.
+        if frame.get("id") == Some(&serde_json::json!(2)) {
+            if let Some(id) = frame["result"]["sessionId"].as_str() {
+                send(
+                    &mut stdin,
+                    serde_json::json!({
+                        "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                        "params": {
+                            "sessionId": id,
+                            "prompt": [{
+                                "type": "text",
+                                "text": "Create a file called approved.txt in this \
+                                         directory containing the single word yes. \
+                                         Use your file-writing tool.",
+                            }],
+                        },
+                    }),
+                );
+                prompted = true;
+            }
+        }
+
+        // The request this release exists to raise. Answering it is the test.
+        if frame.get("method") == Some(&serde_json::json!("session/request_permission")) {
+            send(
+                &mut stdin,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": frame["id"].clone(),
+                    "result": { "outcome": "selected", "optionId": answer },
+                }),
+            );
+        }
+
+        // The prompt's own result ends the turn.
+        if prompted && frame.get("id") == Some(&serde_json::json!(3)) {
+            break;
+        }
+    }
+
+    drop(stdin);
+    let _ = child.wait();
+    (workspace.path().join("approved.txt").exists(), seen)
+}
+
+/// **0.38.0 O4 — an editor answers a permission request and the write happens.**
+///
+/// **The assertion is that the write committed, not that a frame was sent.**
+/// 0.36.0 shipped the frame builders with gates that asserted them against each
+/// other, and a live arm that watched for the request would repeat that mistake
+/// against a real provider. What changed for an operator is that answering yes
+/// makes the file appear.
+///
+/// The negative control is the sibling below, and it is what makes this arm mean
+/// anything: a model that wrote the file without ever asking would pass this one
+/// alone. 0.34.0 shipped exactly that shape — a live arm passing over a feature
+/// that placed nothing, because the model reached the goal another way.
+#[test]
+#[ignore = "live"]
+fn live_an_acp_client_that_allows_a_write_gets_the_write() {
+    let (wrote, seen) = acp_permission_run("allow-once");
+
+    let asked = seen
+        .iter()
+        .any(|f| f.get("method") == Some(&serde_json::json!("session/request_permission")));
+    println!("asked for permission: {asked}  wrote the file: {wrote}");
+
+    assert!(
+        asked,
+        "no `session/request_permission` was raised, so the posture never reached \
+         the approver and this arm proves nothing",
+    );
+    assert!(
+        wrote,
+        "the client allowed the write and it did not happen — the answer did not \
+         reach the run",
+    );
+}
+
+/// **0.38.0 O4's negative control — denying stops the write.**
+///
+/// Run with the same fixture and the same prompt; only the answer differs. If
+/// this one also wrote the file, the answer is not deciding anything and the arm
+/// above is passing on a model's own behaviour rather than on the feature.
+#[test]
+#[ignore = "live"]
+fn live_an_acp_client_that_denies_a_write_stops_it() {
+    let (wrote, seen) = acp_permission_run("deny");
+
+    let asked = seen
+        .iter()
+        .any(|f| f.get("method") == Some(&serde_json::json!("session/request_permission")));
+    println!("asked for permission: {asked}  wrote the file: {wrote}");
+
+    assert!(asked, "no permission was raised, so nothing was denied");
+    assert!(
+        !wrote,
+        "the client denied the write and the file exists anyway — the denial did \
+         not reach the run",
     );
 }

@@ -272,7 +272,7 @@ pub fn viewed(
     graphics: crate::term::Graphics,
     width: u16,
 ) -> Option<Drawn> {
-    let EventKind::ToolCall { name, target } = &event.kind else {
+    let EventKind::ToolCall { name, target, .. } = &event.kind else {
         return None;
     };
     if name != VIEW_IMAGE_TOOL {

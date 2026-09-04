@@ -400,6 +400,7 @@ fn every_event_this_release_renders_draws_in_ascii() {
         EventKind::ToolCall {
             name: "read_file".into(),
             target: "src/main.rs".into(),
+            origin: None,
         },
     );
     assert!(

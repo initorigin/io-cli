@@ -32,6 +32,7 @@ With no subcommand, `io` opens an interactive session.
 | `io config …` | Read and write configuration keys |
 | `io skill …` | Add, list and remove skills |
 | `io acp` | Serves the Agent Client Protocol on stdin and stdout, for an editor |
+| `io upgrade` | Prints the command that updates this binary, for the way it was installed |
 
 `--plain` reaches an interactive session and stops there. `io exec` builds no theme, draws
 nothing and animates nothing already, so there is no second thing for the flag to switch off.
@@ -72,17 +73,26 @@ produce that pause today at all** — it declines every approval rather than def
 session and headless alike — so the carve-out is what would be printed if it ever did, and is
 written down because the code that would print it exists and is reached by nothing.
 
-**That sentence is still true of every door 0.36.0 ships, `io acp` included.** An ACP session is
-the first surface with a person behind it that is not a terminal, so it is the first that *could*
-raise an approval and be answered — but 0.36.0 does not raise one. An approval in an ACP session
-is refused, and the client is told so by a `session/update` naming the tool call, its act and its
-target, with `status: "failed"`.
+**That sentence is true of `io exec`. It stopped being true of `io acp` in 0.38.0.** An ACP
+session is the first surface with a person behind it that is not a terminal, so it is the first
+that can raise an approval and be answered — and it does. An approval becomes a
+`session/request_permission` request naming the tool call, its act and its target, offering three
+options: allow once, allow for this session, and deny.
 
-It is a notification and **not** a `session/request_permission` request. Raising a request means
-waiting for the answer, and routing that answer back into the run is not wired; a request whose
-reply is ignored would render a prompt in the editor whose outcome does nothing, which is worse
-than not asking. The model is told the interface could not route the approval — not that the
-operator denied it, because the operator was never asked.
+The answer decides the call. `allow-session` remembers exactly that act on exactly that target
+for the rest of the run, which is the same rule the terminal's own approval overlay writes —
+both surfaces build it in one place, so they cannot come to mean different things by the same
+word. An option id that was never offered, a cancellation, and a JSON-RPC error are all
+denials: there is one safe direction to be wrong in.
+
+**A client that disconnects mid-question denies rather than hangs, and there is no timeout.**
+When the reader stops, every outstanding request is abandoned and each waiter becomes a denial.
+A timeout would have been a number invented here — a minute is too short for someone reading a
+diff, and an hour is indistinguishable from a hang. The connection ending is the real event.
+
+Where nobody answered, the model is told the interface could not route the approval, never that
+the operator denied it: the operator was not asked. Where the operator *was* asked and said no,
+the model is told they refused, because that is what happened.
 
 `io exec` is unchanged and declines every approval for its own reason: an unattended run has
 nobody to ask, and an approver that blocked there would hang forever.

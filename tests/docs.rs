@@ -2517,9 +2517,9 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
 /// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
 /// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
 /// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.76.0/src/tools/mod.rs:33-42`).
+/// cache *write* on every later turn (`io-harness-0.78.0/src/tools/mod.rs:33-42`).
 /// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`src/run/prompts.rs:976`).
+/// naming what is withheld (`src/run/prompts.rs:1133`).
 ///
 /// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
 /// its headline. That framing is what a writer reaches for, because "withhold" means

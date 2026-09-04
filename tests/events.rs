@@ -173,6 +173,7 @@ fn f8_every_styled_kind_renders_its_own_facts() {
         &event(EventKind::ToolCall {
             name: "exec".into(),
             target: "cargo test".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -340,6 +341,7 @@ fn f8_a_line_kind_commits_one_though_a_token_and_a_tool_call_are_deferred() {
         EventKind::ToolCall {
             name: "read_file".into(),
             target: String::new(),
+            origin: None,
         },
         EventKind::Refused {
             act: "a".into(),
@@ -592,7 +594,8 @@ fn the_kind_name_is_the_serde_tag() {
     assert_eq!(
         kind_name(&EventKind::ToolCall {
             name: String::new(),
-            target: String::new()
+            target: String::new(),
+            origin: None
         }),
         "tool_call",
     );
@@ -694,6 +697,7 @@ fn f2_a_tool_call_commits_nothing_until_its_step_lands() {
         &event(EventKind::ToolCall {
             name: "read_file".into(),
             target: "src/lib.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -721,6 +725,7 @@ fn f2_a_tool_cell_commits_its_result_and_its_observed_duration() {
         &event(EventKind::ToolCall {
             name: "read_file".into(),
             target: "src/lib.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -784,6 +789,7 @@ fn f2_a_refused_call_does_not_close_as_a_completed_one() {
         &event(EventKind::ToolCall {
             name: "write_file".into(),
             target: "src/main.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -835,6 +841,7 @@ fn f2_an_unfinished_call_closes_without_inventing_a_duration() {
         &event(EventKind::ToolCall {
             name: "read_file".into(),
             target: "src/lib.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -865,6 +872,7 @@ fn f2_two_calls_before_one_step_each_close_with_their_own_duration() {
         &event(EventKind::ToolCall {
             name: "read_file".into(),
             target: "src/a.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -872,6 +880,7 @@ fn f2_two_calls_before_one_step_each_close_with_their_own_duration() {
         &event(EventKind::ToolCall {
             name: "read_file".into(),
             target: "src/b.rs".into(),
+            origin: None,
         }),
         Duration::from_millis(100),
     );
@@ -1488,6 +1497,7 @@ fn f6_an_open_call_names_that_act_and_its_target() {
         &event(EventKind::ToolCall {
             name: "write_file".into(),
             target: "/work/io-cli/src/lib.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -1540,6 +1550,7 @@ fn f6_a_pending_approval_outranks_an_open_call_and_a_thought() {
         &event(EventKind::ToolCall {
             name: "write_file".into(),
             target: "src/lib.rs".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -1604,6 +1615,7 @@ fn cell(events: &mut Events, name: &str, target: &str) -> String {
         &event(EventKind::ToolCall {
             name: name.into(),
             target: target.into(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -1711,6 +1723,7 @@ fn f4_the_result_says_what_it_adds_and_not_what_the_cell_already_said() {
             &event(EventKind::ToolCall {
                 name: tool.into(),
                 target: target.into(),
+                origin: None,
             }),
             Duration::ZERO,
         );
@@ -1841,6 +1854,7 @@ fn f8_a_designed_block_and_the_next_prompt_are_not_one_block() {
                 &event(EventKind::ToolCall {
                     name: "read_file".into(),
                     target: "src/lib.rs".into(),
+                    origin: None,
                 }),
                 Duration::ZERO,
             );
@@ -2723,6 +2737,7 @@ fn a_tool_targets_path_is_never_translated_however_it_is_spelled() {
             EventKind::ToolCall {
                 name: "read_file".to_string(),
                 target: path.to_string(),
+                origin: None,
             },
         );
         // The call is held open and committed by the `Step` that follows it, so
@@ -2749,6 +2764,7 @@ fn a_skills_target_is_still_drawn_the_way_the_operator_reads_it() {
         &event(EventKind::ToolCall {
             name: io_cli::events::READ_SKILL.to_string(),
             target: "ultraship__brainstorm".to_string(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -2772,6 +2788,7 @@ fn skill_cell(target: &str, decision: &str) -> String {
         &event(EventKind::ToolCall {
             name: io_cli::events::READ_SKILL.to_string(),
             target: target.to_string(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -2867,6 +2884,7 @@ fn f11_a_companion_path_is_drawn_intact_and_the_skill_is_still_named() {
             &event(EventKind::ToolCall {
                 name: io_cli::events::READ_SKILL.to_string(),
                 target: path.to_string(),
+                origin: None,
             }),
             Duration::ZERO,
         );
@@ -2925,6 +2943,7 @@ fn f6_an_mcp_tool_cell_names_the_server_and_the_tool() {
         &event(EventKind::ToolCall {
             name: "mcp__github__create_issue".to_string(),
             target: "mcp__github__create_issue".to_string(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -2949,6 +2968,7 @@ fn f6_a_server_id_containing_the_separator_still_splits_at_the_first_join() {
         &event(EventKind::ToolCall {
             name: "mcp__deep__nested__tool".to_string(),
             target: "mcp__deep__nested__tool".to_string(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -2973,6 +2993,7 @@ fn an_mcp_calls_measured_duration_survives_the_translation() {
         &event(EventKind::ToolCall {
             name: "mcp__github__create_issue".to_string(),
             target: "mcp__github__create_issue".to_string(),
+            origin: None,
         }),
         Duration::ZERO,
     );
@@ -3134,7 +3155,7 @@ fn f5_the_echoed_line_reads_as_a_command_and_not_as_a_prompt() {
 /// never resolves, which is what an operator would actually see.
 ///
 /// io-harness feeds its own sentence back as the step's decision
-/// (`"{tool} refused: withheld from this turn"`, `run/read.rs:1230`), so the cell
+/// (`"{tool} refused: withheld from this turn"`, `run/read.rs:1318`), so the cell
 /// pairs to that rather than to a word io-cli invented. What this asserts is the
 /// pairing survives: one call, one decision, so `paired` holds and the cell
 /// carries the harness's sentence instead of falling through to the step verdict.
@@ -3151,6 +3172,7 @@ fn f7_a_withheld_call_is_one_refused_cell_that_names_the_mask() {
         &event(EventKind::ToolCall {
             name: "docx_write".into(),
             target: "report.docx".into(),
+            origin: None,
         }),
         Duration::ZERO,
     );

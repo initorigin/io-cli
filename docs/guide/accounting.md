@@ -30,6 +30,15 @@ that and each is on the page rather than in this file:
   says so** — in that word, with the number of calls it applies to, and on the
   row itself in the grouped sections so a reader scanning for the largest figure
   can see which of them is incomplete without reading past the list.
+- **A wire that reports no cache-write counter makes the cache-write figure a
+  floor too, and since 0.38.0 the grouped rows say that as well.** They stated
+  the money floor and stayed silent about this one, while the totals above them
+  had named both since 0.36.0 — so a per-model row could show a cache-write
+  number that was a floor and read as a fact. A row whose group is partly
+  unreported says `cache written N or more`; one whose group reported nothing
+  says `cache written unknown`, in the same words the total uses, because two
+  surfaces on one page inventing two vocabularies for one fact is worse than
+  either wording alone.
 
 `/stats` is the other half: runs by outcome, runs by day, the first-try counts,
 gate failures by phase, recovery, the slowest calls and the time to first token

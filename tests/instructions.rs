@@ -5,7 +5,7 @@
 //! other half and `tests/memory.rs` covers it. This file covers the half that
 //! decides whether any of it reaches a model: `[instructions] files`, which is
 //! the only mechanism io-harness has for finding two of the three
-//! (`io-harness-0.76.0/src/config.rs:190` — the automatic set is exactly
+//! (`io-harness-0.78.0/src/config.rs:190` — the automatic set is exactly
 //! `["AGENTS.md"]`).
 //!
 //! Every test sets `IO_CONFIG_HOME`, because that is the only way to move the
@@ -37,7 +37,7 @@ const SCOPES: [Scope; 3] = [Scope::User, Scope::Project, Scope::Local];
 /// Point io's home at `home` and clear the variable that would win over it.
 ///
 /// `IO_CONFIG` names a file outright and beats `IO_CONFIG_HOME`
-/// (`config.rs:1668-1673`), so a developer who has one exported would otherwise
+/// (`config.rs:2253-2258`), so a developer who has one exported would otherwise
 /// have this suite writing into their own configuration.
 fn home_at(home: &Path) {
     std::env::remove_var(io_harness::config::CONFIG_VAR);
@@ -77,13 +77,13 @@ fn row(view: &[Instruction], scope: Scope) -> &Instruction {
 /// says which one broke.
 ///
 /// `files` REPLACES io-harness's default rather than adding to it
-/// (`config.rs:1879-1882`: `Some(files) => files.clone()`), so a list written to
+/// (`config.rs:2918-2921`: `Some(files) => files.clone()`), so a list written to
 /// reach `AGENTS.local.md` and `IO.md` alone would silently stop the
 /// repository's own `AGENTS.md` being read — no error, because a name that
-/// resolves to nothing is skipped in silence (`config.rs:1886`).
+/// resolves to nothing is skipped in silence (`config.rs:2925`).
 ///
 /// And `IO.md` cannot be named relatively at all: every name is resolved
-/// `root.join(&name)` against the discovery root (`config.rs:1885`), and io's
+/// `root.join(&name)` against the discovery root (`config.rs:2924`), and io's
 /// home is not the workspace.
 #[test]
 fn the_list_names_the_committed_file_and_reaches_the_home_by_absolute_path() {
@@ -192,7 +192,7 @@ fn installing_a_list_that_is_already_correct_writes_nothing() {
 /// with a `~`.
 ///
 /// io-harness does substitute `${env:…}`, and an unset variable is a **hard
-/// error** that fails the whole parse (`config.rs:1983-1989`) — on Windows
+/// error** that fails the whole parse (`config.rs:3022-3028`) — on Windows
 /// `HOME` frequently is unset, and a configuration that refuses to parse is a
 /// session that does not start. `~` is worse: nothing in `config.rs` expands
 /// one, so it would be taken as a directory literally named `~`.
@@ -275,9 +275,9 @@ fn the_view_reports_what_each_file_holds_and_that_it_is_read() {
 /// read.
 ///
 /// `["instructions","files"]` is not in io-harness's `APPENDING` set
-/// (`config.rs:2052`), so a later scope replaces the array wholesale rather than
+/// (`config.rs:3130`), so a later scope replaces the array wholesale rather than
 /// adding to it — the scopes are merged in the order listed at
-/// `config.rs:688-693` and a later value overwrites (`config.rs:2142-2144`), so
+/// `config.rs:1078-1083` and a later value overwrites (`config.rs:3222-3224`), so
 /// Local beats Project beats User.
 /// This is the case a view inferring `read` from `exists` gets wrong, and it is
 /// the case the view exists for: the operator's `IO.md` is on disk, was
@@ -328,7 +328,7 @@ fn a_project_list_replaces_the_user_one_and_the_unread_files_say_so() {
 /// absent rather than unread-for-some-other-reason.
 ///
 /// io-harness skips a named file that does not exist in silence
-/// (`config.rs:1886`), so nothing downstream fails — which is exactly why the
+/// (`config.rs:2925`), so nothing downstream fails — which is exactly why the
 /// view has to distinguish the two.
 #[test]
 fn a_named_file_that_is_absent_is_skipped_and_reported_absent() {
@@ -363,7 +363,7 @@ fn a_named_file_that_is_absent_is_skipped_and_reported_absent() {
 /// A file that exists and holds nothing but whitespace is not read, and the view
 /// does not pretend it is.
 ///
-/// `read_instructions` trims and skips an empty result (`config.rs:1891-1894`).
+/// `read_instructions` trims and skips an empty result (`config.rs:2930-2933`).
 /// The row an operator sees is "there, and not reaching the model", which is the
 /// only wording that explains why nothing changed after they created it.
 #[test]

@@ -1024,7 +1024,7 @@ fn f6_the_file_a_row_names_is_the_file_its_position_is_read_from() {
 
 #[test]
 fn f6_a_shadowed_server_is_not_offered_for_editing_because_it_is_not_running() {
-    // `[[mcp]]` is NOT one of io-harness's appending keys (`config.rs:2052`):
+    // `[[mcp]]` is NOT one of io-harness's appending keys (`config.rs:3130`):
     // the winning scope replaces the array WHOLE, "because a half-merged MCP
     // server definition is not a server". So an entry named only in the project
     // file, while a local file declares any `[[mcp]]` at all, is not

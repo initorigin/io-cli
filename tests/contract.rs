@@ -91,7 +91,7 @@ fn discovered(files: &[(&str, &str)]) -> (tempfile::TempDir, Config) {
 ///
 /// **Not `support::user_scope`**, and the difference is the `files` argument: a
 /// contract reads `[instructions]` off disk, relative to the *discovery root*
-/// (`config.rs:2673`), so the workspace still has to hold `GUIDE.md` while the
+/// (`config.rs:2904`), so the workspace still has to hold `GUIDE.md` while the
 /// configuration lives outside it. `support::user_scope` hands back an empty
 /// workspace by design.
 ///
@@ -1829,7 +1829,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
 /// **F7 — a tilde is a home directory, never a directory named `~`.**
 ///
 /// io-harness substitutes `${env:…}` and `${file:…}` and nothing else — there is
-/// no tilde branch anywhere in `io-harness-0.76.0/src/config.rs` — so a `~` an
+/// no tilde branch anywhere in `io-harness-0.78.0/src/config.rs` — so a `~` an
 /// operator writes in `[run] skills` reaches `Skills::discover` verbatim and the
 /// harness looks inside a directory whose name is one character long. The
 /// operator's skills sit exactly where they said they would, and the session

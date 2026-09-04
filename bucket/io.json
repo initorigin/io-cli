@@ -1,0 +1,28 @@
+{
+  "version": "0.37.0",
+  "description": "Terminal agent that shows what it may do, what it spends and what it refused",
+  "homepage": "https://github.com/initorigin/io-cli",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/initorigin/io-cli/releases/download/v0.37.0/io-0.37.0-x86_64-pc-windows-msvc.zip",
+      "hash": "a6011df7775bdcc4d3a8b5e026690c0b010ee42c7d018c595196cb323d21ce57",
+      "extract_dir": "io-0.37.0-x86_64-pc-windows-msvc"
+    }
+  },
+  "bin": "io.exe",
+  "checkver": {
+    "github": "https://github.com/initorigin/io-cli"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/initorigin/io-cli/releases/download/v$version/io-$version-x86_64-pc-windows-msvc.zip",
+        "extract_dir": "io-$version-x86_64-pc-windows-msvc",
+        "hash": {
+          "url": "https://github.com/initorigin/io-cli/releases/download/v$version/SHA256SUMS"
+        }
+      }
+    }
+  }
+}

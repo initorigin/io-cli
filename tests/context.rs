@@ -890,7 +890,7 @@ fn f9_allow_reports_a_no_op_and_a_clear_names_what_returned() {
 /// **The defect this replaces was the safety lever being silently inert.**
 /// io-harness keeps an unknown mask name rather than rejecting it, deliberately,
 /// so a mask stays portable across builds with different cargo features
-/// (`io-harness-0.76.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
+/// (`io-harness-0.78.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
 /// the exact string and a misspelling withholds nothing — while the operator was
 /// told "calling it will be refused before anything starts" and `/context` drew it
 /// on the withheld row. `/context withhold Docx_Write` and the file gets written.

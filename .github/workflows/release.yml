@@ -206,10 +206,29 @@ jobs:
           irm https://raw.githubusercontent.com/initorigin/io-cli/main/install.ps1 | iex
           ```
 
+          Or with a package manager:
+
+          ```sh
+          brew tap initorigin/io-cli https://github.com/initorigin/io-cli
+          brew install initorigin/io-cli/io
+          ```
+
+          ```powershell
+          scoop bucket add io-cli https://github.com/initorigin/io-cli
+          scoop install io
+          ```
+
+          The tap and the bucket are updated from this Release's own
+          `SHA256SUMS` shortly after it is published, so they may serve the
+          previous version for a few minutes.
+
           Both scripts verify the artifact against `SHA256SUMS` before unpacking
           it and install into a per-user directory with no administrator rights.
           The checksum defends against a truncated download and a tampered asset;
           `curl | sh` is a trust-the-publisher model regardless.
+
+          `io upgrade` prints the command that updates whichever of these
+          installed the binary you are running.
           EOF
           cat notes.md
 

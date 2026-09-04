@@ -249,7 +249,7 @@ fn f7_removing_the_head_promotes_the_next_link_and_removing_the_only_one_leaves_
 #[test]
 fn f7_a_compatible_entry_naming_both_bases_or_neither_cannot_be_written() {
     // io-harness takes EXACTLY ONE of `preset` and `base_url` and refuses both
-    // and neither, by index, at load (`config.rs:456`). `configure::write`'s
+    // and neither, by index, at load (`config.rs:571`). `configure::write`'s
     // round trip would catch it and roll back, which is a good failure — but the
     // pair of `Option`s that made it expressible is gone: `Endpoint` has one
     // variant per shape, so three of the four combinations cannot be spelled.

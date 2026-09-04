@@ -719,6 +719,188 @@ fn f10_a_fresh_figure_computed_from_a_floor_is_not_drawn_as_a_number() {
     );
 }
 
+/// The token split the two F12 tests below group over.
+///
+/// A non-zero cache **read** is load-bearing rather than decoration, for the same
+/// reason it is in the F10 fixtures: `section` draws the cache block only where
+/// something about the cache is known, so a fixture with no reads and no reported
+/// writes has no `of which cache written` row for the grouped row to be compared
+/// against.
+fn cached(cache_write: Option<u64>) -> Usage {
+    Usage {
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        total_tokens: 1_100,
+        cache_read_tokens: 100,
+        cache_write_tokens: cache_write,
+        ..Default::default()
+    }
+}
+
+/// One `by model` row, as a reader sees it.
+///
+/// The grouped rows are keyed by model id, so the fixture's own model name is the
+/// label — and `field` takes the first row carrying it, which on this page is the
+/// `by model` row rather than anything in the two total sections above it.
+fn grouped_row(calls: &[ProviderCall]) -> String {
+    field(&page(&seeded(calls), &table(), &provenance()), PRICED).to_string()
+}
+
+/// **F12 — a grouped row states the cache-write floor, and names it as one.**
+///
+/// `Total`'s section has drawn both floors since 0.36.0: the money is a floor
+/// where a model has no rate, and the cache-write count is a floor where a call
+/// reported usage without a write counter. The rows under `by model` and `by day`
+/// drew only the money one, so the same silent call that made the section say
+/// "or more" left the row below it reading like a complete measurement.
+///
+/// Reachable rather than theoretical, and the grouped rows are where it is most
+/// likely: `openai_wire` reports no cache-write count at all while Anthropic
+/// reports one only where a cache was created, and `by day` groups a day that used
+/// both vendors into one row.
+///
+/// The three arms are the three states, and the zero arm is what makes the test
+/// able to fail in the other direction: a row that appended the qualifier
+/// unconditionally would put "or more" over a group every call of which reported,
+/// which is the same invented uncertainty as an invented number.
+///
+/// Sabotage: append the qualifier without its label — a bare `1.0k` beside the
+/// money — and the segment assertion fails by name while the `contains` arms would
+/// not have noticed. That is the 0.36.0 defect exactly: a figure drawn on this
+/// page without saying which direction it errs in.
+#[test]
+fn f12_a_grouped_row_states_the_cache_write_floor() {
+    let spelled = io_cli::status::format_tokens;
+
+    let mixed = grouped_row(&[
+        call(Some(PRICED), Some(cached(Some(1_000)))),
+        call(Some(PRICED), Some(cached(None))),
+    ]);
+    assert!(
+        mixed.contains(&format!("cache written {} or more", spelled(1_000))),
+        "a group holding one silent call drew its cache writes as a count:\n{mixed}",
+    );
+
+    // **The label is the assertion, not decoration.** The row already carries
+    // money, a call count and a token total, and a fourth figure appended bare
+    // reads as a fifth measurement rather than as a qualification of one of them.
+    // Splitting on the row's own separator is how the test can tell a labelled
+    // floor from a number sitting beside the money.
+    let floor: Vec<&str> = mixed
+        .split(" · ")
+        .filter(|part| part.contains("or more"))
+        .collect();
+    assert_eq!(
+        floor.len(),
+        1,
+        "the floor is not on the row exactly once:\n{mixed}",
+    );
+    assert!(
+        floor[0].starts_with("cache written "),
+        "the row draws a floor beside the money without saying which figure it \
+         qualifies:\n{mixed}",
+    );
+
+    // Every call reported: nothing is in doubt, so nothing is said. A qualifier
+    // here would claim an uncertainty the group does not have.
+    let all_reported = grouped_row(&[
+        call(Some(PRICED), Some(cached(Some(250)))),
+        call(Some(PRICED), Some(cached(Some(750)))),
+    ]);
+    assert!(
+        !all_reported.contains("cache written"),
+        "a group whose every call reported a cache-write count was qualified \
+         anyway:\n{all_reported}",
+    );
+    assert!(
+        !all_reported.contains("or more"),
+        "a complete count was drawn as a floor:\n{all_reported}",
+    );
+    // The control on that pair of negations: a `grouped` that drew an empty value,
+    // or a `field` that found the wrong row, would satisfy both of them forever.
+    assert!(
+        all_reported.contains("2 calls"),
+        "the row under test is not the group's row at all:\n{all_reported}",
+    );
+
+    // No call reported, so there is no number to put a floor under, and the row
+    // says the word rather than a figure — `unknown`, which is what `UNREPORTED`
+    // is and what the section above draws for the same fold.
+    let silent = grouped_row(&[
+        call(Some(PRICED), Some(cached(None))),
+        call(Some(PRICED), Some(cached(None))),
+    ]);
+    assert!(
+        silent.contains("cache written unknown"),
+        "a group no call of which reported a cache-write count did not say \
+         so:\n{silent}",
+    );
+    assert!(
+        !silent.contains("or more"),
+        "a group with nothing reported drew a floor under a number it does not \
+         have:\n{silent}",
+    );
+    assert_ne!(
+        mixed, silent,
+        "a mixed group and a wholly silent one drew the same row, so the page \
+         cannot tell an operator which one happened",
+    );
+}
+
+/// **F12's other half — one page, one vocabulary for one floor.**
+///
+/// The grouped rows and the `Total` sections above them describe the same calls
+/// out of the same store. io-harness's `Spend::unreported_cache_writes` and this
+/// module's `Total::unreported_writes` count identically over every call that
+/// reported usage, so a fixture whose only group is the run's own calls has one
+/// fold drawn twice — and drawing it in two vocabularies would read as two
+/// different facts about a single number.
+///
+/// Asserted as containment of the section's own rendered value rather than against
+/// a literal: a release that changed "or more" to something else in one place has
+/// to change it in both or this fails, which is the property. A literal on both
+/// sides would let the two surfaces drift together past the assertion.
+///
+/// Sabotage: spell the grouped qualifier "at least 1.0k" or "unmeasured". Every
+/// assertion in the test above still passes — they read the grouped row alone —
+/// and this one fails.
+#[test]
+fn f12_the_grouped_row_and_the_total_say_the_floor_in_the_same_words() {
+    let both = |calls: &[ProviderCall]| {
+        let rows = page(&seeded(calls), &table(), &provenance());
+        (
+            field(&rows, "of which cache written").to_string(),
+            field(&rows, PRICED).to_string(),
+        )
+    };
+
+    let (section_mixed, row_mixed) = both(&[
+        call(Some(PRICED), Some(cached(Some(1_000)))),
+        call(Some(PRICED), Some(cached(None))),
+    ]);
+    let (section_silent, row_silent) = both(&[
+        call(Some(PRICED), Some(cached(None))),
+        call(Some(PRICED), Some(cached(None))),
+    ]);
+
+    // The two states have to be different words on the section before agreement
+    // with the rows below means anything: if both sections said "unknown", a
+    // grouped row that always said "unknown" would agree with both.
+    assert_ne!(
+        section_mixed, section_silent,
+        "the section itself does not distinguish a mixed fold from a silent \
+         one, so agreement below it proves nothing",
+    );
+
+    for (section, row) in [(section_mixed, row_mixed), (section_silent, row_silent)] {
+        assert!(
+            row.contains(&format!("cache written {section}")),
+            "the grouped row and the total describe one fold in two \
+             vocabularies: the section says `{section}` and the row reads:\n{row}",
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // `money`
 // ---------------------------------------------------------------------------

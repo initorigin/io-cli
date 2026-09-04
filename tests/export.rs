@@ -45,7 +45,7 @@ fn fixture() -> (tempfile::TempDir, Store, Workspace) {
 ///
 /// **Every run records two steps, and that is not decoration.** The first
 /// version of this fixture recorded none, and `Store::canonical_trace` is built
-/// entirely from `steps` and `context_events` (`state/trace.rs:1019-1036`) — so
+/// entirely from `steps` and `context_events` (`state/trace.rs:1234-1251`) — so
 /// it returned the empty string, and the byte-for-byte gate below was comparing
 /// `""` against `""`. It passed, and it would have gone on passing over any
 /// defect whatsoever.

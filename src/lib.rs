@@ -134,5 +134,6 @@ pub mod theme;
 pub mod transcript;
 pub mod triage;
 pub mod undo;
+pub mod upgrade;
 pub mod verify;
 pub mod wizard;

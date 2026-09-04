@@ -293,21 +293,11 @@ impl Approval {
 
     /// Answer it, and let the run go on.
     pub fn answer(self, answer: Answer) {
-        let decision = match answer {
-            Answer::Once => Decision::approve(),
-            Answer::Session => Decision::Approve {
-                modified: None,
-                // The harness applies this for the rest of the *run*, which is one
-                // turn. Carrying it into the next turn is the caller's job and is
-                // what F5 asserts; see `remembered`.
-                remember: vec![self.remembered()],
-            },
-            Answer::Deny => Decision::deny(REFUSED_BY_OPERATOR),
-        };
+        let decision = decision(answer, self.ask.act(), self.ask.target());
         self.ask.answer(decision);
     }
 
-    /// The rule *allow this session* means.
+    /// The rule this approval's *allow this session* means.
     ///
     /// The narrowest thing a person means when they say yes to the same question
     /// twice: this act, on this target. Not the act alone, which would allow every
@@ -678,6 +668,40 @@ fn fit_line(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
     }
     spans.push(Span::styled(mark.to_string(), theme.style(Tone::Muted)));
     Line::from(spans)
+}
+
+/// What an answer means as an io-harness decision.
+///
+/// **One place, because two surfaces answer approvals now.** The session's
+/// overlay asks a person at a keyboard and `io acp` asks an editor's client;
+/// both arrive here with the same three answers and must mean the same three
+/// things by them. Left inside the overlay, "allow for this session" would have
+/// been re-derived in `src/acp.rs` — and a second derivation that quietly
+/// remembered a *wider* rule is a permission the operator did not grant, which
+/// no test comparing either surface to itself could see.
+///
+/// `remember` is applied by the harness for the rest of the **run**, which is one
+/// turn. Carrying it into the next turn is the caller's job.
+///
+/// The rule is the narrowest thing a person means when they say yes to the same
+/// question twice: this act, on this target. Not the act alone, which would allow
+/// every write; and the pattern is the target as written, because a bare filename
+/// is matched against a basename too and would allow the same name anywhere in
+/// the tree.
+#[must_use]
+pub fn decision(answer: Answer, act: Act, target: &str) -> Decision {
+    match answer {
+        Answer::Once => Decision::approve(),
+        Answer::Session => Decision::Approve {
+            modified: None,
+            remember: vec![Rule {
+                act,
+                effect: Effect::Allow,
+                pattern: target.to_string(),
+            }],
+        },
+        Answer::Deny => Decision::deny(REFUSED_BY_OPERATOR),
+    }
 }
 
 pub fn act_word(act: Act) -> &'static str {

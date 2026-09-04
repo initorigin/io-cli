@@ -246,7 +246,7 @@ impl Provider for Vendor {
 ///
 /// **`last_served` answers `None` when the head served, and that is a deliberate
 /// difference from `Fallback`.** io-harness emits `EventKind::FellBackTo` for any
-/// `Some` (`run/step.rs:503`), while `Fallback::last_served` answers `Some` for its
+/// `Some` (`run/step.rs:577`), while `Fallback::last_served` answers `Some` for its
 /// *primary* too — so a chain built from that type would report "the provider fell
 /// over" on every step of every run, including the ones where nothing did. Reporting
 /// only a link that is not the head makes the event mean what its name says, and
