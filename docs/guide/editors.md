@@ -54,24 +54,34 @@ see [When a run stops for you](resume.md).
 
 ## Permissions
 
-**In 0.36.0 an editor session refuses every action the policy puts in the grey tier, and does not
-ask you about it.** The tool call's update says the action needed an approval this agent could not
-route, and the agent is told the same — not that you denied it, because you were never asked.
+**An editor session asks you about every action the policy puts in the grey tier.** io sends
+`session/request_permission` naming the tool call, its act and its target, and your answer decides
+the call. Through 0.37.0 it asked nobody and refused them all; that is what 0.38.0 changed.
 
-io does not send `session/request_permission`. Raising that request means waiting for your answer,
-and routing the answer back into the running turn is the piece 0.36.0 does not have; a prompt in
-your editor whose outcome is ignored would be worse than no prompt.
+The request carries three options — allow once, allow for this session, deny — and not ACP's
+four. There is no *reject always*, because io-harness records a remembered **approval** and has
+nowhere to record a remembered refusal: a later matching action would ask again, and an option
+that quietly means something narrower than its name is worse than one that is absent.
 
-So configure the posture you want rather than relying on being asked — see
+*Allow for this session* remembers exactly that act on exactly that target for the rest of the
+run — not the act on its own, which would allow every write once you had allowed one. It is the
+same rule the terminal's own approval overlay writes, from one shared function, so the two
+surfaces cannot come to mean different things by the same word.
+
+**If your client never answers, the action is denied rather than left hanging.** There is no
+timer: when the connection ends, every question still outstanding becomes a denial. A timeout
+would have been a number invented here — a minute is too short for someone reading a diff, and an
+hour is indistinguishable from a hang. An option id io never offered, a cancellation, and a
+protocol error are denials too; there is one safe direction to be wrong in.
+
+Where nobody answered, the agent is told the interface could not route the approval, never that
+you denied it. Where you were asked and said no, it is told you refused, because that is what
+happened.
+
+You can still configure the posture you want rather than being asked at all — see
 [Configuration](configuration.md). A `workspace` posture lets the agent write inside the workspace
 without an approval; `read-only` refuses writes outright. Nothing is granted that you did not
 grant, and nothing happens silently.
-
-When the request does land, it will carry three options — allow once, allow for this session, deny
-— and not ACP's four. There is no *reject always*, because io-harness records a remembered
-**approval** and has nowhere to record a remembered refusal: a later matching action would ask
-again, and an option that quietly means something narrower than its name is worse than one that is
-absent.
 
 ## Cancelling
 

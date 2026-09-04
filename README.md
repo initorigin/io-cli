@@ -95,15 +95,37 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/initorigin/io-cli/main/install.ps1 | iex
 ```
 
+Or with a package manager you already have. macOS and Linux:
+
+```sh
+brew tap initorigin/io-cli https://github.com/initorigin/io-cli
+brew install initorigin/io-cli/io
+```
+
+Windows:
+
+```powershell
+scoop bucket add io-cli https://github.com/initorigin/io-cli
+scoop install io
+```
+
+The tap and the bucket live in this repository rather than in two of their own,
+which is why `brew tap` and `scoop bucket add` name a URL. They install the same
+checksum-verified artifacts the scripts do.
+
 Both scripts pick the right build for your machine, **verify it against the
 published `SHA256SUMS` before unpacking it**, and install into a directory you
 own — `~/.local/bin`, or `%LOCALAPPDATA%\io\bin` on Windows. Neither needs
 administrator rights and neither edits your shell profile or your `PATH`: if
 the directory is not on your `PATH`, the script prints the line to add.
 
-Re-running the script is how you update. There is no auto-update and no version
-check: a terminal tool that contacts a server you did not ask it to contact is
-one of this product's stated non-goals.
+`io upgrade` prints the command that updates the binary you are running:
+`brew upgrade io` from a Homebrew install, `scoop update io` from a scoop one,
+and the installer line above from a script install. It prints and does not run,
+and it asks nothing about what the newest version is. There is still no
+auto-update and no version check: a terminal tool that contacts a server you did
+not ask it to contact is one of this product's stated non-goals, and `io upgrade`
+reads the path of the running binary rather than a network.
 
 Set `IO_VERSION` to install a specific version, and `IO_INSTALL_DIR` to install
 somewhere else.
@@ -155,7 +177,7 @@ the limits that capability actually has.
 | [Pictures and documents](docs/guide/media.md) | Attaching an image, drawing it where the terminal can, and the twelve document tools |
 | [Reading it without seeing it](docs/guide/accessibility.md) | `--plain`, and what a screen reader, a braille display or a log gets |
 | [Headless](docs/guide/headless.md) | `io exec`, the exit codes, the JSON, resuming without a terminal, and managing the configuration from a shell |
-| [From an editor](docs/guide/editors.md) | `io acp`, pointing Zed or a JetBrains IDE at it, what the editor is sent, and the two things it is not |
+| [From an editor](docs/guide/editors.md) | `io acp`, pointing Zed or a JetBrains IDE at it, what the editor is sent, how it is asked for permission, and what it is still not |
 | [Configuration](docs/guide/configuration.md) | Every section of `io.toml`, changing it without leaving the session, and where io keeps your things |
 | [What the store is holding](docs/guide/store.md) | Reading the store, putting work back, and taking the work out |
 | [What this release is not](docs/guide/limits.md) | The limits, stated plainly, and the ones that are decisions rather than gaps |

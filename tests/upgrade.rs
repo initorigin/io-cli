@@ -64,12 +64,7 @@ fn f6_the_command_is_the_first_line_and_nothing_else_is_on_it() {
         let lines = upgrade::advice(&PathBuf::from(path), false);
         let first = &lines[0];
         assert!(
-            [
-                upgrade::HOMEBREW,
-                upgrade::SCOOP,
-                upgrade::INSTALLER_UNIX
-            ]
-            .contains(&first.as_str()),
+            [upgrade::HOMEBREW, upgrade::SCOOP, upgrade::INSTALLER_UNIX].contains(&first.as_str()),
             "{path} led with {first:?}, which is not one of the three commands"
         );
         assert_eq!(lines[1], "", "the command should stand alone on its line");

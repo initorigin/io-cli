@@ -74,7 +74,7 @@ pub fn installed(exe: &Path) -> Installed {
         .components()
         .filter_map(|part| part.as_os_str().to_str())
         .collect();
-    let has = |name: &str| parts.iter().any(|part| *part == name);
+    let has = |name: &str| parts.contains(&name);
 
     if has("Cellar") || has("homebrew") || has(".linuxbrew") {
         return Installed::Homebrew;
@@ -88,7 +88,10 @@ pub fn installed(exe: &Path) -> Installed {
     }
     if let Some(dir) = exe.parent() {
         let ends_with = |a: &str, b: &str| {
-            let mut tail = dir.components().rev().filter_map(|p| p.as_os_str().to_str());
+            let mut tail = dir
+                .components()
+                .rev()
+                .filter_map(|p| p.as_os_str().to_str());
             tail.next() == Some(b) && tail.next() == Some(a)
         };
         // `install.sh` writes `$HOME/.local/bin` and `install.ps1` writes
@@ -118,8 +121,7 @@ pub fn advice(exe: &Path, windows: bool) -> Vec<String> {
         Installed::Homebrew => vec![
             HOMEBREW.to_string(),
             String::new(),
-            "io was installed by Homebrew, from the tap in this repository."
-                .to_string(),
+            "io was installed by Homebrew, from the tap in this repository.".to_string(),
         ],
         Installed::Scoop => vec![
             SCOOP.to_string(),
