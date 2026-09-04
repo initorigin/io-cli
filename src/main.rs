@@ -104,6 +104,31 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
             io_cli::exec::OK
         }));
     });
+    // `io upgrade` leaves before anything else happens at all — before the home
+    // is adopted, before a configuration is discovered, before a working
+    // directory is even resolved. It reads this process's own path and prints,
+    // so taking a home or a store on the way would be side effects a command
+    // that answers one question has no business having.
+    //
+    // The whole decision is `upgrade::advice`, in the library, because nothing
+    // under `tests/` links this file. What is written here is the read of
+    // `current_exe` and the printing, and neither is a decision.
+    if let Some(Subcommand::Upgrade) = cli.command {
+        // A process that cannot say where its own executable is has no path to
+        // classify, so it hands on an empty one and takes the unrecognised arm
+        // rather than guessing at a location. `cfg!` and not a runtime probe:
+        // the installer that could have placed this binary is the one built for
+        // the platform it was built for.
+        let exe = std::env::current_exe().unwrap_or_default();
+        for line in io_cli::upgrade::advice(&exe, cfg!(windows)) {
+            println!("{line}");
+        }
+        // `OK` rather than a bare zero: this is the exit table
+        // `docs/CONTRACT.md` publishes, and a literal here would be a second
+        // opinion about what success is.
+        return Ok(io_cli::exec::OK);
+    }
+
     let root = match cli.dir {
         Some(dir) => dir,
         None => std::env::current_dir().map_err(|error| error.to_string())?,

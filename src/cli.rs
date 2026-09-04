@@ -109,6 +109,16 @@ pub enum Command {
     /// `tests/` links `src/main.rs` and nothing tested clap's routing, so the
     /// whole suite was green over a door that did not open.
     Skill(Manage),
+    /// Print the command that updates this binary, for the way it was
+    /// installed.
+    ///
+    /// **It prints and does not run.** io has no HTTP client and asks nothing
+    /// about what the latest version is: the answer is read from the running
+    /// binary's own path, so a Homebrew install is told `brew upgrade io`, a
+    /// scoop install `scoop update io`, and a script install the installer line.
+    /// A path none of the three would have produced is told so rather than given
+    /// advice that might replace a binary something else placed.
+    Upgrade,
 }
 
 /// The three management subcommands' arguments, handed through untouched.
