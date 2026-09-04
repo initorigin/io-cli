@@ -352,6 +352,134 @@ fn f9_a_server_never_reached_shows_neither_number() {
     assert!(drawn.contains("not reached this session"), "{drawn:?}");
 }
 
+// --- F11: what a server costs on every request --------------------------------
+
+/// The same row, with what the last request carried applied to it.
+///
+/// Deliberately a second helper rather than a change to [`detail`]: the two are
+/// different sources, and a test that could not draw a row *without* the cost map
+/// would not be able to assert what an un-costed surface says.
+fn costed_detail(
+    config: &Config,
+    observed: &Observed,
+    cost: &BTreeMap<String, u64>,
+    id: &str,
+) -> String {
+    let mut list = servers::servers(config, observed);
+    servers::costed(&mut list, cost);
+    let rows = servers::rows(&list);
+    let at = list
+        .iter()
+        .position(|s| s.id == id)
+        .expect("a configured id");
+    rows[at].detail.clone().expect("every row carries a detail")
+}
+
+/// Sabotage: drop the cost clause from `servers::rows` — restore
+/// `let state = if server.enabled { state } else { … }` without the
+/// `format!("{state} · {cost}")`. The figure then reaches no operator and only
+/// this test says so.
+#[test]
+fn f11_a_server_on_the_wire_says_what_it_costs_every_request() {
+    // The figure is not derivable from either count beside it: this server
+    // announced ten tools and this session has called none of them, and it still
+    // costs every one of those tokens on every request, because io-harness sends
+    // the whole catalogue whether a tool is called or not.
+    let config = configured();
+    let mut observed = Observed::default();
+    observed.event(&reached_offering("docs", 10));
+    let cost = BTreeMap::from([("docs".to_string(), 4_200_u64)]);
+
+    let drawn = costed_detail(&config, &observed, &cost, "docs");
+    assert!(
+        drawn.contains("4.2k tokens every request"),
+        "the row does not say what the server costs: {drawn:?}",
+    );
+}
+
+/// Sabotage: `cost.get(&server.id).copied().or(Some(0))` in `servers::costed`, or
+/// `None => per_request(0)` in `servers::rows`. Either one turns "no request has
+/// carried this server" into "this server is free", and this is the only test
+/// that fails.
+#[test]
+fn f11_a_server_no_request_has_carried_is_never_drawn_as_a_zero() {
+    // `search` is demonstrably alive — it announced ten tools this session — and
+    // is absent from the map, which is what a server that came up after the last
+    // completion looks like. Absent is "no figure yet", never "costs nothing".
+    let config = configured();
+    let mut observed = Observed::default();
+    observed.event(&reached_offering("search", 10));
+    let cost = BTreeMap::from([("docs".to_string(), 4_200_u64)]);
+
+    let drawn = costed_detail(&config, &observed, &cost, "search");
+    assert!(
+        drawn.contains(servers::NOT_ON_A_REQUEST),
+        "a server no request has carried draws {drawn:?}",
+    );
+    assert!(
+        !drawn.contains("0 tokens"),
+        "a missing figure was drawn as a measured zero: {drawn:?}",
+    );
+    assert!(
+        !drawn.contains("tokens every request"),
+        "a figure was invented for a server that has been on no wire: {drawn:?}",
+    );
+}
+
+/// Sabotage: swap the two counts in `servers::rows` —
+/// `format!("answered · {tools} offered · {offered} used")`. The row still draws
+/// three plausible numbers and this test fails on both of them by name; the
+/// values are chosen distinct so that no swap of any pair survives.
+#[test]
+fn f11_the_three_numbers_on_one_row_each_wear_the_word_that_says_which() {
+    let config = configured();
+    let mut observed = Observed::default();
+    observed.event(&reached_offering("docs", 10));
+    observed.event(&called("docs", "search_docs", Some(true)));
+    observed.event(&called("docs", "get_page", Some(true)));
+    let cost = BTreeMap::from([("docs".to_string(), 512_u64)]);
+
+    let drawn = costed_detail(&config, &observed, &cost, "docs");
+    // Ten announced, two called, 512 tokens on the wire: three sources, three
+    // values, and every one of them attached to the word for its own question.
+    assert!(drawn.contains("10 offered"), "{drawn:?}");
+    assert!(drawn.contains("2 used"), "{drawn:?}");
+    assert!(drawn.contains("512 tokens every request"), "{drawn:?}");
+
+    let at = |needle: &str| {
+        drawn
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not on the row: {drawn:?}"))
+    };
+    assert!(at("offered") < at("used"), "{drawn:?}");
+    assert!(at("used") < at("tokens every request"), "{drawn:?}");
+}
+
+/// Sabotage: draw the cost clause for a switched-off server as well — move the
+/// `format!("{state} · {cost}")` outside the `server.enabled` arm. The row then
+/// carries a figure for a server that put nothing on any wire, and this fails.
+#[test]
+fn f11_a_switched_off_server_states_no_figure_at_all() {
+    // A stale figure is the danger here, not a missing one: the map still holds
+    // what this server cost before it was switched off, and drawing it would
+    // report a charge the operator has already stopped paying.
+    let config = loaded(
+        "\
+[[mcp]]
+id = \"docs\"
+transport = \"stdio\"
+command = \"mcp-docs\"
+enabled = false
+",
+    );
+    let cost = BTreeMap::from([("docs".to_string(), 4_200_u64)]);
+
+    let drawn = costed_detail(&config, &Observed::default(), &cost, "docs");
+    assert!(drawn.starts_with(servers::DISABLED), "{drawn:?}");
+    assert!(!drawn.contains("tokens"), "{drawn:?}");
+    assert!(!drawn.contains(servers::NOT_ON_A_REQUEST), "{drawn:?}");
+}
+
 // --- F6: the writes -----------------------------------------------------------
 
 #[test]
@@ -869,6 +997,9 @@ fn f6_the_file_a_row_names_is_the_file_its_position_is_read_from() {
         // an ordinary entry produces — and `declared_at` locates by id, which is
         // why a switched-off server is still editable and still removable.
         enabled: true,
+        // Nothing to do with where an entry is declared: this is what the last
+        // request carried, and `declared_at` reads a file.
+        cost: None,
     };
     let at = servers::declared_at(&row).expect("the file names `search`");
     assert_eq!(at.index(), 1);

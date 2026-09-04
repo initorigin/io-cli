@@ -109,15 +109,182 @@
 //! carried on [`View::adapters`] — and it is still not a second read of any file.
 //! See [`Listed::adapted`].
 //!
+//! # What a bundle costs, and the four kinds that cost nothing
+//!
+//! A bundle is a thing an operator pays for on **every** request, and until
+//! 0.37.0 this surface said what a bundle contributed and never what that
+//! weighed. [`View::costs`] carries [`crate::context::bundle_cost`]'s answer and
+//! [`rows`] draws it beside the kinds.
+//!
+//! **The more useful half of the answer is that most of it is free.** Of the
+//! seven kinds a bundle can contribute, only skills, agents and MCP servers reach
+//! a provider at all; hooks, templates, a declared binary and a policy layer cost
+//! nothing, ever. That is stated from [`COSTS`] — an exhaustive table keyed by
+//! io-harness's own wire names, where "free" is a recorded decision with a reason
+//! beside it — rather than from a list somebody wrote down, so an eighth kind
+//! added upstream fails `tests/pluginview.rs` instead of being drawn as free.
+//!
+//! **No number here is something a mask or `/context` can reduce.** io-harness
+//! sends a byte-identical tool catalogue on a masked turn and an unmasked one,
+//! deliberately, because the tool array sits ahead of the provider's cache
+//! breakpoint. The only lever these figures inform is switching the bundle off,
+//! which is [`enable`] — the verb this surface already offers, which is why the
+//! figures belong on this row and not on a page somewhere else.
+//!
 //! Like [`crate::servers`] and [`crate::skillview`], this is a data model and
 //! functions over it: [`view`] is where the machine is read, once, and everything
 //! that draws is pure over what it returned. The driver in `src/main.rs` owns the
 //! keyboard and applies what [`add`] and [`remove`] return.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::glyphs::Glyphs;
 use crate::picker::{fit, fit_left, Row};
+
+/// Whether one kind of contribution reaches a provider, and whether io-cli can
+/// put a number on it.
+///
+/// **`Free` is a recorded decision, never a default.** See [`COSTS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// It is on **every** request, and [`crate::context::bundle_cost`] locates
+    /// and counts it.
+    Every,
+    /// It is on **every** request and `bundle_cost` cannot locate it, so a
+    /// bundle contributing this draws a figure that under-reports. Said in the
+    /// row — see [`AT_LEAST`] — rather than approximated.
+    EveryUncounted,
+    /// It never reaches a provider at all. Not "small", not "cheap": nothing
+    /// about it is in any request, ever.
+    Free,
+}
+
+/// What every kind of contribution a bundle can make costs on the wire, and why.
+///
+/// # Why this is a table and not a hand-written list of the free ones
+///
+/// The fact an operator least expects and most needs is that **four of the seven
+/// kinds cost nothing at all** — a bundle contributing only hooks is genuinely
+/// free forever, and no amount of budget pressure is a reason to remove it. The
+/// failure mode of stating that from a list of names in a `match` with a `_`
+/// arm is that io-harness adds an eighth kind, it falls to the wildcard, and the
+/// surface silently calls it free. Nobody would ever see it happen.
+///
+/// So this is [`crate::acp_map::MAPPING`]'s and [`crate::triage::TRIAGE`]'s shape,
+/// for their reason: keyed by **io-harness's own wire name** — the strings
+/// `Plugin::contributions` returns — with the decision and the sentence that
+/// justifies it beside each. `tests/pluginview.rs` reads the locked harness's own
+/// `contributions()` and fails **by name** when the two sets differ, so an eighth
+/// kind is a red suite rather than a row that quietly under-reports.
+///
+/// The order is io-harness's own, which is the order [`rows`] draws the kinds in.
+pub const COSTS: &[(&str, Wire, &str)] = &[
+    (
+        "skills",
+        Wire::Every,
+        "io-harness appends the skill catalogue to the system block of every \
+         request — one `- name: description` line per skill, namespaced by the \
+         bundle, which is what `context::bundle_cost` sums",
+    ),
+    (
+        "templates",
+        Wire::Free,
+        "a prompt template is expanded into a message the operator chose to send; \
+         a request that does not use one carries no trace that the directory \
+         exists, so the standing cost of declaring templates is nothing",
+    ),
+    (
+        "agents",
+        Wire::EveryUncounted,
+        "io-harness composes the roster into the system block of every request, \
+         so it does cost — but it writes no marker `crate::context` can locate, \
+         and a number invented for it would be worse than an honest floor",
+    ),
+    (
+        "mcp",
+        Wire::Every,
+        "every tool the server offered is in the tool array of every request, \
+         with its description and its whole JSON schema, which is where nearly \
+         all of the weight is",
+    ),
+    (
+        "hooks",
+        Wire::Free,
+        "a hook is a program io-harness runs on this machine around a step; the \
+         model is never told it exists and no request carries a byte of it",
+    ),
+    (
+        "bin",
+        Wire::Free,
+        "a declared executable is put on the run's PATH; nothing names it in a \
+         request, and it costs tokens only if the model is separately told to \
+         run it",
+    ),
+    (
+        "policy",
+        Wire::Free,
+        "a policy layer is a deny rule io-harness evaluates locally before a call \
+         happens; the model is not shown the rules and learns of one only by \
+         being refused",
+    ),
+];
+
+/// What [`COSTS`] says about one kind, or `None` for a kind it does not name.
+///
+/// `None` is the only unsafe answer here and every caller reads it the
+/// conservative way: an unknown kind is **not** free and its cost is **not**
+/// counted, so a bundle carrying one draws a floor rather than a `free` it did
+/// not earn. The test is what turns that from a quiet safety net into a failure.
+#[must_use]
+pub fn wire(kind: &str) -> Option<Wire> {
+    COSTS
+        .iter()
+        .find(|(name, _, _)| *name == kind)
+        .map(|(_, wire, _)| *wire)
+}
+
+/// Whether nothing this bundle contributes reaches a request, ever.
+///
+/// Every kind must be a *recorded* [`Wire::Free`]: an empty list is not free (it
+/// is a bundle contributing nothing, which the row already says in words), and a
+/// kind [`COSTS`] does not name is not free either.
+#[must_use]
+pub fn free(contributions: &[&str]) -> bool {
+    !contributions.is_empty()
+        && contributions
+            .iter()
+            .all(|kind| wire(kind) == Some(Wire::Free))
+}
+
+/// Whether this bundle's figure is a floor rather than the whole of what it costs.
+///
+/// True for a bundle contributing agents — [`crate::context::bundle_cost`] leaves
+/// the roster out on purpose, because io-harness composes it into the system block
+/// with no marker to find — and true for a kind [`COSTS`] does not name, which is
+/// the same situation arriving through a dependency bump.
+#[must_use]
+pub fn under_reported(contributions: &[&str]) -> bool {
+    contributions
+        .iter()
+        .any(|kind| !matches!(wire(kind), Some(Wire::Free | Wire::Every)))
+}
+
+/// What a bundle costing nothing at all is drawn as.
+///
+/// **Words rather than `0 tokens every request`, and the difference is the point.**
+/// A zero is a measurement — "this was on the wire and weighed nothing" — and a
+/// bundle contributing only hooks was never on a wire to be weighed. It is also
+/// the answer to a question a number cannot answer: not "what did it cost this
+/// time" but "will it ever cost anything", and the table says no, permanently.
+///
+/// A comma rather than a dash, because this string is drawn in both glyph sets and
+/// in `--plain`, and punctuation that needs a glyph set is punctuation that has a
+/// fallback to get wrong.
+pub const FREE: &str = "free, nothing on the wire";
+
+/// The word in front of a figure that is a floor. See [`under_reported`].
+pub const AT_LEAST: &str = "at least ";
 
 /// The mark on a bundle that loaded.
 ///
@@ -331,9 +498,41 @@ pub struct View {
     /// could be under, so no row is marked and every bundle draws as the native
     /// one it must be.
     pub adapters: Option<PathBuf>,
+    /// What each bundle's contributions weighed on the last request that went
+    /// out, by plugin id, from [`crate::context::bundle_cost`].
+    ///
+    /// Carried on the view for [`View::adapters`]'s reason: it is a fact about
+    /// the session rather than about the terminal, and threading it through
+    /// [`rows`] would put it in the signature of every drawing function
+    /// including the ones that never show it.
+    ///
+    /// **Empty is "no request has gone out yet", and a missing id is not a
+    /// zero.** `bundle_cost` inserts every loaded bundle it was given, at zero
+    /// where the bundle contributed nothing to that request — so an id that is
+    /// absent means the map was never built, and [`rows`] draws
+    /// [`crate::servers::NOT_ON_A_REQUEST`] for it rather than a figure.
+    ///
+    /// **Not something an operator can shrink by masking a tool.** io-harness
+    /// sends a byte-identical tool catalogue on a masked turn and an unmasked
+    /// one, deliberately, because the tool array sits ahead of the provider's
+    /// cache breakpoint. The lever this informs is [`enable`] — switching the
+    /// bundle off — which is the verb this surface already offers.
+    pub costs: BTreeMap<String, u64>,
 }
 
 impl View {
+    /// This view, told what the last request carried.
+    ///
+    /// A builder rather than an argument to [`view`], because `view` is called
+    /// from ten places that are not drawing a cost column — an id lookup, a
+    /// disclosure, a `--plain` listing — and every one of them would otherwise
+    /// have to hold a request snapshot it has no use for.
+    #[must_use]
+    pub fn with_costs(mut self, costs: BTreeMap<String, u64>) -> View {
+        self.costs = costs;
+        self
+    }
+
     /// Whether the configuration declared no bundle at all.
     ///
     /// **Both lists, because a configuration whose only bundle was refused has
@@ -493,6 +692,10 @@ pub fn view(plugins: &io_harness::Plugins) -> View {
         // would make three pure functions read this machine's environment and
         // leave a test unable to say what any of them saw.
         adapters: crate::home::adapters(),
+        // Empty here and filled by [`View::with_costs`]: the figure comes from
+        // the last request that went out, which is not a fact this function's
+        // one input — the bundles io-harness read — can answer.
+        costs: BTreeMap::new(),
     }
 }
 
@@ -526,7 +729,13 @@ pub fn view(plugins: &io_harness::Plugins) -> View {
 ///
 /// The id is the label. The contributions are unconditional, because they are the
 /// answer to what the bundle *did to this session* and are the only field here
-/// with no other home. The version follows when there is one, the description
+/// with no other home. **What they cost follows them immediately and is
+/// unconditional too** — see `cost_word` below — because it is the sentence about
+/// that list rather than a fact of its own, and because the answer is very often
+/// [`FREE`]: four of the seven kinds never reach a request, so an operator under
+/// budget pressure has to be able to see, without opening anything, that a bundle
+/// contributing only hooks is not what to remove. The version follows when there
+/// is one, the description
 /// takes what is left, and **the root path is the field that gives way** — below
 /// a floor this module keeps privately it is dropped whole rather than drawn as an
 /// ellipsis and an extension. At eighty columns a row is therefore the id, what it
@@ -576,6 +785,22 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
             // A manifest with a `name` and nothing else. Loaded, contributing
             // nothing, and saying so is the whole point of the row.
             detail = "contributes nothing".to_string();
+        }
+        // **Immediately after the kinds, because it is the sentence about them.**
+        // "skills, mcp · 4.2k tokens every request" reads as one fact; the same
+        // figure after the version reads as a fact about the version. Drawn
+        // before the width budget below is taken, so the cost competes with the
+        // description and the root for room rather than being appended past the
+        // end of the row.
+        //
+        // Nothing at all on a switched-off bundle, which contributed none of it:
+        // that row already leads with "switched off", and either a figure or the
+        // word `free` under it would be a claim about a session this bundle is
+        // not in. Nothing on a bundle contributing nothing either — the row
+        // already says so in words, and `free` would add no fact.
+        if plugin.enabled && !plugin.contributions.is_empty() {
+            detail.push_str(separator);
+            detail.push_str(&cost_word(plugin, &view.costs));
         }
         if let Some(version) = &plugin.version {
             detail.push_str(separator);
@@ -651,6 +876,41 @@ pub fn rows(view: &View, width: u16, glyphs: &Glyphs) -> Vec<Row> {
     }
 
     out
+}
+
+/// What one bundle's row says about what it costs, in one field.
+///
+/// Four answers, and the order they are asked in is the whole of the logic:
+///
+/// 1. **[`FREE`]**, when every kind the bundle contributes is a recorded
+///    [`Wire::Free`]. Asked *first*, so it beats every number: it is a statement
+///    about all future requests, from [`COSTS`], and it must not depend on
+///    whether a request happens to have gone out yet.
+/// 2. **[`crate::servers::NOT_ON_A_REQUEST`]**, when no request has gone out —
+///    the bundle is absent from `costs`, which is empty until
+///    [`View::with_costs`] is given a snapshot. Never `0`: see that constant.
+/// 3. **[`AT_LEAST`] and the figure**, when the bundle contributes something
+///    [`crate::context::bundle_cost`] cannot locate — an agent roster today, an
+///    eighth kind a later io-harness adds. The figure is a floor and the row
+///    says so, which is the honest form of a number io-cli cannot complete.
+/// 4. **The figure**, otherwise.
+///
+/// A bundle can legitimately draw `0 tokens every request` here — it contributes
+/// an MCP server that has offered no tool to a request yet — and that is *not*
+/// [`FREE`]: one is a measurement of the last request, the other is a promise
+/// about every request, and collapsing them would tell an operator a server they
+/// are about to pay for is free.
+fn cost_word(plugin: &Listed, costs: &BTreeMap<String, u64>) -> String {
+    if free(&plugin.contributions) {
+        return FREE.to_string();
+    }
+    match costs.get(&plugin.id) {
+        None => crate::servers::NOT_ON_A_REQUEST.to_string(),
+        Some(&tokens) if under_reported(&plugin.contributions) => {
+            format!("{AT_LEAST}{}", crate::servers::per_request(tokens))
+        }
+        Some(&tokens) => crate::servers::per_request(tokens),
+    }
 }
 
 /// The picker rows for one bundle: what it actually put into the session.
@@ -1229,6 +1489,10 @@ mod tests {
             // are what the rows wear. The adapted case is asserted in
             // `tests/plugins.rs`, against a bundle whose root really is under one.
             adapters: None,
+            // No request has gone out, which is the state these row-shape tests
+            // are about. The cost figures are asserted in `tests/pluginview.rs`
+            // against a snapshot `context::bundle_cost` was given.
+            costs: BTreeMap::new(),
         }
     }
 
@@ -1317,6 +1581,7 @@ mod tests {
                 error: "/repo/bundles/empty: no plugin.toml".to_string(),
             }],
             adapters: None,
+            costs: BTreeMap::new(),
         };
         for glyphs in [&UNICODE, &ASCII] {
             let rows = rows(&view, 200, glyphs);
@@ -1419,6 +1684,7 @@ mod tests {
                 error: sentence.to_string(),
             }],
             adapters: None,
+            costs: BTreeMap::new(),
         };
         for glyphs in [&UNICODE, &ASCII] {
             let rows = rows(&view, 200, glyphs);
@@ -1450,6 +1716,7 @@ mod tests {
                 error: sentence.to_string(),
             }],
             adapters: None,
+            costs: BTreeMap::new(),
         };
         for glyphs in [&UNICODE, &ASCII] {
             let rows = rows(&view, 80, glyphs);

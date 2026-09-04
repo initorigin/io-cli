@@ -40,7 +40,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | --- | --- |
 | `/help` | this table |
 | `/status` | commit the whole session state into the scrollback |
-| `/context` | what is in the model's window, read from the request that carried the turn |
+| `/context` | what is in the model's window, read from the request that carried the turn, and withhold or allow a tool by name |
 | `/expand` | commit the last step's full detail into the scrollback |
 | `/fleet` | show the children this turn has spawned |
 | `/skills` | every skill, shipped or yours: what it is for, whether it is on, and its file; add and remove one |

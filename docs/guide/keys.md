@@ -156,9 +156,15 @@ the defaults that shipped, and marks `Ctrl+C` as fixed.
 
 ## While a turn is running
 
-**Eleven commands report while the agent works**, and they are `/status`,
+**Eleven commands run while the agent works**, and they are `/status`,
 `/context`, `/cost`, `/stats`, `/help`, `/theme`, `/copy`, `/expand`, `/fleet`,
 `/image` and `/config`.
+
+Ten of them only report. `/context withhold <tool>` is the one that changes
+something, and it is admitted because watching the agent reach for a tool is
+exactly when you know you want it withheld. It takes effect on the **next** turn
+— this one's contract was built before you typed — and it writes no file, which
+is the test every command on this list has to pass.
 
 The palette opens mid-turn too, and path completion with it — the `/` and the `@`
 in the table above. `/compact` and `/steer` reach the running turn through their

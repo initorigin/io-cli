@@ -2242,3 +2242,49 @@ fn f5_every_submission_that_rewrites_the_prompt_also_carries_the_typed_text() {
         "both echo sites must re-add the slash the parse removed",
     );
 }
+
+/// **F3 — the cost columns have a caller, and the caller is the driver.**
+///
+/// **This gate exists because of 0.31.0 and it is the most important test in this
+/// release.** That release shipped `adapt::generate`, `marketplace::fetched`,
+/// `Disclosure::withheld` and `orphaned` — every one reachable only from tests,
+/// every row it added listable and uninstallable, behind 1,666 green tests. 0.35.0
+/// then shipped a guard whose caller handed it `Vec::new()`, and 0.36.0 shipped a
+/// frame builder whose only caller was its own test file. Three releases running,
+/// the same shape: the unit is correct, the door does not open it.
+///
+/// `servers::costed` and `View::with_costs` are exactly that shape. Both are
+/// perfectly testable in isolation and both are inert unless `src/main.rs` calls
+/// them — and nothing under `tests/` links `src/main.rs`, so no ordinary test can
+/// tell the difference between a wired column and a column that draws
+/// "not yet on a request" for every server forever.
+///
+/// Asserted on the driver's own text, which is the only instrument that reaches
+/// this. Sabotage: delete either call from `src/main.rs`. The whole suite stays
+/// green and both surfaces silently stop reporting.
+#[test]
+fn f3_the_cost_columns_are_filled_by_the_driver_and_not_only_by_tests() {
+    let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let code = code_of(&std::fs::read_to_string(&driver).expect("the driver is readable"));
+
+    for (call, surface) in [("servers::costed(", "/mcp"), (".with_costs(", "/plugin")] {
+        assert!(
+            code.contains(call),
+            "`{call}` has no call site in src/main.rs, so {surface}'s cost column \
+             is drawn from an empty map on every keystroke — the 0.31.0 shape, \
+             where a release's whole pipeline was reachable only from its tests.",
+        );
+    }
+
+    // And each is fed from the request that actually went out rather than from a
+    // fresh contract. A `contract::session` here would also trip that function's
+    // own caller count, which fails at five — so the two facts guard each other.
+    for needle in ["context::server_cost(", "context::bundle_cost("] {
+        assert!(
+            code.contains(needle),
+            "the driver must fill the column from `{needle}`, which reads the \
+             request the provider was handed; a figure computed any other way is \
+             io-cli's belief about a catalogue rather than the catalogue",
+        );
+    }
+}

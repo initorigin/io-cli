@@ -36,6 +36,24 @@
 //! bound on what is offered, and the two numbers are drawn as two numbers: one
 //! replacing the other would answer a question nobody asked.
 //!
+//! # A third number, from a third source, and what it is not
+//!
+//! [`Server::cost`] is what the server's tools **weighed on the last request's
+//! wire**, from [`crate::context::server_cost`]. That is neither of the counts
+//! above: the announcing event says what a server offered at connect time, this
+//! module counts what the session called, and only the request says what the
+//! catalogue cost. **They can legitimately disagree** — a server that came up
+//! after the last completion has announced its tools and has been on no wire —
+//! so all three are drawn with the word that says which they are, and a server
+//! that has been on no wire draws [`NOT_ON_A_REQUEST`] and never `0`.
+//!
+//! **It is a standing charge, not something a mask can shave.** io-harness sends
+//! a byte-identical tool catalogue on a masked turn and an unmasked one,
+//! deliberately, because the tool array sits ahead of the provider's cache
+//! breakpoint — so `/context` and a narrowed toolset do not reduce this figure
+//! by a token. The lever it informs is [`switch`], which is the verb this panel
+//! already offers, and that is the whole reason the number belongs on this row.
+//!
 //! # Disable, and why the write that was refused in 0.29.0 is correct in 0.30.0
 //!
 //! Through io-harness 0.69.0 this paragraph said `McpServer` was `id`, `transport`
@@ -184,6 +202,31 @@ pub struct Server {
     /// [`Server::state`] rather than a variant of [`Reached`]. A server that is
     /// off has *no* state to have reached.
     pub enabled: bool,
+    /// What this server's tools cost on **every** request the session makes, by
+    /// [`crate::context::server_cost`] over the last one that went out.
+    ///
+    /// **A third number beside [`Reached`]'s two, from a third source, and the
+    /// row says which is which.** `Reached::Answered`'s `offered` is what the
+    /// server *announced at connect time*, on an `EventKind::Mcp`; its `tools` is
+    /// what this session has *called*. This is what the server's catalogue
+    /// *weighed on the wire* of the most recent request. They legitimately
+    /// disagree — a server that came up after the last completion has announced
+    /// its tools and put none of them on a wire yet — so all three are drawn with
+    /// the word that says what they are, never as bare figures side by side.
+    ///
+    /// **`None` is "no request has carried it yet", and it is not zero.** A zero
+    /// would say the server is free, which is the one wrong answer this number
+    /// can give. [`servers`] leaves it `None` and [`costed`] is what fills it, so
+    /// a surface that never asked for the figure draws [`NOT_ON_A_REQUEST`]
+    /// rather than a number it invented.
+    ///
+    /// **Not something an operator can shrink by withholding the server from a
+    /// turn.** io-harness sends a byte-identical tool catalogue whether or not a
+    /// tool is masked, deliberately, because the tool array sits ahead of the
+    /// provider's cache breakpoint. The lever this number informs is
+    /// [`switch`] — turning the server off in the file — which is the verb this
+    /// panel already offers.
+    pub cost: Option<u64>,
 }
 
 /// Per-server facts accumulated from the run's own events.
@@ -301,9 +344,52 @@ pub fn servers(config: &Config, observed: &Observed) -> Vec<Server> {
                 },
                 state: observed.of(&server.id),
                 enabled: server.enabled,
+                // Left unstated here, and filled by [`costed`]: the figure comes
+                // from the last request that went out, which is a different
+                // source from `observed` and is not this function's to reach for.
+                cost: None,
             }
         })
         .collect()
+}
+
+/// What a token figure on one of these rows means, spelled once.
+///
+/// **"Every request", not "this request".** The catalogue is re-sent whole on
+/// every completion a turn makes, so this is a standing charge rather than a
+/// measurement of one moment — and an operator reading it as the latter would
+/// reach for the wrong lever. See [`Server::cost`].
+pub fn per_request(tokens: u64) -> String {
+    format!(
+        "{} tokens every request",
+        crate::status::format_tokens(tokens)
+    )
+}
+
+/// What a thing no request has carried yet is drawn as.
+///
+/// **A phrase, and never `0`.** Zero is a measurement — "this was on the wire and
+/// weighed nothing" — and this is the absence of a measurement. Drawing them the
+/// same would report a server that has not been on a wire as free, which is the
+/// one claim that would stop an operator looking at it.
+///
+/// Shared with [`crate::pluginview`] rather than spelled twice, so `/mcp` and
+/// `/plugin` cannot drift into two phrases for one state.
+pub const NOT_ON_A_REQUEST: &str = "not yet on a request";
+
+/// Fill in what each server's tools weighed on the last request.
+///
+/// `cost` is [`crate::context::server_cost`]'s map, keyed on the **wire** id,
+/// which is the id [`Server`] already holds — so no translation happens here and
+/// there is no second spelling to get wrong.
+///
+/// A server absent from the map keeps its `None`, which is the whole reason this
+/// is a lookup rather than a `get(..).unwrap_or(0)`: absent means no request has
+/// carried it, and zero would mean it is free. See [`Server::cost`].
+pub fn costed(servers: &mut [Server], cost: &BTreeMap<String, u64>) {
+    for server in servers {
+        server.cost = cost.get(&server.id).copied();
+    }
 }
 
 /// How a server is reached, in one short string.
@@ -322,7 +408,23 @@ fn transport(server: &io_harness::McpServer) -> String {
 /// The rows as the picker draws them.
 ///
 /// Content before metadata: the id is the label, and the detail carries what the
-/// session saw then how it is reached.
+/// session saw, what it costs, then how it is reached.
+///
+/// # Three numbers, and every one of them wears its word
+///
+/// `10 offered · 2 used · 4.2k tokens every request` is three answers to three
+/// questions from three sources — the announcing event, this session's own call
+/// count, and the catalogue on the last request's wire. Two of them can
+/// legitimately disagree with the third: a server that came up after the last
+/// completion has announced its tools and put none of them on a wire yet, and
+/// draws [`NOT_ON_A_REQUEST`] beside a stated `offered`. **Unlabelled figures
+/// side by side are how a surface starts lying**, so none of the three is ever
+/// drawn as a bare number.
+///
+/// A switched-off server draws none of them, for the reason it draws no state:
+/// there is nothing it did this session and nothing it put on a wire, and
+/// `0 tokens every request` over it would read as a measurement rather than as
+/// the file's own instruction.
 pub fn rows(servers: &[Server]) -> Vec<crate::picker::Row> {
     servers
         .iter()
@@ -349,8 +451,17 @@ pub fn rows(servers: &[Server]) -> Vec<crate::picker::Row> {
             // "not reached this session" over a server the file switched off is
             // true and reads as a server that simply has not been called yet,
             // which is the one wrong answer available here.
+            //
+            // **A third clause, with its own word, and never a bare figure.** It
+            // answers a different question from either count beside it and comes
+            // from a different source — see this function's docs — and `None` is
+            // drawn as the absence it is rather than as a zero.
             let state = if server.enabled {
-                state
+                let cost = match server.cost {
+                    Some(tokens) => per_request(tokens),
+                    None => NOT_ON_A_REQUEST.to_string(),
+                };
+                format!("{state} · {cost}")
             } else {
                 DISABLED.to_string()
             };
